@@ -11,6 +11,8 @@ const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
 const CIRCULAR_READ_SYNTAX_SYMBOL: &str = "emaxx--circular-read-syntax";
 const HASH_TABLE_LITERAL_SYMBOL: &str = "emaxx--hash-table-literal";
+pub(crate) const CHAR_TABLE_LITERAL_SYMBOL: &str = "emaxx--char-table-literal";
+pub(crate) const SUB_CHAR_TABLE_LITERAL_SYMBOL: &str = "emaxx--sub-char-table-literal";
 pub(crate) const RECORD_LITERAL_SYMBOL: &str = "emaxx--record-literal";
 const BOOL_VECTOR_LITERAL_SYMBOL: &str = "bool-vector-literal";
 static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -41,6 +43,8 @@ fn structure_slot_eval_form(value: Value) -> Value {
                     Some(Value::Symbol(symbol))
                         if symbol == "vector-literal"
                             || symbol == BOOL_VECTOR_LITERAL_SYMBOL
+                            || symbol == CHAR_TABLE_LITERAL_SYMBOL
+                            || symbol == SUB_CHAR_TABLE_LITERAL_SYMBOL
                             || symbol == RECORD_LITERAL_SYMBOL
                             || symbol == "quote"
                 )
@@ -262,7 +266,8 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                     let car = car_cell.borrow();
                     if let Value::Symbol(symbol) = &*car
                         && (symbol == CIRCULAR_READ_SYNTAX_SYMBOL
-                            || symbol == HASH_TABLE_LITERAL_SYMBOL)
+                            || symbol == HASH_TABLE_LITERAL_SYMBOL
+                            || symbol == CHAR_TABLE_LITERAL_SYMBOL)
                     {
                         return true;
                     }
@@ -1187,6 +1192,44 @@ impl<'a> Reader<'a> {
                 }
                 Err(LispError::ReadError("unsupported #@ syntax".into()))
             }
+            Some(b'^') => {
+                self.advance();
+                let marker = if self.peek() == Some(b'^') {
+                    self.advance();
+                    SUB_CHAR_TABLE_LITERAL_SYMBOL
+                } else {
+                    CHAR_TABLE_LITERAL_SYMBOL
+                };
+                if self.peek() != Some(b'[') {
+                    return Err(LispError::ReadError("invalid-read-syntax".into()));
+                }
+                let fields = self.read_bracketed_fields()?;
+                if marker == CHAR_TABLE_LITERAL_SYMBOL {
+                    if fields.len() < 68 {
+                        return Err(LispError::ReadError("invalid size char-table".into()));
+                    }
+                } else {
+                    let Some(Value::Integer(depth @ 1..=3)) = fields.first() else {
+                        return Err(LispError::ReadError(
+                            "invalid depth in sub-char-table".into(),
+                        ));
+                    };
+                    let expected_contents = [0usize, 16, 32, 128][*depth as usize];
+                    if fields.len() != expected_contents + 2 {
+                        return Err(LispError::ReadError(
+                            "invalid size in sub-char-table".into(),
+                        ));
+                    }
+                    if !matches!(fields.get(1), Some(Value::Integer(0..=0x3f_ffff))) {
+                        return Err(LispError::ReadError(
+                            "invalid minimum character in sub-char-table".into(),
+                        ));
+                    }
+                }
+                Ok(Some(Value::list(
+                    std::iter::once(Value::symbol(marker)).chain(fields),
+                )))
+            }
             Some(b'[') => {
                 self.advance();
                 let mut fields = Vec::new();
@@ -1462,6 +1505,23 @@ impl<'a> Reader<'a> {
         }
     }
 
+    fn read_bracketed_fields(&mut self) -> Result<Vec<Value>, LispError> {
+        debug_assert_eq!(self.peek(), Some(b'['));
+        self.advance();
+        let mut fields = Vec::new();
+        loop {
+            self.skip_whitespace_and_comments();
+            match self.peek() {
+                None => return Err(LispError::EndOfInput),
+                Some(b']') => {
+                    self.advance();
+                    return Ok(fields);
+                }
+                _ => fields.push(self.read()?.ok_or(LispError::EndOfInput)?),
+            }
+        }
+    }
+
     fn try_read_string_literal_with_properties(
         &self,
         items: &[Value],
@@ -1586,12 +1646,6 @@ impl<'a> Reader<'a> {
             return Ok(Some(normalize_bigint(n)));
         }
 
-        if let Some((radix, digits)) = token.split_once(['r', 'R'])
-            && let Ok(base) = radix.parse::<u32>()
-        {
-            return Ok(Some(parse_radix_integer(base, digits)?));
-        }
-
         if let Some(f) = parse_special_float_token(&token) {
             return Ok(Some(Value::Float(f)));
         }
@@ -1667,11 +1721,11 @@ fn parse_decimal_token(token: &str) -> Option<Value> {
     None
 }
 
-fn parse_special_float_token(token: &str) -> Option<f64> {
+pub(crate) fn parse_special_float_token(token: &str) -> Option<f64> {
     let (mantissa, suffix) = token.split_once(['e', 'E'])?;
     let mantissa_value = mantissa.parse::<f64>().ok()?;
     let upper_suffix = suffix.to_ascii_uppercase();
-    if upper_suffix == "+NAN" || upper_suffix == "NAN" {
+    if upper_suffix == "+NAN" {
         let sign = if mantissa_value.is_sign_negative() {
             -1.0
         } else {
@@ -1679,27 +1733,12 @@ fn parse_special_float_token(token: &str) -> Option<f64> {
         };
         return Some(f64::NAN.copysign(sign));
     }
-    if upper_suffix == "+INF" || upper_suffix == "INF" {
+    if upper_suffix == "+INF" {
         return Some(if mantissa_value.is_sign_negative() {
             f64::NEG_INFINITY
         } else {
             f64::INFINITY
         });
-    }
-    if upper_suffix == "-INF" {
-        return Some(if mantissa_value.is_sign_negative() {
-            f64::INFINITY
-        } else {
-            f64::NEG_INFINITY
-        });
-    }
-    if upper_suffix == "-NAN" {
-        let sign = if mantissa_value.is_sign_negative() {
-            1.0
-        } else {
-            -1.0
-        };
-        return Some(f64::NAN.copysign(sign));
     }
     None
 }
@@ -2038,6 +2077,17 @@ mod tests {
     }
 
     #[test]
+    fn bare_radix_shaped_tokens_remain_symbols() {
+        // GNU only recognizes radix integers after the `#' dispatch
+        // character.  Tokens such as Artist's local variable `2rx2' are
+        // ordinary symbols, even when the prefix before `r' is numeric.
+        assert_eq!(read_one("2rx2"), Value::Symbol("2rx2".into()));
+        assert_eq!(read_one("16rFF"), Value::Symbol("16rFF".into()));
+        assert_eq!(read_one("10r12"), Value::Symbol("10r12".into()));
+        assert_eq!(read_one("#16rFF"), Value::Integer(255));
+    }
+
+    #[test]
     fn reads_bool_vector_literals() {
         assert_eq!(
             read_one(r#"#&8"\1""#),
@@ -2053,6 +2103,37 @@ mod tests {
                 Value::Nil,
             ])
         );
+    }
+
+    #[test]
+    fn reads_and_validates_character_table_literals() {
+        let ascii = std::iter::repeat_n("nil", 128)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let roots = std::iter::repeat_n("nil", 64).collect::<Vec<_>>().join(" ");
+        let literal = read_one(&format!(
+            "#^[fallback nil purpose #^^[3 0 {ascii}] {roots}]"
+        ));
+        let fields = literal.to_vec().expect("character-table marker");
+        assert_eq!(
+            fields.first(),
+            Some(&Value::Symbol(CHAR_TABLE_LITERAL_SYMBOL.into()))
+        );
+        assert_eq!(fields.len(), 1 + 68);
+        assert!(matches!(
+            fields[4].to_vec().ok().as_deref(),
+            Some([Value::Symbol(marker), Value::Integer(3), Value::Integer(0), ..])
+                if marker == SUB_CHAR_TABLE_LITERAL_SYMBOL
+        ));
+
+        assert!(matches!(
+            Reader::new("#^[nil]").read(),
+            Err(LispError::ReadError(message)) if message == "invalid size char-table"
+        ));
+        assert!(matches!(
+            Reader::new("#^^[2 0 nil]").read(),
+            Err(LispError::ReadError(message)) if message == "invalid size in sub-char-table"
+        ));
     }
 
     #[test]

@@ -226,6 +226,202 @@ impl Drop for RunnerTempDirectory {
     }
 }
 
+#[derive(Debug)]
+struct IsolatedTestCheckout {
+    root: PathBuf,
+    checkout: PathBuf,
+    commit: String,
+    support_files: Vec<PathBuf>,
+}
+
+impl IsolatedTestCheckout {
+    fn clone(source: &Path, commit: &str, runner: &str) -> Result<Self, String> {
+        let root = unique_temp_path(&format!("checkout-{runner}"))?;
+        fs::create_dir(&root).map_err(|error| {
+            format!("create isolated checkout root {}: {error}", root.display())
+        })?;
+        let checkout = root.join("emacs");
+        let support_files = isolated_test_support_inputs(source)?;
+        copy_relative_files(source, &root.join("test-support"), &support_files)?;
+        let isolated = Self {
+            root,
+            checkout,
+            commit: commit.to_string(),
+            support_files,
+        };
+        let clone = Command::new("git")
+            .args([
+                "-c",
+                "advice.detachedHead=false",
+                "clone",
+                "--shared",
+                "--quiet",
+            ])
+            .arg(source)
+            .arg(&isolated.checkout)
+            .status()
+            .map_err(|error| format!("clone isolated GNU Emacs checkout: {error}"))?;
+        if !clone.success() {
+            return Err(format!(
+                "clone isolated GNU Emacs checkout from {} failed",
+                source.display()
+            ));
+        }
+
+        isolated.restore()?;
+        Ok(isolated)
+    }
+
+    fn restore(&self) -> Result<(), String> {
+        let reset = Command::new("git")
+            .args(["reset", "--hard", "--quiet"])
+            .arg(&self.commit)
+            .current_dir(&self.checkout)
+            .status()
+            .map_err(|error| {
+                format!(
+                    "reset isolated checkout {}: {error}",
+                    self.checkout.display()
+                )
+            })?;
+        if !reset.success() {
+            return Err(format!(
+                "reset isolated checkout {} to {} failed",
+                self.checkout.display(),
+                self.commit
+            ));
+        }
+
+        let clean = Command::new("git")
+            .args(["clean", "-ffdqx"])
+            .current_dir(&self.checkout)
+            .status()
+            .map_err(|error| {
+                format!(
+                    "clean isolated checkout {}: {error}",
+                    self.checkout.display()
+                )
+            })?;
+        if !clean.success() {
+            return Err(format!(
+                "clean isolated checkout {} failed",
+                self.checkout.display()
+            ));
+        }
+        copy_relative_files(
+            &self.root.join("test-support"),
+            &self.checkout,
+            &self.support_files,
+        )?;
+        Ok(())
+    }
+
+    fn file(&self, relative: &str) -> PathBuf {
+        self.checkout.join(relative)
+    }
+}
+
+impl Drop for IsolatedTestCheckout {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn isolated_test_support_inputs(repo_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let output = Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--",
+            "lisp",
+            "lib-src",
+            "etc/charsets",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|error| {
+            format!(
+                "list generated test-support inputs in {}: {error}",
+                repo_root.display()
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "list generated test-support inputs in {} failed",
+            repo_root.display()
+        ));
+    }
+
+    let mut files = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            String::from_utf8(path.to_vec())
+                .map(PathBuf::from)
+                .map_err(|error| format!("generated Lisp path is not UTF-8: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    files.retain(|path| {
+        (path.starts_with("lisp") && path.extension().is_some_and(|extension| extension == "el")
+            || libexec_test_helper(path)
+            || generated_charset_map(path))
+            && repo_root.join(path).is_file()
+    });
+    files.sort();
+    Ok(files)
+}
+
+fn generated_charset_map(path: &Path) -> bool {
+    path.parent() == Some(Path::new("etc/charsets"))
+        && path.extension().is_some_and(|extension| extension == "map")
+}
+
+fn libexec_test_helper(path: &Path) -> bool {
+    const HELPERS: &[&str] = &[
+        "ctags",
+        "ebrowse",
+        "emacsclient",
+        "etags",
+        "hexl",
+        "make-docfile",
+        "make-fingerprint",
+        "movemail",
+    ];
+    if path.parent() != Some(Path::new("lib-src")) {
+        return false;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    HELPERS
+        .iter()
+        .any(|helper| name == *helper || name == format!("{helper}{}", env::consts::EXE_SUFFIX))
+}
+
+fn copy_relative_files(source: &Path, destination: &Path, files: &[PathBuf]) -> Result<(), String> {
+    for relative in files {
+        let source_file = source.join(relative);
+        let destination_file = destination.join(relative);
+        let parent = destination_file
+            .parent()
+            .ok_or_else(|| format!("{} has no parent", destination_file.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+        fs::copy(&source_file, &destination_file).map_err(|error| {
+            format!(
+                "copy isolated test-support input {} to {}: {error}",
+                source_file.display(),
+                destination_file.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct AggregateReport {
     mode: String,
@@ -259,6 +455,8 @@ struct RunProvenance {
     oracle_sha256: String,
     oracle_repo: String,
     oracle_repo_commit: String,
+    #[serde(default)]
+    oracle_test_support_sha256: String,
     oracle_emacs_version: String,
     oracle_system_type: String,
     oracle_native_compilation: bool,
@@ -494,14 +692,21 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let artifact_root = make_artifact_root("list")?;
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
+    let oracle_checkout = IsolatedTestCheckout::clone(
+        &context.local.emacs_repo,
+        &context.lock.emacs_repo_commit,
+        "oracle",
+    )?;
 
     for file in files {
         let relative = compat::relative_test_path(&context.local.emacs_repo, &file)?;
         let per_file_dir = per_file_artifact_dir(&artifact_root, &relative);
+        oracle_checkout.restore()?;
         let oracle = run_oracle(
             &context.local,
+            &oracle_checkout.checkout,
             &relative,
-            &file,
+            &oracle_checkout.file(&relative),
             &selector,
             &per_file_dir,
             timeout,
@@ -815,6 +1020,11 @@ fn artifact_incompatibilities(
         candidate.provenance.oracle_repo_commit
     );
     require_equal!(
+        "provenance.oracle_test_support_sha256",
+        baseline.provenance.oracle_test_support_sha256,
+        candidate.provenance.oracle_test_support_sha256
+    );
+    require_equal!(
         "provenance.oracle_emacs_version",
         baseline.provenance.oracle_emacs_version,
         candidate.provenance.oracle_emacs_version
@@ -1070,6 +1280,16 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
     let mut matching_files = 0usize;
     let mut mismatches = Vec::new();
     let mut relative_files = Vec::new();
+    let oracle_checkout = IsolatedTestCheckout::clone(
+        &context.local.emacs_repo,
+        &context.lock.emacs_repo_commit,
+        "oracle",
+    )?;
+    let emaxx_checkout = IsolatedTestCheckout::clone(
+        &context.local.emacs_repo,
+        &context.lock.emacs_repo_commit,
+        "emaxx",
+    )?;
 
     for file in files {
         let relative = compat::relative_test_path(&context.local.emacs_repo, &file)?;
@@ -1078,23 +1298,28 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         fs::create_dir_all(&per_file_dir)
             .map_err(|error| format!("create {}: {error}", per_file_dir.display()))?;
 
+        oracle_checkout.restore()?;
         let oracle = run_oracle(
             &context.local,
+            &oracle_checkout.checkout,
             &relative,
-            &file,
+            &oracle_checkout.file(&relative),
             selector,
             &per_file_dir,
             timeout,
         )?;
-        let emaxx = run_emaxx(
-            &subject.binary,
-            &context.local.emacs_repo,
-            &relative,
-            &file,
+        emaxx_checkout.restore()?;
+        let emaxx_file = emaxx_checkout.file(&relative);
+        let emaxx = run_emaxx(EmaxxRun {
+            binary: &subject.binary,
+            load_path_repo: &context.local.emacs_repo,
+            test_repo: &emaxx_checkout.checkout,
+            relative_file: &relative,
+            file: &emaxx_file,
             selector,
-            &per_file_dir,
+            artifact_dir: &per_file_dir,
             timeout,
-        )?;
+        })?;
 
         let oracle_report = compat::filter_report_by_name(&oracle.report, name_filter);
         let emaxx_report = compat::filter_report_by_name(&emaxx.report, name_filter);
@@ -1491,6 +1716,7 @@ fn collect_run_provenance(
         oracle_sha256: sha256_file(&context.local.emacs_binary)?,
         oracle_repo: context.local.emacs_repo.display().to_string(),
         oracle_repo_commit: context.lock.emacs_repo_commit.clone(),
+        oracle_test_support_sha256: test_support_fingerprint(&context.local.emacs_repo)?,
         oracle_emacs_version: context.lock.emacs_version.clone(),
         oracle_system_type: oracle_runtime.system_type,
         oracle_native_compilation: oracle_runtime.native_compilation,
@@ -1550,7 +1776,37 @@ fn verify_run_inputs_unchanged(provenance: &RunProvenance) -> Result<(), String>
             provenance.oracle_repo_commit
         ));
     }
+    let test_support_sha256 = test_support_fingerprint(oracle_repo)?;
+    if test_support_sha256 != provenance.oracle_test_support_sha256 {
+        return Err(format!(
+            "GNU Emacs generated test-support inputs changed during compatibility run: expected {}, found {}; refusing to write a valid summary",
+            provenance.oracle_test_support_sha256, test_support_sha256
+        ));
+    }
     Ok(())
+}
+
+fn test_support_fingerprint(repo_root: &Path) -> Result<String, String> {
+    let mut hasher = Sha256::new();
+    for relative in isolated_test_support_inputs(repo_root)? {
+        let path = relative.to_string_lossy();
+        hasher.update((path.len() as u64).to_le_bytes());
+        hasher.update(path.as_bytes());
+        let mut file = fs::File::open(repo_root.join(&relative))
+            .map_err(|error| format!("open {} for hashing: {error}", relative.display()))?;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|error| format!("read {} for hashing: {error}", relative.display()))?;
+            if read == 0 {
+                break;
+            }
+            hasher.update((read as u64).to_le_bytes());
+            hasher.update(&buffer[..read]);
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -1609,6 +1865,17 @@ fn make_artifact_root(prefix: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+fn unique_temp_path(label: &str) -> Result<PathBuf, String> {
+    Ok(env::temp_dir().join(format!(
+        "emaxx-compat-{label}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("clock error: {error}"))?
+            .as_nanos()
+    )))
+}
+
 fn per_file_artifact_dir(artifact_root: &Path, relative: &str) -> PathBuf {
     artifact_root.join(relative).with_extension("compat")
 }
@@ -1617,14 +1884,7 @@ fn configure_isolated_temp_directory(
     command: &mut Command,
     runner: &str,
 ) -> Result<RunnerTempDirectory, String> {
-    let temp_directory = env::temp_dir().join(format!(
-        "emaxx-compat-{runner}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("clock error: {error}"))?
-            .as_nanos()
-    ));
+    let temp_directory = unique_temp_path(runner)?;
     fs::create_dir(&temp_directory)
         .map_err(|error| format!("create {}: {error}", temp_directory.display()))?;
     // Keep each side independent of the developer's shared temp directory
@@ -1638,8 +1898,27 @@ fn configure_isolated_temp_directory(
     })
 }
 
+fn configure_isolated_source_directory(
+    command: &mut Command,
+    repo_root: &Path,
+) -> Result<(), String> {
+    let mut directory = repo_root.display().to_string();
+    if !directory.ends_with(std::path::MAIN_SEPARATOR) {
+        directory.push(std::path::MAIN_SEPARATOR);
+    }
+    let literal = serde_json::to_string(&directory)
+        .map_err(|error| format!("encode isolated source-directory: {error}"))?;
+    // GNU's dumped `source-directory' points at the checkout that built the
+    // oracle executable.  Override it before loading a test so fixtures under
+    // test/data are resolved inside this run's clean checkout instead.
+    command.arg("--eval");
+    command.arg(format!("(setq source-directory {literal})"));
+    Ok(())
+}
+
 fn run_oracle(
     local: &OracleLocalConfig,
+    repo_root: &Path,
     relative_file: &str,
     file: &Path,
     selector: &str,
@@ -1650,7 +1929,7 @@ fn run_oracle(
         .map_err(|error| format!("create {}: {error}", per_file_dir.display()))?;
     let result_path = per_file_dir.join("oracle.json");
     let helper_path = compat::oracle_helper_path();
-    let test_directory = local.emacs_repo.join("test");
+    let test_directory = repo_root.join("test");
     let mut command = Command::new(&local.emacs_binary);
     compat::configure_upstream_like_env(&mut command, &test_directory);
     let _temp_directory = configure_isolated_temp_directory(&mut command, "oracle")?;
@@ -1661,6 +1940,7 @@ fn run_oracle(
     command.arg("--no-site-file");
     command.arg("--no-site-lisp");
     command.arg("--batch");
+    configure_isolated_source_directory(&mut command, repo_root)?;
     command.arg("-L");
     command.arg(&test_directory);
     command.arg("-l");
@@ -1678,28 +1958,40 @@ fn run_oracle(
     Ok(RunnerArtifacts { report, process })
 }
 
-fn run_emaxx(
-    emaxx_binary: &Path,
-    repo_root: &Path,
-    relative_file: &str,
-    file: &Path,
-    selector: &str,
-    per_file_dir: &Path,
+struct EmaxxRun<'a> {
+    binary: &'a Path,
+    load_path_repo: &'a Path,
+    test_repo: &'a Path,
+    relative_file: &'a str,
+    file: &'a Path,
+    selector: &'a str,
+    artifact_dir: &'a Path,
     timeout: Option<Duration>,
-) -> Result<RunnerArtifacts, String> {
-    fs::create_dir_all(per_file_dir)
-        .map_err(|error| format!("create {}: {error}", per_file_dir.display()))?;
-    let result_path = per_file_dir.join("emaxx.json");
-    let test_directory = repo_root.join("test");
-    let load_paths = compat::emaxx_upstream_load_path(repo_root)?;
-    let mut command = Command::new(emaxx_binary);
+}
+
+fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
+    fs::create_dir_all(request.artifact_dir)
+        .map_err(|error| format!("create {}: {error}", request.artifact_dir.display()))?;
+    let result_path = request.artifact_dir.join("emaxx.json");
+    let test_directory = request.test_repo.join("test");
+    let load_paths = remap_load_paths(
+        compat::emaxx_upstream_load_path(request.load_path_repo)?,
+        request.load_path_repo,
+        request.test_repo,
+    )?;
+    let mut command = Command::new(request.binary);
     compat::configure_upstream_like_env(&mut command, &test_directory);
     let _temp_directory = configure_isolated_temp_directory(&mut command, "emaxx")?;
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
+    // Emaxx's Lisp condition is the compatibility result, while this
+    // host-side trace preserves the nested file/form that produced opaque
+    // conditions such as `(args-out-of-range [] 0)' in the immutable log.
+    command.env("EMAXX_TRACE_LOAD_ERRORS", "1");
     command.arg("--no-init-file");
     command.arg("--no-site-file");
     command.arg("--no-site-lisp");
     command.arg("--batch");
+    configure_isolated_source_directory(&mut command, request.test_repo)?;
     for load_path in &load_paths {
         command.arg("-L");
         command.arg(load_path);
@@ -1707,14 +1999,47 @@ fn run_emaxx(
     command.arg("-l");
     command.arg("ert");
     command.arg("-l");
-    command.arg(file);
+    command.arg(request.file);
     command.arg("--eval");
-    command.arg(format!("(ert-run-tests-batch-and-exit (quote {selector}))"));
+    command.arg(format!(
+        "(ert-run-tests-batch-and-exit (quote {}))",
+        request.selector
+    ));
 
-    let process = run_command(command, timeout)?;
-    let report =
-        load_or_synthesize_report(&result_path, "emaxx", relative_file, selector, &process)?;
+    let process = run_command(command, request.timeout)?;
+    let report = load_or_synthesize_report(
+        &result_path,
+        "emaxx",
+        request.relative_file,
+        request.selector,
+        &process,
+    )?;
     Ok(RunnerArtifacts { report, process })
+}
+
+fn remap_load_paths(
+    paths: Vec<PathBuf>,
+    source_repo: &Path,
+    isolated_repo: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let source_repo = compat::canonicalize_path(source_repo)?;
+    paths
+        .into_iter()
+        .map(|path| match path.strip_prefix(&source_repo) {
+            Ok(relative) => {
+                let isolated = isolated_repo.join(relative);
+                if isolated.is_dir() {
+                    Ok(isolated)
+                } else {
+                    Err(format!(
+                        "isolated load-path directory is missing: {}",
+                        isolated.display()
+                    ))
+                }
+            }
+            Err(_) => Ok(path),
+        })
+        .collect()
 }
 
 fn load_or_synthesize_report(
@@ -2143,6 +2468,19 @@ fn cargo_profile_for_binary_directory(bin_dir: &Path) -> Result<String, String> 
 mod tests {
     use super::*;
 
+    fn git_ok(root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "git {args:?} failed in {}",
+            root.display()
+        );
+    }
+
     fn test_provenance() -> RunProvenance {
         RunProvenance {
             harness_source_root: "/harness".into(),
@@ -2162,6 +2500,7 @@ mod tests {
             oracle_sha256: "oracle".into(),
             oracle_repo: "/oracle".into(),
             oracle_repo_commit: "oracle-head".into(),
+            oracle_test_support_sha256: "test-support".into(),
             oracle_emacs_version: "30.2".into(),
             oracle_system_type: "darwin".into(),
             oracle_native_compilation: true,
@@ -2553,6 +2892,158 @@ mod tests {
 
         drop(configured);
         assert!(!configured_path.exists());
+    }
+
+    #[test]
+    fn runner_overrides_dumped_source_directory_with_isolated_checkout() {
+        let mut command = Command::new("emacs-test-command");
+        let checkout = Path::new("/tmp/emaxx isolated checkout");
+        configure_isolated_source_directory(&mut command, checkout)
+            .expect("configure isolated source-directory");
+
+        let mut expected_directory = checkout.display().to_string();
+        expected_directory.push(std::path::MAIN_SEPARATOR);
+        let expected_literal = serde_json::to_string(&expected_directory).unwrap();
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                "--eval".to_string(),
+                format!("(setq source-directory {expected_literal})"),
+            ]
+        );
+    }
+
+    #[test]
+    fn isolated_test_checkout_excludes_ignored_state_and_restores_between_files() {
+        let source = unique_temp_path("checkout-source-test").unwrap();
+        fs::create_dir(&source).unwrap();
+        git_ok(&source, &["init", "--quiet"]);
+        fs::write(
+            source.join(".gitignore"),
+            "*.elc\nlisp/loaddefs.el\nlib-src/emacsclient\netc/charsets/*.map\n",
+        )
+        .unwrap();
+        fs::write(source.join("fixture.el"), "(pristine)\n").unwrap();
+        fs::create_dir(source.join("lisp")).unwrap();
+        fs::write(source.join("lisp/loaddefs.el"), "(generated-pristine)\n").unwrap();
+        fs::create_dir(source.join("lib-src")).unwrap();
+        fs::write(source.join("lib-src/emacsclient"), "helper\n").unwrap();
+        fs::create_dir_all(source.join("etc/charsets")).unwrap();
+        fs::write(source.join("etc/charsets/IBM038.map"), "0x81 0x0061\n").unwrap();
+        git_ok(&source, &["add", ".gitignore", "fixture.el"]);
+        git_ok(
+            &source,
+            &[
+                "-c",
+                "user.name=Emaxx Test",
+                "-c",
+                "user.email=emaxx@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+        );
+        let commit = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&source)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        fs::write(source.join("stale.elc"), "stale").unwrap();
+        let support_fingerprint = test_support_fingerprint(&source).unwrap();
+
+        let checkout = IsolatedTestCheckout::clone(&source, commit.trim(), "test").unwrap();
+        assert!(!checkout.file("stale.elc").exists());
+        assert_eq!(
+            fs::read_to_string(checkout.file("lisp/loaddefs.el")).unwrap(),
+            "(generated-pristine)\n"
+        );
+        assert_eq!(
+            fs::read_to_string(checkout.file("lib-src/emacsclient")).unwrap(),
+            "helper\n"
+        );
+        assert_eq!(
+            fs::read_to_string(checkout.file("etc/charsets/IBM038.map")).unwrap(),
+            "0x81 0x0061\n"
+        );
+        fs::write(checkout.file("fixture.el"), "(mutated)\n").unwrap();
+        fs::write(checkout.file("lisp/loaddefs.el"), "(generated-mutated)\n").unwrap();
+        fs::write(checkout.file("lib-src/emacsclient"), "helper-mutated\n").unwrap();
+        fs::write(
+            checkout.file("etc/charsets/IBM038.map"),
+            "generated-mutated\n",
+        )
+        .unwrap();
+        fs::write(checkout.file("generated.elc"), "generated").unwrap();
+
+        checkout.restore().unwrap();
+        assert_eq!(
+            fs::read_to_string(checkout.file("fixture.el")).unwrap(),
+            "(pristine)\n"
+        );
+        assert_eq!(
+            fs::read_to_string(checkout.file("lisp/loaddefs.el")).unwrap(),
+            "(generated-pristine)\n"
+        );
+        assert_eq!(
+            fs::read_to_string(checkout.file("lib-src/emacsclient")).unwrap(),
+            "helper\n"
+        );
+        assert_eq!(
+            fs::read_to_string(checkout.file("etc/charsets/IBM038.map")).unwrap(),
+            "0x81 0x0061\n"
+        );
+        assert!(!checkout.file("generated.elc").exists());
+        fs::write(source.join("lisp/loaddefs.el"), "(generated-changed)\n").unwrap();
+        fs::write(source.join("etc/charsets/IBM038.map"), "0x82 0x0061\n").unwrap();
+        assert_ne!(
+            test_support_fingerprint(&source).unwrap(),
+            support_fingerprint
+        );
+
+        let checkout_root = checkout.root.clone();
+        drop(checkout);
+        assert!(!checkout_root.exists());
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn isolated_runner_preserves_the_oracles_load_path_order() {
+        let source = unique_temp_path("load-path-source-test").unwrap();
+        let isolated = unique_temp_path("load-path-isolated-test").unwrap();
+        fs::create_dir_all(source.join("lisp/emacs-lisp")).unwrap();
+        fs::create_dir_all(isolated.join("lisp/emacs-lisp")).unwrap();
+        let source = source.canonicalize().unwrap();
+        let external = PathBuf::from("/external/load-path");
+
+        assert_eq!(
+            remap_load_paths(
+                vec![
+                    source.join("lisp"),
+                    source.join("lisp/emacs-lisp"),
+                    external.clone()
+                ],
+                &source,
+                &isolated,
+            )
+            .unwrap(),
+            vec![
+                isolated.join("lisp"),
+                isolated.join("lisp/emacs-lisp"),
+                external
+            ]
+        );
+
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(isolated).unwrap();
     }
 
     #[test]

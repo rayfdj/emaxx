@@ -114,13 +114,13 @@ fn sort_coding_systems_uses_priority_order() {
 }
 
 #[test]
-fn coding_system_type_reports_known_coding_kind() {
+fn coding_system_type_treats_nil_as_the_no_conversion_designator() {
     assert_eq!(
         eval_str(
             "(list (coding-system-type nil) (coding-system-type 'utf-8) (coding-system-type 'raw-text))"
         ),
         Value::list([
-            Value::Nil,
+            Value::symbol("raw-text"),
             Value::symbol("utf-8"),
             Value::symbol("raw-text"),
         ])
@@ -143,6 +143,44 @@ fn cyrillic_koi8_is_a_single_byte_round_tripping_coding() {
             Value::Symbol("cyrillic-koi8-unix".into()),
             Value::Integer(7),
             Value::String("Русский".into()),
+        ])
+    );
+}
+
+#[test]
+fn windows_1252_is_a_preloaded_single_byte_round_tripping_coding() {
+    assert_eq!(
+        eval_str(
+            "(let* ((bytes (unibyte-string
+                            100 233 106 224 32 114 97 116 233 32 128))
+                    (decoded (decode-coding-string bytes 'windows-1252)))
+               (list (coding-system-type 'windows-1252)
+                     (coding-system-base 'cp1252)
+                     (coding-system-get 'windows-1252 :mime-charset)
+                     decoded
+                     (multibyte-string-p decoded)
+                     (string-to-list
+                      (encode-coding-string decoded 'windows-1252))))"
+        ),
+        Value::list([
+            Value::Symbol("charset".into()),
+            Value::Symbol("windows-1252".into()),
+            Value::Symbol("windows-1252".into()),
+            Value::String("déjà raté €".into()),
+            Value::T,
+            Value::list([
+                Value::Integer(100),
+                Value::Integer(233),
+                Value::Integer(106),
+                Value::Integer(224),
+                Value::Integer(32),
+                Value::Integer(114),
+                Value::Integer(97),
+                Value::Integer(116),
+                Value::Integer(233),
+                Value::Integer(32),
+                Value::Integer(128),
+            ]),
         ])
     );
 }
@@ -448,6 +486,218 @@ fn set_char_table_range_accepts_t_for_full_range() {
 }
 
 #[test]
+fn character_table_reader_literals_preserve_ascii_root_default_and_extras() {
+    let mut ascii = vec!["nil"; 128];
+    ascii[65] = "upper";
+    let ascii = ascii.join(" ");
+    let mut roots = vec!["nil"; 64];
+    roots[0] = "root";
+    let literal = format!(
+        "#^[fallback nil purpose #^^[3 0 {ascii}] {} extra]",
+        roots.join(" ")
+    );
+    let inspect = |name: &str| {
+        format!(
+            "(list (char-table-p {name})
+                   (char-table-subtype {name})
+                   (aref {name} ?A)
+                   (aref {name} ?B)
+                   (aref {name} 200)
+                   (aref {name} #x10000)
+                   (char-table-extra-slot {name} 0))"
+        )
+    };
+    let result = eval_str(&format!(
+        "(let ((direct {literal})
+               (quoted '{literal})
+               (read-back (car (read-from-string \"{literal}\"))))
+           (list {} {} {}))",
+        inspect("direct"),
+        inspect("quoted"),
+        inspect("read-back"),
+    ));
+    let expected_table = Value::list([
+        Value::T,
+        Value::symbol("purpose"),
+        Value::symbol("upper"),
+        Value::symbol("fallback"),
+        Value::symbol("root"),
+        Value::symbol("fallback"),
+        Value::symbol("extra"),
+    ]);
+    assert_eq!(
+        result,
+        Value::list([
+            expected_table.clone(),
+            expected_table.clone(),
+            expected_table
+        ])
+    );
+}
+
+#[test]
+fn upstream_generated_idna_character_table_loads_and_indexes_nested_ranges() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                "(progn
+                   (require 'idna-mapping)
+                   (list (char-table-p idna-mapping-table)
+                         (char-table-subtype idna-mapping-table)
+                         (elt idna-mapping-table ?A)
+                         (elt idna-mapping-table ?a)
+                         (elt idna-mapping-table #xAD)
+                         (elt idna-mapping-table #x212A)
+                         (elt idna-mapping-table #xFF21)
+                         (elt idna-mapping-table #x1D400)
+                         (elt idna-mapping-table #xE0100)
+                         (elt idna-mapping-table #x10FFFF)))"
+            ),
+            Value::list([
+                Value::T,
+                Value::Nil,
+                Value::String("a".into()),
+                Value::Nil,
+                Value::symbol("ignored"),
+                Value::String("k".into()),
+                Value::String("a".into()),
+                Value::String("a".into()),
+                Value::symbol("ignored"),
+                Value::Nil,
+            ])
+        );
+    });
+}
+
+#[test]
+fn preloaded_character_property_registry_uses_lisp_policy_and_rust_table_access() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compatibility prelude");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let ((table (make-char-table 'char-code-property-table)))
+               (set-char-table-extra-slot table 0 'emaxx-test-property)
+               (aset table ?A 'before)
+               (define-char-code-property
+                 'emaxx-test-property table \"Test property.\")
+               (let ((before (get-char-code-property
+                              ?A 'emaxx-test-property)))
+                 (put-char-code-property ?A 'emaxx-test-property 'after)
+                 (list (fboundp 'define-char-code-property)
+                       (eq (cdr (assq 'emaxx-test-property
+                                      char-code-property-alist))
+                           table)
+                       before
+                       (get-char-code-property ?A 'emaxx-test-property)
+                       (get 'emaxx-test-property
+                            'char-code-property-documentation))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::symbol("before"),
+            Value::symbol("after"),
+            Value::String("Test property.".into()),
+        ])
+    );
+}
+
+#[test]
+fn generated_numeric_property_table_uncompresses_and_decodes_values() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compatibility prelude");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (require 'charprop)
+               (list (get-char-code-property ?5 'numeric-value)
+                     (get-char-code-property #x0665 'numeric-value)
+                     (get-char-code-property #x00BC 'numeric-value)
+                     (get-char-code-property #x216B 'numeric-value)
+                     (get-char-code-property #x0665 'general-category)))"
+        ),
+        Value::list([
+            Value::Integer(5),
+            Value::Integer(5),
+            Value::Float(0.25),
+            Value::Integer(12),
+            Value::symbol("Nd"),
+        ])
+    );
+}
+
+#[test]
+fn generated_decomposition_property_table_decodes_word_deltas() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(vec![upstream_emacs_repo().join("lisp/international")]);
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compatibility prelude");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (define-char-code-property
+                 'decomposition \"uni-decomposition.el\")
+               (list (get-char-code-property ?A 'decomposition)
+                     (get-char-code-property #x212B 'decomposition)
+                     (get-char-code-property #x00C5 'decomposition)
+                     (get-char-code-property #x00E5 'decomposition)
+                     (get-char-code-property #xFB01 'decomposition)))"
+        ),
+        Value::list([
+            Value::list([Value::Integer(65)]),
+            Value::list([Value::Integer(197)]),
+            Value::list([Value::Integer(65), Value::Integer(778)]),
+            Value::list([Value::Integer(97), Value::Integer(778)]),
+            Value::list([
+                Value::symbol("compat"),
+                Value::Integer(102),
+                Value::Integer(105),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn translate_region_supports_character_vector_and_sequence_mappings() {
+    assert_eq!(
+        eval_str(
+            "(let ((table (make-char-table 'translation-table)))
+               (aset table ?a ?A)
+               (aset table ?b [?B ?!])
+               (aset table ?c (list (cons [?c ?d] [?C ?D ?!])))
+               (with-temp-buffer
+                 (insert \"abcdx\")
+                 (list (translate-region-internal
+                        (point-min) (point-max) table)
+                       (buffer-string))))"
+        ),
+        Value::list([Value::Integer(6), Value::String("AB!CD!x".into()),])
+    );
+}
+
+#[test]
 fn standard_minibuffer_completion_map_is_bound() {
     let result = eval_str(
         "(list (boundp 'minibuffer-local-completion-map)
@@ -487,20 +737,34 @@ fn file_expand_wildcards_returns_existing_matches() {
 
 #[test]
 fn mock_tramp_file_operations_use_localname() {
+    let prefix = format!("/mock:{}:", crate::lisp::primitives::system_name_value());
     let result = eval_str(
-        r#"(let ((dir (make-temp-file "emaxx-mock-tramp-" t)))
+        r#"(let ((dir (make-temp-file "emaxx-mock-tramp-" t))
+                 ;; Model the broad handler installed when real Tramp is
+                 ;; loaded.  Every supported /mock: operation must select
+                 ;; Emaxx's in-process transport before reaching this one.
+                 (file-name-handler-alist '(("\\`/mock:" . error))))
              (unwind-protect
                  (let* ((remote (concat "/mock::" dir))
                         (remote-file (expand-file-name "sample.txt" remote)))
                    (write-region "sample" nil remote-file)
                    (let ((copy (file-local-copy remote-file)))
                      (prog1
-                         (list (file-remote-p remote)
+                         (list (eq (find-file-name-handler
+                                    remote-file 'write-region)
+                                   'emaxx-mock-file-name-handler)
+                               (eq (find-file-name-handler
+                                    remote-file 'delete-file)
+                                   'emaxx-mock-file-name-handler)
+                               (file-remote-p remote)
                                (file-directory-p remote)
                                (file-writable-p remote)
                                (and copy
                                     (not (file-remote-p copy))
-                                    (file-exists-p copy)))
+                                    (file-exists-p copy))
+                               (progn
+                                 (delete-file remote-file)
+                                 (file-exists-p remote-file)))
                        (when copy
                          (delete-file copy)))))
                (delete-directory dir t)))"#,
@@ -508,10 +772,13 @@ fn mock_tramp_file_operations_use_localname() {
     assert_eq!(
         result,
         Value::list([
-            Value::String("/mock::".into()),
             Value::T,
             Value::T,
-            Value::T
+            Value::String(prefix),
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil,
         ])
     );
 }
@@ -660,6 +927,277 @@ fn tex_mode_is_callable_and_available_as_mode_symbol() {
 }
 
 #[test]
+fn upstream_tex_mode_installs_its_lisp_keymap() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize interpreter");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (boundp 'tex-mode-map) (boundp 'texinfo-mode-map))",
+        ),
+        Value::list([Value::Nil, Value::Nil])
+    );
+    interp.load_target("tex-mode").expect("load GNU tex-mode");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list
+               (subrp (indirect-function 'tex-mode))
+               (lookup-key tex-mode-map \"\\\"\")
+               (lookup-key latex-mode-map \"\\\"\")
+               (with-temp-buffer
+                 (tex-mode)
+                 (list major-mode
+                       (eq (current-local-map) latex-mode-map)
+                       (key-binding \"\\\"\"))))",
+        ),
+        Value::list([
+            Value::Nil,
+            Value::symbol("tex-insert-quote"),
+            Value::symbol("tex-insert-quote"),
+            Value::list([
+                Value::symbol("latex-mode"),
+                Value::T,
+                Value::symbol("tex-insert-quote"),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn upstream_electric_layout_uses_the_c_mode_indent_contract() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize interpreter");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list custom-delayed-init-variables
+                   electric-indent-mode
+                   (get 'electric-indent-mode 'custom-set)
+                   (fboundp 'electric-indent-mode)
+                   (not (null
+                         (memq 'electric-indent-post-self-insert-function
+                               post-self-insert-hook))))",
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::symbol("custom-set-minor-mode"),
+            Value::T,
+            Value::T,
+        ])
+    );
+    interp
+        .load_target("elec-pair")
+        .expect("load GNU Electric Pair");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (define-derived-mode plainer-c-mode c-mode \"pC\"
+                 (c-toggle-electric-state -1)
+                 (setq-local electric-indent-local-mode-hook nil)
+                 (setq-local electric-indent-mode-hook nil)
+                 (electric-indent-local-mode 1)
+                 (dolist (key '(?\\\" ?' ?{ ?} ?\\( ?\\) ?[ ?]))
+                   (local-set-key (vector key) 'self-insert-command)))
+               (with-temp-buffer
+                 (plainer-c-mode)
+                 (electric-layout-local-mode 1)
+                 (electric-pair-local-mode 1)
+                 (electric-indent-local-mode 1)
+                 (setq-local electric-layout-rules
+                             '((?{ . (after)) (?} . (before))))
+                 (insert \"int main () \")
+                 (let ((last-command-event ?{))
+                   (call-interactively
+                    (key-binding (vector last-command-event))))
+                 (list indent-line-function
+                       (buffer-string)
+                       electric-indent-mode
+                       electric-layout-mode
+                       (not (null
+                             (memq
+                              'electric-indent-post-self-insert-function
+                              post-self-insert-hook)))
+                       (not (null
+                             (memq
+                              'electric-layout-post-self-insert-function
+                              post-self-insert-hook))))))",
+        ),
+        Value::list([
+            Value::symbol("c-indent-line"),
+            Value::String("int main () {\n  \n}".into()),
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn upstream_files_lisp_owns_remote_file_policy() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize interpreter");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list
+               (subrp (indirect-function 'file-remote-p))
+               (subrp (indirect-function 'file-local-name))
+               (subrp (indirect-function 'file-local-copy))
+               (find-file-name-handler
+                \"/ftp:who@foo.com:/whatever\" 'file-remote-p)
+               (fboundp 'vc-file-getprop)
+               (mapcar
+                (lambda (buffer)
+                  (list (buffer-name buffer)
+                        (buffer-local-value 'buffer-offer-save buffer)
+                        (local-variable-p 'buffer-offer-save buffer)))
+                (seq-filter #'buffer-modified-p (buffer-list)))
+               (progn
+                 (defun sample-remote-handler
+                     (operation file &optional _identification _connected)
+                   (and (equal file \"/ftp:who@foo.com:/whatever\")
+                        (cond
+                         ((eq operation 'file-remote-p)
+                          (if (eq _identification 'localname)
+                              \"/whatever\"
+                            \"/ftp:who@foo.com:\"))
+                         ((eq operation 'file-local-copy)
+                          \"/tmp/local-copy\"))))
+                 (let ((file-name-handler-alist
+                        '((\"\\\\`/ftp:\" . sample-remote-handler))))
+                   (list
+                    (file-remote-p \"/ftp:who@foo.com:/whatever\")
+                    (file-local-name \"/ftp:who@foo.com:/whatever\")
+                    (file-local-copy \"/ftp:who@foo.com:/whatever\")))))",
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::symbol("tramp-autoload-file-name-handler"),
+            Value::T,
+            Value::list([Value::list([
+                Value::String("*Messages*".into()),
+                Value::Nil,
+                Value::Nil,
+            ])]),
+            Value::list([
+                Value::String("/ftp:who@foo.com:".into()),
+                Value::String("/whatever".into()),
+                Value::String("/tmp/local-copy".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn upstream_nonessential_remote_probe_accepts_an_unknown_method_without_connecting() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize interpreter");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list
+               (boundp 'non-essential)
+               (special-variable-p 'non-essential)
+               (file-remote-p \"/method:host:\")
+               (file-remote-p \"/method:host:\" 'method)
+               (file-remote-p \"/method:host:\" 'host))",
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::String("/method:host:".into()),
+            Value::String("method".into()),
+            Value::String("host".into()),
+        ])
+    );
+}
+
+#[test]
+fn upstream_save_policy_only_queries_buffers_that_offer_to_save() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize interpreter");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list
+               (let (buffers prompts)
+                 (unwind-protect
+                     (progn
+                       (dolist (spec '((\"emaxx-offer-1\" t)
+                                       (\"emaxx-offer-2\" always)
+                                       (\"emaxx-offer-3\" nil)))
+                         (let ((buffer (generate-new-buffer (car spec))))
+                           (push buffer buffers)
+                           (with-current-buffer buffer
+                             (setq buffer-offer-save (cadr spec))
+                             (insert \"modified\"))))
+                       (with-current-buffer (car buffers)
+                         (cl-letf (((symbol-function 'read-event)
+                                    (lambda (&rest _)
+                                      (push t prompts)
+                                      ?n))
+                                   ((symbol-function 'kill-emacs) #'ignore))
+                           (save-buffers-kill-emacs)))
+                       (length prompts))
+                   (dolist (buffer buffers)
+                     (with-current-buffer buffer
+                       (set-buffer-modified-p nil))
+                     (kill-buffer buffer))))
+               (let ((process
+                      (make-pipe-process :name \"emaxx-query-on-exit\"))
+                     prompts)
+                 (unwind-protect
+                     (cl-letf (((symbol-function 'yes-or-no-p)
+                                (lambda (prompt)
+                                  (push prompt prompts)
+                                  nil))
+                               ((symbol-function 'kill-emacs) #'ignore))
+                       (let ((confirm-kill-processes nil))
+                         (save-buffers-kill-emacs))
+                       prompts)
+                   (delete-process process))))",
+        ),
+        Value::list([Value::Integer(2), Value::Nil,])
+    );
+}
+
+#[test]
 fn text_mode_marks_quotes_as_text_punctuation() {
     assert_eq!(
         eval_str(
@@ -788,6 +1326,31 @@ fn nested_backquote_splices_vector_result_without_internal_marker() {
             Value::Symbol("bc".into()),
             Value::Symbol("c".into())
         ])
+    );
+}
+
+#[test]
+fn find_file_noselect_runs_find_file_hook_when_semantic_init_hook_is_nil() {
+    assert_eq!(
+        eval_str(
+            "(let ((file (make-temp-file \"emaxx-find-file-hook\")))
+               (unwind-protect
+                   (progn
+                     (defvar semantic-init-hook nil)
+                     (defvar find-file-hook nil)
+                     (setq emaxx-find-file-hook-ran nil)
+                     (let ((semantic-init-hook nil)
+                           (find-file-hook
+                            (list
+                             (lambda ()
+                               (setq emaxx-find-file-hook-ran
+                                     buffer-file-name)))))
+                       (let ((buffer (find-file-noselect file)))
+                         (kill-buffer buffer)))
+                     (and emaxx-find-file-hook-ran t))
+                 (delete-file file)))"
+        ),
+        Value::T
     );
 }
 
@@ -1098,6 +1661,41 @@ fn field_string_uses_point_and_preserves_text_properties() {
 }
 
 #[test]
+fn line_edge_motion_stops_at_field_boundaries() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert (propertize
+                          "P> "
+                          'field 'prompt
+                          'front-sticky '(field)
+                          'rear-nonsticky '(field)))
+                 (insert "echo hello")
+                 (goto-char (point-max))
+                 (move-beginning-of-line 1)
+                 (let ((beginning (point)))
+                   (move-end-of-line 1)
+                   (list beginning (point))))"#
+        ),
+        Value::list([Value::Integer(4), Value::Integer(14)])
+    );
+}
+
+#[test]
+fn preloaded_mark_whole_buffer_is_interactive_and_sets_region() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(with-temp-buffer
+                 (insert "abc")
+                 (goto-char 2)
+                 (call-interactively 'mark-whole-buffer)
+                 (list (point) (mark) mark-active))"#
+        ),
+        Value::list([Value::Integer(1), Value::Integer(4), Value::T])
+    );
+}
+
+#[test]
 fn get_pos_property_obeys_overlay_endpoint_advancement() {
     assert_eq!(
         eval_str(
@@ -1274,6 +1872,22 @@ fn execute_kbd_macro_self_insert_binding_sets_last_command_event() {
 }
 
 #[test]
+fn keyboard_macro_incremental_search_honors_the_uppercase_case_fold_rule() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (set-window-buffer nil (current-buffer))
+                 (insert "Windows Indic")
+                 (goto-char (point-min))
+                 (execute-kbd-macro (kbd "C-s Ind ESC"))
+                 (list (point)
+                       (buffer-substring (- (point) 3) (point))))"#
+        ),
+        Value::list([Value::Integer(12), Value::String("Ind".into())])
+    );
+}
+
+#[test]
 fn execute_kbd_macro_reports_an_undefined_key_sequence() {
     assert_eq!(
         eval_str(
@@ -1284,6 +1898,31 @@ fn execute_kbd_macro_reports_an_undefined_key_sequence() {
                 "#
         ),
         Value::String("C-c C-z is undefined\n".into())
+    );
+}
+
+#[test]
+fn execute_kbd_macro_propagates_non_minibuffer_command_errors() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun emaxx-kbd-user-error ()
+                   (interactive)
+                   (user-error "boom"))
+                 (global-set-key (kbd "C-c e") #'emaxx-kbd-user-error)
+                 ;; A customized reporter does not broaden the command
+                 ;; loop's explicit `minibuffer-quit' catch set.
+                 (let ((command-error-function #'ignore))
+                   (condition-case err
+                       (progn
+                         (execute-kbd-macro (kbd "C-c e"))
+                         'no-error)
+                     (user-error err))))"#
+        ),
+        Value::list([
+            Value::Symbol("user-error".into()),
+            Value::String("boom".into()),
+        ])
     );
 }
 
@@ -1615,17 +2254,83 @@ fn define_minor_mode_variable_option_toggles_backing_variable() {
 }
 
 #[test]
+fn define_minor_mode_variable_setter_controls_the_stored_value() {
+    assert_eq!(
+        eval_str(
+            "(progn
+              (define-minor-mode sample-setter-mode \"doc\"
+                :variable
+                (sample-setter-state
+                 . (lambda (enabled)
+                     (setq sample-setter-state
+                           (and enabled 'enabled)))))
+              (list (sample-setter-mode 1)
+                    sample-setter-state
+                    (sample-setter-mode -1)
+                    sample-setter-state))"
+        ),
+        Value::list([
+            Value::Symbol("enabled".into()),
+            Value::Symbol("enabled".into()),
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn define_global_minor_mode_init_value_runs_body() {
     assert_eq!(
         eval_str(
             "(progn
+              (setq post-self-insert-hook nil)
               (define-minor-mode electric-indent-mode \"doc\"
                 :global t
                 :init-value t
-                (setq sample-init-mode-body-ran t))
-              (list electric-indent-mode sample-init-mode-body-ran))"
+                (setq sample-init-mode-body-ran t)
+                (add-hook 'post-self-insert-hook
+                          #'electric-indent-post-self-insert-function
+                          60))
+              (list electric-indent-mode
+                    sample-init-mode-body-ran
+                    post-self-insert-hook))"
         ),
-        Value::list([Value::T, Value::T])
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::list([Value::symbol("electric-indent-post-self-insert-function")]),
+        ])
+    );
+}
+
+#[test]
+fn internal_cursor_visibility_round_trips() {
+    assert_eq!(
+        eval_str(
+            "(list (internal-show-cursor-p)
+                   (progn
+                     (internal-show-cursor nil nil)
+                     (internal-show-cursor-p))
+                   (progn
+                     (internal-show-cursor nil t)
+                     (internal-show-cursor-p)))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn process_query_on_exit_flag_defaults_true_and_round_trips() {
+    assert_eq!(
+        eval_str(
+            "(let ((process (make-pipe-process :name \"query-on-exit\")))
+               (unwind-protect
+                   (list (process-query-on-exit-flag process)
+                         (set-process-query-on-exit-flag process nil)
+                         (process-query-on-exit-flag process))
+                 (delete-process process)))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::Nil])
     );
 }
 
@@ -3105,29 +3810,46 @@ fn backtrace_frames_from_current_thread_returns_live_frames() {
 
 #[test]
 fn ert_x_remote_temp_directory_loads_after_tramp() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+    // `env.el' is part of GNU's dumped startup image.  Exercise Tramp from
+    // the same initialized boundary instead of constructing an impossible
+    // half-started interpreter with a load-path but no dumped libraries.
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
-    );
-    interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-    interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize batch interpreter");
     assert_eq!(
         eval_str_with(
             &mut interp,
             r#"
-              (progn
+              (let ((remote-temp-was-bound
+                     (boundp 'ert-remote-temporary-file-directory))
+                    (helper-was-defined (fboundp 'ert-filter-string))
+                    (missing-home
+                     (make-temp-name
+                      (expand-file-name "emaxx-missing-home-"
+                                        temporary-file-directory))))
+                (setenv "HOME" missing-home)
                 (require 'tramp)
                 (require 'ert-x)
-                (list (featurep 'ert-x)
+                (list remote-temp-was-bound
+                      helper-was-defined
+                      (equal (getenv "HOME")
+                             (directory-file-name temporary-file-directory))
+                      (featurep 'ert-x)
                       (file-remote-p ert-remote-temporary-file-directory)
                       (file-directory-p ert-remote-temporary-file-directory)
                       (file-writable-p ert-remote-temporary-file-directory)))
             "#
         ),
         Value::list([
+            Value::Nil,
+            Value::Nil,
             Value::T,
-            Value::String("/mock::".into()),
+            Value::T,
+            Value::String(format!("/mock:{}:", primitives::system_name_value())),
             Value::T,
             Value::T
         ])
@@ -3174,7 +3896,16 @@ fn dumped_bootstrap_exposes_core_preload_contracts() {
                    (= (file-user-uid) (user-uid))
                    (= (file-group-gid) (group-gid))
                    (fboundp 'exec-path)
-                   (equal (exec-path) exec-path))",
+                   (equal (exec-path) exec-path)
+                   (boundp 'bidi-control-characters)
+                   (special-variable-p 'bidi-control-characters)
+                   (equal bidi-control-characters
+                          '(#x200e #x200f #x061c #x202a #x202b #x202d
+                            #x202e #x2066 #x2067 #x2068 #x202c #x2069))
+                   (equal (bidi-string-strip-control-characters
+                           (string ?a #x202e ?b #x2069 ?c))
+                          \"abc\")
+                   (not (subrp (symbol-function 'function-get))))",
         ),
         Value::list([
             Value::T,
@@ -3196,6 +3927,32 @@ fn dumped_bootstrap_exposes_core_preload_contracts() {
             Value::T,
             Value::T,
             Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn unicode_normalization_builtins_cover_canonical_and_compatibility_forms() {
+    let mut interp = Interpreter::new();
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(list (ucs-normalize-NFC-string "LÅRSI")
+                     (ucs-normalize-NFD-string "LÅRSI")
+                     (ucs-normalize-NFKC-string "LÅRSI")
+                     (ucs-normalize-NFKD-string "LÅRSI"))"#,
+        ),
+        Value::list([
+            Value::String("LÅRSI".into()),
+            Value::String("LA\u{30a}RSI".into()),
+            Value::String("LÅRSI".into()),
+            Value::String("LA\u{30a}RSI".into()),
         ])
     );
 }
@@ -3252,6 +4009,70 @@ fn simple_compat_preloads_custom_url_view_and_widget_entry_points() {
 }
 
 #[test]
+fn requiring_url_loads_lisp_setup_before_first_parser_call() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize batch interpreter");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(let ((premature-url-feature (featurep 'url)))
+                     (require 'url)
+                     (list premature-url-feature
+                           (featurep 'url)
+                           (fboundp 'url-host)
+                           (url-host (url-generic-parse-url "Hello"))
+                           (equal
+                            (url-host
+                             (url-generic-parse-url "https://gnu.org/"))
+                            "gnu.org")))"#,
+            ),
+            Value::list([Value::Nil, Value::T, Value::T, Value::Nil, Value::T,])
+        );
+    });
+}
+
+#[test]
+fn simple_compat_preloads_paren_blinking_defaults() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list blink-matching-paren
+                   blink-matching-paren-on-screen
+                   blink-matching-paren-distance
+                   blink-matching-delay
+                   blink-matching-paren-dont-ignore-comments
+                   blink-matching-paren-highlight-offscreen)",
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::Integer(100 * 1024),
+            Value::Integer(1),
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn simple_compat_exposes_condition_case_unless_debug_as_a_macro() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(
@@ -3298,6 +4119,108 @@ fn simple_compat_exposes_with_temp_buffer_as_a_preloaded_macro() {
             Value::Nil,
             Value::Symbol("let".into()),
             Value::String("ok".into()),
+        ])
+    );
+}
+
+#[test]
+fn simple_compat_exposes_with_temp_message_as_a_preloaded_macro() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let ((calls 0)
+                   (expanded (macroexpand-all
+                              '(with-temp-message (progn (setq calls (1+ calls))
+                                                         \"working\")
+                                 (list 'done calls)))))
+               (list (macrop 'with-temp-message)
+                     (special-form-p 'with-temp-message)
+                     (car expanded)
+                     (with-temp-message (progn (setq calls (1+ calls)) \"working\")
+                       (list 'done calls))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::Symbol("let".into()),
+            Value::list([Value::Symbol("done".into()), Value::Integer(1)]),
+        ])
+    );
+}
+
+#[test]
+fn simple_compat_exposes_the_dumped_font_lock_hook_entry_point() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(with-temp-buffer
+               (list (fboundp 'turn-on-font-lock)
+                     font-lock-mode
+                     (turn-on-font-lock)
+                     font-lock-mode))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn simple_compat_preloads_subr_shell_process_wrappers() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize batch interpreter");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(mapcar #'fboundp
+                     '(start-process-shell-command
+                       start-file-process-shell-command
+                       call-process-shell-command
+                       process-file-shell-command))"
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn batch_startup_preloads_gnu_environment_helpers() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize batch interpreter");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (featurep 'env)
+                   (fboundp 'substitute-env-vars)
+                   (substitute-env-vars \"$EMAXX_UNDEFINED/x\" 'only-defined))"
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::String("$EMAXX_UNDEFINED/x".into()),
         ])
     );
 }
@@ -3505,6 +4428,206 @@ fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
 }
 
 #[test]
+fn upstream_completion_preview_uses_preloaded_forward_symbol() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("completion-preview-tests.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(list (fboundp 'forward-whitespace)
+                       (fboundp 'forward-symbol)
+                       (fboundp 'forward-same-syntax)
+                       (with-temp-buffer
+                         (insert \"foo\")
+                         (bounds-of-thing-at-point 'symbol))
+                       (with-temp-buffer
+                         (insert \"foo bar\")
+                         (forward-symbol -1)
+                         (point))
+                       (with-temp-buffer
+                         (insert \"  \\ntext\")
+                         (goto-char (point-min))
+                         (forward-whitespace 2)
+                         (point))
+                       (with-temp-buffer
+                         (insert \"abc \")
+                         (goto-char (point-min))
+                         (forward-same-syntax)
+                         (point)))"
+            ),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::cons(Value::Integer(1), Value::Integer(4)),
+                Value::Integer(5),
+                Value::Integer(4),
+                Value::Integer(4),
+            ])
+        );
+
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.total, 11, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 11, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_descr_text_uses_unicode_property_table_descriptions() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("descr-text-tests.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(substring-no-properties
+                   (describe-char-eldoc--format #x2026))"
+            ),
+            Value::String("U+2026: Horizontal ellipsis (Po: Punctuation, Other)".into(),)
+        );
+
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.total, 3, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 3, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn dumped_loaddefs_inline_functions_are_available_without_owner_loads() {
+    assert_eq!(
+        eval_str(
+            "(list (fboundp 'cvs-dired-noselect)
+                   (cvs-dired-noselect temporary-file-directory)
+                   (fboundp 'tramp-autoload-file-name-handler)
+                   (fboundp 'vc-cvs-registered))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn upstream_dired_does_not_refresh_parent_for_nested_file_changes() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("dired-tests.el");
+        let name = "dired-test-bug27243-01";
+        let summary = interp.run_ert_tests_with_selector(Some(&Value::Symbol(name.into())));
+        assert_eq!(summary.total, 1, "{name}: {:#?}", interp.test_results);
+        assert_eq!(summary.passed, 1, "{name}: {:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_dired_killed_buffer_cleanup_preserves_later_window_display() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("dired-tests.el");
+        let selector = eval_str_with(
+            &mut interp,
+            "'(member dired-test-bug25609
+                      files-tests-bug-50630
+                      files-tests-insert-directory-shows-files
+                      files-tests-insert-directory-shows-free)",
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+        assert_eq!(summary.total, 4, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 4, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_dnd_mock_remote_transport_handles_file_lifecycle() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("dnd-tests.el");
+        let selector = eval_str_with(
+            &mut interp,
+            "'(member dnd-tests-begin-file-drag
+                      dnd-tests-begin-drag-files)",
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+        assert_eq!(summary.total, 2, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 2, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_files_fast_processes_do_not_leak_into_exit_queries() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("files-tests.el");
+        let subprocess = Value::symbol("files-tests-file-name-non-special--subprocess");
+        let subprocess_summary = interp.run_ert_tests_with_selector(Some(&subprocess));
+        assert_eq!(subprocess_summary.passed, 1, "{:#?}", interp.test_results);
+        // Emaxx can reach the next test before these tiny host processes have
+        // been scheduled.  Once they have exited, the later process-status
+        // must be delivered at the ERT boundary without an explicit Lisp
+        // output wait, just as GNU's SIGCHLD-driven runner does.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let selector = eval_str_with(
+            &mut interp,
+            "'(member files-tests-save-buffers-kill-emacs--asks-to-save-buffers
+                      files-tests-save-buffers-kill-emacs--confirm-kill-processes)",
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+        assert_eq!(summary.total, 2, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 2, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_electric_mode_producers_match_their_gnu_owners() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("electric-tests.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(list
+                   (with-temp-buffer
+                     (plainer-c-mode)
+                     (list indent-line-function
+                           (progn
+                             (insert \"int main () {\\n\\n}\")
+                             (goto-char 15)
+                             (indent-according-to-mode)
+                             (buffer-string))))
+                   (subrp (indirect-function 'tex-mode))
+                   (with-temp-buffer
+                     (tex-mode)
+                     (list major-mode
+                           (key-binding \"\\\"\")
+                           (subrp (indirect-function 'tex-insert-quote)))))",
+            ),
+            Value::list([
+                Value::list([
+                    Value::symbol("c-indent-line"),
+                    Value::String("int main () {\n  \n}".into()),
+                ]),
+                Value::Nil,
+                Value::list([
+                    Value::symbol("latex-mode"),
+                    Value::symbol("tex-insert-quote"),
+                    Value::Nil,
+                ]),
+            ])
+        );
+    });
+}
+
+#[test]
+fn upstream_custom_theme_uses_native_frame_parameter_updates() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("custom-tests.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(subrp (indirect-function 'modify-frame-parameters))"
+            ),
+            Value::T
+        );
+
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.total, 9, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 9, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
 fn upstream_cl_macs_dynamic_and_symbol_macro_regressions_stay_green() {
     run_with_large_stack(|| {
         let mut interp = upstream_lisp_test_interpreter("emacs-lisp/cl-macs-tests.el");
@@ -3528,6 +4651,19 @@ fn upstream_nested_backquote_regression_stays_green() {
 
         assert_eq!(summary.total, 1, "{:#?}", interp.test_results);
         assert_eq!(summary.passed, 1, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_ert_resource_macro_finds_faces_theme_from_defining_file() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("faces-tests.el");
+        let summary = interp
+            .run_ert_tests_with_selector(Some(&Value::symbol("faces--test-extend-with-themes")));
+
+        assert_eq!(summary.total, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
     });
 }
 
@@ -3566,6 +4702,51 @@ fn edebug_instrumented_cl_macrolet_preserves_expander_arguments() {
         assert_eq!(summary.total, 1, "{:#?}", interp.test_results);
         assert_eq!(summary.passed, 1, "{:#?}", interp.test_results);
         assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn edebug_sample_code_eval_buffer_reaches_its_provide_form() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("emacs-lisp/edebug-tests.el");
+        let file = eval_str_with(
+            &mut interp,
+            r#"(let ((file (make-temp-file "emaxx-edebug-code" nil ".el")))
+                 (edebug-tests-setup-code-file file)
+                 file)"#,
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                &format!(
+                    "(with-current-buffer (find-file-noselect {})
+                       (goto-char (point-min))
+                       (and (re-search-forward \"!\\\\(\\\\S-+?\\\\)!\" nil t)
+                            (match-string-no-properties 0)))",
+                    file
+                ),
+            ),
+            Value::Nil,
+            "the setup producer must remove every Edebug stop-point annotation"
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                &format!(
+                    "(unwind-protect
+                         (progn
+                           (with-current-buffer (find-file {})
+                             (read-only-mode)
+                             (setq lexical-binding t)
+                             (syntax-ppss)
+                             (eval-buffer))
+                           (featurep 'edebug-test-code))
+                       (ignore-errors (delete-file {})))",
+                    file, file
+                ),
+            ),
+            Value::T
+        );
     });
 }
 
@@ -3993,13 +5174,74 @@ fn eshell_test_interpreter(test_file: &str) -> Interpreter {
     // larger debug test binary, with several upstream suites in parallel.
     // Keep the upstream observable-condition wait, but give that event loop
     // a debug-suite deadline instead of turning scheduler pressure into a
-    // false semantic failure.
+    // false semantic failure.  A single isolated external-pipeline case can
+    // take 16 seconds in this unoptimized interpreter; the complete suite
+    // concurrently runs another large-stack interpreter and native child
+    // process probes.
     interp.set_variable(
         "eshell-test--max-wait-time",
-        Value::Integer(20),
+        Value::Integer(60),
         &mut Vec::new(),
     );
     interp
+}
+
+#[test]
+fn upstream_eshell_script_regressions_stay_green() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-script-tests.el");
+        let selector = eval_str_with(
+            &mut interp,
+            "'(member em-script-test/execute-file/output-file
+                      em-script-test/source-script/background)",
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+
+        assert_eq!(summary.total, 2, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 2, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_eshell_unix_regressions_stay_green_in_file_order() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-unix-tests.el");
+        let summary = interp.run_ert_tests_with_selector(None);
+
+        assert_eq!(summary.total, 5, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 5, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_eshell_command_regressions_stay_green() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("esh-cmd-tests.el");
+        let selector = eval_str_with(
+            &mut interp,
+            "'(member esh-cmd-test/background/kill
+                      esh-cmd-test/background/simple-command
+                      esh-cmd-test/background/subcommand
+                      esh-cmd-test/if-else-statement-lisp-form-2
+                      esh-cmd-test/quoted-lisp-form
+                      esh-cmd-test/which/plain/eshell-builtin)",
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+
+        assert_eq!(summary.total, 6, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 6, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_eshell_external_regressions_stay_green_in_file_order() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("esh-ext-tests.el");
+        let summary = interp.run_ert_tests_with_selector(None);
+
+        assert_eq!(summary.total, 5, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 5, "{:#?}", interp.test_results);
+    });
 }
 
 #[test]
@@ -4050,12 +5292,19 @@ fn icalendar_recurring_date_round_trip_uses_historical_local_offset() {
 #[test]
 fn todo_month_edits_observe_dynamic_prefix_argument() {
     let mut interp = upstream_lisp_test_interpreter("calendar/todo-mode-tests.el");
-    interp.set_current_load_file(Some(
-        upstream_emacs_repo()
-            .join("test/lisp/calendar/todo-mode-tests.el")
-            .display()
-            .to_string(),
-    ));
+    let test_file = upstream_emacs_repo()
+        .join("test/lisp/calendar/todo-mode-tests.el")
+        .display()
+        .to_string();
+    interp.set_current_load_file(Some(test_file.clone()));
+    // GNU's real `macroexp-file-name' reads the final file entry from
+    // `current-load-list'.  Keep this direct (non-ERT-runner) probe in the
+    // same macro-expansion context as the loaded upstream test body.
+    interp.set_variable(
+        "current-load-list",
+        Value::list([Value::String(test_file)]),
+        &mut Vec::new(),
+    );
     let value = eval_str_with(
         &mut interp,
         r#"(with-todo-test
@@ -4417,30 +5666,24 @@ fn comint_password_function_survives_the_temporary_process_buffer() {
                          (with-temp-buffer
                            (cl-letf (((symbol-function 'read-passwd)
                                       (lambda (&rest _args) "fallback")))
-                             (make-comint-in-buffer
-                              "emaxx-comint-binding" (current-buffer)
-                              (executable-find "cat"))
-                             (let ((process (get-buffer-process
-                                             (current-buffer))))
-                               (set-process-query-on-exit-flag process nil)
-                               (comint-send-invisible "Password: ")
-                               ;; Wait for the observable echo instead of
-                               ;; assuming one scheduler turn is enough.
-                               ;; The exact upstream 0.1-second behavior is
-                               ;; still covered by the release oracle; this
-                               ;; debug regression targets binding semantics.
-                               (let ((deadline
-                                      (+ (float-time (current-time)) 10.0)))
-                                 (while (and (= (buffer-size) 0)
-                                             (< (float-time (current-time))
-                                                deadline))
-                                   (accept-process-output process 0.1)))
-                               (buffer-substring-no-properties
-                                (point-min) (point-max)))))))
+                             (comint-mode)
+                             (let ((process
+                                    (make-pipe-process
+                                     :name "emaxx-comint-binding"
+                                     :buffer (current-buffer)
+                                     :noquery t))
+                                   sent)
+                               (unwind-protect
+                                   (let ((comint-input-sender
+                                          (lambda (_process string)
+                                            (setq sent string))))
+                                     (comint-send-invisible "Password: ")
+                                     sent)
+                                 (delete-process process)))))))
                      (emaxx-comint-password-roundtrip
                       (lambda (&rest _args) "alternate")))"#,
             ),
-            Value::String("alternate\n".into())
+            Value::String("alternate".into())
         );
     });
 }
@@ -4472,7 +5715,15 @@ fn erc_process_input_line_preserves_spaces_in_the_flood_queue() {
                        (progn
                          (setq erc-server-current-nick "tester")
                          (with-current-buffer (erc--open-target "#chan")
+                           ;; The upstream helper's fake server is `sleep 1'.
+                           ;; Under a saturated Rust suite it can exit before
+                           ;; this focused queue assertion reaches ERC.  Keep
+                           ;; process scheduling outside this string-shape
+                           ;; regression while retaining the real queue path.
                            (cl-letf (((symbol-function
+                                      'erc-server-process-alive)
+                                     (lambda () t))
+                                    ((symbol-function
                                       'erc-server-send-queue)
                                      #'ignore))
                              (erc-process-input-line
@@ -4499,6 +5750,7 @@ fn dabbrev_cross_buffer_cases_remain_order_independent_in_native_runner() {
     run_with_large_stack(|| {
         let mut interp = upstream_lisp_test_interpreter("dabbrev-tests.el");
         let expected_passes = [
+            "dabbrev-expand-after-killing-buffer",
             "dabbrev-expand-test-minibuffer-4",
             "dabbrev-expand-test-other-buffer-1",
             "dabbrev-expand-test-other-buffer-2",

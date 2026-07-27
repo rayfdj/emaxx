@@ -1,8 +1,426 @@
 use super::*;
 use crate::lisp::reader::Reader;
+use std::io::Write;
 
 fn upstream_emacs_repo() -> PathBuf {
     crate::compat::project_root().join("../emacs")
+}
+
+fn assert_upstream_primitive_contract(program: &str, expected: &str) {
+    let binary = upstream_emacs_repo().join("src/emacs");
+    let output = std::process::Command::new(&binary)
+        .args(["--batch", "-Q", "--eval", program])
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "run primitive-contract oracle {}: {error}",
+                binary.display()
+            )
+        });
+    assert!(
+        output.status.success(),
+        "primitive-contract oracle failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+}
+
+fn assert_upstream_primitive_contract_with_stdin(program: &str, stdin: &str, expected: &str) {
+    let binary = upstream_emacs_repo().join("src/emacs");
+    let mut child = std::process::Command::new(&binary)
+        .args(["--batch", "-Q", "--eval", program])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| {
+            panic!(
+                "run primitive-contract oracle {}: {error}",
+                binary.display()
+            )
+        });
+    child
+        .stdin
+        .as_mut()
+        .expect("GNU primitive-contract stdin should be piped")
+        .write_all(stdin.as_bytes())
+        .expect("write GNU primitive-contract stdin");
+    let output = child
+        .wait_with_output()
+        .expect("wait for GNU primitive-contract oracle");
+    assert!(
+        output.status.success(),
+        "primitive-contract oracle failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+}
+
+#[test]
+fn record_literal_detection_does_not_traverse_vector_storage() {
+    let vector = Value::list([
+        Value::symbol("vector-literal"),
+        Value::Integer(1),
+        Value::Integer(2),
+    ]);
+    let (_, tail) = vector
+        .cons_cells()
+        .expect("the vector facade should have a tagged cons root");
+    let _exclusive_tail_borrow = tail.borrow_mut();
+
+    // Holding the tail exclusively makes any attempted traversal panic.
+    // Record detection must reject the vector solely from its distinct tag.
+    assert!(record_literal_items(&vector).is_none());
+}
+
+#[test]
+fn sort_recognizes_an_evaluated_numeric_lambda_without_interpreting_each_comparison() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new("(lambda (x y) (< x y))")
+        .read()
+        .expect("the comparator should parse")
+        .expect("the comparator form should be present");
+    let comparator = interp
+        .eval(&form, &mut env)
+        .expect("the comparator should evaluate");
+
+    assert!(
+        direct_sort_comparator(&interp, &comparator, &env).is_some(),
+        "ordinary numeric comparator was not recognized: {comparator:?}"
+    );
+}
+
+#[test]
+fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
+    let mut interp = Interpreter::new();
+    let form = Reader::new(
+        r#"(progn
+             (setq emaxx-kill-seen nil)
+             (setq kill-emacs-hook
+                   (list
+                    (lambda ()
+                      (setq emaxx-kill-seen
+                            (cons 'first emaxx-kill-seen)))
+                    (lambda () (error "ignored shutdown error"))
+                    (lambda ()
+                      (setq emaxx-kill-seen
+                            (cons 'third emaxx-kill-seen)))))
+             (unwind-protect
+                 (condition-case nil
+                     (kill-emacs 7)
+                   (t
+                    (setq emaxx-kill-seen
+                          (cons 'caught emaxx-kill-seen))))
+               (setq emaxx-kill-seen
+                     (cons 'cleanup emaxx-kill-seen))))"#,
+    )
+    .read_all()
+    .expect("read kill-emacs nonlocal-control contract")
+    .remove(0);
+    let error = interp
+        .eval(&form, &mut Vec::new())
+        .expect_err("kill-emacs must not return into Lisp");
+    assert!(matches!(
+        error,
+        LispError::Terminate(EmacsTermination {
+            exit_code: 7,
+            restart: false
+        })
+    ));
+    assert_eq!(
+        interp.lookup_var("emaxx-kill-seen", &Vec::new()),
+        Some(Value::list([
+            Value::symbol("third"),
+            Value::symbol("first")
+        ])),
+        "ordinary hook errors are demoted, while condition handlers and unwind cleanup never run"
+    );
+    assert_eq!(
+        interp.take_pending_termination(),
+        Some(EmacsTermination {
+            exit_code: 7,
+            restart: false,
+        })
+    );
+
+    let termination_for = |args: &[Value]| {
+        let mut interp = Interpreter::new();
+        match call(&mut interp, "kill-emacs", args, &mut Vec::new())
+            .expect_err("native kill-emacs must request process termination")
+        {
+            LispError::Terminate(termination) => termination,
+            other => panic!("unexpected kill-emacs outcome: {other}"),
+        }
+    };
+    assert_eq!(
+        termination_for(&[]),
+        EmacsTermination {
+            exit_code: 0,
+            restart: false,
+        }
+    );
+    assert_eq!(
+        termination_for(&[Value::Integer(-1)]),
+        EmacsTermination {
+            exit_code: -1,
+            restart: false,
+        }
+    );
+    assert_eq!(
+        termination_for(&[Value::Integer(i64::MAX)]),
+        EmacsTermination {
+            exit_code: i32::MAX,
+            restart: false,
+        }
+    );
+    assert_eq!(
+        termination_for(&[Value::BigInteger(BigInt::from(i64::MAX) + 1)]),
+        EmacsTermination {
+            exit_code: 0,
+            restart: false,
+        },
+        "emacs.c uses FIXNUMP, so a bignum is not an exit status"
+    );
+    assert_eq!(
+        termination_for(&[Value::String("terminal input".into()), Value::T]),
+        EmacsTermination {
+            exit_code: 0,
+            restart: true,
+        }
+    );
+}
+
+#[test]
+fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let string_object = interp
+        .eval(
+            &Reader::new("\"heap string\"")
+                .read_all()
+                .expect("read string literal")
+                .remove(0),
+            &mut env,
+        )
+        .expect("evaluate string literal");
+    let lambda = interp
+        .eval(
+            &Reader::new("(lambda (value) value)")
+                .read_all()
+                .expect("read lambda")
+                .remove(0),
+            &mut env,
+        )
+        .expect("evaluate lambda");
+    let representatives = vec![
+        Value::Nil,
+        Value::T,
+        Value::Integer(1),
+        Value::BigInteger(BigInt::from(i64::MAX) + 1),
+        Value::Float(1.5),
+        Value::String("inline string".into()),
+        string_object,
+        Value::symbol("symbol"),
+        Value::cons(Value::Integer(1), Value::Nil),
+        Value::BuiltinFunc("car".into()),
+        lambda,
+        Value::Buffer(1, "*scratch*".into()),
+        Value::Marker(1),
+        Value::Overlay(1),
+        Value::CharTable(1),
+        Value::Record(1),
+        Value::Finalizer(1),
+        Value::Unbound,
+    ];
+
+    for value in representatives {
+        assert_eq!(
+            call(
+                &mut interp,
+                "user-ptrp",
+                std::slice::from_ref(&value),
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("user-ptrp rejected {value}: {error}")),
+            Value::Nil,
+            "module-free Emaxx cannot construct GNU's PVEC_USER_PTR"
+        );
+    }
+}
+
+#[test]
+fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
+    use super::generated_gnu_c_primitives::{
+        GNU_C_PRIMITIVE_AVAILABLE_COUNT, GNU_C_PRIMITIVE_SOURCE_COUNT, GNU_C_PRIMITIVES,
+    };
+
+    assert_eq!(GNU_C_PRIMITIVES.len(), GNU_C_PRIMITIVE_SOURCE_COUNT);
+    assert_eq!(
+        GNU_C_PRIMITIVES
+            .iter()
+            .filter(|contract| contract.arity.is_some())
+            .count(),
+        GNU_C_PRIMITIVE_AVAILABLE_COUNT
+    );
+    assert!(
+        GNU_C_PRIMITIVES
+            .windows(2)
+            .all(|pair| pair[0].name < pair[1].name),
+        "generated GNU C primitive inventory must stay sorted and unique"
+    );
+
+    let available = GNU_C_PRIMITIVES
+        .iter()
+        .filter(|contract| contract.arity.is_some())
+        .collect::<Vec<_>>();
+    let is_native_mirror = |name: &str| is_builtin(name) || is_special_form_name(name);
+    let missing = available
+        .iter()
+        .copied()
+        .filter(|contract| !is_native_mirror(contract.name))
+        .collect::<Vec<_>>();
+    let mut mirrored = Vec::new();
+    let mut issues = Vec::new();
+    for contract in available
+        .iter()
+        .copied()
+        .filter(|contract| is_native_mirror(contract.name))
+    {
+        mirrored.push(contract.name);
+        if generated_builtin_arities::generated_builtin_arity(contract.name) != contract.arity {
+            issues.push(format!(
+                "{} [{}]: arity {:?}, expected {:?}",
+                contract.name,
+                contract.origins,
+                generated_builtin_arities::generated_builtin_arity(contract.name),
+                contract.arity
+            ));
+        }
+        if is_special_form_name(contract.name) != contract.special_form {
+            issues.push(format!(
+                "{} [{}]: special_form {}, expected {}",
+                contract.name,
+                contract.origins,
+                is_special_form_name(contract.name),
+                contract.special_form
+            ));
+        }
+        if generated_builtin_arities::generated_builtin_command_p(contract.name) != contract.command
+        {
+            issues.push(format!(
+                "{} [{}]: command {}, expected {}",
+                contract.name,
+                contract.origins,
+                generated_builtin_arities::generated_builtin_command_p(contract.name),
+                contract.command
+            ));
+        }
+        if !contract.special_form && !has_dispatch_handler(contract.name) {
+            issues.push(format!(
+                "{} [{}]: claimed native without a Rust dispatch route",
+                contract.name, contract.origins
+            ));
+        }
+    }
+
+    let fingerprint = |names: &[&str]| {
+        // Stable FNV-1a over the sorted, NUL-separated names.  The exact
+        // fingerprint prevents a removed dispatch arm from silently moving
+        // from the mirrored inventory into the missing inventory.
+        names.iter().fold(0xcbf29ce484222325_u64, |mut hash, name| {
+            for byte in name.bytes().chain(std::iter::once(0)) {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            hash
+        })
+    };
+    let missing_names = missing
+        .iter()
+        .map(|contract| contract.name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        (mirrored.len(), fingerprint(&mirrored)),
+        (1_197, 9_266_388_462_729_764_669),
+        "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
+    );
+    assert_eq!(
+        (missing_names.len(), fingerprint(&missing_names)),
+        (223, 3_603_939_082_018_779_415),
+        "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
+    );
+    if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
+        let mut by_origin = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+        for contract in missing {
+            by_origin
+                .entry(contract.origins)
+                .or_default()
+                .push(contract.name);
+        }
+        for (origins, names) in by_origin {
+            eprintln!("{} ({})\n  {}", origins, names.len(), names.join(" "));
+        }
+    }
+    assert!(
+        issues.is_empty(),
+        "{} GNU C primitive surface mismatches across {} Emaxx mirrors:\n{}",
+        issues.len(),
+        mirrored.len(),
+        issues.join("\n")
+    );
+}
+
+#[test]
+fn generated_rust_manifests_never_contain_trailing_whitespace() {
+    for (name, source) in [
+        (
+            "dumped autoloads",
+            include_str!("../eval/generated_autoloads.rs"),
+        ),
+        (
+            "builtin arities",
+            include_str!("generated_builtin_arities.rs"),
+        ),
+    ] {
+        for (line_index, line) in source.lines().enumerate() {
+            assert!(
+                !line.ends_with(' ') && !line.ends_with('\t'),
+                "{name} generator emitted trailing whitespace on line {}",
+                line_index + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn gnu_c_primitive_boundary_is_not_reimplemented_in_simple_compat_lisp() {
+    use super::generated_gnu_c_primitives::GNU_C_PRIMITIVES;
+
+    let available = GNU_C_PRIMITIVES
+        .iter()
+        .filter(|contract| contract.arity.is_some())
+        .map(|contract| contract.name)
+        .collect::<std::collections::HashSet<_>>();
+    let mut violations = include_str!("../simple_compat.el")
+        .lines()
+        .filter_map(|line| {
+            let form = line
+                .strip_prefix("(defun ")
+                .or_else(|| line.strip_prefix("(defmacro "))?;
+            let name = form
+                .split(|ch: char| ch.is_ascii_whitespace() || ch == '(' || ch == ')')
+                .next()?;
+            available.contains(name).then_some(name)
+        })
+        .collect::<Vec<_>>();
+    violations.sort_unstable();
+
+    assert!(
+        violations.is_empty(),
+        "GNU C primitives must stay on Emaxx's Rust side of the host/Lisp boundary:\n{}",
+        violations.join("\n")
+    );
 }
 
 #[test]
@@ -78,6 +496,36 @@ fn subregexp_context_rejects_classes_bounds_and_trailing_escape() {
 
 #[test]
 fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
+    // Keep this public-value contract tied to the pinned GNU implementation,
+    // not merely to hand-copied Rust expectations.  This probe is small
+    // enough for the fast suite and covers the related char-table boundary.
+    assert_upstream_primitive_contract(
+        r#"(let ((table (make-syntax-table)) mapped)
+              (modify-syntax-entry ?% ". c" table)
+              (map-char-table
+               (lambda (range syntax)
+                 (when (or (equal range ?%)
+                           (and (consp range)
+                                (<= (car range) ?%)
+                                (>= (cdr range) ?%)))
+                   (setq mapped syntax)))
+               table)
+              (prin1
+               (list (string-to-syntax ".")
+                     (string-to-syntax ". 1234")
+                     (string-to-syntax "(] 1234")
+                     (string-to-syntax "@")
+                     (string-to-syntax ". c")
+                     (aref table ?%)
+                     (char-table-range table ?%)
+                     mapped
+                     (condition-case error
+                         (string-to-syntax "z")
+                       (error (list (car error)
+                                    (error-message-string error)))))))"#,
+        "((1) (983041) (983044 . 93) nil (8388609) (8388609) (8388609) (8388609) (error \"Invalid syntax description letter: z\"))",
+    );
+
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
 
@@ -89,7 +537,7 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
             &mut env,
         )
         .expect("punctuation syntax"),
-        Value::Integer(1)
+        Value::list([Value::Integer(1)])
     );
     assert_eq!(
         call(
@@ -99,7 +547,7 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
             &mut env,
         )
         .expect("comment flag syntax"),
-        Value::Integer(983041)
+        Value::list([Value::Integer(983041)])
     );
     assert_eq!(
         call(
@@ -109,7 +557,7 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
             &mut env,
         )
         .expect("nested style-b syntax"),
-        Value::Integer(6291457)
+        Value::list([Value::Integer(6291457)])
     );
     assert_eq!(
         call(
@@ -120,6 +568,693 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
         )
         .expect("matching paren syntax"),
         Value::cons(Value::Integer(983044), Value::Integer(']' as i64))
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "string-to-syntax",
+            &[Value::String("@".into())],
+            &mut env,
+        )
+        .expect("inherit syntax"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "string-to-syntax",
+            &[Value::String(". c".into())],
+            &mut env,
+        )
+        .expect("comment style-c syntax"),
+        Value::list([Value::Integer(8_388_609)])
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "string-to-syntax",
+            &[Value::String("z".into())],
+            &mut env,
+        )
+        .expect_err("invalid syntax descriptors must signal")
+        .to_string(),
+        "Invalid syntax description letter: z"
+    );
+}
+
+#[test]
+fn internal_char_font_matches_the_headless_gnu_font_boundary() {
+    assert_upstream_primitive_contract(
+        r#"(prin1 (list (internal-char-font nil ?A)
+                         (with-temp-buffer
+                           (insert "A")
+                           (internal-char-font 1))))"#,
+        "(nil nil)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    assert_eq!(
+        call(
+            &mut interp,
+            "internal-char-font",
+            &[Value::Nil, Value::Integer('A' as i64)],
+            &mut env,
+        )
+        .expect("query the headless default font"),
+        Value::Nil
+    );
+    interp.buffer.insert("A");
+    assert_eq!(
+        call(
+            &mut interp,
+            "internal-char-font",
+            &[Value::Integer(1)],
+            &mut env,
+        )
+        .expect("query an undisplayed buffer position"),
+        Value::Nil
+    );
+}
+
+#[test]
+fn fontp_matches_the_gnu_font_record_contract() {
+    assert_upstream_primitive_contract(
+        r#"(let ((font (font-spec :name "x")))
+              (prin1
+               (list (fontp nil)
+                     (fontp font)
+                     (fontp font 'font-spec)
+                     (fontp font 'font-object)
+                     (condition-case error
+                         (fontp font 'bogus)
+                       (error (car error))))))"#,
+        "(nil t t nil wrong-type-argument)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let font = call(
+        &mut interp,
+        "font-spec",
+        &[Value::Symbol(":name".into()), Value::String("x".into())],
+        &mut env,
+    )
+    .expect("font-spec should create a font record");
+    assert_eq!(
+        call(&mut interp, "fontp", &[Value::Nil], &mut env).expect("nil is not a font"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(&mut interp, "fontp", std::slice::from_ref(&font), &mut env)
+            .expect("font-spec is a font"),
+        Value::T
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "fontp",
+            &[font.clone(), Value::Symbol("font-spec".into())],
+            &mut env,
+        )
+        .expect("font-spec subtype should match"),
+        Value::T
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "fontp",
+            &[font.clone(), Value::Symbol("font-object".into())],
+            &mut env,
+        )
+        .expect("font-object subtype should not match"),
+        Value::Nil
+    );
+    let error = call(
+        &mut interp,
+        "fontp",
+        &[font, Value::Symbol("bogus".into())],
+        &mut env,
+    )
+    .expect_err("invalid font subtype must signal");
+    assert_eq!(error.condition_type(), "wrong-type-argument");
+}
+
+#[test]
+fn nil_coding_system_queries_match_the_gnu_primitive_contract() {
+    assert_upstream_primitive_contract(
+        "(prin1 (list (coding-system-p nil)
+                       (coding-system-type nil)
+                       (coding-system-base nil)
+                       (coding-system-eol-type nil)
+                       (coding-system-equal nil nil)
+                       (plist-get (coding-system-plist nil) :coding-type)))",
+        "(t raw-text no-conversion 0 t raw-text)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let mut actual = [
+        "coding-system-p",
+        "coding-system-type",
+        "coding-system-base",
+        "coding-system-eol-type",
+    ]
+    .into_iter()
+    .map(|name| {
+        call(&mut interp, name, &[Value::Nil], &mut env)
+            .unwrap_or_else(|error| panic!("{name} nil: {error}"))
+    })
+    .collect::<Vec<_>>();
+    actual.push(
+        call(
+            &mut interp,
+            "coding-system-equal",
+            &[Value::Nil, Value::Nil],
+            &mut env,
+        )
+        .expect("nil coding systems should compare equal"),
+    );
+    let plist = call(&mut interp, "coding-system-plist", &[Value::Nil], &mut env)
+        .expect("nil coding system plist should resolve to no-conversion");
+    actual.push(
+        call(
+            &mut interp,
+            "plist-get",
+            &[plist, Value::Symbol(":coding-type".into())],
+            &mut env,
+        )
+        .expect("no-conversion plist should expose its public coding type"),
+    );
+    assert_eq!(
+        Value::list(actual),
+        Value::list([
+            Value::T,
+            Value::Symbol("raw-text".into()),
+            Value::Symbol("no-conversion".into()),
+            Value::Integer(0),
+            Value::T,
+            Value::Symbol("raw-text".into()),
+        ])
+    );
+}
+
+#[test]
+fn bootstrap_coding_plists_expose_gnu_display_and_keyboard_metadata() {
+    assert_upstream_primitive_contract(
+        "(prin1 (mapcar
+                   (lambda (coding)
+                     (list coding
+                           (coding-system-get coding :ascii-compatible-p)
+                           (coding-system-get coding :charset-list)))
+                   '(utf-8 utf-8-unix us-ascii iso-latin-1 raw-text undecided)))",
+        "((utf-8 t (unicode)) (utf-8-unix t (unicode)) (us-ascii t (ascii)) (iso-latin-1 t (iso-8859-1)) (raw-text t nil) (undecided t (ascii)))",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for (coding, charset) in [
+        ("utf-8", Some("unicode")),
+        ("utf-8-unix", Some("unicode")),
+        ("us-ascii", Some("ascii")),
+        ("iso-latin-1", Some("iso-8859-1")),
+        ("raw-text", None),
+        ("undecided", Some("ascii")),
+    ] {
+        let plist = call(
+            &mut interp,
+            "coding-system-plist",
+            &[Value::Symbol(coding.into())],
+            &mut env,
+        )
+        .unwrap_or_else(|error| panic!("coding-system-plist {coding}: {error}"));
+        assert_eq!(
+            call(
+                &mut interp,
+                "plist-get",
+                &[plist.clone(), Value::Symbol(":ascii-compatible-p".into())],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("ascii-compatible {coding}: {error}")),
+            Value::T,
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "plist-get",
+                &[plist, Value::Symbol(":charset-list".into())],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("charset-list {coding}: {error}")),
+            charset
+                .map(|name| Value::list([Value::Symbol(name.into())]))
+                .unwrap_or(Value::Nil),
+        );
+    }
+}
+
+#[test]
+fn coding_system_eol_type_exposes_base_variant_vectors() {
+    assert_upstream_primitive_contract(
+        "(prin1 (mapcar (lambda (coding)
+                          (list coding (coding-system-eol-type coding)))
+                        '(utf-8 utf-8-unix undecided no-conversion raw-text)))",
+        "((utf-8 [utf-8-unix utf-8-dos utf-8-mac]) (utf-8-unix 0) (undecided [undecided-unix undecided-dos undecided-mac]) (no-conversion 0) (raw-text [raw-text-unix raw-text-dos raw-text-mac]))",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for (coding, expected) in [
+        (
+            "utf-8",
+            Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::Symbol("utf-8-unix".into()),
+                Value::Symbol("utf-8-dos".into()),
+                Value::Symbol("utf-8-mac".into()),
+            ]),
+        ),
+        ("utf-8-unix", Value::Integer(0)),
+        (
+            "undecided",
+            Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::Symbol("undecided-unix".into()),
+                Value::Symbol("undecided-dos".into()),
+                Value::Symbol("undecided-mac".into()),
+            ]),
+        ),
+        ("no-conversion", Value::Integer(0)),
+    ] {
+        assert_eq!(
+            call(
+                &mut interp,
+                "coding-system-eol-type",
+                &[Value::Symbol(coding.into())],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("coding-system-eol-type {coding}: {error}")),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
+    assert_upstream_primitive_contract(
+        r#"(progn
+              (require 'ert-x)
+              (prin1
+               (list (ert-simulate-keys [?u ?t ?f ?- ?8 return]
+                       (read-coding-system "Coding: " nil))
+                     (ert-simulate-keys [return]
+                       (read-coding-system "Coding: " 'utf-8))
+                     (ert-simulate-keys [return]
+                       (read-coding-system "Coding: " nil)))))"#,
+        "(utf-8 utf-8 nil)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_global_binding("executing-kbd-macro", Value::T);
+    for (events, default, expected) in [
+        (
+            vec![b'u', b't', b'f', b'-', b'8', 13],
+            Value::Nil,
+            Value::Symbol("utf-8".into()),
+        ),
+        (
+            vec![13],
+            Value::Symbol("utf-8".into()),
+            Value::Symbol("utf-8".into()),
+        ),
+        (vec![13], Value::Nil, Value::Nil),
+    ] {
+        interp.set_global_binding(
+            "unread-command-events",
+            Value::list(events.into_iter().map(|event| Value::Integer(event.into()))),
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "read-coding-system",
+                &[Value::String("Coding: ".into()), default],
+                &mut env,
+            )
+            .expect("read-coding-system should consume simulated minibuffer input"),
+            expected,
+        );
+    }
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "command-error-default-function",
+            &[
+                Value::list([Value::Symbol("error".into()), Value::String("boom".into())]),
+                Value::String(String::new()),
+                Value::Nil,
+            ],
+            &mut env,
+        )
+        .expect("dumped help.el must be able to delegate to the host error reporter"),
+        Value::Nil,
+    );
+}
+
+#[test]
+fn map_char_table_exposes_public_syntax_descriptors() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let forms = Reader::new(
+        r#"
+            (let ((table (make-syntax-table))
+                  punctuation)
+              (modify-syntax-entry ?% "." table)
+              (map-char-table
+               (lambda (range syntax)
+                 (when (or (and (integerp range) (= range ?%))
+                           (and (consp range)
+                                (<= (car range) ?%)
+                                (>= (cdr range) ?%)))
+                   (setq punctuation syntax)))
+               table)
+              (list (string-to-syntax ".") punctuation))"#,
+    )
+    .read_all()
+    .expect("syntax-table mapping test should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("syntax-table callbacks should receive public descriptors");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::list([Value::Integer(1)]),
+            Value::list([Value::Integer(1)]),
+        ])
+    );
+}
+
+#[test]
+fn eval_region_preserves_point_and_uses_the_supplied_reader() {
+    let program = r#"(progn
+          (makunbound 'emaxx-eval-region-sample)
+          (let ((reads 0))
+            (with-temp-buffer
+              (insert "(setq emaxx-eval-region-sample 1)\n(setq emaxx-eval-region-sample 42)\n")
+              (goto-char 2)
+              (let ((before (point))
+                    (result
+                     (eval-region
+                      (point-min) (point-max) nil
+                      (lambda (stream)
+                        (setq reads (1+ reads))
+                        (read stream)))))
+                (list result before (point) reads
+                      (symbol-value 'emaxx-eval-region-sample))))))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil 2 2 2 42)");
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let result = Reader::new(program)
+        .read_all()
+        .expect("eval-region contract should parse")
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("eval-region should evaluate the bounded input");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Nil,
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(42),
+        ])
+    );
+}
+
+#[test]
+fn headless_terminal_queries_match_the_upstream_batch_terminal() {
+    assert_upstream_primitive_contract(
+        "(prin1 (list (tty-type) (tty-display-color-p)\
+                      (tty-display-color-cells) (controlling-tty-p)\
+                      (tty-top-frame)))",
+        "(nil nil 0 nil nil)",
+    );
+
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        [
+            "tty-type",
+            "tty-display-color-p",
+            "tty-display-color-cells",
+            "controlling-tty-p",
+            "tty-top-frame",
+        ]
+        .into_iter()
+        .map(|name| call(&mut interp, name, &[], &mut Vec::new())
+            .unwrap_or_else(|error| panic!("query {name}: {error}")))
+        .collect::<Vec<_>>(),
+        vec![
+            Value::Nil,
+            Value::Nil,
+            Value::Integer(0),
+            Value::Nil,
+            Value::Nil,
+        ]
+    );
+}
+
+#[test]
+fn native_terminal_state_and_tty_controls_share_the_gnu_headless_contract() {
+    let program = r#"(let* ((terminal (frame-terminal))
+                            (capture
+                             (lambda (thunk)
+                               (condition-case err
+                                   (list 'ok (funcall thunk))
+                                 (error err)))))
+                       (list
+                        (tty-no-underline)
+                        (funcall capture
+                                 (lambda () (tty-no-underline 'bogus)))
+                        (funcall capture (lambda () (suspend-tty)))
+                        (funcall capture (lambda () (resume-tty terminal)))
+                        (funcall capture
+                                 (lambda () (tty--output-buffer-size)))
+                        (funcall capture
+                                 (lambda ()
+                                   (tty--set-output-buffer-size 0 terminal)))
+                        (funcall capture
+                                 (lambda () (tty--set-output-buffer-size -1)))
+                        (terminal-parameter terminal 'emaxx-native-probe)
+                        (set-terminal-parameter
+                         terminal 'emaxx-native-probe 1)
+                        (set-terminal-parameter
+                         terminal 'emaxx-native-probe 2)
+                        (terminal-parameter terminal 'emaxx-native-probe)
+                        (assq 'emaxx-native-probe
+                              (terminal-parameters terminal))
+                        (terminal-name terminal)
+                        (terminal-live-p terminal)
+                        (terminal-live-p 'bogus)))"#;
+    let expected = r#"(nil (wrong-type-argument terminal-live-p bogus) (error "Attempt to suspend a non-text terminal device") (error "Attempt to resume a non-text terminal device") (error "Not a tty terminal") (error "Attempt to suspend a non-text terminal device") (error "Invalid output buffer size") nil nil 1 2 (emaxx-native-probe . 2) "initial_terminal" t nil)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read native terminal contract")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate native terminal contract");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn native_delete_terminal_tracks_liveness_and_runs_its_hook_before_removal() {
+    let program = r#"(let ((terminal (car (terminal-list)))
+                           seen)
+                       (list
+                        (terminal-live-p terminal)
+                        (condition-case error-data
+                            (delete-terminal terminal)
+                          (error
+                           (list (car error-data)
+                                 (cadr error-data))))
+                        (progn
+                          (add-hook
+                           'delete-terminal-functions
+                           (lambda (argument)
+                             (setq seen
+                                   (list (eq argument terminal)
+                                         (terminal-live-p argument)))))
+                          (delete-terminal terminal t))
+                        seen
+                        (terminal-live-p terminal)
+                        (terminal-list)))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        r#"(t (error "Attempt to delete the sole active display terminal") nil (t t) nil nil)"#,
+    );
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read delete-terminal contract")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate delete-terminal contract");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::T,
+            Value::list([
+                Value::symbol("error"),
+                Value::String("Attempt to delete the sole active display terminal".into()),
+            ]),
+            Value::Nil,
+            Value::list([Value::T, Value::T]),
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+
+    let mut no_op_interp = Interpreter::new();
+    assert_eq!(
+        call(
+            &mut no_op_interp,
+            "delete-terminal",
+            &[Value::symbol("bogus"), Value::T],
+            &mut Vec::new(),
+        )
+        .expect("an object that does not designate a terminal is a no-op"),
+        Value::Nil
+    );
+    assert!(no_op_interp.terminal_live());
+}
+
+#[test]
+fn native_dispnew_family_tracks_menu_state_and_headless_redisplay_contracts() {
+    let state_program = r#"(progn
+          (defvar emaxx-disp-state nil)
+          (list
+           (frame-or-buffer-changed-p 'emaxx-disp-state)
+           (vectorp emaxx-disp-state)
+           (frame-or-buffer-changed-p 'emaxx-disp-state)
+           (progn
+             (set-buffer-modified-p t)
+             (frame-or-buffer-changed-p 'emaxx-disp-state))
+           (frame-or-buffer-changed-p 'emaxx-disp-state)
+           (progn
+             (set-buffer-modified-p nil)
+             (frame-or-buffer-changed-p 'emaxx-disp-state))
+           (frame-or-buffer-changed-p 'emaxx-disp-state)
+           (progn
+             (get-buffer-create "visible")
+             (frame-or-buffer-changed-p 'emaxx-disp-state))
+           (frame-or-buffer-changed-p 'emaxx-disp-state)
+           (progn
+             (kill-buffer "visible")
+             (frame-or-buffer-changed-p 'emaxx-disp-state))
+           (progn
+             (get-buffer-create " hidden")
+             (frame-or-buffer-changed-p 'emaxx-disp-state))
+           (progn
+             (kill-buffer " hidden")
+             (frame-or-buffer-changed-p 'emaxx-disp-state))
+           (progn
+             (aset emaxx-disp-state 0 'tampered)
+             (frame-or-buffer-changed-p 'emaxx-disp-state))))"#;
+    let expected_state = "(t t nil t nil t nil t nil t nil nil t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {state_program})"), expected_state);
+
+    let mut interp = Interpreter::new();
+    let state_form = Reader::new(state_program)
+        .read_all()
+        .expect("read dispnew state contract")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&state_form, &mut Vec::new())
+            .expect("evaluate dispnew state contract")
+            .to_string(),
+        expected_state
+    );
+
+    let surface_program = r#"(list
+          (redisplay)
+          (redisplay t)
+          (redraw-frame)
+          (redraw-frame nil)
+          (redraw-frame (selected-frame))
+          (redraw-display)
+          (condition-case error-data
+              (open-termscript nil)
+            (error error-data))
+          (condition-case error-data
+              (open-termscript "ignored")
+            (error error-data))
+          (condition-case error-data
+              (display--update-for-mouse-movement 1.0 2)
+            (error error-data)))"#;
+    let expected_surface = r#"(t t nil nil nil nil (error "Current frame is not on a tty device") (error "Current frame is not on a tty device") (wrong-type-argument fixnump 1.0))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {surface_program})"), expected_surface);
+    let surface_form = Reader::new(surface_program)
+        .read_all()
+        .expect("read dispnew headless surface")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&surface_form, &mut Vec::new())
+            .expect("evaluate dispnew headless surface")
+            .to_string(),
+        expected_surface
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "display--update-for-mouse-movement",
+            &[Value::Integer(1), Value::Integer(2)],
+            &mut Vec::new(),
+        )
+        .expect("valid fixnum mouse coordinates"),
+        Value::Nil
+    );
+}
+
+#[test]
+fn headless_input_mode_family_matches_the_upstream_batch_terminal() {
+    let program = "(list (current-input-mode)
+                          (progn (set-input-meta-mode 8)
+                                 (current-input-mode))
+                          (progn (set-input-mode nil t nil ?x)
+                                 (current-input-mode))
+                          (progn (set-input-mode t nil 'encoded ?\\C-g)
+                                 (current-input-mode)))";
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "((t nil t 7) (t nil t 7) (nil nil t 7) (t nil t 7))",
+    );
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read input-mode family probe")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate input-mode family probe"),
+        Value::list([
+            Value::list([Value::T, Value::Nil, Value::T, Value::Integer(7)]),
+            Value::list([Value::T, Value::Nil, Value::T, Value::Integer(7)]),
+            Value::list([Value::Nil, Value::Nil, Value::T, Value::Integer(7)]),
+            Value::list([Value::T, Value::Nil, Value::T, Value::Integer(7)]),
+        ])
     );
 }
 
@@ -562,8 +1697,8 @@ fn ert_resource_directory_prefers_sibling_resources_dir() {
         "/tmp/example-resources/"
     );
     assert_eq!(
-        ert_resource_directory_for("/Users/alpha/CodexProjects/emacs/test/src/syntax-tests.el"),
-        "/Users/alpha/CodexProjects/emacs/test/src/syntax-resources/"
+        ert_resource_directory_for("/Users/example/projects/emacs/test/src/syntax-tests.el"),
+        "/Users/example/projects/emacs/test/src/syntax-resources/"
     );
 }
 
@@ -627,6 +1762,27 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
         ])
     );
 
+    interp.set_variable(
+        "default-directory",
+        Value::String(format!("{}/", directory.display())),
+        &mut env,
+    );
+    let relative_full = call(
+        &mut interp,
+        "directory-files",
+        &[
+            Value::String(".".into()),
+            Value::T,
+            Value::String("\\`[^.]".into()),
+        ],
+        &mut env,
+    )
+    .expect("relative directory-files should honor dynamic default-directory");
+    assert_eq!(
+        relative_full,
+        Value::list([Value::String(directory.join("ext4").display().to_string())])
+    );
+
     let file_name = result.to_vec().expect("directory entries")[2].clone();
     call(
         &mut interp,
@@ -686,7 +1842,10 @@ fn seq_uniq_preserves_first_occurrence_order() {
 fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
     let mut interp = Interpreter::new();
     assert!(interp.has_charset("ascii"));
-    assert_eq!(interp.charset_id("unicode"), Some(1));
+    assert_eq!(interp.charset_id("iso-8859-1"), Some(1));
+    assert_eq!(interp.charset_id("unicode"), Some(2));
+    assert_eq!(interp.charset_id("emacs"), Some(3));
+    assert_eq!(interp.charset_id("eight-bit"), Some(4));
     assert_eq!(charset_for_char('A' as u32), "ascii");
     assert_eq!(charset_for_char('あ' as u32), "unicode");
 
@@ -711,6 +1870,16 @@ fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
 
 #[test]
 fn unicode_char_property_helpers_cover_names_and_general_categories() {
+    assert_upstream_primitive_contract(
+        "(prin1 (mapcar (lambda (u)
+                          (list u
+                                (get-char-code-property u 'name)
+                                (get-char-code-property u 'general-category)))
+                        '(#x16100 #x1CC00 #x14646 #x2FFC #x4E00
+                          #xD800 #xE000 #x10FFFF)))",
+        "((90368 nil Cn) (117760 nil Cn) (83526 \"ANATOLIAN HIEROGLYPH A530\" Lo) (12284 \"IDEOGRAPHIC DESCRIPTION CHARACTER SURROUND FROM RIGHT\" So) (19968 \"CJK IDEOGRAPH-4E00\" Lo) (55296 \"HIGH SURROGATE-D800\" Cs) (57344 nil Co) (1114111 nil Cn))",
+    );
+
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
 
@@ -746,6 +1915,260 @@ fn unicode_char_property_helpers_cover_names_and_general_categories() {
     )
     .expect("char-code-property-description should describe general categories");
     assert_eq!(description, Value::String("Punctuation, Other".into()));
+
+    for (code, expected_name, expected_category) in [
+        (0x16100, None, "Cn"),
+        (0x1CC00, None, "Cn"),
+        (0x14646, Some("ANATOLIAN HIEROGLYPH A530"), "Lo"),
+        (
+            0x2FFC,
+            Some("IDEOGRAPHIC DESCRIPTION CHARACTER SURROUND FROM RIGHT"),
+            "So",
+        ),
+        (0x4E00, Some("CJK IDEOGRAPH-4E00"), "Lo"),
+        (0xD800, Some("HIGH SURROGATE-D800"), "Cs"),
+        (0xE000, None, "Co"),
+        (0x10FFFF, None, "Cn"),
+    ] {
+        assert_eq!(
+            call(
+                &mut interp,
+                "get-char-code-property",
+                &[Value::Integer(code), Value::Symbol("name".into())],
+                &mut env,
+            )
+            .expect("read the Unicode 15.1 name property"),
+            expected_name.map_or(Value::Nil, |name| Value::String(name.into()))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "get-char-code-property",
+                &[
+                    Value::Integer(code),
+                    Value::Symbol("general-category".into()),
+                ],
+                &mut env,
+            )
+            .expect("read the Unicode 15.1 category property"),
+            Value::Symbol(expected_category.into())
+        );
+    }
+}
+
+#[test]
+fn max_char_distinguishes_the_internal_and_unicode_character_spaces() {
+    // Pin the producer contract that bounds Unicode-wide Lisp loops.  A
+    // regression here multiplies every `(dotimes (u (1+ (max-char 'ucs))))'
+    // scan by almost four before any property lookup is even considered.
+    assert_upstream_primitive_contract(
+        "(prin1 (list (max-char) (max-char 'ucs) (max-char t) (max-char nil)))",
+        "(4194303 1114111 1114111 4194303)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    assert_eq!(
+        call(&mut interp, "max-char", &[], &mut env).expect("internal character ceiling"),
+        Value::Integer(0x3f_ffff)
+    );
+    for unicode in [Value::Symbol("ucs".into()), Value::T] {
+        assert_eq!(
+            call(&mut interp, "max-char", &[unicode], &mut env).expect("Unicode character ceiling"),
+            Value::Integer(0x10_ffff)
+        );
+    }
+    assert_eq!(
+        call(&mut interp, "max-char", &[Value::Nil], &mut env)
+            .expect("nil retains the internal character ceiling"),
+        Value::Integer(0x3f_ffff)
+    );
+}
+
+#[test]
+fn unicode_property_tables_are_stable_and_preserve_overrides() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let property = Value::Symbol("name".into());
+    let table = call(
+        &mut interp,
+        "unicode-property-table-internal",
+        std::slice::from_ref(&property),
+        &mut env,
+    )
+    .expect("create the lazy Unicode name table");
+
+    // This is a hot primitive in Unicode-wide scans.  Stable identity both
+    // matches GNU's char-code-property-alist cache and prevents per-character
+    // char-table allocation from returning unnoticed.
+    for _ in 0..10_000 {
+        assert_eq!(
+            call(
+                &mut interp,
+                "unicode-property-table-internal",
+                std::slice::from_ref(&property),
+                &mut env,
+            )
+            .expect("reuse the Unicode name table"),
+            table
+        );
+    }
+
+    call(
+        &mut interp,
+        "put-unicode-property-internal",
+        &[
+            table.clone(),
+            Value::Integer('A' as i64),
+            Value::String("EMAXX TEST OVERRIDE".into()),
+        ],
+        &mut env,
+    )
+    .expect("override a Unicode table entry");
+    assert_eq!(
+        call(
+            &mut interp,
+            "get-unicode-property-internal",
+            &[table, Value::Integer('A' as i64)],
+            &mut env,
+        )
+        .expect("read the Unicode table override"),
+        Value::String("EMAXX TEST OVERRIDE".into())
+    );
+}
+
+#[test]
+fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let pattern = Value::String("-[0-9A-F]+\\'".into());
+    let haystack = Value::String("CJK IDEOGRAPH-4E00".into());
+
+    regexp::reset_regexp_syntax_class_render_count();
+    for _ in 0..10_000 {
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-match-p",
+                &[pattern.clone(), haystack.clone()],
+                &mut env,
+            )
+            .expect("match a table-independent regexp"),
+            Value::Integer(13)
+        );
+    }
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        0,
+        "plain compiled-regexp cache hits must not rebuild syntax-table classes"
+    );
+}
+
+#[test]
+fn equal_string_hash_tables_scale_without_losing_public_semantics() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let table = call(
+        &mut interp,
+        "make-hash-table",
+        &[
+            Value::Symbol(":test".into()),
+            Value::Symbol("equal".into()),
+            Value::Symbol(":size".into()),
+            Value::Integer(20_000),
+        ],
+        &mut env,
+    )
+    .expect("create an equal string hash table");
+
+    for index in 0..20_000 {
+        call(
+            &mut interp,
+            "puthash",
+            &[
+                Value::String(format!("UNICODE NAME {index}")),
+                Value::Integer(index),
+                table.clone(),
+            ],
+            &mut env,
+        )
+        .expect("insert an indexed string key");
+    }
+    for index in [0, 9_999, 19_999] {
+        assert_eq!(
+            call(
+                &mut interp,
+                "gethash",
+                &[
+                    Value::String(format!("UNICODE NAME {index}")),
+                    table.clone(),
+                ],
+                &mut env,
+            )
+            .expect("look up an indexed string key"),
+            Value::Integer(index)
+        );
+    }
+    call(
+        &mut interp,
+        "puthash",
+        &[
+            make_shared_string_value_with_multibyte("SHARED UNICODE NAME".into(), Vec::new(), true),
+            Value::Integer(20_000),
+            table.clone(),
+        ],
+        &mut env,
+    )
+    .expect("insert a shared Lisp string through the same index");
+    assert_eq!(
+        call(
+            &mut interp,
+            "gethash",
+            &[Value::String("SHARED UNICODE NAME".into()), table.clone(),],
+            &mut env,
+        )
+        .expect("plain and shared strings compare equal as hash keys"),
+        Value::Integer(20_000)
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "hash-table-count",
+            std::slice::from_ref(&table),
+            &mut env,
+        )
+        .expect("count indexed entries"),
+        Value::Integer(20_001)
+    );
+
+    let copy = call(
+        &mut interp,
+        "copy-hash-table",
+        std::slice::from_ref(&table),
+        &mut env,
+    )
+    .expect("copy the indexed table");
+    call(
+        &mut interp,
+        "puthash",
+        &[
+            Value::String("UNICODE NAME 9999".into()),
+            Value::Integer(-1),
+            table,
+        ],
+        &mut env,
+    )
+    .expect("replace an entry in the original table");
+    assert_eq!(
+        call(
+            &mut interp,
+            "gethash",
+            &[Value::String("UNICODE NAME 9999".into()), copy,],
+            &mut env,
+        )
+        .expect("the copied table remains independent"),
+        Value::Integer(9_999)
+    );
 }
 
 #[test]
@@ -787,10 +2210,6 @@ fn compat_paths_follow_emacs_test_directory_layout() {
 
     let test_directory = test_dir.display().to_string();
     assert_eq!(
-        compat_invocation_path_from_test_directory(&test_directory),
-        Some(src_dir.join("emacs"))
-    );
-    assert_eq!(
         compat_emacsclient_path_from_test_directory(&test_directory),
         Some(lib_src_dir.join("emacsclient"))
     );
@@ -798,6 +2217,11 @@ fn compat_paths_follow_emacs_test_directory_layout() {
     unsafe {
         std::env::set_var("EMACS_TEST_DIRECTORY", &test_directory);
     }
+    assert_eq!(
+        current_invocation_path(),
+        std::env::current_exe().expect("current test executable"),
+        "EMACS_TEST_DIRECTORY must never redirect Emaxx subprocesses to the GNU oracle"
+    );
     assert_eq!(
         compat_installation_directory(),
         Some(path_to_directory_string(&repo_root))
@@ -813,6 +2237,41 @@ fn compat_paths_follow_emacs_test_directory_layout() {
     }
 
     let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn insert_file_contents_reports_missing_input_as_file_missing() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-missing-input-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let error = call(
+        &mut interp,
+        "insert-file-contents",
+        &[Value::String(path.display().to_string())],
+        &mut env,
+    )
+    .expect_err("a nonexistent input file must signal");
+
+    assert_eq!(error.condition_type(), "file-missing");
+
+    let path = path.display().to_string();
+    let error = call(
+        &mut interp,
+        "insert-file-contents",
+        &[Value::String(path.clone()), Value::T],
+        &mut env,
+    )
+    .expect_err("visiting a nonexistent input file must still signal");
+
+    assert_eq!(error.condition_type(), "file-missing");
+    assert_eq!(interp.buffer.file.as_deref(), Some(path.as_str()));
+    assert!(!interp.buffer.is_modified());
 }
 
 #[cfg(unix)]
@@ -852,7 +2311,7 @@ fn process_lines_uses_default_directory_as_subprocess_cwd() {
 
 #[cfg(unix)]
 #[test]
-fn start_process_routes_command_output_to_its_buffer() {
+fn process_send_string_and_region_route_output_to_the_process_buffer() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*process-output*");
@@ -905,6 +2364,14 @@ fn start_process_routes_command_output_to_its_buffer() {
         &mut env,
     )
     .expect("second process-send-string should succeed");
+    interp.insert_current_buffer("prefix\nregion\nsuffix");
+    call(
+        &mut interp,
+        "process-send-region",
+        &[process.clone(), Value::Integer(8), Value::Integer(15)],
+        &mut env,
+    )
+    .expect("process-send-region should succeed");
 
     // Process output is asynchronous.  Wait explicitly, as Lisp callers
     // must, before asserting on its buffer.  The long deadline does not slow
@@ -921,7 +2388,7 @@ fn start_process_routes_command_output_to_its_buffer() {
                 .point_max(),
         )
         .expect("process output");
-    if current_contents != "secret\nsecond\n" {
+    if current_contents != "secret\nsecond\nregion\n" {
         call(
             &mut interp,
             "accept-process-output",
@@ -942,7 +2409,7 @@ fn start_process_routes_command_output_to_its_buffer() {
                 .point_max(),
         )
         .expect("process output");
-    assert_eq!(contents, "secret\nsecond\n");
+    assert_eq!(contents, "secret\nsecond\nregion\n");
     assert_eq!(
         call(
             &mut interp,
@@ -953,6 +2420,320 @@ fn start_process_routes_command_output_to_its_buffer() {
         .expect("process-status should succeed"),
         Value::Symbol("run".into())
     );
+}
+
+#[test]
+fn process_list_is_newest_first_and_excludes_deleted_processes() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let first = call(
+        &mut interp,
+        "make-pipe-process",
+        &[Value::Symbol(":name".into()), Value::String("first".into())],
+        &mut env,
+    )
+    .expect("create first pipe process");
+    let second = call(
+        &mut interp,
+        "make-pipe-process",
+        &[
+            Value::Symbol(":name".into()),
+            Value::String("second".into()),
+        ],
+        &mut env,
+    )
+    .expect("create second pipe process");
+
+    assert_eq!(
+        call(&mut interp, "process-list", &[], &mut env).expect("list live processes"),
+        Value::list([second.clone(), first.clone()])
+    );
+    call(
+        &mut interp,
+        "delete-process",
+        std::slice::from_ref(&second),
+        &mut env,
+    )
+    .expect("delete second process");
+    assert_eq!(
+        call(&mut interp, "process-list", &[], &mut env).expect("list remaining process"),
+        Value::list([first])
+    );
+}
+
+#[test]
+fn process_sentinel_can_delete_its_own_process_exactly_once() {
+    let program = r#"(let ((calls 0) process)
+                       (setq
+                        process
+                        (make-pipe-process
+                         :name "self-delete"
+                         :sentinel
+                         (lambda (process _event)
+                           (setq calls (1+ calls))
+                           (delete-process process))))
+                       (delete-process process)
+                       (list calls
+                             (process-live-p process)
+                             (process-status process)))"#;
+    let expected = "(1 nil closed)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("self-deleting process sentinel contract should parse")
+        .expect("self-deleting process sentinel contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("self-deleting process sentinel should terminate"),
+        Reader::new(expected)
+            .read()
+            .expect("self-deleting sentinel result should parse")
+            .expect("self-deleting sentinel result should exist")
+    );
+}
+
+#[cfg(unix)]
+fn process_connection_probe(connection_type: Value, name: &str) -> String {
+    process_connection_probe_with_default(Some(connection_type), Value::T, name)
+}
+
+#[cfg(unix)]
+fn process_connection_probe_with_default(
+    connection_type: Option<Value>,
+    default_connection_type: Value,
+    name: &str,
+) -> String {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("process-connection-type", default_connection_type, &mut env);
+    let (buffer_id, buffer_name) = interp.create_buffer(&format!("*{name}*"));
+    let mut process_args = vec![
+        Value::Symbol(":name".into()),
+        Value::String(name.into()),
+        Value::Symbol(":buffer".into()),
+        Value::Buffer(buffer_id, buffer_name),
+        Value::Symbol(":command".into()),
+        Value::list([
+            Value::String("/bin/sh".into()),
+            Value::String("-c".into()),
+            Value::String(
+                "printf x; [ -t 0 ] && printf i; [ -t 1 ] && printf o; [ -t 2 ] && printf e >&2"
+                    .into(),
+            ),
+        ]),
+        Value::Symbol(":sentinel".into()),
+        Value::symbol("ignore"),
+    ];
+    if let Some(connection_type) = connection_type {
+        process_args.extend([Value::Symbol(":connection-type".into()), connection_type]);
+    }
+    let process = call(&mut interp, "make-process", &process_args, &mut env)
+        .expect("create connection probe");
+    let process_id = interp
+        .resolve_process_id(&process)
+        .expect("probe process id");
+    while interp.process_is_live(process_id) {
+        call(
+            &mut interp,
+            "accept-process-output",
+            std::slice::from_ref(&process),
+            &mut env,
+        )
+        .expect("wait for probe process activity");
+    }
+    pump_external_process_output(&mut interp, &mut env).expect("drain probe output");
+    interp
+        .get_buffer_by_id(buffer_id)
+        .expect("probe buffer")
+        .buffer_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn make_process_honors_split_pipe_and_pty_connection_types() {
+    assert_eq!(
+        process_connection_probe(
+            Value::cons(Value::Nil, Value::Symbol("pipe".into())),
+            "input-pty"
+        ),
+        "xi"
+    );
+    assert_eq!(process_connection_probe(Value::Nil, "all-pty"), "xioe");
+    assert_eq!(
+        process_connection_probe(
+            Value::cons(Value::Symbol("pipe".into()), Value::Nil),
+            "output-pty"
+        ),
+        "xoe"
+    );
+    assert_eq!(
+        process_connection_probe(Value::Symbol("pipe".into()), "all-pipe"),
+        "x"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_process_nil_or_omitted_connection_type_uses_the_dynamic_default() {
+    assert_eq!(
+        process_connection_probe_with_default(None, Value::T, "omitted-default-pty"),
+        "xioe"
+    );
+    assert_eq!(
+        process_connection_probe_with_default(Some(Value::Nil), Value::Nil, "nil-default-pipe"),
+        "x"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let (buffer_id, buffer_name) = interp.create_buffer("*pty-eof*");
+    let process = call(
+        &mut interp,
+        "make-process",
+        &[
+            Value::Symbol(":name".into()),
+            Value::String("pty-eof".into()),
+            Value::Symbol(":buffer".into()),
+            Value::Buffer(buffer_id, buffer_name),
+            Value::Symbol(":command".into()),
+            Value::list([Value::String("/bin/cat".into())]),
+            Value::Symbol(":connection-type".into()),
+            Value::Nil,
+            Value::Symbol(":sentinel".into()),
+            Value::symbol("ignore"),
+        ],
+        &mut env,
+    )
+    .expect("create PTY cat");
+    call(
+        &mut interp,
+        "process-send-string",
+        &[process.clone(), Value::String("hello\n".into())],
+        &mut env,
+    )
+    .expect("send PTY input");
+    call(
+        &mut interp,
+        "process-send-eof",
+        std::slice::from_ref(&process),
+        &mut env,
+    )
+    .expect("send PTY EOF");
+    let process_id = interp.resolve_process_id(&process).expect("PTY process id");
+    while interp.process_is_live(process_id) {
+        call(
+            &mut interp,
+            "accept-process-output",
+            &[process.clone(), Value::Float(0.1)],
+            &mut env,
+        )
+        .expect("wait for PTY output");
+    }
+    pump_external_process_output(&mut interp, &mut env).expect("drain final PTY output");
+
+    assert_eq!(
+        interp
+            .get_buffer_by_id(buffer_id)
+            .expect("PTY process buffer")
+            .buffer_string(),
+        "hello\n"
+    );
+    assert!(!interp.process_is_live(process_id));
+}
+
+#[cfg(unix)]
+#[test]
+fn signal_process_preserves_os_signal_status_and_sentinel_event() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("captured-signal-event", Value::Nil, &mut env);
+    let process = call(
+        &mut interp,
+        "start-process",
+        &[
+            Value::String("signal-target".into()),
+            Value::Nil,
+            Value::String("/bin/sleep".into()),
+            Value::String("30".into()),
+        ],
+        &mut env,
+    )
+    .expect("start signal target");
+    let sentinel = Value::list([
+        Value::Symbol("lambda".into()),
+        Value::list([
+            Value::Symbol("_process".into()),
+            Value::Symbol("event".into()),
+        ]),
+        Value::list([
+            Value::Symbol("setq".into()),
+            Value::Symbol("captured-signal-event".into()),
+            Value::Symbol("event".into()),
+        ]),
+    ]);
+    call(
+        &mut interp,
+        "set-process-sentinel",
+        &[process.clone(), sentinel],
+        &mut env,
+    )
+    .expect("install signal sentinel");
+    call(
+        &mut interp,
+        "signal-process",
+        &[process.clone(), Value::Symbol("SIGPIPE".into())],
+        &mut env,
+    )
+    .expect("signal child process");
+    let process_id = interp
+        .resolve_process_id(&process)
+        .expect("target process id");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        pump_external_process_output(&mut interp, &mut env).expect("pump signal target");
+        if !interp.process_is_live(process_id) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!interp.process_is_live(process_id));
+    assert_eq!(
+        call(
+            &mut interp,
+            "process-status",
+            std::slice::from_ref(&process),
+            &mut env,
+        )
+        .expect("signaled process status"),
+        Value::Symbol("signal".into())
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "process-exit-status",
+            std::slice::from_ref(&process),
+            &mut env,
+        )
+        .expect("signaled process exit status"),
+        Value::Integer(libc::SIGPIPE.into())
+    );
+    let event = interp
+        .lookup_var("captured-signal-event", &env)
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .expect("captured signal sentinel event");
+    assert!(
+        event.starts_with("broken pipe"),
+        "unexpected event: {event:?}"
+    );
+    assert!(event.ends_with('\n'), "unexpected event: {event:?}");
 }
 
 #[cfg(unix)]
@@ -1044,7 +2825,8 @@ fn run_at_time_callbacks_fire_on_accept_process_output() {
                 Value::T,
             ]),
             Value::T,
-        ],
+        ]
+        .into(),
         shared_env(Vec::new()),
     );
 
@@ -1076,7 +2858,8 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
                 Value::T,
             ]),
             Value::T,
-        ],
+        ]
+        .into(),
         shared_env(Vec::new()),
     );
 
@@ -1136,6 +2919,38 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
 }
 
 #[test]
+fn accept_process_output_without_timeout_waits_for_requested_process() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let buffer = Value::Buffer(interp.current_buffer_id(), String::new());
+    let process = call(
+        &mut interp,
+        "start-process",
+        &[
+            Value::String("accept-output-no-timeout".into()),
+            buffer,
+            Value::String("sh".into()),
+            Value::String("-c".into()),
+            Value::String("printf ready".into()),
+        ],
+        &mut env,
+    )
+    .expect("start-process should launch a writer");
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "accept-process-output",
+            std::slice::from_ref(&process),
+            &mut env,
+        )
+        .expect("accept-process-output should wait without an explicit deadline"),
+        Value::T
+    );
+    assert_eq!(interp.buffer.full_buffer_string(), "ready");
+}
+
+#[test]
 fn accept_process_output_ignores_distractor_output_until_target_delivers() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -1187,10 +3002,11 @@ fn accept_process_output_ignores_distractor_output_until_target_delivers() {
         call(
             &mut interp,
             "accept-process-output",
-            // This is only a deadline: the delayed writer normally arrives
-            // in 150ms, while a saturated parallel test host may leave the
-            // newly spawned shell unscheduled for several seconds.
-            &[target, Value::Integer(10)],
+            // Wait for the requested process event itself.  A wall-clock
+            // deadline turns host scheduler contention into a false failure,
+            // while returning early for the distractor is still caught by
+            // the target-buffer assertion below.
+            &[target],
             &mut env,
         )
         .expect("wait for requested process"),
@@ -1290,7 +3106,8 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
             Value::Symbol("setq".into()),
             Value::Symbol("nowait-event".into()),
             Value::Symbol("event".into()),
-        ])],
+        ])]
+        .into(),
         shared_env(Vec::new()),
     );
     let client = call(
@@ -1591,6 +3408,940 @@ fn looking_at_p_preserves_existing_match_data() {
 
     assert_eq!(result, Value::Nil);
     assert_eq!(interp.last_match_data, saved);
+}
+
+#[test]
+fn native_posix_buffer_search_and_search_state_helpers_match_gnu_contracts() {
+    let program = r#"
+        (with-temp-buffer
+          (insert "aa")
+          (goto-char 1)
+          (let ((here (current-buffer))
+                ordinary-inhibited inhibited longest forward backward translated metadata)
+            (set-match-data '(9 10))
+            (setq ordinary-inhibited
+                  (and (looking-at "a" t)
+                       (equal (match-data t) '(9 10))))
+            (set-match-data '(9 10))
+            (setq inhibited
+                  (and (posix-looking-at "\\(a\\|aa\\)" t)
+                       (equal (match-data t) '(9 10))))
+            (posix-looking-at "\\(a\\|aa\\)")
+            (setq longest
+                  (and (equal (butlast (match-data t)) '(1 3 1 3))
+                       (eq (car (last (match-data t))) here)))
+            (goto-char 1)
+            (setq forward
+                  (and (= (posix-search-forward "\\(a\\|aa\\)") 3)
+                       (equal (butlast (match-data t)) '(1 3 1 3))))
+            (goto-char 3)
+            (setq backward
+                  (and (= (posix-search-backward "\\(a\\|aa\\)") 2)
+                       (equal (butlast (match-data t)) '(2 3 2 3))))
+            (set-match-data '(2 7 nil nil 4 5))
+            (setq translated
+                  (and (null (match-data--translate -3))
+                       (equal (match-data t) '(0 4 nil nil 1 2))))
+            (setq metadata
+                  (list (subrp (symbol-function 'posix-looking-at))
+                        (subrp (symbol-function 'posix-search-forward))
+                        (subrp (symbol-function 'posix-search-backward))
+                        (subrp (symbol-function 'match-data--translate))
+                        (subrp (symbol-function 'newline-cache-check))
+                        (equal (help-function-arglist 'posix-looking-at)
+                               '(arg1 &optional arg2))
+                        (commandp 'posix-search-forward)
+                        (commandp 'posix-search-backward)))
+            (list ordinary-inhibited inhibited longest forward backward translated
+                  (null (newline-cache-check))
+                  (null (newline-cache-check here))
+                  metadata)))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "(t t t t t t t t (t t t t t t t t))",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("POSIX search contract should parse")
+        .expect("POSIX search contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("POSIX search native family should match GNU"),
+        Value::list(
+            std::iter::repeat_n(Value::T, 8).chain(std::iter::once(Value::list(vec![Value::T; 8]))),
+        )
+    );
+}
+
+#[test]
+fn match_data_preserves_gnu_source_reuse_reseat_and_elision_contracts() {
+    let program = r#"
+        (with-temp-buffer
+          (insert "a")
+          (goto-char 1)
+          (looking-at "\\(a\\)\\(z\\)?")
+          (let* ((here (current-buffer))
+                 (integers (match-data t))
+                 (reuse (list nil nil nil nil nil 'spare))
+                 (marker-data (match-data))
+                 (old-marker (car marker-data))
+                 restored-source reuse-result reseated)
+            (setq reuse-result
+                  (and (eq (match-data t reuse) reuse)
+                       (equal (list (nth 0 reuse) (nth 1 reuse)
+                                    (nth 2 reuse) (nth 3 reuse))
+                              '(1 2 1 2))
+                       (eq (nth 4 reuse) here)
+                       (null (nth 5 reuse))))
+            (setq reseated
+                  (and (eq (match-data nil marker-data t) marker-data)
+                       (null (marker-buffer old-marker))))
+            (set-match-data integers)
+            (setq restored-source
+                  (and (equal (butlast (match-data t)) '(1 2 1 2))
+                       (eq (car (last (match-data t))) here)))
+            (list (equal (butlast integers) '(1 2 1 2))
+                  (eq (car (last integers)) here)
+                  reuse-result reseated restored-source)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t t t t)");
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("match-data state contract should parse")
+        .expect("match-data state contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("match-data should retain GNU state semantics"),
+        Value::list(vec![Value::T; 5])
+    );
+}
+
+#[test]
+fn native_sqlite_columns_uses_the_live_result_set_schema() {
+    let program = r#"
+        (let* ((db (sqlite-open))
+               (set (sqlite-select
+                     db "select 1 as alpha, 2 as beta" nil 'set))
+               result)
+          (unwind-protect
+              (let ((before (sqlite-columns set))
+                    (row (sqlite-next set))
+                    (after (sqlite-columns set))
+                    (finalized (sqlite-finalize set)))
+                (setq result
+                      (list (equal before '("alpha" "beta"))
+                            (equal row '(1 2))
+                            (equal after '("alpha" "beta"))
+                            finalized
+                            (condition-case nil
+                                (progn (sqlite-columns set) nil)
+                              (error t))
+                            (subrp (symbol-function 'sqlite-columns))
+                            (equal (help-function-arglist 'sqlite-columns)
+                                   '(arg1)))))
+            (sqlite-close db))
+          result)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t t t t t t)");
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("sqlite-columns contract should parse")
+        .expect("sqlite-columns contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("sqlite-columns should expose the result-set schema"),
+        Value::list(vec![Value::T; 7])
+    );
+}
+
+#[test]
+fn native_file_lock_primitives_share_the_buffer_lock_state_machine() {
+    let program = r#"
+        (let ((path (make-temp-file "emaxx-lock-primitive-")))
+          (unwind-protect
+              (let ((locked (lock-file path))
+                    (owner (file-locked-p path))
+                    (unlocked (unlock-file path))
+                    (after (file-locked-p path))
+                    disabled)
+                (let ((create-lockfiles nil))
+                  (lock-file path)
+                  (setq disabled (file-locked-p path)))
+                (list locked owner unlocked after disabled
+                      (subrp (symbol-function 'lock-file))
+                      (subrp (symbol-function 'unlock-file))
+                      (help-function-arglist 'lock-file)))
+            (ignore-errors (unlock-file path))
+            (delete-file path)))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "(nil t nil nil nil t t (arg1))",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("file lock primitive contract should parse")
+        .expect("file lock primitive contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("file lock primitives should use the shared lock implementation"),
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::list([Value::Symbol("arg1".into())]),
+        ])
+    );
+}
+
+#[test]
+fn native_message_dialog_fallbacks_share_the_headless_message_contract() {
+    let program = r#"
+        (list (message-or-box "value=%d" 7)
+              (message-box "value=%d" 8)
+              (message-or-box nil)
+              (message-box nil)
+              (subrp (symbol-function 'message-or-box))
+              (subrp (symbol-function 'message-box))
+              (help-function-arglist 'message-or-box))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "(\"value=7\" \"value=8\" nil nil t t (arg1 &rest rest))",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("message dialog fallback contract should parse")
+        .expect("message dialog fallback contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("headless dialog messages should use the message path"),
+        Value::list([
+            Value::String("value=7".into()),
+            Value::String("value=8".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::list([
+                Value::Symbol("arg1".into()),
+                Value::Symbol("&rest".into()),
+                Value::Symbol("rest".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn native_mutex_name_reads_the_shared_mutex_state() {
+    let program = r#"
+        (let ((named (make-mutex "gate"))
+              (unnamed (make-mutex)))
+          (list (mutex-name named)
+                (mutex-name unnamed)
+                (subrp (symbol-function 'mutex-name))
+                (help-function-arglist 'mutex-name)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(\"gate\" nil t (arg1))");
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("mutex-name contract should parse")
+        .expect("mutex-name contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("mutex-name should expose the stored mutex name"),
+        Value::list([
+            Value::String("gate".into()),
+            Value::Nil,
+            Value::T,
+            Value::list([Value::Symbol("arg1".into())]),
+        ])
+    );
+}
+
+#[test]
+fn native_menu_activity_predicate_is_false_without_a_graphical_menu() {
+    let program = r#"
+        (list (menu-or-popup-active-p)
+              (subrp (symbol-function 'menu-or-popup-active-p))
+              (help-function-arglist 'menu-or-popup-active-p))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil t nil)");
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("menu activity contract should parse")
+        .expect("menu activity contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("headless menu activity should be false"),
+        Value::list([Value::Nil, Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn native_imagep_validates_the_shared_image_specification_shape() {
+    let program = r#"
+        (list
+         (mapcar
+          #'imagep
+          '(nil
+            (image)
+            (image :type xpm)
+            (image :type xpm :data "")
+            (image :type png :file "not-loaded-by-imagep")
+            (image :type nope :data "")
+            (image :type xpm :data "" :type png)
+            (image :type png :data "" :file "both")
+            (image :type xpm :data "" extra)))
+         (subrp (symbol-function 'imagep))
+         (help-function-arglist 'imagep))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "((nil nil nil t t nil nil nil nil) t (arg1))",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("imagep contract should parse")
+        .expect("imagep contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("imagep should validate image property lists"),
+        Value::list([
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::T,
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ]),
+            Value::T,
+            Value::list([Value::Symbol("arg1".into())]),
+        ])
+    );
+}
+
+#[test]
+fn native_image_cache_family_matches_the_headless_frame_contract() {
+    let program = r#"
+        (let ((valid (list 'image :type (car image-types) :data "x")))
+          (list
+           (condition-case err (clear-image-cache) (error (car err)))
+           (clear-image-cache t)
+           (clear-image-cache "x")
+           (clear-image-cache nil (cons 'image valid))
+           (condition-case err
+               (clear-image-cache nil 7)
+             (error (car err)))
+           (image-cache-size)
+           (image-transforms-p)
+           (condition-case err (image-flush valid) (error (car err)))
+           (image-flush valid t)
+           (condition-case err (image-flush 'nope) (error (car err)))
+           (subrp (symbol-function 'clear-image-cache))
+           (help-function-arglist 'clear-image-cache)
+           (subrp (symbol-function 'image-cache-size))
+           (help-function-arglist 'image-cache-size)
+           (subrp (symbol-function 'image-flush))
+           (help-function-arglist 'image-flush)
+           (subrp (symbol-function 'image-transforms-p))
+           (help-function-arglist 'image-transforms-p)))"#;
+    let expected = "(error nil nil nil wrong-type-argument 0 nil error nil error t (&optional arg1 arg2) t nil t (arg1 &optional arg2) t (&optional arg1))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("image cache contract should parse")
+        .expect("image cache contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("image cache operations should respect the headless frame"),
+        Reader::new(expected)
+            .read()
+            .expect("expected image cache result should parse")
+            .expect("expected image cache result should exist")
+    );
+}
+
+#[test]
+fn native_conditional_gc_and_memory_info_match_the_host_contract() {
+    let program = r#"
+        (let ((memory (memory-info)))
+          (list
+           (garbage-collect-maybe 0)
+           (garbage-collect-maybe 1)
+           (condition-case nil
+               (progn (garbage-collect-maybe -1) nil)
+             (wrong-type-argument t))
+           (or (null memory)
+               (and (= (length memory) 4)
+                    (integerp (nth 0 memory))
+                    (integerp (nth 1 memory))
+                    (integerp (nth 2 memory))
+                    (integerp (nth 3 memory))))
+           (subrp (symbol-function 'garbage-collect-maybe))
+           (subrp (symbol-function 'memory-info))
+           (help-function-arglist 'garbage-collect-maybe)
+           (help-function-arglist 'memory-info)))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "(nil nil t t t t (arg1) nil)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("conditional GC and memory contract should parse")
+        .expect("conditional GC and memory contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("host memory and GC policy should match GNU's shape"),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::list([Value::Symbol("arg1".into())]),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn native_invocation_queries_copy_host_values_and_daemon_finalization_rejects_batch() {
+    let program = r#"
+        (list
+         (equal (invocation-name) invocation-name)
+         (eq (invocation-name) invocation-name)
+         (equal (invocation-directory) invocation-directory)
+         (eq (invocation-directory) invocation-directory)
+         (condition-case err (daemon-initialized) (error (car err)))
+         (subrp (symbol-function 'invocation-name))
+         (help-function-arglist 'invocation-name)
+         (subrp (symbol-function 'invocation-directory))
+         (help-function-arglist 'invocation-directory)
+         (subrp (symbol-function 'daemon-initialized))
+         (help-function-arglist 'daemon-initialized))"#;
+    let expected = "(t nil t nil error t nil t nil t nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("invocation contract should parse")
+        .expect("invocation contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("invocation queries should copy native host strings"),
+        Reader::new(expected)
+            .read()
+            .expect("expected invocation result should parse")
+            .expect("expected invocation result should exist")
+    );
+}
+
+#[test]
+fn native_syntax_description_decodes_the_shared_descriptor_bits() {
+    let program = r#"
+        (let
+            ((results
+              (mapcar
+               (lambda (case)
+                 (with-temp-buffer
+                   (let* ((value (car case))
+                          (returned
+                           (internal-describe-syntax-value value)))
+                     (and (eq returned value)
+                          (equal (buffer-string) (cadr case))))))
+               (list
+                (list nil "default")
+                (list (standard-syntax-table) "deeper char-table ...")
+                (list 42 "invalid")
+                (list (string-to-syntax ".")
+                      ". 	which means: punctuation")
+                (list (string-to-syntax "(]")
+                      "(]	which means: open, matches ]")
+                (list
+                 (string-to-syntax ". 1234pbnc")
+                 ". 1234pbcn	which means: punctuation,
+	  is the first character of a comment-start sequence,
+	  is the second character of a comment-start sequence,
+	  is the first character of a comment-end sequence,
+	  is the second character of a comment-end sequence (comment style b) (comment style c) (nestable),
+	  is a prefix character for ‘backward-prefix-chars’")))))
+          (list results
+                (subrp
+                 (symbol-function 'internal-describe-syntax-value))
+                (help-function-arglist
+                 'internal-describe-syntax-value)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "((t t t t t t) t (arg1))");
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("syntax description contract should parse")
+        .expect("syntax description contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("syntax descriptions should decode native descriptor bits"),
+        Value::list([
+            Value::list(vec![Value::T; 6]),
+            Value::T,
+            Value::list([Value::Symbol("arg1".into())]),
+        ])
+    );
+}
+
+#[test]
+fn text_quoting_policy_is_shared_by_the_query_and_substitution_primitives() {
+    let program = r#"
+        (mapcar
+         (lambda (style)
+           (let ((text-quoting-style style))
+             (list style
+                   (text-quoting-style)
+                   (substitute-command-keys "`foo'"))))
+         '(nil grave straight curve))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "((nil curve \"‘foo’\") (grave grave \"`foo'\") (straight straight \"'foo'\") (curve curve \"‘foo’\"))",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("text quoting contract should parse")
+        .expect("text quoting contract should contain a form");
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("text quoting query and substitution should share policy");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::list([
+                Value::Nil,
+                Value::Symbol("curve".into()),
+                Value::String("‘foo’".into()),
+            ]),
+            Value::list([
+                Value::Symbol("grave".into()),
+                Value::Symbol("grave".into()),
+                Value::String("`foo'".into()),
+            ]),
+            Value::list([
+                Value::Symbol("straight".into()),
+                Value::Symbol("straight".into()),
+                Value::String("'foo'".into()),
+            ]),
+            Value::list([
+                Value::Symbol("curve".into()),
+                Value::Symbol("curve".into()),
+                Value::String("‘foo’".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn format_message_quotes_only_format_literals_with_the_effective_text_style() {
+    let program = r#"
+        (mapcar
+         (lambda (style)
+           (let ((text-quoting-style style))
+             (list style
+                   (format-message "`%s'" "`arg'")
+                   (format "`%s'" "`arg'"))))
+         '(nil grave straight curve))"#;
+    let expected = r#"((nil "‘`arg'’" "``arg''") (grave "``arg''" "``arg''") (straight "'`arg''" "``arg''") (curve "‘`arg'’" "``arg''"))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read format-message quoting contract")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate format-message quoting contract");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn selected_global_keymap_is_distinct_from_the_global_map_variable() {
+    let program = r#"
+        (let ((old-global (current-global-map))
+              (old-local (current-local-map))
+              (new-global (make-sparse-keymap))
+              (new-local (make-sparse-keymap)))
+          (define-key new-global "x" 'selected-command)
+          (unwind-protect
+              (list (use-global-map new-global)
+                    (eq (current-global-map) new-global)
+                    (eq global-map new-global)
+                    (key-binding "x")
+                    (use-local-map new-local)
+                    (eq (current-local-map) new-local)
+                    (subrp (symbol-function 'use-global-map))
+                    (help-function-arglist 'use-global-map))
+            (use-global-map old-global)
+            (use-local-map old-local)))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "(nil t nil selected-command nil t t (arg1))",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("selected global keymap contract should parse")
+        .expect("selected global keymap contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("global keymap selection should drive key lookup"),
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Symbol("selected-command".into()),
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::list([Value::Symbol("arg1".into())]),
+        ])
+    );
+}
+
+#[test]
+fn minor_mode_keymap_consumers_share_gnu_order_replacement_and_default_rules() {
+    let program = r#"
+        (progn
+          (defvar emaxx-test-mode-a nil)
+          (defvar emaxx-test-mode-b nil)
+          (defvar emaxx-test-mode-c nil)
+          (defvar emaxx-test-emulation nil)
+          (let* ((map-a (make-sparse-keymap))
+                 (map-b (make-sparse-keymap))
+                 (map-c (make-sparse-keymap))
+                 (prefix-a (make-sparse-keymap))
+                 (prefix-c (make-sparse-keymap))
+                 (emaxx-test-mode-a t)
+                 (emaxx-test-mode-b t)
+                 (emaxx-test-mode-c t)
+                 (minor-mode-map-alist
+                  (list (cons 'emaxx-test-mode-a map-a)
+                        (cons 'emaxx-test-mode-b map-b)))
+                 (minor-mode-overriding-map-alist
+                  (list (cons 'emaxx-test-mode-b map-c)))
+                 (emaxx-test-emulation
+                  (list (cons 'emaxx-test-mode-c map-a)))
+                 (emulation-mode-map-alists '(emaxx-test-emulation)))
+            (define-key map-a "x" prefix-a)
+            (define-key map-b "x" 'hidden)
+            (define-key map-c "x" prefix-c)
+            (list
+             (mapcar (lambda (map)
+                       (cond ((eq map map-a) 'a)
+                             ((eq map map-b) 'b)
+                             ((eq map map-c) 'c)))
+                     (current-minor-mode-maps))
+             (mapcar (lambda (entry)
+                       (cons (car entry)
+                             (cond ((eq (cdr entry) prefix-a) 'pa)
+                                   ((eq (cdr entry) prefix-c) 'pc))))
+                     (minor-mode-key-binding "x"))
+             (let ((defaults (make-sparse-keymap))
+                   (emaxx-test-mode-c t)
+                   (minor-mode-map-alist nil)
+                   (minor-mode-overriding-map-alist nil)
+                   (emulation-mode-map-alists nil))
+               (define-key defaults [t] 'fallback)
+               (let ((minor-mode-map-alist
+                      (list (cons 'emaxx-test-mode-c defaults))))
+                 (list (lookup-key defaults "z")
+                       (lookup-key defaults "z" t)
+                       (minor-mode-key-binding "z")
+                       (minor-mode-key-binding "z" t))))
+             (list (subrp (symbol-function 'current-minor-mode-maps))
+                   (help-function-arglist 'current-minor-mode-maps)
+                   (subrp (symbol-function 'minor-mode-key-binding))
+                   (help-function-arglist 'minor-mode-key-binding)))))"#;
+    let expected = "((a c a) ((emaxx-test-mode-c . pa) (emaxx-test-mode-b . pc) (emaxx-test-mode-a . pa)) (nil fallback nil ((emaxx-test-mode-c . fallback))) (t nil t (arg1 &optional arg2)))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("minor-mode keymap contract should parse")
+        .expect("minor-mode keymap contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("all minor-mode keymap consumers should share one stack"),
+        Reader::new(expected)
+            .read()
+            .expect("expected minor-mode keymap result should parse")
+            .expect("expected minor-mode keymap result should exist")
+    );
+}
+
+#[test]
+fn map_keymap_internal_visits_only_direct_bindings_and_returns_the_parent() {
+    let program = r#"
+        (let* ((parent (make-sparse-keymap))
+               (map (make-sparse-keymap))
+               seen result)
+          (define-key parent "p" 'parent-command)
+          (define-key map "a" 'child-command)
+          (set-keymap-parent map parent)
+          (setq result
+                (map-keymap-internal
+                 (lambda (key value) (push (cons key value) seen))
+                 map))
+          (list (eq result parent)
+                seen
+                (subrp (symbol-function 'map-keymap-internal))
+                (help-function-arglist 'map-keymap-internal)
+                (help-function-arglist 'map-keymap)))"#;
+    let expected = "(t ((97 . child-command)) t (arg1 arg2) (arg1 arg2 &optional arg3))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("internal keymap walker contract should parse")
+        .expect("internal keymap walker contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("internal keymap walker should preserve the parent boundary"),
+        Reader::new(expected)
+            .read()
+            .expect("expected internal keymap result should parse")
+            .expect("expected internal keymap result should exist")
+    );
+}
+
+#[test]
+fn describe_vector_groups_equal_ranges_and_shares_standard_output_with_describers() {
+    let program = r#"
+        (let ((table (make-char-table nil nil)))
+          (set-char-table-range table (cons 65 67) 'foo)
+          (set-char-table-range table 70 'bar)
+          (list
+           (with-temp-buffer
+             (list (describe-vector [foo foo nil bar bar bar])
+                   (buffer-string)))
+           (with-temp-buffer
+             (list (describe-vector
+                    [foo nil bar]
+                    (lambda (value) (insert (format "<%S>" value))))
+                   (buffer-string)))
+           (with-temp-buffer
+             (list (describe-vector table) (buffer-string)))
+           (subrp (symbol-function 'describe-vector))
+           (help-function-arglist 'describe-vector)))"#;
+    let expected = "((nil \"\nC-@ .. C-a\tfoo\nC-c .. C-e\tbar\n\") (nil \"\nC-@\t\t<foo>\nC-b\t\t<bar>\n\") (nil \"\nA .. C\t\tfoo\nF\t\tbar\n\") t (arg1 &optional arg2))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("vector description contract should parse")
+        .expect("vector description contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("vector and char-table descriptions should match GNU"),
+        Reader::new(expected)
+            .read()
+            .expect("expected vector description result should parse")
+            .expect("expected vector description result should exist")
+    );
+}
+
+#[test]
+fn internal_buffer_completion_preserves_hidden_filtering_metadata_and_predicate_values() {
+    let program = r#"
+        (progn
+          (get-buffer-create " zz-hidden")
+          (get-buffer-create "zz-visible")
+          (let ((predicate
+                 (lambda (entry)
+                   (member (car entry) '(" zz-hidden" "zz-visible")))))
+            (list
+             (internal-complete-buffer "" predicate t)
+             (internal-complete-buffer " " predicate t)
+             (internal-complete-buffer "zz-v" predicate nil)
+             (internal-complete-buffer "zz-visible" predicate 'lambda)
+             (internal-complete-buffer "" predicate 'metadata)
+             (internal-complete-buffer "" predicate 'other)
+             (subrp (symbol-function 'internal-complete-buffer))
+             (help-function-arglist 'internal-complete-buffer))))"#;
+    let expected = "((\"zz-visible\") (\" zz-hidden\") \"zz-visible\" (\"zz-visible\") (metadata (category . buffer) (cycle-sort-function . identity)) nil t (arg1 arg2 arg3))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("buffer completion contract should parse")
+        .expect("buffer completion contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("buffer completion should preserve GNU's collection protocol"),
+        Reader::new(expected)
+            .read()
+            .expect("expected buffer completion result should parse")
+            .expect("expected buffer completion result should exist")
+    );
+}
+
+#[test]
+fn native_command_and_variable_readers_normalize_defaults_and_intern_results() {
+    let oracle_program = r#"
+        (progn
+          (defun emaxx-test-readable-command () (interactive))
+          (defcustom emaxx-test-readable-option nil "test"
+            :type 'boolean :group 'emacs)
+          (prin1
+           (list
+            (read-command "Command: " 'emaxx-test-readable-command)
+            (read-command "Command: "
+                          '("emaxx-test-readable-command" "ignore"))
+            (read-command "Command: ")
+            (read-variable "Variable: " 'emaxx-test-readable-option)
+            (read-variable "Variable: "
+                           '("emaxx-test-readable-option" "other"))
+            (subrp (symbol-function 'read-command))
+            (help-function-arglist 'read-command)
+            (subrp (symbol-function 'read-variable))
+            (help-function-arglist 'read-variable))))"#;
+    let result = "(emaxx-test-readable-command emaxx-test-readable-command ## emaxx-test-readable-option emaxx-test-readable-option t (arg1 &optional arg2) t (arg1 &optional arg2))";
+    assert_upstream_primitive_contract_with_stdin(
+        oracle_program,
+        "\n\n\n\n\n",
+        &format!("Command: Command: Command: Variable: Variable: {result}"),
+    );
+
+    let emaxx_program = r#"
+        (progn
+          (defun emaxx-test-readable-command () (interactive))
+          (defcustom emaxx-test-readable-option nil "test"
+            :type 'boolean :group 'emacs)
+          (list
+           (read-command "Command: " 'emaxx-test-readable-command)
+           (read-command "Command: "
+                         '("emaxx-test-readable-command" "ignore"))
+           (let ((unread-command-events '(13)))
+             (read-command "Command: "))
+           (read-variable "Variable: " 'emaxx-test-readable-option)
+           (read-variable "Variable: "
+                          '("emaxx-test-readable-option" "other"))
+           (subrp (symbol-function 'read-command))
+           (help-function-arglist 'read-command)
+           (subrp (symbol-function 'read-variable))
+           (help-function-arglist 'read-variable)))"#;
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(emaxx_program)
+        .read()
+        .expect("native symbol reader contract should parse")
+        .expect("native symbol reader contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("native symbol readers should use completion and intern"),
+        Reader::new(result)
+            .read()
+            .expect("expected native symbol reader result should parse")
+            .expect("expected native symbol reader result should exist")
+    );
+}
+
+#[test]
+fn set_minibuffer_window_validates_and_updates_the_shared_window_state() {
+    let program = r#"
+        (let ((mini (minibuffer-window))
+              (ordinary (selected-window)))
+          (list (eq (set-minibuffer-window mini) mini)
+                (eq (minibuffer-window) mini)
+                (condition-case err
+                    (set-minibuffer-window ordinary)
+                  (error (car err)))
+                (condition-case err
+                    (set-minibuffer-window 7)
+                  (error (car err)))
+                (subrp (symbol-function 'set-minibuffer-window))
+                (help-function-arglist 'set-minibuffer-window)))"#;
+    let expected = "(t t error wrong-type-argument t (arg1))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("minibuffer window contract should parse")
+        .expect("minibuffer window contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("minibuffer window selection should share window state"),
+        Reader::new(expected)
+            .read()
+            .expect("expected minibuffer window result should parse")
+            .expect("expected minibuffer window result should exist")
+    );
 }
 
 #[test]
@@ -2278,6 +5029,36 @@ fn font_lock_mode_enables_minimal_jit_lock_state() {
 }
 
 #[test]
+fn set_buffer_redisplay_is_a_callable_variable_watcher() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let watcher = interp
+        .lookup_function("set-buffer-redisplay", &env)
+        .expect("xdisp watcher primitive should be prebound");
+    assert_eq!(
+        call(
+            &mut interp,
+            "add-variable-watcher",
+            &[Value::Symbol("header-line-format".into()), watcher.clone(),],
+            &mut env,
+        )
+        .expect("install redisplay watcher"),
+        watcher
+    );
+    let form = Reader::new(
+        "(setq header-line-format
+               '(:eval (get-text-property (point-min) 'header-line)))",
+    )
+    .read_all()
+    .expect("read redisplay watcher assignment")
+    .remove(0);
+    assert!(
+        interp.eval(&form, &mut env).is_ok(),
+        "the GNU redisplay watcher must accept assignments"
+    );
+}
+
+#[test]
 fn font_lock_text_property_helpers_keep_anonymous_faces_atomic() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "foo");
@@ -2373,6 +5154,22 @@ fn bidi_override_positions_match_upstream_cases() {
             );
         }
     }
+
+    // A directional isolate changes presentation without overriding the
+    // surrounding logical order.  Textsec appends the mixed-direction suffix
+    // before asking the primitive, so exercise the exact balanced shape that
+    // previously produced a false positive.
+    let balanced = "אבגד \u{2067}שונה\u{2069} מרגילa1א:!";
+    let mut interp = Interpreter::new();
+    interp.buffer = crate::buffer::Buffer::from_text("*test*", balanced);
+    assert_eq!(
+        find_bidi_override(
+            &interp,
+            interp.buffer.point_min(),
+            interp.buffer.point_max(),
+        ),
+        None
+    );
 }
 
 #[test]
@@ -2408,6 +5205,44 @@ fn key_description_matches_upstream_string_and_vector_cases() {
     .expect("key-description should format prefixed vector keys");
     assert_eq!(prefixed, Value::String("C-x <right>".into()));
 
+    let meta_prefixed = call(
+        &mut interp,
+        "key-description",
+        &[
+            Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::Integer('<' as i64),
+            ]),
+            Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::Integer(KEY_DESCRIPTION_META_PREFIX),
+            ]),
+        ],
+        &mut env,
+    )
+    .expect("key-description should combine an ESC prefix with the next event");
+    assert_eq!(meta_prefixed, Value::String("M-<".into()));
+
+    let nested_meta_prefixed = call(
+        &mut interp,
+        "key-description",
+        &[
+            Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::Integer('c' as i64),
+            ]),
+            Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::Integer(KEY_DESCRIPTION_META_PREFIX),
+                Value::Integer('g' as i64),
+                Value::Integer(KEY_DESCRIPTION_META_PREFIX),
+            ]),
+        ],
+        &mut env,
+    )
+    .expect("key-description should combine nested ESC prefixes");
+    assert_eq!(nested_meta_prefixed, Value::String("M-g M-c".into()));
+
     let raw_byte = call(
         &mut interp,
         "key-description",
@@ -2434,7 +5269,22 @@ fn key_description_matches_upstream_string_and_vector_cases() {
 #[test]
 fn key_sequence_binding_parts_preserve_control_prefixes() {
     assert_eq!(
+        key_sequence_binding_parts(&Value::String("\x03,\x17".into()))
+            .expect("raw control-byte key sequence should parse"),
+        vec!["C-c".to_string(), ",".to_string(), "C-w".to_string()]
+    );
+    assert_eq!(
+        key_sequence_keymap_parts(&Value::String("\x03,\x17".into()))
+            .expect("raw control-byte key sequence should retain every event"),
+        vec!["C-c".to_string(), ",".to_string(), "C-w".to_string()]
+    );
+    assert_eq!(
         key_sequence_binding_parts(&Value::String("C-c g".into()))
+            .expect("raw strings should remain raw key sequences"),
+        vec!["C", "-", "c", "SPC", "g"]
+    );
+    assert_eq!(
+        textual_key_sequence_binding_parts(&Value::String("C-c g".into()))
             .expect("textual control-prefixed key should parse"),
         vec!["C-c".to_string(), "g".to_string()]
     );
@@ -2446,6 +5296,132 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         ]))
         .expect("vector control-prefixed key should parse"),
         vec!["C-c".to_string(), "g".to_string()]
+    );
+    assert_eq!(
+        textual_key_sequence_keymap_parts(&Value::String("M-v".into()))
+            .expect("Meta character key should normalize for keymap storage"),
+        vec!["ESC".to_string(), "v".to_string()]
+    );
+    assert_eq!(
+        textual_key_sequence_keymap_parts(&Value::String("M-<up>".into()))
+            .expect("Meta function key should remain one symbolic event"),
+        vec!["M-up".to_string()]
+    );
+}
+
+#[test]
+fn define_key_preserves_raw_space_events_in_shared_prefixes() {
+    assert_upstream_primitive_contract(
+        r#"(let ((map (make-sparse-keymap)))
+              (define-key map "\C-c, " 'semantic-complete-analyze-inline)
+              (define-key map "\C-c,\C-w" 'senator-kill-tag)
+              (prin1 (list (lookup-key map "\C-c, ")
+                           (lookup-key map "\C-c,\C-w"))))"#,
+        "(semantic-complete-analyze-inline senator-kill-tag)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let forms = Reader::new(
+        r#"(let ((map (make-sparse-keymap)))
+              (define-key map "\C-c, " 'semantic-complete-analyze-inline)
+              (define-key map "\C-c,\C-w" 'senator-kill-tag)
+              (list (lookup-key map "\C-c, ")
+                    (lookup-key map "\C-c,\C-w")))"#,
+    )
+    .read_all()
+    .expect("shared-prefix keymap regression should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("raw-space and sibling control bindings should coexist");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Symbol("semantic-complete-analyze-inline".into()),
+            Value::Symbol("senator-kill-tag".into()),
+        ])
+    );
+}
+
+#[test]
+fn define_key_creates_a_local_prefix_over_an_inherited_non_prefix_binding() {
+    assert_upstream_primitive_contract(
+        r#"(let ((parent (make-sparse-keymap))
+                 (map (make-keymap)))
+              (define-key parent "s" 'inherited-command)
+              (set-keymap-parent map parent)
+              (suppress-keymap map t)
+              (define-key map "s?" 'prefix-help)
+              (define-key map "sc" 'prefix-command)
+              (prin1 (list (lookup-key map "s?")
+                           (lookup-key map "sc")
+                           (lookup-key parent "s"))))"#,
+        "(prefix-help prefix-command inherited-command)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let forms = Reader::new(
+        r#"(let ((parent (make-sparse-keymap))
+                 (map (make-keymap)))
+              (define-key parent "s" 'inherited-command)
+              (set-keymap-parent map parent)
+              (suppress-keymap map t)
+              (define-key map "s?" 'prefix-help)
+              (define-key map "sc" 'prefix-command)
+              (list (lookup-key map "s?")
+                    (lookup-key map "sc")
+                    (lookup-key parent "s")))"#,
+    )
+    .read_all()
+    .expect("full-map nil-prefix regression should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("an inherited non-prefix binding should be shadowed locally");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Symbol("prefix-help".into()),
+            Value::Symbol("prefix-command".into()),
+            Value::Symbol("inherited-command".into()),
+        ])
+    );
+}
+
+#[test]
+fn define_key_creates_a_specific_prefix_over_a_default_binding() {
+    assert_upstream_primitive_contract(
+        r#"(let ((map (make-sparse-keymap)))
+              (define-key map [t] 'fallback-command)
+              (define-key map [27 t] 'meta-fallback-command)
+              (prin1 (list (lookup-key map [t])
+                           (lookup-key map [27 t]))))"#,
+        "(fallback-command meta-fallback-command)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let forms = Reader::new(
+        r#"(let ((map (make-sparse-keymap)))
+              (define-key map [t] 'fallback-command)
+              (define-key map [27 t] 'meta-fallback-command)
+              (list (lookup-key map [t])
+                    (lookup-key map [27 t])))"#,
+    )
+    .read_all()
+    .expect("default-binding prefix regression should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("a default binding should not block a specific prefix");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Symbol("fallback-command".into()),
+            Value::Symbol("meta-fallback-command".into()),
+        ])
     );
 }
 
@@ -2694,7 +5670,114 @@ fn map_keymap_visits_runtime_keymap_bindings() {
 }
 
 #[test]
+fn keymaps_nest_multi_event_bindings_and_report_full_map_ranges() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let forms = Reader::new(
+        r#"
+            (let ((map (make-keymap))
+                  seen
+                  public-seen)
+              (define-key map [remap foo] 'bar)
+              (define-key map (kbd "M-v") 'meta-command)
+              (dolist (key '("1" "2" "3" "4"))
+                (define-key map (kbd key) 'range-command))
+              (define-key map [(65 . 67)] 'public-range-command)
+              (map-keymap (lambda (key value)
+                            (setq seen (cons (cons key value) seen)))
+                          map)
+              (let ((public (list 'keymap (cadr map))))
+                (map-keymap (lambda (key value)
+                              (setq public-seen
+                                    (cons (cons key value) public-seen)))
+                            public)
+                (list (lookup-key map [remap foo] t)
+                      (length (accessible-keymaps map))
+                      (keymapp (lookup-key map (kbd "ESC") t))
+                      (lookup-key map (kbd "M-v") t)
+                      (not (null (member '((49 . 52) . range-command) seen)))
+                      (lookup-key public "B" t)
+                      (not (null
+                                 (member '((65 . 67) . public-range-command)
+                                         public-seen))))))"#,
+    )
+    .read_all()
+    .expect("keymap range test should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("keymap prefixes and ranges should be observable");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Symbol("bar".into()),
+            Value::Integer(3),
+            Value::T,
+            Value::Symbol("meta-command".into()),
+            Value::T,
+            Value::Symbol("public-range-command".into()),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn keymap_walkers_follow_prefix_command_symbols_and_run_leaf_menu_filters() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let forms = Reader::new(
+        r#"
+            (progn
+              (setq keymap-tests-filter-buffer nil)
+              (let ((root (make-sparse-keymap))
+                    (prefix (make-sparse-keymap)))
+                (fset 'keymap-tests-prefix prefix)
+                (define-key root (kbd "a") 'keymap-tests-prefix)
+                (define-key prefix (kbd "b")
+                  `(menu-item "Identity" identity
+                              :filter ,(lambda (command)
+                                         (setq keymap-tests-filter-buffer
+                                               (current-buffer))
+                                         command)))
+                (with-temp-buffer
+                  (let ((here (current-buffer))
+                        (lookup (lookup-key root (kbd "a b") t))
+                        (accessible (length (accessible-keymaps root))))
+                    (setq keymap-tests-filter-buffer nil)
+                    (list lookup
+                          accessible
+                          (key-description
+                           (where-is-internal #'identity root t))
+                          (eq keymap-tests-filter-buffer here))))))"#,
+    )
+    .read_all()
+    .expect("prefix-command keymap test should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("all keymap walkers should traverse prefix-command symbols");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Symbol("identity".into()),
+            Value::Integer(2),
+            Value::String("a b".into()),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn completion_predicates_preserve_string_list_membership() {
+    assert_upstream_primitive_contract(
+        r#"(let* ((abcdef '("abc" "def"))
+                  (pred (lambda (elt) (memq elt abcdef))))
+             (prin1
+              (list (try-completion "a" abcdef pred)
+                    (all-completions "a" abcdef pred)
+                    (test-completion "abc" abcdef pred))))"#,
+        "(\"abc\" (\"abc\") (\"abc\" \"def\"))",
+    );
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
         .spawn(|| {
@@ -2716,7 +5799,7 @@ fn completion_predicates_preserve_string_list_membership() {
             let expected = Value::list([
                 Value::String("abc".into()),
                 Value::list([Value::String("abc".into())]),
-                Value::T,
+                Value::list([Value::String("abc".into()), Value::String("def".into())]),
             ]);
             assert!(
                 values_equal(&interp, &result, &expected),
@@ -2733,8 +5816,8 @@ fn shell_quote_argument_matches_upstream_batch_cases() {
     assert_eq!(shell_quote_argument("*.pl"), r"\*.pl");
     assert_eq!(shell_quote_argument("nfs"), "nfs");
     assert_eq!(
-        shell_quote_argument("/Users/alpha/CodexProjects/emaxx/"),
-        "/Users/alpha/CodexProjects/emaxx/"
+        shell_quote_argument("/Users/example/projects/emaxx/"),
+        "/Users/example/projects/emaxx/"
     );
     assert_eq!(shell_quote_argument("foo bar"), r"foo\ bar");
     assert_eq!(shell_quote_argument(""), "''");
@@ -2817,4 +5900,1817 @@ fn substring_of_completion_result_accepts_text_properties() {
         .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
         .expect("completion substring should accept text properties");
     assert_eq!(result, Value::Symbol("completion-preview".into()));
+}
+
+#[test]
+fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
+    assert_upstream_primitive_contract(
+        r#"(with-temp-buffer
+             (insert "head")
+             (let* ((p (make-pipe-process :name "audit" :buffer (current-buffer)))
+                    (m (copy-marker (point-max))))
+               (goto-char (point-min))
+               (let ((surface
+                      (list
+                       (process-filter p)
+                       (process-sentinel p)
+                       (set-process-filter p nil)
+                       (process-filter p)
+                       (set-process-sentinel p nil)
+                       (process-sentinel p)
+                       (process-type p)
+                       (process-type (process-name p))
+                       (process-type (current-buffer))
+                       (process-inherit-coding-system-flag p)
+                       (set-process-inherit-coding-system-flag p 'yes)
+                       (process-inherit-coding-system-flag p)
+                       (set-process-coding-system p nil nil)
+                       (set-process-window-size p 24 80))))
+                 (internal-default-process-filter p "out")
+                 (let ((after-filter
+                        (list (buffer-string) (point)
+                              (marker-position m)
+                              (marker-position (process-mark p)))))
+                   (set-process-sentinel p 'ignore)
+                   (delete-process p)
+                   (internal-default-process-sentinel p "finished\n")
+                   (prin1
+                    (list surface after-filter
+                          (buffer-string) (point)
+                          (marker-position m)
+                          (marker-position (process-mark p))))))))"#,
+        "((internal-default-process-filter internal-default-process-sentinel internal-default-process-filter internal-default-process-filter internal-default-process-sentinel internal-default-process-sentinel pipe pipe pipe nil yes t nil nil) (\"headout\" 1 8 8) \"headout\nProcess audit finished\n\" 1 8 32)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let (buffer_id, _) = interp.create_buffer(" *native-process-audit*");
+    interp
+        .switch_to_buffer_id(buffer_id)
+        .expect("switch to process audit buffer");
+    interp.insert_current_buffer("head");
+    let buffer = interp
+        .buffer_identity_value(buffer_id)
+        .expect("process audit buffer identity");
+    let process = call(
+        &mut interp,
+        "make-pipe-process",
+        &[
+            Value::symbol(":name"),
+            Value::String("audit".into()),
+            Value::symbol(":buffer"),
+            buffer.clone(),
+        ],
+        &mut env,
+    )
+    .expect("create pipe process");
+
+    let mut surface = Vec::new();
+    for (function, arguments) in [
+        ("process-filter", vec![process.clone()]),
+        ("process-sentinel", vec![process.clone()]),
+        ("set-process-filter", vec![process.clone(), Value::Nil]),
+        ("process-filter", vec![process.clone()]),
+        ("set-process-sentinel", vec![process.clone(), Value::Nil]),
+        ("process-sentinel", vec![process.clone()]),
+        ("process-type", vec![process.clone()]),
+        ("process-type", vec![Value::String("audit".into())]),
+        ("process-type", vec![buffer]),
+        ("process-inherit-coding-system-flag", vec![process.clone()]),
+        (
+            "set-process-inherit-coding-system-flag",
+            vec![process.clone(), Value::symbol("yes")],
+        ),
+        ("process-inherit-coding-system-flag", vec![process.clone()]),
+        (
+            "set-process-coding-system",
+            vec![process.clone(), Value::Nil, Value::Nil],
+        ),
+        (
+            "set-process-window-size",
+            vec![process.clone(), Value::Integer(24), Value::Integer(80)],
+        ),
+    ] {
+        surface.push(
+            call(&mut interp, function, &arguments, &mut env)
+                .unwrap_or_else(|error| panic!("{function}: {error}")),
+        );
+    }
+    assert_eq!(
+        Value::list(surface),
+        Value::list([
+            Value::symbol("internal-default-process-filter"),
+            Value::symbol("internal-default-process-sentinel"),
+            Value::symbol("internal-default-process-filter"),
+            Value::symbol("internal-default-process-filter"),
+            Value::symbol("internal-default-process-sentinel"),
+            Value::symbol("internal-default-process-sentinel"),
+            Value::symbol("pipe"),
+            Value::symbol("pipe"),
+            Value::symbol("pipe"),
+            Value::Nil,
+            Value::symbol("yes"),
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+
+    let marker = interp
+        .copy_marker_value(&Value::Integer(interp.buffer.point_max() as i64), false)
+        .expect("copy marker at process output boundary");
+    interp.buffer.goto_char(interp.buffer.point_min());
+    call(
+        &mut interp,
+        "internal-default-process-filter",
+        &[process.clone(), Value::String("out".into())],
+        &mut env,
+    )
+    .expect("run native default process filter");
+    let Value::Marker(marker_id) = marker else {
+        unreachable!("copy-marker returns a marker")
+    };
+    let process_id = interp
+        .resolve_process_id(&process)
+        .expect("pipe process id");
+    let process_mark = interp.process_mark_id(process_id).expect("process mark");
+    assert_eq!(interp.buffer.buffer_string(), "headout");
+    assert_eq!(interp.buffer.point(), 1);
+    assert_eq!(interp.marker_position(marker_id), Some(8));
+    assert_eq!(interp.marker_position(process_mark), Some(8));
+
+    call(
+        &mut interp,
+        "set-process-sentinel",
+        &[process.clone(), Value::symbol("ignore")],
+        &mut env,
+    )
+    .expect("suppress automatic delete message");
+    call(
+        &mut interp,
+        "delete-process",
+        std::slice::from_ref(&process),
+        &mut env,
+    )
+    .expect("delete pipe process");
+    call(
+        &mut interp,
+        "internal-default-process-sentinel",
+        &[process, Value::String("finished\n".into())],
+        &mut env,
+    )
+    .expect("run native default process sentinel");
+    assert_eq!(
+        interp.buffer.buffer_string(),
+        "headout\nProcess audit finished\n"
+    );
+    assert_eq!(interp.buffer.point(), 1);
+    assert_eq!(interp.marker_position(marker_id), Some(8));
+    assert_eq!(interp.marker_position(process_mark), Some(32));
+}
+
+#[cfg(unix)]
+#[test]
+fn native_connection_control_and_pid_signals_follow_gnu_process_c() {
+    let program = r#"(let ((p (make-pipe-process :name "control" :sentinel 'ignore)))
+                       (unwind-protect
+                           (list
+                            (eq (stop-process p) p)
+                            (process-status p)
+                            (process-command p)
+                            (eq (continue-process p) p)
+                            (process-status p)
+                            (process-command p)
+                            (internal-default-signal-process "not-a-pid" 'TERM)
+                            (signal-process (emacs-pid) 0))
+                         (when (process-live-p p)
+                           (delete-process p))))"#;
+    let expected = "(t stop t t open nil nil 0)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("native process control contract should parse")
+        .expect("native process control contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("native process control contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("native process control result should parse")
+            .expect("native process control result should exist")
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_signal_names_share_the_platform_codec_used_by_signal_process() {
+    let program = r#"(let ((names (signal-names)))
+                       (list
+                        names
+                        (catch 'invalid
+                          (dolist (name names t)
+                            (unless
+                                (= -1
+                                   (internal-default-signal-process
+                                    2147483647 (intern name)))
+                              (throw 'invalid nil))))))"#;
+    let expected = r#"(("USR2" "USR1" "INFO" "WINCH" "PROF" "VTALRM" "XFSZ" "XCPU" "IO" "TTOU" "TTIN" "CHLD" "CONT" "TSTP" "STOP" "URG" "TERM" "ALRM" "PIPE" "SYS" "SEGV" "BUS" "KILL" "FPE" "EMT" "ABRT" "TRAP" "ILL" "QUIT" "INT" "HUP" "EXIT") t)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("native signal-name contract should parse")
+        .expect("native signal-name contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("native signal-name contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("native signal-name result should parse")
+            .expect("native signal-name result should exist")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn process_filters_can_observe_that_read_event_is_waiting_for_user_input() {
+    let program = r#"(progn
+                       (setq emaxx-test-wait-seen nil
+                             emaxx-test-wait-received nil)
+                       (let*
+                         ((p
+                           (make-process
+                            :name "wait-input"
+                            :command '("/bin/cat")
+                            :connection-type 'pipe
+                            :filter
+                            (lambda (_process text)
+                              (setq
+                               emaxx-test-wait-received text
+                               emaxx-test-wait-seen
+                               (waiting-for-user-input-p)))
+                            :sentinel 'ignore)))
+                         (unwind-protect
+                             (progn
+                               (process-send-string p "x")
+                               (list
+                               (read-event nil nil 10)
+                                emaxx-test-wait-seen
+                                emaxx-test-wait-received
+                                (waiting-for-user-input-p)))
+                           (when (process-live-p p)
+                             (delete-process p)))))"#;
+    let expected = "(nil t \"x\" nil)";
+    // With null stdin GNU's read-event returns before a delayed filter can
+    // run, so the subprocess oracle cannot reliably exercise this timing
+    // state.  Its outside-wait baseline remains exact; the t-during-filter
+    // assertion below covers process.c's documented read_kbd contract.
+    assert_upstream_primitive_contract("(prin1 (waiting-for-user-input-p))", "nil");
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("read-event waiting contract should parse")
+        .expect("read-event waiting contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("read-event waiting contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("read-event waiting result should parse")
+            .expect("read-event waiting result should exist")
+    );
+}
+
+#[test]
+fn native_process_thread_ownership_matches_gnu_descriptor_locking() {
+    let program = r#"(let*
+                         ((p (make-pipe-process
+                              :name "locked" :sentinel 'ignore))
+                          (owner
+                           (make-thread
+                            (lambda () (sleep-for .01))
+                            "owner")))
+                       (unwind-protect
+                           (list
+                            (eq (process-thread p) (current-thread))
+                            (set-process-thread p nil)
+                            (process-thread p)
+                            (eq
+                             (set-process-thread p (current-thread))
+                             (current-thread))
+                            (eq (process-thread p) (current-thread))
+                            (eq (set-process-thread p owner) owner)
+                            (condition-case error
+                                (accept-process-output p 0)
+                              (error (cadr error)))
+                            (progn
+                              (thread-join owner)
+                              (thread-live-p owner))
+                            (process-thread p))
+                         (set-process-thread p nil)
+                         (delete-process p)))"#;
+    let expected = r#"(t nil nil t t t "Attempt to accept output from process locked locked to thread owner" nil nil)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("process thread ownership contract should parse")
+        .expect("process thread ownership contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("process thread ownership contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("process thread ownership result should parse")
+            .expect("process thread ownership result should exist")
+    );
+}
+
+#[test]
+fn native_network_lookup_uses_platform_address_vectors_and_gnu_validation() {
+    let program = r#"(list
+                       (network-lookup-address-info
+                        "127.0.0.1" nil 'numeric)
+                       (network-lookup-address-info
+                        "127.0.0.1" 'ipv4 'numeric)
+                       (network-lookup-address-info
+                        "::1" 'ipv6 'numeric)
+                       (network-lookup-address-info
+                        "127.0.0.1" 'ipv6 'numeric)
+                       (condition-case error
+                           (network-lookup-address-info "x" 'bogus)
+                         (error (cdr error)))
+                       (condition-case error
+                           (network-lookup-address-info "x" nil 'bogus)
+                         (error (cdr error))))"#;
+    let expected = r#"(([127 0 0 1 0]) ([127 0 0 1 0]) ([0 0 0 0 0 0 0 1 0]) nil ("Unsupported family") ("Unsupported hints value"))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("network lookup contract should parse")
+        .expect("network lookup contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("network lookup contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("network lookup result should parse")
+            .expect("network lookup result should exist")
+    );
+}
+
+#[test]
+fn native_serial_process_validation_matches_gnu_process_c() {
+    let program = r#"(list
+                       (make-serial-process)
+                       (condition-case error
+                           (make-serial-process :speed 9600)
+                         (error (cdr error)))
+                       (condition-case error
+                           (make-serial-process :port "/does/not/exist")
+                         (error (cdr error)))
+                       (let ((pipe (make-pipe-process :name "not-serial")))
+                         (unwind-protect
+                             (condition-case error
+                                 (serial-process-configure
+                                  :process pipe :speed 9600)
+                               (error (cdr error)))
+                           (delete-process pipe))))"#;
+    let expected =
+        r#"(nil ("No port specified") (":speed not specified") ("Not a serial process"))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("serial validation contract should parse")
+        .expect("serial validation contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("serial validation contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("serial validation result should parse")
+            .expect("serial validation result should exist")
+    );
+}
+
+#[test]
+fn native_minibuffer_stack_queries_match_gnu_minibuf_c() {
+    let inactive = r#"(let ((buffer (window-buffer (minibuffer-window))))
+                        (list
+                         (buffer-name buffer)
+                         (minibufferp buffer)
+                         (minibufferp buffer t)
+                         (with-current-buffer buffer
+                           (list
+                            (minibuffer-depth)
+                            (minibuffer-prompt)
+                            (minibuffer-prompt-end)
+                            (innermost-minibuffer-p)
+                            (minibuffer-innermost-command-loop-p)))
+                         (innermost-minibuffer-p " *Minibuf-0*")
+                         (condition-case error
+                             (abort-minibuffers)
+                           (error (cdr error)))))"#;
+    let inactive_expected = r#"(" *Minibuf-0*" t nil (0 nil 1 t nil) nil ("Not in a minibuffer"))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {inactive})"), inactive_expected);
+
+    let active = r#"(catch 'state
+                      (minibuffer-with-setup-hook
+                          (lambda ()
+                            (throw
+                             'state
+                             (list
+                              (minibuffer-depth)
+                              (minibuffer-prompt)
+                              (innermost-minibuffer-p)
+                              (minibuffer-innermost-command-loop-p)
+                              (minibuffer-prompt-end)
+                              (minibufferp nil t))))
+                        (let ((executing-kbd-macro t))
+                          (completing-read "Prompt: " '("a")))))"#;
+    let active_expected = r#"(1 "Prompt: " t t 9 t)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {active})"), active_expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for (program, expected) in [(inactive, inactive_expected), (active, active_expected)] {
+        let form = Reader::new(program)
+            .read()
+            .expect("minibuffer stack contract should parse")
+            .expect("minibuffer stack contract should contain a form");
+        let expected = Reader::new(expected)
+            .read()
+            .expect("minibuffer stack result should parse")
+            .expect("minibuffer stack result should exist");
+        assert_eq!(
+            interp
+                .eval(&form, &mut env)
+                .expect("minibuffer stack contract should evaluate"),
+            expected
+        );
+    }
+}
+
+#[test]
+fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
+    let validation = r#"(let* ((mutex (make-mutex "m"))
+                               (condition
+                                (make-condition-variable mutex "c")))
+                          (list
+                           (condition-case error
+                               (condition-wait condition)
+                             (error (cdr error)))
+                           (condition-case error
+                               (condition-notify condition)
+                             (error (cdr error)))))"#;
+    let validation_expected = "((\"Condition variable’s mutex is not held by current thread\") (\"Condition variable’s mutex is not held by current thread\"))";
+    assert_upstream_primitive_contract(&format!("(prin1 {validation})"), validation_expected);
+
+    let synchronization = r#"(let* ((mutex (make-mutex "m"))
+                                    (condition
+                                     (make-condition-variable mutex "c"))
+                                    (flag nil)
+                                    (notifier
+                                     (make-thread
+                                      (lambda ()
+                                        (with-mutex mutex
+                                          (setq flag 'notified)
+                                          (condition-notify condition))))))
+                               (mutex-lock mutex)
+                               (mutex-lock mutex)
+                               (let ((wait-result (condition-wait condition))
+                                     (owned-at-depth-two
+                                      (condition-notify condition)))
+                                 (mutex-unlock mutex)
+                                 (let ((owned-at-depth-one
+                                        (condition-notify condition)))
+                                   (mutex-unlock mutex)
+                                   (thread-join notifier)
+                                   (list
+                                    (null wait-result)
+                                    (null owned-at-depth-two)
+                                    (null owned-at-depth-one)
+                                    (equal
+                                     (condition-case error
+                                         (condition-notify condition)
+                                       (error (cdr error)))
+                                     '("Condition variable’s mutex is not held by current thread"))))))"#;
+    let synchronization_expected = "(t t t t)";
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {synchronization})"),
+        synchronization_expected,
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for (program, expected) in [
+        (validation, validation_expected),
+        (synchronization, synchronization_expected),
+    ] {
+        let form = Reader::new(program)
+            .read()
+            .expect("condition-variable contract should parse")
+            .expect("condition-variable contract should contain a form");
+        let expected = Reader::new(expected)
+            .read()
+            .expect("condition-variable result should parse")
+            .expect("condition-variable result should exist");
+        assert_eq!(
+            interp
+                .eval(&form, &mut env)
+                .expect("condition-variable contract should evaluate"),
+            expected
+        );
+    }
+}
+
+#[test]
+fn native_combined_after_change_merges_ranges_before_running_hooks() {
+    let program = r#"(progn
+                       (defun emaxx-test-after-change
+                           (begin end old-length)
+                         (push
+                          (list
+                           begin end old-length (buffer-string))
+                          emaxx-test-after-change-events))
+                       (with-temp-buffer
+                         (setq emaxx-test-after-change-events nil)
+                         (add-hook
+                          'after-change-functions
+                          'emaxx-test-after-change nil t)
+                         (let
+                             ((before
+                               (let ((combine-after-change-calls t))
+                                 (insert "ab")
+                                 (goto-char 2)
+                                 (delete-char 1)
+                                 (insert "XYZ")
+                                 emaxx-test-after-change-events)))
+                           (list
+                            before
+                            (combine-after-change-execute)
+                            emaxx-test-after-change-events
+                            (buffer-string)))))"#;
+    let expected = r#"(nil nil ((1 5 0 "aXYZ")) "aXYZ")"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("combined after-change contract should parse")
+        .expect("combined after-change contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("combined after-change contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("combined after-change result should parse")
+            .expect("combined after-change result should exist")
+    );
+}
+
+#[test]
+fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() {
+    let contracts = [
+        (
+            r#"(let ((last-kbd-macro [old]))
+                 (list
+                  (store-kbd-macro-event 'ignored)
+                  (cancel-kbd-macro-events)
+                  (start-kbd-macro t t)
+                  defining-kbd-macro
+                  (store-kbd-macro-event 'pending)
+                  (cancel-kbd-macro-events)
+                  (end-kbd-macro)
+                  last-kbd-macro))"#,
+            "(nil nil nil t nil nil nil [old])",
+        ),
+        (
+            r#"(progn
+                 (defalias 'emaxx-macro-alias [97])
+                 (let ((iterations 0)
+                       (terminations 0))
+                   (add-hook
+                    'kbd-macro-termination-hook
+                    (lambda ()
+                      (setq terminations (1+ terminations))))
+                   (with-temp-buffer
+                     (execute-kbd-macro
+                      'emaxx-macro-alias 3
+                      (lambda ()
+                        (setq iterations (1+ iterations))
+                        (< iterations 3)))
+                     (list
+                      (buffer-string)
+                      iterations
+                      terminations
+                      executing-kbd-macro
+                      executing-kbd-macro-index))))"#,
+            r#"("aa" 3 1 nil 0)"#,
+        ),
+        (
+            r#"(list
+                (condition-case error-data
+                    (let ((last-kbd-macro nil))
+                      (call-last-kbd-macro)
+                      'missed)
+                  (error (car error-data)))
+                (condition-case error-data
+                    (let ((last-kbd-macro [])
+                          (defining-kbd-macro t))
+                      (call-last-kbd-macro)
+                      'missed)
+                  (error (car error-data)))
+                (let ((last-kbd-macro [97]))
+                  (with-temp-buffer
+                    (call-last-kbd-macro 2)
+                    (buffer-string))))"#,
+            r#"(error error "aa")"#,
+        ),
+        (
+            r#"(let ((last-kbd-macro [old]))
+                 (start-kbd-macro t t)
+                 (let
+                     ((error-kind
+                       (condition-case error-data
+                           (end-kbd-macro "bad")
+                         (error (car error-data)))))
+                   (prog1
+                       (list
+                        error-kind
+                        defining-kbd-macro
+                        last-kbd-macro)
+                     (cancel-kbd-macro-events)
+                     (end-kbd-macro))))"#,
+            "(wrong-type-argument t [old])",
+        ),
+        (
+            r#"(progn
+                 (defun emaxx-test-store-command ()
+                   (interactive)
+                   (store-kbd-macro-event 'kept))
+                 (global-set-key [f5] 'emaxx-test-store-command)
+                 (let ((last-kbd-macro [old]))
+                   (start-kbd-macro t t)
+                   (execute-kbd-macro [f5])
+                   (store-kbd-macro-event 'pending)
+                   (cancel-kbd-macro-events)
+                   (end-kbd-macro)
+                   last-kbd-macro))"#,
+            "[old kept]",
+        ),
+    ];
+
+    for (program, expected) in contracts {
+        assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let form = Reader::new(program)
+            .read()
+            .expect("keyboard-macro contract should parse")
+            .expect("keyboard-macro contract should contain a form");
+        assert_eq!(
+            interp
+                .eval(&form, &mut env)
+                .expect("keyboard-macro contract should evaluate"),
+            Reader::new(expected)
+                .read()
+                .expect("keyboard-macro expected value should parse")
+                .expect("keyboard-macro expected value should exist"),
+            "keyboard-macro contract diverged: {program}"
+        );
+    }
+}
+
+#[test]
+fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
+    let contracts = [
+        (
+            r#"(list
+                (event-convert-list '(control a))
+                (event-convert-list '(shift a))
+                (event-convert-list '(meta control x))
+                (event-convert-list '(hyper f5))
+                (event-convert-list '(double down mouse-1))
+                (condition-case error-data
+                    (event-convert-list '(a b))
+                  (error (car error-data))))"#,
+            "(1 65 134217752 H-f5 double-down-mouse-1 error)",
+        ),
+        (
+            r#"(list
+                (internal-event-symbol-parse-modifiers 'M-C-S-f5)
+                (internal-event-symbol-parse-modifiers
+                 'double-down-mouse-1)
+                (internal-event-symbol-parse-modifiers 'mouse-1))"#,
+            "((f5 meta control shift) (mouse-1 double down) (mouse-1 click))",
+        ),
+        (
+            r#"(let ((track-mouse 'outside)
+                     seen)
+                 (list
+                  (internal--track-mouse
+                   (lambda ()
+                     (setq seen track-mouse)
+                     42))
+                  seen
+                  track-mouse
+                  (condition-case error-data
+                      (internal--track-mouse
+                       (lambda () (error "boom")))
+                    (error (car error-data)))
+                  track-mouse))"#,
+            "(42 t outside error outside)",
+        ),
+        (
+            r#"(list
+                (internal-handle-focus-in
+                 (list 'focus-in (selected-frame)))
+                (condition-case error-data
+                    (internal-handle-focus-in '(focus-in nope))
+                  (error (car error-data)))
+                (condition-case error-data
+                    (suspend-emacs 1)
+                  (error (car error-data))))"#,
+            "(nil error wrong-type-argument)",
+        ),
+        (
+            r#"(progn
+                 (set--this-command-keys "ab")
+                 (let
+                     ((before
+                       (list
+                        (this-command-keys)
+                        (this-command-keys-vector)
+                        (this-single-command-keys))))
+                   (clear-this-command-keys t)
+                   (list
+                    before
+                    (this-command-keys)
+                    (this-command-keys-vector))))"#,
+            r#"(("ab" [97 98] [97 98]) "" [])"#,
+        ),
+        (
+            r#"(let ((unread-command-events '(97)))
+                 (list
+                  (read-key-sequence nil)
+                  (this-command-keys)
+                  (this-command-keys-vector)
+                  (this-single-command-keys)
+                  (this-single-command-raw-keys)
+                  (recent-keys)))"#,
+            r#"("a" "a" [97] [97] [97] [97])"#,
+        ),
+        (
+            r#"(let ((unread-command-events '(f5)))
+                 (list
+                  (read-key-sequence-vector nil)
+                  (this-command-keys)
+                  (this-command-keys-vector)
+                  (this-single-command-raw-keys)
+                  (recent-keys)))"#,
+            "([f5] [f5] [f5] [f5] [f5])",
+        ),
+        (
+            r#"(let ((last-kbd-macro [old])
+                     (unread-command-events '(97)))
+                 (start-kbd-macro t t)
+                 (store-kbd-macro-event 'pending)
+                 (discard-input)
+                 (list
+                  last-kbd-macro
+                  defining-kbd-macro
+                  unread-command-events))"#,
+            "([old] nil nil)",
+        ),
+        (
+            r#"(let ((old-size (lossage-size)))
+                 (unwind-protect
+                     (list
+                      old-size
+                      (lossage-size 100)
+                      (condition-case error-data
+                          (lossage-size 99)
+                        (user-error
+                         (list
+                          (car error-data)
+                          (cadr error-data)))))
+                   (lossage-size old-size)))"#,
+            r#"(300 100 (user-error "Value must be >= 100"))"#,
+        ),
+    ];
+
+    for (program, expected) in contracts {
+        assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let form = Reader::new(program)
+            .read()
+            .expect("keyboard-input contract should parse")
+            .expect("keyboard-input contract should contain a form");
+        assert_eq!(
+            interp
+                .eval(&form, &mut env)
+                .expect("keyboard-input contract should evaluate"),
+            Reader::new(expected)
+                .read()
+                .expect("keyboard-input expected value should parse")
+                .expect("keyboard-input expected value should exist"),
+            "keyboard-input contract diverged: {program}"
+        );
+    }
+}
+
+#[test]
+fn native_open_dribble_file_creates_and_closes_a_private_file_like_gnu() {
+    let path = std::env::temp_dir().join(format!("emaxx-native-dribble-{}", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let program = format!(
+        r#"(let ((file {path:?}))
+             (unwind-protect
+                 (progn
+                   (open-dribble-file file)
+                   (open-dribble-file nil)
+                   (list
+                    (file-exists-p file)
+                    (file-modes file)
+                    (nth 7 (file-attributes file))))
+               (ignore-errors (open-dribble-file nil))
+               (ignore-errors (delete-file file))))"#,
+        path = path.to_string_lossy()
+    );
+    let expected = "(t 384 0)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&program)
+        .read()
+        .expect("dribble-file contract should parse")
+        .expect("dribble-file contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("dribble-file contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("dribble-file expected value should parse")
+            .expect("dribble-file expected value should exist")
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn native_libxml_family_uses_strict_xml_and_tolerant_html_dom_contracts() {
+    let program = r#"(list
+                       (with-temp-buffer
+                         (insert
+                          "<p CLASS=x>Hello<br>world<!--c-->")
+                         (libxml-parse-html-region))
+                       (with-temp-buffer
+                         (insert "<b>one<i>two</b>three")
+                         (libxml-parse-html-region nil nil nil t))
+                       (with-temp-buffer
+                         (insert
+                          "<!--top--><root b=\"2\" a=\"1\"> x <!--inside--><child/> </root><!--after-->")
+                         (list
+                          (libxml-parse-xml-region)
+                          (libxml-parse-xml-region nil nil nil t)
+                          (libxml-parse-xml-region
+                           (point-max) (point-min))))
+                       (with-temp-buffer
+                         (insert "<broken>")
+                         (libxml-parse-xml-region))
+                       (with-temp-buffer
+                         (insert "<p>x")
+                         (condition-case error-data
+                             (libxml-parse-html-region nil nil 3)
+                           (error (car error-data)))))"#;
+    let expected = r#"((html nil
+                         (body nil
+                          (p ((class . "x"))
+                           "Hello" (br nil) "world"
+                           (comment nil "c"))))
+                       (html nil
+                        (body nil
+                         (b nil "one" (i nil "two"))
+                         "three"))
+                       ((top nil
+                         (comment nil "top")
+                         (root ((b . "2") (a . "1"))
+                          " x " (comment nil "inside") (child nil) " ")
+                         (comment nil "after"))
+                        (root ((b . "2") (a . "1"))
+                         " x " (comment nil "inside") (child nil) " ")
+                        (top nil
+                         (comment nil "top")
+                         (root ((b . "2") (a . "1"))
+                          " x " (comment nil "inside") (child nil) " ")
+                         (comment nil "after")))
+                       nil
+                       wrong-type-argument)"#;
+    let expected_printed = "((html nil (body nil (p ((class . \"x\")) \"Hello\" (br nil) \"world\" (comment nil \"c\")))) (html nil (body nil (b nil \"one\" (i nil \"two\")) \"three\")) ((top nil (comment nil \"top\") (root ((b . \"2\") (a . \"1\")) \" x \" (comment nil \"inside\") (child nil) \" \") (comment nil \"after\")) (root ((b . \"2\") (a . \"1\")) \" x \" (comment nil \"inside\") (child nil) \" \") (top nil (comment nil \"top\") (root ((b . \"2\") (a . \"1\")) \" x \" (comment nil \"inside\") (child nil) \" \") (comment nil \"after\"))) nil wrong-type-argument)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("libxml family contract should parse")
+        .expect("libxml family contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("libxml family contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("libxml expected value should parse")
+            .expect("libxml expected value should exist")
+    );
+}
+
+#[test]
+fn native_headless_window_geometry_and_hscroll_match_gnu_c_contracts() {
+    let program = r#"(let ((window (selected-window))
+                            (buffer (current-buffer)))
+                        (unwind-protect
+                            (progn
+                              (set-window-hscroll window 0)
+                              (set-window-margins window 3 4)
+                              (list
+                               (list
+                                (window-body-width window)
+                                (window-text-width window)
+                                (window-text-width window t)
+                                (window-text-height window)
+                                (window-text-height window t))
+                               (mapcar
+                                (lambda (xy)
+                                  (coordinates-in-window-p xy window))
+                                (list
+                                 (cons 0 0) (cons 2 0) (cons 3 0)
+                                 (cons 75 0) (cons 76 0) (cons 79 0)
+                                 (cons 0 23)))
+                               (list
+                                (window-hscroll window)
+                                (set-window-hscroll window 5)
+                                (scroll-left 3)
+                                (scroll-right 4)
+                                (scroll-right 99)
+                                (scroll-left nil)
+                                (scroll-right nil))
+                               (list
+                                (window-line-height nil window)
+                                (window-lines-pixel-dimensions window))
+                               (eq
+                                (window-configuration-frame
+                                 (current-window-configuration))
+                                (selected-frame))
+                               (list
+                                (force-window-update)
+                                (force-window-update window)
+                                (force-window-update buffer)
+                                (force-window-update (buffer-name buffer))
+                                (force-window-update "missing")
+                                (force-window-update 42))
+                               (progn
+                                 (setq-local tab-line-format "t"
+                                             header-line-format "h")
+                                 (list
+                                  (coordinates-in-window-p
+                                   (cons 3 0) window)
+                                  (coordinates-in-window-p
+                                   (cons 3 1) window)
+                                  (coordinates-in-window-p
+                                   (cons 3 2) window)
+                                  (window-text-height window)))))
+                          (set-window-margins window nil nil)
+                          (set-window-hscroll window 0)))"#;
+    let expected = r#"((73 73 73 23 23)
+                        (left-margin left-margin (0 . 0) (72 . 0)
+                         right-margin right-margin mode-line)
+                        (0 5 8 4 0 71 0)
+                        (nil nil)
+                        t
+                        (t t t t nil nil)
+                        (tab-line header-line (0 . 2) 21))"#;
+    let expected_printed = "((73 73 73 23 23) (left-margin left-margin (0 . 0) (72 . 0) right-margin right-margin mode-line) (0 5 8 4 0 71 0) (nil nil) t (t t t t nil nil) (tab-line header-line (0 . 2) 21))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("window geometry contract should parse")
+        .expect("window geometry contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("window geometry contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("window geometry expected value should parse")
+            .expect("window geometry expected value should exist")
+    );
+}
+
+#[test]
+fn native_window_change_state_hooks_and_minibuffer_resize_match_gnu() {
+    let program = r#"(list
+                       (list (window-old-buffer) (window-old-point))
+                       (list
+                        (condition-case error-data
+                            (other-window-for-scrolling)
+                          (error (car error-data)))
+                        (let ((other-window-scroll-default
+                               (lambda () (minibuffer-window))))
+                          (eq
+                           (other-window-for-scrolling)
+                           (minibuffer-window))))
+                       (let ((old
+                              (default-value
+                               'window-configuration-change-hook)))
+                         (unwind-protect
+                             (progn
+                               (fset
+                                'emaxx-w-local
+                                (lambda ()
+                                  (setq emaxx-w-events
+                                        (cons 'local emaxx-w-events))))
+                               (fset
+                                'emaxx-w-global
+                                (lambda ()
+                                  (setq emaxx-w-events
+                                        (cons 'global emaxx-w-events))))
+                               (setq emaxx-w-events nil)
+                               (setq-default
+                                window-configuration-change-hook
+                                (list 'emaxx-w-global))
+                               (add-hook
+                                'window-configuration-change-hook
+                                'emaxx-w-local nil t)
+                               (run-window-configuration-change-hook)
+                               (nreverse emaxx-w-events))
+                           (setq-default
+                            window-configuration-change-hook old)
+                           (kill-local-variable
+                            'window-configuration-change-hook)
+                           (fmakunbound 'emaxx-w-local)
+                           (fmakunbound 'emaxx-w-global)))
+                       (let* ((mini (minibuffer-window))
+                              (root (frame-root-window)))
+                         (list
+                          (window-total-height root)
+                          (window-total-height mini)
+                          (progn
+                            (set-window-new-pixel root 23)
+                            (set-window-new-pixel mini 2)
+                            (resize-mini-window-internal mini))
+                          (window-total-height root)
+                          (window-total-height mini))))"#;
+    let expected = "((nil 1) (error t) (local global) (24 1 t 23 2))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("window state contract should parse")
+        .expect("window state contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("window state contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("window state expected value should parse")
+            .expect("window state expected value should exist")
+    );
+}
+
+#[cfg(unix)]
+fn serial_test_pty() -> (serialport::TTYPort, String) {
+    use serialport::SerialPort;
+
+    let (master, slave) = serialport::TTYPort::pair().expect("create serial test PTY");
+    let path = slave
+        .name()
+        .expect("serial test PTY should have a slave path");
+    drop(slave);
+    (master, path)
+}
+
+#[cfg(unix)]
+fn serial_surface_program(path: &str) -> String {
+    format!(
+        r#"(let* ((port {path:?})
+                  (process
+                   (make-serial-process
+                    :name "serial-audit"
+                    :buffer " *serial-audit*"
+                    :port port
+                    :speed 9600
+                    :bytesize nil
+                    :parity nil
+                    :stopbits nil
+                    :flowcontrol nil
+                    :noquery t
+                    :stop t
+                    :sentinel 'ignore)))
+             (unwind-protect
+                 (list
+                  (eq (process-type process) 'serial)
+                  (eq (process-status process) 'stop)
+                  (null (process-id process))
+                  (equal (process-contact process) (list port 9600))
+                  (= (process-contact process :speed) 9600)
+                  (= (process-contact process :bytesize) 8)
+                  (null (process-contact process :parity))
+                  (= (process-contact process :stopbits) 1)
+                  (null (process-contact process :flowcontrol))
+                  (equal (process-contact process :summary) "8N1")
+                  (null (process-query-on-exit-flag process))
+                  (progn
+                    (continue-process process)
+                    (eq (process-status process) 'open))
+                  (progn
+                    (stop-process process)
+                    (eq (process-status process) 'stop))
+                  (progn
+                    (serial-process-configure
+                     :process process
+                     :bytesize nil
+                     :parity nil
+                     :stopbits nil
+                     :flowcontrol nil)
+                    (equal (process-contact process :summary) "8N1"))
+                  (progn
+                    (delete-process process)
+                    (and
+                     (eq (process-type process) 'serial)
+                     (eq (process-status process) 'closed))))
+               (when (process-live-p process)
+                 (delete-process process))))"#
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn native_serial_process_surface_and_configuration_match_gnu() {
+    let (gnu_master, gnu_path) = serial_test_pty();
+    let gnu_program = serial_surface_program(&gnu_path);
+    let expected = "(t t t t t t t t t t t t t t t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {gnu_program})"), expected);
+    drop(gnu_master);
+
+    let (_emaxx_master, emaxx_path) = serial_test_pty();
+    let emaxx_program = serial_surface_program(&emaxx_path);
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&emaxx_program)
+        .read()
+        .expect("serial surface contract should parse")
+        .expect("serial surface contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("serial surface contract should evaluate"),
+        Value::list(std::iter::repeat_n(Value::T, 15))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn native_serial_speed_nil_preserves_the_unconfigured_gnu_contract() {
+    let (gnu_master, gnu_path) = serial_test_pty();
+    let program = |path: &str| {
+        format!(
+            r#"(let ((process
+                      (make-serial-process
+                       :name "serial-unconfigured"
+                       :port {path:?}
+                       :speed nil
+                       :sentinel 'ignore)))
+                 (unwind-protect
+                     (list
+                      (eq (process-type process) 'serial)
+                      (null (process-contact process :speed))
+                      (null (process-contact process :summary))
+                      (null
+                       (serial-process-configure
+                        :process process :speed 9600))
+                      (null (process-contact process :speed))
+                      (null (process-contact process :summary)))
+                   (delete-process process)))"#
+        )
+    };
+    let expected = "(t t t t t t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {})", program(&gnu_path)), expected);
+    drop(gnu_master);
+
+    let (_emaxx_master, emaxx_path) = serial_test_pty();
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&program(&emaxx_path))
+        .read()
+        .expect("unconfigured serial contract should parse")
+        .expect("unconfigured serial contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("unconfigured serial contract should evaluate"),
+        Value::list(std::iter::repeat_n(Value::T, 6))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
+    use serialport::SerialPort;
+
+    let (mut master, path) = serial_test_pty();
+    master
+        .set_timeout(Duration::from_secs(1))
+        .expect("set serial test PTY timeout");
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let filter_form = Reader::new("(lambda (_process text) (setq emaxx-test-serial-input text))")
+        .read()
+        .expect("serial filter should parse")
+        .expect("serial filter should exist");
+    let filter = interp
+        .eval(&filter_form, &mut env)
+        .expect("serial filter should evaluate");
+    let process = call(
+        &mut interp,
+        "make-serial-process",
+        &[
+            Value::symbol(":name"),
+            Value::String("serial-io".into()),
+            Value::symbol(":port"),
+            Value::String(path),
+            Value::symbol(":speed"),
+            Value::Integer(9600),
+            Value::symbol(":filter"),
+            filter,
+            Value::symbol(":sentinel"),
+            Value::symbol("ignore"),
+        ],
+        &mut env,
+    )
+    .expect("open serial process on PTY");
+
+    master
+        .write_all(b"from-master")
+        .expect("write PTY master to serial process");
+    call(
+        &mut interp,
+        "accept-process-output",
+        &[process.clone(), Value::Float(1.0)],
+        &mut env,
+    )
+    .expect("pump serial process input");
+    assert_eq!(
+        interp.lookup_var("emaxx-test-serial-input", &env),
+        Some(Value::String("from-master".into()))
+    );
+
+    call(
+        &mut interp,
+        "process-send-string",
+        &[process.clone(), Value::String("from-emaxx".into())],
+        &mut env,
+    )
+    .expect("send serial process output");
+    let mut output = [0_u8; 10];
+    std::io::Read::read_exact(&mut master, &mut output)
+        .expect("read serial process output from PTY master");
+    assert_eq!(&output, b"from-emaxx");
+    call(&mut interp, "delete-process", &[process], &mut env).expect("delete serial process");
+}
+
+#[test]
+fn native_datagram_addresses_track_udp_peer_state_and_contact_metadata() {
+    let program = r#"(let
+                         ((udp
+                           (make-network-process
+                            :name "udp-client"
+                            :type 'datagram
+                            :family 'ipv4
+                            :host "127.0.0.1"
+                            :service 9
+                            :sentinel 'ignore))
+                          (pipe
+                           (make-pipe-process
+                            :name "not-datagram"
+                            :sentinel 'ignore)))
+                       (unwind-protect
+                           (list
+                            (process-status udp)
+                            (process-type udp)
+                            (process-datagram-address udp)
+                            (set-process-datagram-address
+                             udp [127 0 0 1 10])
+                            (process-datagram-address udp)
+                            (process-contact udp :local)
+                            (process-contact udp :remote)
+                            (set-process-datagram-address
+                             udp [0 0 0 0 0 0 0 1 10])
+                            (process-datagram-address pipe)
+                            (set-process-datagram-address
+                             pipe [127 0 0 1 10]))
+                         (delete-process udp)
+                         (delete-process pipe)))"#;
+    let expected = "(open network [127 0 0 1 9] [127 0 0 1 10] [127 0 0 1 10] [0 0 0 0 0] [127 0 0 1 10] nil nil nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("datagram address contract should parse")
+        .expect("datagram address contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("datagram address contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("datagram address result should parse")
+            .expect("datagram address result should exist")
+    );
+}
+
+#[test]
+fn native_udp_event_pump_preserves_datagrams_and_updates_the_reply_peer() {
+    let program = r#"(progn
+                       (setq emaxx-test-udp-received nil)
+                       (let*
+                           ((server
+                             (make-network-process
+                              :name "udp-server"
+                              :type 'datagram
+                              :family 'ipv4
+                              :server t
+                              :host "127.0.0.1"
+                              :service t
+                              :filter
+                              (lambda (_process text)
+                                (setq emaxx-test-udp-received text))
+                              :sentinel 'ignore))
+                            (local (process-contact server :local))
+                            (client
+                             (make-network-process
+                              :name "udp-sender"
+                              :type 'datagram
+                              :family 'ipv4
+                              :host "127.0.0.1"
+                              :service (aref local 4)
+                              :sentinel 'ignore)))
+                         (unwind-protect
+                             (progn
+                               (process-send-string client "ping")
+                               (let ((attempts 0))
+                                 (while
+                                     (and
+                                      (null emaxx-test-udp-received)
+                                      (< attempts 50))
+                                   (accept-process-output server .02)
+                                   (setq attempts (1+ attempts))))
+                               (let
+                                   ((peer
+                                     (process-datagram-address server)))
+                                 (list
+                                  (equal
+                                   emaxx-test-udp-received "ping")
+                                  (equal
+                                   peer
+                                   (process-contact server :remote))
+                                  (and
+                                   (= (aref peer 0) 127)
+                                   (= (aref peer 1) 0)
+                                   (= (aref peer 2) 0)
+                                   (= (aref peer 3) 1))
+                                  (> (aref peer 4) 0))))
+                           (delete-process client)
+                           (delete-process server))))"#;
+    let expected = "(t t t t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("UDP event-pump contract should parse")
+        .expect("UDP event-pump contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("UDP event-pump contract should evaluate"),
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn native_subprocess_job_control_uses_child_groups_and_reaps_signal_states() {
+    fn start_sleep(interp: &mut Interpreter, env: &mut Env, name: &str) -> Value {
+        call(
+            interp,
+            "make-process",
+            &[
+                Value::symbol(":name"),
+                Value::String(name.into()),
+                Value::symbol(":command"),
+                Value::list([
+                    Value::String("/bin/sleep".into()),
+                    Value::String("30".into()),
+                ]),
+                Value::symbol(":connection-type"),
+                Value::symbol("pipe"),
+                Value::symbol(":sentinel"),
+                Value::symbol("ignore"),
+            ],
+            env,
+        )
+        .unwrap_or_else(|error| panic!("start {name}: {error}"))
+    }
+
+    fn wait_for_status(interp: &mut Interpreter, env: &mut Env, process: &Value, expected: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = call(interp, "process-status", std::slice::from_ref(process), env)
+                .expect("read controlled subprocess status");
+            if status == Value::symbol(expected) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "subprocess never reached {expected}; last status was {status:?}"
+            );
+            pump_external_process_output(interp, env).expect("pump controlled subprocess");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+
+    let stopped = start_sleep(&mut interp, &mut env, "stopped-child");
+    let stopped_id = interp
+        .resolve_process_id(&stopped)
+        .expect("stopped child process id");
+    let stopped_pid = interp
+        .process_os_id(stopped_id)
+        .expect("stopped child OS pid") as libc::pid_t;
+    // SAFETY: getpgid reads kernel metadata for a known live child pid.
+    assert_eq!(unsafe { libc::getpgid(stopped_pid) }, stopped_pid);
+    assert_eq!(
+        call(
+            &mut interp,
+            "internal-default-signal-process",
+            &[stopped.clone(), Value::symbol("STOP")],
+            &mut env,
+        )
+        .expect("force child stop"),
+        Value::Integer(0)
+    );
+    wait_for_status(&mut interp, &mut env, &stopped, "stop");
+    assert_eq!(
+        call(
+            &mut interp,
+            "continue-process",
+            std::slice::from_ref(&stopped),
+            &mut env,
+        )
+        .expect("continue stopped child"),
+        stopped
+    );
+    wait_for_status(&mut interp, &mut env, &stopped, "run");
+    assert_eq!(
+        call(
+            &mut interp,
+            "kill-process",
+            std::slice::from_ref(&stopped),
+            &mut env,
+        )
+        .expect("kill continued child"),
+        stopped
+    );
+    wait_for_status(&mut interp, &mut env, &stopped, "signal");
+    assert_eq!(
+        call(
+            &mut interp,
+            "process-exit-status",
+            std::slice::from_ref(&stopped),
+            &mut env,
+        )
+        .expect("killed child signal"),
+        Value::Integer(libc::SIGKILL.into())
+    );
+
+    for (name, function, signal) in [
+        ("interrupted-child", "interrupt-process", libc::SIGINT),
+        ("quit-child", "quit-process", libc::SIGQUIT),
+    ] {
+        let process = start_sleep(&mut interp, &mut env, name);
+        assert_eq!(
+            call(
+                &mut interp,
+                function,
+                std::slice::from_ref(&process),
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{function}: {error}")),
+            process
+        );
+        wait_for_status(&mut interp, &mut env, &process, "signal");
+        assert_eq!(
+            call(
+                &mut interp,
+                "process-exit-status",
+                std::slice::from_ref(&process),
+                &mut env,
+            )
+            .expect("controlled child signal"),
+            Value::Integer(signal.into())
+        );
+    }
+}
+
+#[test]
+fn native_system_process_inventory_and_attributes_share_the_host_snapshot() {
+    let program = r#"(let* ((pid (emacs-pid))
+                            (ids (list-system-processes))
+                            (a (process-attributes pid)))
+                       (list
+                        (or (null ids) (and (listp ids) (memq pid ids) t))
+                        (integerp (alist-get 'euid a))
+                        (stringp (alist-get 'user a))
+                        (integerp (alist-get 'egid a))
+                        (stringp (alist-get 'group a))
+                        (stringp (alist-get 'comm a))
+                        (stringp (alist-get 'state a))
+                        (integerp (alist-get 'ppid a))
+                        (integerp (alist-get 'pgrp a))
+                        (consp (alist-get 'start a))
+                        (integerp (alist-get 'vsize a))
+                        (integerp (alist-get 'rss a))
+                        (consp (alist-get 'etime a))
+                        (stringp (alist-get 'args a))
+                        (process-attributes -1)))"#;
+    let expected = "(t t t t t t t t t t t t t t nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("process inventory assertion should parse")
+        .expect("process inventory assertion form");
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("process inventory assertion should evaluate");
+    assert_eq!(
+        result,
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil,
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let (buffer_id, _) = interp.create_buffer(" *held-process-output*");
+    let buffer = interp
+        .buffer_identity_value(buffer_id)
+        .expect("held-output buffer identity");
+    let process = call(
+        &mut interp,
+        "make-process",
+        &[
+            Value::symbol(":name"),
+            Value::String("held-output".into()),
+            Value::symbol(":buffer"),
+            buffer,
+            Value::symbol(":command"),
+            Value::list([Value::String("/bin/cat".into())]),
+            Value::symbol(":connection-type"),
+            Value::symbol("pipe"),
+            Value::symbol(":sentinel"),
+            Value::symbol("ignore"),
+        ],
+        &mut env,
+    )
+    .expect("start held-output process");
+    call(
+        &mut interp,
+        "set-process-filter",
+        &[process.clone(), Value::T],
+        &mut env,
+    )
+    .expect("hold process output");
+    call(
+        &mut interp,
+        "process-send-string",
+        &[process.clone(), Value::String("held\n".into())],
+        &mut env,
+    )
+    .expect("send held output");
+    assert_eq!(
+        call(
+            &mut interp,
+            "accept-process-output",
+            &[process.clone(), Value::Float(0.05)],
+            &mut env,
+        )
+        .expect("wait while output is held"),
+        Value::Nil
+    );
+    assert_eq!(
+        interp
+            .get_buffer_by_id(buffer_id)
+            .expect("held-output buffer")
+            .buffer_string(),
+        ""
+    );
+
+    call(
+        &mut interp,
+        "set-process-filter",
+        &[process.clone(), Value::Nil],
+        &mut env,
+    )
+    .expect("restore default process filter");
+    // The full debug suite runs heavyweight Eshell interpreters and several
+    // native subprocess probes concurrently.  Keep polling the actual
+    // delivery condition, but do not make host scheduler latency a semantic
+    // failure.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        let delivered = call(
+            &mut interp,
+            "accept-process-output",
+            &[process.clone(), Value::Float(0.05)],
+            &mut env,
+        )
+        .expect("wait for resumed output");
+        if delivered == Value::T {
+            break;
+        }
+    }
+    assert_eq!(
+        interp
+            .get_buffer_by_id(buffer_id)
+            .expect("held-output buffer")
+            .buffer_string(),
+        "held\n"
+    );
+    call(
+        &mut interp,
+        "delete-process",
+        std::slice::from_ref(&process),
+        &mut env,
+    )
+    .expect("delete held-output process");
+}
+
+#[cfg(unix)]
+#[test]
+fn native_process_window_and_foreground_queries_follow_pty_ownership() {
+    assert_upstream_primitive_contract(
+        r#"(let ((pipe (make-process :name "pipe"
+                                     :command '("/bin/cat")
+                                     :connection-type 'pipe))
+                  (pty (make-process :name "pty"
+                                    :command '("/bin/cat")
+                                    :connection-type 'pty)))
+             (unwind-protect
+                 (prin1
+                  (list
+                   (set-process-window-size pipe 24 80)
+                   (set-process-window-size pty 24 80)
+                   (let ((v (process-running-child-p pipe)))
+                     (or (eq v t) (integerp v)))
+                   (null (process-running-child-p pty))))
+               (set-process-sentinel pipe 'ignore)
+               (set-process-sentinel pty 'ignore)
+               (delete-process pipe)
+               (delete-process pty)))"#,
+        "(nil t t t)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let make_process =
+        |interp: &mut Interpreter, env: &mut Env, name: &str, connection_type: &str| {
+            call(
+                interp,
+                "make-process",
+                &[
+                    Value::symbol(":name"),
+                    Value::String(name.into()),
+                    Value::symbol(":command"),
+                    Value::list([Value::String("/bin/cat".into())]),
+                    Value::symbol(":connection-type"),
+                    Value::symbol(connection_type),
+                    Value::symbol(":sentinel"),
+                    Value::symbol("ignore"),
+                ],
+                env,
+            )
+            .unwrap_or_else(|error| panic!("start {connection_type} process: {error}"))
+        };
+    let pipe = make_process(&mut interp, &mut env, "pipe", "pipe");
+    let pty = make_process(&mut interp, &mut env, "pty", "pty");
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "set-process-window-size",
+            &[pipe.clone(), Value::Integer(24), Value::Integer(80)],
+            &mut env,
+        )
+        .expect("pipe window size"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "set-process-window-size",
+            &[pty.clone(), Value::Integer(24), Value::Integer(80)],
+            &mut env,
+        )
+        .expect("PTY window size"),
+        Value::T
+    );
+    let pipe_foreground = call(
+        &mut interp,
+        "process-running-child-p",
+        std::slice::from_ref(&pipe),
+        &mut env,
+    )
+    .expect("pipe foreground query");
+    assert!(pipe_foreground == Value::T || matches!(pipe_foreground, Value::Integer(_)));
+    assert_eq!(
+        call(
+            &mut interp,
+            "process-running-child-p",
+            std::slice::from_ref(&pty),
+            &mut env,
+        )
+        .expect("PTY foreground query"),
+        Value::Nil
+    );
+    for process in [pipe, pty] {
+        call(
+            &mut interp,
+            "delete-process",
+            std::slice::from_ref(&process),
+            &mut env,
+        )
+        .expect("delete process query target");
+    }
 }

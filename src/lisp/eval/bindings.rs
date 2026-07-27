@@ -10,6 +10,29 @@ pub(crate) const MACRO_SHADOW_PREFIX: &str = "--emaxx-shadowed-macro--";
 // hijack `(car x)' (GNU separates value and function cells).
 pub(crate) const FUNCTION_FRAME_MARKER: &str = "--emaxx-function-frame--";
 
+fn dynamic_library_suffix_values() -> Vec<Value> {
+    #[cfg(target_os = "macos")]
+    let suffixes = [".dylib", ".so"].as_slice();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let suffixes = [".so"].as_slice();
+    #[cfg(windows)]
+    let suffixes = [".dll"].as_slice();
+    suffixes
+        .iter()
+        .map(|suffix| Value::String((*suffix).into()))
+        .collect()
+}
+
+fn module_file_suffix_value() -> Value {
+    #[cfg(target_os = "macos")]
+    let suffix = ".dylib";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let suffix = ".so";
+    #[cfg(windows)]
+    let suffix = ".dll";
+    Value::String(suffix.into())
+}
+
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
         // Cow avoids a per-lookup String allocation for the overwhelmingly
@@ -100,6 +123,46 @@ impl Interpreter {
                 "redisplay--unhighlight-overlay-function".into(),
             )),
             "case-fold-search" => Some(Value::T),
+            // buffer.c's reset_buffer_local_variables defaults.  These are
+            // native DEFVAR_PER_BUFFER slots, so they exist before any Lisp
+            // library is loaded even when their value is nil.
+            "abbrev-mode"
+            | "auto-fill-function"
+            | "bidi-paragraph-direction"
+            | "bidi-paragraph-separate-re"
+            | "bidi-paragraph-start-re"
+            | "buffer-backed-up"
+            | "buffer-display-time"
+            | "buffer-file-format"
+            | "fringe-cursor-alist"
+            | "fringe-indicator-alist"
+            | "fringes-outside-margins"
+            | "indicate-buffer-boundaries"
+            | "indicate-empty-lines"
+            | "left-fringe-width"
+            | "local-minor-modes"
+            | "point-before-scroll"
+            | "right-fringe-width"
+            | "scroll-bar-height"
+            | "scroll-bar-width"
+            | "scroll-down-aggressively"
+            | "scroll-up-aggressively"
+            | "text-conversion-style"
+            | "truncate-lines"
+            | "word-wrap" => Some(Value::Nil),
+            "bidi-display-reordering"
+            | "buffer-auto-save-file-format"
+            | "cache-long-scans"
+            | "ctl-arrow"
+            | "cursor-type"
+            | "cursor-in-non-selected-windows"
+            | "horizontal-scroll-bar"
+            | "selective-display-ellipses"
+            | "vertical-scroll-bar" => Some(Value::T),
+            "buffer-display-count"
+            | "buffer-saved-size"
+            | "left-margin-width"
+            | "right-margin-width" => Some(Value::Integer(0)),
             "case-replace" => Some(Value::T),
             "case-symbols-as-words" => Some(Value::Nil),
             "use-hard-newlines" => Some(Value::Nil),
@@ -109,7 +172,13 @@ impl Interpreter {
                 Some(Value::Symbol("buffer-substring--filter".into()))
             }
             "meta-prefix-char" => Some(Value::Integer(27)),
-            "translation-table-vector" => Some(Value::list([Value::symbol("vector-literal")])),
+            // character.c reserves sixteen IDs initially.  mule.el doubles
+            // this vector when it fills; an empty vector can never grow
+            // because doubling zero still yields zero.
+            "translation-table-vector" => Some(Value::list(
+                std::iter::once(Value::symbol("vector-literal"))
+                    .chain(std::iter::repeat_n(Value::Nil, 16)),
+            )),
             "float-e" => Some(Value::Float(std::f64::consts::E)),
             "float-pi" => Some(Value::Float(std::f64::consts::PI)),
             "gc-elapsed" => Some(Value::Float(0.0)),
@@ -165,6 +234,13 @@ impl Interpreter {
                     .map(Value::Symbol)
                     .collect::<Vec<_>>(),
             )),
+            "coding-system-alist" => Some(Value::list(
+                self.coding_system_list(false)
+                    .into_iter()
+                    .map(|name| Value::list([Value::String(name)]))
+                    .collect::<Vec<_>>(),
+            )),
+            "char-code-property-alist" => Some(Value::Nil),
             "set-auto-coding-function" => Some(Value::Nil),
             "file-coding-system-alist" => Some(Value::Nil),
             "file-name-coding-system" => Some(Value::Nil),
@@ -236,9 +312,41 @@ impl Interpreter {
             // time (event-apply-*-modifier bindings).
             "function-key-map" | "key-translation-map" | "input-decode-map"
             | "local-function-key-map" => Some(Value::list([Value::Symbol("keymap".into())])),
+            "values" => Some(Value::Nil),
             "read-circle" => Some(Value::T),
             "gensym-counter" => Some(Value::Integer(0)),
-            "load-file-rep-suffixes" => Some(Value::list([Value::String(String::new())])),
+            "load-suffixes" => Some(Value::list(
+                dynamic_library_suffix_values()
+                    .into_iter()
+                    .chain([Value::String(".elc".into()), Value::String(".el".into())]),
+            )),
+            "module-file-suffix" => Some(module_file_suffix_value()),
+            "dynamic-library-suffixes" => Some(Value::list(dynamic_library_suffix_values())),
+            // GNU's dumped image has jka-compr's representation suffix
+            // installed; the native loader likewise understands gzip.
+            "load-file-rep-suffixes" => Some(Value::list([
+                Value::String(String::new()),
+                Value::String(".gz".into()),
+            ])),
+            "after-load-alist" => Some(Value::Nil),
+            "load-true-file-name" => Some(
+                self.current_load_file
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+            "load-source-file-function" => {
+                Some(Value::Symbol("load-with-code-conversion".into()))
+            }
+            "load-force-doc-strings" | "load-convert-to-unibyte" => Some(Value::Nil),
+            "preloaded-file-list" | "byte-boolean-vars" => Some(Value::Nil),
+            "load-dangerous-libraries" | "force-load-messages" => Some(Value::Nil),
+            "bytecomp-version-regexp" => Some(Value::String(
+                "^;;;.\\(?:in Emacs version\\|bytecomp version FSF\\)".into(),
+            )),
+            "lread--unescaped-character-literals" => Some(Value::Nil),
+            "load-prefer-newer" | "load-no-native" => Some(Value::Nil),
+            "read-symbol-shorthands" => Some(Value::Nil),
             "debug-on-quit" => Some(Value::Nil),
             "inhibit-redisplay" => Some(Value::Nil),
             "inhibit-quit" => Some(Value::Nil),
@@ -253,20 +361,12 @@ impl Interpreter {
             "minor-mode-overriding-map-alist" => Some(Value::Nil),
             "standard-input" => Some(Value::T),
             "temporary-file-directory" => Some(Value::String(temp_directory_name())),
-            "ert-remote-temporary-file-directory" => {
-                let temporary = temp_directory_name();
-                Some(if self.has_feature("tramp") {
-                    Value::String(format!("/mock::{temporary}"))
-                } else {
-                    Value::Nil
-                })
-            }
             "auto-mode-alist" => Some(builtin_auto_mode_alist()),
             "auto-compression-mode" => Some(Value::T),
             "command-switch-alist" => Some(Value::Nil),
             "command-line-args-left" => Some(Value::Nil),
             "purify-flag" => Some(Value::Nil),
-            "require-final-newline" => Some(Value::T),
+            "require-final-newline" => Some(Value::Nil),
             "sentence-end" => Some(Value::Nil),
             "sentence-end-double-space" => Some(Value::T),
             "null-device" => Some(Value::String("/dev/null".into())),
@@ -301,6 +401,8 @@ impl Interpreter {
             ])),
             "ignored-local-variable-values" => Some(Value::Nil),
             "safe-local-variable-values" => Some(Value::Nil),
+            "file-local-variables-alist" | "dir-local-variables-alist" => Some(Value::Nil),
+            "text-quoting-style" => Some(Value::Nil),
             "hack-local-variables-hook" => Some(Value::Nil),
             "custom-current-group-alist" => Some(Value::Nil),
             "defun-declarations-alist" => Some(Value::Nil),
@@ -343,7 +445,7 @@ impl Interpreter {
             "minor-mode-alist" => Some(Value::Nil),
             "timer-list" | "timer-idle-list" => Some(Value::Nil),
             "revert-buffer-function" => {
-                Some(Value::Symbol("emaxx-default-revert-buffer-function".into()))
+                Some(Value::Symbol("revert-buffer--default".into()))
             }
             "buffer-stale-function" => Some(Value::Symbol(
                 "buffer-stale--default-function".into(),
@@ -393,19 +495,7 @@ impl Interpreter {
             "prog-mode-syntax-table" => Some(Value::CharTable(self.standard_syntax_table_id())),
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),
             "compilation-error-regexp-alist" => Some(Value::Nil),
-            "text-mode-map" => Some(primitives::keymap_placeholder(Some("text-mode-map"))),
-            "lisp-mode-shared-map" => {
-                Some(primitives::keymap_placeholder(Some("lisp-mode-shared-map")))
-            }
-            "lisp-mode-map" => Some(primitives::keymap_placeholder(Some("lisp-mode-map"))),
-            "emacs-lisp-mode-map" => {
-                Some(primitives::keymap_placeholder(Some("emacs-lisp-mode-map")))
-            }
             "tex-mode" => Some(Value::Symbol("tex-mode".into())),
-            "tex-mode-map" => Some(primitives::keymap_placeholder(Some("tex-mode-map"))),
-            "texinfo-mode-map" => Some(primitives::keymap_placeholder(Some("texinfo-mode-map"))),
-            "special-mode-map" => Some(primitives::keymap_placeholder(Some("special-mode-map"))),
-            "global-map" => Some(primitives::keymap_placeholder(Some("global-map"))),
             "frame-internal-parameters" => Some(Value::Nil),
             "password-word-equivalents" => Some(Value::list([
                 Value::String("password".into()),
@@ -509,10 +599,7 @@ impl Interpreter {
             "line-spacing" => Some(Value::Nil),
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
-            "scroll-up-aggressively" => Some(Value::Nil),
-            "vertical-scroll-bar" => Some(Value::Symbol("right".into())),
             "overwrite-mode" => Some(Value::Nil),
-            "cursor-in-non-selected-windows" => Some(Value::Nil),
             "load-path" => Some(Value::list(
                 self.load_path
                     .iter()
@@ -551,7 +638,9 @@ impl Interpreter {
                 Some(Value::Symbol("command-error-default-function".into()))
             }
             "read-file-name-completion-ignore-case" => Some(Value::Nil),
-            "mounted-file-systems" => Some(Value::String(String::new())),
+            "mounted-file-systems" => Some(Value::String(
+                r"^\(?:/\(?:afs/\|m\(?:edia/\|nt\)\|\(?:ne\|tmp_mn\)t/\)\)".into(),
+            )),
             "system-type" => Some(Value::Symbol(
                 std::env::consts::OS.replace("macos", "darwin"),
             )),
@@ -594,6 +683,15 @@ impl Interpreter {
             "delete-by-moving-to-trash" => Some(Value::Nil),
             "directory-files-no-dot-files-regexp" => Some(Value::String("[^.]\\|\\.\\.\\.".into())),
             "user-emacs-directory" => Some(Value::String("/nonexistent/.emacs.d/".into())),
+            // Defaults read by the Rust URL transport before url.el has
+            // loaded.  The `url' feature remains Lisp-owned, and loading the
+            // real package replaces/extends this bootstrap state.
+            "url-configuration-directory" => {
+                Some(Value::String("/nonexistent/.emacs.d/url/".into()))
+            }
+            "url-redirect-buffer" | "url-dead-buffer-list" => Some(Value::Nil),
+            "url-retrieve-number-of-calls" => Some(Value::Integer(0)),
+            "url-asynchronous" => Some(Value::T),
             "invocation-name" => Some(Value::String(
                 primitives::current_invocation_name().unwrap_or_else(|| "emaxx".into()),
             )),
@@ -612,13 +710,16 @@ impl Interpreter {
             // fixed nil means "not recorded", which string-replace paths
             // handle (erc--make-message-variable-name checks it).
             "emacs-build-time" => Some(Value::Nil),
-            "etags-program-name" => Some(Value::String(
-                primitives::find_executable("etags").unwrap_or_else(|| "etags".into()),
-            )),
+            "ctags-program-name" => Some(Value::String("ctags".into())),
+            "etags-program-name" => Some(Value::String("etags".into())),
+            "hexl-program-name" => Some(Value::String("hexl".into())),
             "emacsclient-program-name" => Some(Value::String(
                 primitives::compat_emacsclient_program_name()
                     .unwrap_or_else(|| "emacsclient".into()),
             )),
+            "movemail-program-name" => Some(Value::String("movemail".into())),
+            "ebrowse-program-name" => Some(Value::String("ebrowse".into())),
+            "rcs2log-program-name" => Some(Value::String("rcs2log".into())),
             "process-environment" | "initial-environment" => Some(Value::list(
                 std::env::vars()
                     .map(|(name, value)| Value::String(format!("{name}={value}")))
@@ -628,7 +729,12 @@ impl Interpreter {
             "grep-program" => Some(Value::String("grep".into())),
             _ if name.starts_with('.') => Some(Value::Nil),
             _ if name.starts_with(':') => Some(Value::Symbol(name.to_string())),
-            _ => None,
+            _ => generated_autoloads::generated_dumped_variable(name).and_then(|source| {
+                crate::lisp::reader::Reader::new(source)
+                    .read()
+                    .ok()
+                    .flatten()
+            }),
         }
     }
 
@@ -769,7 +875,7 @@ impl Interpreter {
             }
 
             let Some(binding) = self.raw_function_binding(&current, env) else {
-                return Err(LispError::Void(current));
+                return Err(LispError::VoidFunction(current));
             };
             match binding {
                 Value::Symbol(next) => current = next,

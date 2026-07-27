@@ -1,14 +1,128 @@
 use super::*;
 
 #[test]
-fn define_derived_mode_creates_mode_map_variable() {
+fn define_derived_mode_creates_the_complete_mode_state_contract() {
     assert_eq!(
         eval_str(
             "(progn
                    (define-derived-mode sample-derived-mode fundamental-mode \"Sample\")
-                   (keymapp sample-derived-mode-map))"
+                   (list (keymapp sample-derived-mode-map)
+                         (eq (char-table-subtype
+                              sample-derived-mode-syntax-table)
+                             'syntax-table)
+                         (abbrev-table-p sample-derived-mode-abbrev-table)
+                         (special-variable-p 'sample-derived-mode-hook)
+                         (special-variable-p 'sample-derived-mode-map)
+                         (special-variable-p 'sample-derived-mode-syntax-table)
+                         (special-variable-p 'sample-derived-mode-abbrev-table)
+                         (with-temp-buffer
+                           (sample-derived-mode)
+                           (list (eq (syntax-table)
+                                     sample-derived-mode-syntax-table)
+                                 (eq local-abbrev-table
+                                     sample-derived-mode-abbrev-table)))))"
         ),
-        Value::T
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::list([Value::T, Value::T]),
+        ])
+    );
+}
+
+#[test]
+fn eager_define_derived_mode_lowering_replaces_its_search_stub_with_the_real_mode() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (eval (macroexpand
+                      '(define-derived-mode sample-eager-mode fundamental-mode
+                         \"Eager\"
+                         (setq-local sample-eager-body-ran t))))
+               (with-temp-buffer
+                 (sample-eager-mode)
+                 (list major-mode
+                       (derived-mode-p 'sample-eager-mode)
+                       sample-eager-body-ran)))"
+        ),
+        Value::list([
+            Value::Symbol("sample-eager-mode".into()),
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn real_outline_library_loads_over_the_runtime_keymap_list_adapter() {
+    let emacs_repo = upstream_emacs_repo();
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&emacs_repo).expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    crate::lisp::load_file_strict(&mut interp, &emacs_repo.join("lisp/outline.el"))
+        .expect("load real outline");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (featurep 'outline)
+                   (boundp 'outline-mode-syntax-table)
+                   (eq (char-table-subtype outline-mode-syntax-table)
+                       'syntax-table)
+                   (keymapp outline-minor-mode-menu-bar-map))"
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn dumped_word_motion_and_auto_fill_controls_are_complete() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+                (with-temp-buffer
+                  (insert "alpha beta")
+                  (list
+                   (progn (goto-char (point-min))
+                          (forward-word-strictly)
+                          (point))
+                   (progn (goto-char (point-max))
+                          (backward-word-strictly)
+                          (point))
+                   (progn (turn-on-auto-fill) auto-fill-function)
+                   (progn (turn-off-auto-fill) auto-fill-function)
+                   (progn (abbrev-mode 1) abbrev-mode)
+                   (progn (abbrev-mode -1) abbrev-mode)
+                   (char-table-p word-move-empty-char-table)))
+                "#,
+        ),
+        Value::list([
+            Value::Integer(6),
+            Value::Integer(7),
+            Value::Symbol("do-auto-fill".into()),
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::T,
+        ])
     );
 }
 
@@ -296,6 +410,47 @@ fn cl_defstruct_constructor_arglists_ignore_aux_bindings() {
         ),
         Value::list([Value::Nil, Value::T])
     );
+}
+
+#[test]
+fn loaded_gnu_help_reads_simple_native_struct_constructor_arglists() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp =
+            crate::batch::initialize_batch_interpreter(&options).expect("batch interpreter");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                (progn
+                  (require 'help)
+                  (cl-defstruct
+                      (loaded-arglist-struct
+                       (:constructor loaded-arglist-empty (&aux (abc 1)))
+                       (:constructor loaded-arglist-optional (&optional def)))
+                    (abc 5)
+                    def)
+                  (list
+                   (help-function-arglist 'loaded-arglist-empty)
+                   (pcase (help-function-arglist 'loaded-arglist-optional)
+                     (`(&optional ,_) t))
+                   (loaded-arglist-struct-abc (loaded-arglist-empty))
+                   (loaded-arglist-struct-def
+                    (loaded-arglist-optional 'value))))"#
+            ),
+            Value::list([
+                Value::Nil,
+                Value::T,
+                Value::Integer(1),
+                Value::Symbol("value".into()),
+            ])
+        );
+    });
 }
 
 #[test]
@@ -783,7 +938,7 @@ fn byte_compile_from_buffer_warns_for_unresolved_calls_outside_feature_guards() 
         eval_str(
             r#"
                 (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
-                  (with-temp-buffer
+                      (with-temp-buffer
                     (insert "\\(defun foo ()\n"
                             "  (an-undefined-function))\n"
                             "\\(defun foo1 ()\n"
@@ -2918,6 +3073,30 @@ fn decode_time_accepts_let_bound_string_zone() {
 }
 
 #[test]
+fn time_zone_rule_is_interpreter_local_and_setenv_tz_updates_it() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((winter (encode-time '(0 0 12 1 1 2020 nil nil t)))
+                      (summer (encode-time '(0 0 12 1 7 2020 nil nil t))))
+                  (set-time-zone-rule "CET-1CEST,M3.5.0/2,M10.5.0/3")
+                  (list
+                   (format-time-string "%z %Z" winter)
+                   (format-time-string "%z %Z" summer)
+                   (progn
+                     (setenv "TZ" "UTC0")
+                     (format-time-string "%z %Z" winter))))
+                "#
+        ),
+        Value::list([
+            Value::String("+0100 CET".into()),
+            Value::String("+0200 CEST".into()),
+            Value::String("+0000 UTC".into()),
+        ])
+    );
+}
+
+#[test]
 fn decoded_time_accessors_read_list_fields() {
     assert_eq!(
         eval_str(
@@ -2981,6 +3160,73 @@ fn setf_decoded_time_accessors_mutate_time_lists() {
                     Value::Integer(-3600),
                 ]),
             ])
+        );
+    });
+}
+
+#[test]
+fn loaded_gnu_setf_mutates_decoded_time_places() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        crate::lisp::load_file_strict(
+            &mut interp,
+            &upstream_emacs_repo().join("lisp/emacs-lisp/gv.el"),
+        )
+        .expect("load GNU gv");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((time (decode-time 0 \"UTC0\" 'integer)))
+                   (setf (decoded-time-hour time) 23
+                         (decoded-time-second time) 30)
+                   (list (decoded-time-hour time)
+                         (decoded-time-second time)))"
+            ),
+            Value::list([Value::Integer(23), Value::Integer(30)])
+        );
+    });
+}
+
+#[test]
+fn macro_expansion_cache_tracks_symbol_property_mutations() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        crate::lisp::load_file_strict(
+            &mut interp,
+            &upstream_emacs_repo().join("lisp/emacs-lisp/gv.el"),
+        )
+        .expect("load GNU gv");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (defun emaxx-test-late-place--cmacro (_form time)
+                     (list 'nth 2 time))
+                   (defun emaxx-test-set-late-place (time)
+                     (setf (emaxx-test-late-place time) 23))
+                   (let ((time (decode-time 0 \"UTC0\" 'integer)))
+                     (condition-case nil
+                         (emaxx-test-set-late-place time)
+                       (error nil))
+                     (put 'emaxx-test-late-place
+                          'compiler-macro
+                          'emaxx-test-late-place--cmacro)
+                     (emaxx-test-set-late-place time)
+                     (decoded-time-hour time)))"
+            ),
+            Value::Integer(23)
         );
     });
 }
@@ -3113,24 +3359,34 @@ fn format_time_string_supports_colonized_zone_offsets() {
 
 #[test]
 fn posix_tz_environment_drives_local_encode_and_decode_time() {
-    let previous_tz = std::env::var("TZ").ok();
-    unsafe {
-        std::env::set_var("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4");
-    }
-    let result = eval_str(
-        r#"(list (decode-time (encode-time '(0 0 10 1 1 2013 nil -1 nil)) nil 'integer)
-                     (decode-time (encode-time '(0 0 10 1 8 2013 nil -1 nil)) nil 'integer)
-                     (decode-time (encode-time '(0 0 10 1 1 2013 nil -1 t)) nil 'integer))"#,
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize GNU-compatible batch interpreter");
+    eval_str_with(
+        &mut interp,
+        r#"(setenv "TZ" "EET-2EEST,M3.5.0/3,M10.5.0/4")"#,
     );
-    if let Some(value) = previous_tz {
-        unsafe {
-            std::env::set_var("TZ", value);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("TZ");
-        }
-    }
+    assert_eq!(
+        interp.local_time_zone_rule,
+        Value::String("EET-2EEST,M3.5.0/3,M10.5.0/4".into())
+    );
+    let result = eval_str_with(
+        &mut interp,
+        r#"(list
+              (decode-time
+               (encode-time '(0 0 10 1 1 2013 nil -1 nil))
+               nil 'integer)
+              (decode-time
+               (encode-time '(0 0 10 1 8 2013 nil -1 nil))
+               nil 'integer)
+              (decode-time
+               (encode-time '(0 0 10 1 1 2013 nil -1 t))
+               nil 'integer))"#,
+    );
     assert_eq!(
         result,
         Value::list([
@@ -3169,6 +3425,437 @@ fn posix_tz_environment_drives_local_encode_and_decode_time() {
             ]),
         ])
     );
+}
+
+#[test]
+fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("emaxx-todo-mode-{unique}"));
+    let todo_directory = root.join("todo-mode-resources");
+    std::fs::create_dir_all(&todo_directory).expect("create Todo resource directory");
+    let test_file = root.join("todo-mode-tests.el");
+    std::fs::copy(
+        upstream_emacs_repo().join("test/lisp/calendar/todo-mode-tests.el"),
+        &test_file,
+    )
+    .expect("copy Todo test");
+    std::fs::copy(
+        upstream_emacs_repo().join("test/lisp/calendar/todo-mode-resources/todo-test-1.todo"),
+        todo_directory.join("todo-test-1.todo"),
+    )
+    .expect("copy Todo fixture");
+    std::fs::copy(
+        upstream_emacs_repo().join("test/lisp/calendar/todo-mode-resources/todo-test-1.toda"),
+        todo_directory.join("todo-test-1.toda"),
+    )
+    .expect("copy Todo archive fixture");
+    let noselect_file = root.join("noselect.txt");
+    std::fs::write(&noselect_file, "noselect\n").expect("write noselect fixture");
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize GNU-compatible batch interpreter");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(list (featurep 'window)
+                     (fboundp 'cl--assertion-failed)
+                     (subrp (symbol-function 'window-body-width))
+                     (subrp (indirect-function 'window-width))
+                     (subrp (indirect-function 'window-fringes))
+                     (subrp (indirect-function 'set-window-fringes))
+                     (= (window-width) (frame-width))
+                     (= (window-height) (frame-height))
+                     (= (window-pixel-width) (frame-width))
+                     (= (window-pixel-height) (frame-height))
+                     (= (window-pixel-left) 0)
+                     (= (window-pixel-top) 0)
+                     (equal
+                      (list (frame-internal-border-width)
+                            (frame-native-width)
+                            (frame-native-height)
+                            (frame-pixel-width)
+                            (frame-pixel-height)
+                            (frame-text-width)
+                            (frame-text-height)
+                            (frame-text-cols)
+                            (frame-text-lines)
+                            (frame-fringe-width)
+                            (frame-scroll-bar-width)
+                            (frame-scroll-bar-height))
+                      '(0 80 25 80 25 80 25 80 25 0 0 0))
+                     (equal
+                      (list (window-mode-line-height)
+                            (window-header-line-height)
+                            (window-tab-line-height)
+                            (window-right-divider-width)
+                            (window-bottom-divider-width)
+                            (window-scroll-bar-width)
+                            (window-scroll-bar-height))
+                      '(1 0 0 0 0 0 0))
+                     (let ((mode-line-format nil))
+                       (= (window-mode-line-height) 0))
+                     (equal
+                      (list (window-body-width)
+                            (window-body-height)
+                            (window-total-width)
+                            (window-total-height)
+                            (window-pixel-edges)
+                            (window-body-pixel-edges)
+                            (window-inside-pixel-edges)
+                            (window-left-column)
+                            (window-top-line)
+                            (window-old-pixel-width)
+                            (window-old-pixel-height)
+                            (window-old-body-pixel-width)
+                            (window-old-body-pixel-height))
+                      '(80 23 80 24
+                        (0 0 80 24) (0 0 80 23) (0 0 80 23)
+                        0 0 0 0 0 0))
+                     (let ((window (selected-window)))
+                       (and
+                        (equal (window-fringes window) '(0 0 nil nil))
+                        (null (set-window-fringes window 3 4 t t))
+                        (equal (window-fringes window) '(0 0 nil nil))
+                        (equal (window-scroll-bars window)
+                               '(nil 0 t nil 0 t nil))
+                        (null
+                         (set-window-scroll-bars
+                          window 3 'left 2 'bottom t))
+                        (equal (window-scroll-bars window)
+                               '(nil 0 t nil 0 t nil))
+                        (eq (window-cursor-type window) t)
+                        (eq (set-window-cursor-type window 'bar) 'bar)
+                        (eq (window-cursor-type window) 'bar)
+                        (eq (set-window-display-table window 'sentinel)
+                            'sentinel)
+                        (eq (window-display-table window) 'sentinel)
+                        (eq (set-window-cursor-type window t) t)
+                        (null (set-window-display-table window nil))))
+                     (let ((window (selected-window)))
+                       (and
+                        (let ((initial
+                               (list (window-new-pixel window)
+                                     (window-new-total window)
+                                     (window-new-normal window)
+                                     (window-normal-size window)
+                                     (window-normal-size window t))))
+                          (or (equal initial '(0 0 0 1.0 1.0))
+                              (error "initial resize state differs: %S"
+                                     initial)))
+                        (= (set-window-new-pixel window 24) 24)
+                        (= (set-window-new-pixel window -1 t) 23)
+                        (= (set-window-new-pixel window 1 t) 24)
+                        (= (set-window-new-total window 24) 24)
+                        (= (set-window-new-total window -1 t) 23)
+                        (= (set-window-new-total window 1 t) 24)
+                        (eq (set-window-new-normal window 'pending) 'pending)
+                        (eq (window-new-normal window) 'pending)
+                        (window-resize-apply)
+                        (window-resize-apply-total)
+                        (null (set-window-new-normal window))
+                        (null (window-new-normal window))))
+                     (let* ((old (selected-window))
+                            (new (split-window-internal old 12 nil 0.5))
+                            (root (frame-root-window)))
+                       (unwind-protect
+                           (and
+                            (window-valid-p root)
+                            (not (window-live-p root))
+                            (null (window-buffer root))
+                            (eq (window-top-child root) old)
+                            (null (window-left-child root))
+                            (null (window-combination-limit root))
+                            (eq (set-window-combination-limit root t) t)
+                            (eq (window-combination-limit root) t)
+                            (eq (window-parent old) root)
+                            (eq (window-parent new) root)
+                            (eq (window-next-sibling old) new)
+                            (eq (window-prev-sibling new) old)
+                            (= (window-pixel-height old) 12)
+                            (= (window-pixel-height new) 12)
+                            (= (window-pixel-top old) 0)
+                            (= (window-pixel-top new) 12)
+                            (= (length (window-list)) 2)
+                            (eq (next-window old) new)
+                            (eq (previous-window new) old)
+                            (equal (window-buffer old) (window-buffer new))
+                            (let (seen)
+                              (let ((window-scroll-functions
+                                     (list
+                                      (lambda (window start)
+                                        (setq seen
+                                              (list window start
+                                                    (eq (current-buffer)
+                                                        (window-buffer
+                                                         window))))))))
+                                (run-window-scroll-functions new))
+                              (equal seen (list new 1 t)))
+                            (progn
+                              (delete-window-internal new)
+                              (and
+                               (windowp new)
+                               (not (window-valid-p new))
+                               (not (window-live-p new))
+                               (eq (frame-root-window) old)
+                               (null (window-parent old))
+                               (= (window-pixel-height old) 24)
+                               (= (length (window-list)) 1))))
+                         (when (window-valid-p new)
+                           (delete-window-internal new))))
+                     (let ((actual
+                            (list temp-buffer-show-function
+                                  minibuffer-scroll-window
+                                  mode-line-in-non-selected-windows
+                                  other-window-scroll-buffer
+                                  other-window-scroll-default
+                                  auto-window-vscroll
+                                  next-screen-context-lines
+                                  scroll-preserve-screen-position
+                                  window-point-insertion-type
+                                  window-buffer-change-functions
+                                  window-size-change-functions
+                                  window-selection-change-functions
+                                  window-state-change-functions
+                                  window-state-change-hook
+                                  window-configuration-change-hook
+                                  window-restore-killed-buffer-windows
+                                  recenter-redisplay
+                                  window-combination-resize
+                                  window-combination-limit
+                                  window-persistent-parameters
+                                  window-resize-pixelwise
+                                  fast-but-imprecise-scrolling)))
+                       (or (equal actual
+                                  '(nil nil t nil nil t 2 nil nil nil nil nil nil
+                                    nil (window--adjust-process-windows) nil tty
+                                    nil window-size
+                                    ((context . writable) (clone-of . t))
+                                    nil nil))
+                           (error "dumped window defaults differ: %S" actual)))
+                     (= (frame-char-height) 1)
+                     (= (frame-right-divider-width) 0)
+                     (= (frame-bottom-divider-width) 0)
+                     (window-valid-p (selected-window))
+                     (null
+                      (delq nil
+                            (list
+                             (window-parent (selected-window))
+                             (window-prev-sibling (selected-window))
+                             (window-next-sibling (selected-window))
+                             (window-top-child (selected-window))
+                             (window-left-child (selected-window))))))"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+        ])
+    );
+    let window_history_probe = eval_str_with(
+        &mut interp,
+        r#"(let ((original (current-buffer))
+                 (one (get-buffer-create "emaxx-window-one"))
+                 (two (get-buffer-create "emaxx-window-two")))
+             (set-window-buffer nil one)
+             (set-buffer two)
+             (set-window-buffer nil two)
+             (prog1
+                 (buffer-name (caar (window-prev-buffers)))
+               (set-window-buffer nil original)
+               (set-buffer original)
+               (set-window-prev-buffers nil nil)
+               (set-window-next-buffers nil nil)
+               (kill-buffer one)
+               (kill-buffer two)))"#,
+    );
+    assert_eq!(
+        window_history_probe,
+        Value::String("emaxx-window-one".into())
+    );
+    interp.set_global_binding(
+        "emaxx--find-file-noselect-probe",
+        Value::String(noselect_file.display().to_string()),
+    );
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let ((current (current-buffer))
+                     (shown (window-buffer)))
+                 (let ((visited
+                        (find-file-noselect emaxx--find-file-noselect-probe)))
+                   (prog1
+                       (list (eq (current-buffer) current)
+                             (eq (window-buffer) shown))
+                     (kill-buffer visited))))"#,
+        ),
+        Value::list([Value::T, Value::T])
+    );
+    crate::lisp::load_file_strict(&mut interp, &test_file).expect("load copied Todo tests");
+    let selector = Value::list([
+        Value::symbol("member"),
+        Value::symbol("todo-test-item-insertion-with-priority-1"),
+        Value::symbol("todo-test-item-insertion-with-priority-2"),
+        Value::symbol("todo-test-raise-lower-priority"),
+        Value::symbol("todo-test-revert-buffer01"),
+        Value::symbol("todo-test-todo-mark-unmark-category"),
+    ]);
+    let summary = interp.run_ert_tests_with_selector(Some(&selector));
+    let results = format!("{:#?}", interp.test_results);
+    assert_eq!(summary.total, 5, "{results}");
+    assert_eq!(summary.passed, 5, "{results}");
+    let todo_lock = todo_directory.join(".#todo-test-1.todo");
+    let archive_lock = todo_directory.join(".#todo-test-1.toda");
+    assert!(
+        !todo_lock.exists() && !archive_lock.exists(),
+        "Todo state tests left a resource lock"
+    );
+    let first_quit_selector = Value::list([
+        Value::symbol("member"),
+        Value::symbol("todo-test-todo-quit01"),
+    ]);
+    let first_quit_summary = interp.run_ert_tests_with_selector(Some(&first_quit_selector));
+    let first_quit_results = format!("{:#?}", interp.test_results);
+    assert_eq!(first_quit_summary.total, 1, "{first_quit_results}");
+    assert_eq!(first_quit_summary.passed, 1, "{first_quit_results}");
+    let live_buffers = eval_str_with(
+        &mut interp,
+        r#"(mapcar (lambda (buffer)
+                    (with-current-buffer buffer
+                      (list (buffer-name)
+                            (buffer-file-name)
+                            (buffer-modified-p))))
+                  (buffer-list))"#,
+    );
+    assert!(
+        !todo_lock.exists() && !archive_lock.exists(),
+        "Todo quit left a resource lock; live buffers: {live_buffers:#?}"
+    );
+    let quit_selector = Value::list([
+        Value::symbol("member"),
+        Value::symbol("todo-test-todo-quit02"),
+    ]);
+    let quit_summary = interp.run_ert_tests_with_selector(Some(&quit_selector));
+    let quit_results = format!("{:#?}", interp.test_results);
+    let header_selector = Value::list([
+        Value::symbol("member"),
+        Value::symbol("todo-test-toggle-item-header06"),
+    ]);
+    let header_summary = interp.run_ert_tests_with_selector(Some(&header_selector));
+    let header_results = format!("{:#?}", interp.test_results);
+    std::fs::remove_dir_all(root).expect("remove copied Todo test tree");
+    assert_eq!(quit_summary.total, 1, "{quit_results}");
+    assert_eq!(quit_summary.passed, 1, "{quit_results}");
+    assert_eq!(header_summary.total, 1, "{header_results}");
+    assert_eq!(header_summary.passed, 1, "{header_results}");
+}
+
+#[test]
+fn modified_state_transitions_and_buffer_kill_release_owned_file_locks() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("emaxx-lock-lifecycle-{unique}"));
+    std::fs::create_dir_all(&root).expect("create lock lifecycle directory");
+    let visited = root.join("visited.txt");
+    let lock = root.join(".#visited.txt");
+    std::fs::write(&visited, "original\n").expect("write visited file");
+
+    let result = eval_str_with_upstream_batch(&format!(
+        r#"(let ((path "{}")
+                  buffer
+                  locked-with-hidden-file-name
+                  locked-before-restore
+                  locked-after-restore
+                  locked-before-kill
+                  restore-result)
+              (unwind-protect
+                  (progn
+                    (setq buffer (find-file-noselect path))
+                    (with-current-buffer buffer
+                      (goto-char (point-max))
+                      (let ((buffer-file-name nil))
+                        (insert "internal change"))
+                      (setq locked-with-hidden-file-name
+                            (file-exists-p (make-lock-file-name path)))
+                      (restore-buffer-modified-p nil)
+                      (insert "changed")
+                      (setq locked-before-restore
+                            (file-exists-p (make-lock-file-name path)))
+                      (setq restore-result (restore-buffer-modified-p nil))
+                      (setq locked-after-restore
+                            (file-exists-p (make-lock-file-name path))))
+                    (kill-buffer buffer)
+                    (setq buffer (find-file-noselect path))
+                    (with-current-buffer buffer
+                      (goto-char (point-max))
+                      (insert "changed again")
+                      (setq locked-before-kill
+                            (file-exists-p (make-lock-file-name path))))
+                    (let ((original-yes-or-no-p
+                           (symbol-function 'yes-or-no-p)))
+                      (unwind-protect
+                          (progn
+                            (fset 'yes-or-no-p (lambda (&rest _) t))
+                            (kill-buffer buffer))
+                        (fset 'yes-or-no-p original-yes-or-no-p)))
+                    (list locked-with-hidden-file-name
+                          locked-before-restore
+                          restore-result
+                          locked-after-restore
+                          locked-before-kill
+                          (file-exists-p (make-lock-file-name path))
+                          (buffer-live-p buffer)))
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (restore-buffer-modified-p nil))
+                  (kill-buffer buffer))))"#,
+        visited.display()
+    ));
+
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+    assert!(!lock.exists(), "owned lock survived buffer teardown");
+    std::fs::remove_dir_all(root).expect("remove lock lifecycle directory");
 }
 
 #[test]
@@ -3400,6 +4087,10 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
     let interp = Interpreter::new();
     let env = Vec::new();
     assert_eq!(
+        interp.default_value("revert-buffer-function"),
+        Some(Value::Symbol("revert-buffer--default".into()))
+    );
+    assert_eq!(
         interp
             .lookup_function("cl-delete-duplicates", &env)
             .unwrap(),
@@ -3452,8 +4143,33 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
         builtin_file_autoload("keymap", Value::Nil)
     );
     assert_eq!(
+        interp.lookup_function("map-y-or-n-p", &env).unwrap(),
+        builtin_file_autoload("emacs-lisp/map-ynp", Value::Nil)
+    );
+    assert_eq!(
         interp.lookup_function("customize-set-value", &env).unwrap(),
         builtin_file_autoload("cus-edit", Value::T)
+    );
+    assert_eq!(
+        interp.lookup_function("compile", &env).unwrap(),
+        builtin_file_autoload("compile", Value::T)
+    );
+    for function in [
+        "save-buffer",
+        "revert-buffer",
+        "revert-buffer-with-fine-grain",
+        "save-some-buffers",
+        "save-buffers-kill-emacs",
+    ] {
+        assert_eq!(
+            interp.lookup_function(function, &env).unwrap(),
+            builtin_file_autoload("files", Value::T),
+            "autoload for {function}"
+        );
+    }
+    assert_eq!(
+        interp.lookup_function("basic-save-buffer", &env).unwrap(),
+        builtin_file_autoload("files", Value::Nil)
     );
     for function in [
         "pp-to-string",
@@ -3480,6 +4196,185 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
             "interactive autoload for {function}"
         );
     }
+}
+
+#[test]
+fn save_buffer_uses_the_dumped_files_el_policy() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (let ((before (autoloadp (symbol-function 'save-buffer)))
+                      (read-file-name-function
+                       (lambda (&rest _ignore)
+                         (error "Prompted for a file name")))
+                      first-local)
+                  (with-temp-buffer
+                    (setq write-contents-functions (lambda () t))
+                    (setq first-local
+                          (local-variable-p 'write-contents-functions))
+                    (set-buffer-modified-p t)
+                    (save-buffer))
+                  (with-temp-buffer
+                    (set-buffer-modified-p t)
+                    (list before
+                          first-local
+                          (buffer-modified-p)
+                          write-contents-functions
+                          (condition-case nil
+                              (progn (save-buffer) 'did-not-prompt)
+                            (error 'prompted))
+                          write-contents-functions
+                          buffer-file-name
+                          (autoloadp (symbol-function 'save-buffer)))))
+                "#
+        ),
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::Symbol("prompted".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn write_region_visit_marks_the_buffer_saved() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (let ((path (make-temp-file "emaxx-write-region-visit")))
+                  (unwind-protect
+                      (with-temp-buffer
+                        (insert "saved")
+                        (let ((result (write-region nil nil path nil t)))
+                          (list result
+                                (equal buffer-file-name path)
+                                (buffer-modified-p)
+                                (with-temp-buffer
+                                  (insert-file-contents path)
+                                  (buffer-string)))))
+                    (delete-file path)))
+                "#
+        ),
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::String("saved".into()),
+        ])
+    );
+}
+
+#[test]
+fn replace_buffer_contents_preserves_matching_text_and_source_properties() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert #("source" 2 4 (prop 7)))
+                  (let ((source (current-buffer)))
+                    (with-temp-buffer
+                      (insert "before dest after")
+                      (let ((marker (set-marker (make-marker) 14)))
+                        (save-restriction
+                          (narrow-to-region 8 12)
+                          (replace-buffer-contents source))
+                        (list (buffer-string)
+                              (marker-position marker)
+                              (point)
+                              (get-text-property 10 'prop))))))
+                "#
+        ),
+        Value::list([
+            Value::String("before source after".into()),
+            Value::Integer(16),
+            Value::Integer(9),
+            Value::Integer(7),
+        ])
+    );
+}
+
+#[test]
+fn fine_grained_revert_uses_native_non_destructive_buffer_replacement() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (let ((path (make-temp-file "emaxx-fine-grain-revert")))
+                  (unwind-protect
+                      (with-temp-buffer
+                        (insert "saved contents")
+                        (write-file path)
+                        (erase-buffer)
+                        (insert "changed")
+                        (let ((result (revert-buffer-with-fine-grain t t)))
+                          (list result (buffer-string) (buffer-modified-p))))
+                    (delete-file path)))
+                "#
+        ),
+        Value::list([Value::T, Value::String("saved contents".into()), Value::Nil,])
+    );
+}
+
+#[test]
+fn compressed_file_visit_preserves_detected_coding_across_mode_and_save() {
+    let resource = upstream_emacs_repo().join("test/lisp/files-resources/files-bug18141.el.gz");
+    let resource = resource.display().to_string();
+    assert_eq!(
+        eval_str_with_upstream_batch(&format!(
+            r#"
+                (let ((path (make-temp-file "emaxx-bug-18141" nil ".gz")))
+                  (unwind-protect
+                      (progn
+                        (copy-file "{resource}" path t)
+                        (with-current-buffer (find-file-noselect path)
+                          (let ((before buffer-file-coding-system)
+                                (last-before last-coding-system-used))
+                            (set-buffer-modified-p t)
+                            (save-buffer)
+                            (prog1
+                                (list (subrp (indirect-function 'save-buffer))
+                                      before last-before
+                                      buffer-file-coding-system
+                                      last-coding-system-used
+                                      (buffer-modified-p)
+                                      (buffer-live-p
+                                       (get-buffer " *jka-compr-wr-temp*"))
+                                      (with-current-buffer
+                                          " *jka-compr-wr-temp*"
+                                        (buffer-modified-p)))
+                              (kill-buffer (current-buffer))))))
+                    (delete-file path)))
+                "#
+        )),
+        Value::list([
+            Value::Nil,
+            Value::Symbol("iso-2022-7bit-unix".into()),
+            Value::Symbol("iso-2022-7bit-unix".into()),
+            Value::Symbol("iso-2022-7bit-unix".into()),
+            Value::Symbol("iso-2022-7bit-unix".into()),
+            Value::Nil,
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn gnus_group_loads_against_dumped_simple_shell_state() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (require 'gnus-group)
+                (gnus-short-group-name
+                 "nnimap+email@example.com:archives/2020/03")
+                "#
+        ),
+        Value::String("email@example:a/2/03".into())
+    );
 }
 
 #[test]
@@ -3600,6 +4495,174 @@ fn autoloaded_functions_load_on_funcall() {
 
     std::fs::remove_file(&target).unwrap();
     std::fs::remove_dir(&root).unwrap();
+}
+
+#[test]
+fn function_get_autoloads_before_reading_declared_property() {
+    let root = std::env::temp_dir().join(format!(
+        "emaxx-function-get-autoload-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("sample-function-property.el");
+    std::fs::write(
+        &target,
+        "(put 'sample-function-property 'sample-property 'ready)\n\
+         (defun sample-function-property () t)\n",
+    )
+    .unwrap();
+
+    let mut interp = Interpreter::new();
+    interp.set_load_path(vec![root.clone()]);
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (autoload 'sample-function-property \"sample-function-property\")
+               (list
+                (function-get 'sample-function-property
+                              'sample-property 'macro)
+                (autoloadp (symbol-function 'sample-function-property))
+                (function-get 'sample-function-property
+                              'sample-property t)
+                (autoloadp (symbol-function 'sample-function-property))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::Symbol("ready".into()),
+            Value::Nil,
+        ])
+    );
+
+    std::fs::remove_file(&target).unwrap();
+    std::fs::remove_dir(&root).unwrap();
+}
+
+#[test]
+fn symbol_plist_is_the_live_mutable_property_list() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (let* ((symbol (make-symbol "live-plist"))
+                   (plist (list 'a 1 'b 2 'c 3)))
+              (setplist symbol plist)
+              (let ((same-before (eq plist (symbol-plist symbol))))
+                (setcar (cdr plist) 9)
+                (setcdr (cdr plist) (nthcdr 4 plist))
+                (list same-before
+                      (eq plist (symbol-plist symbol))
+                      (get symbol 'a)
+                      (get symbol 'b)
+                      (symbol-plist symbol))))"#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::Integer(9),
+            Value::Nil,
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Integer(9),
+                Value::Symbol("c".into()),
+                Value::Integer(3),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn loaded_gnu_cl_remprop_mutates_non_head_live_plist_cells() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp =
+            crate::batch::initialize_batch_interpreter(&options).expect("batch interpreter");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                (progn
+                  (require 'cl-extra)
+                  (let ((symbol (make-symbol "cl-remprop-live")))
+                    (put symbol 'a 1)
+                    (put symbol 'b 2)
+                    (put symbol 'c 3)
+                    (put symbol 'd 4)
+                    (list
+                     (cl-remprop symbol 'c)
+                     (copy-sequence (symbol-plist symbol))
+                     (cl-remprop symbol 'd)
+                     (copy-sequence (symbol-plist symbol))
+                     (cl-remprop symbol 'a)
+                     (copy-sequence (symbol-plist symbol)))))"#
+            ),
+            Value::list([
+                Value::T,
+                Value::list([
+                    Value::Symbol("a".into()),
+                    Value::Integer(1),
+                    Value::Symbol("b".into()),
+                    Value::Integer(2),
+                    Value::Symbol("d".into()),
+                    Value::Integer(4),
+                ]),
+                Value::T,
+                Value::list([
+                    Value::Symbol("a".into()),
+                    Value::Integer(1),
+                    Value::Symbol("b".into()),
+                    Value::Integer(2),
+                ]),
+                Value::T,
+                Value::list([Value::Symbol("b".into()), Value::Integer(2)]),
+            ])
+        );
+    });
+}
+
+#[test]
+fn eager_macroexpansion_treats_setf_method_names_as_definition_syntax() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp =
+            crate::batch::initialize_batch_interpreter(&options).expect("batch interpreter");
+
+        eval_str_with(
+            &mut interp,
+            r#"
+            (progn
+              (setq lexical-binding t)
+              (require 'ert)
+              (require 'gv)
+              (cl-defgeneric (setf emaxx-eager-method-place) (value object))
+              (ert-deftest emaxx-eager-setf-method-name ()
+                (cl-defmethod (setf emaxx-eager-method-place)
+                    (value (object t))
+                  (list value object))
+                (should
+                 (equal (setf (emaxx-eager-method-place 'target) 'stored)
+                        '(stored target)))))"#,
+        );
+
+        let summary = interp.run_ert_tests_with_selector(Some(&Value::Symbol(
+            "emaxx-eager-setf-method-name".into(),
+        )));
+        assert_eq!(summary.total, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+    });
 }
 
 #[test]
@@ -3889,6 +4952,34 @@ fn last_returns_the_original_tail_cell() {
             Value::Symbol("b".into()),
             Value::Symbol("c".into()),
             Value::Symbol("d".into()),
+        ])
+    );
+}
+
+#[test]
+fn list_tail_functions_treat_nil_as_default_and_nbutlast_mutates() {
+    assert_eq!(
+        eval_str(
+            "(let* ((original (list 'a 'b 'c))
+                    (copy (butlast original nil))
+                    (mutated (list 'a 'b 'c))
+                    (result (nbutlast mutated nil)))
+               (list copy
+                     (eq copy original)
+                     result
+                     (eq result mutated)
+                     mutated
+                     (last '(a . b) -1)
+                     (nbutlast (list 'a 'b) 2)))"
+        ),
+        Value::list([
+            Value::list([Value::Symbol("a".into()), Value::Symbol("b".into())]),
+            Value::Nil,
+            Value::list([Value::Symbol("a".into()), Value::Symbol("b".into())]),
+            Value::T,
+            Value::list([Value::Symbol("a".into()), Value::Symbol("b".into())]),
+            Value::Nil,
+            Value::Nil,
         ])
     );
 }
@@ -4434,7 +5525,7 @@ fn batch_dump_purify_flag_defaults_to_nil() {
 
 #[test]
 fn require_final_newline_matches_batch_default() {
-    assert_eq!(eval_str("require-final-newline"), Value::T);
+    assert_eq!(eval_str("require-final-newline"), Value::Nil);
 }
 
 #[test]
@@ -4555,7 +5646,7 @@ fn locate_file_searches_directories_and_suffixes() {
 
 #[cfg(unix)]
 #[test]
-fn locate_file_accepts_symbolic_access_predicates() {
+fn locate_file_access_predicates_cover_public_and_internal_paths() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = std::env::temp_dir().join(format!(
@@ -4579,9 +5670,136 @@ fn locate_file_accepts_symbolic_access_predicates() {
         )),
         Value::String(script.display().to_string())
     );
+    assert_eq!(
+        eval_str(&format!(
+            "(locate-file-internal \"sample-tool\" '(\"{dir_text}\") '(\"\") 1)"
+        )),
+        Value::String(script.display().to_string())
+    );
 
     std::fs::remove_file(script).unwrap();
     std::fs::remove_dir(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn executable_find_observes_dynamic_exec_path_and_empty_path_entries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!(
+        "emaxx-executable-find-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let script = dir.join("sample-tool");
+    std::fs::write(&script, "#!/bin/sh\n").unwrap();
+    let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).unwrap();
+    let directory = primitives::path_to_directory_string(&dir);
+    let expected = Value::String(script.display().to_string());
+
+    assert_eq!(
+        eval_str_with_upstream_batch(&format!(
+            r#"
+                (load "files")
+                (list
+                  (let ((exec-path '("{directory}")))
+                    (executable-find "sample-tool"))
+                  (let ((default-directory "{directory}")
+                        (exec-path nil))
+                    (executable-find "sample-tool")))
+                "#
+        )),
+        Value::list([expected.clone(), expected])
+    );
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (require 'ert)
+                (require 'ert-x)
+                (require 'nadvice)
+                (require 'cl-lib)
+                (require 'bytecomp)
+                (require 'dired)
+                (require 'filenotify)
+                (load "../emacs/test/lisp/files-tests.el")
+                (ert-with-temp-file tmpfile
+                  :suffix (car exec-suffixes)
+                  (set-file-modes tmpfile #o755)
+                  (list
+                   (let ((exec-path `(,temporary-file-directory)))
+                     (equal tmpfile
+                            (executable-find
+                             (file-name-nondirectory tmpfile))))
+                   (let ((default-directory temporary-file-directory)
+                         (exec-path nil))
+                     (equal tmpfile
+                            (executable-find
+                             (file-name-nondirectory tmpfile))))
+                   (let ((default-directory "/ssh::")
+                         (exec-path
+                          (append exec-path
+                                  `("." ,temporary-file-directory))))
+                     (equal tmpfile
+                            (executable-find
+                             (file-name-nondirectory tmpfile))))))
+                "#
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+
+    std::fs::remove_file(script).unwrap();
+    std::fs::remove_dir(dir).unwrap();
+}
+
+#[test]
+fn quoted_default_directory_preserves_shell_and_file_process_output() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (let ((directory (make-temp-file "emaxx-process-directory" t)))
+                  (unwind-protect
+                      (list
+                       (with-temp-buffer
+                         (let ((default-directory
+                                (file-name-quote
+                                 (file-name-as-directory directory))))
+                           (shell-command "printf 30.2.0" (current-buffer))
+                           (string= (buffer-string) "30.2.0")))
+                       (with-temp-buffer
+                         (let* ((default-directory
+                                 (file-name-quote
+                                  (file-name-as-directory directory)))
+                                (process
+                                 (start-file-process
+                                  "emaxx-process-output" (current-buffer)
+                                  "/bin/echo" "30.2.0")))
+                           (unwind-protect
+                               (progn
+                                 (accept-process-output process)
+                                 (string-match-p "30\\.2\\.0" (buffer-string)))
+                             (set-process-query-on-exit-flag process nil)
+                             (delete-process process))))
+                       (with-temp-buffer
+                         (let ((default-directory
+                                (file-name-quote
+                                 (concat (file-name-as-directory directory)
+                                         "missing/"))))
+                           (condition-case nil
+                               (progn
+                                 (shell-command "printf unexpected"
+                                 (current-buffer))
+                                 nil)
+                             (error t)))))
+                    (delete-directory directory t)))
+                "#
+        ),
+        Value::list([Value::T, Value::Integer(0), Value::T])
+    );
 }
 
 #[test]
@@ -4922,6 +6140,44 @@ fn subr_arity_reports_regular_builtin_functions() {
 }
 
 #[test]
+fn subr_arity_uses_the_generated_gnu_native_manifest() {
+    assert_eq!(
+        eval_str(
+            "(mapcar (lambda (function)
+                       (subr-arity (symbol-function function)))
+                     '(get-buffer-create
+                       modify-category-entry
+                       define-category
+                       category-docstring
+                       copy-category-table))"
+        ),
+        Value::list([
+            Value::cons(Value::Integer(1), Value::Integer(2)),
+            Value::cons(Value::Integer(2), Value::Integer(4)),
+            Value::cons(Value::Integer(2), Value::Integer(3)),
+            Value::cons(Value::Integer(1), Value::Integer(2)),
+            Value::cons(Value::Integer(0), Value::Integer(1)),
+        ])
+    );
+}
+
+#[test]
+fn commandp_uses_the_generated_gnu_native_interactive_manifest() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (commandp 'self-insert-command)
+               (equal
+                (interactive-form #'self-insert-command)
+                '(interactive
+                  (list (prefix-numeric-value current-prefix-arg)
+                        last-command-event))))"
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
 fn cl_assert_signals_condition_with_asserted_form() {
     let mut interp = Interpreter::new();
     let form = Reader::new("(cl-assert lexical-binding)")
@@ -5073,6 +6329,19 @@ fn lexical_ert_body_keeps_macro_context_in_its_temporary_buffer() {
 }
 
 #[test]
+fn evaluated_cl_macrolet_expands_nested_lambda_bodies_before_scope_exit() {
+    assert_eq!(
+        eval_str(
+            r#"(let (function)
+                 (cl-macrolet ((local-value () ''expanded))
+                   (setq function (lambda () (local-value))))
+                 (funcall function))"#
+        ),
+        Value::symbol("expanded")
+    );
+}
+
+#[test]
 fn mode_reset_preserves_active_buffer_local_special_bindings() {
     assert_eq!(
         eval_str(
@@ -5123,6 +6392,55 @@ fn cconv_closure_convert_captures_simple_free_variable() {
             eval_str(
                 "'#'(lambda (x) (internal-make-closure nil (x) nil (internal-get-closed-var 0)))"
             )
+        );
+    });
+}
+
+#[test]
+fn native_cl_generic_method_keeps_generic_documentation_public() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp =
+            crate::batch::initialize_batch_interpreter(&options).expect("batch interpreter");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                (progn
+                  (setq lexical-binding t)
+                  (require 'cl-lib)
+                  (fmakunbound 'sample-loaded-generic)
+                  (setplist 'sample-loaded-generic nil)
+                  (cl-defgeneric sample-loaded-generic (n)
+                    (:documentation (concat "loaded generic" " documentation")))
+                  (cl-defmethod sample-loaded-generic ((n integer))
+                    (:documentation "loaded method documentation")
+                    (1+ n))
+                  (require 'help-fns)
+                  (let ((description
+                         (describe-function 'sample-loaded-generic)))
+                    (list
+                     (and (string-match-p "loaded generic documentation"
+                                          description)
+                          t)
+                     (and (string-match-p "loaded method documentation"
+                                          description)
+                          t)
+                        (sample-loaded-generic 10)
+                        (get 'sample-loaded-generic
+                             'emaxx-cl-defgeneric-documentation))))"#
+            ),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::Integer(11),
+                Value::String("loaded generic documentation".into()),
+            ])
         );
     });
 }

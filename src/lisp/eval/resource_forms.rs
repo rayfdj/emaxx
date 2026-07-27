@@ -7,6 +7,9 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let result = self.eval(&items[1], env);
+        if matches!(result, Err(LispError::Terminate(_))) {
+            return result;
+        }
         // Always run cleanup forms.  If a cleanup itself exits nonlocally,
         // GNU lets that newer exit supersede the protected form's result
         // (including an older error/throw), and does not run later cleanup
@@ -27,7 +30,7 @@ impl Interpreter {
         self.pop_handler_bindings(handler_start);
         match result {
             Ok(value) => Ok(value),
-            Err(error @ LispError::Throw(_, _)) => Err(error),
+            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
             Err(error) => {
                 if self.take_condition_case_suspend() {
                     return Err(error);
@@ -54,7 +57,7 @@ impl Interpreter {
         self.pop_handler_bindings(handler_start);
         match result {
             Ok(value) => Ok(value),
-            Err(error @ LispError::Throw(_, _)) => Err(error),
+            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
             Err(error) => {
                 if self.take_condition_case_suspend() {
                     return Err(error);
@@ -137,7 +140,7 @@ impl Interpreter {
                 }
                 // `throw' passes through `condition-case' untouched; only
                 // signals are eligible for the handlers.
-                if matches!(e, LispError::Throw(_, _)) {
+                if matches!(e, LispError::Throw(_, _) | LispError::Terminate(_)) {
                     return Err(e);
                 }
                 let condition = e.condition_type();
@@ -662,7 +665,7 @@ impl Interpreter {
         let body_result = self.sf_progn(body, env);
         match body_result {
             Ok(value) => Ok(value),
-            Err(LispError::Throw(tag, value)) => Err(LispError::Throw(tag, value)),
+            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
             Err(error) => {
                 let format = if std::ptr::eq(format_form, &default_format) {
                     default_format
@@ -903,11 +906,11 @@ impl Interpreter {
         };
         let advice = if let Some(name) = advice_name {
             let function_name = format!("{target}@{name}");
-            let lambda = Value::Lambda(params, items[3..].to_vec(), shared_env(env.clone()));
+            let lambda = Value::Lambda(params, items[3..].to_vec().into(), shared_env(env.clone()));
             self.push_function_binding(&function_name, lambda);
             Value::Symbol(function_name)
         } else {
-            Value::Lambda(params, items[3..].to_vec(), shared_env(env.clone()))
+            Value::Lambda(params, items[3..].to_vec().into(), shared_env(env.clone()))
         };
         primitives::call(
             self,
@@ -1462,90 +1465,6 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn sf_aset(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() != 4 {
-            return Err(LispError::WrongNumberOfArgs("aset".into(), items.len() - 1));
-        }
-        if let Value::Symbol(name) = &items[1] {
-            let current = self.lookup(name, env)?;
-            let new_value = self.eval(&items[3], env)?;
-            let index_value = self.eval(&items[2], env)?;
-            self.push_backtrace_frame(
-                Value::Symbol("aset".into()),
-                vec![current.clone(), index_value.clone(), new_value.clone()],
-            );
-            let result = if matches!(current, Value::CharTable(_) | Value::Record(_))
-                || primitives::record_literal_items(&current).is_some()
-                || primitives::is_vector_value(&current)
-            {
-                primitives::call(
-                    self,
-                    "aset",
-                    &[current, index_value, new_value.clone()],
-                    env,
-                )
-                .map(|_| new_value.clone())
-            } else {
-                match index_value.as_integer() {
-                    Ok(index) => {
-                        let index = index as usize;
-                        if matches!(current, Value::String(_) | Value::StringObject(_)) {
-                            primitives::aset_string_value(&current, index, &new_value).map(
-                                |updated| {
-                                    self.set_variable(name, updated, env);
-                                    new_value.clone()
-                                },
-                            )
-                        } else {
-                            match current.to_vec() {
-                                Ok(mut entries) => {
-                                    let tagged = matches!(
-                                        entries.first(),
-                                        Some(Value::Symbol(symbol))
-                                            if symbol == "vector-literal"
-                                    );
-                                    let slot = if tagged { index + 1 } else { index };
-                                    if slot >= entries.len() {
-                                        Err(LispError::Signal("Args out of range".into()))
-                                    } else {
-                                        entries[slot] = new_value.clone();
-                                        self.set_variable(name, Value::list(entries), env);
-                                        Ok(new_value.clone())
-                                    }
-                                }
-                                Err(error) => Err(error),
-                            }
-                        }
-                    }
-                    Err(error) => Err(error),
-                }
-            };
-            let result = match result {
-                Ok(value) => Ok(value),
-                Err(error @ LispError::Throw(_, _)) => Err(error),
-                Err(error) => self.dispatch_handler_bindings(error, env),
-            };
-            self.pop_backtrace_frame();
-            return result;
-        }
-
-        let vector = self.eval(&items[1], env)?;
-        let index = self.eval(&items[2], env)?;
-        let new_value = self.eval(&items[3], env)?;
-        self.push_backtrace_frame(
-            Value::Symbol("aset".into()),
-            vec![vector.clone(), index.clone(), new_value.clone()],
-        );
-        let result = match primitives::call(self, "aset", &[vector, index, new_value.clone()], env)
-        {
-            Ok(_) => Ok(new_value),
-            Err(error @ LispError::Throw(_, _)) => Err(error),
-            Err(error) => self.dispatch_handler_bindings(error, env),
-        };
-        self.pop_backtrace_frame();
-        result
-    }
-
     // ── cl-flet ──
     // (cl-flet ((name (args) body...) ...) body...)
     pub(super) fn sf_cl_flet(
@@ -1573,7 +1492,7 @@ impl Interpreter {
                 params.push(p.as_symbol()?.to_string());
             }
             let body: Vec<Value> = parts[2..].to_vec();
-            let lambda = Value::Lambda(params, body, shared_env(env.clone()));
+            let lambda = Value::Lambda(params, body.into(), shared_env(env.clone()));
             frame.push((fname, lambda));
         }
         frame.insert(
@@ -1617,7 +1536,10 @@ impl Interpreter {
                 params.push(p.as_symbol()?.to_string());
             }
             let body: Vec<Value> = parts[2..].to_vec();
-            frame.push((fname, Value::Lambda(params, body, closure_env.clone())));
+            frame.push((
+                fname,
+                Value::Lambda(params, body.into(), closure_env.clone()),
+            ));
         }
 
         frame.insert(
@@ -1650,22 +1572,14 @@ impl Interpreter {
                 items.len() - 1,
             ));
         }
-        let local_macros = self.parse_cl_macrolet_bindings(&items[1], env)?;
-
-        let mut result = Value::Nil;
-        for form in &items[2..] {
-            let (local_start, local_count) = self.push_local_macros(&local_macros);
-
-            let expanded_form = self.cl_macrolet_form_with_expanded_function_body(form, env);
-            let eval_result = match expanded_form {
-                Ok(form) => self.eval(&form, env),
-                Err(error) => Err(error),
-            };
-            self.drain_local_macros(local_start, local_count);
-            result = eval_result?;
-        }
-
-        Ok(result)
+        // `cl-macrolet' is itself a macro: its entire body is expanded while
+        // the local macro environment exists.  Reuse the macroexpansion path
+        // so ordinary evaluation and explicit `macroexpand-all' cannot drift
+        // (ERT relies on this to expand test bodies at definition time).
+        let expanded = self
+            .try_builtin_macroexpand("cl-macrolet", &items[1..], env)?
+            .expect("a valid cl-macrolet form always expands");
+        self.eval(&expanded, env)
     }
 
     pub(super) fn parse_cl_macrolet_bindings(
@@ -1700,35 +1614,6 @@ impl Interpreter {
             });
         }
         Ok(parsed)
-    }
-
-    fn cl_macrolet_form_with_expanded_function_body(
-        &mut self,
-        form: &Value,
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        let Ok(items) = form.to_vec() else {
-            return Ok(form.clone());
-        };
-        if !matches!(
-            items.first(),
-            Some(Value::Symbol(name)) if name == "defun" || name == "defsubst"
-        ) {
-            return Ok(form.clone());
-        }
-
-        let body_start =
-            if items.len() > 3 && matches!(items[3], Value::String(_) | Value::StringObject(_)) {
-                4
-            } else {
-                3
-            };
-        let mut expanded = Vec::with_capacity(items.len());
-        expanded.extend(items[..body_start].iter().cloned());
-        for body in &items[body_start..] {
-            expanded.push(self.macroexpand_all_form_with_environment(body, None, env)?);
-        }
-        Ok(Value::list(expanded))
     }
 
     pub(super) fn sf_cl_symbol_macrolet(

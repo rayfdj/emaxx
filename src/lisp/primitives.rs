@@ -1,8 +1,9 @@
-use super::eval::{BufferDisposition, Interpreter, error_condition_value};
+use super::eval::{BufferDisposition, Interpreter, RunningProcess, error_condition_value};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
 use super::types::{
-    ConsSlot, Env, LispError, SharedStringState, StringPropertySpan, Value, shared_env,
+    ConsSlot, EmacsTermination, Env, LispError, SharedStringState, StringPropertySpan, Value,
+    shared_env,
 };
 use crate::buffer::TextPropertySpan;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
@@ -10,10 +11,11 @@ use fancy_regex::Regex as FancyRegex;
 use flate2::read::GzDecoder;
 use lcms2::{CIECAM02, CIELab, CIELabExt, CIEXYZ, JCh, ViewingConditions};
 use lcms2_sys::Surround;
+use libxml::parser::{Parser as LibxmlParser, ParserOptions as LibxmlParserOptions};
+use libxml::tree::{Node as LibxmlNode, NodeType as LibxmlNodeType};
 use num_bigint::{BigInt, Sign};
 use num_traits::{Signed, ToPrimitive, Zero};
 use regex::Regex;
-use roxmltree::{Document, Node, NodeType};
 use sha1::{Digest, Sha1};
 use sha2::{Sha224, Sha256, Sha384, Sha512};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
@@ -25,15 +27,17 @@ use std::fs;
 use std::io::ErrorKind;
 use std::io::{Read, Write};
 #[cfg(unix)]
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -48,11 +52,15 @@ use unicode_width::UnicodeWidthChar;
 mod accessors_random;
 mod buffers;
 mod case;
+mod ccl;
 mod coding;
 mod color_lcms;
 mod completion;
 mod dispatch;
 mod file_io;
+mod generated_builtin_arities;
+#[cfg(test)]
+mod generated_gnu_c_primitives;
 mod hash_insert;
 mod hooks_overlays;
 mod interactive;
@@ -109,36 +117,12 @@ static FILE_NOTIFY_DESCRIPTOR_COUNTER: AtomicU64 = AtomicU64::new(1);
 static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FILE_CHANGE_CACHE: OnceLock<Mutex<FileChangeCache>> = OnceLock::new();
-static ACTIVE_FILE_NOTIFY_DESCRIPTORS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
-static FILE_NOTIFY_WATCHED_PATHS: OnceLock<Mutex<HashMap<i64, String>>> = OnceLock::new();
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
 
 thread_local! {
     static VECTOR_SLOT_CACHE: RefCell<VectorSlotCache> = RefCell::new(HashMap::new());
-}
-
-fn is_sqlite_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "sqlite-open"
-            | "sqlite-close"
-            | "sqlite-execute"
-            | "sqlite-select"
-            | "sqlite-execute-batch"
-            | "sqlite-transaction"
-            | "sqlite-commit"
-            | "sqlite-rollback"
-            | "sqlite-load-extension"
-            | "sqlite-next"
-            | "sqlite-more-p"
-            | "sqlite-finalize"
-            | "sqlite-version"
-            | "sqlitep"
-            | "sqlite-pragma"
-            | "sqlite-available-p"
-    )
 }
 
 fn is_time_builtin(name: &str) -> bool {
@@ -160,6 +144,7 @@ fn is_time_builtin(name: &str) -> bool {
             | "encode-time"
             | "float-time"
             | "format-time-string"
+            | "set-time-zone-rule"
             | "time-add"
             | "time-convert"
             | "time-equal-p"
@@ -472,6 +457,12 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "built-in-class-p"
             | "cl-functionp"
             | "url-scheme-get-property"
+            // url.el remains the Lisp policy owner, but its transport path
+            // eventually depends on process machinery Emaxx does not yet
+            // implement completely.  Preserve GNU's logical function cells
+            // while executing these two calls through the Rust HTTP client.
+            | "url-retrieve"
+            | "url-retrieve-synchronously"
             // url-handlers.el's url-insert dissects MIME via mm-decode;
             // native url-retrieve buffers hold raw responses instead.
             | "url-insert"
@@ -503,6 +494,8 @@ pub(crate) fn arith_error() -> LispError {
     LispError::SignalValue(Value::list([Value::Symbol("arith-error".into())]))
 }
 
+#[cfg(test)]
+pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::oclosure_type_of;
 pub use dispatch::{call, is_builtin};

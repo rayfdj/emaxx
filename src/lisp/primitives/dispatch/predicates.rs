@@ -25,6 +25,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "bool-vector-subsetp"
             | "floatp"
             | "stringp"
+            | "documentation-stringp"
             | "symbolp"
             | "keywordp"
             | "functionp"
@@ -33,6 +34,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "byte-code-function-p"
             | "closurep"
             | "interpreted-function-p"
+            | "module-function-p"
+            | "user-ptrp"
             | "subrp"
             | "special-form-p"
             | "oddp"
@@ -51,6 +54,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "symbol-with-pos-p"
             | "fboundp"
             | "facep"
+            | "fontp"
             | "face-equal"
             | "face-differs-from-default-p"
             | "face-list"
@@ -72,6 +76,11 @@ pub(super) fn handles(name: &str) -> bool {
             | "mutexp"
             | "condition-variable-p"
             | "minibufferp"
+            | "innermost-minibuffer-p"
+            | "minibuffer-innermost-command-loop-p"
+            | "minibuffer-depth"
+            | "minibuffer-prompt"
+            | "abort-minibuffers"
             | "zerop"
             | "natnump"
             | "atom"
@@ -319,6 +328,15 @@ pub(super) fn call(
                 Value::Nil
             })
         }
+        "documentation-stringp" => {
+            need_args(name, args, 1)?;
+            let valid = matches!(&args[0], Value::Integer(_))
+                || string_like(&args[0]).is_some()
+                || args[0].cons_values().is_some_and(|(file, position)| {
+                    string_like(&file).is_some() && matches!(position, Value::Integer(_))
+                });
+            Ok(if valid { Value::T } else { Value::Nil })
+        }
         "symbolp" => {
             need_args(name, args, 1)?;
             Ok(if args[0].is_symbol() {
@@ -339,11 +357,21 @@ pub(super) fn call(
         }
         "functionp" => {
             need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol().ok();
+            if symbol.is_some_and(|symbol| {
+                crate::lisp::primitives::name_facts(symbol).special_form
+                    || interp.has_macro_binding(symbol)
+            }) {
+                return Ok(Value::Nil);
+            }
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
+            let autoloaded_function = symbol.is_some()
+                && autoload_parts(&value).is_some_and(|(_, _, kind)| kind.is_nil());
             Ok(
                 if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _))
                     || is_lambda_expression(&value)
                     || record_type_name(interp, &value) == Some("byte-code-function")
+                    || autoloaded_function
                 {
                     Value::T
                 } else {
@@ -376,6 +404,39 @@ pub(super) fn call(
                 },
             )
         }
+        "module-function-p" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
+        }
+        "user-ptrp" => {
+            need_args(name, args, 1)?;
+            // GNU's true case is the PVEC_USER_PTR variant created by a
+            // native module.  Emaxx deliberately has no such Value variant
+            // while module loading is absent.  Keep this match exhaustive:
+            // adding module user pointers later must force this predicate to
+            // be revisited instead of silently preserving a blanket nil.
+            let is_user_ptr = match &args[0] {
+                Value::Nil
+                | Value::T
+                | Value::Integer(_)
+                | Value::BigInteger(_)
+                | Value::Float(_)
+                | Value::String(_)
+                | Value::StringObject(_)
+                | Value::Symbol(_)
+                | Value::Cons(_, _)
+                | Value::BuiltinFunc(_)
+                | Value::Lambda(_, _, _)
+                | Value::Buffer(_, _)
+                | Value::Marker(_)
+                | Value::Overlay(_)
+                | Value::CharTable(_)
+                | Value::Record(_)
+                | Value::Finalizer(_)
+                | Value::Unbound => false,
+            };
+            Ok(if is_user_ptr { Value::T } else { Value::Nil })
+        }
         "closurep" => {
             need_args(name, args, 1)?;
             Ok(
@@ -403,7 +464,7 @@ pub(super) fn call(
             // relies on subr-primitive-p being nil to consult symbol-file.
             Ok(match &args[0] {
                 Value::BuiltinFunc(builtin)
-                    if !super::misc_keymaps::builtin_is_gnu_preloaded_lisp(builtin) =>
+                    if !super::misc_keymaps::builtin_is_gnu_preloaded_lisp(interp, builtin) =>
                 {
                     Value::T
                 }
@@ -481,6 +542,11 @@ pub(super) fn call(
                 return Ok(Value::T);
             }
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
+            if let Value::BuiltinFunc(name) = &value
+                && generated_builtin_arities::generated_builtin_command_p(name)
+            {
+                return Ok(Value::T);
+            }
             if autoload_command_p(&value) || interactive_form_items(&value).is_some() {
                 return Ok(Value::T);
             }
@@ -650,6 +716,34 @@ pub(super) fn call(
             } else {
                 Value::Nil
             })
+        }
+        "fontp" => {
+            need_arg_range(name, args, 1, 2)?;
+            let font_type = match &args[0] {
+                Value::Record(id) => interp.find_record(*id).and_then(|record| {
+                    matches!(
+                        record.type_name.as_str(),
+                        "font-spec" | "font-entity" | "font-object"
+                    )
+                    .then(|| record.type_name.clone())
+                }),
+                _ => None,
+            };
+            let matches = match args.get(1) {
+                None | Some(Value::Nil) => font_type.is_some(),
+                Some(Value::Symbol(expected))
+                    if matches!(
+                        expected.as_str(),
+                        "font-spec" | "font-entity" | "font-object"
+                    ) =>
+                {
+                    font_type.as_deref() == Some(expected)
+                }
+                Some(extra_type) => {
+                    return Err(wrong_type_argument("font-extra-type", extra_type.clone()));
+                }
+            };
+            Ok(if matches { Value::T } else { Value::Nil })
         }
         "face-equal" => {
             if args.len() < 2 || args.len() > 3 {
@@ -848,29 +942,91 @@ pub(super) fn call(
             })
         }
         "minibufferp" => {
-            if args.len() > 1 {
+            if args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let buffer_id = if let Some(buffer) = args.first() {
-                interp.resolve_buffer_id(buffer)?
-            } else {
-                interp.current_buffer_id()
+            let buffer_id = match args.first() {
+                None | Some(Value::Nil) => Some(interp.current_buffer_id()),
+                Some(value) if string_like(value).is_some() => string_like(value)
+                    .and_then(|name| interp.find_buffer(&name.text).map(|(id, _)| id)),
+                Some(value) => Some(interp.resolve_buffer_id(value)?),
             };
-            let is_minibuffer = interp
-                .get_buffer_by_id(buffer_id)
+            let is_minibuffer = buffer_id
+                .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))
                 .map(|buffer| buffer.name.starts_with(" *Minibuf"))
                 .unwrap_or(false);
-            Ok(if is_minibuffer { Value::T } else { Value::Nil })
+            let is_live = buffer_id.is_some_and(|buffer_id| {
+                interp
+                    .lookup_var("emaxx--active-minibuffer", env)
+                    .and_then(|value| interp.resolve_buffer_id(&value).ok())
+                    == Some(buffer_id)
+            });
+            let matches = is_minibuffer && (!args.get(1).is_some_and(Value::is_truthy) || is_live);
+            Ok(if matches { Value::T } else { Value::Nil })
+        }
+        "minibuffer-depth" => {
+            need_args(name, args, 0)?;
+            Ok(interp
+                .lookup_var("emaxx--minibuffer-depth", env)
+                .unwrap_or(Value::Integer(0)))
+        }
+        "minibuffer-prompt" => {
+            need_args(name, args, 0)?;
+            Ok(interp
+                .lookup_var("emaxx--minibuffer-prompt", env)
+                .unwrap_or(Value::Nil))
+        }
+        "innermost-minibuffer-p" | "minibuffer-innermost-command-loop-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            let target = match args.first() {
+                None | Some(Value::Nil) => interp
+                    .buffer_identity_value(interp.current_buffer_id())
+                    .unwrap_or(Value::Nil),
+                Some(value) => value.clone(),
+            };
+            let active = interp
+                .lookup_var("emaxx--active-minibuffer", env)
+                .unwrap_or(Value::Nil);
+            let matches = if name == "minibuffer-innermost-command-loop-p" {
+                !active.is_nil() && values_equal(interp, &target, &active)
+            } else if active.is_nil() {
+                interp
+                    .find_buffer(" *Minibuf-0*")
+                    .and_then(|(id, _)| interp.buffer_identity_value(id))
+                    .is_some_and(|buffer| values_equal(interp, &target, &buffer))
+            } else {
+                values_equal(interp, &target, &active)
+            };
+            Ok(if matches { Value::T } else { Value::Nil })
+        }
+        "abort-minibuffers" => {
+            need_args(name, args, 0)?;
+            if interp
+                .lookup_var("emaxx--active-minibuffer", env)
+                .is_none_or(|value| value.is_nil())
+            {
+                return Err(LispError::Signal("Not in a minibuffer".into()));
+            }
+            Err(LispError::SignalValue(Value::list([Value::symbol(
+                "minibuffer-quit",
+            )])))
         }
 
         "zerop" => {
             need_args(name, args, 1)?;
-            Ok(match &args[0] {
-                Value::Integer(0) => Value::T,
-                Value::BigInteger(n) if n.is_zero() => Value::T,
-                Value::Float(f) if *f == 0.0 => Value::T,
-                _ => Value::Nil,
-            })
+            let is_zero = match &args[0] {
+                Value::Integer(value) => *value == 0,
+                Value::BigInteger(value) => value.is_zero(),
+                Value::Float(value) => *value == 0.0,
+                Value::Marker(id) => {
+                    interp
+                        .marker_position(*id)
+                        .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?
+                        == 0
+                }
+                other => return Err(wrong_type_argument("number-or-marker-p", other.clone())),
+            };
+            Ok(if is_zero { Value::T } else { Value::Nil })
         }
 
         "natnump" => {
@@ -1024,7 +1180,6 @@ fn is_special_form_name(name: &str) -> bool {
             | "defface"
             | "defvar-keymap"
             | "define-short-documentation-group"
-            | "eval"
             | "insert"
             | "insert-and-inherit"
             | "insert-char"
@@ -1049,11 +1204,10 @@ fn is_special_form_name(name: &str) -> bool {
             | "with-memoization"
             | "easy-menu-define"
             | "cl-defstruct"
-            | "defalias"
             | "backquote"
             | "comma"
             | "lambda"
-            | "call-interactively"
+            | "interactive"
             | "function"
             | "function-quote"
             | "while"
@@ -1097,7 +1251,6 @@ fn is_special_form_name(name: &str) -> bool {
             | "combine-change-calls"
             | "cl-destructuring-bind"
             | "cl-letf"
-            | "aset"
             | "cl-flet"
             | "cl-labels"
             | "cl-macrolet"
@@ -1118,8 +1271,6 @@ fn is_special_form_name(name: &str) -> bool {
             | "rx"
             | "rx-define"
             | "rx-let"
-            | "require"
-            | "provide"
             | "with-eval-after-load"
             | "with-no-warnings"
             | "declare"

@@ -1,7 +1,11 @@
 use super::*;
 
-fn backquote_splice_elements(value: Value) -> Result<Vec<Value>, LispError> {
-    let mut items = value.to_vec()?;
+fn backquote_splice_elements(interp: &Interpreter, value: Value) -> Result<Vec<Value>, LispError> {
+    // Runtime keymaps have identity-bearing host storage but expose GNU's
+    // public `(keymap ...)' list shape.  Backquote splicing is a list
+    // consumer just like `append' and must use that projection rather than
+    // trying to iterate the raw record.
+    let mut items = crate::lisp::primitives::list_sequence_items(interp, &value)?;
     if matches!(
         items.first(),
         Some(Value::Symbol(symbol)) if symbol == "vector-literal"
@@ -88,7 +92,7 @@ impl Interpreter {
                                     backquote_unquote_form(&car_value)
                             {
                                 let evaled = self.eval(&value, env)?;
-                                result.extend(backquote_splice_elements(evaled)?);
+                                result.extend(backquote_splice_elements(self, evaled)?);
                                 current = cdr_value;
                                 continue;
                             }
@@ -104,7 +108,10 @@ impl Interpreter {
                     }
                 }
                 let result = Value::list(result);
-                if depth == 0 && is_record_literal_reader_form(expr) {
+                if depth == 0
+                    && (is_record_literal_reader_form(expr)
+                        || is_char_table_literal_reader_form(expr))
+                {
                     return self.eval(&result, env);
                 }
                 Ok(result)
@@ -247,29 +254,19 @@ impl Interpreter {
         Ok(Value::Symbol(symbol_name))
     }
 
-    pub(super) fn sf_defalias(
+    /// Implement GNU's ordinary `defalias' primitive after its arguments
+    /// have been evaluated by the normal function-call path.
+    pub(crate) fn defalias_value(
         &mut self,
-        items: &[Value],
+        args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        if items.len() < 3 {
-            return Err(LispError::WrongNumberOfArgs(
-                "defalias".into(),
-                items.len().saturating_sub(1),
-            ));
+        if !(2..=3).contains(&args.len()) {
+            return Err(LispError::WrongNumberOfArgs("defalias".into(), args.len()));
         }
-        // GNU defalias is a FUNCTION: a bare-symbol first argument is an
-        // expression evaluating to the symbol to define (uninterned symbols
-        // held in variables — Bug#61179's `(defalias sym ...)').
-        let name = match &items[1] {
-            Value::Symbol(_) => {
-                let value = self.eval(&items[1], env)?;
-                value.as_symbol()?.to_string()
-            }
-            other => quoted_symbol_name(other)
-                .ok_or_else(|| LispError::TypeError("symbol".into(), other.type_name()))?,
-        };
-        let function = self.eval(&items[2], env)?;
+        let name = args[0].as_symbol()?.to_string();
+        let function = args[1].clone();
+        let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
         self.validate_function_binding(&name, &function)?;
         if crate::lisp::primitives::prefer_builtin_override(&name) {
             // Calls still resolve through the preferred native primitive,
@@ -277,25 +274,26 @@ impl Interpreter {
             // alias chasing, compiler macros, and generalized variables.
             self.set_function_binding(&name, Some(function));
             self.record_definition_in_load_history("defun", &name);
-            return Ok(Value::Symbol(name));
-        }
-        if self.defalias_fset_function_handles(&name, &function, env) {
+        } else if self.defalias_fset_function_handles(&name, &function, env) {
             self.record_definition_in_load_history("defun", &name);
             self.advice_note_new_definition(&name);
-            return Ok(Value::Symbol(name));
+        } else {
+            // Like fset: only a (macro . EXPANDER) cell or a symbol alias
+            // keeps macro-ness; any other definition erases the macro.
+            let keeps_macro = matches!(&function, Value::Symbol(_))
+                || function
+                    .cons_values()
+                    .is_some_and(|(car, _)| matches!(&car, Value::Symbol(s) if s == "macro"));
+            if !keeps_macro {
+                self.shadow_macro_binding(&name);
+            }
+            self.set_function_binding(&name, Some(function));
+            self.record_definition_in_load_history("defun", &name);
+            self.advice_note_new_definition(&name);
         }
-        // Like fset: only a (macro . EXPANDER) cell or a symbol alias keeps
-        // macro-ness; any other definition erases the macro.
-        let keeps_macro = matches!(&function, Value::Symbol(_))
-            || function
-                .cons_values()
-                .is_some_and(|(car, _)| matches!(&car, Value::Symbol(s) if s == "macro"));
-        if !keeps_macro {
-            self.shadow_macro_binding(&name);
+        if !docstring.is_nil() {
+            self.put_symbol_property(&name, "function-documentation", docstring);
         }
-        self.set_function_binding(&name, Some(function));
-        self.record_definition_in_load_history("defun", &name);
-        self.advice_note_new_definition(&name);
         Ok(Value::Symbol(name))
     }
 
@@ -765,33 +763,31 @@ impl Interpreter {
                     }
                     return Ok(Value::list(rebuilt));
                 }
-                // GNU's defun/defmacro are macros expanding to a lambda whose
-                // body gets macro-expanded while the name, arglist, docstring
-                // and declare/interactive forms stay untouched.  emaxx keeps
-                // them as special forms, so descend the same way.
-                "defun" | "defmacro" | "defsubst" if items.len() >= 3 => {
-                    let mut rebuilt = vec![items[0].clone(), items[1].clone(), items[2].clone()];
-                    for form in &items[3..] {
-                        let head = form
-                            .to_vec()
-                            .ok()
-                            .and_then(|parts| parts.first().cloned())
-                            .and_then(|head| head.as_symbol().ok().map(str::to_string));
-                        let verbatim = matches!(form, Value::String(_) | Value::StringObject(_))
-                            || head
-                                .as_deref()
-                                .is_some_and(|head| head == "declare" || head == "interactive");
-                        if verbatim {
-                            rebuilt.push(form.clone());
-                        } else {
-                            rebuilt.push(self.macroexpand_all_form_with_environment(
-                                form,
-                                macro_environment,
-                                env,
-                            )?);
-                        }
+                // GNU's definition macros consume names and lambda lists as
+                // syntax, then macro-expand only executable body positions.
+                // Emaxx keeps these bootstrap facades native, so its generic
+                // walker must preserve the same operand roles.  Otherwise a
+                // setf method name such as `(setf accessor)' is mistaken for
+                // a one-argument invocation once gv.el has been autoloaded.
+                "defun" | "defmacro" | "defsubst" | "cl-defun" | "cl-defmacro"
+                    if items.len() >= 3 =>
+                {
+                    return self.macroexpand_all_definition_body(&items, 3, macro_environment, env);
+                }
+                "cl-defmethod" if items.len() >= 3 => {
+                    let lambda_list_index =
+                        items.iter().enumerate().skip(2).find_map(|(index, value)| {
+                            matches!(value, Value::Cons(_, _) | Value::Nil).then_some(index)
+                        });
+                    if let Some(lambda_list_index) = lambda_list_index {
+                        return self.macroexpand_all_definition_body(
+                            &items,
+                            lambda_list_index + 1,
+                            macro_environment,
+                            env,
+                        );
                     }
-                    return Ok(Value::list(rebuilt));
+                    return Ok(form.clone());
                 }
                 "pcase-let" | "pcase-let*" | "pcase-dolist"
                     if items.len() >= 2 && !self.has_macro_binding("pcase-let") =>
@@ -874,6 +870,37 @@ impl Interpreter {
             }
         }
         Ok(Value::list(expanded))
+    }
+
+    fn macroexpand_all_definition_body(
+        &mut self,
+        items: &[Value],
+        body_start: usize,
+        macro_environment: Option<&Value>,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let mut rebuilt = items[..body_start].to_vec();
+        for form in &items[body_start..] {
+            let head = form
+                .to_vec()
+                .ok()
+                .and_then(|parts| parts.first().cloned())
+                .and_then(|head| head.as_symbol().ok().map(str::to_string));
+            let verbatim = matches!(form, Value::String(_) | Value::StringObject(_))
+                || head
+                    .as_deref()
+                    .is_some_and(|head| head == "declare" || head == "interactive");
+            if verbatim {
+                rebuilt.push(form.clone());
+            } else {
+                rebuilt.push(self.macroexpand_all_form_with_environment(
+                    form,
+                    macro_environment,
+                    env,
+                )?);
+            }
+        }
+        Ok(Value::list(rebuilt))
     }
 
     fn macroexpand_all_let_form_with_environment(
@@ -1123,7 +1150,6 @@ impl Interpreter {
                     forms.push(Value::list([
                         Value::Symbol("defvar".into()),
                         Value::Symbol(format!("{mode}-{suffix}")),
-                        Value::Nil,
                     ]));
                 }
                 forms.push(Value::list(

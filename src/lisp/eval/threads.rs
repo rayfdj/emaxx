@@ -26,6 +26,103 @@ fn drain_nonblocking<R: std::io::Read>(stream: &mut R) -> (Vec<u8>, bool) {
     (out, closed)
 }
 
+fn record_child_exit(process: &mut ProcessState, status: std::process::ExitStatus) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+
+        if let Some(signal) = status.signal() {
+            process.status = ProcessStatus::Signal;
+            process.exit_code = Some(signal);
+            process.exit_signal = Some(signal);
+            return;
+        }
+    }
+    process.status = ProcessStatus::Exit;
+    process.exit_code = status.code();
+    process.exit_signal = None;
+}
+
+enum ChildStatusEvent {
+    Stopped,
+    Continued,
+    Exited(std::process::ExitStatus),
+}
+
+#[cfg(unix)]
+fn poll_child_status(child: &mut Child) -> std::io::Result<Option<ChildStatusEvent>> {
+    use std::os::unix::process::ExitStatusExt;
+
+    let mut status = 0;
+    loop {
+        // Unlike `Child::try_wait', GNU observes job-control transitions as
+        // well as terminal exits.  WUNTRACED/WCONTINUED preserves that
+        // process.c contract while remaining nonblocking.
+        // SAFETY: CHILD owns this live pid and STATUS is initialized,
+        // writable caller storage for waitpid's result.
+        let result = unsafe {
+            libc::waitpid(
+                child.id() as libc::pid_t,
+                &mut status,
+                libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED,
+            )
+        };
+        if result == 0 {
+            return Ok(None);
+        }
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if libc::WIFSTOPPED(status) {
+            return Ok(Some(ChildStatusEvent::Stopped));
+        }
+        if libc::WIFCONTINUED(status) {
+            return Ok(Some(ChildStatusEvent::Continued));
+        }
+        return Ok(Some(ChildStatusEvent::Exited(
+            std::process::ExitStatus::from_raw(status),
+        )));
+    }
+}
+
+#[cfg(not(unix))]
+fn poll_child_status(child: &mut Child) -> std::io::Result<Option<ChildStatusEvent>> {
+    child
+        .try_wait()
+        .map(|status| status.map(ChildStatusEvent::Exited))
+}
+
+#[cfg(unix)]
+fn signal_event_message(signal: i32) -> String {
+    // GNU uses strsignal and lowercases its initial character for sentinel
+    // events (for example, SIGPIPE begins with "broken pipe"; Darwin's
+    // description also includes the signal number).
+    // SAFETY: strsignal returns either null or a process-lifetime C string.
+    let description = unsafe {
+        let pointer = libc::strsignal(signal);
+        (!pointer.is_null()).then(|| {
+            std::ffi::CStr::from_ptr(pointer)
+                .to_string_lossy()
+                .into_owned()
+        })
+    }
+    .unwrap_or_else(|| "unknown".into());
+    let mut characters = description.chars();
+    let Some(first) = characters.next() else {
+        return "unknown\n".into();
+    };
+    format!("{}{}\n", first.to_lowercase(), characters.as_str())
+}
+
+#[cfg(not(unix))]
+fn signal_event_message(_signal: i32) -> String {
+    "killed\n".into()
+}
+
 /// Write all of INPUT to a non-blocking stream, napping through WouldBlock.
 fn send_all<W: std::io::Write>(stream: &mut W, input: &[u8]) -> Result<(), LispError> {
     let mut written = 0;
@@ -80,6 +177,16 @@ impl Interpreter {
     pub fn process_plist_value(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
             .map(|process| process.plist.clone())
+    }
+
+    pub fn process_list_value(&self) -> Value {
+        Value::list(
+            self.process_states
+                .iter()
+                .rev()
+                .filter(|process| process.status.is_live())
+                .map(|process| Value::Record(process.record_id)),
+        )
     }
 
     pub fn set_process_plist_value(&mut self, record_id: u64, plist: Value) -> bool {
@@ -149,12 +256,12 @@ impl Interpreter {
         }
     }
 
-    pub fn create_process(
+    pub(crate) fn create_process(
         &mut self,
         buffer_id: Option<u64>,
         program: Option<String>,
         argv: Vec<String>,
-        runtime: Option<Child>,
+        runtime: Option<RunningProcess>,
         name: Option<String>,
     ) -> Result<Value, LispError> {
         // GNU names the process after the NAME argument (uniquified with
@@ -175,8 +282,15 @@ impl Interpreter {
             .lookup_var("default-process-coding-system", &Env::new())
             .and_then(|value| value.cons_values())
             .unwrap_or((Value::Nil, Value::Nil));
+        let os_pid = runtime.as_ref().map(|runtime| runtime.child.id());
+        let kind = if program.is_some() {
+            ProcessKind::Real
+        } else {
+            ProcessKind::Pipe
+        };
         self.process_states.push(ProcessState {
             record_id,
+            kind,
             buffer_id,
             mark_marker_id,
             status: ProcessStatus::Run,
@@ -185,15 +299,21 @@ impl Interpreter {
             sentinel_notified: false,
             log: None,
             name,
-            _query_on_exit_flag: false,
+            thread_id: Some(self.active_thread_id),
+            query_on_exit_flag: true,
+            traffic_stopped: false,
+            inherit_coding_system_flag: false,
             decoding,
             encoding,
             program,
             argv,
             stderr_process_id: None,
             exit_code: None,
-            runtime: runtime.map(|child| RunningProcess { child }),
+            exit_signal: None,
+            os_pid,
+            runtime,
             network: None,
+            serial: None,
             contact_host: None,
             contact_service: None,
             remote: None,
@@ -214,6 +334,7 @@ impl Interpreter {
         &mut self,
         name: &str,
         buffer_id: Option<u64>,
+        inherit_coding_system_flag: bool,
         filter: Option<Value>,
         sentinel: Option<Value>,
         log: Option<Value>,
@@ -227,7 +348,9 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let status = match &network {
             NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => ProcessStatus::Listen,
-            NetworkRuntime::Stream(_) | NetworkRuntime::UnixStream(_) => ProcessStatus::Open,
+            NetworkRuntime::Stream(_)
+            | NetworkRuntime::Datagram { .. }
+            | NetworkRuntime::UnixStream(_) => ProcessStatus::Open,
         };
         let process = self.create_record("process", Vec::new());
         let Value::Record(record_id) = process.clone() else {
@@ -242,6 +365,7 @@ impl Interpreter {
         self.set_marker(mark_marker_id, initial_position, buffer_id)?;
         self.process_states.push(ProcessState {
             record_id,
+            kind: ProcessKind::Network,
             buffer_id,
             mark_marker_id,
             status,
@@ -250,19 +374,93 @@ impl Interpreter {
             sentinel_notified: false,
             log,
             name: name.to_string(),
-            _query_on_exit_flag: false,
+            thread_id: Some(self.active_thread_id),
+            query_on_exit_flag: true,
+            traffic_stopped: false,
+            inherit_coding_system_flag,
             decoding: Value::Nil,
             encoding: Value::Nil,
             program: None,
             argv: Vec::new(),
             stderr_process_id: None,
             exit_code: None,
+            exit_signal: None,
+            os_pid: None,
             runtime: None,
             network: Some(network),
+            serial: None,
             contact_host,
             contact_service,
             remote,
             parent_server_id,
+            pending_stdout: Vec::new(),
+            pending_stderr: Vec::new(),
+            output_delivery_count: 0,
+            plist,
+            contact,
+        });
+        Ok(process)
+    }
+
+    /// Create a serial connection process backed by an already-open port.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_serial_process(
+        &mut self,
+        name: &str,
+        buffer_id: u64,
+        filter: Option<Value>,
+        sentinel: Option<Value>,
+        plist: Value,
+        serial: super::SerialRuntime,
+        contact: Value,
+        decoding: Value,
+        encoding: Value,
+        query_on_exit_flag: bool,
+        stopped: bool,
+    ) -> Result<Value, LispError> {
+        let name = self.unique_process_name(name);
+        let process = self.create_record("process", Vec::new());
+        let Value::Record(record_id) = process.clone() else {
+            unreachable!("create_record returns a record")
+        };
+        let marker = self.make_marker();
+        let Value::Marker(mark_marker_id) = marker else {
+            unreachable!("make_marker returns a marker")
+        };
+        let initial_position = self
+            .get_buffer_by_id(buffer_id)
+            .map(|buffer| buffer.point_max());
+        self.set_marker(mark_marker_id, initial_position, Some(buffer_id))?;
+        self.process_states.push(ProcessState {
+            record_id,
+            kind: ProcessKind::Serial,
+            buffer_id: Some(buffer_id),
+            mark_marker_id,
+            status: ProcessStatus::Open,
+            filter,
+            sentinel,
+            sentinel_notified: false,
+            log: None,
+            name,
+            thread_id: Some(self.active_thread_id),
+            query_on_exit_flag,
+            traffic_stopped: stopped,
+            inherit_coding_system_flag: false,
+            decoding,
+            encoding,
+            program: None,
+            argv: Vec::new(),
+            stderr_process_id: None,
+            exit_code: None,
+            exit_signal: None,
+            os_pid: None,
+            runtime: None,
+            network: None,
+            serial: Some(serial),
+            contact_host: None,
+            contact_service: None,
+            remote: None,
+            parent_server_id: None,
             pending_stdout: Vec::new(),
             pending_stderr: Vec::new(),
             output_delivery_count: 0,
@@ -284,6 +482,11 @@ impl Interpreter {
             .map(|process| process.name.clone())
     }
 
+    pub fn process_os_id(&self, record_id: u64) -> Option<u32> {
+        self.find_process_state(record_id)
+            .and_then(|process| process.os_pid)
+    }
+
     pub(crate) fn process_output_delivery_count(&self, record_id: u64) -> Option<u64> {
         self.find_process_state(record_id)
             .map(|process| process.output_delivery_count)
@@ -300,7 +503,11 @@ impl Interpreter {
     pub fn process_command_value(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id).map(|process| {
             let Some(program) = process.program.as_ref() else {
-                return Value::Nil;
+                return if process.traffic_stopped {
+                    Value::T
+                } else {
+                    Value::Nil
+                };
             };
             Value::list(
                 std::iter::once(program)
@@ -315,7 +522,7 @@ impl Interpreter {
         self.process_states
             .iter()
             .rev()
-            .find(|process| process.name == name)
+            .find(|process| process.name == name && process.status.is_live())
             .map(|process| process.record_id)
     }
 
@@ -337,6 +544,17 @@ impl Interpreter {
     pub fn process_sentinel(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
             .and_then(|process| process.sentinel.clone())
+    }
+
+    /// GNU exposes the native default sentinel as an ordinary function
+    /// object.  `None' is only Emaxx's optimized internal representation.
+    pub fn process_sentinel_value(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id).map(|process| {
+            process
+                .sentinel
+                .clone()
+                .unwrap_or_else(|| Value::symbol("internal-default-process-sentinel"))
+        })
     }
 
     pub fn set_process_sentinel(&mut self, record_id: u64, sentinel: Option<Value>) -> bool {
@@ -365,13 +583,17 @@ impl Interpreter {
     /// GNU's pipe EOF ordering and allowing Eshell's primary sentinel to
     /// finish after its shared stderr-live flag is cleared.
     pub fn take_pending_subprocess_exit_events(&mut self) -> Vec<(u64, String)> {
+        let active_thread_id = self.active_thread_id;
         let completed_children = self
             .process_states
             .iter()
             .filter(|process| {
-                process.network.is_none()
-                    && process.status == ProcessStatus::Exit
+                matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
+                    && matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
                     && process.stderr_process_id.is_some()
+                    && process
+                        .thread_id
+                        .is_none_or(|thread_id| thread_id == active_thread_id)
             })
             .filter_map(|process| {
                 process
@@ -390,14 +612,20 @@ impl Interpreter {
 
         let mut events = Vec::new();
         for process in &mut self.process_states {
-            if process.network.is_some()
-                || process.status != ProcessStatus::Exit
+            if !matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
+                || !matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
                 || process.sentinel_notified
+                || process
+                    .thread_id
+                    .is_some_and(|thread_id| thread_id != active_thread_id)
             {
                 continue;
             }
             process.sentinel_notified = true;
             let event = match process.exit_code {
+                _ if process.exit_signal.is_some() => {
+                    signal_event_message(process.exit_signal.expect("checked signal"))
+                }
                 Some(0) => "finished\n".to_string(),
                 Some(code) => format!("exited abnormally with code {code}\n"),
                 None => "killed\n".to_string(),
@@ -433,7 +661,81 @@ impl Interpreter {
 
     pub fn is_network_process(&self, record_id: u64) -> bool {
         self.find_process_state(record_id)
-            .is_some_and(|process| process.network.is_some())
+            .is_some_and(|process| process.kind == ProcessKind::Network)
+    }
+
+    pub fn is_serial_process(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.kind == ProcessKind::Serial)
+    }
+
+    pub fn set_process_contact_plist(
+        &mut self,
+        record_id: u64,
+        contact: Value,
+    ) -> Result<(), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        process.contact = contact;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub fn serial_process_fd(&self, record_id: u64) -> Result<std::os::fd::RawFd, LispError> {
+        use std::os::fd::AsRawFd;
+
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        let Some(serial) = process.serial.as_ref() else {
+            return Err(LispError::Signal("Not a serial process".into()));
+        };
+        Ok(serial.port.as_raw_fd())
+    }
+
+    pub fn process_datagram_address(
+        &self,
+        record_id: u64,
+    ) -> Result<Option<std::net::SocketAddr>, LispError> {
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        let Some(NetworkRuntime::Datagram { socket, remote }) = process.network.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(remote.unwrap_or_else(|| {
+            socket
+                .local_addr()
+                .map(|address| match address {
+                    std::net::SocketAddr::V4(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+                    std::net::SocketAddr::V6(_) => {
+                        std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0))
+                    }
+                })
+                .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], 0)))
+        })))
+    }
+
+    pub fn set_process_datagram_address(
+        &mut self,
+        record_id: u64,
+        address: std::net::SocketAddr,
+    ) -> Result<bool, LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        let Some(NetworkRuntime::Datagram { socket, remote }) = process.network.as_mut() else {
+            return Ok(false);
+        };
+        let same_family = socket
+            .local_addr()
+            .is_ok_and(|local| local.is_ipv4() == address.is_ipv4());
+        if !same_family {
+            return Ok(false);
+        }
+        *remote = Some(address);
+        Ok(true)
     }
 
     pub fn network_listener_ids(&self) -> Vec<u64> {
@@ -444,19 +746,29 @@ impl Interpreter {
                     process.network,
                     Some(NetworkRuntime::Listener(_)) | Some(NetworkRuntime::UnixListener(_))
                 ) && process.status.is_live()
+                    && !process.traffic_stopped
+                    && process
+                        .thread_id
+                        .is_none_or(|thread_id| thread_id == self.active_thread_id)
             })
             .map(|process| process.record_id)
             .collect()
     }
 
-    pub fn network_stream_ids(&self) -> Vec<u64> {
+    pub fn connection_stream_ids(&self) -> Vec<u64> {
         self.process_states
             .iter()
             .filter(|process| {
-                matches!(
+                (matches!(
                     process.network,
-                    Some(NetworkRuntime::Stream(_)) | Some(NetworkRuntime::UnixStream(_))
-                ) && process.status.is_live()
+                    Some(NetworkRuntime::Stream(_))
+                        | Some(NetworkRuntime::Datagram { .. })
+                        | Some(NetworkRuntime::UnixStream(_))
+                ) || process.serial.is_some())
+                    && process.status.is_live()
+                    && process
+                        .thread_id
+                        .is_none_or(|thread_id| thread_id == self.active_thread_id)
             })
             .map(|process| process.record_id)
             .collect()
@@ -497,32 +809,91 @@ impl Interpreter {
         }
     }
 
-    /// Non-blocking read of a network stream. Returns the bytes read and
-    /// whether the peer closed the connection.
-    pub fn poll_network_stream(&mut self, record_id: u64) -> Result<(Vec<u8>, bool), LispError> {
+    /// Non-blocking read of a network or serial connection. Returns the bytes
+    /// read and whether the peer/device closed the connection.
+    pub fn poll_connection_stream(&mut self, record_id: u64) -> Result<(Vec<u8>, bool), LispError> {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return Ok((Vec::new(), false));
         };
         let (out, closed) = match process.network.as_mut() {
             Some(NetworkRuntime::Stream(stream)) => drain_nonblocking(stream),
             Some(NetworkRuntime::UnixStream(stream)) => drain_nonblocking(stream),
-            _ => return Ok((Vec::new(), false)),
+            Some(NetworkRuntime::Datagram { socket, remote }) => {
+                let mut bytes = vec![0; 65_535];
+                match socket.recv_from(&mut bytes) {
+                    Ok((length, peer)) => {
+                        bytes.truncate(length);
+                        *remote = Some(peer);
+                        (bytes, false)
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        (Vec::new(), false)
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                        (Vec::new(), false)
+                    }
+                    Err(_) => (Vec::new(), false),
+                }
+            }
+            _ => {
+                let Some(serial) = process.serial.as_mut() else {
+                    return Ok((Vec::new(), false));
+                };
+                let mut bytes = vec![0; 65_535];
+                match serial.port.read(&mut bytes) {
+                    Ok(0) => (Vec::new(), true),
+                    Ok(length) => {
+                        bytes.truncate(length);
+                        (bytes, false)
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                        ) =>
+                    {
+                        (Vec::new(), false)
+                    }
+                    Err(_) => (Vec::new(), true),
+                }
+            }
         };
         if closed {
             process.status = ProcessStatus::Closed;
             process.network = None;
+            process.serial = None;
         }
         Ok((out, closed))
     }
 
-    pub fn network_stream_send(&mut self, record_id: u64, input: &[u8]) -> Result<(), LispError> {
+    pub fn connection_send(&mut self, record_id: u64, input: &[u8]) -> Result<(), LispError> {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return Err(wrong_type_argument("processp", Value::Record(record_id)));
         };
         match process.network.as_mut() {
             Some(NetworkRuntime::Stream(stream)) => send_all(stream, input),
             Some(NetworkRuntime::UnixStream(stream)) => send_all(stream, input),
-            _ => Err(LispError::Signal("Process is not a network stream".into())),
+            Some(NetworkRuntime::Datagram {
+                socket,
+                remote: Some(remote),
+            }) => socket
+                .send_to(input, *remote)
+                .map(|_| ())
+                .map_err(|error| LispError::Signal(error.to_string())),
+            Some(NetworkRuntime::Datagram { remote: None, .. }) => {
+                Err(LispError::Signal("Datagram address is not set".into()))
+            }
+            _ => {
+                let Some(serial) = process.serial.as_mut() else {
+                    return Err(LispError::Signal(
+                        "Process has no writable connection".into(),
+                    ));
+                };
+                serial
+                    .port
+                    .write_all(input)
+                    .map_err(|error| LispError::Signal(error.to_string()))
+            }
         }
     }
 
@@ -533,29 +904,39 @@ impl Interpreter {
         let Some(runtime) = process.runtime.as_mut() else {
             return Ok(());
         };
-        if let Some(status) = runtime
-            .child
-            .try_wait()
+        if let Some(event) = poll_child_status(&mut runtime.child)
             .map_err(|error| LispError::Signal(error.to_string()))?
         {
-            // Drain whatever the child wrote before exiting so the next
-            // pump still delivers it to the filter (gpg's final status
-            // lines arrive after `process-status' notices the exit).
-            if let Some(pipe) = runtime.child.stdout.as_mut() {
-                let mut tail = Vec::new();
-                if std::io::Read::read_to_end(pipe, &mut tail).is_ok() {
-                    process.pending_stdout.extend(tail);
+            match event {
+                ChildStatusEvent::Stopped => process.status = ProcessStatus::Stop,
+                ChildStatusEvent::Continued => process.status = ProcessStatus::Run,
+                ChildStatusEvent::Exited(status) => {
+                    // Drain whatever the child wrote before exiting so the
+                    // next pump still delivers it to the filter (gpg's final
+                    // status lines arrive after `process-status' notices the
+                    // exit).
+                    if let Some(pipe) = runtime.child.stdout.as_mut() {
+                        let mut tail = Vec::new();
+                        if std::io::Read::read_to_end(pipe, &mut tail).is_ok() {
+                            process.pending_stdout.extend(tail);
+                        }
+                    }
+                    if let Some(pipe) = runtime.child.stderr.as_mut() {
+                        let mut tail = Vec::new();
+                        if std::io::Read::read_to_end(pipe, &mut tail).is_ok() {
+                            process.pending_stderr.extend(tail);
+                        }
+                    }
+                    if let Some(pty) = runtime.pty_output.as_mut() {
+                        let mut tail = Vec::new();
+                        let _ = read_nonblocking_pipe(pty, &mut tail);
+                        process.pending_stdout.extend(tail);
+                    }
+                    drop(runtime.pty_slave_guard.take());
+                    record_child_exit(process, status);
+                    process.runtime = None;
                 }
             }
-            if let Some(pipe) = runtime.child.stderr.as_mut() {
-                let mut tail = Vec::new();
-                if std::io::Read::read_to_end(pipe, &mut tail).is_ok() {
-                    process.pending_stderr.extend(tail);
-                }
-            }
-            process.status = ProcessStatus::Exit;
-            process.exit_code = status.code();
-            process.runtime = None;
         }
         Ok(())
     }
@@ -568,7 +949,7 @@ impl Interpreter {
         })
     }
 
-    pub(super) fn refresh_process_id(&mut self, record_id: u64) -> Result<(), LispError> {
+    pub(crate) fn refresh_process_id(&mut self, record_id: u64) -> Result<(), LispError> {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
@@ -598,8 +979,19 @@ impl Interpreter {
 
     pub fn process_status_value(&mut self, record_id: u64) -> Option<Value> {
         let _ = self.refresh_process_id(record_id);
-        self.find_process_state(record_id)
-            .map(|process| Value::Symbol(process.status.symbol().into()))
+        self.find_process_state(record_id).map(|process| {
+            if process.traffic_stopped {
+                Value::symbol("stop")
+            } else if process.kind == ProcessKind::Pipe {
+                Value::symbol(match process.status {
+                    ProcessStatus::Run => "open",
+                    ProcessStatus::Exit => "closed",
+                    _ => process.status.symbol(),
+                })
+            } else {
+                Value::Symbol(process.status.symbol().into())
+            }
+        })
     }
 
     pub fn process_exit_status_value(&mut self, record_id: u64) -> Option<Value> {
@@ -617,9 +1009,15 @@ impl Interpreter {
     }
 
     pub(crate) fn open_connecting_network_processes(&mut self) -> Vec<u64> {
+        let active_thread_id = self.active_thread_id;
         let mut opened = Vec::new();
         for process in &mut self.process_states {
-            if process.status == ProcessStatus::Connect && process.network.is_some() {
+            if process.status == ProcessStatus::Connect
+                && process.network.is_some()
+                && process
+                    .thread_id
+                    .is_none_or(|thread_id| thread_id == active_thread_id)
+            {
                 process.status = ProcessStatus::Open;
                 opened.push(process.record_id);
             }
@@ -639,6 +1037,27 @@ impl Interpreter {
     pub fn process_filter(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
             .and_then(|process| process.filter.clone())
+    }
+
+    /// GNU exposes the native default filter as an ordinary function object.
+    /// `None' remains the direct Rust fast path inside the event pump.
+    pub fn process_filter_value(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id).map(|process| {
+            process
+                .filter
+                .clone()
+                .unwrap_or_else(|| Value::symbol("internal-default-process-filter"))
+        })
+    }
+
+    pub fn process_output_paused(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id).is_some_and(|process| {
+            process.traffic_stopped
+                || process
+                    .filter
+                    .as_ref()
+                    .is_some_and(|filter| *filter == Value::T)
+        })
     }
 
     pub fn set_process_filter(
@@ -685,14 +1104,241 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
-        process._query_on_exit_flag = flag;
+        process.query_on_exit_flag = flag;
         Ok(())
     }
 
-    pub fn delete_process(&mut self, record_id: u64) -> Result<(), LispError> {
+    pub fn process_query_on_exit_flag(&self, record_id: u64) -> Result<bool, LispError> {
+        self.find_process_state(record_id)
+            .map(|process| process.query_on_exit_flag)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))
+    }
+
+    pub fn set_process_inherit_coding_system_flag(
+        &mut self,
+        record_id: u64,
+        flag: bool,
+    ) -> Result<(), LispError> {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        process.inherit_coding_system_flag = flag;
+        Ok(())
+    }
+
+    pub fn process_inherit_coding_system_flag(&self, record_id: u64) -> Result<bool, LispError> {
+        self.find_process_state(record_id)
+            .map(|process| process.inherit_coding_system_flag)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))
+    }
+
+    pub fn process_type_name(&self, record_id: u64) -> Result<&'static str, LispError> {
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        Ok(match process.kind {
+            ProcessKind::Real => "real",
+            ProcessKind::Pipe => "pipe",
+            ProcessKind::Network => "network",
+            ProcessKind::Serial => "serial",
+        })
+    }
+
+    pub fn set_process_window_size(
+        &mut self,
+        record_id: u64,
+        height: u16,
+        width: u16,
+    ) -> Result<bool, LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        if process.kind != ProcessKind::Real {
+            return Ok(false);
+        }
+        let Some(runtime) = process.runtime.as_ref() else {
+            return Ok(false);
+        };
+        let Some(pty) = runtime.pty_input.as_ref() else {
+            return Ok(false);
+        };
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+
+            let size = libc::winsize {
+                ws_row: height,
+                ws_col: width,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            // SAFETY: the PTY descriptor stays live through this call, and
+            // TIOCSWINSZ only reads the supplied initialized structure.
+            Ok(unsafe { libc::ioctl(pty.as_raw_fd(), libc::TIOCSWINSZ, &size) } == 0)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (pty, height, width);
+            Ok(false)
+        }
+    }
+
+    pub fn process_running_child_value(&self, record_id: u64) -> Result<Value, LispError> {
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        if process.kind != ProcessKind::Real {
+            return Err(LispError::Signal(format!(
+                "Process {} is not a subprocess",
+                process.name
+            )));
+        }
+        let Some(runtime) = process.runtime.as_ref() else {
+            return Err(LispError::Signal(format!(
+                "Process {} is not active",
+                process.name
+            )));
+        };
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+
+            let input_fd = runtime
+                .pty_input
+                .as_ref()
+                .map(AsRawFd::as_raw_fd)
+                .or_else(|| runtime.child.stdin.as_ref().map(AsRawFd::as_raw_fd));
+            let Some(input_fd) = input_fd else {
+                return Err(LispError::Signal(format!(
+                    "Process {} is not active",
+                    process.name
+                )));
+            };
+            let mut foreground_group: libc::pid_t = -1;
+            // SAFETY: input_fd is a live process input descriptor and the
+            // ioctl writes one pid_t into initialized caller-owned storage.
+            if unsafe {
+                libc::ioctl(
+                    input_fd,
+                    libc::TIOCGPGRP,
+                    &mut foreground_group as *mut libc::pid_t,
+                )
+            } == 0
+            {
+                if process
+                    .os_pid
+                    .is_some_and(|pid| pid == foreground_group as u32)
+                {
+                    return Ok(Value::Nil);
+                }
+                if foreground_group >= 0 {
+                    return Ok(Value::Integer(i64::from(foreground_group)));
+                }
+            }
+            Ok(Value::T)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = runtime;
+            Ok(Value::T)
+        }
+    }
+
+    pub fn set_process_traffic_stopped(
+        &mut self,
+        record_id: u64,
+        stopped: bool,
+    ) -> Result<bool, LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        if process.kind == ProcessKind::Real {
+            return Ok(false);
+        }
+        process.traffic_stopped = stopped;
+        Ok(true)
+    }
+
+    #[cfg(unix)]
+    pub fn signal_process_group(
+        &mut self,
+        record_id: u64,
+        signal: i32,
+        current_group: &Value,
+    ) -> Result<(), LispError> {
+        use std::os::fd::AsRawFd;
+
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        if process.kind != ProcessKind::Real {
+            return Err(LispError::Signal(format!(
+                "Process {} is not a subprocess",
+                process.name
+            )));
+        }
+        let Some(runtime) = process.runtime.as_ref() else {
+            return Err(LispError::Signal(format!(
+                "Process {} is not active",
+                process.name
+            )));
+        };
+        let pid = process
+            .os_pid
+            .ok_or_else(|| LispError::Signal(format!("Process {} is not active", process.name)))?
+            as libc::pid_t;
+        let uses_input_pty = runtime.pty_input.is_some();
+        let mut group = pid;
+        if uses_input_pty && current_group.is_truthy() {
+            if let Some(input) = runtime.pty_input.as_ref() {
+                let mut foreground_group: libc::pid_t = -1;
+                // SAFETY: input is a live PTY descriptor and ioctl writes one
+                // pid_t into initialized caller-owned storage.
+                if unsafe {
+                    libc::ioctl(
+                        input.as_raw_fd(),
+                        libc::TIOCGPGRP,
+                        &mut foreground_group as *mut libc::pid_t,
+                    )
+                } == 0
+                    && foreground_group >= 0
+                {
+                    group = foreground_group;
+                }
+            }
+            if matches!(current_group, Value::Symbol(symbol) if symbol == "lambda") && group == pid
+            {
+                return Ok(());
+            }
+        }
+        // SAFETY: negative GROUP addresses the child-owned process group;
+        // spawn_persistent_process establishes that group before exec.
+        unsafe {
+            libc::kill(-group, signal);
+        }
+        if signal == libc::SIGCONT
+            && let Some(process) = self.find_process_state_mut(record_id)
+        {
+            // GNU publishes `run' before the kernel's WCONTINUED event.
+            process.status = ProcessStatus::Run;
+        }
+        Ok(())
+    }
+
+    pub fn delete_process(&mut self, record_id: u64) -> Result<(&'static str, bool), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        let kind = process.kind;
+        // `status_notify' claims a terminal transition before invoking its
+        // sentinel.  A sentinel such as `compilation-sentinel' may then call
+        // `delete-process' on itself; GNU removes the process from the
+        // notification registry first, so that nested deletion must not
+        // invoke the same sentinel recursively.
+        let notify_sentinel = !process.sentinel_notified;
+        // GNU clears the connection flow-control marker while closing the
+        // descriptor, so a stopped connection reports `closed' afterwards.
+        process.traffic_stopped = false;
         if let Some(runtime) = process.runtime.as_mut() {
             let _ = runtime.child.kill();
             let _ = runtime.child.wait();
@@ -705,18 +1351,49 @@ impl Interpreter {
                 NetworkRuntime::UnixStream(stream) => {
                     let _ = stream.shutdown(std::net::Shutdown::Both);
                 }
+                NetworkRuntime::Datagram { .. } => {}
                 // GNU leaves a unix listener's socket file behind; the
                 // tests delete it themselves.
                 NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => {}
             }
             process.status = ProcessStatus::Closed;
             process.runtime = None;
-            return Ok(());
+            process.sentinel_notified = true;
+            return Ok(("deleted\n", notify_sentinel));
         }
-        process.status = ProcessStatus::Exit;
-        process.exit_code = None;
+        if process.serial.take().is_some() {
+            process.status = ProcessStatus::Closed;
+            process.runtime = None;
+            process.sentinel_notified = true;
+            return Ok(("deleted\n", notify_sentinel));
+        }
+        if kind == ProcessKind::Pipe {
+            process.status = ProcessStatus::Closed;
+            process.exit_code = Some(0);
+            process.exit_signal = None;
+        } else {
+            process.status = ProcessStatus::Signal;
+            #[cfg(unix)]
+            {
+                process.exit_code = Some(libc::SIGKILL);
+                process.exit_signal = Some(libc::SIGKILL);
+            }
+            #[cfg(not(unix))]
+            {
+                process.exit_code = None;
+                process.exit_signal = None;
+            }
+        }
         process.runtime = None;
-        Ok(())
+        process.sentinel_notified = true;
+        Ok((
+            if kind == ProcessKind::Pipe {
+                "finished\n"
+            } else {
+                "killed\n"
+            },
+            notify_sentinel,
+        ))
     }
 
     pub fn process_send_string(
@@ -731,8 +1408,8 @@ impl Interpreter {
         if !process.status.is_live() {
             return Err(LispError::Signal("Process is not running".into()));
         }
-        if process.network.is_some() {
-            self.network_stream_send(record_id, input)?;
+        if matches!(process.kind, ProcessKind::Network | ProcessKind::Serial) {
+            self.connection_send(record_id, input)?;
             return Ok((Vec::new(), Vec::new()));
         }
         let process = self
@@ -741,7 +1418,11 @@ impl Interpreter {
         let Some(runtime) = process.runtime.as_mut() else {
             return Ok((input.to_vec(), Vec::new()));
         };
-        let Some(stdin) = runtime.child.stdin.as_mut() else {
+        let stdin: &mut dyn Write = if let Some(pty) = runtime.pty_input.as_mut() {
+            pty
+        } else if let Some(stdin) = runtime.child.stdin.as_mut() {
+            stdin
+        } else {
             return Err(LispError::Signal("Process stdin is closed".into()));
         };
         stdin
@@ -768,41 +1449,20 @@ impl Interpreter {
         let Some(runtime) = process.runtime.as_mut() else {
             return Ok((Vec::new(), Vec::new()));
         };
-        // Closing stdin delivers EOF; drain the pipes until the process
-        // exits (filters/buffers get the output like process-send-string).
-        drop(runtime.child.stdin.take());
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            if let Some(pipe) = runtime.child.stdout.as_mut() {
-                read_nonblocking_pipe(pipe, &mut stdout)?;
-            }
-            if let Some(pipe) = runtime.child.stderr.as_mut() {
-                read_nonblocking_pipe(pipe, &mut stderr)?;
-            }
-            if let Some(status) = runtime
-                .child
-                .try_wait()
-                .map_err(|error| LispError::Signal(error.to_string()))?
-            {
-                if let Some(pipe) = runtime.child.stdout.as_mut() {
-                    read_nonblocking_pipe(pipe, &mut stdout)?;
-                }
-                if let Some(pipe) = runtime.child.stderr.as_mut() {
-                    read_nonblocking_pipe(pipe, &mut stderr)?;
-                }
-                process.status = ProcessStatus::Exit;
-                process.exit_code = status.code();
-                process.runtime = None;
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
+        // A PTY uses canonical Ctrl-D for EOF (as GNU's child_setup_tty
+        // configures it); merely closing one duplicate master does not send
+        // EOF when the output side shares that master.
+        if let Some(mut pty) = runtime.pty_input.take() {
+            pty.write_all(&[4])
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            pty.flush()
+                .map_err(|error| LispError::Signal(error.to_string()))?;
         }
-        Ok((stdout, stderr))
+        drop(runtime.child.stdin.take());
+        // GNU only makes EOF visible after already queued input and returns.
+        // Output remains owned by the normal event pump, which preserves
+        // filter ordering and avoids an arbitrary synchronous drain timeout.
+        Ok((Vec::new(), Vec::new()))
     }
 
     pub fn live_external_process_ids(&self) -> Vec<u64> {
@@ -812,6 +1472,11 @@ impl Interpreter {
                 process.runtime.is_some()
                     || !process.pending_stdout.is_empty()
                     || !process.pending_stderr.is_empty()
+            })
+            .filter(|process| {
+                process
+                    .thread_id
+                    .is_none_or(|thread_id| thread_id == self.active_thread_id)
             })
             .map(|process| process.record_id)
             .collect()
@@ -838,25 +1503,34 @@ impl Interpreter {
         if let Some(pipe) = runtime.child.stderr.as_mut() {
             read_nonblocking_pipe(pipe, &mut stderr)?;
         }
-        if let Some(status) = runtime
-            .child
-            .try_wait()
+        if let Some(pty) = runtime.pty_output.as_mut() {
+            read_nonblocking_pipe(pty, &mut stdout)?;
+        }
+        if let Some(event) = poll_child_status(&mut runtime.child)
             .map_err(|error| LispError::Signal(error.to_string()))?
         {
-            // The child can exit between the non-blocking reads above and
-            // `try_wait'.  Drain once more after observing exit: all pipe
-            // writers are closed now, so this owns the final bytes before
-            // dropping the runtime.  Without this drain a fast process can
-            // make `accept-process-output' time out with an empty buffer.
-            if let Some(pipe) = runtime.child.stdout.as_mut() {
-                read_nonblocking_pipe(pipe, &mut stdout)?;
+            match event {
+                ChildStatusEvent::Stopped => process.status = ProcessStatus::Stop,
+                ChildStatusEvent::Continued => process.status = ProcessStatus::Run,
+                ChildStatusEvent::Exited(status) => {
+                    // The child can exit between the non-blocking reads above
+                    // and status polling.  Drain once more after observing
+                    // exit: all pipe writers are closed now, so this owns the
+                    // final bytes before dropping the runtime.
+                    if let Some(pipe) = runtime.child.stdout.as_mut() {
+                        read_nonblocking_pipe(pipe, &mut stdout)?;
+                    }
+                    if let Some(pipe) = runtime.child.stderr.as_mut() {
+                        read_nonblocking_pipe(pipe, &mut stderr)?;
+                    }
+                    if let Some(pty) = runtime.pty_output.as_mut() {
+                        read_nonblocking_pipe(pty, &mut stdout)?;
+                    }
+                    drop(runtime.pty_slave_guard.take());
+                    record_child_exit(process, status);
+                    process.runtime = None;
+                }
             }
-            if let Some(pipe) = runtime.child.stderr.as_mut() {
-                read_nonblocking_pipe(pipe, &mut stderr)?;
-            }
-            process.status = ProcessStatus::Exit;
-            process.exit_code = status.code();
-            process.runtime = None;
         }
         Ok((stdout, stderr))
     }
@@ -938,6 +1612,53 @@ impl Interpreter {
     pub fn queue_file_notification(&mut self, path: &str, action: &str) {
         self.pending_file_notifications
             .push((path.to_string(), action.to_string()));
+    }
+
+    pub(crate) fn register_file_notify_watch(
+        &mut self,
+        descriptor: i64,
+        path: Option<String>,
+        callback: Value,
+    ) {
+        self.file_notify_watches.insert(
+            descriptor,
+            FileNotifyWatch {
+                path,
+                callback: Self::stored_value(callback),
+                active: true,
+            },
+        );
+    }
+
+    pub(crate) fn remove_file_notify_watch(&mut self, descriptor: i64) {
+        self.file_notify_watches.remove(&descriptor);
+    }
+
+    pub(crate) fn file_notify_watch_is_active(&self, descriptor: i64) -> bool {
+        self.file_notify_watches
+            .get(&descriptor)
+            .is_some_and(|watch| watch.active)
+    }
+
+    pub(crate) fn invalidate_file_notify_watches_for_path(&mut self, path: &str) {
+        for watch in self.file_notify_watches.values_mut() {
+            if watch.path.as_deref() == Some(path) {
+                watch.active = false;
+            }
+        }
+    }
+
+    pub(crate) fn file_notify_callbacks_for_path(&self, path: &str) -> Vec<(i64, Value)> {
+        self.file_notify_watches
+            .iter()
+            .filter_map(|(descriptor, watch)| {
+                watch
+                    .path
+                    .as_deref()
+                    .filter(|watched| file_notify_watch_covers(watched, path))
+                    .map(|_| (*descriptor, watch.callback.clone()))
+            })
+            .collect()
     }
 
     pub fn run_pending_file_notifications(&mut self, env: &mut Env) -> Result<(), LispError> {
@@ -1094,8 +1815,67 @@ impl Interpreter {
             status: ThreadStatus::Runnable,
             program,
             outcome: None,
+            waiting_for_user_input: false,
         });
         Ok(Value::Record(record_id))
+    }
+
+    pub fn waiting_for_user_input(&self) -> bool {
+        self.find_thread_state(self.active_thread_id)
+            .is_some_and(|thread| thread.waiting_for_user_input)
+    }
+
+    pub fn set_waiting_for_user_input(&mut self, waiting: bool) -> bool {
+        let Some(thread) = self.find_thread_state_mut(self.active_thread_id) else {
+            return false;
+        };
+        std::mem::replace(&mut thread.waiting_for_user_input, waiting)
+    }
+
+    pub fn process_thread_value(&self, record_id: u64) -> Result<Value, LispError> {
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        Ok(process.thread_id.map(Value::Record).unwrap_or(Value::Nil))
+    }
+
+    pub fn set_process_thread_id(
+        &mut self,
+        record_id: u64,
+        thread_id: Option<u64>,
+    ) -> Result<(), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        process.thread_id = thread_id;
+        Ok(())
+    }
+
+    pub fn ensure_process_owned_by_current_thread(&self, record_id: u64) -> Result<(), LispError> {
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        let Some(thread_id) = process.thread_id else {
+            return Ok(());
+        };
+        if thread_id == self.active_thread_id {
+            return Ok(());
+        }
+        let owner = self
+            .thread_name(thread_id)
+            .unwrap_or_else(|| format!("#<thread id:{thread_id}>"));
+        Err(LispError::Signal(format!(
+            "Attempt to accept output from process {} locked to thread {owner}",
+            process.name
+        )))
+    }
+
+    fn unlock_processes_for_thread(&mut self, thread_id: u64) {
+        for process in &mut self.process_states {
+            if process.thread_id == Some(thread_id) {
+                process.thread_id = None;
+            }
+        }
     }
 
     pub fn make_mutex(&mut self, name: Option<String>) -> Value {
@@ -1350,8 +2130,20 @@ impl Interpreter {
         if self.try_lock_mutex(self.active_thread_id, mutex_id) {
             return Ok(Value::Nil);
         }
-        while !self.try_lock_mutex(self.active_thread_id, mutex_id) {
-            self.drive_threads(env, false)?;
+        let thread_id = self.active_thread_id;
+        if let Some(thread) = self.find_thread_state_mut(thread_id) {
+            thread.status = ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id));
+        }
+        while !self.try_lock_mutex(thread_id, mutex_id) {
+            if let Err(error) = self.drive_threads(env, false) {
+                if let Some(thread) = self.find_thread_state_mut(thread_id) {
+                    thread.status = ThreadStatus::Runnable;
+                }
+                return Err(error);
+            }
+        }
+        if let Some(thread) = self.find_thread_state_mut(thread_id) {
+            thread.status = ThreadStatus::Runnable;
         }
         Ok(Value::Nil)
     }
@@ -1361,7 +2153,77 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
-    pub fn notify_condition_variable(&mut self, condvar_id: u64, notify_all: bool) {
+    pub fn wait_condition_variable(
+        &mut self,
+        condvar_id: u64,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let mutex_id = self
+            .condition_variable_mutex_id(condvar_id)
+            .ok_or_else(|| {
+                wrong_type_argument("condition-variable-p", Value::Record(condvar_id))
+            })?;
+        let thread_id = self.active_thread_id;
+        let saved_depth = self
+            .mutex_states
+            .iter()
+            .find(|mutex| mutex.record_id == mutex_id && mutex.owner == Some(thread_id))
+            .map(|mutex| mutex.recursion_depth)
+            .filter(|depth| *depth > 0)
+            .ok_or_else(|| {
+                LispError::Signal("Condition variable’s mutex is not held by current thread".into())
+            })?;
+        if let Some(mutex) = self.find_mutex_state_mut(mutex_id) {
+            mutex.owner = None;
+            mutex.recursion_depth = 0;
+        }
+        if let Some(thread) = self.find_thread_state_mut(thread_id) {
+            thread.status = ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(condvar_id));
+        }
+
+        let wait_result = loop {
+            if !self.find_thread_state(thread_id).is_some_and(|thread| {
+                matches!(
+                    thread.status,
+                    ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id))
+                        if id == condvar_id
+                )
+            }) {
+                break Ok(());
+            }
+            if let Err(error) = self.drive_threads(env, false) {
+                break Err(error);
+            }
+        };
+
+        while !self.try_lock_mutex(thread_id, mutex_id) {
+            self.drive_threads(env, false)?;
+        }
+        for _ in 1..saved_depth {
+            debug_assert!(self.try_lock_mutex(thread_id, mutex_id));
+        }
+        wait_result.map(|()| Value::Nil)
+    }
+
+    pub fn notify_condition_variable(
+        &mut self,
+        condvar_id: u64,
+        notify_all: bool,
+    ) -> Result<(), LispError> {
+        let mutex_id = self
+            .condition_variable_mutex_id(condvar_id)
+            .ok_or_else(|| {
+                wrong_type_argument("condition-variable-p", Value::Record(condvar_id))
+            })?;
+        if !self.mutex_states.iter().any(|mutex| {
+            mutex.record_id == mutex_id
+                && mutex.owner == Some(self.active_thread_id)
+                && mutex.recursion_depth > 0
+        }) {
+            return Err(LispError::Signal(
+                "Condition variable’s mutex is not held by current thread".into(),
+            ));
+        }
         for thread in self.thread_states.iter_mut() {
             if !matches!(
                 thread.status,
@@ -1377,6 +2239,7 @@ impl Interpreter {
                 break;
             }
         }
+        Ok(())
     }
 
     pub fn allow_kill_buffer_for_threads(&mut self, buffer_id: u64) -> bool {
@@ -1443,6 +2306,7 @@ impl Interpreter {
             thread.status = ThreadStatus::Finished;
             thread.outcome = Some(ThreadOutcome::Returned(value));
         }
+        self.unlock_processes_for_thread(record_id);
     }
 
     pub(super) fn finish_thread_with_signal(&mut self, record_id: u64, value: Value) {
@@ -1450,6 +2314,7 @@ impl Interpreter {
             thread.status = ThreadStatus::Finished;
             thread.outcome = Some(ThreadOutcome::Signaled(value.clone()));
         }
+        self.unlock_processes_for_thread(record_id);
         self.last_thread_error = Some(value);
     }
 
@@ -1757,6 +2622,16 @@ impl Interpreter {
     }
 }
 
+fn file_notify_watch_covers(watched_path: &str, event_path: &str) -> bool {
+    let watched = watched_path.trim_end_matches('/');
+    if watched == event_path.trim_end_matches('/') {
+        return true;
+    }
+    event_path
+        .rsplit_once('/')
+        .is_some_and(|(parent, _)| parent == watched)
+}
+
 fn read_nonblocking_pipe<T: Read>(pipe: &mut T, output: &mut Vec<u8>) -> Result<bool, LispError> {
     let mut read_any = false;
     let mut buffer = [0u8; 4096];
@@ -1768,6 +2643,8 @@ fn read_nonblocking_pipe<T: Read>(pipe: &mut T, output: &mut Vec<u8>) -> Result<
                 read_any = true;
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+            #[cfg(unix)]
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
             Err(error) => return Err(LispError::Signal(error.to_string())),
         }
     }

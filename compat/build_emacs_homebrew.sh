@@ -10,7 +10,7 @@ Usage:
 
 Options:
   --repo PATH                Emacs source tree to build.
-                             Default: /Users/alpha/CodexProjects/emacs
+                             Default: the emacs repository beside emaxx.
   --jobs N                   Parallel build jobs.
                              Default: detected logical CPU count.
   --configure-only           Run autogen/configure but skip the build.
@@ -34,7 +34,8 @@ detect_default_jobs() {
     || printf '%s\n' 4
 }
 
-repo="/Users/alpha/CodexProjects/emacs"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd -- "${script_dir}/../.." && pwd)/emacs"
 jobs="$(detect_default_jobs)"
 configure_only="no"
 clean_first="no"

@@ -6,13 +6,17 @@ pub(super) fn handles(name: &str) -> bool {
         "match-beginning"
             | "match-end"
             | "match-data"
+            | "match-data--translate"
             | "set-match-data"
             | "match-string"
             | "match-string-no-properties"
             | "looking-at"
+            | "posix-looking-at"
             | "looking-at-p"
             | "looking-back"
+            | "newline-cache-check"
             | "replace-match"
+            | "replace-buffer-contents"
             | "replace-region-contents"
             | "flush-lines"
             | "subst-char-in-region"
@@ -31,6 +35,260 @@ pub(super) fn handles(name: &str) -> bool {
             | "insert-before-markers"
             | "insert-before-markers-and-inherit"
     )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BufferReplacementHunk {
+    old_start: usize,
+    old_end: usize,
+    new_start: usize,
+    new_end: usize,
+}
+
+fn replacement_hunks_from_matches(
+    old_len: usize,
+    new_len: usize,
+    matches: &[(usize, usize)],
+) -> Vec<BufferReplacementHunk> {
+    let mut hunks = Vec::new();
+    let (mut old_cursor, mut new_cursor) = (0, 0);
+    for &(old_index, new_index) in matches {
+        if old_cursor != old_index || new_cursor != new_index {
+            hunks.push(BufferReplacementHunk {
+                old_start: old_cursor,
+                old_end: old_index,
+                new_start: new_cursor,
+                new_end: new_index,
+            });
+        }
+        old_cursor = old_index + 1;
+        new_cursor = new_index + 1;
+    }
+    if old_cursor != old_len || new_cursor != new_len {
+        hunks.push(BufferReplacementHunk {
+            old_start: old_cursor,
+            old_end: old_len,
+            new_start: new_cursor,
+            new_end: new_len,
+        });
+    }
+    hunks
+}
+
+fn heuristic_replacement_hunks(old: &[char], new: &[char]) -> Vec<BufferReplacementHunk> {
+    let mut prefix = 0;
+    while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < old.len().saturating_sub(prefix)
+        && suffix < new.len().saturating_sub(prefix)
+        && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    if prefix == old.len() && prefix == new.len() {
+        Vec::new()
+    } else {
+        vec![BufferReplacementHunk {
+            old_start: prefix,
+            old_end: old.len() - suffix,
+            new_start: prefix,
+            new_end: new.len() - suffix,
+        }]
+    }
+}
+
+/// Compute a bounded longest-common-subsequence edit plan.  The matrix is
+/// deliberately capped by MAX-COSTS: beyond that limit we retain the common
+/// head and tail and use one coarse middle replacement, matching GNU's
+/// contract that MAX-COSTS may reduce diff quality without making the call
+/// fail.  A time-limit breach is distinct and makes the caller report nil.
+fn non_destructive_replacement_hunks(
+    old: &[char],
+    new: &[char],
+    max_costs: usize,
+    deadline: Option<Instant>,
+) -> Option<Vec<BufferReplacementHunk>> {
+    let timed_out = || deadline.is_some_and(|limit| Instant::now() >= limit);
+    if timed_out() {
+        return None;
+    }
+    let cells = old.len().checked_add(1).and_then(|rows| {
+        new.len()
+            .checked_add(1)
+            .and_then(|columns| rows.checked_mul(columns))
+    });
+    if cells.is_none_or(|cells| cells > max_costs) {
+        return Some(heuristic_replacement_hunks(old, new));
+    }
+
+    let columns = new.len() + 1;
+    let mut lengths = vec![0_u32; cells.unwrap_or(0)];
+    for old_index in (0..old.len()).rev() {
+        if timed_out() {
+            return None;
+        }
+        for new_index in (0..new.len()).rev() {
+            let slot = old_index * columns + new_index;
+            lengths[slot] = if old[old_index] == new[new_index] {
+                lengths[(old_index + 1) * columns + new_index + 1] + 1
+            } else {
+                lengths[(old_index + 1) * columns + new_index]
+                    .max(lengths[old_index * columns + new_index + 1])
+            };
+        }
+    }
+
+    let mut matches = Vec::new();
+    let (mut old_index, mut new_index) = (0, 0);
+    while old_index < old.len() && new_index < new.len() {
+        if old[old_index] == new[new_index]
+            && lengths[old_index * columns + new_index]
+                == lengths[(old_index + 1) * columns + new_index + 1] + 1
+        {
+            matches.push((old_index, new_index));
+            old_index += 1;
+            new_index += 1;
+        } else if lengths[(old_index + 1) * columns + new_index]
+            >= lengths[old_index * columns + new_index + 1]
+        {
+            // Prefer deleting from the target on ties.  Besides making the
+            // result deterministic, this retains the same earlier source
+            // match GNU's diff does for ambiguous one-character matches.
+            old_index += 1;
+        } else {
+            new_index += 1;
+        }
+    }
+    Some(replacement_hunks_from_matches(
+        old.len(),
+        new.len(),
+        &matches,
+    ))
+}
+
+fn clipped_property_spans(
+    spans: &[TextPropertySpan],
+    from: usize,
+    to: usize,
+) -> Vec<TextPropertySpan> {
+    spans
+        .iter()
+        .filter_map(|span| {
+            let start = span.start.max(from);
+            let end = span.end.min(to);
+            (start < end).then(|| TextPropertySpan {
+                start: start - from,
+                end: end - from,
+                props: span.props.clone(),
+            })
+        })
+        .collect()
+}
+
+fn apply_buffer_replacement_hunks(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    target_start: usize,
+    target_end: usize,
+    source_chars: &[char],
+    source_props: &[TextPropertySpan],
+    hunks: &[BufferReplacementHunk],
+) -> Result<(), LispError> {
+    if hunks.is_empty() {
+        return Ok(());
+    }
+    ensure_region_modifiable(interp, target_start, target_end, env)?;
+    ensure_no_supersession_threat(interp, env)?;
+
+    let old_len = target_end - target_start;
+    let new_len = source_chars.len();
+    let overlay_calls = overlay_change_hook_calls(
+        &interp.buffer,
+        target_start,
+        target_end,
+        target_start + new_len,
+    );
+    run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+    run_change_hooks(
+        interp,
+        "before-change-functions",
+        &[
+            Value::Integer(target_start as i64),
+            Value::Integer(target_end as i64),
+        ],
+        env,
+    )?;
+
+    // GNU records the excursion before applying its diff.  A marker, rather
+    // than a numeric point, is essential here: if a matching character near
+    // point survives, point must continue to follow that character.
+    let saved_point = interp.buffer.point();
+    let saved_point_marker = match interp.make_marker() {
+        Value::Marker(id) => id,
+        _ => unreachable!("make_marker returns a marker"),
+    };
+    interp.set_marker(
+        saved_point_marker,
+        Some(saved_point),
+        Some(interp.current_buffer_id()),
+    )?;
+
+    let restore_hooks = interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
+    let edit_result: Result<(), LispError> = (|| {
+        for hunk in hunks.iter().rev() {
+            let from = target_start + hunk.old_start;
+            let to = target_start + hunk.old_end;
+            if from < to {
+                interp
+                    .delete_region_current_buffer(from, to)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+            }
+            if hunk.new_start < hunk.new_end {
+                let inserted: String = source_chars[hunk.new_start..hunk.new_end].iter().collect();
+                let inserted_len = hunk.new_end - hunk.new_start;
+                interp.buffer.goto_char(from);
+                interp.insert_current_buffer(&inserted);
+                // `insert' can inherit edge properties.  `replace-buffer-contents'
+                // grafts the source intervals instead, including property-free gaps.
+                interp
+                    .buffer
+                    .set_text_properties(from, from + inserted_len, &[]);
+                for span in clipped_property_spans(source_props, hunk.new_start, hunk.new_end) {
+                    interp.buffer.set_text_properties(
+                        from + span.start,
+                        from + span.end,
+                        &span.props,
+                    );
+                }
+            }
+        }
+        Ok(())
+    })();
+    let restore_result = interp.restore_special_dynamic(restore_hooks, env);
+    let restored_point = interp
+        .marker_position(saved_point_marker)
+        .unwrap_or(saved_point)
+        .clamp(interp.buffer.point_min(), interp.buffer.point_max());
+    interp.buffer.goto_char(restored_point);
+    let _ = interp.set_marker(saved_point_marker, None, None);
+    edit_result?;
+    restore_result?;
+
+    run_change_hooks(
+        interp,
+        "after-change-functions",
+        &[
+            Value::Integer(target_start as i64),
+            Value::Integer((target_start + new_len) as i64),
+            Value::Integer(old_len as i64),
+        ],
+        env,
+    )?;
+    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+    let _ = maybe_lock_current_buffer_on_change(interp, env);
+    Ok(())
 }
 
 pub(super) fn call(
@@ -63,8 +321,24 @@ pub(super) fn call(
             Ok(result)
         }
         "match-data" => {
-            if args.len() > 2 {
+            if args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            if args.get(2).is_some_and(Value::is_truthy)
+                && let Some(reuse) = args.get(1)
+            {
+                let mut tail = reuse.clone();
+                while let Value::Cons(car, cdr) = tail {
+                    let marker_id = match &*car.borrow() {
+                        Value::Marker(marker_id) => Some(*marker_id),
+                        _ => None,
+                    };
+                    if let Some(marker_id) = marker_id {
+                        interp.set_marker(marker_id, None, None)?;
+                        *car.borrow_mut() = Value::Nil;
+                    }
+                    tail = cdr.borrow().clone();
+                }
             }
             let use_integers = args.first().is_some_and(Value::is_truthy);
             let source_buffer_id = if use_integers {
@@ -73,7 +347,12 @@ pub(super) fn call(
                 interp.last_match_data_buffer_id
             };
             let mut items = Vec::new();
-            for entry in interp.last_match_data.clone().unwrap_or_default() {
+            let match_data = interp.last_match_data.clone().unwrap_or_default();
+            let live_register_count = match_data
+                .iter()
+                .rposition(Option::is_some)
+                .map_or(0, |index| index + 1);
+            for entry in match_data.into_iter().take(live_register_count) {
                 match entry {
                     Some((start, end)) => {
                         if let Some(buffer_id) = source_buffer_id {
@@ -100,7 +379,33 @@ pub(super) fn call(
                     }
                 }
             }
-            Ok(Value::list(items))
+            if use_integers
+                && let Some(buffer_id) = interp.last_match_data_buffer_id
+                && let Some(buffer) = interp.buffer_identity_value(buffer_id)
+            {
+                items.push(buffer);
+            }
+            let Some(reuse) = args
+                .get(1)
+                .filter(|value| matches!(value, Value::Cons(_, _)))
+            else {
+                return Ok(Value::list(items));
+            };
+            let mut tail = reuse.clone();
+            let mut previous = None;
+            let mut item_index = 0usize;
+            while let Value::Cons(car, cdr) = tail {
+                *car.borrow_mut() = items.get(item_index).cloned().unwrap_or(Value::Nil);
+                item_index += 1;
+                previous = Some(Value::Cons(car.clone(), cdr.clone()));
+                tail = cdr.borrow().clone();
+            }
+            if item_index < items.len()
+                && let Some(previous) = previous
+            {
+                previous.set_cdr(Value::list(items.into_iter().skip(item_index)))?;
+            }
+            Ok(reuse.clone())
         }
         "set-match-data" => {
             need_arg_range(name, args, 1, 2)?;
@@ -114,6 +419,10 @@ pub(super) fn call(
             let mut restored_buffer_id = None;
             let mut index = 0usize;
             while index + 1 < items.len() {
+                if let Value::Buffer(buffer_id, _) = &items[index] {
+                    restored_buffer_id = Some(*buffer_id);
+                    break;
+                }
                 for item in [&items[index], &items[index + 1]] {
                     if let Value::Marker(marker_id) = item
                         && restored_buffer_id.is_none()
@@ -137,32 +446,77 @@ pub(super) fn call(
                 });
                 index += 2;
             }
+            if let Some(Value::Buffer(buffer_id, _)) = items.get(index) {
+                restored_buffer_id = Some(*buffer_id);
+            }
+            if args.get(1).is_some_and(Value::is_truthy) {
+                let mut tail = args[0].clone();
+                while let Value::Cons(car, cdr) = tail {
+                    let marker_id = match &*car.borrow() {
+                        Value::Marker(marker_id) => Some(*marker_id),
+                        _ => None,
+                    };
+                    if let Some(marker_id) = marker_id {
+                        interp.set_marker(marker_id, None, None)?;
+                        *car.borrow_mut() = Value::Nil;
+                    }
+                    tail = cdr.borrow().clone();
+                }
+            }
             interp.last_match_data = Some(restored);
             interp.last_match_data_buffer_id = restored_buffer_id;
-            Ok(args[0].clone())
+            Ok(Value::Nil)
+        }
+        "match-data--translate" => {
+            need_args(name, args, 1)?;
+            let Value::Integer(delta) = args[0] else {
+                return Err(LispError::TypeError("fixnum".into(), args[0].type_name()));
+            };
+            if let Some(match_data) = &mut interp.last_match_data {
+                for entry in match_data.iter_mut().flatten() {
+                    entry.0 = (entry.0 as i64).saturating_add(delta).max(0) as usize;
+                    entry.1 = (entry.1 as i64).saturating_add(delta).max(0) as usize;
+                }
+            }
+            Ok(Value::Nil)
         }
         "match-string" | "match-string-no-properties" => regexp::match_string_impl(interp, args),
 
-        "looking-at" => {
-            need_args(name, args, 1)?;
+        "looking-at" | "posix-looking-at" => {
+            need_arg_range(name, args, 1, 2)?;
             let pattern = string_text(&args[0])?;
             interp.set_variable(
                 "last-looking-at-pattern",
                 Value::String(pattern.clone()),
                 &mut env.clone(),
             );
-            regexp::looking_at_impl(interp, &args[0], env)
+            regexp::looking_at_impl(
+                interp,
+                &args[0],
+                name == "posix-looking-at",
+                !args.get(1).is_some_and(Value::is_truthy),
+                env,
+            )
         }
         "looking-at-p" => {
             need_args(name, args, 1)?;
             let saved_match_data = interp.last_match_data.clone();
             let saved_match_data_buffer_id = interp.last_match_data_buffer_id;
-            let result = regexp::looking_at_impl(interp, &args[0], env);
+            let result = regexp::looking_at_impl(interp, &args[0], false, false, env);
             interp.last_match_data = saved_match_data;
             interp.last_match_data_buffer_id = saved_match_data_buffer_id;
             result
         }
         "looking-back" => regexp::looking_back_impl(interp, args, env),
+        "newline-cache-check" => {
+            need_arg_range(name, args, 0, 1)?;
+            if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
+                interp.resolve_buffer_id(buffer)?;
+            }
+            // Emaxx does not maintain GNU's optional long-line newline
+            // cache.  GNU's documented result when no cache exists is nil.
+            Ok(Value::Nil)
+        }
 
         "replace-match" => {
             need_args(name, args, 1)?;
@@ -328,6 +682,91 @@ pub(super) fn call(
                 interp.buffer.goto_char(target);
             }
             Ok(Value::Nil)
+        }
+        "replace-buffer-contents" => {
+            need_arg_range(name, args, 1, 3)?;
+            let source_id = interp.resolve_buffer_id(&args[0])?;
+            if source_id == interp.current_buffer_id() {
+                return Err(LispError::Signal(
+                    "Cannot replace a buffer with itself".into(),
+                ));
+            }
+            let (source_text, source_props) = {
+                let source = interp
+                    .get_buffer_by_id(source_id)
+                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {source_id}")))?;
+                (
+                    source
+                        .buffer_substring(source.point_min(), source.point_max())
+                        .map_err(|error| LispError::Signal(error.to_string()))?,
+                    source.substring_property_spans(source.point_min(), source.point_max()),
+                )
+            };
+            let target_start = interp.buffer.point_min();
+            let target_end = interp.buffer.point_max();
+            let target_text = interp
+                .buffer
+                .buffer_substring(target_start, target_end)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let old_chars: Vec<char> = target_text.chars().collect();
+            let new_chars: Vec<char> = source_text.chars().collect();
+
+            let max_costs = match args.get(2) {
+                None | Some(Value::Nil) => 1_000_000,
+                Some(Value::Integer(value)) => (*value).max(0) as usize,
+                Some(Value::BigInteger(value)) => value.to_usize().unwrap_or_else(|| {
+                    if value.sign() == Sign::Minus {
+                        0
+                    } else {
+                        usize::MAX
+                    }
+                }),
+                Some(value) => {
+                    return Err(LispError::TypeError("integer".into(), value.type_name()));
+                }
+            };
+            let deadline = match args.get(1) {
+                None | Some(Value::Nil) => None,
+                Some(value) => {
+                    let seconds = numeric_to_f64(interp, value)?;
+                    if seconds <= 0.0 {
+                        Some(Instant::now())
+                    } else if seconds.is_finite() {
+                        Some(Instant::now() + Duration::from_secs_f64(seconds))
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            let (hunks, non_destructive) = match non_destructive_replacement_hunks(
+                &old_chars, &new_chars, max_costs, deadline,
+            ) {
+                Some(hunks) => (hunks, true),
+                None => (
+                    vec![BufferReplacementHunk {
+                        old_start: 0,
+                        old_end: old_chars.len(),
+                        new_start: 0,
+                        new_end: new_chars.len(),
+                    }],
+                    false,
+                ),
+            };
+            apply_buffer_replacement_hunks(
+                interp,
+                env,
+                target_start,
+                target_end,
+                &new_chars,
+                &source_props,
+                &hunks,
+            )?;
+            Ok(if non_destructive {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "flush-lines" => {
             need_args(name, args, 3)?;
@@ -589,31 +1028,53 @@ pub(super) fn call(
                 Vec::new(),
                 interp.buffer.is_multibyte(),
             );
-            let destination_buffer = args
-                .get(3)
-                .filter(|value| !value.is_nil())
-                .and_then(|value| interp.resolve_buffer_id(value).ok());
-            let destination = args.get(3).is_some_and(Value::is_truthy);
+            enum Destination {
+                Replace,
+                Return,
+                Buffer(u64),
+            }
+            let destination = match args.get(3) {
+                None | Some(Value::Nil) => Destination::Replace,
+                Some(Value::T) => Destination::Return,
+                Some(buffer) => Destination::Buffer(interp.resolve_buffer_id(buffer)?),
+            };
+            let return_string = matches!(destination, Destination::Return);
             let transformed = if name == "encode-coding-region" {
-                encode_coding_value(interp, &region, coding.as_deref(), destination, env)?
+                encode_coding_value(interp, &region, coding.as_deref(), return_string, env)?
             } else {
-                decode_coding_text(interp, &region, coding.as_deref(), destination, env)?
+                decode_coding_text(interp, &region, coding.as_deref(), return_string, env)?
             };
             let transformed_text = string_text(&transformed)?;
-            if let Some(buffer_id) = destination_buffer {
-                let saved_buffer_id = interp.current_buffer_id();
-                interp.switch_to_buffer_id(buffer_id)?;
-                let insert_at = interp.buffer.point();
-                insert_text_with_hooks(interp, &transformed_text, &[], false, false, env)?;
-                interp.buffer.goto_char(insert_at);
-                let _ = interp.switch_to_buffer_id(saved_buffer_id);
-            } else if !destination {
-                replace_buffer_region_with_text(interp, start, end, &transformed_text)?;
-            }
-            if destination {
-                Ok(transformed)
-            } else {
-                Ok(Value::Nil)
+            let transformed_length = transformed_text.chars().count();
+            let text_for_buffer = |multibyte: bool| -> Result<String, LispError> {
+                if name == "decode-coding-region" && !multibyte {
+                    Ok(decode_raw_text_bytes(&encode_utf8_bytes(
+                        &transformed_text,
+                        false,
+                    )?))
+                } else {
+                    Ok(transformed_text.clone())
+                }
+            };
+            match destination {
+                Destination::Return => Ok(transformed),
+                Destination::Replace => {
+                    let text = text_for_buffer(interp.buffer.is_multibyte())?;
+                    replace_buffer_region_with_text(interp, start, end, &text)?;
+                    Ok(Value::Integer(transformed_length as i64))
+                }
+                Destination::Buffer(buffer_id) => {
+                    let saved_buffer_id = interp.current_buffer_id();
+                    interp.switch_to_buffer_id(buffer_id)?;
+                    let insert_at = interp.buffer.point();
+                    let text = text_for_buffer(interp.buffer.is_multibyte())?;
+                    let insertion = insert_text_with_hooks(interp, &text, &[], false, false, env);
+                    interp.buffer.goto_char(insert_at);
+                    let restore = interp.switch_to_buffer_id(saved_buffer_id);
+                    insertion?;
+                    restore?;
+                    Ok(Value::Integer(transformed_length as i64))
+                }
             }
         }
 

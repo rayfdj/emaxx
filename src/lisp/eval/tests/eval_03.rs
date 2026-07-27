@@ -664,6 +664,41 @@ fn insert_file_contents_leaves_point_at_insert_start() {
 }
 
 #[test]
+fn literal_file_bytes_keep_the_unibyte_buffer_decoding_contract() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-unibyte-file-bytes-{}.bin",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, [0xc3, 0xa4]).unwrap();
+
+    let path_literal = path.display().to_string().replace('\\', "\\\\");
+    assert_eq!(
+        eval_str(&format!(
+            "(with-temp-buffer
+               (set-buffer-multibyte nil)
+               (insert-file-contents-literally \"{path_literal}\")
+               (let ((bytes (buffer-string)))
+                 (list (multibyte-string-p bytes)
+                       (string-to-list bytes)
+                       (decode-coding-string bytes 'utf-8)
+                       (multibyte-string-p
+                        (decode-coding-string bytes 'utf-8)))))"
+        )),
+        Value::list([
+            Value::Nil,
+            Value::list([Value::Integer(0xc3), Value::Integer(0xa4)]),
+            Value::String("ä".into()),
+            Value::T,
+        ])
+    );
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn insert_file_contents_rejects_circular_after_insert_file_functions() {
     let path = std::env::temp_dir().join(format!(
         "emaxx-insert-file-contents-circular-{}.txt",
@@ -934,6 +969,146 @@ fn window_height_tracks_runtime_frame_height() {
 }
 
 #[test]
+fn frame_resize_keeps_split_window_tree_geometry_coherent() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((first (selected-window))
+                       (second (split-window-internal first 40 t 0.5)))
+                  (set-frame-width nil 120)
+                  (set-frame-height nil 40)
+                  (let ((root (frame-root-window)))
+                    (list
+                     (eq first second)
+                     (eq root first)
+                     (eq root second)
+                     (eq root (window-parent first))
+                     (eq (window-parent first) (window-parent second))
+                     (window-width root)
+                     (window-height root)
+                     (window-width first)
+                     (window-width second)
+                     (+ (window-width first) (window-width second))
+                     (window-height first)
+                     (window-height second)
+                     (nth 2 (window-edges second))
+                     (nth 3 (window-edges second)))))
+                "#,
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::Integer(120),
+            Value::Integer(40),
+            Value::Integer(60),
+            Value::Integer(60),
+            Value::Integer(120),
+            Value::Integer(40),
+            Value::Integer(40),
+            Value::Integer(120),
+            Value::Integer(40),
+        ])
+    );
+}
+
+#[test]
+fn window_use_times_follow_selection_and_second_most_recent_bumps() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(let* ((first (selected-window))
+                    (second (split-window first)))
+               (list
+                (window-use-time first)
+                (window-use-time second)
+                (window-bump-use-time second)
+                (window-use-time first)
+                (window-use-time second)
+                (window-bump-use-time second)
+                (progn (select-window second) (window-use-time second))
+                (window-use-time first)))"
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(4),
+            Value::Integer(3),
+        ])
+    );
+}
+
+#[test]
+fn frame_selected_window_family_preserves_norecord_state() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(let* ((first (selected-window))
+                    (second (split-window first)))
+               (list
+                (subrp (indirect-function 'set-frame-selected-window))
+                (subrp (indirect-function 'frame-old-selected-window))
+                (subrp (indirect-function 'old-selected-window))
+                (eq (old-selected-window) first)
+                (null (frame-old-selected-window))
+                (eq (set-frame-selected-window nil second t) second)
+                (eq (selected-window) second)
+                (window-use-time second)
+                (eq (set-frame-selected-window nil first t) first)
+                (eq (selected-window) first)
+                (window-use-time first)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Integer(0),
+            Value::T,
+            Value::T,
+            Value::Integer(1),
+        ])
+    );
+}
+
+#[test]
+fn terminal_frame_visibility_family_matches_gnu() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((frame (selected-frame)))
+                 (list
+                  (frame-visible-p frame)
+                  (eq (make-frame-visible frame) frame)
+                  (condition-case err
+                      (progn (make-frame-invisible frame) 'no-error)
+                    (error (car err)))
+                  (make-frame-invisible frame t)
+                  (frame-visible-p frame)
+                  (iconify-frame frame)
+                  (frame-visible-p frame)
+                  (and (memq frame (visible-frame-list)) t)))"#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::Symbol("error".into()),
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn window_edge_aliases_report_selected_window_geometry() {
     assert_eq!(
         eval_str(
@@ -958,19 +1133,19 @@ fn window_edge_aliases_report_selected_window_geometry() {
                 Value::Integer(0),
                 Value::Integer(0),
                 Value::Integer(120),
-                Value::Integer(40),
+                Value::Integer(39),
             ]),
             Value::list([
                 Value::Integer(0),
                 Value::Integer(0),
                 Value::Integer(120),
-                Value::Integer(40),
+                Value::Integer(39),
             ]),
             Value::list([
                 Value::Integer(0),
                 Value::Integer(0),
-                Value::Integer(960),
-                Value::Integer(640),
+                Value::Integer(120),
+                Value::Integer(39),
             ]),
         ])
     );
@@ -1021,9 +1196,22 @@ fn query_replace_map_is_preloaded_for_prompt_helpers() {
     assert_eq!(
         eval_str(
             "(list (keymapp query-replace-map)
-                       (define-key query-replace-map \" \" 'ignore))"
+                       (lookup-key query-replace-map \"y\")
+                       (lookup-key query-replace-map \"n\")
+                       (lookup-key query-replace-map \" \" )
+                       (lookup-key query-replace-map [delete])
+                       (lookup-key query-replace-map \"!\")
+                       (lookup-key query-replace-map [escape]))"
         ),
-        Value::list([Value::T, Value::Symbol("ignore".into())])
+        Value::list([
+            Value::T,
+            Value::Symbol("act".into()),
+            Value::Symbol("skip".into()),
+            Value::Symbol("act".into()),
+            Value::Symbol("skip".into()),
+            Value::Symbol("automatic".into()),
+            Value::Symbol("exit-prefix".into()),
+        ])
     );
 }
 
@@ -1250,13 +1438,18 @@ fn key_binding_resolves_minor_mode_remaps() {
                 (progn
                   (setq sample-mode t)
                   (let ((map (make-sparse-keymap "demo")))
+                    (global-set-key (kbd "C-x 5 C-o") 'display-buffer-other-frame)
                     (define-key map [remap display-buffer-other-frame] 'demo-display)
                     (setq sample-mode-map-entry (cons 'sample-mode map))
                     (add-to-list 'minor-mode-map-alist sample-mode-map-entry)
-                    (key-binding (kbd "C-x 5 C-o"))))
+                    (list (key-binding (kbd "C-x 5 C-o"))
+                          (key-binding (kbd "C-x 5 C-o") nil t))))
                 "#
         ),
-        Value::Symbol("demo-display".into())
+        Value::list([
+            Value::Symbol("demo-display".into()),
+            Value::Symbol("display-buffer-other-frame".into()),
+        ])
     );
 }
 
@@ -1396,6 +1589,42 @@ fn cl_destructuring_bind_supports_dotted_tail_patterns() {
         Value::list([
             Value::cons(Value::Integer(184), Value::Integer(95)),
             Value::list([Value::Symbol("tail".into())]),
+        ])
+    );
+}
+
+#[test]
+fn nreverse_relinks_cons_cells_and_cl_copy_list_preserves_dotted_tails() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (let* ((head (list 'a 'b 'c))
+                       (first head)
+                       (second (cdr head))
+                       (third (cddr head))
+                       (reversed (nreverse head)))
+                  (list reversed
+                        (eq reversed third)
+                        (eq (cdr reversed) second)
+                        (eq (cddr reversed) first)
+                        head
+                        (cl-copy-list '(slot . property))))
+                "#
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("c".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("a".into()),
+            ]),
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::list([Value::Symbol("a".into())]),
+            Value::cons(
+                Value::Symbol("slot".into()),
+                Value::Symbol("property".into()),
+            ),
         ])
     );
 }
@@ -1613,6 +1842,317 @@ fn preloaded_cl_struct_class_slots_support_compiled_macroexpansion() {
             Value::Nil,
         ])
     );
+}
+
+#[test]
+fn loaded_gnu_setf_mutates_all_preloaded_slot_descriptor_fields() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        crate::lisp::load_file_strict(
+            &mut interp,
+            &upstream_emacs_repo().join("lisp/emacs-lisp/gv.el"),
+        )
+        .expect("load GNU gv");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((slot (record 'cl-slot-descriptor
+                                     'old-name nil nil nil)))
+                   (setf (cl--slot-descriptor-name slot) 'new-name
+                         (cl--slot-descriptor-initform slot) 7
+                         (cl--slot-descriptor-type slot) 'integer
+                         (cl--slot-descriptor-props slot) '((:read-only . t)))
+                   (list (cl--slot-descriptor-name slot)
+                         (cl--slot-descriptor-initform slot)
+                         (cl--slot-descriptor-type slot)
+                         (cl--slot-descriptor-props slot)))"
+            ),
+            Value::list([
+                Value::Symbol("new-name".into()),
+                Value::Integer(7),
+                Value::Symbol("integer".into()),
+                Value::list([Value::cons(Value::Symbol(":read-only".into()), Value::T)]),
+            ])
+        );
+    });
+}
+
+#[test]
+fn loaded_gnu_eieio_instances_use_completed_inherited_slot_records() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (require 'eieio)
+                   (eieio-defclass-internal
+                    'sample-loaded-slot-parent nil
+                    '((file :initarg :file :initform nil)) nil)
+                   (eieio-defclass-internal
+                    'sample-loaded-slot-child '(sample-loaded-slot-parent)
+                    '((own :initarg :own :initform 3)) nil)
+                   (let ((object
+                          (make-instance 'sample-loaded-slot-child
+                                         :file \"source.cpp\"
+                                         :own 7)))
+                     (list (slot-value object 'file)
+                           (slot-value object 'own)
+                           (mapcar
+                            #'cl--slot-descriptor-name
+                            (append
+                             (eieio--class-slots
+                              (cl--find-class
+                               'sample-loaded-slot-child))
+                             nil)))))"
+            ),
+            Value::list([
+                Value::String("source.cpp".into()),
+                Value::Integer(7),
+                Value::list([Value::Symbol("file".into()), Value::Symbol("own".into()),]),
+            ])
+        );
+    });
+}
+
+#[test]
+fn loaded_gnu_eieio_metadata_and_class_storage_stay_authoritative() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (require 'eieio)
+                   (eieio-defclass-internal
+                    'sample-loaded-abstract nil nil '(:abstract t))
+                   (eieio-defclass-internal
+                    'sample-loaded-allocation nil
+                    '((shared :allocation :class
+                              :initarg :shared :initform 5))
+                    nil)
+                   (let* ((class
+                           (cl--find-class 'sample-loaded-allocation))
+                          (object
+                           (make-instance 'sample-loaded-allocation)))
+                     (list
+                      (class-abstract-p 'sample-loaded-abstract)
+                      (slot-value object 'shared)
+                      (progn
+                        (setf (slot-value object 'shared) 9)
+                        (slot-value object 'shared))
+                      (aref
+                       (eieio--class-class-allocation-values class)
+                       0)
+                      (progn
+                        (eieio-oset-default
+                         'sample-loaded-allocation 'shared 11)
+                        (list
+                         (slot-value object 'shared)
+                         (aref
+                          (eieio--class-class-allocation-values
+                           class)
+                          0))))))"
+            ),
+            Value::list([
+                Value::T,
+                Value::Integer(5),
+                Value::Integer(9),
+                Value::Integer(9),
+                Value::list([Value::Integer(11), Value::Integer(11)]),
+            ])
+        );
+    });
+}
+
+#[test]
+fn upstream_semantic_format_loads_with_complete_eieio_slots() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        let path = upstream_emacs_repo().join("test/lisp/cedet/semantic/format-tests.el");
+        crate::lisp::load_file_strict(&mut interp, &path).expect("load semantic format tests");
+        let summary =
+            interp.run_ert_tests_with_selector(Some(&Value::Symbol("semantic-fmt-utest".into())));
+        assert_eq!(summary.total, 1, "results: {:#?}", interp.test_results);
+        assert_eq!(summary.passed, 1, "results: {:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_semantic_make_completion_survives_the_file_visit_sequence() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        let test_path = upstream_emacs_repo().join("test/lisp/cedet/semantic-utest-ia.el");
+        crate::lisp::load_file_strict(&mut interp, &test_path).expect("load Semantic IA tests");
+        let resource =
+            upstream_emacs_repo().join("test/lisp/cedet/semantic-utest-ia-resources/test.mk");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                &format!(
+                    "(semantic-ia-utest {resource:?})",
+                    resource = resource.display().to_string()
+                )
+            ),
+            Value::Nil
+        );
+    });
+}
+
+#[test]
+fn semantic_make_fallback_follows_mode_ancestry_not_file_spelling() {
+    let root = std::env::temp_dir().join(format!(
+        "emaxx-semantic-make-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("create Make completion fixture directory");
+    std::fs::write(root.join("testdoublens.cpp"), "").expect("write C++ fixture");
+    std::fs::write(root.join("testdoublens.hpp"), "").expect("write C++ header fixture");
+    let directory = format!("{}/", root.display());
+
+    assert_eq!(
+        eval_str(&format!(
+            "(progn
+               (put 'sample-make-mode 'derived-mode-parent 'makefile-mode)
+               (with-temp-buffer
+                 (setq major-mode 'sample-make-mode)
+                 (setq-local default-directory {directory:?})
+                 (insert \"FILES=testdoub\\noptional: all\\nprobe: $FIL\\nnotoptional: opt\\n\")
+                 (let ((tags
+                        (mapcar #'car (semantic-fetch-tags))))
+                   (goto-char (point-min))
+                   (search-forward \"testdoub\")
+                   (let ((files
+                          (mapcar #'car
+                                  (semantic-analyze-possible-completions
+                                   nil))))
+                     (goto-char (point-min))
+                   (search-forward \"$FIL\")
+                   (let ((variables
+                          (mapcar #'car
+                                  (semantic-analyze-possible-completions
+                                   nil))))
+                     (search-forward \"notoptional: opt\")
+                     (list tags
+                           files
+                           variables
+                           (mapcar #'car
+                                   (semantic-analyze-possible-completions
+                                    nil))))))))"
+        )),
+        Value::list([
+            Value::list([
+                Value::String("optional".into()),
+                Value::String("probe".into()),
+                Value::String("notoptional".into()),
+            ]),
+            Value::list([
+                Value::String("testdoublens.cpp".into()),
+                Value::String("testdoublens.hpp".into()),
+            ]),
+            Value::list([Value::String("FILES".into())]),
+            Value::list([Value::String("optional".into())]),
+        ])
+    );
+
+    std::fs::remove_dir_all(root).expect("remove Make completion fixture directory");
+}
+
+#[test]
+fn loaded_gnu_file_modes_run_semantic_parser_setup() {
+    run_with_large_stack(|| {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-semantic-modes-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create Semantic mode fixture directory");
+        let python = root.join("sample.py");
+        let html = root.join("sample.html");
+        let makefile = root.join("Makefile");
+        std::fs::write(&python, "def sample():\n    return 1\n").expect("write Python fixture");
+        std::fs::write(&html, "<html><body>sample</body></html>\n").expect("write HTML fixture");
+        std::fs::write(&makefile, "sample:\n\t@true\n").expect("write Makefile fixture");
+
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        let expression = format!(
+            "(progn
+               (require 'semantic)
+               (semantic-mode 1)
+               (mapcar
+                (lambda (file)
+                  (let ((buffer (find-file-noselect file)))
+                    (with-current-buffer buffer
+                      (prog1
+                          (list major-mode
+                                (semantic-active-p)
+                                (and (boundp 'semantic--parse-table)
+                                     semantic--parse-table
+                                     t))
+                        (kill-buffer buffer)))))
+                (list {python:?} {html:?} {makefile:?})))",
+            python = python.display().to_string(),
+            html = html.display().to_string(),
+            makefile = makefile.display().to_string(),
+        );
+        let actual = eval_str_with(&mut interp, &expression);
+
+        std::fs::remove_dir_all(&root).expect("remove Semantic mode fixture directory");
+        assert_eq!(
+            actual,
+            Value::list([
+                Value::list([Value::Symbol("python-mode".into()), Value::T, Value::T,]),
+                Value::list([Value::Symbol("html-mode".into()), Value::T, Value::T,]),
+                Value::list([
+                    Value::Symbol("makefile-bsdmake-mode".into()),
+                    Value::T,
+                    Value::T,
+                ]),
+            ])
+        );
+    });
 }
 
 #[test]
@@ -2116,6 +2656,152 @@ fn cl_typep_recognizes_builtin_numeric_parent_types() {
 }
 
 #[test]
+fn cl_typep_implements_gnu_builtin_satisfies_and_eql_types() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defun sample-cl-command () (interactive))
+               (put 'sample-even 'cl-deftype-satisfies
+                    (lambda (value) (and (integerp value) (zerop (% value 2)))))
+               (list (cl-typep :before 'keyword)
+                     (cl-typep 'before 'keyword)
+                     (cl-typep 65 'character)
+                     (cl-typep -1 'character)
+                     (cl-typep 0 'natnum)
+                     (cl-typep -1 'natnum)
+                     (cl-typep 1.5 'real)
+                     (cl-typep 'sample-cl-command 'command)
+                     (cl-typep 4 'sample-even)
+                     (cl-typep 3 'sample-even)
+                     (cl-typep 1 '(eql 1))
+                     (cl-typep 1.0 '(eql 1))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn loaded_gnu_cl_deftype_drives_class_type_matching() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(progn
+               (require 'eieio)
+               (eieio-defclass-internal 'sample-loaded-class nil nil nil)
+               (list (functionp (get 'class 'cl-deftype-handler))
+                     (class-p 'sample-loaded-class)
+                     (cl-typep 'sample-loaded-class 'class)
+                     (cl-typep (cl--find-class 'sample-loaded-class) 'class)
+                     (cl-typep 'not-a-class 'class)))"
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn loaded_gnu_eieio_subclass_dispatch_reads_completed_lisp_class_records() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(progn
+               (require 'eieio)
+               (eieio-defclass-internal 'sample-loaded-parent nil nil nil)
+               (eieio-defclass-internal
+                'sample-loaded-child '(sample-loaded-parent) nil nil)
+               (cl-defmethod sample-loaded-dispatch
+                 ((_class (subclass sample-loaded-parent)))
+                 'matched)
+               (list
+                (mapcar #'cl--class-name
+                        (cl--class-parents
+                         (cl--find-class 'sample-loaded-child)))
+                (cl--class-allparents
+                 (cl--find-class 'sample-loaded-child))
+                (sample-loaded-dispatch 'sample-loaded-child)))"
+        ),
+        Value::list([
+            Value::list([Value::Symbol("sample-loaded-parent".into())]),
+            Value::list([
+                Value::Symbol("sample-loaded-child".into()),
+                Value::Symbol("sample-loaded-parent".into()),
+                Value::Symbol("eieio-default-superclass".into()),
+                Value::Symbol("record".into()),
+                Value::Symbol("atom".into()),
+                Value::T,
+            ]),
+            Value::Symbol("matched".into()),
+        ])
+    );
+}
+
+#[test]
+fn loaded_gnu_eieio_subclass_dispatch_resolves_autoload_dummy_classes() {
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-eieio-autoload-class-{}.el",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(defclass sample-autoload-child (sample-autoload-parent) nil)\n\
+             (setq sample-autoload-loaded t)\n",
+        )
+        .unwrap();
+        let path = path.display().to_string().replace('\\', "\\\\");
+
+        assert_eq!(
+            eval_str_with_upstream_batch(&format!(
+                "(progn
+                   (require 'eieio)
+                   (eieio-defclass-internal
+                    'sample-autoload-parent nil nil nil)
+                   (setq sample-autoload-loaded nil)
+                   (eieio-defclass-autoload
+                    'sample-autoload-child
+                    '(sample-autoload-parent)
+                    \"{path}\"
+                    \"Autoload child\")
+                   (cl-defmethod sample-autoload-dispatch
+                     ((_class (subclass sample-autoload-parent)))
+                     'matched)
+                   (let ((loaded-before-dispatch sample-autoload-loaded))
+                     (list loaded-before-dispatch
+                           (sample-autoload-dispatch
+                            'sample-autoload-child)
+                           sample-autoload-loaded
+                           (mapcar
+                            #'cl--class-name
+                            (cl--class-parents
+                             (cl--find-class
+                              'sample-autoload-child))))))"
+            )),
+            Value::list([
+                Value::Nil,
+                Value::Symbol("matched".into()),
+                Value::T,
+                Value::list([Value::Symbol("sample-autoload-parent".into())]),
+            ])
+        );
+
+        std::fs::remove_file(path).unwrap();
+    });
+}
+
+#[test]
 fn cl_deftype_optional_args_default_to_star() {
     assert_eq!(
         eval_str(
@@ -2328,6 +3014,51 @@ fn setf_updates_eieio_class_parent_metadata() {
             Value::T,
         ])
     );
+}
+
+#[test]
+fn complete_lisp_eieio_record_is_authoritative_for_class_children() {
+    assert_eq!(
+        eval_str(
+            "(let ((parent (make-record 'eieio--class 11 nil)))
+               (aset parent 1 'sample-live-parent)
+               (aset parent 6 '(sample-live-child))
+               (setf (cl--find-class 'sample-live-parent) parent)
+               (eieio-class-children 'sample-live-parent))"
+        ),
+        Value::list([Value::Symbol("sample-live-child".into())])
+    );
+}
+
+#[test]
+fn loaded_gnu_setf_updates_raw_cl_class_parent_slot() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        crate::lisp::load_file_strict(
+            &mut interp,
+            &upstream_emacs_repo().join("lisp/emacs-lisp/gv.el"),
+        )
+        .expect("load GNU gv");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((parent (record 'eieio--class
+                                       'parent nil nil nil nil))
+                       (child (record 'eieio--class
+                                      'child nil nil nil nil)))
+                   (setf (cl--class-parents child) (list parent))
+                   (list (eq (car (cl--class-parents child)) parent)
+                         (equal (aref child 3) (list parent))))"
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    });
 }
 
 #[test]
@@ -3101,6 +3832,14 @@ fn dotimes_nested_lambdas_bind_uninterned_parameters() {
 }
 
 #[test]
+fn dotimes_reuses_its_binding_across_large_loops() {
+    assert_eq!(
+        eval_str("(dotimes (unicode-codepoint 250000 unicode-codepoint))"),
+        Value::Integer(250_000)
+    );
+}
+
+#[test]
 fn cl_defmethod_supports_setf_function_names() {
     assert_eq!(
         eval_str(
@@ -3152,8 +3891,36 @@ fn cl_defgeneric_does_not_notify_edebug_on_plain_eval() {
 #[test]
 fn oclosure_lambda_lowers_to_plain_lambda() {
     assert_eq!(
-        eval_str("(funcall (oclosure-lambda (sample-type) (x) x) 7)"),
-        Value::Integer(7)
+        eval_str(
+            "(let ((object (oclosure-lambda (sample-type) (x) x)))
+               (list (funcall object 7)
+                     (oclosure-type object)
+                     (oclosure-type (lambda () nil))))"
+        ),
+        Value::list([Value::Integer(7), Value::symbol("sample-type"), Value::Nil])
+    );
+}
+
+#[test]
+fn function_quote_returns_non_lambda_list_objects_literally() {
+    assert_eq!(
+        eval_str("#'(1 2)"),
+        Value::list([Value::int(1), Value::int(2)])
+    );
+}
+
+#[test]
+fn zerop_rejects_non_numbers_instead_of_treating_them_as_nonzero() {
+    assert_eq!(
+        eval_str(
+            "(condition-case err
+                 (zerop \"not-a-number\")
+               (wrong-type-argument (list (car err) (cadr err))))"
+        ),
+        Value::list([
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("number-or-marker-p"),
+        ])
     );
 }
 
@@ -3543,6 +4310,40 @@ fn cl_letf_can_mix_variable_and_function_rebinding() {
             Value::Symbol("value".into()),
             Value::Symbol("outer".into()),
         ])
+    );
+}
+
+#[test]
+fn cl_letf_can_temporarily_override_native_read_event() {
+    assert_eq!(
+        eval_str(
+            "(cl-letf (((symbol-function 'read-event) \
+                         (lambda (&rest _) ?n))) \
+                 (read-event))"
+        ),
+        Value::Integer('n' as i64)
+    );
+}
+
+#[test]
+fn map_y_or_n_p_honors_a_temporarily_overridden_read_event() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (require 'map-ynp)
+                (let ((use-dialog-box nil)
+                      (reads 0))
+                  (cl-letf (((symbol-function 'read-event)
+                             (lambda (&rest _)
+                               (setq reads (1+ reads))
+                               ?n))
+                            ((symbol-function 'sit-for)
+                             (lambda (&rest _)
+                               (error "map-y-or-n-p retried a valid answer"))))
+                    (list (map-y-or-n-p "%s? " #'ignore '(item)) reads)))
+                "#
+        ),
+        Value::list([Value::Integer(0), Value::Integer(1)])
     );
 }
 
@@ -4111,6 +4912,55 @@ fn save_window_excursion_restores_window_start() {
 }
 
 #[test]
+fn preloaded_window_contract_restores_context_and_defines_resize_mode() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (let ((original-buffer (current-buffer))
+                      (original-window (selected-window))
+                      (other (get-buffer-create "*save-selected-window*")))
+                  (list
+                   (macrop 'save-selected-window)
+                   (boundp 'temp-buffer-resize-mode)
+                   temp-buffer-resize-mode
+                   (save-selected-window
+                     (set-buffer other)
+                     'body-value)
+                   (eq (current-buffer) original-buffer)
+                   (eq (selected-window) original-window)))
+                "#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::symbol("body-value"),
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn window_configuration_equality_ignores_view_position_but_compares_layout() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (insert "one\ntwo\nthree\n")
+                 (let ((before (current-window-configuration)))
+                   (goto-char (point-max))
+                   (set-window-start (selected-window) 5)
+                   (let ((moved (current-window-configuration)))
+                     (switch-to-buffer (get-buffer-create "*other-layout*"))
+                     (list (window-configuration-equal-p before moved)
+                           (window-configuration-equal-p
+                            before (current-window-configuration))))))"#
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn vertical_motion_moves_by_lines_and_reports_actual_motion() {
     assert_eq!(
         eval_str(
@@ -4588,6 +5438,85 @@ fn with_environment_variables_binds_process_environment_dynamically() {
 }
 
 #[test]
+fn setenv_is_lisp_local_and_does_not_mutate_the_host_process() {
+    let name = format!(
+        "EMAXX_SETENV_HOST_ISOLATION_{}_{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    assert!(std::env::var_os(&name).is_none());
+
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            &format!(
+                r#"(let ((name {name:?}))
+                     (list
+                      (getenv name)
+                      (let ((process-environment
+                             (copy-sequence process-environment)))
+                        (setenv name "lisp-only")
+                        (getenv name))
+                      (getenv name)))"#
+            )
+        ),
+        Value::list([Value::Nil, Value::String("lisp-only".into()), Value::Nil])
+    );
+    assert!(std::env::var_os(&name).is_none());
+}
+
+#[test]
+fn expand_file_name_uses_lisp_home_environment() {
+    let home = std::env::temp_dir().join(format!(
+        "emaxx-lisp-home-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let home = home.display().to_string();
+    let expected_child = PathBuf::from(&home)
+        .join("base")
+        .join("child")
+        .display()
+        .to_string();
+
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            &format!(
+                r#"(let ((process-environment
+                           (copy-sequence process-environment)))
+                     (setenv "HOME" {home:?})
+                     (list (expand-file-name "~")
+                           (expand-file-name "child" "~/base/")))"#
+            )
+        ),
+        Value::list([Value::String(home), Value::String(expected_child)])
+    );
+}
+
+#[test]
+fn missing_process_and_buffer_designators_are_non_live() {
+    assert_eq!(
+        eval_str(
+            r#"(list (get-buffer-process " *emaxx-no-such-buffer*")
+                      (process-live-p "emaxx-no-such-process")
+                      (process-live-p 'undef)
+                      (process-live-p 42)
+                      (process-live-p nil))"#
+        ),
+        Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil, Value::Nil,])
+    );
+}
+
+#[test]
 fn ert_selector_excludes_expensive_tests_by_tag() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -4764,6 +5693,47 @@ fn fset_can_define_function_aliases() {
 }
 
 #[test]
+fn named_lisp_calls_share_immutable_function_code() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let definition = Reader::new("(defun emaxx-test-shared-function-code (value) (+ value 1))")
+        .read()
+        .expect("shared-code function should parse")
+        .expect("shared-code definition should exist");
+    interp
+        .eval(&definition, &mut env)
+        .expect("define the shared-code function");
+
+    let first = interp
+        .lookup_function("emaxx-test-shared-function-code", &env)
+        .expect("first function lookup");
+    let second = interp
+        .lookup_function("emaxx-test-shared-function-code", &env)
+        .expect("second function lookup");
+    let (Value::Lambda(_, first_body, _), Value::Lambda(_, second_body, _)) = (&first, &second)
+    else {
+        panic!("named definition should remain a Lisp lambda");
+    };
+    assert!(
+        std::rc::Rc::ptr_eq(first_body, second_body),
+        "function lookup must share immutable code rather than cloning its AST"
+    );
+
+    let call = Reader::new("(emaxx-test-shared-function-code 41)")
+        .read()
+        .expect("shared-code call should parse")
+        .expect("shared-code call should exist");
+    for _ in 0..20_000 {
+        assert_eq!(
+            interp
+                .eval(&call, &mut env)
+                .expect("repeated shared-code call should execute"),
+            Value::Integer(42)
+        );
+    }
+}
+
+#[test]
 fn dumped_string_equal_alias_is_visible_to_metadata_consumers() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(
@@ -4806,6 +5776,27 @@ fn defalias_evaluates_symbol_definition_forms() {
 }
 
 #[test]
+fn defalias_evaluates_computed_names_and_optional_docstrings() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((entry '(sample-computed-alias . ignored))
+                      (documentation "computed alias documentation"))
+                  (list
+                   (defalias (car entry) #'ignore documentation)
+                   (funcall (car entry))
+                   (get (car entry) 'function-documentation)))
+                "#
+        ),
+        Value::list([
+            Value::Symbol("sample-computed-alias".into()),
+            Value::Nil,
+            Value::String("computed alias documentation".into()),
+        ])
+    );
+}
+
+#[test]
 fn function_quote_allows_forward_symbol_references() {
     assert_eq!(
         eval_str(
@@ -4833,36 +5824,60 @@ fn functionp_and_funcall_accept_quoted_lambda_expressions() {
 }
 
 #[test]
-fn preloaded_sh_mode_sets_imenu_configuration() {
-    let value = eval_str(
-        "(with-temp-buffer
-               (funcall #'sh-mode)
-               (list major-mode
-                     mode-name
-                     imenu-case-fold-search
-                     imenu-create-index-function
-                     imenu-generic-expression))",
-    );
-    let items = value.to_vec().unwrap();
-    assert_eq!(items[0], Value::Symbol("sh-mode".into()));
-    assert_string_value(items[1].clone(), "Shell-script");
-    assert_eq!(items[2], Value::Nil);
+fn functionp_accepts_function_autoload_symbols_but_not_macros_or_special_forms() {
     assert_eq!(
-        items[3],
-        Value::Symbol("imenu-default-create-index-function".into())
+        eval_str(
+            "(progn
+               (autoload 'sample-autoloaded-function \"sample-function\")
+               (autoload 'sample-autoloaded-macro
+                         \"sample-macro\" nil nil 'macro)
+               (list (functionp 'sample-autoloaded-function)
+                     (functionp 'sample-autoloaded-macro)
+                     (functionp 'if)))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::Nil])
     );
+}
+
+#[test]
+fn upstream_script_modes_own_their_derived_mode_contracts() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize interpreter");
     assert_eq!(
-        items[4],
+        eval_str_with(
+            &mut interp,
+            "(list
+               (with-temp-buffer
+                 (sh-mode)
+                 (list major-mode
+                       (derived-mode-p 'sh-base-mode)
+                       (subrp (indirect-function 'sh-mode))
+                       (local-variable-p 'sh-shell)))
+               (with-temp-buffer
+                 (python-mode)
+                 (list major-mode
+                       (derived-mode-p 'python-base-mode)
+                       (subrp (indirect-function 'python-mode))))
+               (list
+                (cdr (assoc \"python[0-9.]*\" interpreter-mode-alist))
+                (cdr (assoc \"gawk\" interpreter-mode-alist))))",
+        ),
         Value::list([
             Value::list([
+                Value::Symbol("sh-mode".into()),
+                Value::T,
                 Value::Nil,
-                Value::String("^[ \t]*function[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)".into()),
-                Value::Integer(1),
+                Value::T,
             ]),
+            Value::list([Value::Symbol("python-mode".into()), Value::T, Value::Nil,]),
             Value::list([
-                Value::Nil,
-                Value::String("^[ \t]*\\([A-Za-z_][A-Za-z0-9_]*\\)[ \t]*()".into()),
-                Value::Integer(1),
+                Value::Symbol("python-mode".into()),
+                Value::Symbol("awk-mode".into()),
             ]),
         ])
     );

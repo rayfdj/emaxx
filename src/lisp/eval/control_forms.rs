@@ -30,7 +30,8 @@ impl Interpreter {
         // GNU's reader creates real hash tables for `#s(hash-table ...)'
         // literals at READ time; emaxx's reader leaves a marker form, so
         // quoted data materializes it here (in place, like a constant).
-        crate::lisp::primitives::materialize_read_hash_table_literals(self, &value)
+        let value = crate::lisp::primitives::materialize_read_hash_table_literals(self, &value)?;
+        crate::lisp::primitives::materialize_read_char_table_literals(self, &value)
     }
 
     pub(super) fn sf_if(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -86,44 +87,102 @@ impl Interpreter {
             ));
         }
         let bindings = items[1].to_vec()?;
+        self.eval_if_let_star_bindings(bindings, &items[2], items.get(3..).unwrap_or(&[]), env)
+    }
+
+    /// Execute the shared semantics of the native `if-let*', `if-let', and
+    /// `when-let' fallbacks without constructing a new macro form and
+    /// sending it back through `eval'.  The latter made a fresh cons-cell
+    /// callsite on every loop iteration, defeating the macro-expansion cache
+    /// whenever GNU's preloaded `if-let*' macro was present.
+    fn eval_if_let_star_bindings(
+        &mut self,
+        bindings: Vec<Value>,
+        then_form: &Value,
+        else_forms: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let frame_index = env.len();
         Self::push_marked_frame(env, Vec::new());
-        for binding in bindings {
-            let value = match binding {
-                Value::Symbol(name) => self.lookup(&name, env)?,
-                Value::Cons(_, _) => {
-                    let parts = binding.to_vec()?;
-                    match parts.as_slice() {
-                        [expr] => self.eval(expr, env)?,
-                        [Value::Symbol(name), expr] => {
-                            let value = self.eval(expr, env)?;
-                            if name != "_"
-                                && let Some(frame) = env.last_mut()
-                            {
-                                frame.push((name.clone(), Self::stored_value(value.clone())));
+        let mut special_restores = Vec::new();
+        let mut all_non_nil = true;
+
+        let result = (|| -> Result<Value, LispError> {
+            for binding in bindings {
+                let (binding_name, value) = match binding {
+                    Value::Symbol(name) => {
+                        let value = if all_non_nil {
+                            self.lookup(&name, env)?
+                        } else {
+                            Value::Nil
+                        };
+                        (Some(name), value)
+                    }
+                    Value::Cons(_, _) => {
+                        let parts = binding.to_vec()?;
+                        match parts.as_slice() {
+                            [expr] => {
+                                let value = if all_non_nil {
+                                    self.eval(expr, env)?
+                                } else {
+                                    Value::Nil
+                                };
+                                (None, value)
                             }
-                            value
-                        }
-                        _ => {
-                            env.pop();
-                            return Err(LispError::Signal("Invalid if-let* binding".into()));
+                            [Value::Symbol(name), expr] => {
+                                let value = if all_non_nil {
+                                    self.eval(expr, env)?
+                                } else {
+                                    Value::Nil
+                                };
+                                let binding_name = (name != "_").then(|| name.clone());
+                                (binding_name, value)
+                            }
+                            _ => {
+                                return Err(LispError::Signal("Invalid if-let* binding".into()));
+                            }
                         }
                     }
-                }
-                _ => {
-                    env.pop();
-                    return Err(LispError::Signal("Invalid if-let* binding".into()));
-                }
-            };
+                    _ => {
+                        return Err(LispError::Signal("Invalid if-let* binding".into()));
+                    }
+                };
 
-            if !value.is_truthy() {
-                env.pop();
-                return self.sf_progn(items.get(3..).unwrap_or(&[]), env);
+                if let Some(name) = binding_name {
+                    if self.binding_is_dynamic(&name, env) {
+                        special_restores.push(self.bind_special_variable(
+                            &name,
+                            value.clone(),
+                            env,
+                        )?);
+                    } else if let Some(frame) = env.get_mut(frame_index) {
+                        frame.push((name, Self::stored_value(value.clone())));
+                    }
+                }
+                all_non_nil &= value.is_truthy();
+            }
+
+            if all_non_nil {
+                self.eval(then_form, env)
+            } else {
+                self.sf_progn(else_forms, env)
+            }
+        })();
+
+        env.truncate(frame_index);
+        let mut restore_error = None;
+        for restore in special_restores.into_iter().rev() {
+            if let Err(error) = self.restore_special_binding(restore, env)
+                && restore_error.is_none()
+            {
+                restore_error = Some(error);
             }
         }
-
-        let result = self.eval(&items[2], env);
-        env.pop();
-        result
+        match (result, restore_error) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Some(error)) => Err(error),
+            (Ok(value), None) => Ok(value),
+        }
     }
 
     pub(super) fn sf_if_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -133,16 +192,8 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
-        let spec = normalize_if_let_spec(&items[1])?;
-        let rewritten = Value::list(
-            std::iter::once(Value::symbol("if-let*"))
-                .chain(std::iter::once(spec))
-                .chain(std::iter::once(items[2].clone()))
-                .chain(std::iter::once(forms_to_progn(
-                    items.get(3..).unwrap_or(&[]),
-                ))),
-        );
-        self.eval(&rewritten, env)
+        let bindings = normalize_if_let_spec(&items[1])?;
+        self.eval_if_let_star_bindings(bindings, &items[2], items.get(3..).unwrap_or(&[]), env)
     }
 
     pub(super) fn sf_and_let_star(
@@ -214,12 +265,9 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
-        let rewritten = Value::list([
-            Value::symbol("if-let"),
-            items[1].clone(),
-            forms_to_progn(items.get(2..).unwrap_or(&[])),
-        ]);
-        self.eval(&rewritten, env)
+        let bindings = normalize_if_let_spec(&items[1])?;
+        let body = forms_to_progn(items.get(2..).unwrap_or(&[]));
+        self.eval_if_let_star_bindings(bindings, &body, &[], env)
     }
 
     pub(super) fn sf_when_let_star(
@@ -233,15 +281,9 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
-        let rewritten = Value::list(
-            std::iter::once(Value::symbol("if-let*"))
-                .chain(std::iter::once(items[1].clone()))
-                .chain(std::iter::once(Value::list(
-                    std::iter::once(Value::symbol("progn")).chain(items[2..].iter().cloned()),
-                )))
-                .chain(std::iter::once(Value::Nil)),
-        );
-        self.eval(&rewritten, env)
+        let bindings = items[1].to_vec()?;
+        let body = forms_to_progn(items.get(2..).unwrap_or(&[]));
+        self.eval_if_let_star_bindings(bindings, &body, &[], env)
     }
 
     pub(super) fn sf_unless(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -450,7 +492,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         };
         let body = items[body_start..].to_vec();
         let expander_name = format!("{name}--pcase-macroexpander");
-        let expander = Value::Lambda(params, body, shared_env(env.clone()));
+        let expander = Value::Lambda(params, body.into(), shared_env(env.clone()));
         self.validate_function_binding(&expander_name, &expander)?;
         self.set_function_binding(&expander_name, Some(expander));
         self.put_symbol_property(&name, "pcase-macroexpander", Value::Symbol(expander_name));
@@ -555,7 +597,9 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         }
         let tag = self.eval(&items[1], env)?;
         let depth = env.len();
+        self.active_catch_tags.push(tag.clone());
         let result = self.sf_progn(&items[2..], env);
+        self.active_catch_tags.pop();
         // A non-local exit unwinds any binding frames pushed between the
         // catch and the throw, like GNU's unbind_to at the catch point.
         if env.len() > depth {
@@ -563,21 +607,34 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         }
         match result {
             Ok(value) => Ok(value),
-            Err(LispError::Throw(thrown_tag, value)) if thrown_tag == tag => Ok(value),
+            Err(LispError::Throw(thrown_tag, value))
+                if crate::lisp::primitives::values_eq_in_env(self, &thrown_tag, &tag, env) =>
+            {
+                Ok(value)
+            }
             Err(error) => Err(error),
         }
     }
 
-    pub(super) fn sf_throw(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() != 3 {
-            return Err(LispError::WrongNumberOfArgs(
-                "throw".into(),
-                items.len().saturating_sub(1),
-            ));
+    pub(crate) fn throw_value(
+        &mut self,
+        tag: Value,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if self
+            .active_catch_tags
+            .iter()
+            .rev()
+            .any(|candidate| crate::lisp::primitives::values_eq_in_env(self, candidate, &tag, env))
+        {
+            Err(LispError::Throw(tag, value))
+        } else {
+            self.dispatch_handler_bindings(
+                LispError::SignalValue(Value::list([Value::Symbol("no-catch".into()), tag, value])),
+                env,
+            )
         }
-        let tag = self.eval(&items[1], env)?;
-        let value = self.eval(&items[2], env)?;
-        Err(LispError::Throw(tag, value))
     }
 
     pub(super) fn sf_cl_return(
@@ -1060,6 +1117,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         }
         let alist = self.eval(&items[1], env)?;
         let mut frame = Vec::new();
+        let mut bound = HashSet::new();
         for entry in alist.to_vec().unwrap_or_default() {
             let Some((car, cdr)) = entry.cons_values() else {
                 continue;
@@ -1068,7 +1126,11 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                 continue;
             };
             // GNU binds each `.key' to (cdr (assq 'key alist)) verbatim;
-            // a single-element-list cdr stays a list.
+            // a single-element-list cdr stays a list, and duplicate keys
+            // retain the first entry just as `assq' does.
+            if !bound.insert(symbol.to_string()) {
+                continue;
+            }
             frame.push((format!(".{symbol}"), Self::stored_value(cdr)));
         }
         Self::push_marked_frame(env, frame);

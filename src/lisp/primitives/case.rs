@@ -70,6 +70,14 @@ pub(crate) fn is_raw_byte_regex_char(ch: char) -> bool {
     raw_byte_from_regex_char(ch).is_some()
 }
 
+pub(crate) fn public_buffer_char_code(ch: char, multibyte: bool) -> i64 {
+    match raw_byte_from_regex_char(ch) {
+        Some(byte) if multibyte => i64::from(RAW_BYTE8_BASE + u32::from(byte)),
+        Some(byte) => i64::from(byte),
+        None => ch as i64,
+    }
+}
+
 pub(crate) fn single_char_case_mapping(iter: impl Iterator<Item = char>, fallback: u32) -> u32 {
     let mut iter = iter;
     match (iter.next(), iter.next()) {
@@ -122,16 +130,40 @@ pub(crate) fn simple_titlecase_char(code: u32) -> u32 {
 }
 
 pub(crate) fn unicode_character_name(code: u32) -> Option<String> {
-    char::from_u32(code)
-        .and_then(unicode_name)
-        .map(|name| name.to_string())
+    if (0xD800..=0xDBFF).contains(&code) {
+        return Some(format!("HIGH SURROGATE-{code:04X}"));
+    }
+    if (0xDC00..=0xDFFF).contains(&code) {
+        return Some(format!("LOW SURROGATE-{code:04X}"));
+    }
+
+    let name = char::from_u32(code).and_then(unicode_name)?.to_string();
+    // Unicode calls these "CJK UNIFIED IDEOGRAPH-*".  GNU's generated
+    // uni-name table intentionally exposes the shorter historical spelling.
+    Some(
+        name.strip_prefix("CJK UNIFIED IDEOGRAPH-")
+            .map(|suffix| format!("CJK IDEOGRAPH-{suffix}"))
+            .unwrap_or(name),
+    )
 }
 
 pub(crate) fn unicode_general_category_symbol(code: u32) -> Option<&'static str> {
     if (0xD800..=0xDFFF).contains(&code) {
         Some("Cs")
     } else {
-        char::from_u32(code).map(|ch| get_general_category(ch).abbreviation())
+        char::from_u32(code).map(|ch| {
+            let category = get_general_category(ch).abbreviation();
+            // `unicode-general-category' has no Unicode 15.1 release (its
+            // adjacent tables are 15.0 and 16.0), so retain its fast lookup
+            // but do not expose Unicode 16 assignments through GNU 30.2's
+            // Unicode 15.1 API.  Assigned scalar values have a Unicode name
+            // except controls and private-use characters.
+            if matches!(category, "Cc" | "Co") || unicode_name(ch).is_some() {
+                category
+            } else {
+                "Cn"
+            }
+        })
     }
 }
 

@@ -18,13 +18,59 @@ pub(crate) fn run_change_hooks(
     if interp.change_hooks_are_running() {
         return Ok(());
     }
-    let hook_values = hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
-    if hook_values.is_empty() {
+    let hooks = hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
+    let combining = interp
+        .lookup_var("combine-after-change-calls", env)
+        .is_some_and(|value| value.is_truthy());
+    if hook_name == "before-change-functions" {
+        if hooks.is_empty() && combining {
+            return Ok(());
+        }
+        flush_combined_after_change(interp, env)?;
+    } else if hook_name == "after-change-functions" {
+        let can_defer = combining && interp.buffer.overlays.is_empty() && {
+            hook_values(
+                interp,
+                "before-change-functions",
+                env,
+                Some(interp.current_buffer_id()),
+            )
+            .is_empty()
+        };
+        if can_defer {
+            let buffer_id = interp.current_buffer_id();
+            if interp
+                .combined_after_change()
+                .is_some_and(|pending| pending.buffer_id != buffer_id)
+            {
+                flush_combined_after_change(interp, env)?;
+            }
+            let [begin, end, old_length] = args else {
+                return Err(LispError::Signal(
+                    "Invalid after-change hook arguments".into(),
+                ));
+            };
+            let begin = begin.as_integer()?;
+            let end = end.as_integer()?;
+            let old_length = old_length.as_integer()?;
+            let new_length = end - begin;
+            let unchanged_before = begin - interp.buffer.point_min() as i64;
+            let unchanged_after =
+                interp.buffer.point_max() as i64 - (begin - old_length + new_length);
+            interp.record_combined_after_change(
+                buffer_id,
+                (unchanged_before, unchanged_after, new_length - old_length),
+            );
+            return Ok(());
+        }
+        flush_combined_after_change(interp, env)?;
+    }
+    if hooks.is_empty() {
         return Ok(());
     }
     interp.enter_change_hooks();
     let mut result = Ok(());
-    for hook in hook_values {
+    for hook in hooks {
         if let Err(error) = call_function_value(interp, &hook, args, env) {
             result = Err(error);
             break;
@@ -32,6 +78,48 @@ pub(crate) fn run_change_hooks(
     }
     interp.leave_change_hooks();
     result
+}
+
+pub(crate) fn flush_combined_after_change(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let Some(pending) = interp.take_combined_after_change() else {
+        return Ok(Value::Nil);
+    };
+    if !interp.has_buffer_id(pending.buffer_id) {
+        return Ok(Value::Nil);
+    }
+    let saved_buffer_id = interp.current_buffer_id();
+    interp.switch_to_buffer_id(pending.buffer_id)?;
+    let mut unchanged_before = interp.buffer.buffer_size() as i64;
+    let mut unchanged_after = unchanged_before;
+    let mut net_change = 0_i64;
+    for (begin, end, change) in pending.changes {
+        unchanged_before = unchanged_before.min(begin);
+        unchanged_after = unchanged_after.min(end);
+        net_change += change;
+    }
+    let begin = interp.buffer.point_min() as i64 + unchanged_before;
+    let end = interp.buffer.point_max() as i64 - unchanged_after;
+    let new_length = end - begin;
+    let old_length = new_length - net_change;
+    let restore = interp.bind_special_dynamic("combine-after-change-calls", Value::Nil, env)?;
+    let result = run_change_hooks(
+        interp,
+        "after-change-functions",
+        &[
+            Value::Integer(begin),
+            Value::Integer(end),
+            Value::Integer(old_length),
+        ],
+        env,
+    );
+    interp.restore_special_dynamic(restore, env)?;
+    if interp.has_buffer_id(saved_buffer_id) {
+        interp.switch_to_buffer_id(saved_buffer_id)?;
+    }
+    result.map(|()| Value::Nil)
 }
 
 pub(crate) fn hook_values(
@@ -112,7 +200,7 @@ pub(crate) fn safe_run_named_hooks(
     for hook in hook_values(interp, hook_name, env, buffer_id) {
         match call_function_value(interp, &hook, &[], env) {
             Ok(_) => {}
-            Err(error @ LispError::Throw(_, _)) => return Err(error),
+            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
             Err(error) => {
                 let function_name = match &hook {
                     Value::Symbol(name) | Value::BuiltinFunc(name) => name.clone(),
@@ -209,7 +297,7 @@ pub(crate) fn call_named_function(
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     match interp.lookup_function(name, env) {
-        Ok(function) => call_function_value(interp, &function, args, env),
+        Ok(function) => interp.call_function_value(function, Some(name), args, env),
         Err(_) => Ok(Value::T),
     }
 }
@@ -233,80 +321,32 @@ pub(crate) fn deliver_file_notification(
     path: &str,
     action: &str,
 ) -> Result<(), LispError> {
-    let Ok(descriptors) = interp.symbol_value_cell("auto-revert--buffer-by-watch-descriptor")
-    else {
-        return Ok(());
-    };
-    let Ok(entries) = descriptors.to_vec() else {
-        return Ok(());
-    };
     let saved_buffer_id = interp.current_buffer_id();
-    for entry in entries {
-        let Some((descriptor, Value::Buffer(buffer_id, _))) = entry.cons_values() else {
-            continue;
-        };
-        if !interp.has_buffer_id(buffer_id) {
-            continue;
-        }
-        // A watch only reports events for its own path, or for entries of a
-        // watched directory, like the real file-notify backends.
-        if let Ok(id) = descriptor.as_integer()
-            && let Ok(watched) = file_notify_watched_paths().lock()
-            && let Some(watched_path) = watched.get(&id)
-            && !file_notify_watch_covers(watched_path, path)
-        {
-            continue;
-        }
+    let backend_action = match action {
+        "created" => "create",
+        "deleted" => "delete",
+        "changed" => "write",
+        "attribute-changed" => "attrib",
+        "renamed" => "rename",
+        other => other,
+    };
+    let callbacks = interp.file_notify_callbacks_for_path(path);
+    let mut result = Ok(());
+    for (descriptor, callback) in callbacks {
         let event = Value::list([
-            descriptor,
-            Value::Symbol(action.into()),
+            Value::Integer(descriptor),
+            Value::list([Value::Symbol(backend_action.into())]),
             Value::String(path.into()),
         ]);
-        call_named_function(interp, "auto-revert-notify-handler", &[event], env)?;
-    }
-    interp.switch_to_buffer_id(saved_buffer_id)?;
-    Ok(())
-}
-
-fn file_notify_watch_covers(watched_path: &str, event_path: &str) -> bool {
-    let watched = watched_path.trim_end_matches('/');
-    if watched == event_path.trim_end_matches('/') {
-        return true;
-    }
-    // Watching a directory reports events for its direct entries.
-    event_path
-        .rsplit_once('/')
-        .is_some_and(|(parent, _)| parent == watched)
-}
-
-pub(crate) fn active_file_notify_descriptors() -> &'static Mutex<HashSet<i64>> {
-    ACTIVE_FILE_NOTIFY_DESCRIPTORS.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-pub(crate) fn file_notify_watched_paths() -> &'static Mutex<HashMap<i64, String>> {
-    FILE_NOTIFY_WATCHED_PATHS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// A kqueue watch tracks the file itself, so deleting the watched file
-/// leaves the descriptor dead.  Invalidate any descriptors watching PATH.
-pub(crate) fn invalidate_file_notify_watches_for_path(path: &str) {
-    let Ok(watched) = file_notify_watched_paths().lock() else {
-        return;
-    };
-    let dead: Vec<i64> = watched
-        .iter()
-        .filter(|(_, watched_path)| watched_path.as_str() == path)
-        .map(|(descriptor, _)| *descriptor)
-        .collect();
-    drop(watched);
-    if dead.is_empty() {
-        return;
-    }
-    if let Ok(mut active) = active_file_notify_descriptors().lock() {
-        for descriptor in &dead {
-            active.remove(descriptor);
+        if let Err(error) = call_function_value(interp, &callback, &[event], env) {
+            result = Err(error);
+            break;
         }
     }
+    if interp.has_buffer_id(saved_buffer_id) {
+        interp.switch_to_buffer_id(saved_buffer_id)?;
+    }
+    result
 }
 
 pub(crate) fn callable_display_action_function(
@@ -778,7 +818,8 @@ pub(crate) fn font_lock_ensure_region(
 // (loading the defining library for its keyword variables) the first time
 // fontification is requested.
 fn font_lock_require_feature(interp: &mut Interpreter, feature: &str, env: &mut Env) {
-    // `require' is a special form; evaluate it as one.
+    // Go through the ordinary Lisp call path so argument evaluation and any
+    // Lisp-level override retain the same behavior as a source `require'.
     let form = Value::list([
         Value::Symbol("require".into()),
         Value::list([Value::Symbol("quote".into()), Value::Symbol(feature.into())]),

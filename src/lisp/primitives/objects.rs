@@ -21,7 +21,8 @@ pub(crate) fn make_advice_wrapper_after(original: Value, advice: Value) -> Value
                 Value::Symbol(advice_name.clone()),
                 Value::Symbol(args_name),
             ]),
-        ],
+        ]
+        .into(),
         shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
     )
 }
@@ -41,7 +42,8 @@ pub(crate) fn make_advice_wrapper_around(original: Value, advice: Value) -> Valu
                 Value::Symbol(advice_name.clone()),
                 Value::Symbol(args_name),
             ]),
-        ],
+        ]
+        .into(),
         shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
     )
 }
@@ -123,10 +125,113 @@ pub(crate) fn eieio_slot_descriptors(
     interp: &Interpreter,
     class_name: &str,
 ) -> Result<Vec<EieioSlotDescriptor>, LispError> {
+    if let Some(descriptors) = raw_eieio_slot_descriptors(interp, class_name)? {
+        return Ok(descriptors);
+    }
     let mut descriptors = Vec::new();
     let mut seen = Vec::new();
     collect_merged_eieio_slot_descriptors(interp, class_name, &mut descriptors, &mut seen)?;
     Ok(descriptors)
+}
+
+fn raw_eieio_slot_descriptors(
+    interp: &Interpreter,
+    class_name: &str,
+) -> Result<Option<Vec<EieioSlotDescriptor>>, LispError> {
+    let Some(instance_slots) = interp.raw_eieio_class_slot_by_name(class_name, 3) else {
+        return Ok(None);
+    };
+    let initarg_tuples = interp
+        .raw_eieio_class_slot_by_name(class_name, 6)
+        .unwrap_or(Value::Nil)
+        .to_vec()?;
+    let class_slots = interp
+        .raw_eieio_class_slot_by_name(class_name, 7)
+        .unwrap_or_else(|| Value::list([Value::Symbol("vector-literal".into())]));
+    let mut descriptors = Vec::new();
+    collect_raw_eieio_slot_descriptors(
+        interp,
+        &instance_slots,
+        &initarg_tuples,
+        false,
+        &mut descriptors,
+    )?;
+    collect_raw_eieio_slot_descriptors(
+        interp,
+        &class_slots,
+        &initarg_tuples,
+        true,
+        &mut descriptors,
+    )?;
+    Ok(Some(descriptors))
+}
+
+fn collect_raw_eieio_slot_descriptors(
+    interp: &Interpreter,
+    raw_slots: &Value,
+    initarg_tuples: &[Value],
+    class_allocated: bool,
+    descriptors: &mut Vec<EieioSlotDescriptor>,
+) -> Result<(), LispError> {
+    for raw_slot in vector_items(raw_slots)? {
+        let Value::Record(record_id) = raw_slot else {
+            continue;
+        };
+        let Some(record) = interp
+            .find_record(record_id)
+            .filter(|record| record.type_name == "cl-slot-descriptor")
+        else {
+            continue;
+        };
+        let Some(name) = record
+            .slots
+            .first()
+            .and_then(|value| value.as_symbol().ok())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let raw_initform = record.slots.get(1).cloned().unwrap_or(Value::Nil);
+        let initform = if interp
+            .eieio_unbound_form()
+            .is_some_and(|unbound| values_equal(interp, &raw_initform, &unbound))
+        {
+            None
+        } else {
+            Some(raw_initform)
+        };
+        let slot_type = record.slots.get(2).cloned().unwrap_or(Value::T);
+        let props = record
+            .slots
+            .get(3)
+            .cloned()
+            .unwrap_or(Value::Nil)
+            .to_vec()?
+            .into_iter()
+            .filter_map(|property| {
+                let (key, value) = property.cons_values()?;
+                Some((key.as_symbol().ok()?.to_string(), value))
+            })
+            .collect();
+        let initargs = initarg_tuples
+            .iter()
+            .filter_map(|tuple| {
+                let (initarg, slot_name) = tuple.cons_values()?;
+                (slot_name.as_symbol().ok()? == name)
+                    .then(|| initarg.as_symbol().ok().map(str::to_string))
+                    .flatten()
+            })
+            .collect();
+        descriptors.push(EieioSlotDescriptor {
+            name,
+            initform,
+            slot_type,
+            props,
+            initargs,
+            class_allocated,
+        });
+    }
+    Ok(())
 }
 
 // GNU stores each class's slots already merged: a class's own
@@ -444,8 +549,8 @@ fn eieio_validate_constant_initform(
     if !eieio_value_matches_type(interp, &value, &descriptor.slot_type, env)? {
         if std::env::var("EMAXX_DEBUG_EIEIO").is_ok() {
             eprintln!(
-                "EIEIO defclass initform type fail: slot={} type={} value={}",
-                descriptor.name, descriptor.slot_type, value
+                "EIEIO defclass initform type fail: slot={} initform={} type={} value={}",
+                descriptor.name, initform, descriptor.slot_type, value
             );
         }
         return Err(LispError::SignalValue(Value::list([
@@ -620,6 +725,72 @@ pub(crate) fn eieio_class_allocation_property(slot_name: &str) -> String {
     format!("emaxx-class-default:{slot_name}")
 }
 
+fn raw_eieio_class_allocation_index(
+    interp: &Interpreter,
+    class_name: &str,
+    slot_name: &str,
+) -> Result<Option<usize>, LispError> {
+    let Some(class_slots) = interp.raw_eieio_class_slot_by_name(class_name, 7) else {
+        return Ok(None);
+    };
+    Ok(vector_items(&class_slots)?.iter().rposition(|descriptor| {
+        let Value::Record(record_id) = descriptor else {
+            return false;
+        };
+        interp
+            .find_record(*record_id)
+            .filter(|record| record.type_name == "cl-slot-descriptor")
+            .and_then(|record| record.slots.first())
+            .and_then(|name| name.as_symbol().ok())
+            .is_some_and(|name| name == slot_name)
+    }))
+}
+
+fn raw_eieio_class_allocated_value(
+    interp: &Interpreter,
+    class_name: &str,
+    slot_name: &str,
+) -> Result<Option<Value>, LispError> {
+    let Some(index) = raw_eieio_class_allocation_index(interp, class_name, slot_name)? else {
+        return Ok(None);
+    };
+    let Some(values) = interp.raw_eieio_class_slot_by_name(class_name, 8) else {
+        return Ok(None);
+    };
+    let value = vector_items(&values)?.get(index).cloned();
+    Ok(value.map(|value| {
+        if interp
+            .eieio_unbound_value()
+            .is_some_and(|unbound| values_equal(interp, &value, &unbound))
+        {
+            Value::Unbound
+        } else {
+            value
+        }
+    }))
+}
+
+pub(crate) fn set_eieio_class_allocated_value(
+    interp: &mut Interpreter,
+    class_name: &str,
+    slot_name: &str,
+    value: Value,
+) -> Result<bool, LispError> {
+    let Some(index) = raw_eieio_class_allocation_index(interp, class_name, slot_name)? else {
+        return Ok(false);
+    };
+    let Some(values) = interp.raw_eieio_class_slot_by_name(class_name, 8) else {
+        return Ok(false);
+    };
+    let stored = if matches!(value, Value::Unbound) {
+        interp.eieio_unbound_value().unwrap_or(Value::Unbound)
+    } else {
+        value
+    };
+    aset_vector_value(&values, index, stored)?;
+    Ok(true)
+}
+
 fn eieio_slot_missing_dispatch(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -682,12 +853,15 @@ fn eieio_slot_unbound_dispatch(
     ])))
 }
 
-fn eieio_class_allocated_value(
+pub(crate) fn eieio_class_allocated_value(
     interp: &mut Interpreter,
     class_name: &str,
     slot: &EieioSlotSpec,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    if let Some(value) = raw_eieio_class_allocated_value(interp, class_name, &slot.name)? {
+        return Ok(value);
+    }
     if let Some(value) =
         interp.get_symbol_property(class_name, &eieio_class_allocation_property(&slot.name))
     {
@@ -843,6 +1017,14 @@ pub(crate) fn eieio_oset_dispatch(
         }
     }
     if slots[slot_index].class_allocated {
+        if set_eieio_class_allocated_value(
+            interp,
+            &type_name,
+            &slots[slot_index].name,
+            value.clone(),
+        )? {
+            return Ok(value);
+        }
         interp.put_symbol_property(
             &type_name,
             &eieio_class_allocation_property(&slots[slot_index].name),
@@ -886,6 +1068,14 @@ pub(crate) fn eieio_slot_makeunbound(
         ])));
     };
     if slots[slot_index].class_allocated {
+        if set_eieio_class_allocated_value(
+            interp,
+            &class_name,
+            &slots[slot_index].name,
+            Value::Unbound,
+        )? {
+            return Ok(Value::Nil);
+        }
         interp.put_symbol_property(
             &class_name,
             &eieio_class_allocation_property(&slots[slot_index].name),
@@ -929,6 +1119,15 @@ pub(crate) fn eieio_slot_boundp(
         return Ok(Value::Nil);
     };
     if slots[slot_index].class_allocated {
+        if let Some(value) =
+            raw_eieio_class_allocated_value(interp, &class_name, &slots[slot_index].name)?
+        {
+            return Ok(if matches!(value, Value::Unbound) {
+                Value::Nil
+            } else {
+                Value::T
+            });
+        }
         let bound = match interp.get_symbol_property(
             &class_name,
             &eieio_class_allocation_property(&slots[slot_index].name),
@@ -967,11 +1166,27 @@ pub(crate) fn eieio_slot_value(
             record.type_name
         )));
     };
-    if slots[slot_index].class_allocated
-        && let Some(value) =
+    if slots[slot_index].class_allocated {
+        if let Some(value) =
+            raw_eieio_class_allocated_value(interp, &record.type_name, &slots[slot_index].name)?
+        {
+            return if matches!(value, Value::Unbound) {
+                Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("unbound-slot".into()),
+                    Value::String(format!("Unbound slot: {slot_name}")),
+                    object.clone(),
+                    object.clone(),
+                    Value::Symbol(slot_name.into()),
+                ])))
+            } else {
+                Ok(value)
+            };
+        }
+        if let Some(value) =
             interp.get_symbol_property(&record.type_name, &eieio_class_default_property(slot_name))
-    {
-        return Ok(value);
+        {
+            return Ok(value);
+        }
     }
     match record.slots.get(slot_index) {
         Some(Value::Unbound) | None => Err(LispError::SignalValue(Value::list([
@@ -1044,6 +1259,14 @@ pub(crate) fn set_eieio_slot_value(
         )));
     };
     if slots[slot_index].class_allocated {
+        if set_eieio_class_allocated_value(
+            interp,
+            &type_name,
+            &slots[slot_index].name,
+            value.clone(),
+        )? {
+            return Ok(value);
+        }
         interp.put_symbol_property(
             &type_name,
             &eieio_class_default_property(slot_name),

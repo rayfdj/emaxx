@@ -12,6 +12,7 @@ const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 pub type ConsSlot = Rc<RefCell<Value>>;
 pub type ConsCells = (ConsSlot, ConsSlot);
 pub type SharedEnv = Rc<RefCell<Env>>;
+pub type SharedLambdaBody = Rc<Vec<Value>>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StringPropertySpan {
@@ -41,8 +42,12 @@ pub enum Value {
     Cons(ConsSlot, ConsSlot),
     /// Built-in function: name, arity (min, max), function pointer handled in eval
     BuiltinFunc(String),
-    /// A lambda or closure: params, body, captured env
-    Lambda(Vec<String>, Vec<Value>, SharedEnv),
+    /// A lambda or closure: params, immutable shared body, captured env.
+    ///
+    /// Function-cell lookup clones Lisp values on every call.  Sharing the
+    /// immutable code keeps that clone O(1) while the captured environment
+    /// retains its independent Lisp identity and mutability.
+    Lambda(Vec<String>, SharedLambdaBody, SharedEnv),
     /// A buffer object: (id, name). The id is used for `eq` identity.
     Buffer(u64, String),
     /// A marker object, identified by unique id.
@@ -449,13 +454,26 @@ fn format_value(
     }
 }
 
-/// Lisp errors.
+/// An orderly process termination requested by `kill-emacs`.
+///
+/// This is evaluator control flow, not a Lisp condition: GNU's native
+/// `kill-emacs` is `noreturn`, so `condition-case`, `handler-bind`, and
+/// `unwind-protect` cannot intercept it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmacsTermination {
+    pub exit_code: i32,
+    pub restart: bool,
+}
+
+/// Lisp errors and non-local evaluator control flow.
 #[derive(Clone, Debug)]
 pub enum LispError {
     /// Type mismatch: expected, got
     TypeError(String, String),
     /// Unbound variable
     Void(String),
+    /// Unbound function cell
+    VoidFunction(String),
     /// Wrong number of arguments
     WrongNumberOfArgs(String, usize),
     /// Generic error with a message (like Emacs's `error` function)
@@ -466,6 +484,8 @@ pub enum LispError {
     ErtTestFailed(String),
     /// Non-local exit via `throw`.
     Throw(Value, Value),
+    /// Orderly, non-catchable process termination via `kill-emacs`.
+    Terminate(EmacsTermination),
     /// An ERT skip condition.
     TestSkipped(String),
     /// End of input during read
@@ -479,6 +499,7 @@ impl LispError {
         match self {
             LispError::TypeError(_, _) => "wrong-type-argument".into(),
             LispError::Void(_) => "void-variable".into(),
+            LispError::VoidFunction(_) => "void-function".into(),
             LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
             LispError::Signal(_) => "error".into(),
             LispError::SignalValue(value) => match value.car() {
@@ -487,6 +508,10 @@ impl LispError {
             },
             LispError::ErtTestFailed(_) => "ert-test-failed".into(),
             LispError::Throw(_, _) => "no-catch".into(),
+            // This name is only a defensive fallback for diagnostics.
+            // Evaluator condition machinery must propagate Terminate before
+            // asking for a condition type.
+            LispError::Terminate(_) => "emaxx--process-termination".into(),
             LispError::TestSkipped(_) => "ert-test-skipped".into(),
             LispError::EndOfInput => "end-of-file".into(),
             LispError::ReadError(_) => "invalid-read-syntax".into(),
@@ -501,6 +526,9 @@ impl fmt::Display for LispError {
                 write!(f, "Wrong type argument: {}, {}", expected, got)
             }
             LispError::Void(name) => write!(f, "Symbol's value as variable is void: {}", name),
+            LispError::VoidFunction(name) => {
+                write!(f, "Symbol's function definition is void: {}", name)
+            }
             LispError::WrongNumberOfArgs(name, n) => {
                 write!(f, "Wrong number of arguments: {}, {}", name, n)
             }
@@ -529,6 +557,21 @@ impl fmt::Display for LispError {
             },
             LispError::ErtTestFailed(msg) => write!(f, "{}", msg),
             LispError::Throw(tag, value) => write!(f, "No catch for {}: {}", tag, value),
+            LispError::Terminate(termination) => {
+                if termination.restart {
+                    write!(
+                        f,
+                        "Emacs requested restart with exit code {}",
+                        termination.exit_code
+                    )
+                } else {
+                    write!(
+                        f,
+                        "Emacs requested exit with code {}",
+                        termination.exit_code
+                    )
+                }
+            }
             LispError::TestSkipped(msg) => write!(f, "{}", msg),
             LispError::EndOfInput => write!(f, "End of file during parsing"),
             LispError::ReadError(msg) => write!(f, "Invalid read syntax: {}", msg),

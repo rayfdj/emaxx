@@ -43,6 +43,17 @@ pub(crate) fn highest_priority_overlay_property(
     prop: &str,
     at_insertion_position: bool,
 ) -> Option<Value> {
+    highest_priority_overlay_property_with_id(interp, buffer, pos, prop, at_insertion_position)
+        .map(|(value, _)| value)
+}
+
+pub(crate) fn highest_priority_overlay_property_with_id(
+    interp: &Interpreter,
+    buffer: &crate::buffer::Buffer,
+    pos: usize,
+    prop: &str,
+    at_insertion_position: bool,
+) -> Option<(Value, u64)> {
     let mut overlays: Vec<&crate::overlay::Overlay> = buffer
         .overlays
         .iter()
@@ -55,9 +66,9 @@ pub(crate) fn highest_priority_overlay_property(
             .cmp(&b.priority())
             .then_with(|| a.id.cmp(&b.id))
     });
-    overlays
-        .last()
-        .and_then(|overlay| overlay_property_with_category(interp, overlay, prop))
+    overlays.last().and_then(|overlay| {
+        overlay_property_with_category(interp, overlay, prop).map(|value| (value, overlay.id))
+    })
 }
 
 pub(crate) fn overlay_covers_position(
@@ -271,34 +282,65 @@ pub(crate) fn translate_region_with_table(
     to: usize,
     table: &TranslationTable,
 ) -> Result<Value, LispError> {
-    let mut changed = 0i64;
-    let mut translated = String::new();
-    for pos in from..to {
-        let source_char = interp
-            .buffer
-            .text_property_at(pos, "emaxx-raw-char")
-            .and_then(|value| value.as_integer().ok())
-            .map(|value| value as u32)
-            .or_else(|| interp.buffer.char_at(pos).map(|ch| ch as u32))
-            .unwrap_or_default();
-        let mapped = match table {
-            TranslationTable::CharTable(id) => interp
-                .char_table_get(*id, source_char)
+    let source = (from..to)
+        .map(|position| {
+            interp
+                .buffer
+                .text_property_at(position, "emaxx-raw-char")
                 .and_then(|value| value.as_integer().ok())
-                .map(|value| value as u32)
-                .unwrap_or(source_char),
-            TranslationTable::String(text) => text
-                .chars()
-                .nth(source_char as usize)
-                .map(|ch| ch as u32)
-                .unwrap_or(source_char),
+                .and_then(|value| u32::try_from(value).ok())
+                .or_else(|| interp.buffer.char_at(position).map(u32::from))
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let string_table = match table {
+        TranslationTable::String(text) => Some(text.chars().map(u32::from).collect::<Vec<_>>()),
+        TranslationTable::CharTable(_) => None,
+    };
+    let mut translated = String::new();
+    let mut changed = 0i64;
+    let mut index = 0usize;
+    while index < source.len() {
+        let source_char = source[index];
+        let mapping = match table {
+            TranslationTable::CharTable(id) => interp.char_table_get(*id, source_char),
+            TranslationTable::String(_) => string_table
+                .as_ref()
+                .and_then(|chars| chars.get(source_char as usize))
+                .copied()
+                .map(|character| Value::Integer(i64::from(character))),
         };
-        if mapped != source_char {
-            changed += 1;
+        let mut consumed = 1usize;
+        let replacement = mapping.as_ref().and_then(|value| {
+            if let Ok(character) = value.as_integer() {
+                let character = u32::try_from(character).ok()?;
+                return (character != source_char).then_some(vec![character]);
+            }
+            translation_characters(value).or_else(|| {
+                translation_sequence_match(value, &source[index..]).map(
+                    |(matched_length, replacement)| {
+                        consumed = matched_length;
+                        replacement
+                    },
+                )
+            })
+        });
+        match replacement {
+            Some(replacement) => {
+                changed += replacement.len() as i64;
+                for character in replacement {
+                    if let Some(character) = char::from_u32(character) {
+                        translated.push(character);
+                    }
+                }
+            }
+            None => {
+                if let Some(character) = char::from_u32(source_char) {
+                    translated.push(character);
+                }
+            }
         }
-        if let Some(mapped_char) = char::from_u32(mapped) {
-            translated.push(mapped_char);
-        }
+        index += consumed;
     }
     interp
         .delete_region_current_buffer(from, to)
@@ -306,6 +348,47 @@ pub(crate) fn translate_region_with_table(
     interp.buffer.goto_char(from);
     interp.insert_current_buffer(&translated);
     Ok(Value::Integer(changed))
+}
+
+fn translation_characters(value: &Value) -> Option<Vec<u32>> {
+    if let Ok(character) = value.as_integer() {
+        return u32::try_from(character)
+            .ok()
+            .filter(|character| char::from_u32(*character).is_some())
+            .map(|character| vec![character]);
+    }
+    let items = value.to_vec().ok()?;
+    let (Value::Symbol(marker), characters) = items.split_first()? else {
+        return None;
+    };
+    if marker != "vector-literal" {
+        return None;
+    }
+    characters
+        .iter()
+        .map(|character| {
+            character
+                .as_integer()
+                .ok()
+                .and_then(|character| u32::try_from(character).ok())
+                .filter(|character| char::from_u32(*character).is_some())
+        })
+        .collect()
+}
+
+fn translation_sequence_match(value: &Value, source: &[u32]) -> Option<(usize, Vec<u32>)> {
+    for candidate in value.to_vec().ok()? {
+        let Some((from, to)) = candidate.cons_values() else {
+            continue;
+        };
+        let Some(from) = translation_characters(&from).filter(|from| !from.is_empty()) else {
+            continue;
+        };
+        if source.starts_with(&from) {
+            return translation_characters(&to).map(|to| (from.len(), to));
+        }
+    }
+    None
 }
 
 pub(crate) fn marker_id_from_value(value: &Value) -> Result<u64, LispError> {
@@ -1296,6 +1379,19 @@ pub(crate) fn builtin_class_predicate(name: &str) -> Option<&'static str> {
         "special-form" => Some("special-form-p"),
         _ => None,
     }
+}
+
+/// CL types that GNU defines directly through `cl-deftype-satisfies' rather
+/// than through the built-in class hierarchy.
+pub(crate) fn builtin_cl_satisfies_types() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("base-char", "characterp"),
+        ("character", "natnump"),
+        ("command", "commandp"),
+        ("keyword", "keywordp"),
+        ("natnum", "natnump"),
+        ("real", "numberp"),
+    ]
 }
 
 pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'static str, LispError> {

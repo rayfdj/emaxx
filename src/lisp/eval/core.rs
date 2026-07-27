@@ -5,6 +5,27 @@ fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
     matches!(record.slots.get(2), Some(Value::Symbol(symbol)) if symbol == "dynamic-binding")
 }
 
+fn minibuffer_prompt_literal(form: &Value) -> Option<Value> {
+    let items = form.to_vec().ok()?;
+    if matches!(
+        items.first(),
+        Some(Value::Symbol(function))
+            if matches!(
+                function.as_str(),
+                "read-from-minibuffer"
+                    | "read-string"
+                    | "read-no-blanks-input"
+                    | "completing-read"
+            )
+    ) {
+        return items
+            .get(1)
+            .filter(|value| matches!(value, Value::String(_) | Value::StringObject(_)))
+            .cloned();
+    }
+    items.iter().find_map(minibuffer_prompt_literal)
+}
+
 // ── Dev-only flat profiler (EMAXX_PROFILE=<path>) ──
 // Per-name call counts, cumulative and self wall time; the report file is
 // rewritten every few thousand calls.  Zero cost unless the variable is
@@ -98,6 +119,9 @@ impl Interpreter {
     const LISP_EVAL_DEPTH_SCALE: usize = 384;
 
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        if let Some(termination) = self.pending_termination().cloned() {
+            return Err(LispError::Terminate(termination));
+        }
         if !matches!(expr, Value::Cons(_, _)) {
             return self.eval_inner(expr, env);
         }
@@ -164,6 +188,11 @@ impl Interpreter {
                     Some(Value::Symbol(name)) if name == "bool-vector-literal"
                 ) {
                     return Ok(self.create_record("bool-vector", items[1..].to_vec()));
+                }
+                if is_char_table_literal_reader_form(expr) {
+                    return crate::lisp::primitives::materialize_read_char_table_literals(
+                        self, expr,
+                    );
                 }
                 if is_record_literal_reader_form(expr) {
                     return self.eval_record_literal_form(&items[1..], env);
@@ -251,7 +280,6 @@ impl Interpreter {
                         }
                         "cl-return" => return self.sf_cl_return(&items, env),
                         "cl-return-from" => return self.sf_cl_return_from(&items, env),
-                        "throw" => return self.sf_throw(&items, env),
                         "prog1" => return self.sf_prog1(&items, env),
                         "prog2" => return self.sf_prog2(&items, env),
                         "let" => {
@@ -327,7 +355,12 @@ impl Interpreter {
                         "setq-default" => return self.sf_setq_default(&items, env),
                         "setq-local" => return self.sf_setq_local(&items, env),
                         "setopt" => return self.sf_setopt(&items, env),
-                        "setf" => return self.sf_setf(&items, env),
+                        // gv.el owns generalized-variable expansion once its
+                        // public `setf' macro is loaded.  The native arm is a
+                        // bootstrap/file-less fallback only.
+                        "setf" if !self.has_macro_binding("setf") => {
+                            return self.sf_setf(&items, env);
+                        }
                         "incf" | "cl-incf" => return self.sf_incf(&items, env, 1),
                         "decf" | "cl-decf" => return self.sf_incf(&items, env, -1),
                         "cl-callf" => return self.sf_cl_callf(&items, env),
@@ -337,13 +370,14 @@ impl Interpreter {
                         "defvar-local" => return self.sf_defvar_local(&items, env),
                         "defgroup" => return self.sf_defgroup(&items),
                         "defface" => return self.sf_defface(&items),
-                        "defvar-keymap" => return self.sf_defvar_keymap(&items, env),
+                        "defvar-keymap" if !self.has_macro_binding("defvar-keymap") => {
+                            return self.sf_defvar_keymap(&items, env);
+                        }
                         "define-short-documentation-group"
                             if !self.has_macro_binding("define-short-documentation-group") =>
                         {
                             return self.sf_defgroup(&items);
                         }
-                        "eval" => return self.sf_eval_function(&items, env),
                         "insert" => return self.sf_insert_function(&items, env, false, false),
                         "insert-and-inherit" => {
                             return self.sf_insert_function(&items, env, true, false);
@@ -409,7 +443,6 @@ impl Interpreter {
                         "cl-defstruct" | "emaxx--cl-defstruct" => {
                             return self.sf_cl_defstruct(&items);
                         }
-                        "defalias" => return self.sf_defalias(&items, env),
                         "backquote" | "`" => return self.eval_backquote(&items[1], env),
                         "comma" | "," => {
                             if let Some(value) = items.get(1) {
@@ -417,10 +450,8 @@ impl Interpreter {
                             }
                             return Ok(Value::Nil);
                         }
-                        "lambda" => return self.sf_lambda(&items, env),
-                        "call-interactively" => {
-                            return self.sf_call_interactively(&items, env);
-                        }
+                        "lambda" => return self.sf_lambda_from_source(expr, &items, env),
+                        "interactive" => return Ok(Value::Nil),
                         "function" | "function-quote" => {
                             // #'foo or (function foo)
                             if items.len() >= 2 {
@@ -430,7 +461,17 @@ impl Interpreter {
                                 if let Ok(name) = function_name_from_binding_form(&items[1]) {
                                     return Ok(Value::Symbol(name));
                                 }
-                                return self.eval(&items[1], env);
+                                if matches!(
+                                    items[1].car(),
+                                    Ok(Value::Symbol(ref head)) if head == "lambda"
+                                ) {
+                                    return self.eval(&items[1], env);
+                                }
+                                // Unlike quote, `function' gives lambdas
+                                // lexical closure semantics.  Other list
+                                // objects are still returned literally:
+                                // GNU evaluates #'(1 2) to (1 2).
+                                return Ok(items[1].clone());
                             }
                             return Ok(Value::Nil);
                         }
@@ -513,7 +554,13 @@ impl Interpreter {
                         "with-temp-file" => return self.sf_with_temp_file(&items, env),
                         "ert-with-temp-file" => return self.sf_ert_with_temp_file(&items, env),
                         "with-current-buffer" => return self.sf_with_current_buffer(&items, env),
-                        "with-current-buffer-window" => {
+                        // GNU window.el owns this macro's setup/body/display
+                        // lifecycle.  The native arm is only a file-less
+                        // bootstrap fallback; once the macro is loaded it
+                        // must not be pre-empted or its ACTION is never run.
+                        "with-current-buffer-window"
+                            if !self.has_macro_binding("with-current-buffer-window") =>
+                        {
                             return self.sf_with_current_buffer_window(&items, env);
                         }
                         "with-restriction" => return self.sf_with_restriction(&items, env),
@@ -559,7 +606,6 @@ impl Interpreter {
                             return self.sf_cl_destructuring_bind(&items, env);
                         }
                         "cl-letf" => return self.sf_cl_letf(&items, env),
-                        "aset" => return self.sf_aset(&items, env),
                         "cl-flet" if !self.has_lisp_macro("cl-flet") => {
                             return self.sf_cl_flet(&items, env);
                         }
@@ -665,60 +711,6 @@ impl Interpreter {
                                 Value::Symbol("rx-let-eval".into()),
                             ])));
                         }
-                        "require"
-                            if matches!(
-                                self.lookup_function("require", env),
-                                Ok(Value::BuiltinFunc(ref name)) if name == "require"
-                            ) =>
-                        {
-                            if let Some(feature_expr) = items.get(1) {
-                                let feature_value = self.eval(feature_expr, env)?;
-                                let feature = feature_value.as_symbol()?.to_string();
-                                let target = match items.get(2) {
-                                    Some(expr) => {
-                                        let value = self.eval(expr, env)?;
-                                        if value.is_nil() {
-                                            None
-                                        } else {
-                                            Some(primitives::string_text(&value)?)
-                                        }
-                                    }
-                                    None => None,
-                                };
-                                let noerror = match items.get(3) {
-                                    Some(expr) => self.eval(expr, env)?.is_truthy(),
-                                    None => false,
-                                };
-                                let result = self.require_feature_with_target(
-                                    &feature,
-                                    target.as_deref(),
-                                    env,
-                                );
-                                // GNU: with NOERROR, a missing file yields nil.
-                                if noerror
-                                    && let Err(LispError::SignalValue(condition)) = &result
-                                    && matches!(condition.car(), Ok(Value::Symbol(kind))
-                                        if kind == "file-missing" || kind == "file-error")
-                                {
-                                    return Ok(Value::Nil);
-                                }
-                                return result;
-                            }
-                            return Ok(Value::Nil);
-                        }
-                        "provide"
-                            if matches!(
-                                self.lookup_function("provide", env),
-                                Ok(Value::BuiltinFunc(ref name)) if name == "provide"
-                            ) =>
-                        {
-                            if let Some(feature_expr) = items.get(1) {
-                                let feature_value = self.eval(feature_expr, env)?;
-                                let feature = feature_value.as_symbol()?.to_string();
-                                return self.provide_feature_with_after_load(&feature);
-                            }
-                            return Ok(Value::Nil);
-                        }
                         "with-eval-after-load" => {
                             return self.sf_with_eval_after_load(&items, env);
                         }
@@ -743,7 +735,12 @@ impl Interpreter {
                         "def-edebug-elem-spec" => {
                             return self.sf_def_edebug_elem_spec(&items, env);
                         }
-                        "cl-deftype" => return self.sf_cl_deftype(&items, env),
+                        // cl-macs.el owns the public type-expander metadata
+                        // once its `cl-deftype' macro is loaded.  Keep the
+                        // native implementation for bootstrap/file-less use.
+                        "cl-deftype" if !self.has_macro_binding("cl-deftype") => {
+                            return self.sf_cl_deftype(&items, env);
+                        }
                         "eval-and-compile" | "eval-when-compile" => {
                             return self.sf_progn(&items[1..], env);
                         }
@@ -787,19 +784,46 @@ impl Interpreter {
                             // GNU runs the hook when BODY activates a
                             // minibuffer, with that minibuffer current and
                             // `active-minibuffer-window' non-nil.
+                            let previous_depth = self
+                                .lookup_var("emaxx--minibuffer-depth", env)
+                                .and_then(|value| value.as_integer().ok())
+                                .unwrap_or(0);
+                            let depth = previous_depth + 1;
                             let minibuffer_id = self
-                                .find_buffer(" *Minibuf-0*")
+                                .find_buffer(&format!(" *Minibuf-{depth}*"))
                                 .map(|(id, _)| id)
-                                .unwrap_or_else(|| self.create_buffer(" *Minibuf-0*").0);
+                                .unwrap_or_else(|| {
+                                    self.create_buffer(&format!(" *Minibuf-{depth}*")).0
+                                });
                             let saved_buffer_id = self.current_buffer_id();
                             let previous_active = self
                                 .lookup_var("emaxx--active-minibuffer", env)
                                 .unwrap_or(Value::Nil);
+                            let previous_prompt = self
+                                .lookup_var("emaxx--minibuffer-prompt", env)
+                                .unwrap_or(Value::Nil);
+                            let prompt = items
+                                .get(2)
+                                .and_then(minibuffer_prompt_literal)
+                                .unwrap_or(Value::Nil);
                             let _ = self.switch_to_buffer_id(minibuffer_id);
-                            self.set_global_binding("emaxx--active-minibuffer", Value::T);
+                            let active = self
+                                .buffer_identity_value(minibuffer_id)
+                                .unwrap_or(Value::Nil);
+                            self.set_global_binding("emaxx--active-minibuffer", active);
+                            self.set_global_binding(
+                                "emaxx--minibuffer-depth",
+                                Value::Integer(depth),
+                            );
+                            self.set_global_binding("emaxx--minibuffer-prompt", prompt);
                             let call = vec![hook];
                             let hook_result = self.eval_call(&call, env);
                             self.set_global_binding("emaxx--active-minibuffer", previous_active);
+                            self.set_global_binding(
+                                "emaxx--minibuffer-depth",
+                                Value::Integer(previous_depth),
+                            );
+                            self.set_global_binding("emaxx--minibuffer-prompt", previous_prompt);
                             if self.has_buffer_id(saved_buffer_id) {
                                 let _ = self.switch_to_buffer_id(saved_buffer_id);
                             }
@@ -875,6 +899,9 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        if let Some(termination) = self.pending_termination().cloned() {
+            return Err(LispError::Terminate(termination));
+        }
         // Dev-only flat profiler: EMAXX_PROFILE=<path> accumulates per-name
         // call counts and self-time, periodically rewriting <path>.
         if let Some(path) = profile_path() {
@@ -953,7 +980,7 @@ impl Interpreter {
                 self.capture_current_backtrace_context(original_name, env, None);
                 let result = match primitives::call(self, name, args, env) {
                     Ok(value) => Ok(value),
-                    Err(error @ LispError::Throw(_, _)) => Err(error),
+                    Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
                     Err(error) => self.dispatch_handler_bindings(error, env),
                 };
                 self.pop_backtrace_frame();

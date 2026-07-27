@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Cow;
 
 const REGEX_WORD_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\x{2620}]";
 const REGEX_NON_WORD_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\x{2620}]";
@@ -6,6 +7,10 @@ const REGEX_SYMBOL_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\-\x{2620}]";
 const REGEX_NON_SYMBOL_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\-\x{2620}]";
 const REGEX_WHITESPACE_CLASS: &str = r"[\p{White_Space}]";
 const REGEX_NON_WHITESPACE_CLASS: &str = r"[^\p{White_Space}]";
+const TABLE_WORD_CLASS_MARKER: char = '\u{f0000}';
+const TABLE_NON_WORD_CLASS_MARKER: char = '\u{f0001}';
+const TABLE_CASE_SENSITIVE_START_MARKER: char = '\u{f0002}';
+const TABLE_CASE_SENSITIVE_END_MARKER: char = '\u{f0003}';
 
 #[derive(Clone)]
 enum RegexClassAtom {
@@ -438,6 +443,10 @@ fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
         && !pattern.contains("\\S>")
         && !pattern.contains("\\s_")
         && !pattern.contains("\\S_")
+        && !pattern.contains("\\sw")
+        && !pattern.contains("\\Sw")
+        && !pattern.contains("\\w")
+        && !pattern.contains("\\W")
     {
         return pattern.to_string();
     }
@@ -448,13 +457,16 @@ fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
             super::syntax::syntax_class_explicit_chars(interp, class_char)
         };
         if chars.is_empty() {
-            return if negated {
+            let class = if negated {
                 // Anything (GNU: no character has the class).
                 "\\(?:.\\|\n\\)".to_string()
             } else {
                 // Nothing can match.
                 "\\`X\\`".to_string()
             };
+            return format!(
+                "{TABLE_CASE_SENSITIVE_START_MARKER}{class}{TABLE_CASE_SENSITIVE_END_MARKER}"
+            );
         }
         let mut set = String::new();
         if negated {
@@ -475,7 +487,7 @@ fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
         if contains_hyphen {
             set.push('-');
         }
-        format!("[{set}]")
+        format!("{TABLE_CASE_SENSITIVE_START_MARKER}[{set}]{TABLE_CASE_SENSITIVE_END_MARKER}")
     };
     let mut result = String::new();
     let mut chars = pattern.chars().peekable();
@@ -485,11 +497,28 @@ fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
             continue;
         }
         match chars.peek() {
+            Some('w') => {
+                chars.next();
+                result.push(TABLE_WORD_CLASS_MARKER);
+            }
+            Some('W') => {
+                chars.next();
+                result.push(TABLE_NON_WORD_CLASS_MARKER);
+            }
             Some('s') | Some('S') => {
                 let escape = *chars.peek().expect("peeked");
                 let mut lookahead = chars.clone();
                 lookahead.next();
                 match lookahead.peek() {
+                    Some('w') => {
+                        chars.next();
+                        chars.next();
+                        result.push(if escape == 'S' {
+                            TABLE_NON_WORD_CLASS_MARKER
+                        } else {
+                            TABLE_WORD_CLASS_MARKER
+                        });
+                    }
                     Some('<') | Some('>') | Some('_') => {
                         chars.next();
                         let class_char = chars.next().expect("peeked class");
@@ -510,6 +539,40 @@ fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
         }
     }
     result
+}
+
+/// Render the effective one-character word/non-word classes for the current
+/// syntax table.  GNU's standard table makes `$' and `%' word constituents,
+/// while `_` is a symbol constituent; a fixed Unicode `\w' approximation
+/// therefore cannot implement either `\w' or `\sw'.
+fn rendered_table_word_classes(interp: &Interpreter) -> (String, String) {
+    #[cfg(test)]
+    REGEXP_SYNTAX_CLASS_RENDER_COUNT.with(|count| count.set(count.get() + 1));
+    let ascii_word = super::syntax::syntax_class_ascii_chars(interp, 'w');
+    let class_for_ascii = |select_word: bool| {
+        let members = (0..=0x7f)
+            .filter_map(char::from_u32)
+            .filter(|ch| ascii_word.contains(ch) == select_word)
+            .map(|ch| format!(r"\x{{{:x}}}", ch as u32))
+            .collect::<String>();
+        format!("[{members}]")
+    };
+
+    // Outside ASCII, retain the existing Unicode/category approximation.  A
+    // zero-width non-ASCII guard keeps explicit ASCII table overrides out of
+    // that broad category class; the linear prefilter removes this guard
+    // while the anchored exact matcher enforces it.
+    let non_ascii = r"(?=[^\x00-\x7F])";
+    (
+        format!(
+            "(?:{}|{non_ascii}{REGEX_WORD_CLASS})",
+            class_for_ascii(true)
+        ),
+        format!(
+            "(?:{}|{non_ascii}{REGEX_NON_WORD_CLASS})",
+            class_for_ascii(false)
+        ),
+    )
 }
 
 fn regex_syntax_class(
@@ -974,7 +1037,15 @@ fn elisp_capture_mapping(pattern: &str) -> Result<Vec<usize>, LispError> {
 #[derive(Clone)]
 pub(super) struct CompiledElispRegex {
     regex: FancyRegex,
+    linear_boundary_prefilter: Option<LinearBoundaryPrefilter>,
     capture_mapping: Vec<usize>,
+}
+
+#[derive(Clone)]
+struct LinearBoundaryPrefilter {
+    regex: Regex,
+    exact_at_start: FancyRegex,
+    exact_after_one_char: FancyRegex,
 }
 
 impl CompiledElispRegex {
@@ -982,7 +1053,7 @@ impl CompiledElispRegex {
         &self,
         haystack: &'h str,
     ) -> Result<Option<fancy_regex::Captures<'h>>, fancy_regex::Error> {
-        self.regex.captures(haystack)
+        self.captures_from_pos(haystack, 0)
     }
 
     pub(super) fn captures_from_pos<'h>(
@@ -990,11 +1061,53 @@ impl CompiledElispRegex {
         haystack: &'h str,
         start: usize,
     ) -> Result<Option<fancy_regex::Captures<'h>>, fancy_regex::Error> {
-        self.regex.captures_from_pos(haystack, start)
+        let Some(prefilter) = &self.linear_boundary_prefilter else {
+            return self.regex.captures_from_pos(haystack, start);
+        };
+
+        // Lookaround makes fancy-regex try the exact expression at every
+        // character.  GNU boundary-heavy searches (notably NEWS scans) are
+        // linear instead: first find a plausible textual match, then test
+        // the zero-width syntax assertions at that one position.  Advance
+        // one character from a rejected candidate so overlapping matches
+        // such as the second `aa' in `aaa ' remain visible.
+        let mut next_candidate = start.min(haystack.len());
+        while next_candidate <= haystack.len() {
+            let Some(candidate) = prefilter.regex.find_at(haystack, next_candidate) else {
+                return Ok(None);
+            };
+            let candidate_start = candidate.start();
+            let exact = if candidate_start == 0 {
+                prefilter.exact_at_start.is_match(haystack)?
+            } else {
+                let previous_start = haystack[..candidate_start]
+                    .char_indices()
+                    .next_back()
+                    .map(|(index, _)| index)
+                    .unwrap_or(0);
+                prefilter
+                    .exact_after_one_char
+                    .is_match(&haystack[previous_start..])?
+            };
+            if exact
+                && let Some(captures) = self.regex.captures_from_pos(haystack, candidate_start)?
+                && captures
+                    .get(0)
+                    .is_some_and(|matched| matched.start() == candidate_start)
+            {
+                return Ok(Some(captures));
+            }
+
+            let Some(next) = haystack[candidate_start..].chars().next() else {
+                return Ok(None);
+            };
+            next_candidate = candidate_start + next.len_utf8();
+        }
+        Ok(None)
     }
 
     pub(super) fn is_match(&self, haystack: &str) -> Result<bool, fancy_regex::Error> {
-        self.regex.is_match(haystack)
+        Ok(self.captures(haystack)?.is_some())
     }
 
     pub(super) fn capture_mapping(&self) -> &[usize] {
@@ -1002,9 +1115,48 @@ impl CompiledElispRegex {
     }
 }
 
+fn build_fancy_regex(rendered: &str) -> Result<FancyRegex, fancy_regex::Error> {
+    // Bounded repetitions over Unicode classes (cc-mode uses `\{,1000\}'
+    // on symbol-char classes) overflow the delegate's default 10MB
+    // compiled-program budget; GNU regexps have no such limit.
+    fancy_regex::RegexBuilder::new(rendered)
+        .delegate_size_limit(512 * 1024 * 1024)
+        .build()
+}
+
+fn linear_boundary_prefilter(rendered: &str) -> Option<LinearBoundaryPrefilter> {
+    let word_start = format!("(?<!{REGEX_WORD_CLASS})(?={REGEX_WORD_CLASS})");
+    let word_end = format!("(?<={REGEX_WORD_CLASS})(?!{REGEX_WORD_CLASS})");
+    let symbol_start = format!("(?<!{REGEX_SYMBOL_CLASS})(?={REGEX_SYMBOL_CLASS})");
+    let symbol_end = format!("(?<={REGEX_SYMBOL_CLASS})(?!{REGEX_SYMBOL_CLASS})");
+    let mut coarse = rendered.to_string();
+    coarse = coarse.replace(r"(?=[^\x00-\x7F])", "(?:)");
+    for assertion in [word_start, word_end, symbol_start, symbol_end] {
+        coarse = coarse.replace(&assertion, "(?:)");
+    }
+    if coarse == rendered {
+        return None;
+    }
+
+    let regex = regex::RegexBuilder::new(&coarse)
+        .size_limit(512 * 1024 * 1024)
+        .build()
+        .ok()?;
+    let exact_at_start = build_fancy_regex(&format!(r"\A(?:{rendered})")).ok()?;
+    // Include exactly one preceding character in the anchored probe so a
+    // boundary at the beginning of the match sees its real left context.
+    let exact_after_one_char = build_fancy_regex(&format!(r"\A(?:[\s\S])(?:{rendered})")).ok()?;
+    Some(LinearBoundaryPrefilter {
+        regex,
+        exact_at_start,
+        exact_after_one_char,
+    })
+}
+
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct CompiledElispRegexKey {
     pattern: String,
+    syntax_word_class: String,
     point_assertion: String,
     at_absolute_start: bool,
     case_fold: bool,
@@ -1045,6 +1197,19 @@ impl CompiledElispRegexCache {
 thread_local! {
     static COMPILED_ELISP_REGEX_CACHE: RefCell<CompiledElispRegexCache> =
         RefCell::new(CompiledElispRegexCache::default());
+    #[cfg(test)]
+    static REGEXP_SYNTAX_CLASS_RENDER_COUNT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn reset_regexp_syntax_class_render_count() {
+    REGEXP_SYNTAX_CLASS_RENDER_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn regexp_syntax_class_render_count() -> usize {
+    REGEXP_SYNTAX_CLASS_RENDER_COUNT.with(std::cell::Cell::get)
 }
 
 pub(super) fn compile_elisp_regex(
@@ -1058,11 +1223,24 @@ pub(super) fn compile_elisp_regex(
     // The rewritten pattern doubles as the cache key, so changing tables
     // cannot reuse a stale class expansion.
     let pattern_text = resolve_table_syntax_classes(interp, &pattern.text);
+    // Most regexps contain no syntax-table-dependent word atom.  Rendering
+    // both effective ASCII classes before consulting the compiled-regexp
+    // cache made even a cache HIT scan 256 syntax entries and allocate two
+    // large key strings.  Keep that work in the dependent-pattern path; an
+    // empty component is a complete cache key for table-independent forms.
+    let uses_table_word_class = pattern_text.contains(TABLE_WORD_CLASS_MARKER)
+        || pattern_text.contains(TABLE_NON_WORD_CLASS_MARKER);
+    let (syntax_word_class, syntax_non_word_class) = if uses_table_word_class {
+        rendered_table_word_classes(interp)
+    } else {
+        (String::new(), String::new())
+    };
     let case_fold = interp
         .lookup_var("case-fold-search", env)
         .is_some_and(|value| value.is_truthy());
     let key = CompiledElispRegexKey {
         pattern: pattern_text.clone(),
+        syntax_word_class: syntax_word_class.clone(),
         point_assertion: point_assertion.to_string(),
         at_absolute_start,
         case_fold,
@@ -1077,21 +1255,26 @@ pub(super) fn compile_elisp_regex(
         &pattern_text,
         point_assertion,
         if at_absolute_start { r"\A" } else { r"(?!)" },
-    );
+    )
+    .replace(
+        TABLE_WORD_CLASS_MARKER,
+        &format!("(?-i:{syntax_word_class})"),
+    )
+    .replace(
+        TABLE_NON_WORD_CLASS_MARKER,
+        &format!("(?-i:{syntax_non_word_class})"),
+    )
+    .replace(TABLE_CASE_SENSITIVE_START_MARKER, "(?-i:")
+    .replace(TABLE_CASE_SENSITIVE_END_MARKER, ")");
     let rendered = if case_fold {
         format!("(?mi:{translated})")
     } else {
         format!("(?m:{translated})")
     };
     let compiled = CompiledElispRegex {
-        // Bounded repetitions over Unicode classes (cc-mode uses
-        // `\{,1000\}' on symbol-char classes) overflow the delegate's
-        // default 10MB compiled-program budget; GNU regexps have no such
-        // limit, so give the delegate more room.
-        regex: fancy_regex::RegexBuilder::new(&rendered)
-            .delegate_size_limit(512 * 1024 * 1024)
-            .build()
+        regex: build_fancy_regex(&rendered)
             .map_err(|error| invalid_regexp_error(error.to_string()))?,
+        linear_boundary_prefilter: linear_boundary_prefilter(&rendered),
         capture_mapping: elisp_capture_mapping(&pattern.text)?,
     };
     COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().insert(key, compiled.clone()));
@@ -1197,13 +1380,156 @@ pub(super) fn set_match_data(
     interp.last_match_data_buffer_id = source_buffer_id;
 }
 
+#[derive(Clone, Copy)]
+enum SearchPointBoundary {
+    None,
+    Start,
+    End,
+}
+
+impl SearchPointBoundary {
+    fn ordinary_assertion(self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::Start => r"\A",
+            Self::End => r"\z",
+        }
+    }
+
+    fn candidate_assertion(
+        self,
+        match_start_byte: usize,
+        candidate_end_byte: usize,
+        haystack_len: usize,
+    ) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::Start if match_start_byte == 0 => r"\A",
+            Self::End if candidate_end_byte == haystack_len => r"\z",
+            Self::Start | Self::End => r"(?!)",
+        }
+    }
+}
+
+struct PosixMatch {
+    start_byte: usize,
+    end_byte: usize,
+    start_position: usize,
+    end_position: usize,
+    match_data: Vec<Option<(usize, usize)>>,
+}
+
+struct PosixMatchContext<'a> {
+    position_base: usize,
+    point_boundary: SearchPointBoundary,
+    haystack_at_absolute_start: bool,
+    env: &'a Env,
+}
+
+/// Find the ordinary match's earliest start, then require the regexp to
+/// consume the longest possible prefix at that start.  Appending only the
+/// end anchor is intentional: prepending an Emacs `\`` anchor would confuse
+/// a candidate slice with the actual beginning of the string or buffer.
+fn posix_longest_match(
+    interp: &Interpreter,
+    pattern: &StringLike,
+    haystack: &str,
+    search_offset: usize,
+    context: PosixMatchContext<'_>,
+) -> Result<Option<PosixMatch>, LispError> {
+    let ordinary = compile_elisp_regex(
+        interp,
+        pattern,
+        context.env,
+        context.point_boundary.ordinary_assertion(),
+        context.haystack_at_absolute_start,
+    )?;
+    let Some(first) = ordinary
+        .captures_from_pos(haystack, search_offset)
+        .map_err(|error| LispError::Signal(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let Some(first_match) = first.get(0) else {
+        return Ok(None);
+    };
+    let match_start_byte = first_match.start();
+    let match_start_chars = haystack[..match_start_byte].chars().count();
+    let remainder = &haystack[match_start_byte..];
+    let end_anchored_pattern = StringLike {
+        text: format!(r"\(?:{}\)\'", pattern.text),
+        props: pattern.props.clone(),
+        multibyte: pattern.multibyte,
+    };
+    let mut candidate_ends = std::iter::once(0)
+        .chain(
+            remainder
+                .char_indices()
+                .map(|(byte, ch)| byte + ch.len_utf8()),
+        )
+        .collect::<Vec<_>>();
+    candidate_ends.reverse();
+
+    for candidate_end in candidate_ends {
+        let absolute_candidate_end = match_start_byte + candidate_end;
+        let candidate = &remainder[..candidate_end];
+        let exact = compile_elisp_regex(
+            interp,
+            &end_anchored_pattern,
+            context.env,
+            context.point_boundary.candidate_assertion(
+                match_start_byte,
+                absolute_candidate_end,
+                haystack.len(),
+            ),
+            context.haystack_at_absolute_start && match_start_byte == 0,
+        )?;
+        let Some(captures) = exact
+            .captures(candidate)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+        else {
+            continue;
+        };
+        let Some(matched) = captures.get(0) else {
+            continue;
+        };
+        if matched.start() != 0 || matched.end() != candidate.len() {
+            continue;
+        }
+        let match_position_base = context.position_base + match_start_chars;
+        let match_data = match_data_from_captures(
+            match_position_base,
+            candidate,
+            &captures,
+            exact.capture_mapping(),
+        );
+        let Some((start_position, end_position)) = match_data.first().and_then(|entry| *entry)
+        else {
+            continue;
+        };
+        return Ok(Some(PosixMatch {
+            start_byte: match_start_byte,
+            end_byte: absolute_candidate_end,
+            start_position,
+            end_position,
+            match_data,
+        }));
+    }
+
+    // The ordinary search succeeded, so a full prefix must match too.  Keep
+    // delegate disagreement on the ordinary Lisp boundary instead of
+    // exposing an internal assertion.
+    Ok(None)
+}
+
 pub(super) fn string_match_impl(
     interp: &mut Interpreter,
     args: &[Value],
     env: &Env,
     update_match_data: bool,
 ) -> Result<Value, LispError> {
-    if args.len() < 2 || args.len() > 4 {
+    let max_args = if update_match_data { 4 } else { 3 };
+    if args.len() < 2 || args.len() > max_args {
         return Err(LispError::WrongNumberOfArgs(
             if update_match_data {
                 "string-match".into()
@@ -1217,9 +1543,19 @@ pub(super) fn string_match_impl(
         .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
     let haystack = string_like(&args[1])
         .ok_or_else(|| LispError::TypeError("string".into(), args[1].type_name()))?;
-    let haystack_len = haystack.text.chars().count() as i64;
-    let start = normalize_string_index(args.get(2), 0, haystack_len)? as usize;
-    let tail: String = haystack.text.chars().skip(start).collect();
+    // The overwhelmingly common no-START path searches the original string.
+    // Counting and copying the full haystack made it O(n) before the regex
+    // engine even ran (particularly painful for large buffers/Unicode data).
+    let start = if let Some(start) = args.get(2) {
+        normalize_string_index(Some(start), 0, haystack.text.chars().count() as i64)? as usize
+    } else {
+        0
+    };
+    let tail = if start == 0 {
+        Cow::Borrowed(haystack.text.as_str())
+    } else {
+        Cow::Owned(haystack.text.chars().skip(start).collect::<String>())
+    };
     let regex = compile_elisp_regex(interp, &pattern, env, "", start == 0)?;
     let captures = regex
         .captures(&tail)
@@ -1228,7 +1564,7 @@ pub(super) fn string_match_impl(
         && let Some(matched) = captures.get(0)
     {
         let match_start = start + tail[..matched.start()].chars().count();
-        if update_match_data {
+        if update_match_data && !args.get(3).is_some_and(Value::is_truthy) {
             set_match_data(
                 interp,
                 start,
@@ -1242,6 +1578,54 @@ pub(super) fn string_match_impl(
     } else {
         Ok(Value::Nil)
     }
+}
+
+pub(super) fn posix_string_match_impl(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &Env,
+) -> Result<Value, LispError> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(LispError::WrongNumberOfArgs(
+            "posix-string-match".into(),
+            args.len(),
+        ));
+    }
+    let pattern = string_like(&args[0])
+        .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+    let haystack = string_like(&args[1])
+        .ok_or_else(|| LispError::TypeError("string".into(), args[1].type_name()))?;
+    let start = if let Some(start) = args.get(2) {
+        normalize_string_index(Some(start), 0, haystack.text.chars().count() as i64)? as usize
+    } else {
+        0
+    };
+    let tail = if start == 0 {
+        Cow::Borrowed(haystack.text.as_str())
+    } else {
+        Cow::Owned(haystack.text.chars().skip(start).collect::<String>())
+    };
+
+    if let Some(selected) = posix_longest_match(
+        interp,
+        &pattern,
+        &tail,
+        0,
+        PosixMatchContext {
+            position_base: start,
+            point_boundary: SearchPointBoundary::None,
+            haystack_at_absolute_start: start == 0,
+            env,
+        },
+    )? {
+        if !args.get(3).is_some_and(Value::is_truthy) {
+            interp.last_match_data = Some(selected.match_data);
+            interp.last_match_data_buffer_id = None;
+        }
+        return Ok(Value::Integer(selected.start_position as i64));
+    }
+
+    Ok(Value::Nil)
 }
 
 fn trim_regexp_pattern(regexp: Option<&Value>, anchored_left: bool) -> Result<String, LispError> {
@@ -1634,6 +2018,8 @@ pub(super) fn match_string_impl(interp: &Interpreter, args: &[Value]) -> Result<
 pub(super) fn looking_at_impl(
     interp: &mut Interpreter,
     pattern_value: &Value,
+    posix: bool,
+    update_match_data: bool,
     env: &Env,
 ) -> Result<Value, LispError> {
     let pattern = string_like(pattern_value)
@@ -1651,20 +2037,47 @@ pub(super) fn looking_at_impl(
         .buffer
         .buffer_substring(pos, interp.buffer.point_max())
         .map_err(|error| LispError::Signal(error.to_string()))?;
+    if posix {
+        let Some(selected) = posix_longest_match(
+            interp,
+            &pattern,
+            &tail,
+            0,
+            PosixMatchContext {
+                position_base: pos,
+                point_boundary: SearchPointBoundary::Start,
+                haystack_at_absolute_start: pos == interp.buffer.point_min(),
+                env,
+            },
+        )?
+        else {
+            return Ok(Value::Nil);
+        };
+        if selected.start_byte != 0 {
+            return Ok(Value::Nil);
+        }
+        if update_match_data {
+            interp.last_match_data = Some(selected.match_data);
+            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+        }
+        return Ok(Value::T);
+    }
     if let Some(captures) = regex
         .captures(&tail)
         .map_err(|error| LispError::Signal(error.to_string()))?
         && let Some(matched) = captures.get(0)
         && matched.start() == 0
     {
-        set_match_data(
-            interp,
-            pos,
-            &tail,
-            &captures,
-            regex.capture_mapping(),
-            Some(interp.current_buffer_id()),
-        );
+        if update_match_data {
+            set_match_data(
+                interp,
+                pos,
+                &tail,
+                &captures,
+                regex.capture_mapping(),
+                Some(interp.current_buffer_id()),
+            );
+        }
         Ok(Value::T)
     } else {
         Ok(Value::Nil)
@@ -1752,10 +2165,15 @@ pub(super) fn buffer_regex_search(
     args: &[Value],
     env: &Env,
     forward: bool,
+    posix: bool,
 ) -> Result<Value, LispError> {
     if args.is_empty() || args.len() > 4 {
         return Err(LispError::WrongNumberOfArgs(
-            if forward {
+            if posix && forward {
+                "posix-search-forward".into()
+            } else if posix {
+                "posix-search-backward".into()
+            } else if forward {
                 "re-search-forward".into()
             } else {
                 "re-search-backward".into()
@@ -1808,7 +2226,7 @@ pub(super) fn buffer_regex_search(
                 backward_args.resize(4, Value::Nil);
             }
             backward_args[3] = Value::Integer(-count);
-            return buffer_regex_search(interp, &backward_args, env, false);
+            return buffer_regex_search(interp, &backward_args, env, false, posix);
         }
         if limit < start {
             return if noerror {
@@ -1847,6 +2265,46 @@ pub(super) fn buffer_regex_search(
             .map(|(byte, _)| byte)
             .unwrap_or(haystack.len());
         for _ in 0..count {
+            if posix {
+                let Some(selected) = posix_longest_match(
+                    interp,
+                    &pattern,
+                    &haystack,
+                    search_offset,
+                    PosixMatchContext {
+                        position_base: haystack_start,
+                        point_boundary: SearchPointBoundary::Start,
+                        haystack_at_absolute_start: haystack_start == interp.buffer.point_min(),
+                        env,
+                    },
+                )?
+                else {
+                    return if noerror {
+                        if move_on_failure {
+                            interp.buffer.goto_char(limit);
+                        }
+                        Ok(Value::Nil)
+                    } else {
+                        Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("search-failed".into()),
+                            Value::String(pattern.text.clone()),
+                        ])))
+                    };
+                };
+                interp.last_match_data = Some(selected.match_data);
+                interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+                interp.buffer.goto_char(selected.end_position);
+                search_offset = if selected.end_byte > search_offset {
+                    selected.end_byte
+                } else {
+                    haystack[search_offset..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(offset, _)| search_offset + offset)
+                        .unwrap_or(haystack.len())
+                };
+                continue;
+            }
             let Some(captures) = regex
                 .captures_from_pos(&haystack, search_offset)
                 .map_err(|error| LispError::Signal(error.to_string()))?
@@ -1906,7 +2364,7 @@ pub(super) fn buffer_regex_search(
                 forward_args.resize(4, Value::Nil);
             }
             forward_args[3] = Value::Integer(-count);
-            return buffer_regex_search(interp, &forward_args, env, true);
+            return buffer_regex_search(interp, &forward_args, env, true, posix);
         }
         let limit = match args.get(1) {
             Some(Value::Integer(pos)) if *pos < interp.buffer.point_min() as i64 => {
@@ -1944,20 +2402,69 @@ pub(super) fn buffer_regex_search(
                 interp.buffer.goto_char(pos);
                 continue;
             }
+            if posix {
+                let mut best_match = None;
+                let mut search_byte = 0usize;
+                while search_byte <= prefix.len() {
+                    let Some(selected) = posix_longest_match(
+                        interp,
+                        &pattern,
+                        &prefix,
+                        search_byte,
+                        PosixMatchContext {
+                            position_base: absolute_start,
+                            point_boundary: SearchPointBoundary::End,
+                            haystack_at_absolute_start: true,
+                            env,
+                        },
+                    )?
+                    else {
+                        break;
+                    };
+                    let selected_start_byte = selected.start_byte;
+                    if selected.start_position >= limit
+                        && best_match.as_ref().is_none_or(|best: &PosixMatch| {
+                            selected.start_position > best.start_position
+                                || (selected.start_position == best.start_position
+                                    && selected.end_position > best.end_position)
+                        })
+                    {
+                        best_match = Some(selected);
+                    }
+                    let Some(next) = prefix[selected_start_byte..].chars().next() else {
+                        break;
+                    };
+                    search_byte = selected_start_byte + next.len_utf8();
+                }
+                if let Some(selected) = best_match {
+                    interp.last_match_data = Some(selected.match_data);
+                    interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+                    interp.buffer.goto_char(selected.start_position);
+                    continue;
+                }
+                return if noerror {
+                    if move_on_failure {
+                        interp.buffer.goto_char(limit);
+                    }
+                    Ok(Value::Nil)
+                } else {
+                    Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("search-failed".into()),
+                        Value::String(pattern.text.clone()),
+                    ])))
+                };
+            }
             let mut best_match: Option<(usize, usize, usize)> = None;
-            for start_byte in prefix
-                .char_indices()
-                .map(|(index, _)| index)
-                .chain(std::iter::once(prefix.len()))
-            {
+            let mut search_byte = 0usize;
+            while search_byte <= prefix.len() {
                 let Some(captures) = regex
-                    .captures_from_pos(&prefix, start_byte)
+                    .captures_from_pos(&prefix, search_byte)
                     .map_err(|error| LispError::Signal(error.to_string()))?
                 else {
-                    continue;
+                    break;
                 };
                 let Some(matched) = captures.get(0) else {
-                    continue;
+                    break;
                 };
                 let Some(match_start) = backward_match_position(
                     absolute_start,
@@ -1965,24 +2472,34 @@ pub(super) fn buffer_regex_search(
                     matched.start(),
                     empty_line_pattern,
                 ) else {
-                    continue;
+                    break;
                 };
-                if match_start < limit {
-                    continue;
-                }
                 let Some(match_end) = backward_match_position(
                     absolute_start,
                     &prefix,
                     matched.end(),
                     empty_line_pattern,
                 ) else {
-                    continue;
+                    break;
                 };
-                if best_match.is_none_or(|(best_start, best_end, _)| {
-                    match_start > best_start || (match_start == best_start && match_end > best_end)
-                }) {
+                if match_start >= limit
+                    && best_match.is_none_or(|(best_start, best_end, _)| {
+                        match_start > best_start
+                            || (match_start == best_start && match_end > best_end)
+                    })
+                {
                     best_match = Some((match_start, match_end, matched.start()));
                 }
+
+                // Move from the match's START, not its end: backward search
+                // must notice overlapping candidates and ultimately select
+                // the rightmost start.  Each iteration nevertheless moves
+                // monotonically, unlike the former per-character loop that
+                // restarted an unanchored search at every buffer position.
+                let Some(next) = prefix[matched.start()..].chars().next() else {
+                    break;
+                };
+                search_byte = matched.start() + next.len_utf8();
             }
             if let Some((match_start, _, start_byte)) = best_match
                 && let Some(captures) = regex

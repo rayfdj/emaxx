@@ -7,11 +7,79 @@ use crate::lisp::types::{Env, LispError, Value};
 pub(crate) const DEFAULT_SELECTED_WINDOW_HEIGHT: usize = 24;
 pub(crate) const WINDOW_BUFFER_SLOT: usize = 0;
 pub(crate) const WINDOW_START_SLOT: usize = 1;
+pub(crate) const WINDOW_OLD_POINT_SLOT: usize = 2;
 pub(crate) const WINDOW_KIND_SLOT: usize = 3;
 pub(crate) const WINDOW_PARAMETERS_SLOT: usize = 4;
 pub(crate) const WINDOW_PREV_BUFFERS_SLOT: usize = 5;
 pub(crate) const WINDOW_NEXT_BUFFERS_SLOT: usize = 6;
+pub(crate) const WINDOW_DEDICATED_SLOT: usize = 7;
+pub(crate) const WINDOW_NEW_PIXEL_SLOT: usize = 8;
+pub(crate) const WINDOW_NEW_TOTAL_SLOT: usize = 9;
+pub(crate) const WINDOW_NEW_NORMAL_SLOT: usize = 10;
+pub(crate) const WINDOW_DISPLAY_TABLE_SLOT: usize = 11;
+pub(crate) const WINDOW_CURSOR_TYPE_SLOT: usize = 12;
+pub(crate) const WINDOW_PARENT_SLOT: usize = 13;
+pub(crate) const WINDOW_PREV_SIBLING_SLOT: usize = 14;
+pub(crate) const WINDOW_NEXT_SIBLING_SLOT: usize = 15;
+pub(crate) const WINDOW_FIRST_CHILD_SLOT: usize = 16;
+pub(crate) const WINDOW_PIXEL_WIDTH_SLOT: usize = 17;
+pub(crate) const WINDOW_PIXEL_HEIGHT_SLOT: usize = 18;
+pub(crate) const WINDOW_PIXEL_LEFT_SLOT: usize = 19;
+pub(crate) const WINDOW_PIXEL_TOP_SLOT: usize = 20;
+pub(crate) const WINDOW_NORMAL_WIDTH_SLOT: usize = 21;
+pub(crate) const WINDOW_NORMAL_HEIGHT_SLOT: usize = 22;
+pub(crate) const WINDOW_COMBINATION_LIMIT_SLOT: usize = 23;
+pub(crate) const WINDOW_USE_TIME_SLOT: usize = 24;
+pub(crate) const WINDOW_HSCROLL_SLOT: usize = 25;
+pub(crate) const WINDOW_MIN_HSCROLL_SLOT: usize = 26;
+pub(crate) const WINDOW_SUSPEND_AUTO_HSCROLL_SLOT: usize = 27;
+pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 28;
 pub(crate) const MINIBUFFER_WINDOW_KIND: &str = "minibuffer";
+pub(crate) const INTERNAL_HORIZONTAL_WINDOW_KIND: &str = "internal-horizontal";
+pub(crate) const INTERNAL_VERTICAL_WINDOW_KIND: &str = "internal-vertical";
+pub(crate) const DELETED_WINDOW_KIND: &str = "deleted";
+
+pub(crate) fn window_record_slots(
+    buffer_id: Option<u64>,
+    start: usize,
+    kind: Value,
+    geometry: (i64, i64, i64, i64),
+) -> Vec<Value> {
+    let (width, height, left, top) = geometry;
+    vec![
+        buffer_id
+            .map(|id| Value::Integer(id as i64))
+            .unwrap_or(Value::Nil),
+        Value::Integer(start as i64),
+        Value::Integer(start as i64),
+        kind,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Integer(0),
+        Value::Integer(0),
+        Value::Integer(0),
+        Value::Nil,
+        Value::T,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        Value::Integer(width),
+        Value::Integer(height),
+        Value::Integer(left),
+        Value::Integer(top),
+        Value::Float(1.0),
+        Value::Float(1.0),
+        Value::Nil,
+        Value::Integer(0),
+        Value::Integer(0),
+        Value::Integer(0),
+        Value::Nil,
+        Value::Nil,
+    ]
+}
 
 pub(crate) fn current_window_start(interp: &Interpreter) -> usize {
     interp.selected_window_start()
@@ -58,12 +126,16 @@ pub(crate) fn window_record_id_from_value(interp: &Interpreter, value: &Value) -
 
 pub(crate) fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u64> {
     match window_record_id_from_value(interp, value) {
-        Some(id) if id == interp.selected_window_id() => Some(interp.selected_window_buffer_id()),
+        Some(id) if id == interp.selected_window_id() => {
+            let buffer_id = interp.selected_window_buffer_id();
+            interp.has_buffer_id(buffer_id).then_some(buffer_id)
+        }
         Some(id) => interp
             .find_record(id)
             .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT))
             .and_then(|slot| slot.as_integer().ok())
-            .map(|buffer_id| buffer_id.max(0) as u64),
+            .map(|buffer_id| buffer_id.max(0) as u64)
+            .filter(|buffer_id| interp.has_buffer_id(*buffer_id)),
         None => None,
     }
 }

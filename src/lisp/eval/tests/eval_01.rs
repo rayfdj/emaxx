@@ -9,6 +9,36 @@ fn eval_atoms() {
 }
 
 #[test]
+fn unmatched_throw_signals_no_catch_but_outer_catches_still_receive_throws() {
+    assert_eq!(
+        eval_str(
+            r#"(list
+                 (condition-case err
+                     (throw 'missing 7)
+                   (no-catch err))
+                 (catch 'outer
+                   (condition-case err
+                       (throw 'outer 9)
+                     (no-catch (list 'wrong err))))
+                 (condition-case err
+                     (let ((caught (copy-sequence "tag"))
+                           (thrown (copy-sequence "tag")))
+                       (catch caught (throw thrown 11)))
+                   (no-catch (car err))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("no-catch".into()),
+                Value::Symbol("missing".into()),
+                Value::Integer(7),
+            ]),
+            Value::Integer(9),
+            Value::Symbol("no-catch".into()),
+        ])
+    );
+}
+
+#[test]
 fn unwind_protect_cleanup_nonlocal_exit_supersedes_the_protected_result() {
     assert_eq!(
         eval_str(
@@ -63,18 +93,24 @@ fn subprocess_exit_is_event_driven_and_notifies_stderr_before_primary_once() {
                            :sentinel
                            (lambda (_process _event)
                              (setq events (append events '(primary))))))
-                         (initially-live (process-live-p child)))
+                         (initially-live (process-live-p child))
+                         (pid (process-id child)))
                     (while (process-live-p child)
                       (sit-for 0.01))
                     ;; A second pump must not repeat either terminal event.
                     (sit-for 0.01)
                     (list initially-live
+                          (and (integerp pid) (> pid 0)
+                               (= (process-id child) pid))
+                          (null (get-process "event-order-primary"))
                           events
                           (process-exit-status child)
                           (process-live-p child)
                           (equal (process-command child) command)))"#,
             ),
             Value::list([
+                Value::T,
+                Value::T,
                 Value::T,
                 Value::list([
                     Value::Symbol("stderr".into()),
@@ -109,12 +145,19 @@ fn process_send_eof_keeps_linked_stderr_separate_from_stdout() {
                            :command
                            (list shell "-c"
                                  "input=$(cat); printf 'out:%s' \"$input\"; printf err >&2")
+                           :connection-type 'pipe
                            :stderr stderr
                            :filter
                            (lambda (_process text)
                              (setq stdout (concat stdout text))))))
                     (process-send-string child "value")
                     (process-send-eof child)
+                    (while (process-live-p child)
+                      (accept-process-output child 0.1))
+                    ;; `process-live-p' can observe exit while moving final
+                    ;; bytes into the pending queues; pump once more to run
+                    ;; both filters.
+                    (accept-process-output child 0.1)
                     (list stdout stderr-output))"#,
             ),
             Value::list([
@@ -482,6 +525,317 @@ fn aset_mutates_make_string_storage() {
     assert_eq!(
         eval_str("(let ((buf (make-string 2 ?x))) (aset buf 0 ?a) (equal buf \"ax\"))"),
         Value::T
+    );
+}
+
+#[test]
+fn aset_is_a_normal_primitive_with_left_to_right_argument_evaluation() {
+    assert_eq!(
+        eval_str(
+            "(let ((buf (vector 0)) events)
+               (aset buf
+                     (progn (push 'index events) 0)
+                     (progn (push 'value events) 7))
+               (list buf events
+                     (special-form-p 'aset)
+                     (subrp (symbol-function 'aset))))"
+        ),
+        Value::list([
+            Value::list([Value::Symbol("vector-literal".into()), Value::Integer(7),]),
+            Value::list([Value::Symbol("value".into()), Value::Symbol("index".into()),]),
+            Value::Nil,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn aset_mutates_shared_string_identity_without_rebinding_its_variable() {
+    assert_eq!(
+        eval_str(
+            "(let* ((string \"abc\")
+                    (alias string))
+               (aset string 0 ?x)
+               (list string alias (eq string alias)))"
+        ),
+        Value::list([
+            Value::String("xbc".into()),
+            Value::String("xbc".into()),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn eval_throw_and_call_interactively_keep_their_gnu_function_boundary() {
+    assert_eq!(
+        eval_str(
+            "(mapcar
+               (lambda (name)
+                 (list name
+                       (special-form-p name)
+                       (subrp (symbol-function name))))
+               '(eval throw call-interactively))"
+        ),
+        Value::list([
+            Value::list([Value::Symbol("eval".into()), Value::Nil, Value::T,]),
+            Value::list([Value::Symbol("throw".into()), Value::Nil, Value::T,]),
+            Value::list([
+                Value::Symbol("call-interactively".into()),
+                Value::Nil,
+                Value::T,
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn defalias_provide_and_require_keep_their_gnu_function_boundary() {
+    assert_eq!(
+        eval_str(
+            "(mapcar
+               (lambda (name)
+                 (list name
+                       (special-form-p name)
+                       (subrp (symbol-function name))))
+               '(defalias provide require))"
+        ),
+        Value::list([
+            Value::list([Value::Symbol("defalias".into()), Value::Nil, Value::T,]),
+            Value::list([Value::Symbol("provide".into()), Value::Nil, Value::T,]),
+            Value::list([Value::Symbol("require".into()), Value::Nil, Value::T,]),
+        ])
+    );
+}
+
+#[test]
+fn defalias_provide_and_require_evaluate_arguments_left_to_right() {
+    assert_eq!(
+        eval_str(
+            "(let (events)
+               (defalias
+                 (progn (push 'alias-name events) 'sample-ordered-alias)
+                 (progn (push 'definition events) #'ignore)
+                 (progn (push 'docstring events) \"ordered alias\"))
+               (provide
+                 (progn (push 'feature events) 'sample-ordered-feature)
+                 (progn (push 'subfeatures events) '(:first :second)))
+               (require
+                 (progn (push 'required-feature events)
+                        'sample-ordered-feature)
+                 (progn (push 'filename events) nil)
+                 (progn (push 'noerror events) t))
+               (list events
+                     (featurep 'sample-ordered-feature :second)
+                     (get 'sample-ordered-alias
+                          'function-documentation)))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("noerror".into()),
+                Value::Symbol("filename".into()),
+                Value::Symbol("required-feature".into()),
+                Value::Symbol("subfeatures".into()),
+                Value::Symbol("feature".into()),
+                Value::Symbol("docstring".into()),
+                Value::Symbol("definition".into()),
+                Value::Symbol("alias-name".into()),
+            ]),
+            Value::T,
+            Value::String("ordered alias".into()),
+        ])
+    );
+}
+
+#[test]
+fn migrated_gnu_c_primitives_keep_native_metadata_and_headless_results() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (mapcar
+                 (lambda (name)
+                   (list name
+                         (special-form-p name)
+                         (subrp (symbol-function name))))
+                 '(documentation-stringp current-idle-time posn-at-point))
+               (mapcar #'documentation-stringp
+                       (list \"doc\" 1 (ash 1 100) '(\"file.elc\" . 2)
+                             (cons \"file.elc\" (ash 1 100)) nil
+                             '(\"file.elc\" 2)))
+               (current-idle-time)
+               (posn-at-point))"
+        ),
+        Value::list([
+            Value::list([
+                Value::list([
+                    Value::Symbol("documentation-stringp".into()),
+                    Value::Nil,
+                    Value::T,
+                ]),
+                Value::list([
+                    Value::Symbol("current-idle-time".into()),
+                    Value::Nil,
+                    Value::T,
+                ]),
+                Value::list([Value::Symbol("posn-at-point".into()), Value::Nil, Value::T,]),
+            ]),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::Nil,
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ]),
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn interactive_is_the_gnu_unevaluated_declaration_primitive() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (special-form-p 'interactive)
+               (subrp (symbol-function 'interactive))
+               (interactive (error \"must remain unevaluated\")))"
+        ),
+        Value::list([Value::T, Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn native_table_function_and_runtime_introspection_matches_gnu() {
+    assert_eq!(
+        eval_str(
+            "(let ((case (make-char-table 'case-table))
+                   (syntax (make-char-table 'syntax-table))
+                   (other (make-char-table 'other)))
+               (list
+                 (case-table-p case)
+                 (syntax-table-p syntax)
+                 (case-table-p syntax)
+                 (syntax-table-p other)
+                 (progn
+                   (set-char-table-extra-slot case 0 t)
+                   (case-table-p case))
+                 (subr-type (symbol-function 'car))
+                 (condition-case err
+                     (subr-type (lambda () t))
+                   (wrong-type-argument (car err)))
+                 (let ((make (lambda (x) (lambda () x))))
+                   (function-equal (funcall make 1) (funcall make 2)))
+                 (function-equal (lambda () t) (lambda () t))
+                 (let ((runtime (get-internal-run-time)))
+                   (list (length runtime) (mapcar #'natnump runtime)))
+                 (flush-standard-output)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol("wrong-type-argument".into()),
+            Value::T,
+            Value::Nil,
+            Value::list([
+                Value::Integer(4),
+                Value::list([Value::T, Value::T, Value::T, Value::T]),
+            ]),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn lambda_code_identity_rejects_recycled_source_cons_addresses() {
+    assert_eq!(
+        eval_str(
+            "(let ((first (eval (list 'lambda nil 0) t))
+                   second)
+               (dotimes (index 128)
+                 (setq second
+                       (eval (list 'lambda nil (1+ index)) t)))
+               (list
+                 (funcall first)
+                 (funcall second)
+                 (function-equal first second)))"
+        ),
+        Value::list([Value::Integer(0), Value::Integer(128), Value::Nil])
+    );
+}
+
+#[test]
+fn native_property_change_primitives_use_interval_boundaries() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"abcd\")
+               (add-text-properties 2 4 '(face bold))
+               (let ((overlay (make-overlay 3 4)))
+                 (overlay-put overlay 'help-echo 'from-overlay)
+                 (list
+                   (next-property-change 1)
+                   (next-property-change 2)
+                   (previous-property-change 5)
+                   (next-property-change 1 nil 3)
+                   (next-property-change 1 nil t)
+                   (let ((found
+                          (get-char-property-and-overlay 3 'help-echo)))
+                     (list (car found) (eq (cdr found) overlay)))
+                   (get-char-property-and-overlay 2 'face)
+                   (next-property-change
+                     0 (propertize \"abc\" 'face 'bold) t))))"
+        ),
+        Value::list([
+            Value::Integer(2),
+            Value::Integer(4),
+            Value::Integer(4),
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::list([Value::Symbol("from-overlay".into()), Value::T]),
+            Value::list([Value::Symbol("bold".into())]),
+            Value::Integer(3),
+        ])
+    );
+}
+
+#[test]
+fn native_char_property_changes_merge_overlay_and_text_boundaries() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"abcdef\")
+               (add-text-properties 3 5 '(face bold))
+               (let ((overlay (make-overlay 2 4)))
+                 (list
+                   (mapcar #'next-char-property-change
+                           (number-sequence 1 7))
+                   (mapcar #'previous-char-property-change
+                           (number-sequence 1 7))
+                   (next-char-property-change 1 99)
+                   (next-char-property-change 1 2)
+                   (previous-char-property-change 7 -9)
+                   (previous-char-property-change 7 5)
+                   (list
+                     (subrp (symbol-function
+                              'next-char-property-change))
+                     (func-arity 'next-char-property-change)))))"
+        ),
+        Value::list([
+            Value::list([2, 3, 4, 5, 7, 7, 7].map(Value::Integer)),
+            Value::list([1, 1, 2, 3, 4, 5, 5].map(Value::Integer)),
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(5),
+            Value::Integer(5),
+            Value::list([Value::T, Value::cons(Value::Integer(1), Value::Integer(2)),]),
+        ])
     );
 }
 
@@ -1214,6 +1568,20 @@ fn assert_eval_string_ops() {
         eval_str(r#"(replace-regexp-in-string "[0-9]+" "x" "a1b22" t t)"#),
         "axbx",
     );
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (string-match "\\(before\\)" "before")
+                 (let ((saved (match-data)))
+                   (list
+                    (replace-regexp-in-string
+                     "x\\([0-9]+\\)"
+                     (lambda (matched) (match-string 1 matched))
+                     "pre x42 post")
+                    (equal (match-data) saved))))"#,
+        ),
+        Value::list([Value::String("pre 42 post".into()), Value::T])
+    );
     assert_string_value(
         eval_str(r#"(subst-char-in-string ?/ ?! "/home/me/src")"#),
         "!home!me!src",
@@ -1288,6 +1656,35 @@ fn eval_string_ops() {
 }
 
 #[test]
+fn reader_printer_and_string_to_number_share_gnu_special_float_syntax() {
+    let positive_infinity = eval_str(r#"(string-to-number "1.0e+INFjunk")"#);
+    assert!(matches!(positive_infinity, Value::Float(value) if value == f64::INFINITY));
+    let negative_infinity = eval_str(r#"(string-to-number "-2.e+INF")"#);
+    assert!(matches!(negative_infinity, Value::Float(value) if value == f64::NEG_INFINITY));
+
+    let positive_nan = eval_str(r#"(string-to-number "2.e+NaNjunk")"#);
+    assert!(
+        matches!(positive_nan, Value::Float(value) if value.is_nan() && value.is_sign_positive())
+    );
+    let negative_nan = eval_str(r#"(string-to-number "-2.e+NaN")"#);
+    assert!(
+        matches!(negative_nan, Value::Float(value) if value.is_nan() && value.is_sign_negative())
+    );
+
+    assert_eq!(
+        eval_str(r#"(string-to-number "1e-INF")"#),
+        Value::Integer(1)
+    );
+    assert_eq!(eval_str("'1e-INF"), Value::Symbol("1e-INF".into()));
+    assert!(matches!(eval_str("1e+INF"), Value::Float(value) if value == f64::INFINITY));
+    assert_string_value(eval_str(r#"(prin1-to-string (intern "1e-INF"))"#), "1e-INF");
+    assert_string_value(
+        eval_str(r#"(prin1-to-string (intern "1e+INF"))"#),
+        r"\1e+INF",
+    );
+}
+
+#[test]
 fn string_match_failure_preserves_existing_match_data() {
     let value = eval_str(
         r#"
@@ -1300,6 +1697,34 @@ fn string_match_failure_preserves_existing_match_data() {
     assert_eq!(
         primitives::string_text(&value).expect("match-string result"),
         "b"
+    );
+}
+
+#[test]
+fn posix_string_match_chooses_longest_match_and_honors_inhibit_modify() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (posix-string-match "\\(a\\|aa\\)\\(a*\\)" "xaaa" 1)
+                 (let ((longest (list (match-beginning 0) (match-end 0)
+                                      (match-beginning 1) (match-end 1)
+                                      (match-beginning 2) (match-end 2))))
+                   (string-match "z" "z")
+                   (posix-string-match "\\(a\\|aa\\)" "aa" nil t)
+                   (list longest (match-beginning 0) (match-end 0))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(1),
+                Value::Integer(4),
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(2),
+                Value::Integer(4),
+            ]),
+            Value::Integer(0),
+            Value::Integer(1),
+        ])
     );
 }
 
@@ -1799,6 +2224,64 @@ fn defvar_without_initializer_keeps_variable_void() {
 }
 
 #[test]
+fn missing_function_and_variable_cells_signal_distinct_conditions() {
+    assert_eq!(
+        eval_str(
+            r#"(list
+                 (condition-case err
+                     emaxx-test-unbound
+                   (void-variable (list (car err) (cadr err))))
+                 (condition-case err
+                     (emaxx-test-unbound)
+                   (void-function (list (car err) (cadr err)))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::symbol("void-variable"),
+                Value::symbol("emaxx-test-unbound"),
+            ]),
+            Value::list([
+                Value::symbol("void-function"),
+                Value::symbol("emaxx-test-unbound"),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn preloaded_list_processes_keeps_lisp_policy_over_native_process_records() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(let ((process
+                       (make-pipe-process
+                        :name "emaxx-process-list"
+                        :buffer (current-buffer)
+                        :noquery nil)))
+                 (unwind-protect
+                     (list
+                      (list-processes t)
+                      (with-current-buffer "*Process List*"
+                        (string-match-p "emaxx-process-list"
+                                        (buffer-string))))
+                   (delete-process process)))"#
+        ),
+        Value::list([Value::Nil, Value::Integer(0)])
+    );
+}
+
+#[test]
+fn frame_c_default_frame_alist_is_bound_nil_and_special() {
+    assert_eq!(
+        eval_str(
+            "(list (boundp 'default-frame-alist)
+                   default-frame-alist
+                   (special-variable-p 'default-frame-alist))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::T])
+    );
+}
+
+#[test]
 fn defvar_nil_initializer_binds_variable() {
     let mut interp = Interpreter::new();
     assert_eq!(
@@ -1849,16 +2332,696 @@ fn file_remote_p_parses_tramp_style_names() {
 }
 
 #[test]
+fn file_name_handlers_honor_precedence_operations_and_inhibition() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (put 'emaxx-handler-late 'operations '(copy-file))
+                 (let ((file-name-handler-alist
+                        '(("^/ssh:" . emaxx-handler-broad)
+                          ("host:" . emaxx-handler-late))))
+                   (list
+                    (find-file-name-handler
+                     "/ssh:user@host:/tmp" 'copy-file)
+                    (find-file-name-handler
+                     "/ssh:user@host:/tmp" 'start-file-process)
+                    (let ((inhibit-file-name-operation 'copy-file)
+                          (inhibit-file-name-handlers
+                           '(emaxx-handler-late)))
+                      (find-file-name-handler
+                       "/ssh:user@host:/tmp" 'copy-file))
+                    (let ((inhibit-file-name-operation
+                           'start-file-process)
+                          (inhibit-file-name-handlers
+                           '(emaxx-handler-late)))
+                      (find-file-name-handler
+                       "/ssh:user@host:/tmp" 'copy-file)))))"#,
+        ),
+        Value::list([
+            Value::symbol("emaxx-handler-late"),
+            Value::symbol("emaxx-handler-broad"),
+            Value::symbol("emaxx-handler-broad"),
+            Value::symbol("emaxx-handler-late"),
+        ])
+    );
+}
+
+#[test]
+fn autoloaded_file_name_handlers_keep_their_symbol_identity() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-file-handler-autoload-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("emaxx-sample-handler.el"),
+        "(defun emaxx-sample-handler (operation &rest _args)\n  (eq operation 'file-exists-p))\n(provide 'emaxx-sample-handler-feature)\n",
+    )
+    .unwrap();
+
+    let mut interp = Interpreter::new();
+    interp.set_load_path(vec![dir.clone()]);
+    let result = eval_str_with(
+        &mut interp,
+        r#"(progn
+             (autoload 'emaxx-sample-handler "emaxx-sample-handler")
+             (let ((file-name-handler-alist
+                    '(("\\`/emaxx-autoload-handler" . emaxx-sample-handler))))
+               (list (featurep 'emaxx-sample-handler-feature)
+                     (file-exists-p "/emaxx-autoload-handler")
+                     (featurep 'emaxx-sample-handler-feature))))"#,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(result, Value::list([Value::Nil, Value::T, Value::T]));
+}
+
+#[test]
+fn file_name_handler_insertion_rejoins_the_common_coding_tail() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun emaxx-insert-handler (operation filename &rest _args)
+                   (when (eq operation 'insert-file-contents)
+                     (insert "handled\n")
+                     (setq last-coding-system-used 'iso-2022-7bit-unix)
+                     (list filename 8)))
+                 (defun format-decode (_format inserted _visit) inserted)
+                 (defun emaxx-after-insert (inserted)
+                   (setq emaxx-after-insert-count inserted)
+                   inserted)
+                 (let ((file-name-handler-alist
+                        '(("\\`/emaxx-insert-handler" . emaxx-insert-handler)))
+                       (after-insert-file-functions '(emaxx-after-insert))
+                       emaxx-after-insert-count)
+                   (with-temp-buffer
+                     (let ((result
+                            (insert-file-contents "/emaxx-insert-handler")))
+                       (list result
+                             (buffer-string)
+                             buffer-file-coding-system
+                             emaxx-after-insert-count)))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::String("/emaxx-insert-handler".into()),
+                Value::Integer(8),
+            ]),
+            Value::String("handled\n".into()),
+            Value::Symbol("iso-2022-7bit-unix".into()),
+            Value::Integer(8),
+        ])
+    );
+}
+
+#[test]
+fn file_name_handlers_drive_real_io_and_quoted_names_reach_only_the_host_path() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let* ((path (make-temp-file "emaxx-handler-io"))
+                      (quoted (file-name-quote path))
+                      (link (concat path ".link"))
+                      (magic (concat path ".magic"))
+                      (magic-handler
+                       (lambda (operation &rest arguments)
+                         (let ((file-name-handler-alist nil))
+                           (setcar arguments
+                                   (substring (car arguments) 0 -6))
+                           (apply operation arguments)))))
+                 (unwind-protect
+                     (let ((file-name-handler-alist
+                            (cons (cons "\\.magic\\'" magic-handler)
+                                  file-name-handler-alist)))
+                       (list (file-name-quoted-p quoted)
+                             (file-exists-p quoted)
+                             (file-exists-p magic)
+                             (progn (add-name-to-file quoted link)
+                                    (prog1 (and (file-exists-p link)
+                                                (null (access-file link "test")))
+                                      (delete-file link)))
+                             (equal (file-name-directory quoted)
+                                    (file-name-quote
+                                     (file-name-directory path)))
+                             (with-temp-buffer
+                               (insert-file-contents quoted :visit)
+                               (let* ((actual nil)
+                                      (base-handlers file-name-handler-alist)
+                                      (log (lambda (&rest arguments)
+                                             (setq actual arguments)
+                                             (let ((file-name-handler-alist base-handlers))
+                                               (apply #'file-name-non-special arguments))))
+                                      (file-name-handler-alist
+                                       (cons (cons "\\`/:" log)
+                                             file-name-handler-alist))
+                                      (visiting (current-buffer)))
+                                 (and (equal buffer-file-name quoted)
+                                      (file-name-quoted-p buffer-file-name)
+                                      (with-temp-buffer
+                                        (verify-visited-file-modtime visiting))
+                                      (verify-visited-file-modtime)
+                                      actual)))
+                             (find-file-name-handler
+                              quoted 'file-exists-p)))
+                   (delete-file path)))"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::list([
+                Value::Symbol("verify-visited-file-modtime".into()),
+                Value::Nil,
+            ]),
+            Value::Symbol("file-name-non-special".into()),
+        ])
+    );
+}
+
+#[test]
+fn preloaded_file_name_transforms_and_temp_directory_are_dynamic() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defun sample-make-temp-file () (make-temp-file "child"))
+                 (with-temp-buffer
+                   (setq buffer-file-name "/tmp/foo.txt")
+                   (let* ((directory (make-temp-file "emaxx-temp-scope" t))
+                          (temporary-file-directory
+                           (file-name-as-directory directory))
+                          (child (sample-make-temp-file)))
+                     (unwind-protect
+                         (list (make-auto-save-file-name)
+                               (let ((auto-save-file-name-transforms
+                                      '(("\\`/.*/\\([^/]+\\)\\'"
+                                         "/var/tmp/\\1" t))))
+                                 (make-auto-save-file-name))
+                               (let ((lock-file-name-transforms nil))
+                                 (make-lock-file-name buffer-file-name))
+                               (string-prefix-p temporary-file-directory child))
+                       (delete-file child)
+                       (delete-directory directory)))))"#,
+        ),
+        Value::list([
+            Value::String("/tmp/#foo.txt#".into()),
+            Value::String("/var/tmp/#!tmp!foo.txt#".into()),
+            Value::String("/tmp/.#foo.txt".into()),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn quoted_visited_buffers_use_local_host_paths_without_losing_lisp_spelling() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let* ((path (make-temp-file "emaxx-quoted-visit"))
+                      (quoted (file-name-quote path))
+                      (buffer (find-file-noselect quoted)))
+                 (unwind-protect
+                     (with-current-buffer buffer
+                       (list (file-name-quoted-p buffer-file-name)
+                             (stringp (make-auto-save-file-name))
+                             (null (set-visited-file-modtime))))
+                   (kill-buffer buffer)
+                   (delete-file path)))"#,
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn quoted_visited_buffers_compose_with_earlier_file_name_handlers() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (progn
+                  (require 'ert-x)
+                  (defconst emaxx-test-special-extension ".special")
+                  (defconst emaxx-test-special-regexp "\\.special\\'")
+                  (defun emaxx-test-special-handler (operation &rest args)
+                    (let ((args (copy-sequence args))
+                          (file-name-handler-alist
+                           (delete
+                            (rassoc 'emaxx-test-special-handler
+                                    file-name-handler-alist)
+                            file-name-handler-alist)))
+                      (let ((tail args))
+                        (while tail
+                          (when (and (stringp (car tail))
+                                     (not (file-name-quoted-p (car tail)))
+                                     (string-match emaxx-test-special-regexp
+                                                   (car tail)))
+                            (setcar tail (replace-match "" nil nil (car tail))))
+                          (setq tail (cdr tail))))
+                      (apply operation args)))
+                  (let* ((directory (make-temp-file "emaxx-special-quoted" t))
+                         (temporary-file-directory
+                          (file-name-as-directory directory))
+                         (file-name-handler-alist
+                          `((,emaxx-test-special-regexp
+                             . emaxx-test-special-handler)
+                            . ,file-name-handler-alist))
+                         (actual (make-temp-file "emaxx-special-file"))
+                         (name (concat actual emaxx-test-special-extension))
+                         (quoted (file-name-quote name))
+                         quoted-buffer normal-buffer)
+                    (unwind-protect
+                        (progn
+                          (setq quoted-buffer (find-file-noselect quoted))
+                          (let ((quoted-auto-save
+                                 (with-current-buffer quoted-buffer
+                                   (make-auto-save-file-name)))
+                                (quoted-name
+                                 (buffer-file-name quoted-buffer)))
+                            (kill-buffer quoted-buffer)
+                            (setq quoted-buffer nil)
+                            (setq normal-buffer (find-file-noselect name))
+                            (with-current-buffer normal-buffer
+                              (list (equal quoted-name quoted)
+                                    (stringp quoted-auto-save)
+                                    (null (set-visited-file-modtime))
+                                    (equal buffer-file-name actual)
+                                    (not (equal quoted-auto-save
+                                                (make-auto-save-file-name)))))))
+                      (when (bufferp quoted-buffer) (kill-buffer quoted-buffer))
+                      (when (bufferp normal-buffer) (kill-buffer normal-buffer))
+                      (when (file-exists-p actual) (delete-file actual))
+                      (delete-directory directory t))))
+                "#
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn unix_file_metadata_buffer_lookup_and_exec_path_use_host_facts() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let ((path (make-temp-file "emaxx-host-file")))
+                 (unwind-protect
+                     (progn
+                       (set-file-modes path #o755)
+                       (with-temp-buffer
+                         (insert-file-contents path :visit)
+                         (list (= (file-attribute-user-id
+                                   (file-attributes path 'integer))
+                                  (user-uid))
+                               (consp (visited-file-modtime))
+                               (eq (find-buffer 'buffer-file-truename
+                                                (file-truename path))
+                                   (current-buffer))
+                               (let ((exec-path
+                                      (list (file-name-directory path))))
+                                 (equal path
+                                        (executable-find
+                                         (file-name-nondirectory path)))))))
+                   (delete-file path)))"#,
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn preloaded_file_buffer_policy_is_bound_and_truly_buffer_local() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun emaxx-test-dialog-policy () use-dialog-box)
+                 (let ((first (generate-new-buffer " *emaxx-policy-1*"))
+                     (second (generate-new-buffer " *emaxx-policy-2*")))
+                 (unwind-protect
+                     (progn
+                       (with-current-buffer first
+                         (setq buffer-offer-save t vc-mode 'Git))
+                       (list (boundp 'uniquify-trailing-separator-p)
+                             uniquify-trailing-separator-p
+                             (with-current-buffer first buffer-offer-save)
+                             (with-current-buffer second buffer-offer-save)
+                             (with-current-buffer first vc-mode)
+                             (with-current-buffer second vc-mode)
+                             (let ((use-dialog-box nil))
+                               (emaxx-test-dialog-policy))
+                             (fboundp 'uniquify--create-file-buffer-advice)
+                             (fboundp 'vc-before-save)
+                             (null (string-match mounted-file-systems
+                                                 "/private/var/tmp"))
+                             (numberp (string-match mounted-file-systems
+                                                    "/mnt/share"))))
+                   (kill-buffer first)
+                   (kill-buffer second))))"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Symbol("Git".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn normal_mode_uses_gnu_cookie_directory_interpreter_and_magic_precedence() {
+    assert_eq!(
+        eval_str(
+            r##"(let ((directory (make-temp-file "emaxx-mode-pipeline" t)))
+                 (unwind-protect
+                     (let ((file (expand-file-name "sample.quux" directory))
+                           (locals (expand-file-name ".dir-locals.el" directory)))
+                       (with-temp-file locals
+                         (insert "((auto-mode-alist . ((\"\\\\.quux\\\\'\" . tcl-mode))))"))
+                       (with-temp-file file (insert "puts hello"))
+                       (list
+                        (with-temp-buffer
+                          (insert "-*- mode: notexist; mode: text -*-")
+                          (normal-mode)
+                          major-mode)
+                        (with-temp-buffer
+                          (insert "Local variables:\nmode: text\nmode: outline\nend:\n")
+                          (normal-mode)
+                          major-mode)
+                        (with-current-buffer (find-file-noselect file) major-mode)
+                        (with-temp-buffer
+                          (insert "#!/bin/bash")
+                          (normal-mode)
+                          (list (derived-mode-p 'sh-base-mode) sh-shell))
+                        (let ((magic-mode-alist '(("my-tag" . text-mode))))
+                          (with-temp-buffer
+                            (insert "my-tag")
+                            (normal-mode)
+                            major-mode))
+                        (with-temp-buffer
+                          (insert "<!doctype html>")
+                          (normal-mode)
+                          major-mode)))
+                   (delete-directory directory t)))"##,
+        ),
+        Value::list([
+            Value::Symbol("text-mode".into()),
+            Value::Symbol("outline-mode".into()),
+            Value::Symbol("tcl-mode".into()),
+            Value::list([Value::T, Value::Symbol("bash".into())]),
+            Value::Symbol("text-mode".into()),
+            Value::Symbol("mhtml-mode".into()),
+        ])
+    );
+}
+
+#[test]
+fn mock_remote_operations_use_the_local_mock_handler() {
+    assert_eq!(
+        eval_str(
+            "(let ((file-name-handler-alist nil))
+               (mapcar (lambda (operation)
+                         (find-file-name-handler
+                          \"/mock::/tmp/\" operation))
+                       '(exec-path expand-file-name file-group-gid
+                         file-local-copy file-user-uid make-process
+                         start-file-process)))"
+        ),
+        Value::list([
+            Value::symbol("emaxx-mock-file-name-handler"),
+            Value::symbol("emaxx-mock-file-name-handler"),
+            Value::symbol("emaxx-mock-file-name-handler"),
+            Value::symbol("emaxx-mock-file-name-handler"),
+            Value::symbol("emaxx-mock-file-name-handler"),
+            Value::symbol("emaxx-mock-file-name-handler"),
+            Value::symbol("emaxx-mock-file-name-handler"),
+        ])
+    );
+}
+
+#[test]
+fn expand_file_name_dispatches_a_relative_name_through_its_remote_base() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((default-directory "/mock::/tmp/work/"))
+                 (list
+                  (find-file-name-handler
+                   default-directory 'expand-file-name)
+                  (expand-file-name "sh")
+                  (expand-file-name "../bin/sh" default-directory)
+                  (expand-file-name "~")
+                  (expand-file-name "/bin/sh")))"#
+        ),
+        Value::list([
+            Value::symbol("emaxx-mock-file-name-handler"),
+            Value::String("/mock::/tmp/work/sh".into()),
+            Value::String("/mock::/tmp/bin/sh".into()),
+            Value::String(std::env::var("HOME").expect("test host has a home directory")),
+            Value::String("/bin/sh".into()),
+        ])
+    );
+}
+
+#[test]
+fn remote_default_directory_does_not_reclassify_absolute_or_remote_probe_names() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((default-directory "/mock::/tmp/work/"))
+                 (list (file-remote-p "sh")
+                       (file-executable-p "/bin/sh")
+                       (file-regular-p "/bin/sh")))"#
+        ),
+        Value::list([Value::Nil, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn mock_predicates_accept_relative_names_selected_through_the_remote_base() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((default-directory "/mock::/tmp/work/"))
+                 (list
+                  (file-exists-p "emaxx-definitely-missing")
+                  (file-regular-p "emaxx-definitely-missing")
+                  (file-directory-p "emaxx-definitely-missing")
+                  (file-accessible-directory-p "emaxx-definitely-missing")
+                  (file-executable-p "emaxx-definitely-missing")
+                  (file-readable-p "emaxx-definitely-missing")
+                  (file-writable-p "emaxx-definitely-missing")))"#
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn mock_truename_preserves_the_connection_and_canonicalizes_its_local_part() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((default-directory "/mock::/tmp/work/"))
+                 (list
+                  (file-truename "missing")
+                  (file-truename "/mock::/bin/sh")
+                  (file-truename "/bin/sh")))"#
+        ),
+        Value::list([
+            Value::String("/mock::/tmp/work/missing".into()),
+            Value::String("/mock::/bin/sh".into()),
+            Value::String("/bin/sh".into()),
+        ])
+    );
+}
+
+#[test]
+fn mock_make_process_uses_the_shared_native_process_path() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                r#"(let* ((default-directory "/mock::")
+                          (output "")
+                          (process
+                           (make-process
+                            :name "emaxx-mock-make-process"
+                            :command
+                            (list "/bin/sh" "-c"
+                                  "printf %s \"$INSIDE_EMACS\"")
+                            :file-handler t
+                            :filter
+                            (lambda (_process text)
+                              (setq output (concat output text))))))
+                     (while (process-live-p process)
+                       (accept-process-output process 0.05))
+                     (list (processp process)
+                           (not (null
+                                 (string-match-p ",tramp\\'" output)))))"#
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    });
+}
+
+#[test]
+fn lexical_file_name_operations_ignore_a_remote_default_directory() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun sample-unreachable-file-handler
+                     (&rest _args)
+                   (error "lexical operation reached remote handler"))
+                 (let ((default-directory "/mock::/tmp/work/")
+                       (file-name-handler-alist
+                        '(("\\`/mock:" . sample-unreachable-file-handler))))
+                   (list (file-name-nondirectory "sh")
+                         (file-name-directory "bin/sh")
+                         (file-name-as-directory "bin"))))"#
+        ),
+        Value::list([
+            Value::String("sh".into()),
+            Value::String("bin/".into()),
+            Value::String("bin/".into()),
+        ])
+    );
+}
+
+#[test]
+fn mock_remote_abbreviation_stays_inside_the_native_transport() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((file-name-handler-alist
+                      '(("\\`/mock:" . sample-unreachable-file-handler))))
+                 (list
+                  (find-file-name-handler
+                   "/mock::/tmp/work/" 'abbreviate-file-name)
+                  (abbreviate-file-name "/mock::/tmp/work/")))"#
+        ),
+        Value::list([
+            Value::symbol("emaxx-mock-file-name-handler"),
+            Value::String("/mock::/tmp/work/".into()),
+        ])
+    );
+}
+
+#[test]
+fn files_facade_recognizes_a_bare_mock_connection_prefix() {
+    let prefix = format!("/mock:{}:", crate::lisp::primitives::system_name_value());
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun sample-files-file-remote-p
+                     (file &optional identification connected)
+                   (let ((handler
+                          (find-file-name-handler file 'file-remote-p)))
+                     (and handler
+                          (funcall handler 'file-remote-p file
+                                   identification connected))))
+                 (let ((default-directory "/mock::")
+                       (command "sh"))
+                   (list
+                    (sample-files-file-remote-p default-directory)
+                    (or (and (stringp command)
+                             (sample-files-file-remote-p command))
+                        (sample-files-file-remote-p
+                         default-directory)))))"#
+        ),
+        Value::list([Value::String(prefix.clone()), Value::String(prefix),])
+    );
+}
+
+#[test]
+fn default_directory_binding_is_visible_to_called_functions() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun sample-called-default-directory () default-directory)
+                 (let ((default-directory "/mock::/tmp/work/"))
+                   (list (special-variable-p 'default-directory)
+                         (sample-called-default-directory))))"#
+        ),
+        Value::list([Value::T, Value::String("/mock::/tmp/work/".into()),])
+    );
+}
+
+#[test]
+fn mock_remote_predicates_do_not_fall_through_to_registered_remote_handlers() {
+    assert_eq!(
+        eval_str(
+            "(let ((file-name-handler-alist
+                    '((\".*\" . should-not-handle-native-mock))))
+               (mapcar (lambda (operation)
+                         (find-file-name-handler
+                          \"/mock::/tmp/\" operation))
+                       '(file-accessible-directory-p file-directory-p
+                         file-executable-p file-exists-p file-readable-p
+                         file-regular-p file-writable-p)))"
+        ),
+        Value::list(std::iter::repeat_n(
+            Value::symbol("emaxx-mock-file-name-handler"),
+            7
+        ))
+    );
+}
+
+#[test]
 fn mock_remote_home_localname_uses_the_local_host_home() {
     assert_eq!(
         eval_str(
             r#"(let* ((remote "/mock::~/file.txt")
+                       (qualified (format "/mock:%s:~/file.txt" (system-name)))
                        (expected (expand-file-name "~/file.txt")))
                   (list (equal (file-local-name remote) expected)
+                        (equal (file-local-name qualified) expected)
                         (equal (file-remote-p remote 'localname) expected)
+                        (eq (find-file-name-handler
+                             qualified 'file-remote-p)
+                            'emaxx-mock-file-name-handler)
+                        (equal
+                         (funcall
+                          (find-file-name-handler qualified 'file-remote-p)
+                          'file-remote-p qualified 'localname)
+                         expected)
                         (file-directory-p "/mock::~/")))"#,
         ),
-        Value::list([Value::T, Value::T, Value::T])
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
     );
 }
 
@@ -1904,6 +3067,104 @@ fn preloaded_system_name_variable_matches_the_host_primitive() {
                         (equal system-name (system-name)))"
         ),
         Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn native_window_scroll_policy_is_bound_and_dynamically_special() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defun sample-window-scroll-targets ()
+                 (list minibuffer-scroll-window
+                       other-window-scroll-buffer
+                       other-window-scroll-default))
+               (list
+                (mapcar #'boundp '(minibuffer-scroll-window
+                                    other-window-scroll-buffer
+                                    other-window-scroll-default))
+                (mapcar #'special-variable-p '(minibuffer-scroll-window
+                                                other-window-scroll-buffer
+                                                other-window-scroll-default))
+                (let ((minibuffer-scroll-window 'mini)
+                      (other-window-scroll-buffer 'buffer)
+                      (other-window-scroll-default 'fallback))
+                  (sample-window-scroll-targets))))"
+        ),
+        Value::list([
+            Value::list([Value::T, Value::T, Value::T]),
+            Value::list([Value::T, Value::T, Value::T]),
+            Value::list([
+                Value::symbol("mini"),
+                Value::symbol("buffer"),
+                Value::symbol("fallback"),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn format_mode_line_is_a_batch_no_op_before_inspecting_the_format() {
+    assert_eq!(
+        eval_str(
+            "(list (format-mode-line 'missing-mode-line-variable)
+                   (format-mode-line '(\"ignored\" (:eval (error \"unreachable\")))
+                                     t nil nil))"
+        ),
+        Value::list([Value::String(String::new()), Value::String(String::new())])
+    );
+}
+
+#[test]
+fn buffer_modified_p_honors_its_optional_buffer_argument() {
+    assert_eq!(
+        eval_str(
+            "(let ((clean (get-buffer-create \" *clean*\"))
+                   (dirty (get-buffer-create \" *dirty*\")))
+               (with-current-buffer clean
+                 (insert \"clean\")
+                 (set-buffer-modified-p nil))
+               (with-current-buffer dirty
+                 (insert \"dirty\")
+                 (list (buffer-modified-p clean)
+                       (buffer-modified-p dirty)
+                       (buffer-modified-p))))"
+        ),
+        Value::list([Value::Nil, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn native_buffer_ticks_are_signed_distinct_and_honor_buffer_arguments() {
+    assert_eq!(
+        eval_str(
+            "(let* ((current (current-buffer))
+                    (before (buffer-modified-tick current))
+                    (other (get-buffer-create \" *tick-contract*\")))
+               (internal--set-buffer-modified-tick -3 other)
+               (list
+                 (buffer-modified-tick other)
+                 (buffer-chars-modified-tick other)
+                 (with-current-buffer other
+                   (insert \"x\")
+                   (list
+                     (buffer-modified-tick)
+                     (buffer-chars-modified-tick)))
+                 (= before (buffer-modified-tick current))
+                 (list
+                   (subrp
+                     (symbol-function
+                       'internal--set-buffer-modified-tick))
+                   (func-arity
+                     'internal--set-buffer-modified-tick))))"
+        ),
+        Value::list([
+            Value::Integer(-3),
+            Value::Integer(1),
+            Value::list([Value::Integer(-2), Value::Integer(-2)]),
+            Value::T,
+            Value::list([Value::T, Value::cons(Value::Integer(1), Value::Integer(2)),]),
+        ])
     );
 }
 
@@ -1964,6 +3225,29 @@ fn line_formats_are_bound_special_and_auto_buffer_local() {
             ]),
             Value::list([Value::list([Value::Symbol("temporary".into())]), Value::T,]),
             Value::T,
+        ])
+    );
+}
+
+#[test]
+fn header_line_format_accepts_a_quoted_eval_form_as_data() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (setq header-line-format
+                     '(:eval (get-text-property (point-min) 'header-line)))
+               header-line-format)"
+        ),
+        Value::list([
+            Value::Symbol(":eval".into()),
+            Value::list([
+                Value::Symbol("get-text-property".into()),
+                Value::list([Value::Symbol("point-min".into())]),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol("header-line".into()),
+                ]),
+            ]),
         ])
     );
 }
@@ -2067,6 +3351,37 @@ fn recursive_minibuffer_c_policy_is_bound_and_special() {
                          (emaxx-test-recursive-minibuffer-policy))))"#
         ),
         Value::list([Value::Nil, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn file_completion_minibuffer_policy_is_bound_and_special() {
+    assert_eq!(
+        eval_str(
+            "(list minibuffer-completing-file-name
+                   (special-variable-p
+                    'minibuffer-completing-file-name))"
+        ),
+        Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn native_minibuffer_completion_session_state_is_bound_and_special() {
+    assert_eq!(
+        eval_str(
+            "(mapcar (lambda (name)
+                       (list (boundp name)
+                             (symbol-value name)
+                             (special-variable-p name)))
+                     '(minibuffer-completion-table
+                       minibuffer-completion-predicate
+                       minibuffer-completion-confirm))"
+        ),
+        Value::list(std::iter::repeat_n(
+            Value::list([Value::T, Value::Nil, Value::T]),
+            3
+        ))
     );
 }
 
@@ -2208,6 +3523,8 @@ fn new_buffers_inherit_default_directory_but_not_read_only() {
 #[test]
 fn native_per_buffer_manifest_is_special_and_automatically_local() {
     let interp = Interpreter::new();
+    let env = Env::new();
+    let mut unbound = Vec::new();
     for name in GNU_NATIVE_PER_BUFFER_VARIABLES {
         assert!(
             interp.is_per_buffer_special(name),
@@ -2222,7 +3539,283 @@ fn native_per_buffer_manifest_is_special_and_automatically_local() {
             GNU_ALWAYS_LOCAL_PER_BUFFER_VARIABLES.contains(name),
             "GNU DEFVAR_PER_BUFFER `{name}` has the wrong default-inheriting/always-local subtype"
         );
+        if interp.lookup_var(name, &env).is_none() {
+            unbound.push(*name);
+        }
     }
+    assert!(
+        unbound.is_empty(),
+        "GNU DEFVAR_PER_BUFFER slots cannot be void: {unbound:?}"
+    );
+    for name in GNU_NATIVE_PERMANENT_LOCAL_VARIABLES {
+        assert_eq!(
+            interp.get_symbol_property(name, "permanent-local"),
+            Some(Value::T),
+            "GNU native permanent-local `{name}` must survive mode changes"
+        );
+    }
+}
+
+#[test]
+fn native_permanent_buffer_locals_survive_major_mode_reset() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (setq truncate-lines t
+                     buffer-file-coding-system 'iso-2022-7bit)
+               (kill-all-local-variables)
+               (list truncate-lines
+                     buffer-file-coding-system
+                     (local-variable-p 'truncate-lines)
+                     (local-variable-p 'buffer-file-coding-system)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Symbol("iso-2022-7bit".into()),
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn builtin_text_codings_expose_complete_eol_variant_families() {
+    let interp = Interpreter::new();
+    for base in [
+        "undecided",
+        "us-ascii",
+        "iso-latin-1",
+        "cyrillic-koi8",
+        "utf-8",
+        "utf-8-with-signature",
+        "utf-16",
+        "utf-16le",
+        "utf-16be",
+        "utf-8-auto",
+        "prefer-utf-8",
+        "raw-text",
+        "mac-roman",
+        "euc-jp",
+        "iso-2022-7bit",
+        "sjis",
+        "big5",
+        "chinese-gb18030",
+    ] {
+        for suffix in ["unix", "dos", "mac"] {
+            let variant = format!("{base}-{suffix}");
+            assert!(
+                interp.has_coding_system(&variant),
+                "GNU coding-system variant `{variant}` must be registered"
+            );
+        }
+    }
+    for suffix in ["unix", "dos", "mac"] {
+        assert!(!interp.has_coding_system(&format!("no-conversion-{suffix}")));
+    }
+}
+
+#[test]
+fn dumped_simple_shell_command_state_is_available_at_startup() {
+    assert_eq!(
+        eval_str(
+            "(list shell-command-buffer-name
+                   shell-command-buffer-name-async
+                   shell-command-history
+                   shell-command-default-error-buffer
+                   async-shell-command-buffer
+                   async-shell-command-display-buffer
+                   async-shell-command-width
+                   shell-command-prompt-show-cwd
+                   shell-command-dont-erase-buffer
+                   shell-command-saved-pos)"
+        ),
+        Value::list([
+            Value::String("*Shell Command Output*".into()),
+            Value::String("*Async Shell Command*".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol("confirm-new-buffer".into()),
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn gnu_bindings_host_feature_manifest_is_preprovided() {
+    assert_eq!(
+        eval_str(
+            "(list (featurep 'base64)
+                   (featurep 'md5)
+                   (featurep 'sha1)
+                   (mapcar (lambda (subfeature)
+                             (featurep 'overlay subfeature))
+                           '(display syntax-table field))
+                   (mapcar (lambda (subfeature)
+                             (featurep 'text-properties subfeature))
+                           '(display syntax-table field point-entered)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::list([Value::T, Value::T, Value::T]),
+            Value::list([Value::T, Value::T, Value::T, Value::T]),
+        ])
+    );
+}
+
+#[test]
+fn gnu_callproc_host_program_manifest_is_bound_and_special() {
+    assert_eq!(
+        eval_str(
+            "(mapcar (lambda (entry)
+                       (let ((name (car entry))
+                             (expected (cdr entry)))
+                         (list name
+                               (boundp name)
+                               (equal (symbol-value name) expected)
+                               (special-variable-p name))))
+                     '((ctags-program-name . \"ctags\")
+                       (etags-program-name . \"etags\")
+                       (hexl-program-name . \"hexl\")
+                       (emacsclient-program-name . \"emacsclient\")
+                       (movemail-program-name . \"movemail\")
+                       (ebrowse-program-name . \"ebrowse\")
+                       (rcs2log-program-name . \"rcs2log\")))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("ctags-program-name".into()),
+                Value::T,
+                Value::T,
+                Value::T
+            ]),
+            Value::list([
+                Value::Symbol("etags-program-name".into()),
+                Value::T,
+                Value::T,
+                Value::T
+            ]),
+            Value::list([
+                Value::Symbol("hexl-program-name".into()),
+                Value::T,
+                Value::T,
+                Value::T
+            ]),
+            Value::list([
+                Value::Symbol("emacsclient-program-name".into()),
+                Value::T,
+                Value::T,
+                Value::T
+            ]),
+            Value::list([
+                Value::Symbol("movemail-program-name".into()),
+                Value::T,
+                Value::T,
+                Value::T
+            ]),
+            Value::list([
+                Value::Symbol("ebrowse-program-name".into()),
+                Value::T,
+                Value::T,
+                Value::T
+            ]),
+            Value::list([
+                Value::Symbol("rcs2log-program-name".into()),
+                Value::T,
+                Value::T,
+                Value::T
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn category_primitives_honor_gnu_optional_tables_ranges_and_reset() {
+    assert_eq!(
+        eval_str(
+            "(let ((table (make-category-table)))
+               (set-category-table table)
+               ;; These omitted TABLE arguments are the form used by GNU's
+               ;; dumped character and word-wrap setup.
+               (define-category ?x \"category x\")
+               (define-category ?y \"category y\")
+               (modify-category-entry ?B ?y)
+               ;; A range update must retain the narrower pre-existing value.
+               (modify-category-entry '(?A . ?C) ?x)
+               ;; Nil TABLE also means the current buffer's table.
+               (modify-category-entry ?B ?x nil t)
+               (list (category-docstring ?x)
+                     (mapcar
+                      (lambda (character)
+                        (let ((set (char-category-set character)))
+                          (list (aref set ?x) (aref set ?y))))
+                      '(?A ?B ?C))
+                     (category-table-p (copy-category-table))))"
+        ),
+        Value::list([
+            Value::String("category x".into()),
+            Value::list([
+                Value::list([Value::T, Value::Nil]),
+                Value::list([Value::Nil, Value::T]),
+                Value::list([Value::T, Value::Nil]),
+            ]),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn get_unused_category_scans_the_complete_printable_category_range() {
+    assert_eq!(
+        eval_str(
+            "(let ((table (make-category-table)))
+               (prog1
+                   (list
+                     (get-unused-category table)
+                     (progn
+                       (define-category 32 \"space\" table)
+                       (get-unused-category table))
+                     (subrp
+                       (symbol-function 'get-unused-category)))
+                 (let ((category 33))
+                   (while (<= category 126)
+                     (define-category category \"used\" table)
+                     (setq category (1+ category)))
+                   (unless (null (get-unused-category table))
+                     (error \"category range was not exhausted\")))))"
+        ),
+        Value::list([Value::Integer(32), Value::Integer(33), Value::T])
+    );
+}
+
+#[test]
+fn dumped_define_prefix_command_sets_function_and_requested_value_cell() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (define-prefix-command 'emaxx-test-prefix
+                                      'emaxx-test-prefix-map
+                                      \"Test menu\")
+               (list (keymapp (symbol-function 'emaxx-test-prefix))
+                     (keymapp emaxx-test-prefix-map)
+                     (eq (symbol-function 'emaxx-test-prefix)
+                         emaxx-test-prefix-map)
+                     (boundp 'emaxx-test-prefix)))"
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::Nil])
+    );
 }
 
 #[test]
@@ -2233,7 +3826,72 @@ fn gnu_lread_c_variables_are_declared_special() {
             interp.is_special_variable(name),
             "GNU lread.c DEFVAR `{name}` must remain dynamically scoped"
         );
+        assert!(
+            interp.lookup_var(name, &Vec::new()).is_some(),
+            "GNU lread.c DEFVAR `{name}` must have a startup value"
+        );
     }
+}
+
+#[test]
+fn gnu_emacs_c_locale_variables_exist_before_lisp_startup_policy_runs() {
+    let interp = Interpreter::new();
+    for name in GNU_EMACS_LOCALE_SPECIAL_VARIABLES {
+        assert!(
+            interp.is_special_variable(name),
+            "GNU emacs.c locale DEFVAR `{name}` must remain dynamically scoped"
+        );
+        assert_eq!(
+            interp.lookup_var(name, &Vec::new()),
+            Some(Value::Nil),
+            "GNU emacs.c locale DEFVAR `{name}` must start bound to nil"
+        );
+    }
+}
+
+#[test]
+fn dumped_lread_loader_policy_defaults_are_complete() {
+    #[cfg(target_os = "macos")]
+    let dynamic_suffixes =
+        Value::list([Value::String(".dylib".into()), Value::String(".so".into())]);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let dynamic_suffixes = Value::list([Value::String(".so".into())]);
+    #[cfg(windows)]
+    let dynamic_suffixes = Value::list([Value::String(".dll".into())]);
+
+    let suffix_vector = dynamic_suffixes
+        .to_vec()
+        .expect("dynamic suffix list")
+        .into_iter()
+        .chain([Value::String(".elc".into()), Value::String(".el".into())]);
+    assert_eq!(
+        eval_str(
+            "(list load-suffixes
+                   dynamic-library-suffixes
+                   load-file-rep-suffixes
+                   load-source-file-function
+                   load-force-doc-strings
+                   load-convert-to-unibyte
+                   load-dangerous-libraries
+                   force-load-messages
+                   load-prefer-newer
+                   load-no-native
+                   read-symbol-shorthands)"
+        ),
+        Value::list([
+            Value::list(suffix_vector),
+            dynamic_suffixes,
+            Value::list([Value::String(String::new()), Value::String(".gz".into()),]),
+            Value::Symbol("load-with-code-conversion".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
 }
 
 #[test]
@@ -2396,6 +4054,65 @@ fn defcustom_loads_like_defvar() {
 }
 
 #[test]
+fn defcustom_initializer_runs_setter_at_declaration_time() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defun sample-custom-initialize-reset (symbol exp)
+                   (funcall (get symbol 'custom-set)
+                            symbol
+                            (if (boundp symbol) (symbol-value symbol) (eval exp t))))
+                 (defvar sample-dependent-value nil)
+                 (defun sample-option-setter (symbol value)
+                   (set-default symbol value)
+                   (setq sample-dependent-value (concat "[" value "]")))
+                 (defcustom sample-option "abc" "doc"
+                   :set #'sample-option-setter
+                   :initialize #'sample-custom-initialize-reset
+                   :type 'string)
+                 (list sample-option sample-dependent-value))"#
+        ),
+        Value::list([Value::String("abc".into()), Value::String("[abc]".into()),])
+    );
+}
+
+#[test]
+fn delayed_defcustom_initializer_runs_setter_after_startup() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defun sample-delayed-setter (symbol value)
+                   (set-default symbol value)
+                   (setq sample-delayed-side-effect
+                         (concat "[" value "]")))
+                 (defcustom sample-delayed-option
+                   (concat "runtime-" "default")
+                   "doc"
+                   :set #'sample-delayed-setter
+                   :initialize #'custom-initialize-delay
+                   :type 'string)
+                 (list sample-delayed-option
+                       sample-delayed-side-effect
+                       custom-delayed-init-variables))"#
+        ),
+        Value::list([
+            Value::String("runtime-default".into()),
+            Value::String("[runtime-default]".into()),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn setopt_runs_defcustom_setter() {
     let mut interp = Interpreter::new();
     assert_eq!(
@@ -2543,6 +4260,26 @@ fn killing_selected_window_buffer_moves_window_to_live_buffer() {
 }
 
 #[test]
+fn killing_buffer_replaces_it_in_every_window() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let* ((original (current-buffer))
+                    (victim (get-buffer-create \" kill-other-window-buffer-victim\"))
+                    (other (split-window-internal
+                            (selected-window) 10 'below 0)))
+               (set-window-buffer other victim)
+               (kill-buffer victim)
+               (list (window-live-p other)
+                     (buffer-live-p (window-buffer other))
+                     (eq (window-buffer other) original)))"
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn kill_buffer_nil_kills_the_current_buffer() {
     let mut interp = Interpreter::new();
     assert_eq!(
@@ -2557,16 +4294,39 @@ fn kill_buffer_nil_kills_the_current_buffer() {
 }
 
 #[test]
-fn visual_line_mode_sets_buffer_local_state() {
+fn native_visual_line_mode_exposes_the_complete_minor_mode_contract() {
     assert_eq!(
         eval_str(
-            "(with-temp-buffer
+            "(let (events)
+               (with-temp-buffer
+                   (add-hook 'visual-line-mode-hook
+                             (lambda () (push visual-line-mode events))
+                             nil t)
                    (visual-line-mode)
                    (list visual-line-mode
                          (local-variable-p 'visual-line-mode)
-                         (progn (visual-line-mode 0) visual-line-mode)))"
+                         (keymapp visual-line-mode-map)
+                         (eq (lookup-key visual-line-mode-map
+                                         [remap kill-line])
+                             'kill-visual-line)
+                         (eq (cdr (assq 'visual-line-mode
+                                        minor-mode-map-alist))
+                             visual-line-mode-map)
+                         (not (null (memq 'visual-line-mode
+                                          local-minor-modes)))
+                         (progn (visual-line-mode 0) visual-line-mode)
+                         events)))"
         ),
-        Value::list([Value::T, Value::T, Value::Nil])
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::list([Value::Nil, Value::T]),
+        ])
     );
 }
 
@@ -2712,6 +4472,90 @@ fn define_minor_mode_enables_buffer_local_state_and_runs_body() {
                      (list enabled sample-mode ran)))"
         ),
         Value::list([Value::T, Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn define_minor_mode_registers_mode_line_and_keymap_metadata() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar-keymap sample-mode-map \"x\" 'ignore)
+               (defvar sample-mode-name \" Sample\")
+               (define-minor-mode sample-mode \"doc\"
+                 :lighter sample-mode-name
+                 :keymap sample-mode-map)
+               (list (assq 'sample-mode minor-mode-alist)
+                     (eq (cdr (assq 'sample-mode minor-mode-map-alist))
+                         sample-mode-map)
+                     (car minor-mode-list)))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("sample-mode".into()),
+                Value::Symbol("sample-mode-name".into()),
+            ]),
+            Value::T,
+            Value::Symbol("sample-mode".into()),
+        ])
+    );
+}
+
+#[test]
+fn native_url_transport_does_not_claim_the_lisp_owned_url_feature() {
+    assert_eq!(
+        eval_str(
+            "(list (featurep 'url)
+                     url-configuration-directory
+                     url-redirect-buffer
+                     url-retrieve-number-of-calls
+                     url-asynchronous
+                     url-dead-buffer-list
+                     (equal url-configuration-directory
+                            (locate-user-emacs-file \"url/\" \".url/\")))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::String("/nonexistent/.emacs.d/url/".into()),
+            Value::Nil,
+            Value::Integer(0),
+            Value::T,
+            Value::Nil,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn generated_dumped_variable_defaults_include_image_file_extensions() {
+    assert_eq!(
+        eval_str(
+            "(list (car image-file-name-extensions)
+                   (member \"webp\" image-file-name-extensions)
+                   image-file-name-regexps)"
+        ),
+        Value::list([
+            Value::String("png".into()),
+            Value::list([Value::String("webp".into())]),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn set_buffer_major_mode_uses_the_default_without_selecting_the_buffer() {
+    assert_eq!(
+        eval_str(
+            "(let ((original (current-buffer))
+                   (target (generate-new-buffer \"set-major-mode-target\")))
+               (unwind-protect
+                   (progn
+                     (set-buffer-major-mode target)
+                     (list (eq original (current-buffer))
+                           (buffer-local-value 'major-mode target)))
+                 (kill-buffer target)))"
+        ),
+        Value::list([Value::T, Value::Symbol("fundamental-mode".into())])
     );
 }
 
@@ -3140,13 +4984,46 @@ fn set_frame_parameter_accepts_batch_theme_updates() {
               (window-system 'frame)
               (face-set-after-frame-default 'frame)
               (frame-terminal 'frame)
-              (set-frame-parameter 'frame 'background-color \"white\"))"
+              (set-frame-parameter 'frame 'background-color \"white\")
+              (frame-parameter nil 'background-color)
+              (cdr (assq 'background-color (frame-parameters))))"
         ),
         Value::list([
             Value::Nil,
             Value::Nil,
             Value::Symbol("terminal".into()),
+            Value::Nil,
             Value::String("white".into()),
+            Value::String("white".into()),
+        ])
+    );
+}
+
+#[test]
+fn modify_frame_parameters_persists_values_and_first_duplicate_wins() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (subrp (indirect-function 'modify-frame-parameters))
+               (modify-frame-parameters
+                nil
+                '((sample-parameter . first)
+                  (sample-parameter . second)
+                  (foreground-color . \"green\")))
+               (frame-parameter nil 'sample-parameter)
+               (cdr (assq 'sample-parameter (frame-parameters)))
+               (frame-parameter nil 'foreground-color)
+               (cdr (assq 'foreground-color (frame-parameters)))
+               (frame-parameter nil 'menu-bar-lines))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::Symbol("first".into()),
+            Value::Symbol("first".into()),
+            Value::String("green".into()),
+            Value::String("green".into()),
+            Value::Integer(1),
         ])
     );
 }
@@ -3509,6 +5386,14 @@ fn let_alist_binds_dotted_pair_keys() {
     assert_string_value(
         eval_str("(let ((x '((buffer-text . \"hi\")))) (let-alist x .buffer-text))"),
         "hi",
+    );
+}
+
+#[test]
+fn let_alist_duplicate_keys_keep_the_first_assq_value() {
+    assert_string_value(
+        eval_str("(let-alist '((port . \"7070\") (port . \"70\")) .port)"),
+        "7070",
     );
 }
 
@@ -3898,6 +5783,21 @@ fn define_derived_mode_installs_callable_mode_body() {
 }
 
 #[test]
+fn define_derived_mode_is_a_command_unless_interactive_is_disabled() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (define-derived-mode sample-command-mode fundamental-mode "Command")
+                 (define-derived-mode sample-function-mode fundamental-mode "Function"
+                   :interactive nil)
+                 (list (commandp 'sample-command-mode)
+                       (commandp 'sample-function-mode)))"#
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn define_derived_mode_delays_parent_hooks_and_runs_after_hooks() {
     assert_eq!(
         eval_str(
@@ -3968,5 +5868,99 @@ fn face_alias_predicates_and_fringe_bitmap_fallback_load() {
             Value::Nil,
             Value::Nil,
         ])
+    );
+}
+
+#[test]
+fn loaded_with_current_buffer_window_macro_owns_its_display_lifecycle() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defmacro with-current-buffer-window
+                     (_buffer action _quit &rest body)
+                   `(list :macro
+                          ,action
+                          (progn ,@body)))
+                 (with-current-buffer-window
+                     "*sample-output*"
+                     (progn (setq sample-display-action :evaluated)
+                            :action)
+                     nil
+                   :body))"#
+        ),
+        Value::list([
+            Value::Symbol(":macro".into()),
+            Value::Symbol(":action".into()),
+            Value::Symbol(":body".into()),
+        ])
+    );
+}
+
+#[test]
+fn dumped_with_current_buffer_window_runs_setup_body_display_and_quit() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let ((original (current-buffer))
+                     (target-name "*sample-current-buffer-window*")
+                     phases)
+                 (let ((result
+                        (with-current-buffer-window
+                            target-name
+                            (progn (push :action-evaluated phases) nil)
+                            (lambda (window value)
+                              (list (windowp window)
+                                    value
+                                    (not (null
+                                          (get-buffer-window target-name)))))
+                          (push :body phases)
+                          (list (eq standard-output (current-buffer))
+                                (buffer-name)))))
+                   (list result
+                         (eq (current-buffer) original)
+                         (nreverse phases))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::T,
+                Value::list([
+                    Value::T,
+                    Value::String("*sample-current-buffer-window*".into()),
+                ]),
+                Value::T,
+            ]),
+            Value::T,
+            Value::list([
+                Value::Symbol(":action-evaluated".into()),
+                Value::Symbol(":body".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn dumped_simple_completion_policies_exist_before_minibuffer_display() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list completion-auto-wrap
+                   completion-auto-select
+                   completion-show-help
+                   (not (null
+                         (custom-variable-p 'completion-auto-select))))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::T, Value::T])
     );
 }

@@ -611,10 +611,19 @@ pub(crate) fn make_hash_table(
     test: &str,
     entries: Vec<(Value, Value)>,
 ) -> Value {
-    interp.create_record(
+    let table = interp.create_record(
         HASH_TABLE_RECORD_TYPE,
-        vec![Value::Symbol(test.to_string()), entries_to_list(entries)],
-    )
+        vec![
+            Value::Symbol(test.to_string()),
+            entries_to_list(entries.clone()),
+        ],
+    );
+    if let Value::Record(id) = table {
+        interp.replace_hash_table_runtime_entries(id, test, entries);
+        Value::Record(id)
+    } else {
+        table
+    }
 }
 
 pub(crate) fn hash_table_entries(
@@ -634,6 +643,9 @@ pub(crate) fn hash_table_entries(
         .and_then(|value| value.as_symbol().ok())
         .unwrap_or("eql")
         .to_string();
+    if let Some(entries) = interp.hash_table_runtime_entries(*id) {
+        return Some((test, entries.clone()));
+    }
     let entries = record
         .slots
         .get(1)

@@ -331,42 +331,65 @@ impl Interpreter {
                 _ => {}
             }
         }
-        self.symbol_property_index(name).and_then(|index| {
-            self.symbol_properties[index]
-                .1
-                .iter()
-                .rposition(|(key, _)| key == property)
-                .map(|prop_index| self.symbol_properties[index].1[prop_index].1.clone())
-        })
+        let index = self.symbol_property_index(name)?;
+        let mut tail = self.symbol_properties[index].1.clone();
+        let mut seen = HashSet::new();
+        while let Value::Cons(key_cell, rest_cell) = tail {
+            if !seen.insert(Rc::as_ptr(&key_cell) as usize) {
+                return None;
+            }
+            let rest = rest_cell.borrow().clone();
+            let Value::Cons(value_cell, next_cell) = rest else {
+                return None;
+            };
+            if matches!(&*key_cell.borrow(), Value::Symbol(key) if key == property) {
+                return Some(value_cell.borrow().clone());
+            }
+            tail = next_cell.borrow().clone();
+        }
+        None
     }
 
     pub fn put_symbol_property(&mut self, name: &str, property: &str, value: Value) {
-        // Some macro expansions read symbol properties (setf goes through
-        // gv-expander/gv-setter); changing one must invalidate cached
-        // expansions like a definition change does.
-        if matches!(
-            property,
-            "gv-expander" | "gv-setter" | "setf-method" | "cl-deftype-handler"
-        ) {
-            self.note_definition_changed();
-        }
+        // Lisp macro expanders may consult arbitrary symbol properties.
+        // Treat every plist write as a definition change so a previously
+        // cached expansion cannot outlive the metadata it depended on.
+        self.note_definition_changed();
         let value = Self::stored_value(value);
         if let Some(index) = self.symbol_property_index(name) {
-            if let Some(prop_index) = self.symbol_properties[index]
-                .1
-                .iter()
-                .rposition(|(key, _)| key == property)
-            {
-                self.symbol_properties[index].1[prop_index].1 = value;
-            } else {
-                self.symbol_properties[index]
-                    .1
-                    .push((property.to_string(), value));
+            let plist = self.symbol_properties[index].1.clone();
+            let mut tail = plist.clone();
+            let mut seen = HashSet::new();
+            while let Value::Cons(key_cell, rest_cell) = tail {
+                if !seen.insert(Rc::as_ptr(&key_cell) as usize) {
+                    return;
+                }
+                let rest = rest_cell.borrow().clone();
+                let Value::Cons(value_cell, next_cell) = rest else {
+                    return;
+                };
+                if matches!(&*key_cell.borrow(), Value::Symbol(key) if key == property) {
+                    *value_cell.borrow_mut() = value;
+                    return;
+                }
+                let next = next_cell.borrow().clone();
+                if next.is_nil() {
+                    *next_cell.borrow_mut() =
+                        Value::list([Value::Symbol(property.to_string()), value]);
+                    return;
+                }
+                tail = next;
+            }
+            if plist.is_nil() {
+                self.symbol_properties[index].1 =
+                    Value::list([Value::Symbol(property.to_string()), value]);
             }
             return;
         }
-        self.symbol_properties
-            .push((name.to_string(), vec![(property.to_string(), value)]));
+        self.symbol_properties.push((
+            name.to_string(),
+            Value::list([Value::Symbol(property.to_string()), value]),
+        ));
     }
 
     pub fn intern_symbol_name(&mut self, name: &str) {
@@ -418,49 +441,55 @@ impl Interpreter {
         let Some(index) = self.symbol_property_index(name) else {
             return;
         };
-        if let Some(prop_index) = self.symbol_properties[index]
-            .1
-            .iter()
-            .rposition(|(key, _)| key == property)
-        {
-            self.symbol_properties[index].1.remove(prop_index);
-        }
-        if self.symbol_properties[index].1.is_empty() {
-            self.symbol_properties.remove(index);
+        let mut tail = self.symbol_properties[index].1.clone();
+        let mut previous_value_cell: Option<Value> = None;
+        let mut seen = HashSet::new();
+        while let Value::Cons(key_cell, rest_cell) = tail {
+            if !seen.insert(Rc::as_ptr(&key_cell) as usize) {
+                return;
+            }
+            let rest = rest_cell.borrow().clone();
+            let Value::Cons(_, next_cell) = &rest else {
+                return;
+            };
+            let next = next_cell.borrow().clone();
+            if matches!(&*key_cell.borrow(), Value::Symbol(key) if key == property) {
+                self.note_definition_changed();
+                if let Some(previous) = previous_value_cell {
+                    previous
+                        .set_cdr(next)
+                        .expect("a tracked plist value cell is a cons");
+                } else if next.is_nil() {
+                    self.symbol_properties.remove(index);
+                } else {
+                    self.symbol_properties[index].1 = next;
+                }
+                return;
+            }
+            previous_value_cell = Some(rest);
+            tail = next;
         }
     }
 
     pub fn symbol_plist(&self, name: &str) -> Value {
-        let Some(index) = self.symbol_property_index(name) else {
-            return Value::Nil;
-        };
-        let mut items = Vec::new();
-        for (property, value) in &self.symbol_properties[index].1 {
-            items.push(Value::Symbol(property.clone()));
-            items.push(value.clone());
-        }
-        Value::list(items)
+        self.symbol_property_index(name)
+            .map(|index| self.symbol_properties[index].1.clone())
+            .unwrap_or(Value::Nil)
     }
 
     pub fn set_symbol_plist(&mut self, name: &str, plist: Value) -> Result<Value, LispError> {
-        let items = plist.to_vec()?;
-        let mut props = Vec::new();
-        let mut index = 0usize;
-        while index + 1 < items.len() {
-            props.push((
-                items[index].as_symbol()?.to_string(),
-                Self::stored_value(items[index + 1].clone()),
-            ));
-            index += 2;
-        }
-        if props.is_empty() {
+        // Replacing the whole plist has the same cache-coherence contract as
+        // `put' and `remprop', including when the new plist is empty.
+        self.note_definition_changed();
+        if plist.is_nil() {
             if let Some(existing) = self.symbol_property_index(name) {
                 self.symbol_properties.remove(existing);
             }
         } else if let Some(existing) = self.symbol_property_index(name) {
-            self.symbol_properties[existing].1 = props;
+            self.symbol_properties[existing].1 = Self::stored_value(plist.clone());
         } else {
-            self.symbol_properties.push((name.to_string(), props));
+            self.symbol_properties
+                .push((name.to_string(), Self::stored_value(plist.clone())));
         }
         Ok(plist)
     }
@@ -904,7 +933,7 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn bind_special_variable(
+    pub(crate) fn bind_special_variable(
         &mut self,
         name: &str,
         value: Value,
@@ -983,7 +1012,7 @@ impl Interpreter {
         })
     }
 
-    pub(super) fn restore_special_binding(
+    pub(crate) fn restore_special_binding(
         &mut self,
         restore: SpecialBindingRestore,
         env: &mut Env,
@@ -1398,6 +1427,9 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        if matches!(error, LispError::Terminate(_)) {
+            return Err(error);
+        }
         if self.handler_dispatch_depth > 0 {
             return Err(error);
         }
@@ -1435,7 +1467,7 @@ impl Interpreter {
                         Err(next) => {
                             self.handler_dispatch_depth =
                                 self.handler_dispatch_depth.saturating_sub(1);
-                            if !matches!(next, LispError::Throw(_, _)) {
+                            if !matches!(next, LispError::Throw(_, _) | LispError::Terminate(_)) {
                                 // An error signaled by the handler propagates
                                 // from the `handler-bind' frame outward, so
                                 // every `condition-case' inside it must let

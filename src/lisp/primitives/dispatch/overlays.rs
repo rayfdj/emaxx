@@ -1,5 +1,43 @@
 use super::*;
 
+pub(super) fn next_overlay_change_position(
+    buffer: &crate::buffer::Buffer,
+    position: usize,
+) -> usize {
+    let mut next = buffer.point_max();
+    for overlay in &buffer.overlays {
+        if overlay.is_dead() {
+            continue;
+        }
+        if overlay.beg > position && overlay.beg < next {
+            next = overlay.beg;
+        }
+        if overlay.end > position && overlay.end < next {
+            next = overlay.end;
+        }
+    }
+    next
+}
+
+pub(super) fn previous_overlay_change_position(
+    buffer: &crate::buffer::Buffer,
+    position: usize,
+) -> usize {
+    let mut previous = buffer.point_min();
+    for overlay in &buffer.overlays {
+        if overlay.is_dead() {
+            continue;
+        }
+        if overlay.beg < position && overlay.beg > previous {
+            previous = overlay.beg;
+        }
+        if overlay.end < position && overlay.end > previous {
+            previous = overlay.end;
+        }
+    }
+    previous
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -346,39 +384,17 @@ pub(super) fn call(
         "next-overlay-change" => {
             need_args(name, args, 1)?;
             let pos = position_from_value(interp, &args[0])?;
-            let zv = interp.buffer.point_max();
-            let mut next = zv;
-            for ov in &interp.buffer.overlays {
-                if ov.is_dead() {
-                    continue;
-                }
-                if ov.beg > pos && ov.beg < next {
-                    next = ov.beg;
-                }
-                if ov.end > pos && ov.end < next {
-                    next = ov.end;
-                }
-            }
-            Ok(Value::Integer(next as i64))
+            Ok(Value::Integer(
+                next_overlay_change_position(&interp.buffer, pos) as i64,
+            ))
         }
 
         "previous-overlay-change" => {
             need_args(name, args, 1)?;
             let pos = position_from_value(interp, &args[0])?;
-            let begv = interp.buffer.point_min();
-            let mut prev = begv;
-            for ov in &interp.buffer.overlays {
-                if ov.is_dead() {
-                    continue;
-                }
-                if ov.beg < pos && ov.beg > prev {
-                    prev = ov.beg;
-                }
-                if ov.end < pos && ov.end > prev {
-                    prev = ov.end;
-                }
-            }
-            Ok(Value::Integer(prev as i64))
+            Ok(Value::Integer(
+                previous_overlay_change_position(&interp.buffer, pos) as i64,
+            ))
         }
 
         "overlay-lists" => {

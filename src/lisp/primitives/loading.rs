@@ -330,6 +330,153 @@ pub(crate) fn eval_buffer_impl(
     result
 }
 
+pub(crate) fn eval_region_impl(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(LispError::WrongNumberOfArgs(
+            "eval-region".into(),
+            args.len(),
+        ));
+    }
+    let start = position_from_value(interp, &args[0])?;
+    let end = position_from_value(interp, &args[1])?;
+    if start > end {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("args-out-of-range".into()),
+            args[0].clone(),
+            args[1].clone(),
+        ])));
+    }
+    let print_flag = args.get(2).cloned().unwrap_or(Value::Nil);
+    let read_function = args.get(3).filter(|value| !value.is_nil()).cloned();
+    let buffer_id = interp.current_buffer_id();
+    let buffer_name = interp.buffer.name.clone();
+    let source_file = interp.buffer.file.clone();
+    let saved_point = interp.buffer.point();
+
+    // lread.c dynamically binds these around `readevalloop'.  In
+    // particular, the file load context lets macros expanded by eval-defun
+    // resolve resources relative to the buffer's defining file.
+    let mut restores = Vec::new();
+    let standard_output = if print_flag.is_nil() {
+        Value::Symbol("symbolp".into())
+    } else {
+        print_flag.clone()
+    };
+    restores.push(interp.bind_special_variable("standard-output", standard_output, env)?);
+    let eval_buffer_list = interp
+        .lookup_var("eval-buffer-list", env)
+        .unwrap_or(Value::Nil);
+    restores.push(interp.bind_special_variable(
+        "eval-buffer-list",
+        Value::cons(Value::Buffer(buffer_id, buffer_name), eval_buffer_list),
+        env,
+    )?);
+    if let Some(file) = source_file {
+        restores.push(interp.bind_special_variable(
+            "current-load-list",
+            Value::list([Value::String(file)]),
+            env,
+        )?);
+    }
+
+    let mut result = (|| -> Result<Value, LispError> {
+        if let Some(read_function) = read_function {
+            return eval_region_via_read_function(
+                interp,
+                buffer_id,
+                start,
+                end,
+                &read_function,
+                &print_flag,
+                env,
+            );
+        }
+        let text = interp
+            .buffer
+            .buffer_substring(start, end)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
+        let mut result = Value::Nil;
+        for form in forms {
+            interp.intern_symbols_in_value(&form);
+            result = eager_expand_eval(interp, &form, env)?;
+            if !print_flag.is_nil() {
+                let _ = crate::lisp::primitives::call(
+                    interp,
+                    "print",
+                    &[result.clone(), print_flag.clone()],
+                    env,
+                )?;
+            }
+        }
+        Ok(result)
+    })();
+
+    if interp.current_buffer_id() == buffer_id {
+        interp
+            .buffer
+            .goto_char(saved_point.min(interp.buffer.point_max()));
+    }
+    for restore in restores.into_iter().rev() {
+        if let Err(error) = interp.restore_special_binding(restore, env)
+            && result.is_ok()
+        {
+            result = Err(error);
+        }
+    }
+    result.map(|_| Value::Nil)
+}
+
+fn eval_region_via_read_function(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    start: usize,
+    end: usize,
+    read_function: &Value,
+    print_flag: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    interp.buffer.goto_char(start);
+    let stream = Value::Buffer(buffer_id, interp.buffer.name.clone());
+    let mut result = Value::Nil;
+    while interp.buffer.point() < end {
+        let _ = crate::lisp::primitives::call(
+            interp,
+            "forward-comment",
+            &[Value::Integer(i64::MAX / 2)],
+            env,
+        );
+        if interp.buffer.point() >= end {
+            break;
+        }
+        let form = match interp.call_function_value(
+            read_function.clone(),
+            None,
+            std::slice::from_ref(&stream),
+            env,
+        ) {
+            Ok(form) => form,
+            Err(error) if error.condition_type() == "end-of-file" => break,
+            Err(error) => return Err(error),
+        };
+        interp.intern_symbols_in_value(&form);
+        result = eager_expand_eval(interp, &form, env)?;
+        if !print_flag.is_nil() {
+            let _ = crate::lisp::primitives::call(
+                interp,
+                "print",
+                &[result.clone(), print_flag.clone()],
+                env,
+            )?;
+        }
+    }
+    Ok(result)
+}
+
 fn eval_buffer_forms(
     interp: &mut Interpreter,
     buffer_id: u64,
@@ -360,7 +507,7 @@ fn eval_buffer_forms(
 // source (`internal-macroexpand-for-load'), so macros in function bodies
 // expand while `current-load-list' still names the file being evaluated.
 // Expansion failures fall back to the unexpanded form like GNU.
-fn eager_expand_eval(
+pub(crate) fn eager_expand_eval(
     interp: &mut Interpreter,
     form: &Value,
     env: &mut Env,
@@ -423,7 +570,7 @@ fn eval_buffer_via_load_read_function(
                 break;
             }
         };
-        match interp.eval(&form, env) {
+        match eager_expand_eval(interp, &form, env) {
             Ok(value) => result = Ok(value),
             Err(error) => {
                 result = Err(error);
@@ -553,37 +700,42 @@ pub(crate) fn locate_file_internal(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let file = string_text(file)?;
-    let path_entries = path.to_vec()?;
-    let suffixes = if suffixes.is_nil() {
-        vec![String::new()]
-    } else {
-        suffixes
+    let mut path_entries = path.to_vec()?;
+    // openp treats an empty search path as one empty element, and an empty
+    // element means the dynamically current `default-directory'.
+    if path_entries.is_empty() {
+        path_entries.push(Value::Nil);
+    }
+    let suffixes = match suffixes {
+        Value::Nil => vec![String::new()],
+        Value::String(_) | Value::StringObject(_) => vec![string_text(suffixes)?],
+        _ => suffixes
             .to_vec()?
             .into_iter()
             .map(|value| string_text(&value))
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, _>>()?,
     };
+    let default_directory = interp
+        .lookup_var("default-directory", env)
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .unwrap_or_else(default_directory);
+    let default_directory =
+        unquote_local_file_name(&default_directory).unwrap_or(default_directory);
 
     for directory in path_entries {
-        let Some(directory) = string_like(&directory).map(|string| string.text) else {
-            continue;
+        let directory = if directory.is_nil() {
+            default_directory.clone()
+        } else {
+            let directory = string_text(&directory)?;
+            let directory = unquote_local_file_name(&directory).unwrap_or(directory);
+            expand_file_name_in_env(interp, env, &directory, Some(&default_directory))
         };
         for suffix in &suffixes {
-            let candidate = expand_file_name(&format!("{file}{suffix}"), Some(&directory));
-            let keep = if predicate.is_nil() {
-                fs::metadata(&candidate)
-                    .map(|metadata| metadata.is_file() && file_readable_p(&candidate))
-                    .unwrap_or(false)
-            } else {
-                let result = interp.call_function_value(
-                    resolve_callable(interp, predicate, env)?,
-                    predicate.as_symbol().ok(),
-                    &[Value::String(candidate.clone())],
-                    env,
-                )?;
-                result.is_truthy()
-            };
-            if keep {
+            let candidate =
+                expand_file_name_in_env(interp, env, &format!("{file}{suffix}"), Some(&directory));
+            let candidate = unquote_local_file_name(&candidate).unwrap_or(candidate);
+            let predicate = (!predicate.is_nil()).then_some(predicate);
+            if locate_file_candidate_matches(interp, predicate, &candidate, env)? {
                 return Ok(Value::String(candidate));
             }
         }

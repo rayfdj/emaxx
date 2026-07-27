@@ -1,9 +1,125 @@
 use super::*;
 
+#[cfg(unix)]
+static ACCOUNT_DATABASE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(unix)]
+fn system_user_names() -> Vec<String> {
+    let _guard = ACCOUNT_DATABASE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut names = Vec::new();
+    // SAFETY: getpwent owns its returned storage until the next passwd
+    // database call.  The process-wide lock prevents another Rust test or
+    // interpreter from advancing that cursor while the name is copied.
+    unsafe {
+        libc::setpwent();
+        loop {
+            let entry = libc::getpwent();
+            if entry.is_null() {
+                break;
+            }
+            let name = (*entry).pw_name;
+            if !name.is_null() {
+                names.push(
+                    std::ffi::CStr::from_ptr(name)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        libc::endpwent();
+    }
+    names.reverse();
+    names
+}
+
+#[cfg(not(unix))]
+fn system_user_names() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(unix)]
+fn system_group_names() -> Vec<String> {
+    let _guard = ACCOUNT_DATABASE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut names = Vec::new();
+    // SAFETY: getgrent follows the same process-global cursor contract as
+    // getpwent.  Copy each name while holding the shared database lock.
+    unsafe {
+        libc::setgrent();
+        loop {
+            let entry = libc::getgrent();
+            if entry.is_null() {
+                break;
+            }
+            let name = (*entry).gr_name;
+            if !name.is_null() {
+                names.push(
+                    std::ffi::CStr::from_ptr(name)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        libc::endgrent();
+    }
+    names.reverse();
+    names
+}
+
+#[cfg(not(unix))]
+fn system_group_names() -> Vec<String> {
+    Vec::new()
+}
+
+fn remote_identification_prefix(remote: &RemoteFileNameParts) -> String {
+    // Tramp canonicalizes the empty host in a mock connection to the local
+    // system name when asked for the complete remote identification.  Keep
+    // the spelling of the file itself untouched; this normalization belongs
+    // specifically to the `file-remote-p' identification contract.
+    if remote.method == "mock" && remote.host.is_empty() {
+        format!("/mock:{}:", system_name_value())
+    } else {
+        remote.prefix.clone()
+    }
+}
+
+fn buffer_visiting_exact_file_name(
+    interp: &Interpreter,
+    expanded_file_name: &str,
+) -> Option<(u64, String)> {
+    interp.buffer_list.iter().find_map(|(id, name)| {
+        interp
+            .get_buffer_by_id(*id)
+            .is_some_and(|buffer| buffer.file.as_deref() == Some(expanded_file_name))
+            .then(|| (*id, name.clone()))
+    })
+}
+
+fn bury_buffer_in_lists(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if let Some(index) = interp
+        .buffer_list
+        .iter()
+        .position(|(candidate_id, _)| *candidate_id == buffer_id)
+    {
+        let entry = interp.buffer_list.remove(index);
+        interp.buffer_list.push(entry);
+        run_named_hooks(interp, "buffer-list-update-hook", env, Some(buffer_id))?;
+    }
+    Ok(())
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
         "set-buffer"
+            | "set-buffer-major-mode"
             | "switch-to-buffer"
             | "switch-to-buffer-other-window"
             | "pop-to-buffer"
@@ -31,6 +147,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "find-buffer-visiting"
             | "find-file"
             | "get-file-buffer"
+            | "get-truename-buffer"
+            | "find-buffer"
             | "file-has-changed-p"
             | "expand-file-name"
             | "locate-file"
@@ -56,6 +174,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "file-remote-p"
             | "file-expand-wildcards"
             | "find-file-name-handler"
+            | "unhandled-file-name-directory"
             | "emaxx-mock-file-name-handler"
             | "dired-noselect"
             | "dired-revert"
@@ -63,6 +182,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "dired-buffer-stale-p"
             | "shell-quote-argument"
             | "locate-user-emacs-file"
+            | "comp-el-to-eln-filename"
             | "ert-resource-directory"
             | "ert-resource-file"
             | "ert-gcc-is-clang-p"
@@ -80,11 +200,22 @@ pub(super) fn handles(name: &str) -> bool {
             | "file-in-directory-p"
             | "file-accessible-directory-p"
             | "file-readable-p"
+            | "access-file"
             | "file-regular-p"
             | "file-writable-p"
             | "file-exists-p"
             | "file-executable-p"
+            | "file-system-info"
             | "file-attributes"
+            | "file-attributes-lessp"
+            | "system-users"
+            | "system-groups"
+            | "car-less-than-car"
+            | "file-newer-than-file-p"
+            | "file-acl"
+            | "set-file-acl"
+            | "file-selinux-context"
+            | "set-file-selinux-context"
             | "file-attribute-type"
             | "file-attribute-link-number"
             | "file-attribute-user-id"
@@ -98,6 +229,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "file-attribute-device-number"
             | "file-attribute-file-identifier"
             | "delete-file"
+            | "add-name-to-file"
+            | "add-name-to-file-internal"
             | "copy-file"
             | "rename-file"
             | "delete-file-internal"
@@ -110,6 +243,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "make-temp-file"
             | "make-temp-file-internal"
             | "file-locked-p"
+            | "memory-info"
+            | "lock-file"
+            | "unlock-file"
             | "write-region"
             | "write-file"
             | "kqueue-add-watch"
@@ -127,6 +263,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "get-free-disk-space"
             | "set-visited-file-name"
             | "file-name-all-completions"
+            | "file-name-completion"
             | "file-symlink-p"
             | "make-symbolic-link"
             | "call-process"
@@ -139,30 +276,60 @@ pub(super) fn handles(name: &str) -> bool {
             | "process-mark"
             | "process-status"
             | "process-exit-status"
+            | "process-id"
+            | "process-list"
             | "process-plist"
             | "set-process-plist"
             | "process-get"
             | "process-put"
             | "process-live-p"
+            | "list-system-processes"
             | "process-attributes"
             | "process-coding-system"
             | "set-process-coding-system"
+            | "internal-default-process-filter"
+            | "process-filter"
             | "set-process-filter"
+            | "internal-default-process-sentinel"
             | "set-process-sentinel"
             | "set-process-buffer"
             | "process-sentinel"
+            | "process-thread"
+            | "set-process-thread"
+            | "process-datagram-address"
+            | "set-process-datagram-address"
+            | "process-type"
+            | "process-inherit-coding-system-flag"
+            | "set-process-inherit-coding-system-flag"
+            | "set-process-window-size"
+            | "process-running-child-p"
             | "process-name"
             | "process-command"
             | "process-tty-name"
             | "get-process"
             | "process-contact"
             | "make-network-process"
+            | "make-serial-process"
+            | "serial-process-configure"
             | "open-network-stream"
             | "set-network-process-option"
             | "network-interface-list"
             | "network-interface-info"
+            | "network-lookup-address-info"
             | "delete-process"
+            | "internal-default-interrupt-process"
+            | "interrupt-process"
+            | "kill-process"
+            | "quit-process"
+            | "stop-process"
+            | "continue-process"
+            | "process-query-on-exit-flag"
             | "set-process-query-on-exit-flag"
+            | "internal-default-signal-process"
+            | "signal-process"
+            | "signal-names"
+            | "waiting-for-user-input-p"
+            | "process-send-region"
             | "process-send-string"
             | "process-send-eof"
             | "url-retrieve"
@@ -173,10 +340,12 @@ pub(super) fn handles(name: &str) -> bool {
             | "get-locale-names"
             | "zlib-decompress-region"
             | "libxml-parse-xml-region"
+            | "libxml-parse-html-region"
             | "call-process-region"
             | "shell-command"
             | "kill-buffer"
             | "bury-buffer"
+            | "bury-buffer-internal"
             | "set-mark"
             | "set-mark-command"
             | "push-mark"
@@ -318,11 +487,14 @@ pub(super) fn call(
         "visited-file-modtime" => Ok(interp
             .buffer
             .visited_file_modtime()
-            .and_then(|modtime| system_time_seconds_value(modtime.modified).ok())
+            .and_then(|modtime| system_time_list_value(modtime.modified).ok())
             .unwrap_or(Value::Integer(0))),
         "verify-visited-file-modtime" => {
-            need_args(name, args, 1)?;
-            let buffer_id = interp.resolve_buffer_id(&args[0])?;
+            need_arg_range(name, args, 0, 1)?;
+            let buffer_id = match args.first() {
+                None | Some(Value::Nil) => interp.current_buffer_id(),
+                Some(buffer) => interp.resolve_buffer_id(buffer)?,
+            };
             let remote_visit = interp
                 .buffer_local_value(buffer_id, "emaxx--visited-remote-prefix")
                 .is_some_and(|value| value.is_truthy());
@@ -359,7 +531,7 @@ pub(super) fn call(
                 Some(value) => Some(file_modtime_from_value(interp, value)?),
             };
             interp.buffer.set_visited_file_modtime(modtime);
-            Ok(Value::T)
+            Ok(Value::Nil)
         }
         "rename-visited-file" => {
             need_args(name, args, 1)?;
@@ -388,7 +560,7 @@ pub(super) fn call(
             }
 
             interp.buffer.file = Some(new_location.clone());
-            interp.buffer.file_truename = Some(new_location.clone());
+            interp.buffer.file_truename = Some(canonical_file_name(&new_location));
             interp
                 .buffer
                 .set_visited_file_modtime(file_modtime(&new_location)?);
@@ -428,24 +600,32 @@ pub(super) fn call(
             Ok(coding.map(Value::Symbol).unwrap_or(Value::Nil))
         }
         "after-insert-file-set-coding" => {
-            need_arg_range(name, args, 1, 1)?;
-            let coding = interp
+            need_arg_range(name, args, 1, 2)?;
+            let inserted = args[0].as_integer()?;
+            if args.get(1).is_some_and(Value::is_truthy)
+                && let Some(coding) = interp
+                    .lookup_var("coding-system-for-read", env)
+                    .filter(|value| value.is_truthy())
+                && coding != Value::Symbol("auto-save-coding".into())
+            {
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    "buffer-file-coding-system-explicit",
+                    Value::cons(coding, Value::Nil),
+                );
+            }
+            if let Some(coding) = interp
                 .lookup_var("last-coding-system-used", env)
                 .filter(|value| !value.is_nil())
                 .and_then(|value| checked_coding_name(interp, &value).ok().flatten())
-                .unwrap_or_else(|| {
-                    detect_coding_names_for_text(interp, &interp.buffer.buffer_string(), env)
-                        .into_iter()
-                        .next()
-                        .unwrap_or_else(|| "undecided".into())
-                });
-            interp.set_buffer_local_value(
-                interp.current_buffer_id(),
-                "buffer-file-coding-system",
-                Value::Symbol(coding.clone()),
-            );
-            set_last_coding_system_used(interp, &coding, env);
-            Ok(Value::Symbol(coding))
+            {
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    "buffer-file-coding-system",
+                    Value::Symbol(coding),
+                );
+            }
+            Ok(Value::Integer(inserted))
         }
         "local" => {
             need_args(name, args, 1)?;
@@ -497,6 +677,39 @@ pub(super) fn call(
                 "mode-name",
                 Value::String("Fundamental".into()),
             );
+            Ok(Value::Nil)
+        }
+        "set-buffer-major-mode" => {
+            need_args(name, args, 1)?;
+            let buffer_id = interp.resolve_buffer_id(&args[0])?;
+            let buffer_name = interp
+                .get_buffer_by_id(buffer_id)
+                .map(|buffer| buffer.name.clone())
+                .ok_or_else(|| {
+                    LispError::Signal("Attempt to set major mode for a dead buffer".into())
+                })?;
+            let mode = if buffer_name == "*scratch*" {
+                interp
+                    .lookup_var("initial-major-mode", env)
+                    .unwrap_or(Value::Nil)
+            } else {
+                super::call(
+                    interp,
+                    "default-value",
+                    &[Value::Symbol("major-mode".into())],
+                    env,
+                )?
+            };
+            if mode.is_nil() {
+                return Ok(Value::Nil);
+            }
+            let saved_buffer_id = interp.current_buffer_id();
+            interp.set_current_buffer_id(buffer_id)?;
+            let result = interp.call_function_value(mode, None, &[], env);
+            if interp.has_buffer_id(saved_buffer_id) {
+                interp.set_current_buffer_id(saved_buffer_id)?;
+            }
+            result?;
             Ok(Value::Nil)
         }
         "prog-mode" => {
@@ -619,23 +832,76 @@ pub(super) fn call(
                     Value::T,
                 );
             }
-            if let Some(path) = current_buffer_file(interp)
-                && let Some(mode) = modes::auto_mode_function_for_file_name(interp, env, path)?
+            let path = current_buffer_file(interp).map(str::to_string);
+            let (header_modes, tail_modes) = modes::file_local_mode_functions(&source);
+            if call_auto_modes(interp, &header_modes, env)? {
+                return Ok(Value::Nil);
+            }
+            if let Some(path) = path.as_deref()
+                && let Some(mode) = modes::directory_local_auto_mode(interp, env, path)?
+                && call_auto_mode(interp, &mode, env)?
             {
-                let _ = call_major_or_named_mode(interp, &mode, env)?;
+                return Ok(Value::Nil);
+            }
+            if call_auto_modes(interp, &tail_modes, env)? {
+                return Ok(Value::Nil);
+            }
+            if let Some((mode, dialect)) = modes::interpreter_mode_function(interp, env, &source)?
+                && call_auto_mode(interp, &mode, env)?
+            {
+                if let Some(dialect) = dialect {
+                    interp.set_buffer_local_value(
+                        interp.current_buffer_id(),
+                        "sh-shell",
+                        Value::Symbol(dialect),
+                    );
+                }
+                return Ok(Value::Nil);
+            }
+            if let Some(mode) =
+                modes::magic_mode_function(interp, env, &source, "magic-mode-alist")?
+                && call_auto_mode(interp, &mode, env)?
+            {
+                return Ok(Value::Nil);
+            }
+            if let Some(path) = path.as_deref()
+                && let Some(mode) = modes::auto_mode_function_for_file_name(interp, env, path)?
+                && call_auto_mode(interp, &mode, env)?
+            {
+                return Ok(Value::Nil);
+            }
+            if let Some(mode) =
+                modes::magic_mode_function(interp, env, &source, "magic-fallback-mode-alist")?
+            {
+                let _ = call_auto_mode(interp, &mode, env)?;
             }
             Ok(Value::Nil)
         }
         "find-file-noselect" => {
             need_arg_range(name, args, 1, 4)?;
             let requested = string_text(&args[0])?;
-            let remote_prefix = parse_remote_file_name(&requested).map(|remote| remote.prefix);
-            let path = resolve_file_name_in_env(interp, env, &requested);
+            // `find-file-noselect' is above the host-path boundary: expand
+            // through file-name handlers first, then retain that Lisp-visible
+            // spelling in the buffer while using an unquoted path for I/O.
+            let visited_name = string_text(&super::call(
+                interp,
+                "expand-file-name",
+                &[Value::String(requested)],
+                env,
+            )?)?;
+            let remote_prefix = parse_remote_file_name(&visited_name).map(|remote| remote.prefix);
+            let path = resolve_file_name_in_env(interp, env, &visited_name);
             let literal = args.get(2).is_some_and(Value::is_truthy);
             if !literal && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
-                return super::call(interp, "dired-noselect", &[Value::String(path)], env);
+                return super::call(
+                    interp,
+                    "dired-noselect",
+                    &[Value::String(visited_name)],
+                    env,
+                );
             }
-            if let Some((id, name)) = interp.find_buffer(&path) {
+            let existing = buffer_visiting_exact_file_name(interp, &visited_name);
+            if let Some((id, name)) = existing {
                 if let Some(prefix) = remote_prefix {
                     interp.set_buffer_local_value(
                         id,
@@ -645,19 +911,31 @@ pub(super) fn call(
                 }
                 return Ok(Value::Buffer(id, name));
             }
-            let (id, _) = interp.create_buffer(&path);
+            let buffer = super::call(
+                interp,
+                "create-file-buffer",
+                &[Value::String(visited_name.clone())],
+                env,
+            )?;
+            let id = interp.resolve_buffer_id(&buffer)?;
+            let buffer_name = interp
+                .get_buffer_by_id(id)
+                .map(|buffer| buffer.name.clone())
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
             let saved_buffer_id = interp.current_buffer_id();
-            interp.switch_to_buffer_id(id)?;
+            interp.set_current_buffer_id(id)?;
             let result: Result<(), LispError> = (|| {
-                let mut mode = modes::auto_mode_function_for_file_name(interp, env, &path)?;
+                let mut mode = modes::auto_mode_function_for_file_name(interp, env, &visited_name)?;
                 let file_exists = Path::new(&path).exists();
                 let mut bytes = if file_exists {
                     read_insert_file_bytes(&path, None, None)?
                 } else {
                     Vec::new()
                 };
+                let mut decoding_path = path.clone();
                 if !literal && should_auto_decompress(interp, env, &path) {
                     bytes = maybe_decompress_file_bytes(&path, bytes)?;
+                    decoding_path = compressed_payload_path(&path).unwrap_or(decoding_path);
                 }
                 if !literal && mode.is_none() {
                     mode = modes::auto_mode_function_for_contents(&bytes).map(str::to_string);
@@ -671,20 +949,27 @@ pub(super) fn call(
                         false,
                     )
                 } else {
-                    let (text, coding) = decode_file_contents(interp, env, &bytes, false)?;
+                    let (text, coding) =
+                        decode_file_contents(interp, env, &bytes, false, Some(&decoding_path))?;
                     (text, coding, true)
                 };
-                interp.buffer = crate::buffer::Buffer::from_text(&path, &contents);
+                let truename = string_text(&super::call(
+                    interp,
+                    "file-truename",
+                    &[Value::String(visited_name.clone())],
+                    env,
+                )?)?;
+                interp.buffer = crate::buffer::Buffer::from_text(&buffer_name, &contents);
                 interp.buffer.set_multibyte(multibyte);
-                interp.buffer.file = Some(path.clone());
-                interp.buffer.file_truename = Some(path.clone());
+                interp.buffer.file = Some(visited_name.clone());
+                interp.buffer.file_truename = Some(truename);
                 interp.buffer.set_unmodified();
                 interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
-                if let Some(parent) = Path::new(&path).parent() {
+                if let Some(parent) = file_name_directory(&visited_name) {
                     interp.set_buffer_local_value(
                         interp.current_buffer_id(),
                         "default-directory",
-                        Value::String(file_name_as_directory(&parent.to_string_lossy())),
+                        Value::String(parent),
                     );
                 }
                 interp.set_buffer_local_value(
@@ -710,17 +995,12 @@ pub(super) fn call(
                     interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::T);
                     interp.set_buffer_local_value(buffer_id, "read-only-mode", Value::T);
                 }
-                if !interp
-                    .lookup_var("semantic-init-hook", env)
-                    .is_some_and(|value| value.is_nil())
-                {
-                    run_named_hooks(
-                        interp,
-                        "find-file-hook",
-                        env,
-                        Some(interp.current_buffer_id()),
-                    )?;
-                }
+                run_named_hooks(
+                    interp,
+                    "find-file-hook",
+                    env,
+                    Some(interp.current_buffer_id()),
+                )?;
                 Ok(())
             })();
             // After mode setup: `kill-all-local-variables' would have wiped
@@ -732,9 +1012,9 @@ pub(super) fn call(
                     Value::String(prefix),
                 );
             }
-            let _ = interp.switch_to_buffer_id(saved_buffer_id);
+            let _ = interp.set_current_buffer_id(saved_buffer_id);
             result?;
-            Ok(Value::Buffer(id, path))
+            Ok(Value::Buffer(id, buffer_name))
         }
         "find-file-literally" => {
             need_args(name, args, 1)?;
@@ -746,12 +1026,58 @@ pub(super) fn call(
             )
         }
         "find-buffer-visiting" => {
-            need_args(name, args, 1)?;
-            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-            Ok(interp
-                .find_buffer(&path)
-                .map(|(id, name)| Value::Buffer(id, name))
-                .unwrap_or(Value::Nil))
+            need_arg_range(name, args, 1, 2)?;
+            let expanded = string_text(&super::call(
+                interp,
+                "expand-file-name",
+                &[args[0].clone()],
+                env,
+            )?)?;
+            let predicate = args.get(1).filter(|value| value.is_truthy());
+            let eligible = |interp: &mut Interpreter,
+                            candidate: Option<(u64, String)>,
+                            env: &mut Env|
+             -> Result<Option<Value>, LispError> {
+                let Some((id, name)) = candidate else {
+                    return Ok(None);
+                };
+                let buffer = Value::Buffer(id, name);
+                if let Some(predicate) = predicate {
+                    let accepted =
+                        call_function_value(interp, predicate, std::slice::from_ref(&buffer), env)?;
+                    if accepted.is_nil() {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(buffer))
+            };
+            if let Some(buffer) = eligible(
+                interp,
+                buffer_visiting_exact_file_name(interp, &expanded),
+                env,
+            )? {
+                return Ok(buffer);
+            }
+            let truename = string_text(&super::call(
+                interp,
+                "file-truename",
+                &[Value::String(expanded)],
+                env,
+            )?)?;
+            let abbreviated = string_text(&super::call(
+                interp,
+                "abbreviate-file-name",
+                &[Value::String(truename)],
+                env,
+            )?)?;
+            let candidate = interp.buffer_list.iter().find_map(|(id, name)| {
+                interp.get_buffer_by_id(*id).and_then(|buffer| {
+                    (buffer.file.is_some()
+                        && buffer.file_truename.as_deref() == Some(abbreviated.as_str()))
+                    .then(|| (*id, name.clone()))
+                })
+            });
+            Ok(eligible(interp, candidate, env)?.unwrap_or(Value::Nil))
         }
         "find-file" => {
             need_arg_range(name, args, 1, 2)?;
@@ -781,10 +1107,51 @@ pub(super) fn call(
         }
         "get-file-buffer" => {
             need_args(name, args, 1)?;
-            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-            Ok(interp
-                .find_buffer(&path)
+            let expanded = string_text(&super::call(
+                interp,
+                "expand-file-name",
+                &[args[0].clone()],
+                env,
+            )?)?;
+            Ok(buffer_visiting_exact_file_name(interp, &expanded)
                 .map(|(id, name)| Value::Buffer(id, name))
+                .unwrap_or(Value::Nil))
+        }
+        "get-truename-buffer" => {
+            need_args(name, args, 1)?;
+            let file = string_text(&args[0])?;
+            Ok(interp
+                .buffer_list
+                .iter()
+                .find_map(|(id, name)| {
+                    interp
+                        .get_buffer_by_id(*id)
+                        .and_then(|buffer| buffer.file_truename.as_deref())
+                        .filter(|truename| *truename == file)
+                        .map(|_| Value::Buffer(*id, name.clone()))
+                })
+                .unwrap_or(Value::Nil))
+        }
+        "find-buffer" => {
+            need_args(name, args, 2)?;
+            let variable = args[0].as_symbol()?;
+            Ok(interp
+                .buffer_list
+                .iter()
+                .find_map(|(id, name)| {
+                    let value = match variable {
+                        "buffer-file-name" => interp
+                            .get_buffer_by_id(*id)
+                            .and_then(|buffer| buffer.file.clone().map(Value::String)),
+                        "buffer-file-truename" => interp
+                            .get_buffer_by_id(*id)
+                            .and_then(|buffer| buffer.file_truename.clone().map(Value::String)),
+                        _ => interp.buffer_local_value(*id, variable),
+                    };
+                    value
+                        .filter(|value| values_equal(interp, value, &args[1]))
+                        .map(|_| Value::Buffer(*id, name.clone()))
+                })
                 .unwrap_or(Value::Nil))
         }
         "file-has-changed-p" => {
@@ -828,33 +1195,14 @@ pub(super) fn call(
         }
         "locate-file" => {
             need_arg_range(name, args, 2, 4)?;
-            let filename = string_text(&args[0])?;
-            let paths = args[1].to_vec()?;
-            let predicate = args.get(3).filter(|value| !value.is_nil()).cloned();
-            let suffixes = match args.get(2) {
-                Some(Value::Nil) | None => vec![String::new()],
-                Some(Value::String(_) | Value::StringObject(_)) => vec![string_text(&args[2])?],
-                Some(value) => value
-                    .to_vec()?
-                    .into_iter()
-                    .map(|item| string_text(&item))
-                    .collect::<Result<Vec<_>, _>>()?,
-            };
-            for directory in paths {
-                let directory = string_text(&directory)?;
-                for suffix in &suffixes {
-                    let candidate = expand_file_name_runtime(
-                        interp,
-                        env,
-                        &format!("{filename}{suffix}"),
-                        Some(&directory),
-                    )?;
-                    if locate_file_candidate_matches(interp, predicate.as_ref(), &candidate, env)? {
-                        return Ok(Value::String(candidate));
-                    }
-                }
-            }
-            Ok(Value::Nil)
+            locate_file_internal(
+                interp,
+                &args[0],
+                &args[1],
+                args.get(2).unwrap_or(&Value::Nil),
+                args.get(3).unwrap_or(&Value::Nil),
+                env,
+            )
         }
         "file-relative-name" => {
             need_arg_range(name, args, 1, 2)?;
@@ -983,21 +1331,24 @@ pub(super) fn call(
                 .collect::<Result<Vec<_>, _>>()?,
         ))),
         "file-name-unquote" => {
-            need_args(name, args, 1)?;
-            Ok(Value::String(string_text(&args[0])?))
+            need_arg_range(name, args, 1, 2)?;
+            let file = string_text(&args[0])?;
+            Ok(Value::String(
+                unquote_local_file_name(&file).unwrap_or(file),
+            ))
         }
         "file-local-name" => {
             need_args(name, args, 1)?;
             let file = string_text(&args[0])?;
             Ok(parse_remote_file_name(&file)
-                .map(|remote| Value::String(resolved_remote_localname(&remote)))
+                .map(|remote| Value::String(resolved_remote_localname_in_env(interp, env, &remote)))
                 .unwrap_or(Value::String(file)))
         }
         "file-local-copy" => {
             need_args(name, args, 1)?;
             let file = string_text(&args[0])?;
             if parse_remote_file_name(&file).is_some_and(|remote| remote.method == "mock") {
-                mock_file_local_copy(&file).map(Value::String)
+                mock_file_local_copy(interp, env, &file).map(Value::String)
             } else {
                 Ok(Value::Nil)
             }
@@ -1012,12 +1363,16 @@ pub(super) fn call(
             };
             let identification = args.get(1).cloned().unwrap_or(Value::Nil);
             let result = match identification.as_symbol().ok() {
-                None | Some("nil") | Some("t") => Value::String(remote.prefix),
+                None | Some("nil") | Some("t") => {
+                    Value::String(remote_identification_prefix(&remote))
+                }
                 Some("method") => Value::String(remote.method),
                 Some("user") => remote.user.map(Value::String).unwrap_or(Value::Nil),
                 Some("host") => Value::String(remote.host),
-                Some("localname") => Value::String(resolved_remote_localname(&remote)),
-                _ => Value::String(remote.prefix),
+                Some("localname") => {
+                    Value::String(resolved_remote_localname_in_env(interp, env, &remote))
+                }
+                _ => Value::String(remote_identification_prefix(&remote)),
             };
             Ok(result)
         }
@@ -1045,22 +1400,146 @@ pub(super) fn call(
         "find-file-name-handler" => {
             need_args(name, args, 2)?;
             let file = string_text(&args[0])?;
-            let operation = args[1].as_symbol().ok();
-            if operation == Some("file-local-copy")
-                && parse_remote_file_name(&file).is_some_and(|remote| remote.method == "mock")
-            {
-                Ok(Value::Symbol("emaxx-mock-file-name-handler".into()))
-            } else {
-                Ok(Value::Nil)
-            }
+            let operation = args[1].as_symbol()?;
+            Ok(find_file_name_handler(interp, env, &file, operation)?.unwrap_or(Value::Nil))
+        }
+        "unhandled-file-name-directory" => {
+            need_args(name, args, 1)?;
+            Ok(Value::String(file_name_as_directory(&string_text(
+                &args[0],
+            )?)))
         }
         "emaxx-mock-file-name-handler" => {
-            need_args(name, args, 2)?;
+            need_arg_range(name, args, 1, usize::MAX)?;
             let operation = args[0].as_symbol()?;
-            let file = string_text(&args[1])?;
             match operation {
-                "file-local-copy" => mock_file_local_copy(&file).map(Value::String),
-                _ => Ok(Value::Nil),
+                "abbreviate-file-name" => {
+                    need_args(name, args, 2)?;
+                    Ok(args[1].clone())
+                }
+                "exec-path" => {
+                    need_args(name, args, 1)?;
+                    Ok(interp.lookup_var("exec-path", env).unwrap_or(Value::Nil))
+                }
+                "expand-file-name" => {
+                    need_arg_range(name, args, 2, 3)?;
+                    let file = string_text(&args[1])?;
+                    let file_remote =
+                        parse_remote_file_name(&file).filter(|remote| remote.method == "mock");
+                    let base = args
+                        .get(2)
+                        .filter(|value| !value.is_nil())
+                        .map(string_text)
+                        .transpose()?;
+                    let base_remote = base
+                        .as_deref()
+                        .and_then(parse_remote_file_name)
+                        .filter(|remote| remote.method == "mock");
+                    if file_remote.is_none() && file_name_absolute_p(&file) {
+                        return Ok(Value::String(expand_file_name_in_env(
+                            interp, env, &file, None,
+                        )));
+                    }
+                    let remote_prefix = file_remote
+                        .as_ref()
+                        .or(base_remote.as_ref())
+                        .map(|remote| remote.prefix.clone())
+                        .ok_or_else(|| {
+                            LispError::Signal(format!(
+                                "Invalid mock remote file name: {file:?} with base {base:?}"
+                            ))
+                        })?;
+                    let remote_localname = file_remote
+                        .as_ref()
+                        .map(|remote| resolved_remote_localname_in_env(interp, env, remote))
+                        .unwrap_or(file);
+                    let base_localname = base_remote
+                        .as_ref()
+                        .map(|remote| resolved_remote_localname_in_env(interp, env, remote))
+                        .or(base);
+                    let localname = expand_file_name_in_env(
+                        interp,
+                        env,
+                        &remote_localname,
+                        base_localname.as_deref(),
+                    );
+                    Ok(Value::String(format!("{remote_prefix}{localname}")))
+                }
+                "file-local-copy" => {
+                    need_args(name, args, 2)?;
+                    mock_file_local_copy(interp, env, &string_text(&args[1])?).map(Value::String)
+                }
+                "file-truename" => {
+                    need_args(name, args, 2)?;
+                    let (prefix, localname) =
+                        mock_remote_path_parts(interp, env, &string_text(&args[1])?)?;
+                    Ok(Value::String(format!(
+                        "{prefix}{}",
+                        canonical_file_name(&localname)
+                    )))
+                }
+                "file-remote-p" => {
+                    need_arg_range(name, args, 2, 4)?;
+                    let remote = parse_remote_file_name(&string_text(&args[1])?)
+                        .filter(|remote| remote.method == "mock")
+                        .ok_or_else(|| {
+                            LispError::Signal(format!(
+                                "Invalid mock remote file name for file-remote-p: {:?}",
+                                args[1]
+                            ))
+                        })?;
+                    let identification = args.get(2).cloned().unwrap_or(Value::Nil);
+                    Ok(match identification.as_symbol().ok() {
+                        None | Some("nil") | Some("t") => {
+                            Value::String(remote_identification_prefix(&remote))
+                        }
+                        Some("method") => Value::String(remote.method),
+                        Some("user") => remote.user.map(Value::String).unwrap_or(Value::Nil),
+                        Some("host") => Value::String(remote.host),
+                        Some("localname") => {
+                            Value::String(resolved_remote_localname_in_env(interp, env, &remote))
+                        }
+                        _ => Value::String(remote_identification_prefix(&remote)),
+                    })
+                }
+                "file-user-uid" => {
+                    need_args(name, args, 1)?;
+                    super::call(interp, "user-uid", &[], env)
+                }
+                "file-group-gid" => {
+                    need_args(name, args, 1)?;
+                    super::call(interp, "group-gid", &[], env)
+                }
+                "make-process" => make_process_value(interp, env, &args[1..]),
+                "start-file-process" => {
+                    need_arg_range(name, args, 4, usize::MAX)?;
+                    env.push(mock_remote_process_frame(interp, env)?.ok_or_else(|| {
+                        LispError::Signal("Invalid mock remote directory".into())
+                    })?);
+                    let result = super::call(interp, "start-process", &args[1..], env);
+                    env.pop();
+                    result
+                }
+                _ => {
+                    let Some(MockFileNameHandlerOperation::LocalPathArguments(indices)) =
+                        mock_file_name_handler_operation(operation)
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    let mut local_args = args[1..].to_vec();
+                    for index in indices {
+                        let Some(argument) = local_args.get_mut(*index) else {
+                            continue;
+                        };
+                        let Some(file) = string_like(argument).map(|string| string.text) else {
+                            continue;
+                        };
+                        if mock_path_uses_remote_transport(interp, env, &file) {
+                            *argument = Value::String(mock_remote_local_path(interp, env, &file)?);
+                        }
+                    }
+                    super::call(interp, operation, &local_args, env)
+                }
             }
         }
         "dired-noselect" => {
@@ -1184,6 +1663,27 @@ pub(super) fn call(
                 }
             }
             Ok(Value::String(resolved))
+        }
+        "comp-el-to-eln-filename" => {
+            need_arg_range(name, args, 1, 2)?;
+            let filename = string_text(&args[0])?;
+            let basename = file_name_sans_extension(&file_name_nondirectory(&filename));
+            let base_directory = match args.get(1).filter(|value| value.is_truthy()) {
+                Some(value) => string_text(value)?,
+                None => {
+                    let temporary_directory = interp
+                        .lookup_var("temporary-file-directory", env)
+                        .and_then(|value| string_like(&value).map(|value| value.text))
+                        .unwrap_or_else(|| std::env::temp_dir().display().to_string());
+                    expand_file_name_runtime(interp, env, "eln-cache", Some(&temporary_directory))?
+                }
+            };
+            Ok(Value::String(expand_file_name_runtime(
+                interp,
+                env,
+                &format!("{basename}.eln"),
+                Some(&base_directory),
+            )?))
         }
         "ert-resource-directory" => {
             need_args(name, args, 0)?;
@@ -1378,7 +1878,8 @@ pub(super) fn call(
         }
         "file-directory-p" | "file-accessible-directory-p" => {
             need_args(name, args, 1)?;
-            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            let requested = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &requested);
             validate_file_name(&path)?;
             Ok(
                 if fs::metadata(&path)
@@ -1411,6 +1912,20 @@ pub(super) fn call(
             } else {
                 Value::Nil
             })
+        }
+        "access-file" => {
+            need_args(name, args, 2)?;
+            let requested = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &requested);
+            if file_readable_p(&path) {
+                Ok(Value::Nil)
+            } else {
+                Err(LispError::SignalValue(file_error_with_detail_value(
+                    &string_text(&args[1])?,
+                    "Permission denied",
+                    &requested,
+                )))
+            }
         }
         "file-regular-p" => {
             need_args(name, args, 1)?;
@@ -1492,11 +2007,21 @@ pub(super) fn call(
                 .map(system_time_list_value)
                 .transpose()?
                 .unwrap_or_else(|| modified.clone());
+            #[cfg(unix)]
+            let (links, uid, gid, inode, device) = (
+                metadata.nlink() as i64,
+                metadata.uid() as i64,
+                metadata.gid() as i64,
+                metadata.ino() as i64,
+                metadata.dev() as i64,
+            );
+            #[cfg(not(unix))]
+            let (links, uid, gid, inode, device) = (1, 0, 0, 0, 0);
             Ok(Value::list([
                 type_value,
-                Value::Integer(1),
-                Value::Integer(0),
-                Value::Integer(0),
+                Value::Integer(links),
+                Value::Integer(uid),
+                Value::Integer(gid),
                 accessed,
                 modified,
                 changed,
@@ -1507,9 +2032,87 @@ pub(super) fn call(
                     "-rw-r--r--".into()
                 }),
                 Value::Nil,
-                Value::Integer(0),
-                Value::Integer(0),
+                Value::Integer(inode),
+                Value::Integer(device),
             ]))
+        }
+        "file-attributes-lessp" => {
+            need_args(name, args, 2)?;
+            super::call(
+                interp,
+                "string-lessp",
+                &[args[0].car()?, args[1].car()?],
+                env,
+            )
+        }
+        "system-users" => {
+            need_args(name, args, 0)?;
+            let mut users = system_user_names()
+                .into_iter()
+                .map(Value::String)
+                .collect::<Vec<_>>();
+            if users.is_empty() {
+                users.push(
+                    interp
+                        .lookup_var("user-real-login-name", env)
+                        .unwrap_or(Value::Nil),
+                );
+            }
+            Ok(Value::list(users))
+        }
+        "system-groups" => {
+            need_args(name, args, 0)?;
+            Ok(Value::list(
+                system_group_names().into_iter().map(Value::String),
+            ))
+        }
+        "car-less-than-car" => {
+            need_args(name, args, 2)?;
+            super::call(interp, "<", &[args[0].car()?, args[1].car()?], env)
+        }
+        "file-newer-than-file-p" => {
+            need_args(name, args, 2)?;
+            let first = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            let second = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+            validate_file_name(&first)?;
+            validate_file_name(&second)?;
+            let Ok(first_modified) = fs::metadata(first).and_then(|metadata| metadata.modified())
+            else {
+                return Ok(Value::Nil);
+            };
+            let newer = match fs::metadata(second).and_then(|metadata| metadata.modified()) {
+                Ok(second_modified) => first_modified > second_modified,
+                Err(_) => true,
+            };
+            Ok(if newer { Value::T } else { Value::Nil })
+        }
+        // This macOS build has no SELinux support, and Emaxx does not expose
+        // a host ACL API yet.  Keep GNU's platform-degraded return values on
+        // the native side of the boundary.
+        "file-acl" => {
+            need_args(name, args, 1)?;
+            let _ = string_text(&args[0])?;
+            Ok(Value::Nil)
+        }
+        "set-file-acl" => {
+            need_args(name, args, 2)?;
+            let _ = string_text(&args[0])?;
+            Ok(Value::Nil)
+        }
+        "file-selinux-context" => {
+            need_args(name, args, 1)?;
+            let _ = string_text(&args[0])?;
+            Ok(Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ]))
+        }
+        "set-file-selinux-context" => {
+            need_args(name, args, 2)?;
+            let _ = string_text(&args[0])?;
+            Ok(Value::Nil)
         }
         "file-attribute-type" => {
             need_args(name, args, 1)?;
@@ -1571,7 +2174,7 @@ pub(super) fn call(
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => return Err(LispError::Signal(error.to_string())),
             }
-            invalidate_file_notify_watches_for_path(&path);
+            interp.invalidate_file_notify_watches_for_path(&path);
             dispatch_file_notification(interp, env, &path, "deleted")?;
             Ok(Value::Nil)
         }
@@ -1605,7 +2208,7 @@ pub(super) fn call(
                 return Err(LispError::Signal(format!("File already exists: {target}")));
             }
             fs::rename(&source, &target).map_err(|error| LispError::Signal(error.to_string()))?;
-            invalidate_file_notify_watches_for_path(&source);
+            interp.invalidate_file_notify_watches_for_path(&source);
             dispatch_file_notification(interp, env, &source, "deleted")?;
             dispatch_file_notification(interp, env, &target, "created")?;
             Ok(Value::Nil)
@@ -1619,7 +2222,7 @@ pub(super) fn call(
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => return Err(LispError::Signal(error.to_string())),
             }
-            invalidate_file_notify_watches_for_path(&path);
+            interp.invalidate_file_notify_watches_for_path(&path);
             dispatch_file_notification(interp, env, &path, "deleted")?;
             Ok(Value::Nil)
         }
@@ -1630,17 +2233,21 @@ pub(super) fn call(
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             if args.get(1).is_some_and(Value::is_truthy) {
-                fs::remove_dir_all(path).map_err(|error| LispError::Signal(error.to_string()))?;
+                fs::remove_dir_all(&path).map_err(|error| LispError::Signal(error.to_string()))?;
             } else {
-                fs::remove_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
+                fs::remove_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
             }
+            interp.invalidate_file_notify_watches_for_path(&path);
+            dispatch_file_notification(interp, env, &path, "deleted")?;
             Ok(Value::Nil)
         }
         "delete-directory-internal" => {
             need_args(name, args, 1)?;
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
-            fs::remove_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
+            fs::remove_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+            interp.invalidate_file_notify_watches_for_path(&path);
+            dispatch_file_notification(interp, env, &path, "deleted")?;
             Ok(Value::Nil)
         }
         "make-directory" => {
@@ -1695,6 +2302,22 @@ pub(super) fn call(
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             fs::create_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
+            Ok(Value::Nil)
+        }
+        "add-name-to-file" | "add-name-to-file-internal" => {
+            need_arg_range(name, args, 2, 3)?;
+            let source = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            let target = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+            if args.get(2).is_some_and(Value::is_truthy) && Path::new(&target).exists() {
+                return Ok(Value::Nil);
+            }
+            fs::hard_link(&source, &target).map_err(|error| {
+                LispError::SignalValue(file_error_with_detail_value(
+                    "Adding new name",
+                    &error.to_string(),
+                    &target,
+                ))
+            })?;
             Ok(Value::Nil)
         }
         "make-temp-file" => {
@@ -1753,6 +2376,44 @@ pub(super) fn call(
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             file_locked_p(&path)
         }
+        "memory-info" => {
+            need_args(name, args, 0)?;
+            #[cfg(target_os = "linux")]
+            {
+                let mut info = std::mem::MaybeUninit::<libc::sysinfo>::uninit();
+                // SAFETY: sysinfo initializes the supplied structure on
+                // success, and we read it only after a zero return value.
+                if unsafe { libc::sysinfo(info.as_mut_ptr()) } == 0 {
+                    // SAFETY: established by the successful sysinfo call.
+                    let info = unsafe { info.assume_init() };
+                    let units = u64::from(info.mem_unit);
+                    return Ok(Value::list([
+                        Value::Integer(
+                            ((info.totalram as u64).saturating_mul(units) / 1024) as i64,
+                        ),
+                        Value::Integer(((info.freeram as u64).saturating_mul(units) / 1024) as i64),
+                        Value::Integer(
+                            ((info.totalswap as u64).saturating_mul(units) / 1024) as i64,
+                        ),
+                        Value::Integer(
+                            ((info.freeswap as u64).saturating_mul(units) / 1024) as i64,
+                        ),
+                    ]));
+                }
+            }
+            Ok(Value::Nil)
+        }
+        "lock-file" => {
+            need_args(name, args, 1)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            lock_file_path(interp, env, &path)?;
+            Ok(Value::Nil)
+        }
+        "unlock-file" => {
+            need_args(name, args, 1)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            unlock_file_path(interp, env, &path)
+        }
         "write-region" => {
             if args.len() < 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1770,10 +2431,6 @@ pub(super) fn call(
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             let descriptor =
                 FILE_NOTIFY_DESCRIPTOR_COUNTER.fetch_add(1, AtomicOrdering::Relaxed) as i64;
-            active_file_notify_descriptors()
-                .lock()
-                .map_err(|_| LispError::Signal("file notify descriptor set poisoned".into()))?
-                .insert(descriptor);
             // Watches taken from a remotely visited buffer model Tramp's
             // gio monitors: they outlive deletions of the watched file, so
             // they get no local path registration to invalidate.
@@ -1781,35 +2438,27 @@ pub(super) fn call(
                 || interp
                     .buffer_local_value(interp.current_buffer_id(), "emaxx--visited-remote-prefix")
                     .is_some_and(|value| value.is_truthy());
-            if !remote_watch {
-                file_notify_watched_paths()
-                    .lock()
-                    .map_err(|_| LispError::Signal("file notify watch paths poisoned".into()))?
-                    .insert(descriptor, path);
-            }
+            interp.register_file_notify_watch(
+                descriptor,
+                (!remote_watch).then_some(path),
+                args[2].clone(),
+            );
             Ok(Value::Integer(descriptor))
         }
         "kqueue-rm-watch" => {
             need_args(name, args, 1)?;
             let descriptor = args[0].as_integer()?;
-            active_file_notify_descriptors()
-                .lock()
-                .map_err(|_| LispError::Signal("file notify descriptor set poisoned".into()))?
-                .remove(&descriptor);
-            file_notify_watched_paths()
-                .lock()
-                .map_err(|_| LispError::Signal("file notify watch paths poisoned".into()))?
-                .remove(&descriptor);
+            interp.remove_file_notify_watch(descriptor);
             Ok(Value::Nil)
         }
         "kqueue-valid-p" => {
             need_args(name, args, 1)?;
             let descriptor = args[0].as_integer()?;
-            let active = active_file_notify_descriptors()
-                .lock()
-                .map_err(|_| LispError::Signal("file notify descriptor set poisoned".into()))?
-                .contains(&descriptor);
-            Ok(if active { Value::T } else { Value::Nil })
+            Ok(if interp.file_notify_watch_is_active(descriptor) {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "default-file-modes" => {
             need_args(name, args, 0)?;
@@ -1912,6 +2561,35 @@ pub(super) fn call(
             names.sort();
             Ok(Value::list(names.into_iter().map(Value::String)))
         }
+        "file-name-completion" => {
+            need_arg_range(name, args, 2, 3)?;
+            let names = super::call(
+                interp,
+                "file-name-all-completions",
+                &[args[0].clone(), args[1].clone()],
+                env,
+            )?
+            .to_vec()?
+            .iter()
+            .map(string_text)
+            .collect::<Result<Vec<_>, _>>()?;
+            let Some(first) = names.first() else {
+                return Ok(Value::Nil);
+            };
+            let requested = string_text(&args[0])?;
+            if names.len() == 1 && first == &requested {
+                return Ok(Value::T);
+            }
+            let common_len = names.iter().skip(1).fold(first.len(), |length, name| {
+                first
+                    .bytes()
+                    .zip(name.bytes())
+                    .take(length)
+                    .take_while(|(left, right)| left == right)
+                    .count()
+            });
+            Ok(Value::String(first[..common_len].to_string()))
+        }
         "set-visited-file-name" => {
             need_arg_range(name, args, 1, 3)?;
             if args[0].is_nil() {
@@ -1921,9 +2599,7 @@ pub(super) fn call(
             }
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
-            let truename = std::fs::canonicalize(&path)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| path.clone());
+            let truename = canonical_file_name(&path);
             interp.buffer.file = Some(path.clone());
             interp.buffer.file_truename = Some(truename);
             // GNU renames the buffer to the file's base name (uniquely) and
@@ -2038,6 +2714,41 @@ pub(super) fn call(
         }
         "insert-file-contents" => insert_file_contents(interp, env, args, false),
         "insert-file-contents-literally" => insert_file_contents(interp, env, args, true),
+        "file-system-info" => {
+            need_args(name, args, 1)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            validate_file_name(&path)?;
+            #[cfg(unix)]
+            {
+                let path = CString::new(path.as_bytes())
+                    .map_err(|_| LispError::TypeError("string".into(), "nul-byte".into()))?;
+                // SAFETY: `statvfs` initializes the pointed-to structure on
+                // success, and `path` is a live NUL-terminated C string.
+                let mut stats = unsafe { std::mem::zeroed::<libc::statvfs>() };
+                // SAFETY: both pointers remain valid for the duration of the
+                // call and `stats` has the platform's exact `statvfs` layout.
+                if unsafe { libc::statvfs(path.as_ptr(), &mut stats) } != 0 {
+                    return Ok(Value::Nil);
+                }
+                let block_size = if stats.f_frsize == 0 {
+                    stats.f_bsize
+                } else {
+                    stats.f_frsize
+                };
+                let bytes = |blocks| {
+                    normalize_bigint_value(BigInt::from(block_size) * BigInt::from(blocks))
+                };
+                Ok(Value::list([
+                    bytes(stats.f_blocks),
+                    bytes(stats.f_bfree),
+                    bytes(stats.f_bavail),
+                ]))
+            }
+            #[cfg(not(unix))]
+            {
+                Ok(Value::Nil)
+            }
+        }
         "get-free-disk-space" => {
             need_args(name, args, 1)?;
             // GNU files.el: format (nth 2 (file-system-info dir)) through
@@ -2141,61 +2852,43 @@ pub(super) fn call(
             )?;
             Ok(Value::Integer(exit_status_code(&process_output.status)))
         }
-        "make-process" | "make-pipe-process" => {
-            let parsed = parse_make_process_args(interp, args)?;
-            let runtime = if let Some(command) = parsed.program.as_ref() {
-                Some(spawn_persistent_process(
-                    interp,
-                    command,
-                    &parsed.argv,
-                    env,
-                )?)
-            } else {
-                None
-            };
-            let process = interp.create_process(
-                parsed.buffer_id,
-                parsed.program,
-                parsed.argv,
-                runtime,
-                parsed.name,
-            )?;
-            let process_id = interp.resolve_process_id(&process)?;
-            interp.set_process_filter(process_id, parsed.filter)?;
-            interp.set_process_sentinel(process_id, parsed.sentinel);
-            interp.set_process_stderr(process_id, parsed.stderr_process_id);
-            if let Some((decoding, encoding)) = parsed.coding {
-                interp.set_process_coding_system(process_id, decoding, encoding)?;
-            }
-            Ok(process)
-        }
+        "make-process" | "make-pipe-process" => make_process_value(interp, env, args),
         "start-process" | "start-file-process" => {
             need_arg_range(name, args, 3, usize::MAX)?;
             let buffer_id = process_buffer_target(interp, &args[1])?;
-            let program = string_text(&args[2])?;
+            let inherit_coding_system = buffer_id.is_some()
+                && interp
+                    .lookup_var("inherit-process-coding-system", env)
+                    .is_some_and(|value| value.is_truthy());
+            let requested_program = string_text(&args[2])?;
+            let program = unquote_local_file_name(&requested_program).unwrap_or(requested_program);
             let argv = args[3..]
                 .iter()
                 .map(string_text)
                 .collect::<Result<Vec<_>, _>>()?;
-            let runtime = spawn_persistent_process(interp, &program, &argv, env)?;
+            let runtime = spawn_persistent_process(interp, &program, &argv, env, None, false)?;
             let process_name = string_text(&args[0])?;
-            interp.create_process(
+            let process = interp.create_process(
                 buffer_id,
                 Some(program),
                 argv,
                 Some(runtime),
                 Some(process_name),
-            )
+            )?;
+            let process_id = interp.resolve_process_id(&process)?;
+            interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;
+            Ok(process)
         }
         "get-buffer-process" => {
             need_arg_range(name, args, 0, 1)?;
-            let buffer_id = if let Some(buffer) = args.first() {
-                interp.resolve_buffer_id(buffer)?
-            } else {
-                interp.current_buffer_id()
+            let buffer_id = match args.first() {
+                None | Some(Value::Nil) => Some(interp.current_buffer_id()),
+                Some(buffer) if string_like(buffer).is_some() => string_like(buffer)
+                    .and_then(|name| interp.find_buffer(&name.text).map(|(id, _)| id)),
+                Some(buffer) => Some(interp.resolve_buffer_id(buffer)?),
             };
-            Ok(interp
-                .process_value_for_buffer(buffer_id)
+            Ok(buffer_id
+                .and_then(|id| interp.process_value_for_buffer(id))
                 .unwrap_or(Value::Nil))
         }
         "process-buffer" => {
@@ -2227,6 +2920,18 @@ pub(super) fn call(
             interp
                 .process_exit_status_value(process_id)
                 .ok_or_else(|| LispError::Signal("Invalid process state".into()))
+        }
+        "process-id" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(interp
+                .process_os_id(process_id)
+                .map(|pid| Value::Integer(i64::from(pid)))
+                .unwrap_or(Value::Nil))
+        }
+        "process-list" => {
+            need_args(name, args, 0)?;
+            Ok(interp.process_list_value())
         }
         "process-plist" => {
             need_args(name, args, 1)?;
@@ -2260,8 +2965,14 @@ pub(super) fn call(
         }
         "process-live-p" => {
             need_args(name, args, 1)?;
-            let process_id = interp.resolve_process_id(&args[0])?;
-            Ok(if interp.process_is_live(process_id) {
+            let process_id = match &args[0] {
+                Value::Record(_) => interp.resolve_process_id(&args[0]).ok(),
+                value if string_like(value).is_some() => {
+                    string_like(value).and_then(|name| interp.find_process_id_by_name(&name.text))
+                }
+                _ => None,
+            };
+            Ok(if process_id.is_some_and(|id| interp.process_is_live(id)) {
                 Value::T
             } else {
                 Value::Nil
@@ -2270,6 +2981,10 @@ pub(super) fn call(
         "process-attributes" => {
             need_args(name, args, 1)?;
             Ok(process_attributes_value(args[0].as_integer()?))
+        }
+        "list-system-processes" => {
+            need_args(name, args, 0)?;
+            Ok(list_system_processes_value())
         }
         "process-coding-system" => {
             need_args(name, args, 1)?;
@@ -2282,7 +2997,21 @@ pub(super) fn call(
             let decoding = args.get(1).cloned().unwrap_or(Value::Nil);
             let encoding = args.get(2).cloned().unwrap_or(Value::Nil);
             interp.set_process_coding_system(process_id, decoding, encoding)?;
-            Ok(Value::T)
+            Ok(Value::Nil)
+        }
+        "internal-default-process-filter" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let text = string_text(&args[1])?;
+            internal_default_process_filter(interp, process_id, &text)?;
+            Ok(Value::Nil)
+        }
+        "process-filter" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(interp
+                .process_filter_value(process_id)
+                .expect("resolved process has process state"))
         }
         "set-process-filter" => {
             need_args(name, args, 2)?;
@@ -2293,14 +3022,29 @@ pub(super) fn call(
                 Some(args[1].clone())
             };
             interp.set_process_filter(process_id, filter)?;
-            Ok(args[1].clone())
+            Ok(if args[1].is_nil() {
+                Value::symbol("internal-default-process-filter")
+            } else {
+                args[1].clone()
+            })
+        }
+        "internal-default-process-sentinel" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let message = string_text(&args[1])?;
+            internal_default_process_sentinel(interp, process_id, &message)?;
+            Ok(Value::Nil)
         }
         "set-process-sentinel" => {
             need_args(name, args, 2)?;
             let process_id = interp.resolve_process_id(&args[0])?;
             let sentinel = (!args[1].is_nil()).then(|| args[1].clone());
             interp.set_process_sentinel(process_id, sentinel);
-            Ok(args[1].clone())
+            Ok(if args[1].is_nil() {
+                Value::symbol("internal-default-process-sentinel")
+            } else {
+                args[1].clone()
+            })
         }
         "set-process-buffer" => {
             need_args(name, args, 2)?;
@@ -2316,7 +3060,89 @@ pub(super) fn call(
         "process-sentinel" => {
             need_args(name, args, 1)?;
             let process_id = interp.resolve_process_id(&args[0])?;
-            Ok(interp.process_sentinel(process_id).unwrap_or(Value::Nil))
+            Ok(interp
+                .process_sentinel_value(process_id)
+                .expect("resolved process has process state"))
+        }
+        "process-thread" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp.process_thread_value(process_id)
+        }
+        "set-process-thread" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let thread_id = if args[1].is_nil() {
+                None
+            } else {
+                Some(interp.resolve_thread_id(&args[1])?)
+            };
+            interp.set_process_thread_id(process_id, thread_id)?;
+            Ok(args[1].clone())
+        }
+        "process-datagram-address" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(interp
+                .process_datagram_address(process_id)?
+                .map(sockaddr_vector)
+                .unwrap_or(Value::Nil))
+        }
+        "set-process-datagram-address" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let Some(address) = socket_addr_from_value(&args[1]) else {
+                return Ok(Value::Nil);
+            };
+            Ok(
+                if interp.set_process_datagram_address(process_id, address)? {
+                    args[1].clone()
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "process-type" => {
+            need_args(name, args, 1)?;
+            let process = process_designator_value(interp, args.first())?;
+            let process_id = interp.resolve_process_id(&process)?;
+            Ok(Value::symbol(interp.process_type_name(process_id)?))
+        }
+        "process-inherit-coding-system-flag" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(if interp.process_inherit_coding_system_flag(process_id)? {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "set-process-inherit-coding-system-flag" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp.set_process_inherit_coding_system_flag(process_id, args[1].is_truthy())?;
+            Ok(args[1].clone())
+        }
+        "set-process-window-size" => {
+            need_args(name, args, 3)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let height = u16::try_from(args[1].as_integer()?)
+                .map_err(|_| LispError::Signal("Args out of range".into()))?;
+            let width = u16::try_from(args[2].as_integer()?)
+                .map_err(|_| LispError::Signal("Args out of range".into()))?;
+            Ok(
+                if interp.set_process_window_size(process_id, height, width)? {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "process-running-child-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            let process = process_designator_value(interp, args.first())?;
+            let process_id = interp.resolve_process_id(&process)?;
+            interp.process_running_child_value(process_id)
         }
         "process-name" => {
             need_args(name, args, 1)?;
@@ -2358,6 +3184,11 @@ pub(super) fn call(
             // KEY nil the (HOST SERVICE) pair, any other KEY a plist_get.
             need_arg_range(name, args, 1, 3)?;
             let process_id = interp.resolve_process_id(&args[0])?;
+            if matches!(args.get(1), Some(Value::Symbol(key)) if key == ":remote")
+                && let Some(address) = interp.process_datagram_address(process_id)?
+            {
+                return Ok(sockaddr_vector(address));
+            }
             let contact = interp
                 .process_contact_plist(process_id)
                 .unwrap_or(Value::Nil);
@@ -2366,6 +3197,12 @@ pub(super) fn call(
             }
             match args.get(1) {
                 Some(Value::T) => Ok(contact),
+                None | Some(Value::Nil) if interp.is_serial_process(process_id) => {
+                    Ok(Value::list([
+                        contact_plist_get(&contact, ":port"),
+                        contact_plist_get(&contact, ":speed"),
+                    ]))
+                }
                 None | Some(Value::Nil) => Ok(Value::list([
                     contact_plist_get(&contact, ":host"),
                     contact_plist_get(&contact, ":service"),
@@ -2377,6 +3214,8 @@ pub(super) fn call(
             }
         }
         "make-network-process" => make_network_process(interp, args, env),
+        "make-serial-process" => make_serial_process(interp, args, env),
+        "serial-process-configure" => serial_process_configure(interp, args),
         "open-network-stream" => {
             // network-stream.el open-network-stream, plain-connection
             // subset: (NAME BUFFER HOST SERVICE &rest PARAMETERS).
@@ -2409,35 +3248,221 @@ pub(super) fn call(
             Ok(Value::T)
         }
         "network-interface-list" | "network-interface-info" => Ok(Value::Nil),
+        "network-lookup-address-info" => {
+            need_arg_range(name, args, 1, 3)?;
+            let host = string_text(&args[0])?;
+            if !host.is_ascii() {
+                return Err(LispError::Signal(format!(
+                    "Non-ASCII hostname {host} detected, please use `puny-encode-domain'"
+                )));
+            }
+            enum AddressFamily {
+                Both,
+                Ipv4,
+                Ipv6,
+            }
+            let family = match args.get(1) {
+                None | Some(Value::Nil) => AddressFamily::Both,
+                Some(Value::Symbol(family)) if family == "ipv4" => AddressFamily::Ipv4,
+                Some(Value::Symbol(family)) if family == "ipv6" => AddressFamily::Ipv6,
+                _ => return Err(LispError::Signal("Unsupported family".into())),
+            };
+            let numeric = match args.get(2) {
+                None | Some(Value::Nil) => false,
+                Some(Value::Symbol(hint)) if hint == "numeric" => true,
+                _ => return Err(LispError::Signal("Unsupported hints value".into())),
+            };
+            let resolved = if numeric {
+                host.parse::<std::net::IpAddr>()
+                    .map(|address| vec![std::net::SocketAddr::new(address, 0)])
+                    .map_err(|error| error.to_string())
+            } else {
+                std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), 0))
+                    .map(|addresses| addresses.collect::<Vec<_>>())
+                    .map_err(|error| error.to_string())
+            };
+            let addresses = match resolved {
+                Ok(addresses) => addresses,
+                Err(error) => {
+                    let _ = super::call(
+                        interp,
+                        "message",
+                        &[Value::String(format!("{host}/0 {error}"))],
+                        env,
+                    )?;
+                    return Ok(Value::Nil);
+                }
+            };
+            Ok(Value::list(
+                addresses
+                    .into_iter()
+                    .filter(|address| match family {
+                        AddressFamily::Both => true,
+                        AddressFamily::Ipv4 => address.is_ipv4(),
+                        AddressFamily::Ipv6 => address.is_ipv6(),
+                    })
+                    .map(sockaddr_vector),
+            ))
+        }
         "delete-process" => {
-            // PROCESS may be a process, a buffer, the name of a buffer, or
-            // nil, defaulting to the current buffer's process.
-            let process_value = match args.first() {
-                None | Some(Value::Nil) => {
-                    let buffer_id = interp.current_buffer_id();
-                    interp.process_value_for_buffer(buffer_id)
-                }
-                Some(process @ Value::Record(_)) => Some(process.clone()),
-                Some(other) => {
-                    let buffer_id = interp.resolve_buffer_id(other)?;
-                    interp.process_value_for_buffer(buffer_id)
-                }
-            };
-            let Some(process_value) = process_value else {
-                return Err(wrong_type_argument(
-                    "processp",
-                    args.first().cloned().unwrap_or(Value::Nil),
-                ));
-            };
+            need_args(name, args, 1)?;
+            let process_value = process_designator_value(interp, args.first())?;
             let process_id = interp.resolve_process_id(&process_value)?;
             delete_process_notifying(interp, process_id, env)?;
             Ok(Value::Nil)
+        }
+        "internal-default-interrupt-process" => {
+            need_arg_range(name, args, 0, 2)?;
+            let original = args.first().cloned().unwrap_or(Value::Nil);
+            let process = process_designator_value(interp, args.first())?;
+            let process_id = interp.resolve_process_id(&process)?;
+            #[cfg(unix)]
+            interp.signal_process_group(
+                process_id,
+                libc::SIGINT,
+                args.get(1).unwrap_or(&Value::Nil),
+            )?;
+            #[cfg(not(unix))]
+            return Err(LispError::Signal(
+                "Process signals are unavailable on this platform".into(),
+            ));
+            Ok(original)
+        }
+        "interrupt-process" => {
+            need_arg_range(name, args, 0, 2)?;
+            super::call(
+                interp,
+                "run-hook-with-args-until-success",
+                &[
+                    Value::symbol("interrupt-process-functions"),
+                    args.first().cloned().unwrap_or(Value::Nil),
+                    args.get(1).cloned().unwrap_or(Value::Nil),
+                ],
+                env,
+            )
+        }
+        "kill-process" => {
+            need_arg_range(name, args, 0, 2)?;
+            let original = args.first().cloned().unwrap_or(Value::Nil);
+            let process_value = process_designator_value(interp, args.first())?;
+            let process_id = interp.resolve_process_id(&process_value)?;
+            #[cfg(unix)]
+            interp.signal_process_group(
+                process_id,
+                libc::SIGKILL,
+                args.get(1).unwrap_or(&Value::Nil),
+            )?;
+            #[cfg(not(unix))]
+            return Err(LispError::Signal(
+                "Process signals are unavailable on this platform".into(),
+            ));
+            Ok(original)
+        }
+        "quit-process" => {
+            need_arg_range(name, args, 0, 2)?;
+            let original = args.first().cloned().unwrap_or(Value::Nil);
+            let process = process_designator_value(interp, args.first())?;
+            let process_id = interp.resolve_process_id(&process)?;
+            #[cfg(unix)]
+            interp.signal_process_group(
+                process_id,
+                libc::SIGQUIT,
+                args.get(1).unwrap_or(&Value::Nil),
+            )?;
+            #[cfg(not(unix))]
+            return Err(LispError::Signal(
+                "Process signals are unavailable on this platform".into(),
+            ));
+            Ok(original)
+        }
+        "stop-process" | "continue-process" => {
+            need_arg_range(name, args, 0, 2)?;
+            let original = args.first().cloned().unwrap_or(Value::Nil);
+            let process = process_designator_value(interp, args.first())?;
+            let process_id = interp.resolve_process_id(&process)?;
+            let stop = name == "stop-process";
+            if !interp.set_process_traffic_stopped(process_id, stop)? {
+                #[cfg(unix)]
+                interp.signal_process_group(
+                    process_id,
+                    if stop { libc::SIGTSTP } else { libc::SIGCONT },
+                    args.get(1).unwrap_or(&Value::Nil),
+                )?;
+                #[cfg(not(unix))]
+                return Err(LispError::Signal(
+                    "Process signals are unavailable on this platform".into(),
+                ));
+            }
+            Ok(original)
         }
         "set-process-query-on-exit-flag" => {
             need_args(name, args, 2)?;
             let process_id = interp.resolve_process_id(&args[0])?;
             interp.set_process_query_on_exit_flag(process_id, args[1].is_truthy())?;
             Ok(args[1].clone())
+        }
+        "process-query-on-exit-flag" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(if interp.process_query_on_exit_flag(process_id)? {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "internal-default-signal-process" => {
+            need_arg_range(name, args, 2, 3)?;
+            #[cfg(unix)]
+            {
+                let Some(pid) = signal_process_target_pid(interp, &args[0])? else {
+                    return Ok(Value::Nil);
+                };
+                let signal = process_signal_number(&args[1])?;
+                // SAFETY: `kill' does not dereference pointers; PID and signal
+                // are validated Lisp integers or known platform constants.
+                Ok(Value::Integer(i64::from(unsafe {
+                    libc::kill(pid, signal)
+                })))
+            }
+            #[cfg(not(unix))]
+            {
+                Err(LispError::Signal(
+                    "Process signals are unavailable on this platform".into(),
+                ))
+            }
+        }
+        "signal-process" => {
+            need_arg_range(name, args, 2, 3)?;
+            super::call(
+                interp,
+                "run-hook-with-args-until-success",
+                &[
+                    Value::symbol("signal-process-functions"),
+                    args[0].clone(),
+                    args[1].clone(),
+                    args.get(2).cloned().unwrap_or(Value::Nil),
+                ],
+                env,
+            )
+        }
+        "signal-names" => {
+            need_args(name, args, 0)?;
+            #[cfg(unix)]
+            {
+                Ok(signal_names_value())
+            }
+            #[cfg(not(unix))]
+            {
+                Ok(Value::Nil)
+            }
+        }
+        "waiting-for-user-input-p" => {
+            need_args(name, args, 0)?;
+            Ok(if interp.waiting_for_user_input() {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "url-retrieve" => {
             need_arg_range(name, args, 2, 5)?;
@@ -2554,6 +3579,20 @@ pub(super) fn call(
             deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
             Ok(Value::Nil)
         }
+        "process-send-region" => {
+            need_args(name, args, 3)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let start = position_from_value(interp, &args[1])?;
+            let end = position_from_value(interp, &args[2])?;
+            let input = interp
+                .buffer
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let encoded = crate::lisp::primitives::encode_utf8_bytes(&input, false)?;
+            let (stdout, stderr) = interp.process_send_string(process_id, &encoded)?;
+            deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
+            Ok(Value::Nil)
+        }
         "process-lines" => {
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -2628,15 +3667,39 @@ pub(super) fn call(
             insert_text_with_hooks(interp, &text, &[], false, false, env)?;
             Ok(Value::Nil)
         }
-        "libxml-parse-xml-region" => {
-            need_args(name, args, 2)?;
-            let start = position_from_value(interp, &args[0])?;
-            let end = position_from_value(interp, &args[1])?;
-            let xml = interp
+        "libxml-parse-xml-region" | "libxml-parse-html-region" => {
+            need_arg_range(name, args, 0, 4)?;
+            let start = match args.first() {
+                None | Some(Value::Nil) => interp.buffer.point_min(),
+                Some(start) => position_from_value(interp, start)?,
+            };
+            let end = match args.get(1) {
+                None | Some(Value::Nil) => interp.buffer.point_max(),
+                Some(end) => position_from_value(interp, end)?,
+            };
+            // GNU's `validate_region' canonicalizes reversed bounds before
+            // handing the bytes to libxml2.
+            let (start, end) = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
+            if let Some(base_url) = args.get(2)
+                && !base_url.is_nil()
+                && string_like(base_url).is_none()
+            {
+                return Err(LispError::TypeError("stringp".into(), base_url.type_name()));
+            }
+            let source = interp
                 .buffer
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
-            parse_xml_region(&xml).map_err(|error| LispError::Signal(error.to_string()))
+            let discard_comments = args.get(3).is_some_and(Value::is_truthy);
+            if name == "libxml-parse-html-region" {
+                Ok(parse_html_region(&source, discard_comments))
+            } else {
+                Ok(parse_xml_region(&source, discard_comments))
+            }
         }
         "call-process-region" => {
             if args.len() < 3 {
@@ -2690,9 +3753,10 @@ pub(super) fn call(
             // receiving stdout.
             let capture = args.get(1).is_some_and(|value| !value.is_nil());
             if capture {
-                let output = Command::new("sh")
-                    .arg("-c")
-                    .arg(&command)
+                let mut shell = Command::new("sh");
+                shell.arg("-c").arg(&command);
+                configure_external_command(interp, env, &mut shell);
+                let output = shell
                     .output()
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let target_buffer_id = match args.get(1) {
@@ -2715,9 +3779,10 @@ pub(super) fn call(
                 }
                 return Ok(Value::Integer(output.status.code().unwrap_or(1) as i64));
             }
-            let status = Command::new("sh")
-                .arg("-c")
-                .arg(&command)
+            let mut shell = Command::new("sh");
+            shell.arg("-c").arg(&command);
+            configure_external_command(interp, env, &mut shell);
+            let status = shell
                 .status()
                 .map_err(|error| LispError::Signal(error.to_string()))?;
             Ok(Value::Integer(status.code().unwrap_or(1) as i64))
@@ -2769,9 +3834,6 @@ pub(super) fn call(
                         let _ = fs::remove_file(path);
                     }
                 }
-                if id == interp.current_buffer_id() {
-                    unlock_current_buffer(interp, env)?;
-                }
             }
             if !inhibit_hooks {
                 // The kill hooks run with the dying buffer current, as in
@@ -2804,26 +3866,29 @@ pub(super) fn call(
             if !interp.allow_kill_buffer_for_threads(id) {
                 return Ok(Value::Nil);
             }
+            // GNU releases the target buffer's lock only after every query
+            // and hook has accepted the kill, immediately before teardown.
+            unlock_buffer_by_id(interp, env, id)?;
             interp.kill_buffer_id(id);
             if !inhibit_hooks {
                 run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
             }
             Ok(Value::T)
         }
-        "bury-buffer" => {
-            need_arg_range(name, args, 0, 1)?;
+        "bury-buffer" | "bury-buffer-internal" => {
+            if name == "bury-buffer-internal" {
+                need_args(name, args, 1)?;
+            } else {
+                need_arg_range(name, args, 0, 1)?;
+            }
             let id = if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
                 interp.resolve_buffer_id(buffer)?
             } else {
                 interp.current_buffer_id()
             };
-            if let Some(index) = interp
-                .buffer_list
-                .iter()
-                .position(|(buffer_id, _)| *buffer_id == id)
-            {
-                let entry = interp.buffer_list.remove(index);
-                interp.buffer_list.push(entry);
+            bury_buffer_in_lists(interp, id, env)?;
+            if name == "bury-buffer-internal" {
+                return Ok(Value::Nil);
             }
             if id == interp.current_buffer_id()
                 && let Some((next_id, _)) = interp
@@ -2969,6 +4034,34 @@ pub(super) fn call(
     }
 }
 
+fn process_designator_value(
+    interp: &mut Interpreter,
+    designator: Option<&Value>,
+) -> Result<Value, LispError> {
+    let requested = designator.cloned().unwrap_or(Value::Nil);
+    let process = match designator {
+        None | Some(Value::Nil) => interp.process_value_for_buffer(interp.current_buffer_id()),
+        Some(process @ Value::Record(_)) => Some(process.clone()),
+        Some(value) if string_like(value).is_some() => {
+            let name = string_text(value)?;
+            interp
+                .find_process_id_by_name(&name)
+                .map(Value::Record)
+                .or_else(|| {
+                    interp
+                        .resolve_buffer_id(value)
+                        .ok()
+                        .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id))
+                })
+        }
+        Some(value) => interp
+            .resolve_buffer_id(value)
+            .ok()
+            .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id)),
+    };
+    process.ok_or_else(|| wrong_type_argument("processp", requested))
+}
+
 fn insert_directory_free_space_line(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -3006,7 +4099,7 @@ fn insert_directory_free_space_line(
     Ok(Some(format!("available {human_readable}\n")))
 }
 
-fn mock_file_local_copy(file: &str) -> Result<String, LispError> {
+fn mock_file_local_copy(interp: &Interpreter, env: &Env, file: &str) -> Result<String, LispError> {
     let Some(remote) = parse_remote_file_name(file) else {
         return Ok(file.to_string());
     };
@@ -3017,8 +4110,337 @@ fn mock_file_local_copy(file: &str) -> Result<String, LispError> {
     }
     prefix.push(format!("emaxx-mock-copy-{name}-"));
     let target = make_temp_file_internal(&prefix.display().to_string(), &Value::Nil, "", None)?;
-    fs::copy(&remote.localname, &target).map_err(|error| LispError::Signal(error.to_string()))?;
+    fs::copy(
+        resolved_remote_localname_in_env(interp, env, &remote),
+        &target,
+    )
+    .map_err(|error| LispError::Signal(error.to_string()))?;
     Ok(target)
+}
+
+fn mock_remote_local_path(
+    interp: &Interpreter,
+    env: &Env,
+    file: &str,
+) -> Result<String, LispError> {
+    mock_remote_path_parts(interp, env, file).map(|(_, localname)| localname)
+}
+
+fn mock_path_uses_remote_transport(interp: &Interpreter, env: &Env, file: &str) -> bool {
+    parse_remote_file_name(file).is_some_and(|remote| remote.method == "mock")
+        || (!file_name_absolute_p(file)
+            && interp
+                .lookup_var("default-directory", env)
+                .and_then(|directory| string_like(&directory).map(|directory| directory.text))
+                .and_then(|directory| parse_remote_file_name(&directory))
+                .is_some_and(|remote| remote.method == "mock"))
+}
+
+fn mock_remote_path_parts(
+    interp: &Interpreter,
+    env: &Env,
+    file: &str,
+) -> Result<(String, String), LispError> {
+    if let Some(remote) = parse_remote_file_name(file).filter(|remote| remote.method == "mock") {
+        let prefix = remote.prefix.clone();
+        let localname = resolved_remote_localname_in_env(interp, env, &remote);
+        return Ok((prefix, localname));
+    }
+    let remote = interp
+        .lookup_var("default-directory", env)
+        .and_then(|directory| string_like(&directory).map(|directory| directory.text))
+        .and_then(|directory| parse_remote_file_name(&directory))
+        .filter(|remote| remote.method == "mock")
+        .ok_or_else(|| LispError::Signal("Invalid mock remote file name".into()))?;
+    let prefix = remote.prefix.clone();
+    let base = resolved_remote_localname_in_env(interp, env, &remote);
+    Ok((
+        prefix,
+        expand_file_name_in_env(interp, env, file, Some(&base)),
+    ))
+}
+
+fn mock_remote_process_frame(
+    interp: &Interpreter,
+    env: &Env,
+) -> Result<Option<Vec<(String, Value)>>, LispError> {
+    let Some(remote) = interp
+        .lookup_var("default-directory", env)
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .and_then(|directory| parse_remote_file_name(&directory))
+        .filter(|remote| remote.method == "mock")
+    else {
+        return Ok(None);
+    };
+    let process_environment = interp
+        .lookup_var("process-environment", env)
+        .unwrap_or(Value::Nil);
+    let inside_emacs = getenv_in_environment("INSIDE_EMACS", &process_environment, false)?
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .unwrap_or_else(|| "emaxx".into());
+    let inside_emacs = if inside_emacs.contains(",tramp") {
+        inside_emacs
+    } else {
+        format!("{inside_emacs},tramp")
+    };
+    let process_environment = updated_process_environment(
+        &process_environment,
+        "INSIDE_EMACS",
+        Some(&inside_emacs),
+        true,
+    )?;
+    Ok(Some(vec![
+        (
+            "default-directory".into(),
+            Value::String(resolved_remote_localname_in_env(interp, env, &remote)),
+        ),
+        ("process-environment".into(), process_environment),
+    ]))
+}
+
+fn make_process_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let mut parsed = parse_make_process_args(interp, args)?;
+    let inherit_coding_system = parsed.buffer_id.is_some()
+        && interp
+            .lookup_var("inherit-process-coding-system", env)
+            .is_some_and(|value| value.is_truthy());
+    if let Some(program) = parsed.program.as_deref()
+        && unquote_local_file_name(program).is_some()
+    {
+        parsed.program = Some(resolve_file_name_in_env(interp, env, program));
+    }
+    let mock_frame = if parsed.file_handler {
+        mock_remote_process_frame(interp, env)?
+    } else {
+        None
+    };
+    let uses_mock_frame = mock_frame.is_some();
+    if let Some(frame) = mock_frame {
+        env.push(frame);
+    }
+    let runtime = parsed.program.as_ref().map(|command| {
+        spawn_persistent_process(
+            interp,
+            command,
+            &parsed.argv,
+            env,
+            parsed.connection_type.as_ref(),
+            parsed.stderr_process_id.is_some(),
+        )
+    });
+    if uses_mock_frame {
+        env.pop();
+    }
+    let runtime = runtime.transpose()?;
+    let process = interp.create_process(
+        parsed.buffer_id,
+        parsed.program,
+        parsed.argv,
+        runtime,
+        parsed.name,
+    )?;
+    let process_id = interp.resolve_process_id(&process)?;
+    interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;
+    interp.set_process_filter(process_id, parsed.filter)?;
+    interp.set_process_sentinel(process_id, parsed.sentinel);
+    interp.set_process_stderr(process_id, parsed.stderr_process_id);
+    if let Some((decoding, encoding)) = parsed.coding {
+        interp.set_process_coding_system(process_id, decoding, encoding)?;
+    }
+    Ok(process)
+}
+
+#[cfg(unix)]
+fn process_signal_number(value: &Value) -> Result<i32, LispError> {
+    if let Ok(number) = value.as_integer() {
+        return i32::try_from(number)
+            .map_err(|_| LispError::Signal("Signal number is out of range".into()));
+    }
+    let name = value.as_symbol()?.to_ascii_uppercase();
+    let abbreviation = name.strip_prefix("SIG").unwrap_or(&name);
+    if let Ok(number) = abbreviation.parse::<i32>() {
+        return Ok(number);
+    }
+    if let Some((number, _)) = named_signal_candidates()
+        .into_iter()
+        .find(|(_, candidate)| *candidate == abbreviation)
+    {
+        return Ok(number);
+    }
+    if let Some(number) = realtime_signal_number(abbreviation) {
+        return Ok(number);
+    }
+    Err(LispError::Signal(format!("Undefined signal name {name}")))
+}
+
+#[cfg(unix)]
+fn named_signal_candidates() -> Vec<(i32, &'static str)> {
+    let mut signals = vec![
+        (libc::SIGHUP, "HUP"),
+        (libc::SIGINT, "INT"),
+        (libc::SIGQUIT, "QUIT"),
+        (libc::SIGILL, "ILL"),
+        (libc::SIGTRAP, "TRAP"),
+        (libc::SIGABRT, "ABRT"),
+        (libc::SIGFPE, "FPE"),
+        (libc::SIGKILL, "KILL"),
+        (libc::SIGSEGV, "SEGV"),
+        (libc::SIGBUS, "BUS"),
+        (libc::SIGPIPE, "PIPE"),
+        (libc::SIGALRM, "ALRM"),
+        (libc::SIGTERM, "TERM"),
+        (libc::SIGUSR1, "USR1"),
+        (libc::SIGUSR2, "USR2"),
+        (libc::SIGCHLD, "CHLD"),
+        (libc::SIGURG, "URG"),
+        (libc::SIGSTOP, "STOP"),
+        (libc::SIGTSTP, "TSTP"),
+        (libc::SIGCONT, "CONT"),
+        (libc::SIGTTIN, "TTIN"),
+        (libc::SIGTTOU, "TTOU"),
+        (libc::SIGSYS, "SYS"),
+    ];
+    // sig2str's preferred XSI spelling is POLL when the host defines it.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    signals.push((libc::SIGPOLL, "POLL"));
+    signals.extend([
+        (libc::SIGVTALRM, "VTALRM"),
+        (libc::SIGPROF, "PROF"),
+        (libc::SIGXCPU, "XCPU"),
+        (libc::SIGXFSZ, "XFSZ"),
+        // Historical IOT is an accepted alias, but ABRT remains canonical.
+        (libc::SIGABRT, "IOT"),
+    ]);
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))]
+    signals.push((libc::SIGEMT, "EMT"));
+    // Historical CLD is an accepted alias, but CHLD remains canonical.
+    signals.push((libc::SIGCHLD, "CLD"));
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    signals.push((libc::SIGPWR, "PWR"));
+    signals.push((libc::SIGWINCH, "WINCH"));
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))]
+    signals.push((libc::SIGINFO, "INFO"));
+    signals.push((libc::SIGIO, "IO"));
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    signals.push((libc::SIGSTKFLT, "STKFLT"));
+    signals.push((0, "EXIT"));
+    signals
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn realtime_signal_bounds() -> Option<(i32, i32)> {
+    let minimum = libc::SIGRTMIN();
+    let maximum = libc::SIGRTMAX();
+    (minimum <= maximum).then_some((minimum, maximum))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn realtime_signal_bounds() -> Option<(i32, i32)> {
+    None
+}
+
+#[cfg(unix)]
+fn realtime_signal_number(name: &str) -> Option<i32> {
+    let (minimum, maximum) = realtime_signal_bounds()?;
+    if let Some(delta) = name.strip_prefix("RTMIN") {
+        let delta = if delta.is_empty() {
+            0
+        } else {
+            delta.strip_prefix('+')?.parse::<i32>().ok()?
+        };
+        return (0..=maximum - minimum)
+            .contains(&delta)
+            .then_some(minimum + delta);
+    }
+    let delta = name.strip_prefix("RTMAX")?;
+    let delta = if delta.is_empty() {
+        0
+    } else {
+        delta.parse::<i32>().ok()?
+    };
+    (minimum - maximum..=0)
+        .contains(&delta)
+        .then_some(maximum + delta)
+}
+
+#[cfg(unix)]
+fn signal_names_value() -> Value {
+    let mut names = std::collections::BTreeMap::new();
+    for (number, name) in named_signal_candidates() {
+        names.entry(number).or_insert_with(|| name.to_string());
+    }
+    if let Some((minimum, maximum)) = realtime_signal_bounds() {
+        for number in minimum..=maximum {
+            names.entry(number).or_insert_with(|| {
+                if number <= minimum + (maximum - minimum) / 2 {
+                    let delta = number - minimum;
+                    if delta == 0 {
+                        "RTMIN".into()
+                    } else {
+                        format!("RTMIN+{delta}")
+                    }
+                } else {
+                    let delta = number - maximum;
+                    if delta == 0 {
+                        "RTMAX".into()
+                    } else {
+                        format!("RTMAX{delta}")
+                    }
+                }
+            });
+        }
+    }
+    Value::list(
+        names
+            .into_values()
+            .rev()
+            .map(Value::String)
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[cfg(unix)]
+fn signal_process_target_pid(
+    interp: &mut Interpreter,
+    target: &Value,
+) -> Result<Option<libc::pid_t>, LispError> {
+    if let Some(name) = string_like(target) {
+        if let Some(process_id) = interp.find_process_id_by_name(&name.text) {
+            let pid = interp
+                .process_os_id(process_id)
+                .ok_or_else(|| LispError::Signal(format!("Cannot signal process {}", name.text)))?;
+            return Ok(Some(pid as libc::pid_t));
+        }
+        return Ok(name.text.parse::<libc::pid_t>().ok());
+    }
+    if let Ok(pid) = target.as_integer() {
+        return i32::try_from(pid)
+            .map(Some)
+            .map_err(|_| LispError::Signal("Process id is out of range".into()));
+    }
+    let process = process_designator_value(interp, Some(target))?;
+    let process_id = interp.resolve_process_id(&process)?;
+    let name = interp.process_name(process_id).unwrap_or_default();
+    interp
+        .process_os_id(process_id)
+        .map(|pid| Some(pid as libc::pid_t))
+        .ok_or_else(|| LispError::Signal(format!("Cannot signal process {name}")))
 }
 
 fn file_local_variable_is_truthy(source: &str, variable: &str) -> bool {
@@ -3110,9 +4532,35 @@ fn call_major_or_named_mode(
     mode: &str,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if modes::is_major_mode_builtin(mode) {
-        modes::call_major_mode(interp, mode)
-    } else {
-        call_named_function(interp, mode, &[], env)
+    // A native major-mode arm is a fallback implementation, not a parallel
+    // owner of the function name.  In a full GNU load path the binding may be
+    // an autoload or a completed Lisp definition whose hooks and setup are
+    // observable.  Resolve and call that binding normally; autoload failure
+    // already falls back to the native arm in `call_function_value_inner`.
+    call_named_function(interp, mode, &[], env)
+}
+
+fn call_auto_mode(interp: &mut Interpreter, mode: &str, env: &mut Env) -> Result<bool, LispError> {
+    let available = modes::is_major_mode_builtin(mode)
+        || matches!(
+            mode,
+            "fundamental-mode" | "prog-mode" | "emacs-lisp-mode" | "special-mode"
+        )
+        || interp.lookup_function(mode, env).is_ok();
+    if !available {
+        return Ok(false);
     }
+    Ok(call_major_or_named_mode(interp, mode, env).is_ok())
+}
+
+fn call_auto_modes(
+    interp: &mut Interpreter,
+    modes: &[String],
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let mut activated = false;
+    for mode in modes {
+        activated |= call_auto_mode(interp, mode, env)?;
+    }
+    Ok(activated)
 }

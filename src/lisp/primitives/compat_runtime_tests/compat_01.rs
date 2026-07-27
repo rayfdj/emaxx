@@ -901,7 +901,7 @@ fn modify_syntax_entry_accepts_character_ranges() {
             &mut env,
         )
         .expect("range start should be set"),
-        Value::Integer(2)
+        Value::list([Value::Integer(2)])
     );
     assert_eq!(
         call(
@@ -911,7 +911,7 @@ fn modify_syntax_entry_accepts_character_ranges() {
             &mut env,
         )
         .expect("range middle should be set"),
-        Value::Integer(2)
+        Value::list([Value::Integer(2)])
     );
 }
 
@@ -940,7 +940,7 @@ fn syntax_table_aref_and_range_return_encoded_entries() {
             &mut env,
         )
         .expect("aref should expose encoded syntax descriptor"),
-        Value::Integer(983041)
+        Value::list([Value::Integer(983041)])
     );
     assert_eq!(
         call(
@@ -950,7 +950,7 @@ fn syntax_table_aref_and_range_return_encoded_entries() {
             &mut env,
         )
         .expect("char-table-range should expose encoded syntax descriptor"),
-        Value::Integer(983041)
+        Value::list([Value::Integer(983041)])
     );
 
     call(
@@ -1276,7 +1276,8 @@ fn normal_mode_selects_archive_mode_for_zip_buffers() {
                     ]),
                 ]),
                 Value::Nil,
-            ],
+            ]
+            .into(),
             shared_env(Vec::new()),
         )),
     );
@@ -1415,7 +1416,8 @@ fn normal_mode_consults_auto_mode_alist_before_dispatching() {
                     ]),
                 ]),
                 Value::Nil,
-            ],
+            ]
+            .into(),
             shared_env(Vec::new()),
         )),
     );
@@ -1441,6 +1443,64 @@ fn normal_mode_consults_auto_mode_alist_before_dispatching() {
         interp.lookup_var("major-mode", &env),
         Some(Value::Symbol("sample-custom-mode".into()))
     );
+}
+
+#[test]
+fn normal_mode_prefers_loaded_lisp_mode_over_the_native_fallback() {
+    let root = std::env::temp_dir().join(format!(
+        "emaxx-normal-mode-autoload-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("create mode autoload directory");
+    let target = root.join("sample-python-mode.el");
+    std::fs::write(
+        &target,
+        "(defun python-mode ()\n\
+           (setq loaded-python-mode-ran t)\n\
+           (setq-local major-mode 'python-mode))\n",
+    )
+    .expect("write mode autoload");
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_load_path(vec![root.clone()]);
+    let autoload =
+        crate::lisp::reader::Reader::new("(autoload 'python-mode \"sample-python-mode\")")
+            .read()
+            .expect("read mode autoload")
+            .expect("mode autoload form");
+    interp
+        .eval(&autoload, &mut env)
+        .expect("install mode autoload");
+    interp.set_variable(
+        "auto-mode-alist",
+        Value::list([Value::cons(
+            Value::String("\\.py\\'".into()),
+            Value::Symbol("python-mode".into()),
+        )]),
+        &mut env,
+    );
+    interp.set_variable(
+        "buffer-file-name",
+        Value::String("/tmp/example.py".into()),
+        &mut env,
+    );
+
+    assert_eq!(
+        call(&mut interp, "normal-mode", &[], &mut env).expect("dispatch Python normal-mode"),
+        Value::Nil
+    );
+    assert_eq!(
+        interp.lookup_var("loaded-python-mode-ran", &env),
+        Some(Value::T),
+        "normal-mode must funcall the installed Lisp definition before using a native fallback"
+    );
+
+    std::fs::remove_file(target).expect("remove mode autoload");
+    std::fs::remove_dir(root).expect("remove mode autoload directory");
 }
 
 #[test]
@@ -1603,6 +1663,77 @@ fn find_file_marks_unwritable_files_read_only() {
 }
 
 #[test]
+fn file_visiting_apis_reuse_the_live_buffer_and_preserve_unsaved_text() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-visited-buffer-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    std::fs::write(&path, "disk").expect("create visited file");
+    let path_text = path.to_string_lossy().into_owned();
+
+    let first = call(
+        &mut interp,
+        "find-file-noselect",
+        &[Value::String(path_text.clone())],
+        &mut env,
+    )
+    .expect("first file visit");
+    let first_id = interp.resolve_buffer_id(&first).expect("first buffer id");
+    interp
+        .switch_to_buffer_id(first_id)
+        .expect("select first file buffer");
+    interp.buffer.goto_char(interp.buffer.point_max());
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String("-unsaved".into())],
+        &mut env,
+    )
+    .expect("modify visiting buffer");
+
+    let exact = call(
+        &mut interp,
+        "get-file-buffer",
+        &[Value::String(path_text.clone())],
+        &mut env,
+    )
+    .expect("look up exact visited name");
+    assert_eq!(exact, first);
+
+    let canonical = std::fs::canonicalize(&path)
+        .expect("canonical visited path")
+        .to_string_lossy()
+        .into_owned();
+    let aliased = call(
+        &mut interp,
+        "find-buffer-visiting",
+        &[Value::String(canonical)],
+        &mut env,
+    )
+    .expect("look up canonical visited name");
+    assert_eq!(aliased, first);
+
+    let reopened = call(
+        &mut interp,
+        "find-file-noselect",
+        &[Value::String(path_text)],
+        &mut env,
+    )
+    .expect("reopen visited file");
+    assert_eq!(reopened, first);
+    assert_eq!(interp.buffer.buffer_string(), "disk-unsaved");
+
+    interp.kill_buffer_id(first_id);
+    std::fs::remove_file(path).expect("remove visited file");
+}
+
+#[test]
 fn selected_window_is_a_record_and_tracks_window_start() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -1700,7 +1831,8 @@ fn display_buffer_calls_action_function_via_primitive_entrypoint() {
                     Value::T,
                 ]),
                 Value::list([Value::Symbol("selected-window".into())]),
-            ],
+            ]
+            .into(),
             shared_env(Vec::new()),
         )),
     );
@@ -1740,7 +1872,8 @@ fn display_buffer_action_function_can_return_nil() {
                     Value::T,
                 ]),
                 Value::list([Value::Symbol("quote".into()), Value::Nil]),
-            ],
+            ]
+            .into(),
             shared_env(Vec::new()),
         )),
     );
@@ -1803,7 +1936,7 @@ fn find_operation_coding_system_accepts_file_buffer_cons() {
 #[test]
 fn insert_file_contents_respects_auto_compression_mode_toggle() {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    std::io::Write::write_all(&mut encoder, b"hello\n").expect("write gzip payload");
+    std::io::Write::write_all(&mut encoder, "❄\n".as_bytes()).expect("write gzip payload");
     let compressed = encoder.finish().expect("finish gzip payload");
 
     let path = std::env::temp_dir().join(format!(
@@ -1823,11 +1956,27 @@ fn insert_file_contents_respects_auto_compression_mode_toggle() {
         &mut compressed_env,
     )
     .expect("insert compressed contents literally when auto compression is disabled");
-    assert_ne!(compressed_interp.buffer.buffer_string(), "hello\n");
+    assert_ne!(compressed_interp.buffer.buffer_string(), "❄\n");
 
     let mut decompressed_interp = Interpreter::new();
     let mut decompressed_env = Vec::new();
     decompressed_interp.set_variable("auto-compression-mode", Value::T, &mut decompressed_env);
+    let auto_coding = Reader::new(
+        "(defun emaxx-test-auto-coding (filename _size)
+           (setq emaxx-test-auto-coding-file filename)
+           (if (string-suffix-p \".gz\" filename) 'no-conversion nil))",
+    )
+    .read()
+    .expect("auto-coding regression should parse")
+    .expect("auto-coding regression should contain a form");
+    decompressed_interp
+        .eval(&auto_coding, &mut decompressed_env)
+        .expect("auto-coding regression helper should evaluate");
+    decompressed_interp.set_variable(
+        "set-auto-coding-function",
+        Value::Symbol("emaxx-test-auto-coding".into()),
+        &mut decompressed_env,
+    );
     call(
         &mut decompressed_interp,
         "insert-file-contents",
@@ -1835,9 +1984,75 @@ fn insert_file_contents_respects_auto_compression_mode_toggle() {
         &mut decompressed_env,
     )
     .expect("insert decompressed contents when auto compression is enabled");
-    assert_eq!(decompressed_interp.buffer.buffer_string(), "hello\n");
+    assert_eq!(decompressed_interp.buffer.buffer_string(), "❄\n");
+    assert_eq!(
+        decompressed_interp
+            .lookup_var("emaxx-test-auto-coding-file", &decompressed_env)
+            .expect("auto-coding helper should record its filename"),
+        Value::String(path_string.trim_end_matches(".gz").to_string())
+    );
 
     std::fs::remove_file(path).expect("cleanup gzip file");
+}
+
+#[test]
+fn file_system_info_reports_host_capacity_and_missing_paths() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let info = call(
+        &mut interp,
+        "file-system-info",
+        &[Value::String(std::env::temp_dir().display().to_string())],
+        &mut env,
+    )
+    .expect("file-system-info should query the host filesystem");
+    let values = info
+        .to_vec()
+        .expect("file-system-info should return a three-element list");
+    assert_eq!(values.len(), 3);
+    let total = integer_like_bigint(&interp, &values[0]).expect("total bytes");
+    let free = integer_like_bigint(&interp, &values[1]).expect("free bytes");
+    let available = integer_like_bigint(&interp, &values[2]).expect("available bytes");
+    assert!(total > BigInt::from(0));
+    assert!(total >= free);
+    assert!(free >= available);
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "file-system-info",
+            &[Value::String(
+                "/definitely/missing/emaxx-file-system-info".into()
+            )],
+            &mut env,
+        )
+        .expect("a missing filesystem path is not an exceptional query"),
+        Value::Nil
+    );
+}
+
+#[test]
+fn discard_input_clears_pending_events_and_keyboard_macro_definition() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((unread-command-events '(97 98))
+               (defining-kbd-macro t))
+           (list (discard-input)
+                 unread-command-events
+                 defining-kbd-macro
+                 (input-pending-p)))",
+    )
+    .read()
+    .expect("discard-input regression should parse")
+    .expect("discard-input regression should contain a form");
+
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("discard-input should clear batch-visible input state"),
+        Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil])
+    );
 }
 
 #[test]
