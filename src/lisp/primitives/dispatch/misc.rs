@@ -1,5 +1,164 @@
 use super::*;
 
+fn fringe_bitmap_id(interp: &Interpreter, name: &str) -> Option<i64> {
+    interp
+        .fringe_bitmap_states
+        .iter()
+        .find(|bitmap| bitmap.name == name)
+        .map(|bitmap| bitmap.id)
+}
+
+fn fringe_bits_length(value: &Value) -> Result<usize, LispError> {
+    if is_vector_value(value) {
+        return Ok(vector_items(value)?.len());
+    }
+    if let Some(string) = string_like(value) {
+        return Ok(string.text.chars().count());
+    }
+    Err(wrong_type_argument("arrayp", value.clone()))
+}
+
+fn fringe_fixnum(value: &Value) -> Result<i64, LispError> {
+    match value {
+        Value::Integer(value) => Ok(*value),
+        _ => Err(wrong_type_argument("fixnump", value.clone())),
+    }
+}
+
+fn fringe_symbol_name(value: &Value) -> Result<String, LispError> {
+    value
+        .as_symbol()
+        .map(str::to_string)
+        .map_err(|_| wrong_type_argument("symbolp", value.clone()))
+}
+
+fn define_fringe_bitmap(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &Env,
+) -> Result<Value, LispError> {
+    let name = fringe_symbol_name(&args[0])?;
+    let bits_length = fringe_bits_length(&args[1])?;
+    let height = match args.get(2).filter(|value| !value.is_nil()) {
+        Some(value) => fringe_fixnum(value)?.clamp(0, 255),
+        None => bits_length.min(255) as i64,
+    };
+    let width = match args.get(3).filter(|value| !value.is_nil()) {
+        Some(value) => {
+            let width = fringe_fixnum(value)?;
+            if !(1..=16).contains(&width) {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("args-out-of-range"),
+                    value.clone(),
+                    Value::String("Width must be from 1 to 16".into()),
+                ])));
+            }
+            width
+        }
+        None => 8,
+    };
+    let mut align = args.get(4).cloned().unwrap_or(Value::Nil);
+    let mut periodic = false;
+    if let Some((head, tail)) = align.cons_values() {
+        if let Some((period, _)) = tail.cons_values() {
+            periodic = period.is_truthy();
+        }
+        align = head;
+    }
+    if !align.is_nil()
+        && !matches!(
+            align,
+            Value::Symbol(ref name) if matches!(name.as_str(), "top" | "center" | "bottom")
+        )
+    {
+        return Err(LispError::Signal("Bad align argument".into()));
+    }
+
+    let existing_id = fringe_bitmap_id(interp, &name);
+    let bitmap_id = existing_id.unwrap_or_else(|| {
+        interp
+            .fringe_bitmap_states
+            .iter()
+            .map(|bitmap| bitmap.id)
+            .max()
+            .unwrap_or(STANDARD_FRINGE_BITMAPS.len() as i64)
+            + 1
+    });
+    if existing_id.is_none() {
+        let mut bitmaps = vec![args[0].clone()];
+        bitmaps.extend(
+            interp
+                .lookup_var("fringe-bitmaps", env)
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default(),
+        );
+        interp.set_global_binding("fringe-bitmaps", Value::list(bitmaps));
+        interp.put_symbol_property(&name, "fringe", Value::Integer(bitmap_id));
+    }
+    let definition = Value::list([
+        args[1].clone(),
+        Value::Integer(height),
+        Value::Integer(width),
+        align,
+        if periodic { Value::T } else { Value::Nil },
+    ]);
+    if let Some(bitmap) = interp
+        .fringe_bitmap_states
+        .iter_mut()
+        .find(|bitmap| bitmap.id == bitmap_id)
+    {
+        bitmap.definition = Some(definition);
+        // GNU destroys the old platform bitmap before replacing it, which
+        // also resets any face override.
+        bitmap.face = Value::Nil;
+    } else {
+        interp
+            .fringe_bitmap_states
+            .push(crate::lisp::eval::FringeBitmapState {
+                name,
+                id: bitmap_id,
+                standard: false,
+                definition: Some(definition),
+                face: Value::Nil,
+            });
+    }
+    Ok(args[0].clone())
+}
+
+fn destroy_fringe_bitmap(
+    interp: &mut Interpreter,
+    bitmap: &Value,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let name = fringe_symbol_name(bitmap)?;
+    let Some(id) = fringe_bitmap_id(interp, &name) else {
+        return Ok(Value::Nil);
+    };
+    let Some(index) = interp
+        .fringe_bitmap_states
+        .iter()
+        .position(|bitmap| bitmap.id == id)
+    else {
+        return Ok(Value::Nil);
+    };
+    if interp.fringe_bitmap_states[index].standard {
+        drop(interp.fringe_bitmap_states[index].definition.take());
+        interp.fringe_bitmap_states[index].face = Value::Nil;
+    } else {
+        interp.fringe_bitmap_states.remove(index);
+        interp.put_symbol_property(&name, "fringe", Value::Nil);
+        let bitmaps = interp
+            .lookup_var("fringe-bitmaps", env)
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|candidate| !values_eq_in_env(interp, candidate, bitmap, env))
+            .collect::<Vec<_>>();
+        interp.set_global_binding("fringe-bitmaps", Value::list(bitmaps));
+    }
+    Ok(Value::Nil)
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -23,6 +182,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "require"
             | "define-error"
             | "define-fringe-bitmap"
+            | "destroy-fringe-bitmap"
+            | "set-fringe-bitmap-face"
+            | "fringe-bitmaps-at-pos"
             | "define-mail-user-agent"
             | "intern"
             | "intern-soft"
@@ -455,7 +617,53 @@ pub(super) fn call(
             }
             Ok(args[0].clone())
         }
-        "define-fringe-bitmap" => Ok(Value::Nil),
+        "define-fringe-bitmap" => {
+            need_arg_range(name, args, 2, 5)?;
+            define_fringe_bitmap(interp, args, env)
+        }
+        "destroy-fringe-bitmap" => {
+            need_args(name, args, 1)?;
+            destroy_fringe_bitmap(interp, &args[0], env)
+        }
+        "set-fringe-bitmap-face" => {
+            need_arg_range(name, args, 1, 2)?;
+            let bitmap = fringe_symbol_name(&args[0])?;
+            let Some(bitmap) = interp
+                .fringe_bitmap_states
+                .iter_mut()
+                .find(|candidate| candidate.name == bitmap)
+            else {
+                return Err(LispError::Signal("Undefined fringe bitmap".into()));
+            };
+            bitmap.face = args.get(1).cloned().unwrap_or(Value::Nil);
+            Ok(Value::Nil)
+        }
+        "fringe-bitmaps-at-pos" => {
+            need_arg_range(name, args, 0, 2)?;
+            let window = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .cloned()
+                .unwrap_or_else(|| interp.selected_window_value());
+            if window_record_id_from_value(interp, &window).is_none() {
+                return Err(wrong_type_argument("windowp", window));
+            }
+            if let Some(position) = args.first().filter(|value| !value.is_nil()) {
+                let position_value = position_from_value(interp, position)?;
+                if position_value < interp.buffer.point_min()
+                    || position_value > interp.buffer.point_max()
+                {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("args-out-of-range"),
+                        window,
+                        position.clone(),
+                    ])));
+                }
+            }
+            // The headless renderer retains no glyph matrix, so no display
+            // row can own fringe bitmaps.  GNU returns nil in this state.
+            Ok(Value::Nil)
+        }
         "define-mail-user-agent" => {
             need_arg_range(name, args, 3, 5)?;
             let symbol = args[0].as_symbol()?;

@@ -18,6 +18,26 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- POST-`b3c90e2` 2026-07-27 NATIVE-AUDIT PROGRESS: `fringe.c` is now complete,
+  advancing the exact inventory to 1,211 mirrored / 209 missing.  The former
+  `define-fringe-bitmap` implementation was an unconditional nil stub and an
+  older fast test incorrectly encoded that stub as expected behavior.  Rust
+  now owns the standard/user bitmap registry, replacement and destruction,
+  face overrides, exact C validation, and headless glyph-matrix query
+  contract.  Native bitmap data stays in interpreter state; only GNU's real
+  `fringe-bitmaps` variable and `fringe` symbol property cross into Lisp.
+  The family-level Rust regression compares registry mutations, errors, and
+  row queries directly with GNU.  The complete publication gate is green:
+  `cargo test --all-targets --all-features` passed 1,598 library tests, 28
+  compatibility-harness tests, 1 performance-harness test, 5 CLI tests, and 3
+  ERT-runner tests (plus the zero-test binary target).  The exact 1..N/7080
+  oracle gate remains pending; do not confuse this native-audit checkpoint
+  with 7080 frontier progress.
+- `menu.c` was audited but deliberately remains missing: GNU's own
+  `menu-bar-menu-at-x-y` aborts the initial batch oracle frame (exit 134), so
+  a headless nil shim cannot be established as a compatibility contract.
+  Do not claim this family until it can be tested on a suitable live terminal
+  or graphical-frame harness.
 - POST-CHECKPOINT 2026-07-27 NATIVE-AUDIT PROGRESS: the complete `indent.c`
   and remaining `xdisp.c` families are now mirrored, moving the exact
   inventory from 1,197/223 to 1,208 mirrored / 212 missing.  The shared

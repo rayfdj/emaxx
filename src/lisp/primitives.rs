@@ -104,6 +104,33 @@ pub(crate) use text::*;
 pub(crate) use values::*;
 pub(crate) use window::*;
 
+pub(crate) const STANDARD_FRINGE_BITMAPS: &[&str] = &[
+    "question-mark",
+    "exclamation-mark",
+    "left-arrow",
+    "right-arrow",
+    "up-arrow",
+    "down-arrow",
+    "left-curly-arrow",
+    "right-curly-arrow",
+    "large-circle",
+    "left-triangle",
+    "right-triangle",
+    "top-left-angle",
+    "top-right-angle",
+    "bottom-left-angle",
+    "bottom-right-angle",
+    "left-bracket",
+    "right-bracket",
+    "filled-rectangle",
+    "hollow-rectangle",
+    "filled-square",
+    "hollow-square",
+    "vertical-bar",
+    "horizontal-bar",
+    "empty-line",
+];
+
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 type FileChangeFingerprint = Option<(u64, u128)>;

@@ -342,12 +342,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_208, 3_704_738_922_697_380_503),
+        (1_211, 9_914_116_110_673_568_262),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (212, 15_243_755_666_620_849_093),
+        (209, 13_212_162_071_477_468_134),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -3836,6 +3836,107 @@ fn native_image_cache_family_matches_the_headless_frame_contract() {
             .read()
             .expect("expected image cache result should parse")
             .expect("expected image cache result should exist")
+    );
+}
+
+#[test]
+fn native_fringe_bitmap_registry_family_matches_gnu() {
+    let program = r#"
+        (let ((name 'emaxx-test-fringe))
+          (unwind-protect
+              (list
+               (list
+                (length fringe-bitmaps)
+                (get 'question-mark 'fringe)
+                (get 'empty-line 'fringe))
+               (let* ((before fringe-bitmaps)
+                      (defined
+                       (define-fringe-bitmap
+                        name [1 2 511 -1])))
+                 (list
+                  (eq defined name)
+                  (integerp (get name 'fringe))
+                  (and (memq name fringe-bitmaps) t)
+                  (= (length fringe-bitmaps)
+                     (1+ (length before)))
+                  (set-fringe-bitmap-face name 'warning)
+                  (eq
+                   (define-fringe-bitmap
+                    name "\1\2" 7 16 '(bottom t))
+                   name)
+                  (= (length fringe-bitmaps)
+                     (1+ (length before)))
+                  (destroy-fringe-bitmap name)
+                  (get name 'fringe)
+                  (and (memq name fringe-bitmaps) t)))
+               (mapcar
+                (lambda (thunk)
+                  (condition-case error-data
+                      (funcall thunk)
+                    (error
+                     (list
+                      (car error-data)
+                      (cadr error-data)))))
+                (list
+                 (lambda ()
+                   (define-fringe-bitmap 3 []))
+                 (lambda ()
+                   (define-fringe-bitmap name 3))
+                 (lambda ()
+                   (define-fringe-bitmap name [] nil 0))
+                 (lambda ()
+                   (define-fringe-bitmap name [] nil 17))
+                 (lambda ()
+                   (define-fringe-bitmap
+                    name [] nil 8 'middle))
+                 (lambda ()
+                   (set-fringe-bitmap-face name nil))
+                 (lambda ()
+                   (destroy-fringe-bitmap 3))))
+               (with-temp-buffer
+                 (insert "abc")
+                 (set-window-buffer
+                  (selected-window) (current-buffer))
+                 (list
+                  (fringe-bitmaps-at-pos)
+                  (fringe-bitmaps-at-pos 1)
+                  (condition-case error-data
+                      (fringe-bitmaps-at-pos 99)
+                    (error (car error-data)))
+                  (condition-case error-data
+                      (fringe-bitmaps-at-pos nil 3)
+                    (error (car error-data))))))
+            (destroy-fringe-bitmap name)))"#;
+    let expected = r#"((24 1 24)
+                       (t t t t nil t t nil nil nil)
+                       ((wrong-type-argument symbolp)
+                        (wrong-type-argument arrayp)
+                        (args-out-of-range 0)
+                        (args-out-of-range 17)
+                        (error "Bad align argument")
+                        (error "Undefined fringe bitmap")
+                        (wrong-type-argument symbolp))
+                       (nil nil args-out-of-range
+                        wrong-type-argument))"#;
+    let expected_printed = "((24 1 24) (t t t t nil t t nil nil nil) ((wrong-type-argument symbolp) (wrong-type-argument arrayp) (args-out-of-range 0) (args-out-of-range 17) (error \"Bad align argument\") (error \"Undefined fringe bitmap\") (wrong-type-argument symbolp)) (nil nil args-out-of-range wrong-type-argument))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("fringe.c family contract should parse")
+        .expect("fringe.c family contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("fringe.c family contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("fringe.c expected value should parse")
+        .expect("fringe.c expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "fringe.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 
