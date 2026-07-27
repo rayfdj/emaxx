@@ -54,7 +54,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "ngettext"
             | "format-spec"
             | "char-to-string"
-            | "find-composition-internal"
             | "ucs-normalize-NFC-string"
             | "ucs-normalize-NFD-string"
             | "ucs-normalize-NFKC-string"
@@ -1296,51 +1295,6 @@ pub(super) fn call(
                 Vec::new(),
                 n > 0x7F,
             ))
-        }
-        "find-composition-internal" => {
-            // (find-composition-internal POS LIMIT STRING DETAIL-P): report
-            // the grapheme cluster containing POS.  String positions are
-            // zero-based, while buffer positions are one-based.  Emacs uses
-            // this both for `string-glyph-split' and to keep byte-limited ERC
-            // lines from splitting a base character from its combining mark.
-            need_arg_range(name, args, 4, 4)?;
-            let raw_pos = args[0].as_integer()?.max(0) as usize;
-            let (text, pos, position_base) = if let Some(string) = string_like(&args[2]) {
-                (string.text, raw_pos, 0usize)
-            } else if args[2].is_nil() {
-                (
-                    interp.current_buffer().full_buffer_string(),
-                    raw_pos.saturating_sub(1),
-                    1usize,
-                )
-            } else {
-                return Err(LispError::TypeError("string".into(), args[2].type_name()));
-            };
-            use unicode_segmentation::UnicodeSegmentation;
-            if pos >= text.chars().count() {
-                return Ok(Value::Nil);
-            }
-            // Walk grapheme clusters, tracking character offsets, to find the
-            // one containing POS.
-            let mut char_offset = 0usize;
-            for cluster in text.graphemes(true) {
-                let cluster_len = cluster.chars().count();
-                if (char_offset..char_offset + cluster_len).contains(&pos) {
-                    if cluster_len > 1 {
-                        return Ok(Value::list([
-                            Value::Integer((char_offset + position_base) as i64),
-                            Value::Integer((char_offset + cluster_len + position_base) as i64),
-                            Value::Nil,
-                        ]));
-                    }
-                    return Ok(Value::Nil);
-                }
-                if char_offset > pos {
-                    break;
-                }
-                char_offset += cluster_len;
-            }
-            Ok(Value::Nil)
         }
         "ucs-normalize-NFC-string" => {
             need_args(name, args, 1)?;

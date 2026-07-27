@@ -18,6 +18,24 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- POST-`4bb5a43` 2026-07-27 NATIVE-AUDIT PROGRESS: `composite.c` is now
+  complete, advancing the exact inventory to 1,216 mirrored / 204 missing.
+  The former `find-composition-internal` was a superficial Unicode-grapheme
+  approximation that ignored GNU's `composition` text property.  A dedicated
+  native composition module now owns static buffer/string composition,
+  registration and detail output, headless terminal glyph strings, automatic
+  combining clusters, rule sorting, and cache reset.  The shared text-property
+  interval layer now uses GNU `eq` identity—not structural equality—both when
+  merging adjacent intervals and when scanning single-property changes; this
+  keeps separately allocated but equal composition descriptors distinct.  A
+  fast family-level GNU oracle regression covers all six `composite.c`
+  primitives, every composition method, reverse buffer bounds, search
+  direction and limit clamping, terminal glyph metrics, exact errors, and the
+  shared interval-identity invariant.  The complete publication gate is
+  green: `cargo test --all-targets --all-features` passed 1,599 library
+  tests, 28 compatibility-harness tests, 1 performance-harness test, 5 CLI
+  tests, and 3 ERT-runner tests (plus the zero-test binary target).  The exact
+  1..N/7080 replay is still pending.
 - POST-`b3c90e2` 2026-07-27 NATIVE-AUDIT PROGRESS: `fringe.c` is now complete,
   advancing the exact inventory to 1,211 mirrored / 209 missing.  The former
   `define-fringe-bitmap` implementation was an unconditional nil stub and an

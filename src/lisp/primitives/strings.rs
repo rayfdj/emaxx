@@ -604,7 +604,7 @@ pub(crate) fn merge_string_props(mut props: Vec<TextPropertySpan>) -> Vec<TextPr
     for span in props {
         if let Some(last) = merged.last_mut()
             && last.end == span.start
-            && last.props == span.props
+            && crate::buffer::text_property_plists_eq(&last.props, &span.props)
         {
             last.end = span.end;
         } else {
@@ -797,7 +797,7 @@ pub(crate) fn merge_string_object_props(
     for span in spans {
         if let Some(last) = merged.last_mut()
             && last.end == span.start
-            && last.props == span.props
+            && crate::buffer::text_property_plists_eq(&last.props, &span.props)
         {
             last.end = span.end;
         } else {

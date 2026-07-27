@@ -342,12 +342,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_211, 9_914_116_110_673_568_262),
+        (1_216, 9_889_188_231_541_867_857),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (209, 13_212_162_071_477_468_134),
+        (204, 15_483_140_156_224_271_115),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -3937,6 +3937,141 @@ fn native_fringe_bitmap_registry_family_matches_gnu() {
     assert!(
         values_equal(&interp, &actual, &expected),
         "fringe.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_composite_c_family_and_text_property_identity_match_gnu() {
+    let program = r#"
+        (list
+         (clear-composition-cache)
+         (composition-sort-rules
+          (list [a 2 c] [d 5 f] [g 2 i]))
+         (let ((string (copy-sequence "abcd"))
+               before)
+           (compose-string-internal
+            string 1 3 nil 'ignore)
+           (setq before
+                 (copy-tree
+                  (get-text-property
+                   1 'composition string)))
+           (list
+            before
+            (find-composition-internal
+             1 nil string nil)
+            (find-composition-internal
+             1 nil string t)
+            (get-text-property
+             1 'composition string)))
+         (let ((string (copy-sequence "ab"))
+               (left (list 1))
+               (right (list 1)))
+           (put-text-property 0 1 'x left string)
+           (put-text-property 1 2 'x right string)
+           (list
+            (next-single-property-change
+             0 'x string)
+            (eq
+             (get-text-property 0 'x string)
+             (get-text-property 1 'x string))
+            (equal
+             (get-text-property 0 'x string)
+             (get-text-property 1 'x string))))
+         (with-temp-buffer
+           (insert "abcd")
+           (compose-region-internal
+            4 2 ?X 'ignore)
+           (list
+            (get-text-property 2 'composition)
+            (find-composition-internal
+             2 nil nil t)
+            (find-composition-internal
+             1 4 nil nil)
+            (find-composition-internal
+             5 1 nil nil)))
+         (list
+          (let ((string (copy-sequence "abc")))
+            (compose-string-internal
+             string 0 3 [65 12 66] 'ignore)
+            (find-composition-internal
+             0 nil string t))
+          (let ((string (copy-sequence "abc")))
+            (compose-string-internal
+             string 0 3 "XY" 'ignore)
+            (find-composition-internal
+             0 nil string t)))
+         (composition-get-gstring 0 2 nil "é")
+         (find-composition-internal 0 -9 "abc" nil)
+         (mapcar
+          (lambda (thunk)
+            (condition-case error-data
+                (funcall thunk)
+              (error
+               (list
+                (car error-data)
+                (if (bufferp (cadr error-data))
+                    'buffer
+                  (cadr error-data))))))
+          (list
+           (lambda ()
+             (compose-region-internal 0 1))
+           (lambda ()
+             (compose-region-internal 1 1 1.5))
+           (lambda ()
+             (composition-get-gstring 0 0 nil ""))
+           (lambda ()
+             (composition-get-gstring 0 1 3 "a"))
+           (lambda ()
+             (find-composition-internal 9 nil "a" nil))
+           (lambda ()
+             (composition-sort-rules
+              (list [a -1 c] [b 1 d]))))))"#;
+    let expected = r#"
+        (nil
+         ([d 5 f] [a 2 c] [g 2 i])
+         (((2) . ignore)
+          (1 3 t)
+          (1 3 [98 99] t ignore 1)
+          (0 2 [98 99] . ignore))
+         (1 nil t)
+         ((1 2 [88] . ignore)
+          (2 4 [88] t ignore 1)
+          (2 4 t)
+          (2 4 t))
+         ((0 3 [65 12 66] nil ignore 2)
+          (0 3 [88 89] t ignore 1))
+         [[utf-8-unix 101 769]
+          nil
+          [0 0 101 101 1 0 1 1 0 nil]
+          [1 1 769 769 0 0 0 1 0 nil]
+          nil nil nil nil nil nil]
+         nil
+         ((args-out-of-range buffer)
+          (wrong-type-argument vectorp)
+          (error "Attempt to shape zero-length text")
+          (wrong-type-argument terminal-live-p)
+          (args-out-of-range "a")
+          (error
+           "Invalid composition rule in RULES argument")))"#;
+    let expected_printed = "(nil ([d 5 f] [a 2 c] [g 2 i]) (((2) . ignore) (1 3 t) (1 3 [98 99] t ignore 1) (0 2 [98 99] . ignore)) (1 nil t) ((1 2 [88] . ignore) (2 4 [88] t ignore 1) (2 4 t) (2 4 t)) ((0 3 [65 12 66] nil ignore 2) (0 3 [88 89] t ignore 1)) [[utf-8-unix 101 769] nil [0 0 101 101 1 0 1 1 0 nil] [1 1 769 769 0 0 0 1 0 nil] nil nil nil nil nil nil] nil ((args-out-of-range buffer) (wrong-type-argument vectorp) (error \"Attempt to shape zero-length text\") (wrong-type-argument terminal-live-p) (args-out-of-range \"a\") (error \"Invalid composition rule in RULES argument\")))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("composite.c family contract should parse")
+        .expect("composite.c family contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("composite.c family contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("composite.c expected value should parse")
+        .expect("composite.c expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "composite.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 

@@ -29,6 +29,20 @@ handoff and retry instruction are in
 
 ## Current State
 
+- Post-`4bb5a43` native audit progress completes `composite.c`, bringing the
+  exact inventory to 1,216 mirrored / 204 missing.  The prior
+  `find-composition-internal` grapheme approximation is replaced by a native
+  family model for static buffer/string composition, registration, detail
+  output, headless terminal glyph strings, automatic combining clusters, rule
+  sorting, and cache reset.  The shared interval layer now uses GNU `eq`
+  identity for both adjacent-property merging and single-property change
+  scans, so distinct but structurally equal composition descriptors retain
+  their boundary.  A direct GNU family regression covers all six primitives,
+  all composition methods, reversed buffer bounds, search/clamping, glyph
+  metrics, exact errors, and the shared identity invariant.  The complete
+  publication gate passed 1,599 library, 28 compatibility-harness, 1
+  performance-harness, 5 CLI, and 3 ERT-runner tests.  The exact 1..N/7080
+  replay remains pending.
 - Post-`b3c90e2` native audit progress completes `fringe.c`, bringing the
   exact inventory to 1,211 mirrored / 209 missing.  The former
   `define-fringe-bitmap` nil stub and its superficial test are replaced by an
