@@ -29,6 +29,18 @@ handoff and retry instruction are in
 
 ## Current State
 
+- Post-`b3c90e2` native audit progress completes `fringe.c`, bringing the
+  exact inventory to 1,211 mirrored / 209 missing.  The former
+  `define-fringe-bitmap` nil stub and its superficial test are replaced by an
+  interpreter-owned native registry with GNU-visible standard/user bitmap
+  IDs, replacement/destruction, face overrides, exact validation, and
+  headless row-query behavior.  A family-level Rust oracle test covers the
+  full contract.  The publication gate passed 1,598 library, 28
+  compatibility-harness, 1 performance-harness, 5 CLI, and 3 ERT-runner
+  tests.  The exact 1..N/7080 replay remains pending.  `menu.c` remains
+  missing because GNU
+  `menu-bar-menu-at-x-y` aborts the initial batch frame; do not replace that
+  unknown live-frame contract with a nil shim.
 - Post-checkpoint native audit progress on 2026-07-27 completes `indent.c` and
   the remaining `xdisp.c` surface, advancing the exact inventory to 1,208
   mirrored / 212 missing.  Family-level GNU-oracle Rust regressions cover

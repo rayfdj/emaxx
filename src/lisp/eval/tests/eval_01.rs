@@ -5847,7 +5847,7 @@ fn font_lock_add_keywords_accumulates_derived_mode_keywords() {
 }
 
 #[test]
-fn face_alias_predicates_and_fringe_bitmap_fallback_load() {
+fn face_alias_predicates_and_fringe_bitmap_registry_load() {
     assert_eq!(
         eval_str(
             "(progn
@@ -5866,7 +5866,7 @@ fn face_alias_predicates_and_fringe_bitmap_fallback_load() {
             Value::T,
             Value::Nil,
             Value::Nil,
-            Value::Nil,
+            Value::Symbol("sample-bitmap".into()),
         ])
     );
 }

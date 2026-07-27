@@ -1131,6 +1131,15 @@ pub(crate) struct MacroBinding {
     pub(crate) expander: Value,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct FringeBitmapState {
+    pub(crate) name: String,
+    pub(crate) id: i64,
+    pub(crate) standard: bool,
+    pub(crate) definition: Option<Value>,
+    pub(crate) face: Value,
+}
+
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
 pub struct Interpreter {
@@ -1414,6 +1423,7 @@ pub struct Interpreter {
     pub lossage_size: i64,
     interactive_call_depth: usize,
     face_inheritance: Vec<(String, Option<String>)>,
+    pub(crate) fringe_bitmap_states: Vec<FringeBitmapState>,
     syntax_word_chars: Vec<u32>,
     standard_syntax_table_id: u64,
     undo_sequence: Option<UndoSequenceState>,
@@ -1577,6 +1587,23 @@ impl Interpreter {
             .unwrap_or_else(|_| Value::Symbol("wall".into()));
         let frame_name =
             primitives::make_shared_string_value_with_multibyte("F1".into(), Vec::new(), true);
+        let fringe_bitmaps = Value::list(
+            primitives::STANDARD_FRINGE_BITMAPS
+                .iter()
+                .rev()
+                .map(|name| Value::symbol(name)),
+        );
+        let fringe_bitmap_states = primitives::STANDARD_FRINGE_BITMAPS
+            .iter()
+            .enumerate()
+            .map(|(index, name)| FringeBitmapState {
+                name: (*name).into(),
+                id: (index + 1) as i64,
+                standard: true,
+                definition: None,
+                face: Value::Nil,
+            })
+            .collect();
         let mut interp = Interpreter {
             globals: vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
@@ -1586,6 +1613,7 @@ impl Interpreter {
                 // GNU frame.c defines this native variable before frame.el
                 // and any dumped/preloaded Lisp run.
                 ("default-frame-alist".into(), Value::Nil),
+                ("fringe-bitmaps".into(), fringe_bitmaps),
                 (
                     "command-line-args".into(),
                     primitives::command_line_args_value(),
@@ -2063,6 +2091,7 @@ impl Interpreter {
             lossage_size: 300,
             interactive_call_depth: 0,
             face_inheritance: Vec::new(),
+            fringe_bitmap_states,
             syntax_word_chars: Vec::new(),
             standard_syntax_table_id,
             undo_sequence: None,
@@ -2109,6 +2138,10 @@ impl Interpreter {
         };
         interp.globals_index = interp.globals.iter().cloned().collect();
         interp.special_variables_index = interp.special_variables.iter().cloned().collect();
+        interp.mark_special_variable("fringe-bitmaps");
+        for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
+            interp.put_symbol_property(name, "fringe", Value::Integer((index + 1) as i64));
+        }
         for name in GNU_LREAD_SPECIAL_VARIABLES {
             interp.mark_special_variable(name);
         }
