@@ -215,8 +215,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "kill-emacs"
             | "invocation-name"
             | "invocation-directory"
+            | "Snarf-documentation"
             | "documentation"
             | "documentation-property"
+            | "internal-subr-documentation"
             | "get"
             | "function-get"
             | "makunbound"
@@ -1114,37 +1116,21 @@ pub(super) fn call(
                 .map(|string| Value::String(string.text))
                 .unwrap_or(value))
         }
-        "documentation" => {
+        "Snarf-documentation" => {
             need_args(name, args, 1)?;
-            if let Some(documentation) = function_documentation(interp, &args[0], env) {
-                return Ok(documentation);
-            }
-            let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
-            if let Some(documentation) = function_documentation(interp, &value, env) {
-                return Ok(documentation);
-            }
-            // Fall back to the version's DOC file for builtins that carry no
-            // native docstring (e.g. C primitives documented in etc/DOC), then
-            // to the docstrings inline in the GNU lisp sources on the load path
-            // (many subr.el/files.el functions are implemented natively here and
-            // have no lambda body to read the docstring from).
-            if let Value::Symbol(sym) = &args[0] {
-                if let Some(doc) = builtin_doc_from_doc_file(sym) {
-                    return Ok(Value::String(doc));
-                }
-                if let Some(doc) = builtin_doc_from_lisp_sources(sym) {
-                    return Ok(Value::String(doc));
-                }
-            }
-            Ok(Value::Nil)
+            snarf_documentation(interp, &args[0], env)
+        }
+        "documentation" => {
+            need_arg_range(name, args, 1, 2)?;
+            documentation(interp, args, env)
         }
         "documentation-property" => {
-            need_args(name, args, 2)?;
-            let symbol = args[0].as_symbol()?;
-            let property = args[1].as_symbol()?;
-            Ok(interp
-                .get_symbol_property(symbol, property)
-                .unwrap_or(Value::Nil))
+            need_arg_range(name, args, 2, 3)?;
+            documentation_property(interp, args, env)
+        }
+        "internal-subr-documentation" => {
+            need_args(name, args, 1)?;
+            internal_subr_documentation(interp, &args[0], env)
         }
         "get" => {
             need_arg_range(name, args, 2, 3)?;
@@ -2381,6 +2367,381 @@ fn obsolete_definition_symbol(value: &Value) -> Result<&str, LispError> {
         Value::Symbol(name) => Ok(name),
         _ => Err(LispError::TypeError("symbol".into(), value.type_name())),
     }
+}
+
+#[derive(Clone, Debug)]
+struct DocFileEntry {
+    kind: u8,
+    name: String,
+    offset: i64,
+    user_variable: bool,
+    skip: bool,
+}
+
+fn parse_doc_file_entries(bytes: &[u8]) -> Result<Vec<DocFileEntry>, LispError> {
+    let mut entries = Vec::new();
+    let mut cursor = 0;
+    while let Some(relative) = bytes[cursor..].iter().position(|byte| *byte == 0x1f) {
+        let marker = cursor + relative;
+        if marker + 2 > bytes.len() {
+            return Err(LispError::Signal(format!(
+                "DOC file invalid at position {marker}"
+            )));
+        }
+        let kind = bytes[marker + 1];
+        let name_start = marker + 2;
+        let Some(relative_newline) = bytes[name_start..].iter().position(|byte| *byte == b'\n')
+        else {
+            return Err(LispError::Signal(format!(
+                "DOC file invalid at position {marker}"
+            )));
+        };
+        let newline = name_start + relative_newline;
+        let content_start = newline + 1;
+        let next_marker = bytes[content_start..]
+            .iter()
+            .position(|byte| *byte == 0x1f)
+            .map(|relative| content_start + relative)
+            .unwrap_or(bytes.len());
+        if !matches!(kind, b'F' | b'V' | b'S') {
+            return Err(LispError::Signal(format!(
+                "DOC file invalid at position {marker}"
+            )));
+        }
+        entries.push(DocFileEntry {
+            kind,
+            name: String::from_utf8_lossy(&bytes[name_start..newline]).into_owned(),
+            offset: content_start as i64,
+            user_variable: kind == b'V' && bytes.get(content_start) == Some(&b'*'),
+            skip: bytes[content_start..next_marker].starts_with(b"SKIP"),
+        });
+        cursor = next_marker;
+        if cursor == bytes.len() {
+            break;
+        }
+    }
+    Ok(entries)
+}
+
+fn doc_path(directory: &Value, filename: &Value) -> Result<PathBuf, LispError> {
+    let directory = string_like(directory)
+        .ok_or_else(|| wrong_type_argument("stringp", directory.clone()))?
+        .text;
+    let filename = string_like(filename)
+        .ok_or_else(|| wrong_type_argument("stringp", filename.clone()))?
+        .text;
+    let filename = PathBuf::from(filename);
+    Ok(if filename.is_absolute() {
+        filename
+    } else {
+        Path::new(&directory).join(filename)
+    })
+}
+
+fn standard_doc_path(interp: &Interpreter, env: &Env) -> Result<PathBuf, LispError> {
+    let directory = interp
+        .lookup_var("doc-directory", env)
+        .unwrap_or(Value::Nil);
+    let filename = interp
+        .lookup_var("internal-doc-file-name", env)
+        .unwrap_or(Value::Nil);
+    doc_path(&directory, &filename)
+}
+
+fn decode_doc_string(bytes: &[u8], position: i64) -> Result<Option<String>, LispError> {
+    let Some(position) = position
+        .checked_abs()
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return Ok(None);
+    };
+    if position == 0
+        || position > bytes.len()
+        || bytes.get(position.wrapping_sub(1)) != Some(&b'\n')
+    {
+        return Ok(None);
+    }
+    let marker = bytes[..position - 1].iter().rposition(|byte| *byte == 0x1f);
+    if marker.is_none() {
+        return Ok(None);
+    }
+    let end = bytes[position..]
+        .iter()
+        .position(|byte| *byte == 0x1f)
+        .map(|relative| position + relative)
+        .unwrap_or(bytes.len());
+    let mut decoded = Vec::with_capacity(end - position);
+    let mut cursor = position;
+    while cursor < end {
+        if bytes[cursor] != 1 {
+            decoded.push(bytes[cursor]);
+            cursor += 1;
+            continue;
+        }
+        let Some(escaped) = bytes.get(cursor + 1).copied() else {
+            return Err(LispError::Signal(
+                "Invalid data in documentation file".into(),
+            ));
+        };
+        decoded.push(match escaped {
+            1 => 1,
+            b'0' => 0,
+            b'_' => 0x1f,
+            _ => {
+                return Err(LispError::Signal(format!(
+                    "Invalid data in documentation file -- {} followed by code {escaped:03o}",
+                    1
+                )));
+            }
+        });
+        cursor += 2;
+    }
+    Ok(Some(String::from_utf8_lossy(&decoded).into_owned()))
+}
+
+fn doc_reference_parts(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<Option<(PathBuf, i64)>, LispError> {
+    if let Value::Integer(position) = value {
+        return Ok(Some((standard_doc_path(interp, env)?, *position)));
+    }
+    let Some((filename, position)) = value.cons_values() else {
+        return Ok(None);
+    };
+    let Value::Integer(position) = position else {
+        return Ok(None);
+    };
+    let directory = interp
+        .lookup_var("lisp-directory", env)
+        .unwrap_or(Value::Nil);
+    Ok(Some((doc_path(&directory, &filename)?, position)))
+}
+
+fn resolve_doc_reference(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<Option<Value>, LispError> {
+    let Some((path, position)) = doc_reference_parts(interp, value, env)? else {
+        return Ok(None);
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(decode_doc_string(&bytes, position)?.map(Value::String)),
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound) => {
+            let filename = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_else(|| path.to_str().unwrap_or(""));
+            Ok(Some(Value::String(format!(
+                "Cannot open doc string file \"{filename}\"\n"
+            ))))
+        }
+        Err(error) => Err(LispError::SignalValue(file_error_value(
+            &error.to_string(),
+            &path.to_string_lossy(),
+        ))),
+    }
+}
+
+fn is_doc_reference(value: &Value) -> bool {
+    matches!(value, Value::Integer(_))
+        || value.cons_values().is_some_and(|(filename, position)| {
+            string_like(&filename).is_some() && matches!(position, Value::Integer(_))
+        })
+}
+
+fn substitute_doc_keys(
+    interp: &mut Interpreter,
+    doc: Value,
+    raw: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if raw || string_like(&doc).is_none() {
+        return Ok(doc);
+    }
+    interp.call_function_value(
+        Value::symbol("substitute-command-keys"),
+        Some("substitute-command-keys"),
+        &[doc],
+        env,
+    )
+}
+
+fn snarf_documentation(
+    interp: &mut Interpreter,
+    filename: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if string_like(filename).is_none() {
+        return Err(wrong_type_argument("stringp", filename.clone()));
+    }
+    let directory = interp
+        .lookup_var("doc-directory", env)
+        .unwrap_or(Value::Nil);
+    let path = doc_path(&directory, filename)?;
+    let bytes = std::fs::read(&path).map_err(|error| {
+        LispError::SignalValue(file_error_value(
+            &format!("Opening doc string file: {error}"),
+            &path.to_string_lossy(),
+        ))
+    })?;
+    let entries = parse_doc_file_entries(&bytes)?;
+    interp.set_variable("internal-doc-file-name", filename.clone(), env);
+    let delayed = interp
+        .lookup_var("custom-delayed-init-variables", env)
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    for entry in entries {
+        if entry.skip {
+            continue;
+        }
+        match entry.kind {
+            b'F' => {
+                if let Ok(Value::BuiltinFunc(native_name)) =
+                    interp.lookup_function(&entry.name, env)
+                {
+                    interp.builtin_doc_offsets.insert(native_name, entry.offset);
+                }
+            }
+            b'V' if interp.lookup_var(&entry.name, env).is_some()
+                || delayed
+                    .iter()
+                    .any(|value| matches!(value, Value::Symbol(name) if name == &entry.name)) =>
+            {
+                interp.put_symbol_property(
+                    &entry.name,
+                    "variable-documentation",
+                    Value::Integer(if entry.user_variable {
+                        -entry.offset
+                    } else {
+                        entry.offset
+                    }),
+                );
+            }
+            b'V' | b'S' => {}
+            _ => unreachable!("DOC entry kinds were validated while parsing"),
+        }
+    }
+    Ok(Value::Nil)
+}
+
+fn ensure_builtin_doc_offset(
+    interp: &mut Interpreter,
+    name: &str,
+    env: &Env,
+) -> Result<i64, LispError> {
+    if let Some(offset) = interp.builtin_doc_offsets.get(name) {
+        return Ok(*offset);
+    }
+    let path = standard_doc_path(interp, env)?;
+    let Ok(bytes) = std::fs::read(path) else {
+        return Ok(0);
+    };
+    let offset = parse_doc_file_entries(&bytes)?
+        .into_iter()
+        .find(|entry| entry.kind == b'F' && entry.name == name && !entry.skip)
+        .map(|entry| entry.offset)
+        .unwrap_or(0);
+    interp.builtin_doc_offsets.insert(name.to_string(), offset);
+    Ok(offset)
+}
+
+fn internal_subr_documentation(
+    interp: &mut Interpreter,
+    function: &Value,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let Value::BuiltinFunc(name) = function else {
+        return Ok(Value::T);
+    };
+    Ok(Value::Integer(ensure_builtin_doc_offset(
+        interp, name, env,
+    )?))
+}
+
+fn documentation_property(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let symbol = args[0]
+        .as_symbol()
+        .map_err(|_| wrong_type_argument("symbolp", args[0].clone()))?;
+    let property = args[1]
+        .as_symbol()
+        .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
+    let mut doc = interp
+        .get_symbol_property(symbol, property)
+        .unwrap_or(Value::Nil);
+    if doc.is_nil()
+        && property == "variable-documentation"
+        && let Ok(target) = interp.resolve_variable_name(symbol)
+        && target != symbol
+    {
+        doc = interp
+            .get_symbol_property(&target, property)
+            .unwrap_or(Value::Nil);
+    }
+    if doc == Value::Integer(0) {
+        doc = Value::Nil;
+    } else if is_doc_reference(&doc) {
+        doc = resolve_doc_reference(interp, &doc, env)?.unwrap_or(Value::Nil);
+    } else if string_like(&doc).is_none() && !doc.is_nil() {
+        doc = interp.eval(&doc, env)?;
+    }
+    substitute_doc_keys(interp, doc, args.get(2).is_some_and(Value::is_truthy), env)
+}
+
+fn documentation(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let raw = args.get(1).is_some_and(Value::is_truthy);
+    if let Value::Symbol(symbol) = &args[0]
+        && interp
+            .get_symbol_property(symbol, "function-documentation")
+            .is_some_and(|value| !value.is_nil())
+    {
+        return documentation_property(
+            interp,
+            &[
+                args[0].clone(),
+                Value::symbol("function-documentation"),
+                if raw { Value::T } else { Value::Nil },
+            ],
+            env,
+        );
+    }
+
+    let function = resolve_callable(interp, &args[0], env)?;
+    let mut doc = match &function {
+        Value::BuiltinFunc(name) => {
+            let offset = ensure_builtin_doc_offset(interp, name, env)?;
+            if offset == 0 {
+                Value::Nil
+            } else {
+                resolve_doc_reference(interp, &Value::Integer(offset), env)?.unwrap_or(Value::Nil)
+            }
+        }
+        _ => function_documentation(interp, &function, env).unwrap_or(Value::Nil),
+    };
+    if doc.is_nil()
+        && let Value::Symbol(symbol) = &args[0]
+    {
+        doc = builtin_doc_from_doc_file(symbol)
+            .or_else(|| builtin_doc_from_lisp_sources(symbol))
+            .map(Value::String)
+            .unwrap_or(Value::Nil);
+    }
+    if doc == Value::Integer(0) {
+        doc = Value::Nil;
+    } else if is_doc_reference(&doc) {
+        doc = resolve_doc_reference(interp, &doc, env)?.unwrap_or(Value::Nil);
+    }
+    substitute_doc_keys(interp, doc, raw, env)
 }
 
 /// A lazily-populated docstring cache: the source path it was built from and a

@@ -18,6 +18,24 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- POST-`26e68a4` 2026-07-27 NATIVE-AUDIT PROGRESS: `doc.c` is now complete,
+  advancing the exact inventory to 1,218 mirrored / 202 missing.  The former
+  partial documentation facade rejected GNU's optional `RAW` argument and
+  returned unresolved DOC offsets from `documentation-property`.  One shared
+  native DOC index now parses `F`/`V`/`S` records, installs positive function
+  and signed user-variable offsets, resolves static and lazy references,
+  handles variable aliases and stale offset zero, and backs
+  `Snarf-documentation`, `internal-subr-documentation`, `documentation`, and
+  `documentation-property`.  The same audit exposed a producer contract in
+  dumped key bindings: the initial global map now owns GNU's canonical `C-f`
+  `forward-char` binding, and `substitute-command-keys` preserves
+  `help-key-binding` text properties on rendered keys.  A synthetic-DOC Rust
+  oracle regression covers offsets, raw/substituted strings, text properties,
+  aliases, stale references, and exact errors.  The complete publication gate
+  is green: `cargo test --all-targets --all-features` passed 1,600 library
+  tests, 28 compatibility-harness tests, 1 performance-harness test, 5 CLI
+  tests, and 3 ERT-runner tests (plus the zero-test binary target).  The exact
+  1..N/7080 replay remains pending.
 - POST-`4bb5a43` 2026-07-27 NATIVE-AUDIT PROGRESS: `composite.c` is now
   complete, advancing the exact inventory to 1,216 mirrored / 204 missing.
   The former `find-composition-internal` was a superficial Unicode-grapheme
