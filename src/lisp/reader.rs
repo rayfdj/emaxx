@@ -30,6 +30,8 @@ fn structure_slot_eval_form(value: Value) -> Value {
         | Value::Marker(_)
         | Value::Overlay(_)
         | Value::CharTable(_)
+        | Value::Frame(_)
+        | Value::Terminal(_)
         | Value::Record(_)
         | Value::Finalizer(_)
         | Value::BuiltinFunc(_)

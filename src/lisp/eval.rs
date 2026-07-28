@@ -1185,6 +1185,26 @@ pub(crate) struct FontsetState {
     pub(crate) mappings: Vec<FontsetMappingState>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct FrameState {
+    pub(crate) id: u64,
+    pub(crate) name: Value,
+    pub(crate) live: bool,
+    pub(crate) width: i64,
+    pub(crate) height: i64,
+    pub(crate) text_height: i64,
+    pub(crate) parameter_width: i64,
+    pub(crate) parameter_height: i64,
+    pub(crate) parameter_overrides: Vec<(String, Value)>,
+    pub(crate) focus_frame_id: Option<u64>,
+    pub(crate) left: i64,
+    pub(crate) top: i64,
+    pub(crate) window_state_change: bool,
+    pub(crate) after_make_frame: bool,
+    pub(crate) pointer_invisible: bool,
+    pub(crate) was_invisible: bool,
+}
+
 fn empty_lisp_face_vector() -> Value {
     Value::list(
         std::iter::once(Value::symbol("vector-literal"))
@@ -1279,16 +1299,12 @@ pub struct Interpreter {
     frame_old_selected_window_id: Option<u64>,
     /// Monotonic selection stamp used by `window-use-time'.
     window_select_count: i64,
-    /// The selected frame width in character columns.
-    frame_width: i64,
-    /// The selected frame height in character rows.
-    frame_height: i64,
-    /// Explicit parameters stored on the single batch/TTY frame.  Defaults
-    /// are derived from live geometry by the frame primitives; this sidecar
-    /// only owns values changed through `modify-frame-parameters'.
-    frame_parameter_overrides: Vec<(String, Value)>,
-    /// Stable Lisp identity of the batch frame's default name.
-    frame_name: Value,
+    /// Opaque frame identities and their frame-local state.  The headless
+    /// runtime begins with one TTY frame; keeping its state keyed by identity
+    /// prevents frame objects from collapsing into an ordinary Lisp symbol.
+    pub(crate) frame_states: Vec<FrameState>,
+    pub(crate) selected_frame_id: u64,
+    pub(crate) old_selected_frame_id: u64,
     /// dispnew.c's internal frame/buffer menu state vector.
     frame_and_buffer_state: Value,
     /// Terminal-local parameters for the single runtime terminal.
@@ -1912,10 +1928,26 @@ impl Interpreter {
             old_selected_window_id: 0,
             frame_old_selected_window_id: None,
             window_select_count: 1,
-            frame_width: 80,
-            frame_height: 24,
-            frame_parameter_overrides: Vec::new(),
-            frame_name,
+            frame_states: vec![FrameState {
+                id: 1,
+                name: frame_name,
+                live: true,
+                width: 80,
+                height: 25,
+                text_height: 25,
+                parameter_width: 80,
+                parameter_height: 25,
+                parameter_overrides: Vec::new(),
+                focus_frame_id: None,
+                left: 0,
+                top: 0,
+                window_state_change: false,
+                after_make_frame: true,
+                pointer_invisible: false,
+                was_invisible: false,
+            }],
+            selected_frame_id: 1,
+            old_selected_frame_id: 1,
             frame_and_buffer_state: Value::Nil,
             terminal_parameters: Vec::new(),
             terminal_live: true,
@@ -3365,7 +3397,12 @@ impl Interpreter {
                 Some(interp.current_buffer_id),
                 interp.buffer.point_min(),
                 Value::Nil,
-                (interp.frame_width(), interp.frame_height(), 0, 0),
+                (
+                    interp.frame_width(),
+                    interp.frame_height().saturating_sub(1).max(1),
+                    0,
+                    0,
+                ),
             ),
         );
         interp.set_global_binding("emaxx-root-window", selected_window.clone());
@@ -3384,7 +3421,12 @@ impl Interpreter {
                 Some(minibuffer_buffer_id),
                 1,
                 Value::Symbol(primitives::MINIBUFFER_WINDOW_KIND.into()),
-                (interp.frame_width(), 1, 0, interp.frame_height()),
+                (
+                    interp.frame_width(),
+                    1,
+                    0,
+                    interp.frame_height().saturating_sub(1).max(1),
+                ),
             ),
         );
         interp.set_global_binding("emaxx-minibuffer-window", minibuffer_window);
@@ -4076,6 +4118,8 @@ fn render_undo_value(value: &Value) -> String {
         Value::Marker(id) => format!("#<marker id:{id}>"),
         Value::Overlay(id) => format!("#<overlay id:{id}>"),
         Value::CharTable(id) => format!("#<char-table id:{id}>"),
+        Value::Frame(id) => format!("#<frame id:{id}>"),
+        Value::Terminal(id) => format!("#<terminal id:{id}>"),
         Value::Record(id) => format!("#<record id:{id}>"),
         Value::Finalizer(id) => format!("#<finalizer id:{id}>"),
         Value::Unbound => "#<unbound>".into(),
@@ -4218,6 +4262,8 @@ fn is_record_literal_slot_form(value: &Value) -> bool {
         | Value::Marker(_)
         | Value::Overlay(_)
         | Value::CharTable(_)
+        | Value::Frame(_)
+        | Value::Terminal(_)
         | Value::Record(_)
         | Value::Finalizer(_)
         | Value::BuiltinFunc(_)

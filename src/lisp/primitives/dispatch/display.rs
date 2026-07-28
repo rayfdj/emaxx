@@ -282,10 +282,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "display-grayscale-p"
             | "display-color-cells"
             | "window-system"
-            | "frame-parameter"
-            | "frame-parameters"
-            | "modify-frame-parameters"
-            | "set-frame-parameter"
             | "char-displayable-p"
             | "internal-char-font"
             | "current-input-mode"
@@ -296,24 +292,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "set-quit-char"
             | "frame-width"
             | "frame-height"
-            | "set-frame-width"
-            | "set-frame-height"
-            | "frame-char-width"
-            | "frame-char-height"
-            | "frame-internal-border-width"
-            | "frame-native-width"
-            | "frame-native-height"
             | "frame-pixel-width"
             | "frame-pixel-height"
-            | "frame-text-width"
-            | "frame-text-height"
-            | "frame-text-cols"
-            | "frame-text-lines"
-            | "frame-fringe-width"
-            | "frame-scroll-bar-width"
-            | "frame-scroll-bar-height"
-            | "frame-right-divider-width"
-            | "frame-bottom-divider-width"
             | "display-popup-menus-p"
             | "menu-or-popup-active-p"
             | "imagep"
@@ -431,11 +411,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "color-distance"
             | "color-values"
             | "color-values-from-color-spec"
-            | "make-frame-visible"
-            | "make-frame-invisible"
-            | "iconify-frame"
-            | "frame-visible-p"
-            | "visible-frame-list"
             | "selected-window"
             | "old-selected-window"
             | "frame-selected-window"
@@ -469,13 +444,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "set-window-parameter"
             | "window-parameters"
             | "walk-windows"
-            | "selected-frame"
-            | "last-nonminibuffer-frame"
             | "window-frame"
-            | "frame-live-p"
-            | "framep"
-            | "frame-terminal"
-            | "frame-list"
             | "face-set-after-frame-default"
             | "windowp"
             | "window-live-p"
@@ -511,10 +480,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "posn-at-x-y"
             | "posn-at-point"
             | "window-display-table"
-            | "terminal-live-p"
-            | "terminal-list"
-            | "terminal-name"
-            | "delete-terminal"
             | "tty-type"
             | "tty-display-color-p"
             | "tty-display-color-cells"
@@ -525,9 +490,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "resume-tty"
             | "tty--set-output-buffer-size"
             | "tty--output-buffer-size"
-            | "terminal-parameters"
-            | "terminal-parameter"
-            | "set-terminal-parameter"
             | "send-string-to-terminal"
             | "get-buffer-window"
             | "minibuffer-window"
@@ -547,81 +509,17 @@ pub(super) fn handles(name: &str) -> bool {
     )
 }
 
-fn default_frame_parameters(interp: &Interpreter) -> Vec<(String, Value)> {
-    vec![
-        ("tab-bar-lines".into(), Value::Integer(0)),
-        ("menu-bar-lines".into(), Value::Integer(1)),
-        ("modeline".into(), Value::T),
-        ("width".into(), Value::Integer(interp.frame_width())),
-        ("height".into(), Value::Integer(interp.frame_height())),
-        ("name".into(), interp.frame_name_value()),
-        ("font".into(), Value::String("tty".into())),
-        (
-            "background-color".into(),
-            Value::String("unspecified-bg".into()),
-        ),
-        (
-            "foreground-color".into(),
-            Value::String("unspecified-fg".into()),
-        ),
-        ("cursor-color".into(), Value::String("white".into())),
-        ("scroll-bar-background".into(), Value::Nil),
-        ("scroll-bar-foreground".into(), Value::Nil),
-        ("background-mode".into(), Value::Symbol("dark".into())),
-        ("display-type".into(), Value::Symbol("mono".into())),
-        ("minibuffer".into(), Value::T),
-    ]
-}
-
 fn decode_live_frame(
+    interp: &Interpreter,
     frame: Option<&Value>,
     nil_defaults_to_selected: bool,
 ) -> Result<Value, LispError> {
     match frame {
-        None => Ok(Value::Symbol("frame".into())),
-        Some(Value::Nil) if nil_defaults_to_selected => Ok(Value::Symbol("frame".into())),
-        Some(Value::Symbol(frame)) if frame == "frame" => Ok(Value::Symbol(frame.clone())),
-        Some(frame) => Err(LispError::TypeError(
-            "frame-live-p".into(),
-            frame.type_name(),
-        )),
+        None => Ok(interp.selected_frame_value()),
+        Some(Value::Nil) if nil_defaults_to_selected => Ok(interp.selected_frame_value()),
+        Some(Value::Frame(id)) if interp.frame_is_live(*id) => Ok(Value::Frame(*id)),
+        Some(frame) => Err(wrong_type_argument("frame-live-p", frame.clone())),
     }
-}
-
-fn frame_parameter_value(interp: &Interpreter, parameter: &str) -> Value {
-    interp
-        .frame_parameter_override(parameter)
-        .or_else(|| {
-            default_frame_parameters(interp)
-                .into_iter()
-                .find(|(name, _)| name == parameter)
-                .map(|(_, value)| value)
-        })
-        .unwrap_or(Value::Nil)
-}
-
-fn store_frame_parameter(interp: &mut Interpreter, parameter: String, value: Value) {
-    match (parameter.as_str(), &value) {
-        ("width", Value::Integer(width)) => interp.set_frame_width(*width),
-        ("height", Value::Integer(height)) => interp.set_frame_height(*height),
-        _ => {}
-    }
-    interp.set_frame_parameter_override(parameter, value);
-}
-
-fn frame_parameters_value(interp: &Interpreter) -> Value {
-    let overrides = interp.frame_parameter_overrides();
-    let mut parameters = overrides.to_vec();
-    parameters.extend(
-        default_frame_parameters(interp)
-            .into_iter()
-            .filter(|(name, _)| !overrides.iter().any(|(overridden, _)| overridden == name)),
-    );
-    Value::list(
-        parameters
-            .into_iter()
-            .map(|(name, value)| Value::cons(Value::Symbol(name), value)),
-    )
 }
 
 fn require_live_terminal(interp: &Interpreter, value: Option<&Value>) -> Result<(), LispError> {
@@ -633,7 +531,8 @@ fn require_live_terminal(interp: &Interpreter, value: Option<&Value>) -> Result<
     }
     match value.unwrap_or(&Value::Nil) {
         Value::Nil => Ok(()),
-        Value::Symbol(name) if name == "terminal" || name == "frame" => Ok(()),
+        Value::Terminal(0) => Ok(()),
+        Value::Frame(id) if interp.frame_is_live(*id) => Ok(()),
         value => Err(wrong_type_argument("terminal-live-p", value.clone())),
     }
 }
@@ -641,7 +540,7 @@ fn require_live_terminal(interp: &Interpreter, value: Option<&Value>) -> Result<
 fn current_frame_and_buffer_state(interp: &Interpreter) -> Vec<Value> {
     let mut state = Vec::new();
     if interp.terminal_live() {
-        state.push(Value::symbol("frame"));
+        state.push(interp.selected_frame_value());
         state.push(
             interp
                 .frame_parameter_override("name")
@@ -2217,36 +2116,6 @@ pub(super) fn call(
             need_arg_range(name, args, 1, 2)?;
             Ok(Value::Nil)
         }
-        "frame-parameter" => {
-            need_arg_range(name, args, 1, 2)?;
-            let parameter = args
-                .get(1)
-                .ok_or_else(|| LispError::WrongNumberOfArgs(name.into(), args.len()))?
-                .as_symbol()?;
-            Ok(frame_parameter_value(interp, parameter))
-        }
-        "modify-frame-parameters" => {
-            need_args(name, args, 2)?;
-            let parameters = args[1].to_vec()?;
-            // GNU extracts the alist and applies it in reverse, so when a
-            // parameter appears more than once its first occurrence wins.
-            for entry in parameters.into_iter().rev() {
-                let Some((parameter, value)) = entry.cons_values() else {
-                    return Err(LispError::TypeError("consp".into(), entry.type_name()));
-                };
-                store_frame_parameter(interp, parameter.as_symbol()?.to_string(), value);
-            }
-            Ok(Value::Nil)
-        }
-        "set-frame-parameter" => {
-            need_args(name, args, 3)?;
-            store_frame_parameter(interp, args[1].as_symbol()?.to_string(), args[2].clone());
-            Ok(Value::Nil)
-        }
-        "frame-parameters" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(frame_parameters_value(interp))
-        }
         "char-displayable-p" => {
             need_args(name, args, 1)?;
             match &args[0] {
@@ -2339,42 +2208,23 @@ pub(super) fn call(
         }
         "frame-width" => {
             need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Integer(interp.frame_width()))
+            decode_live_frame(interp, args.first(), true)?;
+            Ok(Value::Integer(interp.frame_parameter_width()))
         }
         "frame-height" => {
             need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Integer(interp.frame_height()))
+            decode_live_frame(interp, args.first(), true)?;
+            Ok(Value::Integer(interp.frame_parameter_height()))
         }
-        "set-frame-width" => {
-            need_arg_range(name, args, 2, 4)?;
-            interp.set_frame_width(args[1].as_integer()?);
-            Ok(Value::Nil)
-        }
-        "set-frame-height" => {
-            need_arg_range(name, args, 2, 4)?;
-            interp.set_frame_height(args[1].as_integer()?);
-            Ok(Value::Nil)
-        }
-        "frame-char-width" | "frame-char-height" => {
+        "frame-pixel-width" => {
             need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Integer(1))
-        }
-        "frame-native-width" | "frame-pixel-width" | "frame-text-width" | "frame-text-cols" => {
-            need_arg_range(name, args, 0, 1)?;
+            decode_live_frame(interp, args.first(), true)?;
             Ok(Value::Integer(interp.frame_width()))
         }
-        "frame-native-height" | "frame-pixel-height" | "frame-text-height" | "frame-text-lines" => {
+        "frame-pixel-height" => {
             need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Integer(interp.frame_height() + 1))
-        }
-        "frame-internal-border-width"
-        | "frame-fringe-width"
-        | "frame-scroll-bar-width"
-        | "frame-scroll-bar-height"
-        | "frame-right-divider-width"
-        | "frame-bottom-divider-width" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Integer(0))
+            decode_live_frame(interp, args.first(), true)?;
+            Ok(Value::Integer(interp.frame_height()))
         }
         "display-popup-menus-p" => Ok(Value::Nil),
         "menu-or-popup-active-p" => {
@@ -2399,7 +2249,7 @@ pub(super) fn call(
                 return Ok(Value::Nil);
             }
             let filter = args.first().cloned().unwrap_or(Value::Nil);
-            if filter.is_nil() || matches!(filter, Value::Symbol(ref frame) if frame == "frame") {
+            if filter.is_nil() || matches!(filter, Value::Frame(id) if interp.frame_is_live(id)) {
                 return Err(LispError::Signal(
                     "Window system frame should be used".into(),
                 ));
@@ -3118,7 +2968,7 @@ pub(super) fn call(
         "window-resize-apply" => {
             need_arg_range(name, args, 0, 2)?;
             if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
-                && !matches!(frame, Value::Symbol(symbol) if symbol == "frame")
+                && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
             {
                 return Err(LispError::TypeError("frame".into(), frame.type_name()));
             }
@@ -3139,7 +2989,7 @@ pub(super) fn call(
         "window-resize-apply-total" => {
             need_arg_range(name, args, 0, 2)?;
             if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
-                && !matches!(frame, Value::Symbol(symbol) if symbol == "frame")
+                && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
             {
                 return Err(LispError::TypeError("frame".into(), frame.type_name()));
             }
@@ -3395,7 +3245,7 @@ pub(super) fn call(
         }
         "tab-bar-height" | "tool-bar-height" => {
             need_arg_range(name, args, 0, 2)?;
-            decode_live_frame(args.first(), true)?;
+            decode_live_frame(interp, args.first(), true)?;
             // The bootstrap terminal frame has no tab/tool-bar window.
             Ok(Value::Integer(0))
         }
@@ -3416,7 +3266,7 @@ pub(super) fn call(
         }
         "redraw-frame" => {
             need_arg_range(name, args, 0, 1)?;
-            decode_live_frame(args.first(), true)?;
+            decode_live_frame(interp, args.first(), true)?;
             // GNU clears glyph matrices and immediately recomputes them.
             // Emaxx retains no glyph matrix between batch evaluations.
             Ok(Value::Nil)
@@ -3656,11 +3506,10 @@ pub(super) fn call(
         }
         "set-frame-selected-window" => {
             need_arg_range(name, args, 2, 3)?;
-            if !args[0].is_nil() && !matches!(&args[0], Value::Symbol(frame) if frame == "frame") {
-                return Err(LispError::TypeError(
-                    "frame-live-p".into(),
-                    args[0].type_name(),
-                ));
+            if !args[0].is_nil()
+                && !matches!(&args[0], Value::Frame(id) if interp.frame_is_live(*id))
+            {
+                return Err(wrong_type_argument("frame-live-p", args[0].clone()));
             }
             select_window_value(interp, &args[1], args.get(2).is_some_and(Value::is_truthy))
         }
@@ -3701,7 +3550,7 @@ pub(super) fn call(
                     args[0].clone(),
                 ));
             }
-            Ok(Value::symbol("frame"))
+            Ok(interp.selected_frame_value())
         }
         "force-window-update" => {
             need_arg_range(name, args, 0, 1)?;
@@ -3734,7 +3583,7 @@ pub(super) fn call(
             need_arg_range(name, args, 0, 1)?;
             if let Some(frame) = args.first()
                 && !frame.is_nil()
-                && !matches!(frame, Value::Symbol(name) if name == "frame")
+                && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
             {
                 return Err(wrong_type_argument("frame-live-p", frame.clone()));
             }
@@ -4071,68 +3920,11 @@ pub(super) fn call(
             }
             Ok(Value::Nil)
         }
-        "make-frame-visible" => {
-            need_arg_range(name, args, 0, 1)?;
-            decode_live_frame(args.first(), true)
-        }
-        "make-frame-invisible" => {
-            need_arg_range(name, args, 0, 2)?;
-            decode_live_frame(args.first(), true)?;
-            if !args.get(1).is_some_and(Value::is_truthy) {
-                return Err(LispError::Signal(
-                    "Attempt to make invisible the sole visible or iconified frame".into(),
-                ));
-            }
-            // The batch frame is a text-terminal frame and therefore remains
-            // visible even when FORCE permits this operation.
-            Ok(Value::Nil)
-        }
-        "iconify-frame" => {
-            need_arg_range(name, args, 0, 1)?;
-            decode_live_frame(args.first(), true)?;
-            // Text-terminal frames cannot be iconified.
-            Ok(Value::Nil)
-        }
-        "frame-visible-p" => {
-            need_args(name, args, 1)?;
-            decode_live_frame(args.first(), false)?;
-            Ok(Value::T)
-        }
-        "visible-frame-list" => {
-            need_args(name, args, 0)?;
-            Ok(Value::list([Value::Symbol("frame".into())]))
-        }
-        "selected-frame" | "last-nonminibuffer-frame" => Ok(Value::Symbol("frame".into())),
         "window-frame" => {
             // emaxx has a single frame; any live window belongs to it.
             need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Symbol("frame".into()))
+            Ok(interp.selected_frame_value())
         }
-        "framep" => {
-            need_args(name, args, 1)?;
-            Ok(
-                if matches!(&args[0], Value::Symbol(symbol) if symbol == "frame") {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
-        }
-        "frame-live-p" => {
-            need_args(name, args, 1)?;
-            Ok(
-                if matches!(&args[0], Value::Symbol(symbol) if symbol == "frame") {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
-        }
-        "frame-terminal" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Symbol("terminal".into()))
-        }
-        "frame-list" => Ok(Value::list([Value::Symbol("frame".into())])),
         "face-set-after-frame-default" => {
             need_arg_range(name, args, 1, 2)?;
             Ok(Value::Nil)
@@ -4459,94 +4251,6 @@ pub(super) fn call(
             window_id_or_selected(interp, &args[0])?;
             // GNU's TTY implementation leaves scroll-bar settings unchanged.
             Ok(Value::Nil)
-        }
-        "terminal-live-p" => {
-            need_args(name, args, 1)?;
-            Ok(if !interp.terminal_live() {
-                Value::Nil
-            } else if matches!(&args[0], Value::Nil) {
-                Value::T
-            } else if let Value::Symbol(symbol) = &args[0] {
-                if symbol == "terminal" || symbol == "frame" {
-                    Value::T
-                } else {
-                    Value::Nil
-                }
-            } else {
-                Value::Nil
-            })
-        }
-        "terminal-list" => {
-            need_arg_range(name, args, 0, 0)?;
-            Ok(if interp.terminal_live() {
-                Value::list([Value::Symbol("terminal".into())])
-            } else {
-                Value::Nil
-            })
-        }
-        "terminal-name" => {
-            need_arg_range(name, args, 0, 1)?;
-            require_live_terminal(interp, args.first())?;
-            Ok(Value::String("initial_terminal".into()))
-        }
-        "delete-terminal" => {
-            need_arg_range(name, args, 0, 2)?;
-            if !interp.terminal_live() {
-                return Ok(Value::Nil);
-            }
-            let target = args.first().cloned().unwrap_or(Value::Nil);
-            let designates_live_terminal = target.is_nil()
-                || matches!(
-                    &target,
-                    Value::Symbol(symbol) if symbol == "terminal" || symbol == "frame"
-                );
-            if !designates_live_terminal {
-                // decode_terminal returns NULL for an object that does not
-                // designate a live terminal; Fdelete_terminal treats that as
-                // an already-deleted/no-op target.
-                return Ok(Value::Nil);
-            }
-            if !args.get(1).is_some_and(Value::is_truthy) {
-                return Err(LispError::Signal(
-                    "Attempt to delete the sole active display terminal".into(),
-                ));
-            }
-
-            // Fdelete_terminal uses safe_calln here.  An ordinary hook error
-            // is reported/demoted and cannot cancel deletion; terminal
-            // process control remains non-catchable.
-            match super::call(
-                interp,
-                "run-hook-with-args",
-                &[Value::symbol("delete-terminal-functions"), target],
-                env,
-            ) {
-                Ok(_) => {}
-                Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => {
-                    return Err(error);
-                }
-                Err(_) => {}
-            }
-            interp.delete_terminal_state();
-            Ok(Value::Nil)
-        }
-        "terminal-parameters" => {
-            need_arg_range(name, args, 0, 1)?;
-            require_live_terminal(interp, args.first())?;
-            Ok(interp.terminal_parameters())
-        }
-        "terminal-parameter" => {
-            need_args(name, args, 2)?;
-            require_live_terminal(interp, args.first())?;
-            if !args[1].is_symbol() {
-                return Err(wrong_type_argument("symbolp", args[1].clone()));
-            }
-            Ok(interp.terminal_parameter(&args[1]).unwrap_or(Value::Nil))
-        }
-        "set-terminal-parameter" => {
-            need_args(name, args, 3)?;
-            require_live_terminal(interp, args.first())?;
-            Ok(interp.set_terminal_parameter(args[1].clone(), args[2].clone()))
         }
         "send-string-to-terminal" => {
             need_arg_range(name, args, 1, 2)?;

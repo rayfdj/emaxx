@@ -2431,8 +2431,8 @@ pub(super) fn call(
             let event = args[0].to_vec().unwrap_or_default();
             let valid = matches!(
                 event.as_slice(),
-                [Value::Symbol(kind), Value::Symbol(frame), ..]
-                    if kind == "focus-in" && frame == "frame"
+                [Value::Symbol(kind), Value::Frame(frame), ..]
+                    if kind == "focus-in" && interp.frame_is_live(*frame)
             );
             if !valid {
                 return Err(LispError::Signal("invalid focus-in event".into()));

@@ -8,6 +8,7 @@ mod display;
 mod faces;
 mod files_process;
 mod fonts;
+mod frames;
 mod lists;
 mod misc;
 mod misc_keymaps;
@@ -18,6 +19,7 @@ mod overlays;
 mod predicates;
 mod search_coding;
 mod strings;
+mod terminals;
 
 /// Memoized per-name facts.  Every predicate cached here is a pure
 /// function of the name (giant static `matches!` lists), but they are
@@ -40,6 +42,8 @@ enum DispatchModule {
     Ccl,
     Numeric,
     Fonts,
+    Frames,
+    Terminals,
     Predicates,
     Lists,
     Composition,
@@ -73,6 +77,10 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::Numeric
     } else if fonts::handles(name) {
         DispatchModule::Fonts
+    } else if frames::handles(name) {
+        DispatchModule::Frames
+    } else if terminals::handles(name) {
+        DispatchModule::Terminals
     } else if predicates::handles(name) {
         DispatchModule::Predicates
     } else if lists::handles(name) {
@@ -142,6 +150,8 @@ pub(crate) fn has_dispatch_handler(name: &str) -> bool {
 fn is_builtin_uncached(name: &str) -> bool {
     faces::handles(name)
         || fonts::handles(name)
+        || frames::handles(name)
+        || terminals::handles(name)
         || matches!(
             name,
             // Arithmetic
@@ -1924,6 +1934,8 @@ pub fn call(
         DispatchModule::Ccl => ccl::call(interp, name, args, env),
         DispatchModule::Numeric => numeric::call(interp, name, args, env),
         DispatchModule::Fonts => fonts::call(interp, name, args, env),
+        DispatchModule::Frames => frames::call(interp, name, args, env),
+        DispatchModule::Terminals => terminals::call(interp, name, args, env),
         DispatchModule::Predicates => predicates::call(interp, name, args, env),
         DispatchModule::Lists => lists::call(interp, name, args, env),
         DispatchModule::Composition => composition::call(interp, name, args, env),

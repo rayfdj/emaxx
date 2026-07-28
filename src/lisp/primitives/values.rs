@@ -273,6 +273,8 @@ pub(crate) fn values_equal_recursive(
         (Value::CharTable(left_id), Value::CharTable(right_id)) => {
             char_tables_equal(interp, *left_id, *right_id, seen)
         }
+        (Value::Frame(left_id), Value::Frame(right_id)) => left_id == right_id,
+        (Value::Terminal(left_id), Value::Terminal(right_id)) => left_id == right_id,
         (Value::Record(left_id), Value::Record(right_id))
             if interp
                 .find_record(*left_id)
@@ -436,6 +438,8 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         | (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
         | (Value::CharTable(left_id), Value::CharTable(right_id))
+        | (Value::Frame(left_id), Value::Frame(right_id))
+        | (Value::Terminal(left_id), Value::Terminal(right_id))
         | (Value::Record(left_id), Value::Record(right_id))
         | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
         _ => false,
@@ -478,6 +482,8 @@ pub(crate) fn values_eq_in_env(
         | (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
         | (Value::CharTable(left_id), Value::CharTable(right_id))
+        | (Value::Frame(left_id), Value::Frame(right_id))
+        | (Value::Terminal(left_id), Value::Terminal(right_id))
         | (Value::Record(left_id), Value::Record(right_id))
         | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
         _ => false,
@@ -1609,6 +1615,14 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 11);
             hash_mix(state, *id);
         }
+        Value::Frame(id) => {
+            hash_mix(state, 18);
+            hash_mix(state, *id);
+        }
+        Value::Terminal(id) => {
+            hash_mix(state, 19);
+            hash_mix(state, *id);
+        }
         Value::Record(id) => {
             hash_mix(state, 12);
             hash_mix(state, *id);
@@ -1725,6 +1739,14 @@ pub(crate) fn hash_value_equal(
         }
         Value::CharTable(id) => {
             hash_char_table_equal(interp, state, *id, include_properties);
+        }
+        Value::Frame(id) => {
+            hash_mix(state, 48);
+            hash_mix(state, *id);
+        }
+        Value::Terminal(id) => {
+            hash_mix(state, 49);
+            hash_mix(state, *id);
         }
         Value::Record(id) => {
             hash_record_equal(interp, state, *id, include_properties);

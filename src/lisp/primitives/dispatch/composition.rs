@@ -363,9 +363,10 @@ fn register_composition(
     Ok(Some((key, relative, tail, width)))
 }
 
-fn terminal_font(value: &Value) -> Result<Value, LispError> {
+fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
     if value.is_nil()
-        || matches!(value, Value::Symbol(name) if matches!(name.as_str(), "frame" | "terminal"))
+        || matches!(value, Value::Terminal(0))
+        || matches!(value, Value::Frame(id) if interp.frame_is_live(*id))
     {
         Ok(Value::symbol("utf-8-unix"))
     } else {
@@ -514,7 +515,7 @@ fn find_composition(interp: &mut Interpreter, args: &[Value]) -> Result<Value, L
 }
 
 fn get_glyph_string(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
-    let font = terminal_font(&args[2])?;
+    let font = terminal_font(interp, &args[2])?;
     let chars = if args[3].is_nil() {
         let (start, end) = checked_buffer_region(interp, &args[0], &args[1])?;
         composition_chars(interp, &Value::Nil, start, end)?

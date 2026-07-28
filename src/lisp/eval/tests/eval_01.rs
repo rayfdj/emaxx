@@ -4980,18 +4980,19 @@ fn set_frame_parameter_accepts_batch_theme_updates() {
     assert_eq!(
         eval_str_with(
             &mut interp,
-            "(list
-              (window-system 'frame)
-              (face-set-after-frame-default 'frame)
-              (frame-terminal 'frame)
-              (set-frame-parameter 'frame 'background-color \"white\")
+            "(let ((frame (selected-frame)))
+              (list
+              (window-system frame)
+              (face-set-after-frame-default frame)
+              (terminal-live-p (frame-terminal frame))
+              (set-frame-parameter frame 'background-color \"white\")
               (frame-parameter nil 'background-color)
-              (cdr (assq 'background-color (frame-parameters))))"
+              (cdr (assq 'background-color (frame-parameters)))))"
         ),
         Value::list([
             Value::Nil,
             Value::Nil,
-            Value::Symbol("terminal".into()),
+            Value::T,
             Value::Nil,
             Value::String("white".into()),
             Value::String("white".into()),

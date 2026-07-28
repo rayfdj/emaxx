@@ -342,12 +342,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_259, 4_288_174_274_230_577_743),
+        (1_294, 2_070_158_572_606_665_513),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (161, 16_561_690_024_276_178_945),
+        (126, 5_015_747_436_665_480_735),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -738,6 +738,272 @@ fn fontp_matches_the_gnu_font_record_contract() {
     )
     .expect_err("invalid font subtype must signal");
     assert_eq!(error.condition_type(), "wrong-type-argument");
+}
+
+#[test]
+fn native_frame_identity_and_single_tty_traversal_match_gnu() {
+    let program = r#"
+        (let ((frame (selected-frame)))
+          (list
+           (type-of frame)
+           (recordp frame)
+           (symbolp frame)
+           (framep frame)
+           (frame-live-p frame)
+           (eq (car (frame-list)) frame)
+           (eq (car (visible-frame-list)) frame)
+           (eq (next-frame frame) frame)
+           (eq (previous-frame frame) frame)
+           (eq (old-selected-frame) frame)
+           (frame-parent frame)
+           (frame-ancestor-p frame frame)))"#;
+    let expected = "(frame nil nil t t t t t t t nil nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("frame identity contract should parse")
+        .expect("frame identity contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("frame identity contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("frame identity expected value should parse")
+        .expect("frame identity expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "frame identity differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_frame_geometry_parameters_and_state_flags_match_gnu() {
+    let program = r#"
+        (let ((frame (selected-frame)))
+          (list
+           (frame-char-width frame)
+           (frame-char-height frame)
+           (frame-native-width frame)
+           (frame-native-height frame)
+           (frame-text-width frame)
+           (frame-text-height frame)
+           (frame-text-cols frame)
+           (frame-text-lines frame)
+           (frame-total-cols frame)
+           (frame-total-lines frame)
+           (frame-internal-border-width frame)
+           (frame-fringe-width frame)
+           (frame-scroll-bar-width frame)
+           (frame-scroll-bar-height frame)
+           (frame-right-divider-width frame)
+           (frame-bottom-divider-width frame)
+           (frame-child-frame-border-width frame)
+           (tool-bar-pixel-width frame)
+           (frame-scale-factor frame)
+           (frame-position frame)
+           (frame-windows-min-size frame nil nil nil)
+           (frame-windows-min-size frame t nil nil)
+           (frame-windows-min-size frame nil nil t)
+           (list
+            (frame-parameter frame 'width)
+            (frame-parameter frame 'height)
+            (frame-parameter frame 'name))
+           (progn
+             (modify-frame-parameters
+              frame
+              '((emaxx-probe . first)
+                (emaxx-probe . second)))
+             (frame-parameter frame 'emaxx-probe))
+           (progn
+             (set-frame-width frame 90)
+             (set-frame-height frame 30)
+             (list
+              (frame-native-width frame)
+              (frame-native-height frame)))
+           (progn
+             (set-frame-size frame 70 20)
+             (list
+              (frame-native-width frame)
+              (frame-native-height frame)))
+           (progn (set-frame-size frame 80 25) nil)
+           (set-frame-position frame 3 -4)
+           (frame-position frame)
+           (frame-window-state-change frame)
+           (set-frame-window-state-change frame t)
+           (frame-window-state-change frame)
+           (set-frame-window-state-change frame nil)
+           (frame--set-was-invisible frame t)
+           (frame--set-was-invisible frame nil)
+           (frame-after-make-frame frame nil)
+           (frame-after-make-frame frame t)))"#;
+    let expected = r#"
+        (1 1 80 25 80 25 80 25 80 25
+         0 0 0 0 0 0 0 0 1.0 (0 . 0)
+         8 10 5 (80 25 "F1") first
+         (90 31) (70 21) nil t (0 . 0)
+         nil t t nil t nil nil t)"#;
+    let expected_printed = r#"(1 1 80 25 80 25 80 25 80 25 0 0 0 0 0 0 0 0 1.0 (0 . 0) 8 10 5 (80 25 "F1") first (90 31) (70 21) nil t (0 . 0) nil t t nil t nil nil t)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("frame geometry contract should parse")
+        .expect("frame geometry contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("frame geometry contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("frame geometry expected value should parse")
+        .expect("frame geometry expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "frame geometry differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn window_configuration_restore_keeps_the_current_frame_size_like_gnu() {
+    let program = r#"
+        (let (configuration)
+          (set-frame-height nil 30)
+          (setq configuration (current-window-configuration))
+          (set-frame-height nil 10)
+          (set-window-configuration configuration)
+          (list
+           (frame-native-height)
+           (frame-text-height)
+           (window-pixel-top (frame-root-window))
+           (window-pixel-height (frame-root-window))
+           (window-pixel-top (minibuffer-window))
+           (window-configuration-equal-p
+            configuration
+            (current-window-configuration))))"#;
+    let expected = r#"(11 10 1 9 10 nil)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("window configuration contract should parse")
+        .expect("window configuration contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("window configuration contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("window configuration expected value should parse")
+        .expect("window configuration expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "window configuration restore differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_frame_focus_mouse_geometry_and_headless_errors_match_gnu() {
+    let program = r#"
+        (let ((frame (selected-frame)))
+          (list
+           (eq (select-frame frame) frame)
+           (eq
+            (handle-switch-frame
+             (list 'switch-frame frame))
+            frame)
+           (eq (make-frame-visible frame) frame)
+           (condition-case error-data
+               (make-frame-invisible frame)
+             (error (car error-data)))
+           (make-frame-invisible frame t)
+           (iconify-frame frame)
+           (frame-visible-p frame)
+           (let ((position (mouse-position)))
+             (list
+              (eq (car position) frame)
+              (cdr position)))
+           (let ((position (mouse-pixel-position)))
+             (list
+              (eq (car position) frame)
+              (cdr position)))
+           (set-mouse-position frame 2 3)
+           (set-mouse-pixel-position frame 2 3)
+           (raise-frame frame)
+           (lower-frame frame)
+           (frame-focus frame)
+           (redirect-frame-focus frame frame)
+           (eq (frame-focus frame) frame)
+           (redirect-frame-focus frame nil)
+           (frame-focus frame)
+           (condition-case error-data
+               (x-focus-frame frame)
+             (error (car error-data)))
+           (frame-pointer-visible-p frame)
+           (condition-case error-data
+               (delete-frame frame)
+             (error (car error-data)))
+           (condition-case error-data
+               (delete-frame frame t)
+             (error (car error-data)))
+           (condition-case error-data
+               (make-terminal-frame nil)
+             (error (car error-data)))
+           (condition-case error-data
+               (reconsider-frame-fonts frame)
+             (error (car error-data)))
+           (condition-case error-data
+               (x-get-resource "a" "b")
+             (error (car error-data)))
+           (x-parse-geometry "80x24+1-2")
+           (x-parse-geometry "+3-4")
+           (x-parse-geometry "bogus")
+           (mapcar
+            (lambda (thunk)
+              (condition-case error-data
+                  (funcall thunk)
+                (error (car error-data))))
+            (list
+             (lambda () (select-frame 1))
+             (lambda ()
+               (set-mouse-position frame 1.0 2))
+             (lambda () (frame-visible-p nil))
+             (lambda () (x-parse-geometry 1))))))"#;
+    let expected = r#"
+        (t t t error nil nil t
+         (t (nil)) (t (nil))
+         nil nil nil nil nil nil t nil nil error t
+         error error error error error
+         ((height . 24) (width . 80)
+          (top . -2) (left . 1))
+         ((top . -4) (left . 3))
+         nil
+         (wrong-type-argument wrong-type-argument
+          wrong-type-argument wrong-type-argument))"#;
+    let expected_printed = "(t t t error nil nil t (t (nil)) (t (nil)) nil nil nil nil nil nil t nil nil error t error error error error error ((height . 24) (width . 80) (top . -2) (left . 1)) ((top . -4) (left . 3)) nil (wrong-type-argument wrong-type-argument wrong-type-argument wrong-type-argument))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("frame headless contract should parse")
+        .expect("frame headless contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("frame headless contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("frame headless expected value should parse")
+        .expect("frame headless expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "frame headless contract differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
 }
 
 #[test]
@@ -1383,6 +1649,40 @@ fn native_terminal_state_and_tty_controls_share_the_gnu_headless_contract() {
         .eval(&form, &mut Vec::new())
         .expect("evaluate native terminal contract");
     assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn native_terminal_identity_is_opaque_and_shared_with_the_frame() {
+    let program = r#"
+        (let* ((frame (selected-frame))
+               (terminal (frame-terminal frame)))
+          (list
+           (type-of terminal)
+           (symbolp terminal)
+           (recordp terminal)
+           (eq terminal (car (terminal-list)))
+           (terminal-live-p terminal)
+           (eq terminal (frame-terminal frame))
+           (terminal-name terminal)))"#;
+    let expected = r#"(terminal nil nil t t t "initial_terminal")"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("terminal identity contract should parse")
+        .expect("terminal identity contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut Vec::new())
+        .expect("terminal identity contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("terminal identity expected value should parse")
+        .expect("terminal identity expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "terminal identity differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
 }
 
 #[test]

@@ -29,6 +29,25 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-07-28 native-audit checkpoint completes `frame.c`, bringing
+  the exact inventory to 1,294 mirrored / 126 missing.  Frame and terminal
+  objects are no longer synthetic Lisp symbols: distinct opaque host values
+  and typed interpreter state now back all 35 formerly missing `frame.c`
+  primitives, the already claimed frame family, and all eight `terminal.c`
+  primitives.  The shared geometry model separates frame parameters, native
+  total size, text size, root-window size, and the minibuffer line.  Direct
+  GNU comparison also fixed window-configuration restore: recorded dimensions
+  participate in configuration equality but do not rewind a later live-frame
+  resize.  Five fast Rust/GNU regressions cover frame and terminal identity,
+  traversal, parameters, geometry, focus/mouse/headless errors, and
+  configuration restore, while the existing terminal regressions cover
+  liveness, deletion hooks, parameters, and TTY controls.  The broad suite
+  caught and corrected one stale Todo/window assertion that assumed the
+  24-line initial root window equaled its 25-line frame.  Rustfmt, strict
+  Clippy, and diff checks are green.  The publication gate passed 1,610
+  library, 28 compatibility-harness, 1 performance-harness, 5 CLI, and 3
+  ERT-runner tests with zero failures.  The exact 1..N/7080 replay remains
+  pending.
 - The 2026-07-28 native-audit checkpoint completes the pure/headless
   `font.c` core and all six `fontset.c` primitives, bringing the exact
   inventory to 1,259 mirrored / 161 missing.  The shallow name-only

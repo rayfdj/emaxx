@@ -56,6 +56,10 @@ pub enum Value {
     Overlay(u64),
     /// A char-table object, identified by unique id.
     CharTable(u64),
+    /// An opaque frame object, identified by unique id.
+    Frame(u64),
+    /// An opaque terminal object, identified by unique id.
+    Terminal(u64),
     /// A record object, identified by unique id.
     Record(u64),
     /// A finalizer object, identified by unique id.
@@ -299,6 +303,8 @@ impl Value {
             Value::Marker(id) => format!("marker<{}>", id),
             Value::Overlay(id) => format!("overlay<{}>", id),
             Value::CharTable(id) => format!("char-table<{}>", id),
+            Value::Frame(id) => format!("frame<{}>", id),
+            Value::Terminal(id) => format!("terminal<{}>", id),
             Value::Record(id) => format!("record<{}>", id),
             Value::Finalizer(id) => format!("finalizer<{}>", id),
             Value::Unbound => "unbound".into(),
@@ -363,6 +369,8 @@ fn values_equal_recursive(left: &Value, right: &Value, seen: &mut HashSet<(usize
         (Value::Marker(a), Value::Marker(b)) => a == b,
         (Value::Overlay(a), Value::Overlay(b)) => a == b,
         (Value::CharTable(a), Value::CharTable(b)) => a == b,
+        (Value::Frame(a), Value::Frame(b)) => a == b,
+        (Value::Terminal(a), Value::Terminal(b)) => a == b,
         (Value::Record(a), Value::Record(b)) => a == b,
         (Value::Finalizer(a), Value::Finalizer(b)) => a == b,
         (Value::Unbound, Value::Unbound) => true,
@@ -448,6 +456,8 @@ fn format_value(
         Value::Marker(id) => write!(f, "#<marker id:{}>", id),
         Value::Overlay(id) => write!(f, "#<overlay id:{}>", id),
         Value::CharTable(id) => write!(f, "#<char-table id:{}>", id),
+        Value::Frame(id) => write!(f, "#<frame id:{}>", id),
+        Value::Terminal(id) => write!(f, "#<terminal id:{}>", id),
         Value::Record(id) => write!(f, "#<record id:{}>", id),
         Value::Finalizer(id) => write!(f, "#<finalizer id:{}>", id),
         Value::Unbound => write!(f, "#<unbound>"),
