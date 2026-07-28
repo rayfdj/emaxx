@@ -54,7 +54,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "symbol-with-pos-p"
             | "fboundp"
             | "facep"
-            | "fontp"
             | "face-equal"
             | "face-differs-from-default-p"
             | "face-list"
@@ -716,34 +715,6 @@ pub(super) fn call(
             } else {
                 Value::Nil
             })
-        }
-        "fontp" => {
-            need_arg_range(name, args, 1, 2)?;
-            let font_type = match &args[0] {
-                Value::Record(id) => interp.find_record(*id).and_then(|record| {
-                    matches!(
-                        record.type_name.as_str(),
-                        "font-spec" | "font-entity" | "font-object"
-                    )
-                    .then(|| record.type_name.clone())
-                }),
-                _ => None,
-            };
-            let matches = match args.get(1) {
-                None | Some(Value::Nil) => font_type.is_some(),
-                Some(Value::Symbol(expected))
-                    if matches!(
-                        expected.as_str(),
-                        "font-spec" | "font-entity" | "font-object"
-                    ) =>
-                {
-                    font_type.as_deref() == Some(expected)
-                }
-                Some(extra_type) => {
-                    return Err(wrong_type_argument("font-extra-type", extra_type.clone()));
-                }
-            };
-            Ok(if matches { Value::T } else { Value::Nil })
         }
         "face-equal" => {
             if args.len() < 2 || args.len() > 3 {

@@ -342,12 +342,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_243, 9_385_334_872_549_546_439),
+        (1_259, 4_288_174_274_230_577_743),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (177, 8_542_746_661_416_825_269),
+        (161, 16_561_690_024_276_178_945),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -738,6 +738,278 @@ fn fontp_matches_the_gnu_font_record_contract() {
     )
     .expect_err("invalid font subtype must signal");
     assert_eq!(error.condition_type(), "wrong-type-argument");
+}
+
+#[test]
+fn native_font_spec_state_and_headless_lookup_family_matches_gnu() {
+    let program = r#"
+        (let ((spec
+               (font-spec
+                :foundry "misc"
+                :family "Mono"
+                :weight 'bold
+                :slant 'italic
+                :width 'condensed
+                :size 12
+                :dpi 96
+                :spacing 'M
+                :avgwidth 80
+                :custom 42)))
+          (list
+           (mapcar
+            (lambda (key) (font-get spec key))
+            '(:foundry :family :weight :slant :width
+              :size :dpi :spacing :avgwidth :custom :name))
+           (font-put spec :family "Serif")
+           (font-get spec :family)
+           (font-xlfd-name spec)
+           (font-xlfd-name spec t)
+           (font-match-p (font-spec :family "Serif") spec)
+           (font-match-p (font-spec :family "Mono") spec)
+           (list-fonts spec)
+           (find-font spec)
+           (font-family-list)
+           (frame-font-cache)
+           (clear-font-cache)))"#;
+    let expected = r#"
+        ((misc Mono bold italic condensed 12 96 100 80 42 nil)
+         "Serif"
+         Serif
+         "-misc-Serif-bold-italic-condensed-*-12-*-96-96-m-80-*-*"
+         "-misc-Serif-bold-italic-condensed-*-12-*-96-96-m-80-*"
+         t nil nil nil nil nil nil)"#;
+    let expected_printed = "((misc Mono bold italic condensed 12 96 100 80 42 nil) \"Serif\" Serif \"-misc-Serif-bold-italic-condensed-*-12-*-96-96-m-80-*-*\" \"-misc-Serif-bold-italic-condensed-*-12-*-96-96-m-80-*\" t nil nil nil nil nil nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("font.c pure family contract should parse")
+        .expect("font.c pure family contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("font.c pure family contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("font.c expected value should parse")
+        .expect("font.c expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "font.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_font_spec_validation_and_name_normalization_match_gnu() {
+    let program = r#"
+        (let ((spec (font-spec :family "Mono")))
+          (list
+           (list
+            (font-put spec :script "latin")
+            (font-get spec :script))
+           (let ((named
+                  (font-spec :name "Mono-12:bold")))
+             (list
+              (font-get named :family)
+              (font-get named :size)
+              (font-get named :weight)
+              (font-get named :name)))
+           (mapcar
+            (lambda (thunk)
+              (condition-case error-data
+                  (funcall thunk)
+                (error (car error-data))))
+            (list
+             (lambda () (font-spec :weight 100))
+             (lambda () (font-spec :size -1))
+             (lambda () (font-spec :weight))
+             (lambda () (font-spec 1 2))
+             (lambda ()
+               (font-put spec :width 'bogus))
+             (lambda () (font-get spec 1))
+             (lambda ()
+               (list-fonts spec nil "one"))))))"#;
+    let expected = r#"
+        (("latin" latin)
+         (Mono 12.0 bold "Mono-12:bold")
+         (error error error wrong-type-argument
+          error wrong-type-argument wrong-type-argument))"#;
+    let expected_printed = "((\"latin\" latin) (Mono 12.0 bold \"Mono-12:bold\") (error error error wrong-type-argument error wrong-type-argument wrong-type-argument))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("font validation contract should parse")
+        .expect("font validation contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("font validation contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("font validation expected value should parse")
+        .expect("font validation expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "font validation differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_font_at_and_info_match_the_headless_gnu_boundary() {
+    let program = r#"
+        (progn
+          (erase-buffer)
+          (insert "Aλ")
+          (list
+           (font-at 1)
+           (font-at 2)
+           (font-at 0 nil "Aλ")
+           (font-at 1 nil "Aλ")
+           (mapcar
+            (lambda (thunk)
+              (condition-case error-data
+                  (funcall thunk)
+                (error (car error-data))))
+            (list
+             (lambda () (font-at 0))
+             (lambda () (font-at 2 nil "A"))
+             (lambda () (font-at 'x nil "A"))
+             (lambda () (font-at 1 7))
+             (lambda ()
+               (with-temp-buffer
+                 (insert "A")
+                 (font-at 1)))
+             (lambda () (font-info "Mono"))))))"#;
+    let expected = "(nil nil nil nil (args-out-of-range args-out-of-range wrong-type-argument wrong-type-argument error error))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("headless font boundary should parse")
+        .expect("headless font boundary should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("headless font boundary should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("headless font result should parse")
+        .expect("headless font result should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "headless font result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_fontset_registry_family_matches_gnu() {
+    let program = r#"
+        (let ((name
+               "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native"))
+          (list
+           (fontset-list)
+           (condition-case error-data
+               (query-fontset "fontset-default")
+             (error (car error-data)))
+           (condition-case error-data
+               (fontset-info t)
+             (error (car error-data)))
+           (new-fontset
+            name
+            (list
+             (list
+              'greek
+              (font-spec
+               :family "Greek"
+               :registry "iso10646-1"))))
+           (fontset-font name 955)
+           (fontset-font name 65)
+           (set-fontset-font
+            name 955
+            (font-spec
+             :family "One"
+             :registry "iso10646-1"))
+           (set-fontset-font
+            name 955
+            (font-spec
+             :family "Two"
+             :registry "iso10646-1")
+            nil 'append)
+           (set-fontset-font
+            name 955
+            (font-spec
+             :family "Zero"
+             :registry "iso10646-1")
+            nil 'prepend)
+           (set-fontset-font
+            name '(1024 . 1030)
+            '("Range" . "iso10646-1"))
+           (set-fontset-font
+            name nil
+            (font-spec
+             :family "Fallback"
+             :registry "iso10646-1"))
+           (fontset-font name 955)
+           (fontset-font name 955 t)
+           (fontset-font name 1026 t)
+           (fontset-font name 128 t)
+           (fontset-list)
+           (condition-case error-data
+               (set-fontset-font
+                name 65
+                (font-spec :family "No"))
+             (error (car error-data)))
+           (condition-case error-data
+               (new-fontset "bad" nil)
+             (error (car error-data)))
+           (new-fontset name nil)
+           (fontset-font name 955 t)
+           (fontset-list)))"#;
+    let expected = r#"
+        (("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default")
+         error error
+         "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native"
+         ("Greek" . "iso10646-1")
+         nil nil nil nil nil nil
+         ("Zero" . "iso10646-1")
+         (("Zero" . "iso10646-1")
+          ("One" . "iso10646-1")
+          ("Two" . "iso10646-1")
+          ("Fallback" . "iso10646-1"))
+         (("Range" . "iso10646-1")
+          ("Fallback" . "iso10646-1"))
+         (("Fallback" . "iso10646-1"))
+         ("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native"
+          "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default")
+         error error
+         "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native"
+         (("Fallback" . "iso10646-1"))
+         ("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native"
+          "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default"))"#;
+    let expected_printed = "((\"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\") error error \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" (\"Greek\" . \"iso10646-1\") nil nil nil nil nil nil (\"Zero\" . \"iso10646-1\") ((\"Zero\" . \"iso10646-1\") (\"One\" . \"iso10646-1\") (\"Two\" . \"iso10646-1\") (\"Fallback\" . \"iso10646-1\")) ((\"Range\" . \"iso10646-1\") (\"Fallback\" . \"iso10646-1\")) ((\"Fallback\" . \"iso10646-1\")) (\"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\") error error \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" ((\"Fallback\" . \"iso10646-1\")) (\"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-emaxx-native\" \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\"))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("fontset.c family contract should parse")
+        .expect("fontset.c family contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("fontset.c family contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("fontset.c expected value should parse")
+        .expect("fontset.c expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "fontset.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
 }
 
 #[test]

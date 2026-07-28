@@ -1159,6 +1159,32 @@ pub(crate) struct LispFaceState {
     pub(crate) selected_frame: Option<Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FontPatternState {
+    pub(crate) family: Option<String>,
+    pub(crate) registry: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FontsetTargetState {
+    Character(i64),
+    Range(i64, i64),
+    Script(String),
+    Fallback,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FontsetMappingState {
+    pub(crate) target: FontsetTargetState,
+    pub(crate) patterns: Vec<Option<FontPatternState>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FontsetState {
+    pub(crate) name: String,
+    pub(crate) mappings: Vec<FontsetMappingState>,
+}
+
 fn empty_lisp_face_vector() -> Value {
     Value::list(
         std::iter::once(Value::symbol("vector-literal"))
@@ -1458,6 +1484,7 @@ pub struct Interpreter {
     pub(crate) alternative_font_family_alist: Value,
     pub(crate) alternative_font_registry_alist: Value,
     pub(crate) tty_suppress_bold_inverse_default_colors: bool,
+    pub(crate) fontset_states: Vec<FontsetState>,
     pub(crate) fringe_bitmap_states: Vec<FringeBitmapState>,
     pub(crate) composition_states: Vec<CompositionState>,
     /// Raw etc/DOC byte offsets installed in built-in subroutine objects by
@@ -2145,6 +2172,10 @@ impl Interpreter {
             alternative_font_family_alist: Value::Nil,
             alternative_font_registry_alist: Value::Nil,
             tty_suppress_bold_inverse_default_colors: false,
+            fontset_states: vec![FontsetState {
+                name: "-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default".into(),
+                mappings: Vec::new(),
+            }],
             fringe_bitmap_states,
             composition_states: Vec::new(),
             builtin_doc_offsets: HashMap::new(),

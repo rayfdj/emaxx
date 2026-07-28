@@ -18,6 +18,30 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-07-28 NATIVE-AUDIT CHECKPOINT: the pure/headless `font.c`
+  core and all of `fontset.c` are complete, advancing the exact inventory to
+  1,259 mirrored / 161 missing.  The former `font-spec` record stored only
+  `:name` and reparsed a handful of computed fields; it could not preserve
+  arbitrary properties or GNU's mutable normalized property contract.  One
+  13-slot native font record now owns fixed and extra properties, ordered
+  name parsing, validation, `font-put` mutation, matching, XLFD generation,
+  and headless lookup/cache behavior.  One interpreter-owned fontset registry
+  now owns the default/custom fontsets, character/range/script/fallback
+  mappings, prepend/append precedence, recreation semantics, ASCII
+  protection, and headless query errors.  Four fast Rust oracle regressions
+  compare all 19 claimed `font.c`/`fontset.c` names (including the already
+  native `font-spec`, `font-get`, and `fontp`) with GNU and cover state,
+  validation, exact errors, window/buffer constraints, and ordering.
+  Eight `font.c` names remain deliberately missing because they require real
+  font entities/objects or a GUI font driver: `open-font`, `close-font`,
+  `query-font`, `font-face-attributes`, `font-has-char-p`,
+  `font-get-glyphs`, `font-shape-gstring`, and `font-variation-glyphs`.
+  Do not replace them with nil stubs.  Font/face-targeted suites, rustfmt,
+  strict Clippy, and `git diff --check` are green.  The complete publication
+  gate is green: `cargo test --all-targets --all-features` passed 1,605
+  library tests, 28 compatibility-harness tests, 1 performance-harness test,
+  5 CLI tests, and 3 ERT-runner tests (plus the zero-test binary target).
+  The exact 1..N/7080 replay remains pending.
 - 2026-07-28 NATIVE-AUDIT CHECKPOINT: the headless semantic core of
   `xfaces.c` is now complete, advancing the exact inventory to 1,243 mirrored
   / 177 missing.  The old model split face attributes across synthetic symbol

@@ -339,28 +339,6 @@ pub(crate) struct FontSpecInfo {
     pub(crate) foundry: Option<String>,
 }
 
-pub(crate) fn font_spec_info(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<FontSpecInfo, LispError> {
-    let Value::Record(id) = value else {
-        return Err(LispError::TypeError("font-spec".into(), value.type_name()));
-    };
-    let record = interp
-        .find_record(*id)
-        .ok_or_else(|| LispError::TypeError("font-spec".into(), value.type_name()))?;
-    if record.type_name != "font-spec" {
-        return Err(LispError::TypeError("font-spec".into(), value.type_name()));
-    }
-    let name = record
-        .slots
-        .first()
-        .map(string_text)
-        .transpose()?
-        .unwrap_or_default();
-    Ok(parse_font_name(&name))
-}
-
 pub(crate) fn parse_font_name(name: &str) -> FontSpecInfo {
     if name.starts_with('-') {
         return parse_xlfd_font_name(name);
