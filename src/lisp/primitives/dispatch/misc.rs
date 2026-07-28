@@ -1846,6 +1846,8 @@ pub(super) fn call(
                 | (Value::Marker(left), Value::Marker(right))
                 | (Value::Overlay(left), Value::Overlay(right))
                 | (Value::CharTable(left), Value::CharTable(right))
+                | (Value::Frame(left), Value::Frame(right))
+                | (Value::Terminal(left), Value::Terminal(right))
                 | (Value::Record(left), Value::Record(right))
                 | (Value::Finalizer(left), Value::Finalizer(right)) => left == right,
                 _ => false,

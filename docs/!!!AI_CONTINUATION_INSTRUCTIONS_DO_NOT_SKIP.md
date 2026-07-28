@@ -18,6 +18,32 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-07-28 NATIVE-AUDIT CHECKPOINT: `frame.c` is complete, advancing
+  the exact inventory to 1,294 mirrored / 126 missing.  Emaxx previously
+  represented both the selected frame and terminal as ordinary interned
+  symbols.  They are now distinct opaque host values (`frame` and `terminal`
+  at the Lisp boundary), backed by typed interpreter state and coherent
+  frame/terminal dispatch modules.  All 35 formerly missing `frame.c`
+  primitives now share that state with the already claimed frame family, and
+  the eight `terminal.c` primitives use the same terminal identity and
+  liveness.  The frame model distinguishes high-level width/height parameters,
+  native total geometry, text geometry, root-window geometry, and the
+  minibuffer line as GNU does on the initial TTY.  Direct GNU probes also
+  exposed and fixed the adjacent rule that `set-window-configuration` records
+  frame dimensions for equality but does not rewind a later frame resize.
+  Five fast Rust/GNU regressions cover opaque identity, traversal, parameters,
+  native resizing, focus/mouse/headless errors, terminal identity, and window
+  configuration restore; the existing terminal family tests cover deletion,
+  hooks, parameters, and TTY controls.  The first broad library run correctly
+  caught one stale Todo/window assertion that equated the 24-line root window
+  with its 25-line frame; a direct GNU probe established `(t nil t nil)` for
+  the width/height window/frame comparisons, the assertion was corrected, and
+  the complete suite then passed in order.  Rustfmt, strict Clippy, and
+  `git diff --check` are green.  The publication gate passed 1,610 library
+  tests, 28 compatibility-harness tests, 1 performance-harness test, 5 CLI
+  tests, and 3 ERT-runner tests (plus the zero-test binary target).  The exact
+  1..N/7080 replay remains pending; do not report this native inventory
+  checkpoint as 7080 frontier progress.
 - 2026-07-28 NATIVE-AUDIT CHECKPOINT: the pure/headless `font.c`
   core and all of `fontset.c` are complete, advancing the exact inventory to
   1,259 mirrored / 161 missing.  The former `font-spec` record stored only

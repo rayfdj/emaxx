@@ -3660,9 +3660,10 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
             Value::T,
             Value::T,
             Value::T,
+            // GNU's initial TTY root window excludes the minibuffer line.
+            Value::Nil,
             Value::T,
-            Value::T,
-            Value::T,
+            Value::Nil,
             Value::T,
             Value::T,
             Value::T,

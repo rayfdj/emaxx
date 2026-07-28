@@ -1425,6 +1425,8 @@ pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'stat
         Value::Marker(_) => "marker",
         Value::Overlay(_) => "overlay",
         Value::CharTable(_) => "char-table",
+        Value::Frame(_) => "frame",
+        Value::Terminal(_) => "terminal",
         Value::Record(id) => match interp
             .find_record(*id)
             .map(|record| record.type_name.as_str())

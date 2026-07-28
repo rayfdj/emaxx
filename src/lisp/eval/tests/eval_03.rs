@@ -933,9 +933,9 @@ fn frame_dimension_primitives_round_trip() {
         ),
         Value::list([
             Value::Integer(80),
-            Value::Integer(24),
-            Value::Integer(120),
-            Value::Integer(40),
+            Value::Integer(25),
+            Value::Integer(80),
+            Value::Integer(25),
         ])
     );
 }
@@ -964,7 +964,7 @@ fn window_height_tracks_runtime_frame_height() {
                   (list (window-height) (window-height (selected-window) 'floor)))
                 "#,
         ),
-        Value::list([Value::Integer(40), Value::Integer(40)])
+        Value::list([Value::Integer(39), Value::Integer(39)])
     );
 }
 
@@ -1002,12 +1002,12 @@ fn frame_resize_keeps_split_window_tree_geometry_coherent() {
             Value::T,
             Value::T,
             Value::Integer(120),
-            Value::Integer(40),
+            Value::Integer(39),
             Value::Integer(60),
             Value::Integer(60),
             Value::Integer(120),
-            Value::Integer(40),
-            Value::Integer(40),
+            Value::Integer(39),
+            Value::Integer(39),
             Value::Integer(120),
             Value::Integer(40),
         ])
@@ -1125,25 +1125,25 @@ fn window_edge_aliases_report_selected_window_geometry() {
         Value::list([
             Value::list([
                 Value::Integer(0),
-                Value::Integer(0),
+                Value::Integer(1),
                 Value::Integer(120),
                 Value::Integer(40),
             ]),
             Value::list([
                 Value::Integer(0),
-                Value::Integer(0),
+                Value::Integer(1),
                 Value::Integer(120),
                 Value::Integer(39),
             ]),
             Value::list([
                 Value::Integer(0),
-                Value::Integer(0),
+                Value::Integer(1),
                 Value::Integer(120),
                 Value::Integer(39),
             ]),
             Value::list([
                 Value::Integer(0),
-                Value::Integer(0),
+                Value::Integer(1),
                 Value::Integer(120),
                 Value::Integer(39),
             ]),

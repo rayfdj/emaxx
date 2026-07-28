@@ -521,24 +521,84 @@ impl Interpreter {
         }
     }
 
+    pub(crate) fn frame_state(&self, id: u64) -> Option<&super::FrameState> {
+        self.frame_states.iter().find(|frame| frame.id == id)
+    }
+
+    pub(crate) fn frame_state_mut(&mut self, id: u64) -> Option<&mut super::FrameState> {
+        self.frame_states.iter_mut().find(|frame| frame.id == id)
+    }
+
+    pub(crate) fn selected_frame_state(&self) -> Option<&super::FrameState> {
+        self.frame_state(self.selected_frame_id)
+    }
+
+    pub(crate) fn selected_frame_state_mut(&mut self) -> Option<&mut super::FrameState> {
+        self.frame_state_mut(self.selected_frame_id)
+    }
+
+    pub(crate) fn selected_frame_value(&self) -> Value {
+        Value::Frame(self.selected_frame_id)
+    }
+
+    pub(crate) fn old_selected_frame_value(&self) -> Value {
+        Value::Frame(self.old_selected_frame_id)
+    }
+
+    pub(crate) fn frame_is_live(&self, id: u64) -> bool {
+        self.terminal_live() && self.frame_state(id).is_some_and(|frame| frame.live)
+    }
+
     pub fn frame_width(&self) -> i64 {
-        self.frame_width.max(1)
+        self.selected_frame_state()
+            .map(|frame| frame.width)
+            .unwrap_or(1)
+            .max(1)
     }
 
     pub fn set_frame_width(&mut self, width: i64) {
         let width = width.max(1);
-        self.resize_frame_window_records(width, self.frame_height());
-        self.frame_width = width;
+        if let Some(frame) = self.selected_frame_state_mut() {
+            frame.width = width;
+        }
+        self.resize_frame_window_records();
     }
 
     pub fn frame_height(&self) -> i64 {
-        self.frame_height.max(1)
+        self.selected_frame_state()
+            .map(|frame| frame.height)
+            .unwrap_or(1)
+            .max(1)
     }
 
     pub fn set_frame_height(&mut self, height: i64) {
-        let height = height.max(1);
-        self.resize_frame_window_records(self.frame_width(), height);
-        self.frame_height = height;
+        let text_height = height.max(1);
+        if let Some(frame) = self.selected_frame_state_mut() {
+            frame.text_height = text_height;
+            frame.height = text_height.saturating_add(1);
+        }
+        self.resize_frame_window_records();
+    }
+
+    pub(crate) fn frame_text_height(&self) -> i64 {
+        self.selected_frame_state()
+            .map(|frame| frame.text_height)
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    pub(crate) fn frame_parameter_width(&self) -> i64 {
+        self.selected_frame_state()
+            .map(|frame| frame.parameter_width)
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    pub(crate) fn frame_parameter_height(&self) -> i64 {
+        self.selected_frame_state()
+            .map(|frame| frame.parameter_height)
+            .unwrap_or(1)
+            .max(1)
     }
 
     fn window_record_geometry(&self, id: u64) -> (i64, i64, i64, i64) {
@@ -657,10 +717,14 @@ impl Interpreter {
         }
     }
 
-    fn resize_frame_window_records(&mut self, width: i64, height: i64) {
+    fn resize_frame_window_records(&mut self) {
+        let width = self.frame_width();
+        let total_height = self.frame_height();
+        let text_height = self.frame_text_height();
+        let top_margin = total_height.saturating_sub(text_height);
+        let root_height = text_height.saturating_sub(1).max(1);
         if let Some(Value::Record(root_id)) = self.global_binding_value("emaxx-root-window") {
-            let old_root = self.window_record_geometry(root_id);
-            self.resize_window_record_tree(root_id, (width, height, old_root.2, old_root.3));
+            self.resize_window_record_tree(root_id, (width, root_height, 0, top_margin));
         }
         if let Some(Value::Record(minibuffer_id)) =
             self.global_binding_value("emaxx-minibuffer-window")
@@ -668,20 +732,28 @@ impl Interpreter {
             let old_minibuffer = self.window_record_geometry(minibuffer_id);
             self.set_window_record_geometry(
                 minibuffer_id,
-                (width, old_minibuffer.1, old_minibuffer.2, height),
+                (
+                    width,
+                    old_minibuffer.1,
+                    old_minibuffer.2,
+                    top_margin.saturating_add(root_height),
+                ),
             );
         }
     }
 
     pub(crate) fn frame_parameter_override(&self, name: &str) -> Option<Value> {
-        self.frame_parameter_overrides
+        self.selected_frame_state()?
+            .parameter_overrides
             .iter()
             .find(|(parameter, _)| parameter == name)
             .map(|(_, value)| value.clone())
     }
 
     pub(crate) fn frame_name_value(&self) -> Value {
-        self.frame_name.clone()
+        self.selected_frame_state()
+            .map(|frame| frame.name.clone())
+            .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn frame_and_buffer_state(&self) -> Value {
@@ -692,22 +764,6 @@ impl Interpreter {
         self.frame_and_buffer_state = state;
     }
 
-    pub(crate) fn frame_parameter_overrides(&self) -> &[(String, Value)] {
-        &self.frame_parameter_overrides
-    }
-
-    pub(crate) fn set_frame_parameter_override(&mut self, name: String, value: Value) {
-        if let Some((_, current)) = self
-            .frame_parameter_overrides
-            .iter_mut()
-            .find(|(parameter, _)| parameter == &name)
-        {
-            *current = value;
-        } else {
-            self.frame_parameter_overrides.insert(0, (name, value));
-        }
-    }
-
     pub(super) fn snapshot_window_configuration(&self) -> WindowConfigurationSnapshot {
         WindowConfigurationSnapshot {
             current_buffer_id: self.current_buffer_id(),
@@ -716,8 +772,8 @@ impl Interpreter {
                 .find_record(self.selected_window_id)
                 .map(|record| record.slots.clone())
                 .unwrap_or_default(),
-            frame_width: self.frame_width,
-            frame_height: self.frame_height,
+            frame_width: self.frame_width(),
+            frame_height: self.frame_height(),
         }
     }
 
@@ -826,11 +882,13 @@ impl Interpreter {
             self.switch_to_buffer_id(snapshot.current_buffer_id)?;
         }
         self.selected_window_id = snapshot.selected_window_id;
-        self.frame_width = snapshot.frame_width.max(1);
-        self.frame_height = snapshot.frame_height.max(1);
         if let Some(window) = self.find_record_mut(snapshot.selected_window_id) {
             window.slots = snapshot.selected_window_slots;
         }
+        // GNU records frame dimensions for configuration equality, but
+        // `set-window-configuration' does not rewind a frame resize.  Restore
+        // the saved tree into the frame's current geometry instead.
+        self.resize_frame_window_records();
         Ok(())
     }
 
@@ -1318,6 +1376,10 @@ impl Interpreter {
 
     pub fn terminal_live(&self) -> bool {
         self.terminal_live
+    }
+
+    pub(crate) fn terminal_value(&self) -> Value {
+        Value::Terminal(0)
     }
 
     pub fn delete_terminal_state(&mut self) {

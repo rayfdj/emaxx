@@ -3189,6 +3189,8 @@ pub(super) fn call(
                 Value::Marker(_) => "marker",
                 Value::Overlay(_) => "overlay",
                 Value::CharTable(_) => "char-table",
+                Value::Frame(_) => "frame",
+                Value::Terminal(_) => "terminal",
                 Value::Record(id) => {
                     let record = interp.find_record(*id).ok_or_else(|| {
                         LispError::TypeError("record".into(), format!("record<{id}>"))
@@ -10993,6 +10995,8 @@ fn byte_compile_render_form(value: &Value) -> String {
         | Value::Marker(_)
         | Value::Overlay(_)
         | Value::CharTable(_)
+        | Value::Frame(_)
+        | Value::Terminal(_)
         | Value::Record(_)
         | Value::Finalizer(_)
         | Value::Unbound => "nil".into(),

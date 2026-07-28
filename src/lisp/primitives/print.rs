@@ -1284,6 +1284,14 @@ pub(crate) fn render_prin1_body(
                 _ => Ok(value.to_string()),
             }
         }
+        Value::Frame(id) => {
+            let name = interp
+                .frame_state(*id)
+                .map(|frame| string_text(&frame.name).unwrap_or_else(|_| format!("F{id}")))
+                .unwrap_or_else(|| format!("F{id}"));
+            Ok(format!("#<frame {name} 0x{id:x}>"))
+        }
+        Value::Terminal(id) => Ok(format!("#<terminal {id} on initial_terminal>")),
         Value::Record(id) => {
             if let Some(record) = interp.find_record(*id) {
                 let rendered = match record.type_name.as_str() {

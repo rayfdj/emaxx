@@ -168,6 +168,8 @@ impl Interpreter {
             | Value::Marker(_)
             | Value::Overlay(_)
             | Value::CharTable(_)
+            | Value::Frame(_)
+            | Value::Terminal(_)
             | Value::Record(_)
             | Value::Finalizer(_)
             | Value::Unbound => Ok(expr.clone()),
