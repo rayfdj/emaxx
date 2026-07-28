@@ -318,12 +318,10 @@ pub(crate) fn eval_buffer_impl(
         let current = interp
             .lookup_var("current-load-list", env)
             .unwrap_or(Value::Nil);
-        if result.is_ok() && current.to_vec().is_ok_and(|items| items.len() > 1) {
-            let history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
-            // GNU build_load_history nreverses `current-load-list' so the
-            // history element leads with the file name.
-            let entry = Value::list(current.to_vec().unwrap_or_default().into_iter().rev());
-            interp.set_global_binding("load-history", Value::cons(entry, history));
+        if result.is_ok()
+            && let Some(source_file) = source_file
+        {
+            interp.commit_entire_load_history(&source_file, current);
         }
         interp.set_global_binding("current-load-list", previous);
     }

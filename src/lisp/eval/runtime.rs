@@ -2145,6 +2145,31 @@ impl Interpreter {
         self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
     }
 
+    /// Commit the definitions accumulated in `current-load-list`.
+    ///
+    /// GNU's `build_load_history' replaces every older entry for an entire
+    /// file evaluation.  Keeping duplicate entries makes `unload-feature'
+    /// remove only the newest one and leaves the previous definitions live.
+    pub(crate) fn commit_entire_load_history(&mut self, filename: &str, current: Value) {
+        let mut entry = current.to_vec().unwrap_or_default();
+        entry.reverse();
+        if entry.is_empty() {
+            return;
+        }
+
+        let filename = Value::String(filename.to_string());
+        let mut history = self
+            .lookup_var("load-history", &Env::new())
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default();
+        history.retain(|existing| match existing.car() {
+            Ok(existing_filename) => existing_filename != filename,
+            Err(_) => true,
+        });
+        history.insert(0, Value::list(entry));
+        self.set_global_binding("load-history", Value::list(history));
+    }
+
     pub fn unprovide_feature(&mut self, feature: &str) {
         self.provided_features.retain(|name| name != feature);
         self.set_global_binding("features", self.features_value());

@@ -5121,6 +5121,40 @@ fn cl_defmethod_load_history_specializers(spec: &Value) -> Vec<Value> {
     specializers
 }
 
+fn cl_generic_no_applicable_function(method_name: &str, params: &[String]) -> Value {
+    let fixed_params = lambda_list_fixed_params(params);
+    let rest_param = lambda_list_rest_param_from_params(params);
+    let mut args = vec![Value::Symbol("list".into())];
+    args.extend(fixed_params.iter().cloned().map(Value::Symbol));
+    let args = if let Some(rest_param) = rest_param {
+        Value::list([
+            Value::Symbol("append".into()),
+            Value::list(args),
+            Value::Symbol(rest_param),
+        ])
+    } else {
+        Value::list(args)
+    };
+    Value::Lambda(
+        params.to_vec(),
+        vec![Value::list([
+            Value::Symbol("emaxx--cl-generic-apply-next".into()),
+            Value::Nil,
+            Value::list([
+                Value::Symbol("quote".into()),
+                Value::Symbol(method_name.to_string()),
+            ]),
+            Value::list([
+                Value::Symbol("quote".into()),
+                Value::Symbol("no-applicable".into()),
+            ]),
+            args,
+        ])]
+        .into(),
+        shared_env(Vec::new()),
+    )
+}
+
 fn cl_defmethod_around_previous_binding(
     function: &Value,
     method_name: &str,
@@ -5285,6 +5319,77 @@ fn cl_defmethod_find_named_binding(function: &Value, name: &str) -> Option<Value
 fn cl_defmethod_set_named_binding(function: &Value, name: &str, replacement: &Value) -> bool {
     let mut seen_envs = HashSet::new();
     cl_defmethod_named_binding_inner(function, name, Some(replacement), &mut seen_envs).is_some()
+}
+
+fn cl_defmethod_replace_child_environment(
+    function: &Value,
+    target_env_id: usize,
+    replacement: &Value,
+) -> bool {
+    fn replace(
+        function: &Value,
+        target_env_id: usize,
+        replacement: &Value,
+        seen_envs: &mut HashSet<usize>,
+    ) -> bool {
+        let Value::Lambda(_, _, closure_env) = function else {
+            return false;
+        };
+        let env_id = closure_env.as_ptr() as usize;
+        if !seen_envs.insert(env_id) {
+            return false;
+        }
+        let mut changed = false;
+        let mut nested = Vec::new();
+        {
+            let mut closure_env = closure_env.borrow_mut();
+            for frame in closure_env.iter_mut() {
+                for (name, value) in frame.iter_mut() {
+                    if !name.starts_with("__emaxx_") {
+                        continue;
+                    }
+                    if matches!(value, Value::Lambda(_, _, child) if child.as_ptr() as usize == target_env_id)
+                    {
+                        *value = replacement.clone();
+                        changed = true;
+                    } else {
+                        nested.push(value.clone());
+                    }
+                }
+            }
+        }
+        for value in nested {
+            changed |= replace(&value, target_env_id, replacement, seen_envs);
+        }
+        changed
+    }
+
+    replace(function, target_env_id, replacement, &mut HashSet::new())
+}
+
+fn cl_defmethod_contains_binding_fragment(function: &Value, fragment: &str) -> bool {
+    fn contains(function: &Value, fragment: &str, seen_envs: &mut HashSet<usize>) -> bool {
+        let Value::Lambda(_, _, closure_env) = function else {
+            return false;
+        };
+        let env_id = closure_env.as_ptr() as usize;
+        if !seen_envs.insert(env_id) {
+            return false;
+        }
+        let nested = closure_env
+            .borrow()
+            .iter()
+            .flat_map(|frame| frame.iter())
+            .filter(|(name, _)| name.starts_with("__emaxx_"))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        nested.iter().any(|(name, _)| name.contains(fragment))
+            || nested
+                .into_iter()
+                .any(|(_, value)| contains(&value, fragment, seen_envs))
+    }
+
+    contains(function, fragment, &mut HashSet::new())
 }
 
 fn cl_defmethod_named_binding_inner(

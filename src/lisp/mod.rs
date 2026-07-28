@@ -394,9 +394,6 @@ pub fn load_file_strict(
     let previous_load_list = interp
         .lookup_var("current-load-list", &types::Env::new())
         .unwrap_or(types::Value::Nil);
-    let previous_load_history = interp
-        .lookup_var("load-history", &types::Env::new())
-        .unwrap_or(types::Value::Nil);
     let previous_read_symbol_shorthands = interp
         .lookup_var("read-symbol-shorthands", &types::Env::new())
         .unwrap_or(types::Value::Nil);
@@ -497,25 +494,7 @@ pub fn load_file_strict(
     let current_load_list = interp
         .lookup_var("current-load-list", &types::Env::new())
         .unwrap_or_else(|| types::Value::list([types::Value::String(path.display().to_string())]));
-    // GNU build_load_history nreverses `current-load-list' (entries were
-    // consed onto the front), so each load-history element leads with the
-    // file name.
-    let history_entry = types::Value::list(
-        current_load_list
-            .to_vec()
-            .unwrap_or_default()
-            .into_iter()
-            .rev(),
-    );
-    // Re-read load-history here: nested loads during this file's
-    // evaluation have pushed their own entries onto it.
-    let load_history_now = interp
-        .lookup_var("load-history", &types::Env::new())
-        .unwrap_or(previous_load_history);
-    interp.set_global_binding(
-        "load-history",
-        types::Value::cons(history_entry, load_history_now),
-    );
+    interp.commit_entire_load_history(&load_file, current_load_list);
     if let Some(message) = warning_message {
         append_message(interp, &message);
     }

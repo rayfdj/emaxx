@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- Fresh 2026-07-28 current-code frontier is 1,957/7,080.  The re-sweep reached
+  1,911 through `easy-mmode-tests.el`; all 46 selected Edebug outcomes then
+  matched GNU in
+  `target/compat/run-1785255202704658000-17314` (45 passes and the same one
+  expected failure).  Next is the eight selected tests in
+  `test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el`.  The older
+  2,879 frontier remains historical evidence, not the current-code position.
+  The Edebug repair is thematic: recursive command loops report errors and
+  permit post-command macro resumption like GNU; modifier-bearing keyboard
+  events normalize before minibuffer editing; native and loaded-Elisp timer
+  representations share one event-pump boundary; entire-file evaluations
+  replace same-file load history; and the Rust-backed generic facade performs
+  exact primary/qualifier method replacement and unload without retaining
+  stale closures or metadata.  Fast Rust tests cover the six order-sensitive
+  Edebug cases, recursive-edit timers and nonlocal exits, repeated generic
+  load/reload/unload, and final `cl-no-applicable-method` state.  The release
+  gate additionally found and fixed a pre-existing optimized-build mutex bug:
+  recursive lock restoration had incorrectly lived inside `debug_assert!`.
+  Rustfmt, strict Clippy, and diff checks are green.  The publication gate
+  passes 1,618/1,618 library tests (1,614 in the socket-restricted sandbox and
+  four exact localhost tests with permission), 28 compatibility-harness, 1
+  performance-harness, 5 CLI, and 3 ERT-runner tests, plus the zero-test main
+  binary.
 - Fresh 2026-07-28 post-native-audit revalidation is green through
   1,807/7,080 selected tests, ending with all 13 selected
   `cl-seq-tests.el` cases.  Next is the 93-test

@@ -407,6 +407,14 @@ impl Interpreter {
             return Ok(None);
         }
 
+        // These definition forms are Rust-backed bootstrap facades.  If a
+        // client explicitly loads cl-generic.el for its higher-level helpers,
+        // its macro definitions must not lower later forms into a second,
+        // incompatible dispatch engine.
+        if matches!(name, "cl-defgeneric" | "cl-defmethod") {
+            return Ok(None);
+        }
+
         // A cached (and still current) not-a-macro verdict skips the whole
         // probe.  cl-flet frame shadowing can only make a name LESS of a
         // macro, so a global "not a macro" verdict stays correct under any

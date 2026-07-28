@@ -4124,6 +4124,31 @@ impl Interpreter {
         } else if self.lookup_function(&name, env).is_err() {
             self.set_function_binding(&name, Some(Value::BuiltinFunc("ignore".into())));
         }
+        if name == "loadhist-unload-element" {
+            // cl-generic.el normally installs this method after defining its
+            // record-backed generic engine.  Emaxx keeps generic dispatch in
+            // Rust during bootstrap, so install the same Lisp-visible method
+            // on that facade and let a tiny host primitive splice its native
+            // method wrapper.  `unload-feature' itself remains GNU Lisp.
+            self.sf_cl_defmethod(
+                &[
+                    Value::Symbol("cl-defmethod".into()),
+                    Value::Symbol(name.clone()),
+                    Value::list([Value::list([
+                        Value::Symbol("element".into()),
+                        Value::list([
+                            Value::Symbol("head".into()),
+                            Value::Symbol("cl-defmethod".into()),
+                        ]),
+                    ])]),
+                    Value::list([
+                        Value::Symbol("emaxx--cl-generic-remove-loadhist-method".into()),
+                        Value::Symbol("element".into()),
+                    ]),
+                ],
+                env,
+            )?;
+        }
         Ok(Value::Symbol(name))
     }
 
@@ -4336,13 +4361,17 @@ impl Interpreter {
         if (is_before_method || is_after_method)
             && let Ok(previous) =
                 self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
-            && previous != Value::BuiltinFunc("ignore".into())
         {
             let params = self.parse_params(&lowered_lambda_list)?;
             let generic_lambda_list = self
                 .cl_defgeneric_lambda_list(&method_name)
                 .unwrap_or_else(|| lowered_lambda_list.clone());
             let generic_params = self.parse_params(&generic_lambda_list)?;
+            let previous = if previous == Value::BuiltinFunc("ignore".into()) {
+                cl_generic_no_applicable_function(&method_name, &generic_params)
+            } else {
+                previous
+            };
             let dispatch_method_specializers =
                 cl_defmethod_dispatch_specializers(&method_specializers, &params, &generic_params);
             let current_stored_specializer =
@@ -4429,6 +4458,40 @@ impl Interpreter {
             } else {
                 wrapper_body
             };
+            if let Some((existing_env, _, existing_previous)) =
+                cl_defmethod_previous_binding(&previous, &previous_symbol)
+            {
+                let replacement = Value::Lambda(
+                    generic_params.clone(),
+                    wrapper_body.clone().into(),
+                    shared_env(
+                        std::iter::once(vec![
+                            (
+                                previous_symbol.clone(),
+                                Self::stored_value(existing_previous),
+                            ),
+                            (
+                                "__emaxx-qualifier-specializer".into(),
+                                current_stored_specializer.metadata_value(),
+                            ),
+                        ])
+                        .chain(env.iter().cloned())
+                        .collect(),
+                    ),
+                );
+                let target_id = existing_env.as_ptr() as usize;
+                if matches!(&previous, Value::Lambda(_, _, root_env) if root_env.as_ptr() as usize == target_id)
+                {
+                    self.set_function_binding(&method_name, Some(replacement));
+                } else {
+                    cl_defmethod_replace_child_environment(&previous, target_id, &replacement);
+                }
+                self.add_cl_defmethod_specializer(
+                    &method_name,
+                    current_stored_specializer.metadata_value(),
+                );
+                return Ok(items[1].clone());
+            }
             // Keep the :before/:after wrapper stack ordered with the most
             // specific method outermost: :before bodies then run
             // most-specific-first on the way in, and :after bodies
@@ -4478,15 +4541,15 @@ impl Interpreter {
             } else {
                 self.set_function_binding(&method_name, Some(wrapper));
             }
+            self.add_cl_defmethod_specializer(
+                &method_name,
+                current_stored_specializer.metadata_value(),
+            );
             return Ok(items[1].clone());
         }
         if let Some(specializer) = ordered_method_specializers.first().cloned()
             && let Ok(previous) =
                 self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
-            && (previous != Value::BuiltinFunc("ignore".into())
-                || method_specializers
-                    .iter()
-                    .any(|specializer| specializer.is_context))
         {
             let advice_original = cl_defmethod_advice_original_binding(&previous);
             let dispatch_root = advice_original
@@ -5104,6 +5167,108 @@ impl Interpreter {
 
     fn cl_defgeneric_lambda_list(&self, method_name: &str) -> Option<Value> {
         self.get_symbol_property(method_name, "emaxx-cl-defgeneric-lambda-list")
+    }
+
+    fn remove_native_cl_defmethod(
+        &mut self,
+        method_name: &str,
+        qualifiers: &Value,
+        specializers: &Value,
+    ) {
+        let Some(lambda_list) = self.cl_defgeneric_lambda_list(method_name) else {
+            return;
+        };
+        let Ok(params) = self.parse_params(&lambda_list) else {
+            return;
+        };
+        let qualifiers = qualifiers.to_vec().unwrap_or_default();
+        let specializers = specializers.to_vec().unwrap_or_default();
+        let method_specializers = params
+            .iter()
+            .filter(|param| !param.starts_with('&'))
+            .zip(specializers.iter())
+            .filter_map(|(variable, specializer)| {
+                cl_defmethod_specializer_kind(Some(specializer)).map(|kind| {
+                    ClDefmethodSpecializer {
+                        variable: variable.clone(),
+                        kind,
+                        is_context: false,
+                        context_expr: None,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let stored = ClDefmethodStoredMethod::from_specializers(&method_specializers);
+        let qualifier_key = cl_defmethod_qualifier_key(&qualifiers);
+        let method_key = stored.hidden_key();
+        let qualifier = qualifiers
+            .iter()
+            .filter_map(|value| value.as_symbol().ok())
+            .find(|name| matches!(*name, ":before" | ":after"));
+        let previous_name = match qualifier {
+            Some(qualifier) => format!(
+                "__emaxx_{}_method_{}_{}",
+                qualifier.trim_start_matches(':'),
+                method_name.replace('-', "_"),
+                method_key
+            ),
+            None => format!(
+                "__emaxx_previous_method_{}_{}{}",
+                method_name.replace('-', "_"),
+                qualifier_key,
+                method_key
+            ),
+        };
+        let Ok(root) = self.lookup_function(method_name, &Env::new()) else {
+            return;
+        };
+        let Some((target_env, _, previous)) = cl_defmethod_previous_binding(&root, &previous_name)
+        else {
+            return;
+        };
+        let previous_is_ignore = previous == Value::BuiltinFunc("ignore".into());
+        let target_id = target_env.as_ptr() as usize;
+        let mut replacement = match &root {
+            Value::Lambda(_, _, root_env) if root_env.as_ptr() as usize == target_id => previous,
+            _ => {
+                cl_defmethod_replace_child_environment(&root, target_id, &previous);
+                root
+            }
+        };
+
+        let retain_metadata =
+            cl_defmethod_contains_binding_fragment(&replacement, &format!("_{method_key}"));
+        let metadata = self
+            .get_symbol_property(method_name, "emaxx-cl-defmethod-specializers")
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|value| retain_metadata || value != &stored.metadata_value())
+            .collect::<Vec<_>>();
+        if metadata.is_empty() && previous_is_ignore {
+            replacement = cl_generic_no_applicable_function(method_name, &params);
+        }
+        self.set_function_binding(method_name, Some(replacement));
+        self.put_symbol_property(
+            method_name,
+            "emaxx-cl-defmethod-specializers",
+            Value::list(metadata),
+        );
+    }
+
+    pub(crate) fn remove_native_cl_defmethod_loadhist_entry(
+        &mut self,
+        entry: &Value,
+    ) -> Result<Value, LispError> {
+        let parts = entry.to_vec()?;
+        if parts.len() < 3
+            || !matches!(parts.first(), Some(Value::Symbol(kind)) if kind == "cl-defmethod")
+        {
+            return Ok(Value::Nil);
+        }
+        let method_name = parts[1].as_symbol()?;
+        self.remove_native_cl_defmethod(method_name, &parts[2], &Value::list(parts[3..].to_vec()));
+        Ok(Value::Nil)
     }
 
     fn add_cl_defmethod_specializer(&mut self, method_name: &str, specializer: Value) {

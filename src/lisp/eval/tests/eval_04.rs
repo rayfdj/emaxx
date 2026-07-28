@@ -851,6 +851,77 @@ fn nonlocal_exit_from_timer_preserves_later_due_timers() {
 }
 
 #[test]
+fn recursive_edit_pumps_loaded_elisp_timers_and_propagates_nonlocal_exits() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+                 (require 'timer)
+                 (catch 'timer-stop
+                   (run-at-time 0 nil (lambda () (throw 'timer-stop 'fired)))
+                   (recursive-edit)
+                   'missed))"
+        ),
+        Value::Symbol("fired".into())
+    );
+}
+
+#[test]
+fn repeated_whole_file_load_and_unload_replace_generic_methods_exactly_once() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (load "seq" nil nil)
+                 (require 'loadhist)
+                 (let ((file (make-temp-file "emaxx-generic-unload-" nil ".el")))
+                   (unwind-protect
+                       (progn
+                         (with-temp-file file
+                           (insert
+                            "(defvar emaxx-generic-unload-log nil)\n"
+                            "(cl-defgeneric emaxx-generic-unload (x))\n"
+                            "(cl-defmethod emaxx-generic-unload :before ((x integer))\n"
+                            "  (push 'before emaxx-generic-unload-log))\n"
+                            "(cl-defmethod emaxx-generic-unload ((x integer))\n"
+                            "  (push 'primary emaxx-generic-unload-log) x)\n"
+                            "(provide 'emaxx-generic-unload-feature)\n"))
+                         (load file nil nil t)
+                         (load file nil nil t)
+                         (setq emaxx-generic-unload-log nil)
+                         (emaxx-generic-unload 1)
+                         (let ((before
+                                (reverse emaxx-generic-unload-log)))
+                           (unload-feature
+                            'emaxx-generic-unload-feature)
+                           (list
+                            before
+                            (length
+                             (seq-filter
+                              (lambda (entry)
+                                (member
+                                 '(provide
+                                   . emaxx-generic-unload-feature)
+                                 (cdr entry)))
+                              load-history))
+                            (get 'emaxx-generic-unload
+                                 'emaxx-cl-defmethod-specializers)
+                            (condition-case condition
+                                (emaxx-generic-unload 1)
+                              (error (car condition))))))
+                     (ignore-errors (delete-file file)))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("before".into()),
+                Value::Symbol("primary".into()),
+            ]),
+            Value::Integer(0),
+            Value::Nil,
+            Value::Symbol("cl-no-applicable-method".into()),
+        ])
+    );
+}
+
+#[test]
 fn auto_revert_mode_reloads_changed_file() {
     let path = std::env::temp_dir().join(format!(
         "emaxx-auto-revert-{}",

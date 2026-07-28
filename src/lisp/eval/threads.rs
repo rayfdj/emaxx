@@ -1692,7 +1692,7 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn run_pending_timers(&mut self, env: &mut Env) -> Result<(), LispError> {
+    fn run_pending_native_timers(&mut self, env: &mut Env) -> Result<(), LispError> {
         // Only timers whose scheduled time has arrived fire; the rest stay
         // queued (GNU never runs a timer before it is due).  Due timers
         // fire in schedule order.
@@ -1789,6 +1789,17 @@ impl Interpreter {
             }
         }
         Ok(())
+    }
+
+    /// Pump every timer representation that can be live in an interpreter.
+    ///
+    /// Bootstrap calls use the native queue; after GNU timer.el loads, timer
+    /// objects live in `timer-list`.  Keeping this as one event-loop operation
+    /// prevents waits and recursive command loops from silently servicing
+    /// only one side of that boundary.
+    pub(crate) fn run_pending_timer_events(&mut self, env: &mut Env) -> Result<(), LispError> {
+        self.run_pending_native_timers(env)?;
+        self.run_due_elisp_timers(env)
     }
 
     pub fn current_thread_value(&self) -> Value {
@@ -2116,8 +2127,7 @@ impl Interpreter {
         }
         if wake_sleepers {
             self.run_pending_file_notifications(env)?;
-            self.run_pending_timers(env)?;
-            self.run_due_elisp_timers(env)?;
+            self.run_pending_timer_events(env)?;
         }
         Ok(())
     }
@@ -2200,7 +2210,11 @@ impl Interpreter {
             self.drive_threads(env, false)?;
         }
         for _ in 1..saved_depth {
-            debug_assert!(self.try_lock_mutex(thread_id, mutex_id));
+            // Restoring recursive ownership is observable behavior, not a
+            // debug-only invariant.  Keeping the state transition inside
+            // `debug_assert!` made release builds silently restore depth one.
+            let restored = self.try_lock_mutex(thread_id, mutex_id);
+            debug_assert!(restored);
         }
         wait_result.map(|()| Value::Nil)
     }
