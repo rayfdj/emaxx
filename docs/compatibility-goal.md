@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- Fresh 2026-07-28 post-native-audit revalidation is green through
+  1,807/7,080 selected tests, ending with all 13 selected
+  `cl-seq-tests.el` cases.  Next is the 93-test
+  `test/lisp/emacs-lisp/comp-cstr-tests.el` manifest entry.  The older
+  measured frontier remains 2,879 and should not be discarded; 1,807 is the
+  current-code re-sweep checkpoint that must catch up to it.  This batch
+  fixed five shared contracts: indexed GNU preload ownership, general
+  structural buckets for `equal` hash tables, a fast ordinary-symbol
+  `eq`/`memq` path that avoids irrelevant symbol-with-position policy reads,
+  GNU Lisp ownership of the interactive `undo` command, and GNU-compatible
+  dynamic `macroexp--dynvars` scoping in native `macroexpand-all`.  The last
+  item repairs `cl-macs--labels` at the common expansion layer and keeps
+  sequential `defvar` declarations visible without leaking nested scopes.
+  Fast Rust tests pin each contract, including scaled hash/memq cases and the
+  combined upstream CL selectors.  Electric passes 874/874 and `cl-macs`
+  passes 61/61 in exact replay.  Rustfmt and strict Clippy are green.  The
+  full library gate passed all 1,611 sandbox-compatible tests; the four
+  localhost tests rejected only by sandbox policy all pass under their exact
+  fully-qualified selectors with socket permission, for 1,615/1,615 semantic
+  passes.  The other publication targets pass 28 compatibility-harness, 1
+  performance-harness, 5 CLI, and 3 ERT-runner tests (plus the zero-test
+  binary target).  Compatibility runs remain source-fingerprinted and
+  isolated so they cannot test a stale Emaxx binary.
 - The 2026-07-28 native-audit checkpoint completes `frame.c`, bringing
   the exact inventory to 1,294 mirrored / 126 missing.  Frame and terminal
   objects are no longer synthetic Lisp symbols: distinct opaque host values

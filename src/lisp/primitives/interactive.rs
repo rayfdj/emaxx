@@ -109,21 +109,44 @@ pub(crate) fn symbol_with_pos_parts(interp: &Interpreter, value: &Value) -> Opti
     Some((record.slots[0].clone(), record.slots[1].as_integer().ok()?))
 }
 
+#[cfg(test)]
+thread_local! {
+    static SYMBOL_WITH_POS_FLAG_READ_COUNT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+fn symbols_with_pos_enabled(interp: &Interpreter, env: &Env) -> bool {
+    #[cfg(test)]
+    SYMBOL_WITH_POS_FLAG_READ_COUNT.with(|count| count.set(count.get() + 1));
+    interp
+        .lookup_var("symbols-with-pos-enabled", env)
+        .is_some_and(|value| value.is_truthy())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_symbol_with_pos_flag_read_count() {
+    SYMBOL_WITH_POS_FLAG_READ_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn symbol_with_pos_flag_read_count() -> usize {
+    SYMBOL_WITH_POS_FLAG_READ_COUNT.with(std::cell::Cell::get)
+}
+
 pub(crate) fn symbol_with_pos_equal_in_env(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
     env: &Env,
 ) -> Option<bool> {
-    let enabled = interp
-        .lookup_var("symbols-with-pos-enabled", env)
-        .is_some_and(|value| value.is_truthy());
     let left_with_pos = symbol_with_pos_parts(interp, left);
     let right_with_pos = symbol_with_pos_parts(interp, right);
+    if left_with_pos.is_none() && right_with_pos.is_none() {
+        return None;
+    }
+
+    let enabled = symbols_with_pos_enabled(interp, env);
     if enabled {
-        if left_with_pos.is_none() && right_with_pos.is_none() {
-            return None;
-        }
         let left_base = left_with_pos
             .as_ref()
             .map(|(symbol, _)| symbol)
@@ -154,16 +177,13 @@ pub(crate) fn symbol_with_pos_eq_in_env(
     right: &Value,
     env: &Env,
 ) -> Option<bool> {
-    let enabled = interp
-        .lookup_var("symbols-with-pos-enabled", env)
-        .is_some_and(|value| value.is_truthy());
-    if !enabled {
-        return None;
-    }
-
     let left_with_pos = symbol_with_pos_parts(interp, left);
     let right_with_pos = symbol_with_pos_parts(interp, right);
     if left_with_pos.is_none() && right_with_pos.is_none() {
+        return None;
+    }
+
+    if !symbols_with_pos_enabled(interp, env) {
         return None;
     }
 

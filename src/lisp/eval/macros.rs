@@ -623,6 +623,39 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Run one GNU `macroexpand-all' scope with a private dynamic
+    /// `macroexp--dynvars' list.  Declarations encountered while walking
+    /// sequential forms remain visible to later siblings, but never leak out
+    /// of the form whose expansion established the scope.
+    pub(crate) fn macroexpand_all_scoped_with_environment(
+        &mut self,
+        form: &Value,
+        macro_environment: Option<&Value>,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.with_macroexp_dynvars_scope(env, |interp, env| {
+            interp.macroexpand_all_form_with_environment(form, macro_environment, env)
+        })
+    }
+
+    fn with_macroexp_dynvars_scope(
+        &mut self,
+        env: &mut Env,
+        expand: impl FnOnce(&mut Self, &mut Env) -> Result<Value, LispError>,
+    ) -> Result<Value, LispError> {
+        let current = self
+            .lookup_var("macroexp--dynvars", env)
+            .unwrap_or(Value::Nil);
+        let restore = self.bind_special_variable("macroexp--dynvars", current, env)?;
+        let result = expand(self, env);
+        let restore_result = self.restore_special_binding(restore, env);
+        match (result, restore_result) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(value), Ok(())) => Ok(value),
+        }
+    }
+
     pub(crate) fn macroexpand_all_form_with_environment(
         &mut self,
         form: &Value,
@@ -667,24 +700,54 @@ impl Interpreter {
                             Some(Value::Symbol(symbol)) if symbol == "lambda"
                         )
                     {
-                        let mut expanded_lambda = Vec::with_capacity(func_items.len());
-                        expanded_lambda.push(func_items[0].clone());
-                        if let Some(params) = func_items.get(1) {
-                            expanded_lambda.push(params.clone());
-                        }
-                        for item in func_items.iter().skip(2) {
-                            expanded_lambda.push(self.macroexpand_all_form_with_environment(
-                                item,
-                                macro_environment,
-                                env,
-                            )?);
-                        }
-                        return Ok(Value::list([
-                            items[0].clone(),
-                            Value::list(expanded_lambda),
-                        ]));
+                        return self.with_macroexp_dynvars_scope(env, |interp, env| {
+                            let mut expanded_lambda = Vec::with_capacity(func_items.len());
+                            expanded_lambda.push(func_items[0].clone());
+                            if let Some(params) = func_items.get(1) {
+                                expanded_lambda.push(params.clone());
+                            }
+                            for item in func_items.iter().skip(2) {
+                                expanded_lambda.push(
+                                    interp.macroexpand_all_form_with_environment(
+                                        item,
+                                        macro_environment,
+                                        env,
+                                    )?,
+                                );
+                            }
+                            Ok(Value::list([
+                                items[0].clone(),
+                                Value::list(expanded_lambda),
+                            ]))
+                        });
                     }
                     return Ok(form.clone());
+                }
+                "defvar" | "defconst"
+                    if items
+                        .get(1)
+                        .is_some_and(|value| matches!(value, Value::Symbol(_))) =>
+                {
+                    let Value::Symbol(declared) = &items[1] else {
+                        unreachable!("guarded above");
+                    };
+                    let current = self
+                        .lookup_var("macroexp--dynvars", env)
+                        .unwrap_or(Value::Nil);
+                    self.set_variable(
+                        "macroexp--dynvars",
+                        Value::cons(Value::Symbol(declared.clone()), current),
+                        env,
+                    );
+                    let mut expanded = items[..2].to_vec();
+                    for item in &items[2..] {
+                        expanded.push(self.macroexpand_all_form_with_environment(
+                            item,
+                            macro_environment,
+                            env,
+                        )?);
+                    }
+                    return Ok(Value::list(expanded));
                 }
                 "eval-when-compile" => {
                     let value = if items.len() <= 1 {
@@ -719,11 +782,13 @@ impl Interpreter {
                     return Ok(Value::list(expanded));
                 }
                 "let" | "let*" | "letrec" => {
-                    return self.macroexpand_all_let_form_with_environment(
-                        &items,
-                        macro_environment,
-                        env,
-                    );
+                    return self.with_macroexp_dynvars_scope(env, |interp, env| {
+                        interp.macroexpand_all_let_form_with_environment(
+                            &items,
+                            macro_environment,
+                            env,
+                        )
+                    });
                 }
                 // Backquote templates stay in place; only the unquoted
                 // expressions inside them are macro-expanded (this is how the
@@ -772,7 +837,9 @@ impl Interpreter {
                 "defun" | "defmacro" | "defsubst" | "cl-defun" | "cl-defmacro"
                     if items.len() >= 3 =>
                 {
-                    return self.macroexpand_all_definition_body(&items, 3, macro_environment, env);
+                    return self.with_macroexp_dynvars_scope(env, |interp, env| {
+                        interp.macroexpand_all_definition_body(&items, 3, macro_environment, env)
+                    });
                 }
                 "cl-defmethod" if items.len() >= 3 => {
                     let lambda_list_index =
@@ -835,19 +902,21 @@ impl Interpreter {
         }
 
         if matches!(head, Value::Symbol(name) if name == "lambda") {
-            let mut expanded = Vec::with_capacity(items.len());
-            expanded.push(items[0].clone());
-            if let Some(params) = items.get(1) {
-                expanded.push(params.clone());
-            }
-            for item in &items[2..] {
-                expanded.push(self.macroexpand_all_form_with_environment(
-                    item,
-                    macro_environment,
-                    env,
-                )?);
-            }
-            return Ok(Value::list(expanded));
+            return self.with_macroexp_dynvars_scope(env, |interp, env| {
+                let mut expanded = Vec::with_capacity(items.len());
+                expanded.push(items[0].clone());
+                if let Some(params) = items.get(1) {
+                    expanded.push(params.clone());
+                }
+                for item in &items[2..] {
+                    expanded.push(interp.macroexpand_all_form_with_environment(
+                        item,
+                        macro_environment,
+                        env,
+                    )?);
+                }
+                Ok(Value::list(expanded))
+            });
         }
 
         let mut expanded = Vec::with_capacity(items.len());

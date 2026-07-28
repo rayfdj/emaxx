@@ -7839,6 +7839,14 @@ since HANDLE are identified by length instead."
                  (tail (nthcdr new-count cur)))
             (setq buffer-undo-list (append head tail))))))))
 
+(defconst undo-equiv-table (make-hash-table :test 'eq :weakness t)
+  "Map redo records to their corresponding undo records.")
+
+(defcustom undo-no-redo nil
+  "If t, `undo' doesn't go through redo entries."
+  :type 'boolean
+  :group 'undo)
+
 (defvar pending-undo-list nil
   "Within a run of consecutive undo commands, list remaining to be undone.
 If t, we undid all the way to the end of it.")
@@ -7961,6 +7969,92 @@ then call `undo-more' one or more times to undo them."
     (setq pending-undo-list (primitive-undo n pending-undo-list))
     (if (null pending-undo-list)
 	(setq pending-undo-list t))))
+
+(defun undo--last-change-was-undo-p (undo-list)
+  (while (and (consp undo-list) (eq (car undo-list) nil))
+    (setq undo-list (cdr undo-list)))
+  (gethash undo-list undo-equiv-table))
+
+;; Keep the command-level undo policy in Lisp, as GNU simple.el does.
+;; `undo-start', `undo-more', and `primitive-undo' above provide the
+;; underlying undo-list operations.
+(defun undo (&optional arg)
+  "Undo some previous changes.
+Repeat this command to undo more changes.
+A numeric ARG serves as a repeat count.
+
+In Transient Mark mode when the mark is active, undo changes only within
+the current region.  Similarly, when not in Transient Mark mode, just
+\\[universal-argument] as an argument limits undo to changes within the
+current region."
+  (interactive "*P")
+  (let* ((modified (buffer-modified-p))
+	 (base-buffer (or (buffer-base-buffer) (current-buffer)))
+	 (recent-save (with-current-buffer base-buffer
+			(recent-auto-save-p)))
+         (inhibit-region (and (symbolp last-command)
+                              (get last-command 'undo-inhibit-region)))
+	 message)
+    (setq this-command 'undo-start)
+    (unless (and (eq last-command 'undo)
+		 (or (eq pending-undo-list t)
+		     (undo--last-change-was-undo-p buffer-undo-list)))
+      (setq undo-in-region
+	    (and (or (region-active-p) (and arg (not (numberp arg))))
+                 (not inhibit-region)))
+      (if undo-in-region
+	  (undo-start (region-beginning) (region-end))
+	(undo-start))
+      (undo-more 1))
+    (setq this-command 'undo)
+    (let ((equiv (gethash pending-undo-list undo-equiv-table)))
+      (or (eq (selected-window) (minibuffer-window))
+	  (setq message (format "%s%s"
+                                (if (or undo-no-redo (not equiv))
+                                    "Undo" "Redo")
+                                (if undo-in-region " in region" ""))))
+      (when (and (consp equiv) undo-no-redo)
+	(while (let ((next (gethash equiv undo-equiv-table)))
+		 (if next (setq equiv next))))
+	(setq pending-undo-list (if (consp equiv) equiv t))))
+    (undo-more
+     (if (numberp arg)
+	 (prefix-numeric-value arg)
+       1))
+    (let ((list buffer-undo-list))
+      (while (eq (car list) nil)
+	(setq list (cdr list)))
+      (puthash list
+               (cond
+                (undo-in-region 'undo-in-region)
+                ((eq list pending-undo-list)
+                 (or (gethash list undo-equiv-table)
+                     'empty))
+                (t pending-undo-list))
+	       undo-equiv-table))
+    (let ((tail buffer-undo-list)
+	  (prev nil))
+      (while (car tail)
+	(when (integerp (car tail))
+	  (let ((pos (car tail)))
+	    (if prev
+		(setcdr prev (cdr tail))
+	      (setq buffer-undo-list (cdr tail)))
+	    (setq tail (cdr tail))
+	    (while (car tail)
+	      (if (eq pos (car tail))
+		  (if prev
+		      (setcdr prev (cdr tail))
+		    (setq buffer-undo-list (cdr tail)))
+		(setq prev tail))
+	      (setq tail (cdr tail)))
+	    (setq tail nil)))
+	(setq prev tail tail (cdr tail))))
+    (and modified (not (buffer-modified-p))
+	 (with-current-buffer base-buffer
+	   (delete-auto-save-file-if-necessary recent-save)))
+    (if message
+	(message "%s" message))))
 
 (defmacro with-case-table (table &rest body)
   "Execute the forms in BODY with TABLE as the current case table.
