@@ -77,6 +77,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "eval-buffer"
             | "eval-region"
             | "unload-feature"
+            | "emaxx--cl-generic-remove-loadhist-method"
             | "mapconcat"
             | "string-join"
             | "ensure-list"
@@ -318,7 +319,11 @@ fn read_minibuffer_text_from_kbd_macro(
     let mut text: Vec<char> = initial.chars().collect();
     let mut cursor = text.len();
     while let Some(event) = current_kbd_macro_event(interp, 0) {
-        let Ok(code) = event.as_integer() else {
+        // `read-kbd-macro' can retain GNU's modifier bits on character
+        // events, whereas literal macro strings contain resolved control
+        // bytes.  Minibuffer editing must see C-a/C-k identically in both
+        // representations.
+        let Ok(code) = crate::lisp::primitives::reader_key_event_value(event).as_integer() else {
             break;
         };
         advance_kbd_macro_index(interp, 1, env);
@@ -698,11 +703,14 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
         )
     };
     let result = entry_hooks
-        .and_then(|()| run_kbd_macro_events(interp, env))
+        .and_then(|()| run_recursive_kbd_command_loop(interp, env))
         // With no more events to dispatch the command loop goes idle, which
-        // processes queued file notifications and fires due timers.
+        // processes queued file notifications and fires due timers.  Loaded
+        // timer.el owns GNU timer objects in `timer-list'; the native queue
+        // remains the bootstrap path, so a real command-loop pump must drain
+        // both representations just like the other event-waiting paths.
         .and_then(|()| interp.run_pending_file_notifications(env))
-        .and_then(|()| interp.run_pending_timers(env));
+        .and_then(|()| interp.run_pending_timer_events(env));
     interp.command_loop_recursion_depth -= 1;
     match result {
         Err(LispError::Throw(tag, value)) if matches!(&tag, Value::Symbol(symbol) if symbol == "exit") => {
@@ -716,6 +724,42 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
         }
         Err(error) => Err(error),
         Ok(()) => Ok(Value::Nil),
+    }
+}
+
+/// Run the command loop used by a recursive edit.
+///
+/// GNU's top-level `execute-kbd-macro' invokes `command_loop_2' with only
+/// `minibuffer-quit' handled, while `recursive-edit' invokes the same loop
+/// with the complete `error' condition.  Edebug depends on that distinction:
+/// a command error inside its recursive edit is reported, the active macro is
+/// stopped, and the next command-loop cycle runs `post-command-hook', where
+/// its test driver may deliberately resume the macro.
+fn run_recursive_kbd_command_loop(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    loop {
+        match run_kbd_macro_events(interp, env) {
+            Ok(()) => return Ok(()),
+            Err(error @ LispError::Throw(_, _)) => return Err(error),
+            Err(error) if error_matches_condition(interp, &error, "error") => {
+                report_kbd_command_error(interp, &error, env)?;
+                safe_run_named_hooks(
+                    interp,
+                    "post-command-hook",
+                    env,
+                    Some(interp.current_buffer_id()),
+                )?;
+                let resumed = interp
+                    .lookup_var("executing-kbd-macro", env)
+                    .is_some_and(|value| value.is_truthy());
+                if !resumed {
+                    return Ok(());
+                }
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -772,19 +816,7 @@ fn execute_kbd_macro_command(
         {
             return Err(error);
         }
-        let error_function = interp
-            .lookup_var("command-error-function", env)
-            .unwrap_or(Value::Nil);
-        let data = crate::lisp::eval::error_condition_value(&error);
-        interp.set_global_binding("executing-kbd-macro", Value::Nil);
-        if !error_function.is_nil() {
-            interp.call_function_value(
-                error_function,
-                None,
-                &[data, Value::String(String::new()), Value::Nil],
-                env,
-            )?;
-        }
+        report_kbd_command_error(interp, &error, env)?;
     }
     safe_run_named_hooks(
         interp,
@@ -800,6 +832,36 @@ fn execute_kbd_macro_command(
         .filter(|value| !value.is_nil())
         .unwrap_or_else(|| command.clone());
     finish_kbd_macro_command(interp, command.clone(), final_this_command, env);
+    Ok(())
+}
+
+fn report_kbd_command_error(
+    interp: &mut Interpreter,
+    error: &LispError,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    // GNU's cmd_error stops an executing macro for ordinary errors, but a
+    // `minibuffer-quit' is allowed to return to the same macro.  Assign the
+    // active dynamic binding: Edebug deliberately rebinds this variable
+    // around its recursive edit.
+    if !error_matches_condition(interp, error, "minibuffer-quit") {
+        interp.set_variable("executing-kbd-macro", Value::Nil, env);
+    }
+    let error_function = interp
+        .lookup_var("command-error-function", env)
+        .unwrap_or(Value::Nil);
+    if !error_function.is_nil() {
+        interp.call_function_value(
+            error_function,
+            None,
+            &[
+                crate::lisp::eval::error_condition_value(error),
+                Value::String(String::new()),
+                Value::Nil,
+            ],
+            env,
+        )?;
+    }
     Ok(())
 }
 
@@ -1914,6 +1976,10 @@ pub(super) fn call(
         "eval-buffer" => eval_buffer_impl(interp, args, env),
         "eval-region" => eval_region_impl(interp, args, env),
         "unload-feature" => unload_feature_impl(interp, args, env),
+        "emaxx--cl-generic-remove-loadhist-method" => {
+            need_args(name, args, 1)?;
+            interp.remove_native_cl_defmethod_loadhist_entry(&args[0])
+        }
         "mapconcat" => {
             if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));

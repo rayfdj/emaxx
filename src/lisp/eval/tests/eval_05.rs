@@ -4706,6 +4706,50 @@ fn edebug_instrumented_cl_macrolet_preserves_expander_arguments() {
 }
 
 #[test]
+fn edebug_recursive_command_loop_timer_and_macro_minibuffer_state_stay_coherent() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("emacs-lisp/edebug-tests.el");
+        let selector = eval_str_with(
+            &mut interp,
+            r#"'(member
+                 edebug-tests-evaluate-expressions
+                 edebug-tests-error-stepping-into-subr
+                 edebug-tests-error-trying-to-set-breakpoint-in-uninstrumented-code
+                 edebug-tests-set-and-break-on-global-condition
+                 edebug-tests-gv-expander
+                 edebug-tests-step-into-generic-method)"#,
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+
+        assert_eq!(summary.total, 6, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 6, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(list
+                   (length
+                    (seq-filter
+                     (lambda (entry)
+                       (member '(provide . edebug-test-code) (cdr entry)))
+                     load-history))
+                   (get 'edebug-test-code-emphasize
+                        'emaxx-cl-defmethod-specializers)
+                   (condition-case condition
+                       (edebug-test-code-emphasize 1)
+                     (error (car condition))))",
+            ),
+            Value::list([
+                Value::Integer(0),
+                Value::Nil,
+                Value::Symbol("cl-no-applicable-method".into()),
+            ]),
+            "whole-file reevaluation and unload must not retain method state"
+        );
+    });
+}
+
+#[test]
 fn edebug_sample_code_eval_buffer_reaches_its_provide_form() {
     run_with_large_stack(|| {
         let mut interp = upstream_lisp_test_interpreter("emacs-lisp/edebug-tests.el");

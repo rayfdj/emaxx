@@ -18,6 +18,41 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-07-28 EDEBUG FRONTIER: the current source tree has a fresh contiguous
+  1,957/7,080 green prefix.  The prefix through `easy-mmode-tests.el` was
+  replayed through 1,911, and all 46 selected outcomes in
+  `test/lisp/emacs-lisp/edebug-tests.el` match GNU in the final
+  source-fingerprinted artifact
+  `target/compat/run-1785255202704658000-17314` (45 passes plus the same
+  expected `edebug-tests-step-into-macro-error` failure).  NEXT is the eight
+  selected tests in
+  `test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el`.  The older
+  2,879 historical frontier remains useful evidence but is not a substitute
+  for this current-code re-sweep.
+  This batch repaired shared command-loop and lifetime contracts rather than
+  Edebug test names.  Recursive edits now use GNU's error-report/resume
+  command-loop behavior, keyboard-macro minibuffer events normalize modifier
+  bits, and every waiting loop pumps both the bootstrap native timer queue and
+  GNU `timer.el`'s `timer-list`.  Whole-file source loads and `eval-buffer`
+  now replace same-file `load-history` entries like GNU
+  `build_load_history`; the Rust-backed `cl-defgeneric` facade uses stable
+  qualifier wrappers, exact method replacement, and a scoped
+  `loadhist-unload-element` adapter so repeated loads and `unload-feature`
+  cannot leave stale primary/before/after closures or metadata.  Do not
+  broadly preload `cl-generic.el`: that creates a second dispatch engine and
+  exposes its unrelated method-combination bootstrap requirements.
+  Fast Rust regressions cover the six order-sensitive Edebug cases plus
+  post-unload state, recursive-edit Elisp timers/nonlocal exits, and repeated
+  whole-file generic load/reload/unload.  The release gate also exposed a
+  pre-existing mutex bug: recursive ownership restoration had been performed
+  inside `debug_assert!`, so optimized builds omitted the state transition.
+  Restoration is now unconditional, the existing GNU-comparison regression
+  passes in release, and a repository-wide assertion scan found no other
+  stateful debug assertions.  Final gates are green: rustfmt, strict Clippy,
+  diff check, 1,614 sandbox-compatible library tests plus the four exact
+  localhost tests with socket permission (1,618/1,618 semantic passes), 28
+  compatibility-harness tests, 1 performance-harness test, 5 CLI tests, and
+  3 ERT-runner tests (plus the zero-test binary target).
 - 2026-07-28 POST-NATIVE-AUDIT ORACLE REVALIDATION: the current source tree
   has been replayed from the start of `compat/oracle_tests_all.txt` through
   the 13 selected `cl-seq-tests.el` cases, giving a fresh contiguous
@@ -2289,7 +2324,7 @@ and are created exclusively, so a run cannot append to an older run.
 For the next known frontier, run:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/find-func-tests.el
+cargo run --release --bin compat-harness -- run --scope all --selector t --file test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el
 ```
 
 After fixing a selector, exact-replay that selector. Then probe the next

@@ -4051,7 +4051,10 @@ pub(super) fn call(
                 ("cl-no-next-method", vec![generic.clone(), Value::Nil])
             };
             hook_args.extend(call_args.iter().cloned());
-            if let Ok(hook_function) = interp.lookup_function(hook, env) {
+            if let Ok(hook_function) = interp.lookup_function(hook, env)
+                && hook_function != Value::BuiltinFunc("ignore".into())
+                && hook_function != Value::Symbol("ignore".into())
+            {
                 return invoke_function_value(interp, &hook_function, &hook_args, env);
             }
             // GNU's default methods signal the dedicated conditions
