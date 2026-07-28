@@ -422,8 +422,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "internal-show-cursor-p"
             | "set-buffer-redisplay"
             | "format-mode-line"
-            | "font-spec"
-            | "font-get"
             | "face-attribute"
             | "face-name"
             | "face-foreground"
@@ -3480,36 +3478,6 @@ pub(super) fn call(
             // batch renderer has no retained glyph cache, so the observable
             // watcher contract is the arity and nil return value.
             Ok(Value::Nil)
-        }
-        "font-spec" => {
-            let mut name_spec = None;
-            let mut index = 0;
-            while index + 1 < args.len() {
-                if let Value::Symbol(keyword) = &args[index]
-                    && keyword == ":name"
-                {
-                    name_spec = Some(string_text(&args[index + 1])?);
-                }
-                index += 2;
-            }
-            Ok(interp.create_record(
-                "font-spec",
-                vec![Value::String(name_spec.unwrap_or_default())],
-            ))
-        }
-        "font-get" => {
-            need_args(name, args, 2)?;
-            let property = args[1].as_symbol()?;
-            let info = font_spec_info(interp, &args[0])?;
-            Ok(match property {
-                ":family" => info.family.map(Value::Symbol).unwrap_or(Value::Nil),
-                ":size" => info.size.map(Value::Float).unwrap_or(Value::Nil),
-                ":weight" => info.weight.map(Value::Symbol).unwrap_or(Value::Nil),
-                ":slant" => info.slant.map(Value::Symbol).unwrap_or(Value::Nil),
-                ":spacing" => info.spacing.map(Value::Integer).unwrap_or(Value::Nil),
-                ":foundry" => info.foundry.map(Value::Symbol).unwrap_or(Value::Nil),
-                _ => Value::Nil,
-            })
         }
         "face-attribute" => {
             if args.len() < 2 || args.len() > 4 {

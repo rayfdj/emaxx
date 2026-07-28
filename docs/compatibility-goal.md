@@ -29,6 +29,22 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-07-28 native-audit checkpoint completes the pure/headless
+  `font.c` core and all six `fontset.c` primitives, bringing the exact
+  inventory to 1,259 mirrored / 161 missing.  The shallow name-only
+  `font-spec` facade has been replaced by one mutable normalized 13-slot font
+  record shared by construction, lookup, mutation, matching, XLFD generation,
+  and headless lookup/cache behavior.  A typed fontset registry owns
+  default/custom sets, character/range/script/fallback mappings,
+  prepend/append precedence, recreation semantics, ASCII protection, and the
+  headless error boundary.  Four direct GNU family regressions cover all 19
+  claimed font/fontset names, including exact validation and ordering.
+  The eight remaining `font.c` names require real font entities/objects or a
+  GUI font driver and remain deliberately unclaimed rather than nil-stubbed.
+  Font/face-targeted tests, rustfmt, strict Clippy, and diff checks are green.
+  The complete publication gate passed 1,605 library, 28
+  compatibility-harness, 1 performance-harness, 5 CLI, and 3 ERT-runner
+  tests with zero failures.  The exact 1..N/7080 replay remains pending.
 - The 2026-07-28 native-audit checkpoint completes the 25-function
   headless semantic core of `xfaces.c`, bringing the exact inventory to 1,243
   mirrored / 177 missing.  One interpreter-owned mutable 20-slot face-vector

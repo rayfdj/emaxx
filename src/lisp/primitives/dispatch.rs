@@ -7,6 +7,7 @@ mod composition;
 mod display;
 mod faces;
 mod files_process;
+mod fonts;
 mod lists;
 mod misc;
 mod misc_keymaps;
@@ -38,6 +39,7 @@ enum DispatchModule {
     Lcms,
     Ccl,
     Numeric,
+    Fonts,
     Predicates,
     Lists,
     Composition,
@@ -69,6 +71,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::Ccl
     } else if numeric::handles(name) {
         DispatchModule::Numeric
+    } else if fonts::handles(name) {
+        DispatchModule::Fonts
     } else if predicates::handles(name) {
         DispatchModule::Predicates
     } else if lists::handles(name) {
@@ -137,6 +141,7 @@ pub(crate) fn has_dispatch_handler(name: &str) -> bool {
 
 fn is_builtin_uncached(name: &str) -> bool {
     faces::handles(name)
+        || fonts::handles(name)
         || matches!(
             name,
             // Arithmetic
@@ -1396,8 +1401,6 @@ fn is_builtin_uncached(name: &str) -> bool {
             | "internal-show-cursor"
             | "internal-show-cursor-p"
             | "display-popup-menus-p"
-            | "font-spec"
-            | "font-get"
             | "face-name"
             | "face-attribute"
             | "face-foreground"
@@ -1920,6 +1923,7 @@ pub fn call(
         DispatchModule::Lcms => call_lcms_builtin(name, args),
         DispatchModule::Ccl => ccl::call(interp, name, args, env),
         DispatchModule::Numeric => numeric::call(interp, name, args, env),
+        DispatchModule::Fonts => fonts::call(interp, name, args, env),
         DispatchModule::Predicates => predicates::call(interp, name, args, env),
         DispatchModule::Lists => lists::call(interp, name, args, env),
         DispatchModule::Composition => composition::call(interp, name, args, env),
