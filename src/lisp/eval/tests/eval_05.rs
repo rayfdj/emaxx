@@ -4628,17 +4628,17 @@ fn upstream_custom_theme_uses_native_frame_parameter_updates() {
 }
 
 #[test]
-fn upstream_cl_macs_dynamic_and_symbol_macro_regressions_stay_green() {
+fn upstream_cl_macs_dynamic_labels_and_symbol_macro_regressions_stay_green() {
     run_with_large_stack(|| {
         let mut interp = upstream_lisp_test_interpreter("emacs-lisp/cl-macs-tests.el");
         let selector = eval_str_with(
             &mut interp,
-            "'(member cl-macs--progv cl-macs-test--symbol-macrolet)",
+            "'(member cl-macs--labels cl-macs--progv cl-macs-test--symbol-macrolet)",
         );
         let summary = interp.run_ert_tests_with_selector(Some(&selector));
 
-        assert_eq!(summary.total, 2, "{:#?}", interp.test_results);
-        assert_eq!(summary.passed, 2, "{:#?}", interp.test_results);
+        assert_eq!(summary.total, 3, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 3, "{:#?}", interp.test_results);
     });
 }
 

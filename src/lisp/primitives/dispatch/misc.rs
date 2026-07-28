@@ -1702,7 +1702,7 @@ pub(super) fn call(
                     None
                 };
                 let result =
-                    interp.macroexpand_all_form_with_environment(&args[0], environment, env);
+                    interp.macroexpand_all_scoped_with_environment(&args[0], environment, env);
                 if let Some(previous) = previous {
                     match previous {
                         Some(value) => {

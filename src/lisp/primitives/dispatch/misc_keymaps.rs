@@ -5,6 +5,7 @@ use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
 
 thread_local! {
     static SEMANTIC_CPP_INCLUDE_TAG_CACHE: RefCell<HashMap<PathBuf, Vec<Value>>> =
@@ -1747,8 +1748,7 @@ pub(super) fn call(
         "hash-table-contains-p" => {
             need_args(name, args, 2)?;
             if let Value::Record(id) = &args[1]
-                && let Some(key) = string_like(&args[0])
-                && let Some(value) = interp.equal_string_hash_lookup(*id, &key.text)
+                && let Some(value) = interp.equal_hash_lookup(*id, &args[0])
             {
                 return Ok(if value.is_some() {
                     Value::T
@@ -1797,8 +1797,7 @@ pub(super) fn call(
             }
             let default = args.get(2).cloned().unwrap_or(Value::Nil);
             if let Value::Record(id) = &args[1]
-                && let Some(key) = string_like(&args[0])
-                && let Some(value) = interp.equal_string_hash_lookup(*id, &key.text)
+                && let Some(value) = interp.equal_hash_lookup(*id, &args[0])
             {
                 return Ok(value.unwrap_or(default));
             }
@@ -1818,8 +1817,7 @@ pub(super) fn call(
         "puthash" => {
             need_args(name, args, 3)?;
             if let Value::Record(id) = &args[2]
-                && let Some(key) = string_like(&args[0])
-                && interp.equal_string_hash_put(*id, &key.text, args[0].clone(), args[1].clone())
+                && interp.equal_hash_put(*id, args[0].clone(), args[1].clone())
             {
                 return Ok(args[1].clone());
             }
@@ -1859,6 +1857,11 @@ pub(super) fn call(
         }
         "remhash" => {
             need_args(name, args, 2)?;
+            if let Value::Record(id) = &args[1]
+                && interp.equal_hash_remove(*id, &args[0]).is_some()
+            {
+                return Ok(Value::Nil);
+            }
             let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
                 return Err(LispError::TypeError(
                     "hash-table".into(),
@@ -13272,40 +13275,124 @@ fn preloaded_lisp_directory(interp: &Interpreter) -> Option<PathBuf> {
         .find(|directory| directory.join("subr.el").is_file())
 }
 
-fn symbol_file_from_preloaded_sources(interp: &Interpreter, symbol: &str) -> Option<String> {
-    let lisp_dir = preloaded_lisp_directory(interp)?;
-    let escaped = regex::escape(symbol);
-    let pattern = regex::Regex::new(&format!(r"(?m)^\(def\S*\s+'?{escaped}[\s)\n]")).ok()?;
+type PreloadedSourceIndex = HashMap<String, String>;
+type PreloadedSourceIndexCache = Mutex<HashMap<PathBuf, Arc<PreloadedSourceIndex>>>;
+
+fn build_preloaded_source_index(lisp_dir: &Path) -> PreloadedSourceIndex {
+    static DEFINITION: OnceLock<regex::Regex> = OnceLock::new();
+    let pattern = DEFINITION.get_or_init(|| {
+        regex::Regex::new(r"(?m)^\(def\S*\s+'?([^\s()]+)[\s)\n]")
+            .expect("static preloaded definition regex")
+    });
+    let mut index = HashMap::new();
     for relative in GNU_PRELOADED_LISP_FILES {
         let path = lisp_dir.join(format!("{relative}.el"));
         let Ok(contents) = std::fs::read_to_string(&path) else {
             continue;
         };
-        if pattern.is_match(&contents) {
-            return Some(path.display().to_string());
+        let rendered_path = path.display().to_string();
+        for captures in pattern.captures_iter(&contents) {
+            if let Some(symbol) = captures.get(1) {
+                // GNU's dumped load-history resolves the first preloaded
+                // definition in loadup order.
+                index
+                    .entry(symbol.as_str().to_string())
+                    .or_insert_with(|| rendered_path.clone());
+            }
         }
     }
-    None
+    index
+}
+
+fn preloaded_source_index(lisp_dir: &Path) -> Arc<PreloadedSourceIndex> {
+    static CACHE: OnceLock<PreloadedSourceIndexCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().expect("preloaded source index lock");
+    Arc::clone(
+        cache
+            .entry(lisp_dir.to_path_buf())
+            .or_insert_with(|| Arc::new(build_preloaded_source_index(lisp_dir))),
+    )
+}
+
+fn symbol_file_from_preloaded_sources(interp: &Interpreter, symbol: &str) -> Option<String> {
+    let lisp_dir = preloaded_lisp_directory(interp)?;
+    preloaded_source_index(&lisp_dir).get(symbol).cloned()
 }
 
 // True when NAME is a native emaxx builtin that GNU defines in PRELOADED
 // LISP (simple.el, lisp.el, subr.el...): such a function is NOT a subr in
 // GNU (`subrp' nil; find-func resolves it through `symbol-file').
-// Memoized — the answer only depends on the oracle tree.
+// The complete immutable source index is memoized per oracle tree.
 pub(crate) fn builtin_is_gnu_preloaded_lisp(interp: &Interpreter, name: &str) -> bool {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    static CACHE: Mutex<Option<HashMap<(String, String), bool>>> = Mutex::new(None);
     let Some(lisp_dir) = preloaded_lisp_directory(interp) else {
         return false;
     };
-    let key = (lisp_dir.display().to_string(), name.to_string());
-    let mut cache = CACHE.lock().expect("preloaded-lisp cache lock");
-    let map = cache.get_or_insert_with(HashMap::new);
-    if let Some(&known) = map.get(&key) {
-        return known;
+    preloaded_source_index(&lisp_dir).contains_key(name)
+}
+
+#[cfg(test)]
+mod preloaded_source_index_tests {
+    use super::*;
+
+    #[test]
+    fn index_preserves_load_order_and_is_reused_per_source_tree() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("emaxx-preloaded-index-{unique}"));
+        let emacs_lisp = root.join("emacs-lisp");
+        std::fs::create_dir_all(&emacs_lisp).expect("create preloaded source directory");
+        let first = emacs_lisp.join("rmc.el");
+        std::fs::write(
+            &first,
+            "(defun first-probe ())\n(defvar 'quoted-probe nil)\n  (defun indented-probe ())\n",
+        )
+        .expect("write first preloaded source");
+        let second = root.join("international/iso-transl.el");
+        std::fs::create_dir_all(second.parent().expect("second source parent"))
+            .expect("create second preloaded source directory");
+        std::fs::write(
+            &second,
+            "(defun first-probe ())\n(define-derived-mode derived-probe fundamental-mode \"Probe\")\n",
+        )
+        .expect("write second preloaded source");
+
+        let first_index = preloaded_source_index(&root);
+        let second_index = preloaded_source_index(&root);
+        assert!(Arc::ptr_eq(&first_index, &second_index));
+        assert_eq!(
+            first_index.get("first-probe").map(String::as_str),
+            Some(first.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            first_index.get("quoted-probe").map(String::as_str),
+            Some(first.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            first_index.get("derived-probe").map(String::as_str),
+            Some(second.to_string_lossy().as_ref())
+        );
+        assert!(!first_index.contains_key("indented-probe"));
+
+        std::fs::remove_dir_all(root).expect("remove preloaded source fixture");
     }
-    let found = symbol_file_from_preloaded_sources(interp, name).is_some();
-    map.insert(key, found);
-    found
+
+    #[test]
+    fn unique_preloaded_ownership_misses_share_one_fast_index() {
+        let interp = Interpreter::new();
+        let started = std::time::Instant::now();
+        for index in 0..512 {
+            assert!(!builtin_is_gnu_preloaded_lisp(
+                &interp,
+                &format!("emaxx-absent-preloaded-symbol-{index}")
+            ));
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "preloaded ownership lookups rebuilt or rescanned the source index: {:?}",
+            started.elapsed()
+        );
+    }
 }

@@ -1528,6 +1528,60 @@ pub(crate) fn sxhash_value(interp: &Interpreter, value: &Value, mode: HashMode) 
     (state & 0x7fff_ffff_ffff_ffff) as i64
 }
 
+/// Return the structural hash used to index a GNU `equal' hash table.
+///
+/// Some runtime objects can compare equal to a different representation
+/// (keymap records and their public list projection, for example), and cyclic
+/// cons graphs need bounded traversal.  Keep those values in a collision
+/// bucket.  Ordinary source forms are acyclic cons trees of scalar values, so
+/// they retain the O(1)-bucket behavior of GNU's native hash tables.
+pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> Option<i64> {
+    fn indexable(
+        value: &Value,
+        visiting: &mut HashSet<usize>,
+        visited: &mut HashSet<usize>,
+    ) -> bool {
+        match value {
+            Value::Record(_)
+            | Value::Buffer(_, _)
+            | Value::Marker(_)
+            | Value::Overlay(_)
+            | Value::CharTable(_)
+            | Value::Lambda(_, _, _) => false,
+            Value::Cons(car, cdr) => {
+                let identity = Rc::as_ptr(car) as usize;
+                if visited.contains(&identity) {
+                    return true;
+                }
+                if !visiting.insert(identity) {
+                    return false;
+                }
+                let car_value = car.borrow();
+                if matches!(
+                    &*car_value,
+                    Value::Symbol(symbol)
+                        if symbol == "keymap"
+                            || symbol == crate::lisp::reader::RECORD_LITERAL_SYMBOL
+                ) {
+                    visiting.remove(&identity);
+                    return false;
+                }
+                let result = indexable(&car_value, visiting, visited)
+                    && indexable(&cdr.borrow(), visiting, visited);
+                visiting.remove(&identity);
+                if result {
+                    visited.insert(identity);
+                }
+                result
+            }
+            _ => true,
+        }
+    }
+
+    indexable(value, &mut HashSet::new(), &mut HashSet::new())
+        .then(|| sxhash_value(interp, value, HashMode::Equal))
+}
+
 pub(crate) fn hash_mix(state: &mut u64, value: u64) {
     *state ^= value;
     *state = state.wrapping_mul(0x0000_0100_0000_01b3);
@@ -1678,22 +1732,29 @@ pub(crate) fn hash_value_equal(
         Value::T => hash_mix(state, 31),
         Value::Integer(number) => {
             hash_mix(state, 32);
-            hash_mix(state, *number as u64);
+            hash_str(state, &number.to_string());
         }
         Value::BigInteger(number) => {
-            hash_mix(state, 33);
+            hash_mix(state, 32);
             hash_str(state, &number.to_string());
         }
         Value::Float(number) => {
             hash_mix(state, 34);
-            hash_mix(state, number.to_bits());
+            let bits = if *number == 0.0 {
+                0.0f64.to_bits()
+            } else if number.is_nan() {
+                f64::NAN.to_bits()
+            } else {
+                number.to_bits()
+            };
+            hash_mix(state, bits);
         }
         Value::String(text) => {
             hash_mix(state, 35);
             hash_str(state, text);
         }
         Value::StringObject(shared) => {
-            hash_mix(state, 36);
+            hash_mix(state, 35);
             let shared = shared.borrow();
             hash_str(state, &shared.text);
             if include_properties {

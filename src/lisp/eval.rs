@@ -911,9 +911,9 @@ pub(crate) struct CombinedAfterChangeState {
 }
 
 #[derive(Clone, Debug, Default)]
-struct EqualStringHashTableState {
+struct EqualHashTableState {
     entries: Vec<(Value, Value)>,
-    string_index: HashMap<String, usize>,
+    key_index: HashMap<Option<i64>, Vec<usize>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1336,10 +1336,10 @@ pub struct Interpreter {
     /// every character lookup makes Unicode-wide scans catastrophically
     /// quadratic in allocation and also loses `put-char-code-property' data.
     unicode_property_table_ids: HashMap<String, u64>,
-    /// Indexed storage for the common GNU `equal' hash-table/string-key
-    /// workload.  Record slots retain metadata compatibility, while this
-    /// sidecar prevents puthash/gethash from cloning and scanning a Lisp list.
-    equal_string_hash_tables: HashMap<u64, EqualStringHashTableState>,
+    /// Indexed storage for GNU `equal' hash tables.  Record slots retain
+    /// metadata compatibility, while this sidecar gives structured Lisp keys
+    /// the same hashed lookup shape as Emacs's native implementation.
+    equal_hash_tables: HashMap<u64, EqualHashTableState>,
     /// Charset aliases defined at runtime.
     charset_aliases: Vec<(String, String)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
@@ -2010,7 +2010,7 @@ impl Interpreter {
                 },
             ],
             unicode_property_table_ids: HashMap::new(),
-            equal_string_hash_tables: HashMap::new(),
+            equal_hash_tables: HashMap::new(),
             charset_aliases: Vec::new(),
             charset_ids: vec![
                 ("ascii".into(), 0),

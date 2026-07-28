@@ -2784,6 +2784,177 @@ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
 }
 
 #[test]
+fn equal_structured_hash_tables_use_structural_buckets() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let table = call(
+        &mut interp,
+        "make-hash-table",
+        &[
+            Value::Symbol(":test".into()),
+            Value::Symbol("equal".into()),
+            Value::Symbol(":size".into()),
+            Value::Integer(5_000),
+        ],
+        &mut env,
+    )
+    .expect("create an equal structured-key hash table");
+
+    let started = Instant::now();
+    for index in 0..5_000 {
+        let key = Value::list([
+            Value::Symbol("macroexp-warning".into()),
+            Value::list([
+                Value::Integer(index),
+                Value::String(format!("generated form {index}")),
+            ]),
+        ]);
+        call(
+            &mut interp,
+            "puthash",
+            &[key, Value::Integer(index), table.clone()],
+            &mut env,
+        )
+        .expect("insert a structurally indexed form");
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "structured equal keys fell back to a quadratic scan: {:?}",
+        started.elapsed()
+    );
+
+    for index in [0, 2_499, 4_999] {
+        let equivalent_key = Value::list([
+            Value::Symbol("macroexp-warning".into()),
+            Value::list([
+                Value::Integer(index),
+                Value::String(format!("generated form {index}")),
+            ]),
+        ]);
+        assert_eq!(
+            call(
+                &mut interp,
+                "gethash",
+                &[equivalent_key, table.clone()],
+                &mut env,
+            )
+            .expect("look up a separately allocated equal form"),
+            Value::Integer(index)
+        );
+    }
+
+    call(
+        &mut interp,
+        "puthash",
+        &[
+            Value::Integer(7),
+            Value::Symbol("number".into()),
+            table.clone(),
+        ],
+        &mut env,
+    )
+    .expect("insert a fixnum key");
+    assert_eq!(
+        call(
+            &mut interp,
+            "gethash",
+            &[Value::BigInteger(BigInt::from(7)), table],
+            &mut env,
+        )
+        .expect("equal fixnum and bignum representations share a bucket"),
+        Value::Symbol("number".into())
+    );
+}
+
+#[test]
+fn ordinary_memq_skips_symbol_with_position_mode_resolution() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)]];
+    let symbols =
+        Value::list((0..2_048).map(|index| Value::Symbol(format!("ordinary-symbol-{index}"))));
+
+    reset_symbol_with_pos_flag_read_count();
+    for _ in 0..256 {
+        assert_eq!(
+            call(
+                &mut interp,
+                "memq",
+                &[Value::Symbol("absent-symbol".into()), symbols.clone()],
+                &mut env,
+            )
+            .expect("scan ordinary symbols"),
+            Value::Nil
+        );
+    }
+    assert_eq!(
+        symbol_with_pos_flag_read_count(),
+        0,
+        "ordinary symbol identity must not resolve the dynamic symbol-with-position mode"
+    );
+
+    let positioned = call(
+        &mut interp,
+        "position-symbol",
+        &[Value::Symbol("ordinary-symbol-1".into()), Value::Integer(7)],
+        &mut env,
+    )
+    .expect("make a positioned symbol");
+    assert_eq!(
+        call(
+            &mut interp,
+            "eq",
+            &[positioned, Value::Symbol("ordinary-symbol-1".into())],
+            &mut env,
+        )
+        .expect("compare a positioned symbol"),
+        Value::T
+    );
+    assert_eq!(
+        symbol_with_pos_flag_read_count(),
+        1,
+        "positioned-symbol equality must still honor the dynamic mode"
+    );
+}
+
+#[test]
+fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
+    let program = r#"
+          (list
+           (commandp 'undo)
+           (subrp (symbol-function 'undo))
+           (car (interactive-form 'undo))
+           (with-temp-buffer
+             (buffer-enable-undo)
+             (insert "first")
+             (undo-boundary)
+             (insert " second")
+             ;; The command loop (and `ert-simulate-command') closes each
+             ;; completed command with this boundary before invoking undo.
+             (undo-boundary)
+             (undo)
+             (buffer-string)))
+        "#;
+    let form = Reader::new(program)
+        .read()
+        .expect("read preloaded undo contract")
+        .expect("preloaded undo contract form");
+    let expected = Reader::new("(t nil interactive \"first\")")
+        .read()
+        .expect("read preloaded undo expectation")
+        .expect("preloaded undo expectation");
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load the Emaxx preload compatibility layer");
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate preloaded undo contract");
+    assert_eq!(result, expected);
+}
+
+#[test]
 fn substitute_in_file_name_expands_shell_style_env_vars() {
     let old = std::env::var("EMAXX_SUBST_TEST").ok();
     unsafe {

@@ -18,6 +18,41 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-07-28 POST-NATIVE-AUDIT ORACLE REVALIDATION: the current source tree
+  has been replayed from the start of `compat/oracle_tests_all.txt` through
+  the 13 selected `cl-seq-tests.el` cases, giving a fresh contiguous
+  1,807/7,080 green prefix.  The next manifest entry is the 93 selected tests
+  in `test/lisp/emacs-lisp/comp-cstr-tests.el`.  This is a fresh validation
+  checkpoint, not a replacement for the older 2,879-test historical frontier;
+  retain that historical result until the present re-sweep reaches it.
+  Five thematic repairs made this prefix reliable and fast enough to replay:
+  one per-source-tree index now resolves GNU preloaded Lisp ownership instead
+  of rescanning every preload for every missing native name; `equal` hash
+  tables now use `sxhash`-partitioned structural buckets while preserving
+  conservative buckets for cyclic or representation-polymorphic keys;
+  ordinary `eq`/`memq` symbol comparisons bypass the symbol-with-position
+  dynamic policy unless an operand can actually be such a record; GNU's
+  Lisp-owned interactive `undo` policy is again preloaded above the native
+  undo-list machinery; and native `macroexpand-all` now scopes
+  `macroexp--dynvars` like GNU, including sequential `defvar` declarations
+  and private nested function scopes.  The last repair fixes
+  `cl-macs--labels` at the macroexpansion abstraction rather than special
+  casing the test.  Fast Rust regressions cover preload index reuse and
+  ordering, 5,000 structured hash keys plus numeric representation equality,
+  524,288 ordinary `memq` comparisons with zero position-policy reads, the
+  real preloaded `undo` command boundary, and the combined upstream
+  `cl-macs--labels` / `cl-macs--progv` / symbol-macrolet selectors.
+  Electric is 874/874 and the full `cl-macs` file is 61/61 in the exact
+  replay.  Rustfmt and strict Clippy are green.  The publication library gate
+  passed 1,611 non-network tests in the restricted sandbox; its only four
+  failures were localhost binds rejected with `Operation not permitted`, and
+  all four exact fully-qualified socket regressions passed immediately with
+  local networking allowed, establishing 1,615/1,615 semantic passes.  The
+  remaining publication targets passed 28 compatibility-harness tests, 1
+  performance-harness test, 5 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test binary target).  The source-fingerprinted isolated compatibility
+  target remains mandatory, so a gate cannot silently exercise a stale Emaxx
+  binary.
 - 2026-07-28 NATIVE-AUDIT CHECKPOINT: `frame.c` is complete, advancing
   the exact inventory to 1,294 mirrored / 126 missing.  Emaxx previously
   represented both the selected frame and terminal as ordinary interned

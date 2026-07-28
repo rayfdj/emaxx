@@ -1653,64 +1653,108 @@ impl Interpreter {
         entries: Vec<(Value, Value)>,
     ) {
         if test != "equal" {
-            self.equal_string_hash_tables.remove(&id);
+            self.equal_hash_tables.remove(&id);
             return;
         }
-        let mut string_index = HashMap::new();
+        let mut key_index: HashMap<Option<i64>, Vec<usize>> = HashMap::new();
         for (index, (key, _)) in entries.iter().enumerate() {
-            let text = match key {
-                Value::String(text) => Some(text.clone()),
-                Value::StringObject(state) => Some(state.borrow().text.clone()),
-                _ => None,
-            };
-            if let Some(text) = text {
-                string_index.insert(text, index);
-            }
+            let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, key);
+            key_index.entry(hash).or_default().push(index);
         }
-        self.equal_string_hash_tables.insert(
-            id,
-            EqualStringHashTableState {
-                entries,
-                string_index,
-            },
-        );
+        self.equal_hash_tables
+            .insert(id, EqualHashTableState { entries, key_index });
     }
 
     pub fn hash_table_runtime_entries(&self, id: u64) -> Option<&Vec<(Value, Value)>> {
-        self.equal_string_hash_tables
-            .get(&id)
-            .map(|state| &state.entries)
+        self.equal_hash_tables.get(&id).map(|state| &state.entries)
     }
 
-    pub fn equal_string_hash_lookup(&self, id: u64, key: &str) -> Option<Option<Value>> {
-        let state = self.equal_string_hash_tables.get(&id)?;
+    pub fn equal_hash_lookup(&self, id: u64, key: &Value) -> Option<Option<Value>> {
+        let state = self.equal_hash_tables.get(&id)?;
+        let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, key);
         Some(
             state
-                .string_index
-                .get(key)
-                .and_then(|index| state.entries.get(*index))
+                .key_index
+                .get(&hash)
+                .into_iter()
+                .flatten()
+                .filter_map(|index| state.entries.get(*index))
+                .find(|(existing, _)| crate::lisp::primitives::values_equal(self, existing, key))
                 .map(|(_, value)| value.clone()),
         )
     }
 
-    pub fn equal_string_hash_put(
-        &mut self,
-        id: u64,
-        key_text: &str,
-        key: Value,
-        value: Value,
-    ) -> bool {
-        let Some(state) = self.equal_string_hash_tables.get_mut(&id) else {
+    pub fn equal_hash_put(&mut self, id: u64, key: Value, value: Value) -> bool {
+        let Some(state) = self.equal_hash_tables.get(&id) else {
             return false;
         };
-        if let Some(index) = state.string_index.get(key_text).copied() {
+        let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, &key);
+        let existing_index = state
+            .key_index
+            .get(&hash)
+            .into_iter()
+            .flatten()
+            .copied()
+            .find(|index| {
+                state.entries.get(*index).is_some_and(|(existing, _)| {
+                    crate::lisp::primitives::values_equal(self, existing, &key)
+                })
+            });
+
+        let state = self
+            .equal_hash_tables
+            .get_mut(&id)
+            .expect("equal hash table disappeared during lookup");
+        if let Some(index) = existing_index {
             state.entries[index].1 = value;
         } else {
             let index = state.entries.len();
             state.entries.push((key, value));
-            state.string_index.insert(key_text.to_string(), index);
+            state.key_index.entry(hash).or_default().push(index);
         }
         true
+    }
+
+    pub fn equal_hash_remove(&mut self, id: u64, key: &Value) -> Option<bool> {
+        let state = self.equal_hash_tables.get(&id)?;
+        let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, key);
+        let existing_index = state
+            .key_index
+            .get(&hash)
+            .into_iter()
+            .flatten()
+            .copied()
+            .find(|index| {
+                state.entries.get(*index).is_some_and(|(existing, _)| {
+                    crate::lisp::primitives::values_equal(self, existing, key)
+                })
+            });
+        let Some(existing_index) = existing_index else {
+            return Some(false);
+        };
+        self.equal_hash_tables
+            .get_mut(&id)
+            .expect("equal hash table disappeared during removal")
+            .entries
+            .remove(existing_index);
+
+        let mut key_index: HashMap<Option<i64>, Vec<usize>> = HashMap::new();
+        for (index, (entry_key, _)) in self
+            .equal_hash_tables
+            .get(&id)
+            .expect("equal hash table disappeared while rebuilding")
+            .entries
+            .iter()
+            .enumerate()
+        {
+            let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, entry_key);
+            key_index.entry(hash).or_default().push(index);
+        }
+        self.equal_hash_tables
+            .get_mut(&id)
+            .expect("equal hash table disappeared after rebuilding")
+            .key_index = key_index;
+        Some(true)
     }
 
     pub fn find_char_table(&self, id: u64) -> Option<&CharTableState> {
