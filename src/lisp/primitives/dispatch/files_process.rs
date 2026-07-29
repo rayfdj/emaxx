@@ -2535,28 +2535,50 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             let prefix = string_text(&args[0])?;
             let directory = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+            // GNU opens the directory before synthesizing its `./' and `../'
+            // candidates.  Returning those entries for a directory that
+            // cannot be opened misleads partial completion into treating a
+            // nonexistent component as an exact directory.
+            let entries = std::fs::read_dir(&directory).map_err(|error| {
+                let rendered = error.to_string();
+                let detail = rendered
+                    .split_once(" (os error")
+                    .map(|(detail, _)| detail)
+                    .unwrap_or(rendered.as_str());
+                LispError::SignalValue(Value::list([
+                    Value::Symbol(
+                        if error.kind() == ErrorKind::NotFound {
+                            "file-missing"
+                        } else {
+                            "file-error"
+                        }
+                        .into(),
+                    ),
+                    Value::String("Opening directory".into()),
+                    Value::String(detail.into()),
+                    Value::String(directory.clone()),
+                ]))
+            })?;
             let mut names: Vec<String> = Vec::new();
             for special in ["./", "../"] {
                 if special.starts_with(&prefix) {
                     names.push(special.to_string());
                 }
             }
-            if let Ok(entries) = std::fs::read_dir(&directory) {
-                for entry in entries.flatten() {
-                    let file_name = entry.file_name().to_string_lossy().into_owned();
-                    if !file_name.starts_with(&prefix) {
-                        continue;
-                    }
-                    // Directories (following symlinks) get a trailing slash.
-                    let is_directory = std::fs::metadata(entry.path())
-                        .map(|metadata| metadata.is_dir())
-                        .unwrap_or(false);
-                    names.push(if is_directory {
-                        format!("{file_name}/")
-                    } else {
-                        file_name
-                    });
+            for entry in entries.flatten() {
+                let file_name = entry.file_name().to_string_lossy().into_owned();
+                if !file_name.starts_with(&prefix) {
+                    continue;
                 }
+                // Directories (following symlinks) get a trailing slash.
+                let is_directory = std::fs::metadata(entry.path())
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false);
+                names.push(if is_directory {
+                    format!("{file_name}/")
+                } else {
+                    file_name
+                });
             }
             names.sort();
             Ok(Value::list(names.into_iter().map(Value::String)))

@@ -4405,13 +4405,32 @@ fn completion_at_point_displays_ambiguous_candidates_after_no_progress() {
 }
 
 fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
+    let emacs_repo = upstream_emacs_repo();
     let options = crate::batch::BatchRunOptions {
-        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+        load_path: crate::compat::emaxx_upstream_load_path(&emacs_repo)
             .expect("upstream load path"),
         ..Default::default()
     };
     let mut interp = crate::batch::initialize_batch_interpreter(&options)
         .expect("initialize upstream Lisp test interpreter");
+    // Match the compatibility runner's installation-directory boundary.
+    // Source-aware upstream tests must not accidentally inspect the Emaxx
+    // workspace just because this faster in-process harness started there.
+    let mut env = Vec::new();
+    interp.set_variable(
+        "source-directory",
+        Value::String(crate::lisp::primitives::path_to_directory_string(
+            &emacs_repo,
+        )),
+        &mut env,
+    );
+    let data_directory = crate::lisp::primitives::path_to_directory_string(&emacs_repo.join("etc"));
+    interp.set_variable(
+        "data-directory",
+        Value::String(data_directory.clone()),
+        &mut env,
+    );
+    interp.set_variable("doc-directory", Value::String(data_directory), &mut env);
     // The compatibility harness passes `-l ert' before loading every test
     // file.  Emaxx also has native bootstrap ERT forms, so relying on the
     // test file's `(require 'ert)' would leave that already-provided feature
@@ -4920,6 +4939,59 @@ fn eieio_core_canonical_suite_preserves_cross_test_object_state() {
         assert_eq!(summary.total, 41, "{:#?}", interp.test_results);
         assert_eq!(summary.passed, 40, "{:#?}", interp.test_results);
         assert_eq!(summary.skipped, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn ert_font_lock_success_paths_share_the_runners_pass_catch() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("emacs-lisp/ert-font-lock-tests.el");
+        let selector = eval_str_with(
+            &mut interp,
+            "'(member test-font-lock-test-file--correct
+                      test-font-lock-test-string--correct
+                      test-macro-test--file)",
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+
+        assert_eq!(summary.total, 3, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 3, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn file_name_completion_rejects_a_missing_directory_before_adding_dot_entries() {
+    let missing = std::env::temp_dir().join(format!(
+        "emaxx-missing-completion-directory-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let expression = format!(
+        r#"(condition-case error
+               (file-name-all-completions "" {missing:?})
+             (file-missing (list (car error) (cadr error))))"#
+    );
+    assert_eq!(
+        eval_str(&expression),
+        Value::list([
+            Value::Symbol("file-missing".into()),
+            Value::String("Opening directory".into()),
+        ])
+    );
+}
+
+#[test]
+fn find_function_suite_uses_preloaded_tag_helpers_and_the_upstream_doc_index() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("emacs-lisp/find-func-tests.el");
+        let summary = interp.run_ert_tests_with_selector(None);
+
+        assert_eq!(summary.total, 6, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 6, "{:#?}", interp.test_results);
         assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
     });
 }
