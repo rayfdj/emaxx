@@ -973,12 +973,32 @@ impl Interpreter {
         self.raw_eieio_class_slot(&class, index)
     }
 
+    pub(crate) fn class_default_object_cache(&self, name: &str) -> Option<Value> {
+        let class = self.class_value(name)?;
+        self.raw_eieio_class_slot(&class, 9).or_else(|| {
+            let Value::Record(record_id) = class else {
+                return None;
+            };
+            // Native bootstrap classes use the compact
+            // (name parents slots options cache) facade.
+            self.find_record(record_id)
+                .and_then(|record| record.slots.get(4).cloned())
+        })
+    }
+
     pub(crate) fn eieio_unbound_form(&self) -> Option<Value> {
         self.global_value("eieio--unbound-form")
     }
 
     pub(crate) fn eieio_unbound_value(&self) -> Option<Value> {
         self.global_value("eieio--unbound")
+    }
+
+    pub(crate) fn value_is_eieio_unbound(&self, value: &Value) -> bool {
+        matches!(value, Value::Unbound)
+            || self
+                .eieio_unbound_value()
+                .is_some_and(|marker| primitives::values_equal(self, value, &marker))
     }
 
     fn raw_eieio_class_parent_names(&self, name: &str) -> Option<Vec<String>> {
@@ -1210,18 +1230,9 @@ impl Interpreter {
                 .collect();
         }
 
-        fn visit(
-            interp: &Interpreter,
-            name: &str,
-            output: &mut Vec<Value>,
-            seen: &mut std::collections::HashSet<String>,
-        ) {
-            if !seen.insert(name.to_string()) {
-                return;
-            }
-            output.push(crate::lisp::types::interned_symbol_value(name.to_string()));
+        fn parent_names(interp: &Interpreter, name: &str) -> Vec<String> {
             let builtin_parents = primitives::builtin_class_parents(name);
-            let parents = if !builtin_parents.is_empty() {
+            if !builtin_parents.is_empty() {
                 builtin_parents
                     .iter()
                     .map(|parent| (*parent).to_string())
@@ -1233,22 +1244,74 @@ impl Interpreter {
                     .find_class_state(name)
                     .map(|state| state.parents.clone())
                     .unwrap_or_default()
-            };
-            if parents.is_empty() {
-                if name != "t" {
-                    visit(interp, "t", output, seen);
-                }
-            } else {
-                for parent in parents {
-                    visit(interp, &parent, output, seen);
-                }
             }
         }
 
-        let mut output = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        visit(self, name, &mut output, &mut seen);
-        output
+        // GNU's `cl--class-allparents' merges the already ordered ancestry
+        // of every direct parent.  A depth-first walk is observably wrong for
+        // multiple inheritance: shared ancestors of the first parent must not
+        // precede the second direct parent.
+        fn merge_ordered(mut lists: Vec<Vec<String>>) -> Vec<String> {
+            lists.retain(|list| !list.is_empty());
+            let mut merged = Vec::new();
+            while lists.len() > 1 {
+                let candidate = lists.iter().find_map(|list| {
+                    let head = list.first()?;
+                    lists
+                        .iter()
+                        .all(|other| !other.iter().skip(1).any(|item| item == head))
+                        .then(|| head.clone())
+                });
+                // GNU's general class merge resolves an inconsistent graph
+                // by taking the first available head.  EIEIO's explicit C3
+                // validator is the layer that signals inconsistent ancestry.
+                let candidate = candidate.unwrap_or_else(|| lists[0][0].clone());
+                merged.push(candidate.clone());
+                for list in &mut lists {
+                    if list.first() == Some(&candidate) {
+                        list.remove(0);
+                    }
+                }
+                lists.retain(|list| !list.is_empty());
+            }
+            if let Some(last) = lists.pop() {
+                merged.extend(last);
+            }
+            merged
+        }
+
+        fn precedence(
+            interp: &Interpreter,
+            name: &str,
+            active: &mut std::collections::HashSet<String>,
+        ) -> Vec<String> {
+            if let Some(parents) = primitives::builtin_class_allparents(name) {
+                return parents.iter().map(|parent| (*parent).to_string()).collect();
+            }
+            if !active.insert(name.to_string()) {
+                return vec![name.to_string()];
+            }
+            let parents = parent_names(interp, name);
+            let mut result = vec![name.to_string()];
+            if parents.is_empty() {
+                if name != "t" {
+                    result.extend(precedence(interp, "t", active));
+                }
+            } else {
+                let parent_lists = parents
+                    .iter()
+                    .map(|parent| precedence(interp, parent, active))
+                    .collect();
+                result.extend(merge_ordered(parent_lists));
+            }
+            active.remove(name);
+            result
+        }
+
+        precedence(self, name, &mut std::collections::HashSet::new())
+            .into_iter()
+            .map(crate::lisp::types::interned_symbol_value)
+            .collect()
     }
 
     // Sibling classes (neither inherits the other) have no global
@@ -1281,6 +1344,48 @@ impl Interpreter {
         self.class_allparents(&record.type_name)
             .iter()
             .any(|parent| matches!(parent, Value::Symbol(name) if name == class_name))
+    }
+
+    pub(crate) fn value_is_eieio_object(&self, value: &Value) -> bool {
+        // Several host-backed values (hash tables, processes, markers, ...)
+        // use Value::Record too.  GNU's `recordp' accepts only actual record
+        // objects here, and `eieio--class-p' further requires their tag to
+        // resolve to an EIEIO class.  Model that semantic boundary through
+        // ancestry instead of leaking Emaxx's shared Rust representation.
+        let Value::Record(record_id) = value else {
+            return false;
+        };
+        let Some(record) = self.find_record(*record_id) else {
+            return false;
+        };
+        self.get_symbol_property(&record.type_name, "emaxx-eieio-class")
+            .is_some_and(|marker| marker.is_truthy())
+            || self.value_is_instance_of_class(value, "eieio-default-superclass")
+    }
+
+    pub(crate) fn callable_is_ignore(&self, value: &Value) -> bool {
+        fn resolves_to_ignore(
+            interp: &Interpreter,
+            value: &Value,
+            seen_records: &mut std::collections::HashSet<u64>,
+        ) -> bool {
+            match value {
+                Value::BuiltinFunc(name) | Value::Symbol(name) => name == "ignore",
+                Value::Record(record_id) if seen_records.insert(*record_id) => interp
+                    .find_record(*record_id)
+                    .filter(|record| record.type_name == "byte-code-function")
+                    .and_then(|record| record.slots.first())
+                    .is_some_and(|callable| resolves_to_ignore(interp, callable, seen_records)),
+                _ => false,
+            }
+        }
+
+        // `symbol-function' exposes a GNU-preloaded Lisp function through an
+        // observable byte-code-function facade, while Emaxx retains the host
+        // callable in slot zero.  Generic dispatch compares callable identity,
+        // so normalize that representation boundary before testing the
+        // `ignore' end-of-chain sentinel.
+        resolves_to_ignore(self, value, &mut std::collections::HashSet::new())
     }
 
     pub(crate) fn class_children(&self, name: &str) -> Vec<Value> {

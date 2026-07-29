@@ -5428,10 +5428,15 @@ fn cl_defmethod_named_binding_inner(
         .find_map(|value| cl_defmethod_named_binding_inner(&value, name, replacement, seen_envs))
 }
 
-fn cl_defmethod_replace_ignore_previous_bindings(function: &Value, replacement: &Value) -> bool {
+fn cl_defmethod_replace_ignore_previous_bindings(
+    interp: &Interpreter,
+    function: &Value,
+    replacement: &Value,
+) -> bool {
     let mut seen_envs = HashSet::new();
     let mut seen_cons = HashSet::new();
     cl_defmethod_replace_ignore_previous_bindings_inner(
+        interp,
         function,
         replacement,
         &mut seen_envs,
@@ -5440,6 +5445,7 @@ fn cl_defmethod_replace_ignore_previous_bindings(function: &Value, replacement: 
 }
 
 fn cl_defmethod_replace_ignore_previous_bindings_inner(
+    interp: &Interpreter,
     function: &Value,
     replacement: &Value,
     seen_envs: &mut HashSet<usize>,
@@ -5459,7 +5465,7 @@ fn cl_defmethod_replace_ignore_previous_bindings_inner(
                     for (name, value) in frame.iter_mut() {
                         if (name.starts_with("__emaxx_previous_method_")
                             || name.starts_with("__emaxx_"))
-                            && value == &Value::BuiltinFunc("ignore".into())
+                            && interp.callable_is_ignore(value)
                         {
                             *value = replacement.clone();
                             replaced = true;
@@ -5471,6 +5477,7 @@ fn cl_defmethod_replace_ignore_previous_bindings_inner(
             }
             nested.into_iter().fold(replaced, |replaced, value| {
                 cl_defmethod_replace_ignore_previous_bindings_inner(
+                    interp,
                     &value,
                     replacement,
                     seen_envs,
@@ -5484,11 +5491,13 @@ fn cl_defmethod_replace_ignore_previous_bindings_inner(
                 return false;
             }
             cl_defmethod_replace_ignore_previous_bindings_inner(
+                interp,
                 &car.borrow(),
                 replacement,
                 seen_envs,
                 seen_cons,
             ) || cl_defmethod_replace_ignore_previous_bindings_inner(
+                interp,
                 &cdr.borrow(),
                 replacement,
                 seen_envs,
