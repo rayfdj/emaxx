@@ -250,6 +250,109 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
 }
 
 #[test]
+fn native_comp_pure_introspection_family_matches_gnu_and_the_backend_boundary() {
+    let signature_program = r#"
+        (mapcar
+         (lambda (name)
+           (comp--subr-signature (symbol-function name)))
+         '(car + concat if let))"#;
+    let expected_signatures = r#"("car(1 . 1)" "+(0 . many)" "concat(0 . many)" "if(2 . unevalled)" "let(1 . unevalled)")"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {signature_program})"),
+        expected_signatures,
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(signature_program)
+        .read()
+        .expect("native-comp signature program should parse")
+        .expect("native-comp signature program should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("native-comp signatures should evaluate");
+    let expected = Reader::new(expected_signatures)
+        .read()
+        .expect("native-comp expected signatures should parse")
+        .expect("native-comp expected signatures should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "comp--subr-signature differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+
+    let capability_form = Reader::new(
+        r#"(list (native-comp-available-p)
+                  (comp-native-driver-options-effective-p)
+                  (comp-native-compiler-options-effective-p)
+                  (comp-libgccjit-version))"#,
+    )
+    .read()
+    .expect("native-comp capability program should parse")
+    .expect("native-comp capability program should contain a form");
+    assert_eq!(
+        interp
+            .eval(&capability_form, &mut env)
+            .expect("native-comp capability queries should evaluate"),
+        Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil]),
+        "compiler capability helpers must agree that Emaxx has no native-comp backend"
+    );
+
+    let error = call(
+        &mut interp,
+        "comp--subr-signature",
+        &[Value::Integer(1)],
+        &mut env,
+    )
+    .expect_err("comp--subr-signature must reject non-subrs");
+    assert_eq!(error.condition_type(), "wrong-type-argument");
+}
+
+#[test]
+fn portable_dump_pure_introspection_observes_real_runtime_state() {
+    let sort_program = r#"
+        (list
+         (dump-emacs-portable--sort-predicate '(first 1) '(second 2))
+         (dump-emacs-portable--sort-predicate '(first 2) '(second 1))
+         (dump-emacs-portable--sort-predicate '(first 1) '(second 1)))"#;
+    let expected = "(t nil nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {sort_program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(sort_program)
+        .read()
+        .expect("portable-dump sort program should parse")
+        .expect("portable-dump sort program should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("portable-dump sort predicate should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("portable-dump sort result should parse")
+        .expect("portable-dump sort result should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "portable-dump relocation ordering differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+
+    assert_upstream_primitive_contract(
+        r#"(let ((stats (pdumper-stats)))
+              (prin1
+               (or (null stats)
+                   (and (eq (alist-get 'dumped-with-pdumper stats) t)
+                        (numberp (alist-get 'load-time stats))
+                        (stringp (alist-get 'dump-file-name stats))))))"#,
+        "t",
+    );
+    assert_eq!(
+        call(&mut interp, "pdumper-stats", &[], &mut env)
+            .expect("a directly initialized Emaxx has valid dump statistics"),
+        Value::Nil,
+        "Emaxx must not claim it restored from a portable dump"
+    );
+}
+
+#[test]
 fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
     use super::generated_gnu_c_primitives::{
         GNU_C_PRIMITIVE_AVAILABLE_COUNT, GNU_C_PRIMITIVE_SOURCE_COUNT, GNU_C_PRIMITIVES,
@@ -342,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_294, 2_070_158_572_606_665_513),
+        (1_300, 12_870_226_212_509_892_759),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (126, 5_015_747_436_665_480_735),
+        (120, 14_341_592_377_143_660_421),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
