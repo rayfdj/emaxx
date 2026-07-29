@@ -3752,7 +3752,17 @@ pub(super) fn call(
             need_args(name, args, 3)?;
             let symbol = args[0].as_symbol()?;
             let property = args[1].as_symbol()?;
-            interp.put_symbol_property(symbol, property, args[2].clone());
+            // Loaded cl-preloaded.el expands
+            // `(setf (cl--find-class NAME) RECORD)' to this public plist
+            // write.  Register the class identity at that producer boundary
+            // so native generic dispatch can enumerate Lisp-created classes;
+            // ancestry itself still comes from the subsequently completed
+            // Lisp record.
+            if name == "put" && property == "cl--class" && matches!(args[2], Value::Record(_)) {
+                interp.set_class_record(symbol, args[2].clone())?;
+            } else {
+                interp.put_symbol_property(symbol, property, args[2].clone());
+            }
             Ok(args[2].clone())
         }
         _ => unreachable!("dispatch chunk called for unsupported primitive"),

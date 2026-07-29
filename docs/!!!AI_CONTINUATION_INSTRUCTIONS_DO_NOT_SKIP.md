@@ -18,6 +18,44 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-07-29 EIEIO FRONTIER: the current source tree has a fresh contiguous
+  2,016/7,080 green prefix.  All eight selected method-invocation tests match
+  GNU in `target/compat/run-1785279839594610000-24793`, all ten persistence
+  tests match in `target/compat/run-1785280963027035000-25049`, and all 41
+  canonical core EIEIO outcomes match in
+  `target/compat/run-1785280978603626000-25219`.  NEXT is selector 2,017,
+  `test-font-lock-test-file--correct`, in
+  `test/lisp/emacs-lisp/ert-font-lock-tests.el`.  Its grouped default replay
+  artifact `target/compat/run-1785281002252375000-25381` has three real Emaxx
+  failures (`test-font-lock-test-file--correct`,
+  `test-font-lock-test-string--correct`, and `test-macro-test--file`): GNU
+  passes while Emaxx signals `no-catch`.
+  The EIEIO repairs are shared representation/lifecycle contracts, not test
+  exceptions.  Lisp-created classes enter native ClassState at the public
+  `cl--class` property producer, while their subsequently completed Lisp
+  records remain authoritative for ancestry and descriptors.  Class
+  precedence uses GNU's ordered merge rather than depth-first traversal, and
+  native children validate/merge inherited slots from completed Lisp parent
+  records.  The generic end-of-chain check resolves observable
+  `byte-code-function` facades to their underlying `ignore` callable, covering
+  dispatch, method insertion/removal, and `cl-next-method-p`.  Host-backed
+  records no longer leak into the `eieio-object` type, persistence recursively
+  serializes actual EIEIO objects inside containers, `oset-default` updates
+  both the live slot descriptor and cached default object, and GNU's Lisp
+  `eieio--unbound` marker is normalized with the Rust sentinel.  Crucially,
+  `eieio-oref-default` now preserves that marker while GNU constructs the
+  default-object cache; the rejected symptom-level clone special case was
+  unnecessary because the generic clone chain was already correct.
+  Fast Rust regressions are
+  `eieio_method_invocation_order_and_next_arguments_stay_coherent`,
+  `eieio_persistence_recurses_through_container_values_with_expected_reader_policy`,
+  `eieio_core_canonical_suite_preserves_cross_test_object_state`, and
+  `eieio_object_type_does_not_leak_the_host_record_representation`.  Final
+  gates are green: rustfmt, strict Clippy, diff check, 1,617
+  sandbox-compatible library tests plus four exact localhost tests
+  (1,621/1,621 semantic passes), 28 compatibility-harness tests, 1
+  performance-harness test, 5 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).
 - 2026-07-28 EDEBUG FRONTIER: the current source tree has a fresh contiguous
   1,957/7,080 green prefix.  The prefix through `easy-mmode-tests.el` was
   replayed through 1,911, and all 46 selected outcomes in
@@ -2324,11 +2362,13 @@ and are created exclusively, so a run cannot append to an older run.
 For the next known frontier, run:
 
 ```sh
-cargo run --release --bin compat-harness -- run --scope all --selector t --file test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el
+cargo run --release --bin compat-harness -- run --scope all --selector test-font-lock-test-file--correct --file test/lisp/emacs-lisp/ert-font-lock-tests.el
 ```
 
-After fixing a selector, exact-replay that selector. Then probe the next
-canonical selector from `compat/oracle_tests_all.txt` and record the result in
+The grouped reproduction for all three currently known failures uses
+`--selector default` on the same file.  After fixing a selector, exact-replay
+that selector. Then probe the next canonical selector from
+`compat/oracle_tests_all.txt` and record the result in
 `docs/compatibility-goal.md`.
 
 ## Prefix Replay Policy

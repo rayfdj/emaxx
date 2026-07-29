@@ -4803,14 +4803,36 @@ fn cl_typep_recognizes_nil_and_cons_as_lists() {
 }
 
 #[test]
-fn cl_typep_recognizes_eieio_records_as_eieio_objects() {
+fn eieio_object_type_does_not_leak_the_host_record_representation() {
     assert_eq!(
         eval_str(
             "(progn
                    (defclass sample-eieio-root nil nil)
-                   (cl-typep (make-instance 'sample-eieio-root) 'eieio-object))"
+                   (let ((object (make-instance 'sample-eieio-root))
+                         (table (make-hash-table))
+                         (plain-record (record 'sample-plain-record)))
+                     (list
+                      (cl-typep object 'eieio-object)
+                      (eieio-object-p object)
+                      (recordp (eieio--object-class object))
+                      (cl-typep table 'eieio-object)
+                      (eieio-object-p table)
+                      (cl-typep plain-record 'eieio-object)
+                      (eieio-object-p plain-record)
+                      (cl-typep [] 'eieio-object)
+                      (eieio-object-p []))))"
         ),
-        Value::T
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
     );
 }
 

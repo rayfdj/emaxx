@@ -3535,6 +3535,11 @@ impl Interpreter {
                 && pair[1].is_truthy()
         });
         let class_record = self.register_class(name, parents, slot_specs, options);
+        // ClassState is also used by the compact cl-defstruct facade, so
+        // retain the producer's semantic category explicitly.  This matters
+        // before the full GNU EIEIO hierarchy has been bootstrapped and an
+        // implicit eieio-default-superclass parent is available.
+        self.put_symbol_property(name, "emaxx-eieio-class", Value::T);
         classes::install_eieio_slot_accessors(self, name)?;
         // GNU validates slot declarations at class-definition time: a
         // constant initform must match the slot :type, and a subclass may
@@ -4367,7 +4372,7 @@ impl Interpreter {
                 .cl_defgeneric_lambda_list(&method_name)
                 .unwrap_or_else(|| lowered_lambda_list.clone());
             let generic_params = self.parse_params(&generic_lambda_list)?;
-            let previous = if previous == Value::BuiltinFunc("ignore".into()) {
+            let previous = if self.callable_is_ignore(&previous) {
                 cl_generic_no_applicable_function(&method_name, &generic_params)
             } else {
                 previous
@@ -4702,7 +4707,7 @@ impl Interpreter {
                 &method_name,
                 &method_previous_symbol,
                 &next_default_form,
-                if dispatch_previous == Value::BuiltinFunc("ignore".into()) {
+                if self.callable_is_ignore(&dispatch_previous) {
                     Value::Nil
                 } else {
                     Value::T
@@ -4954,7 +4959,7 @@ impl Interpreter {
         if method_specializers.is_empty()
             && let Ok(previous) =
                 self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
-            && previous != Value::BuiltinFunc("ignore".into())
+            && !self.callable_is_ignore(&previous)
             && self
                 .get_symbol_property(&method_name, "emaxx-cl-defmethod-specializers")
                 .is_some()
@@ -4968,7 +4973,7 @@ impl Interpreter {
                 executable_method_forms.clone().into(),
                 shared_env(env.clone()),
             );
-            if cl_defmethod_replace_ignore_previous_bindings(&previous, &base_method) {
+            if cl_defmethod_replace_ignore_previous_bindings(self, &previous, &base_method) {
                 return Ok(items[1].clone());
             }
         }
@@ -4978,7 +4983,7 @@ impl Interpreter {
         let result = if method_specializers.is_empty()
             && is_around_qualifier
             && let Ok(previous) = self.lookup_function(&method_name, env)
-            && previous != Value::BuiltinFunc("ignore".into())
+            && !self.callable_is_ignore(&previous)
         {
             // A specializer-less :around wraps whatever the generic
             // currently runs (often the cl-defgeneric default body), with
@@ -5226,7 +5231,7 @@ impl Interpreter {
         else {
             return;
         };
-        let previous_is_ignore = previous == Value::BuiltinFunc("ignore".into());
+        let previous_is_ignore = self.callable_is_ignore(&previous);
         let target_id = target_env.as_ptr() as usize;
         let mut replacement = match &root {
             Value::Lambda(_, _, root_env) if root_env.as_ptr() as usize == target_id => previous,

@@ -4795,6 +4795,136 @@ fn edebug_sample_code_eval_buffer_reaches_its_provide_form() {
 }
 
 #[test]
+fn eieio_method_invocation_order_and_next_arguments_stay_coherent() {
+    run_with_large_stack(|| {
+        let mut interp =
+            upstream_lisp_test_interpreter("emacs-lisp/eieio-tests/eieio-test-methodinvoke.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(list
+                   (cl--class-allparents (cl-find-class 'eitest-B))
+                   (cl--class-allparents (cl-find-class 'D))
+                   (cl--class-allparents (cl-find-class 'E)))",
+            ),
+            eval_str(
+                "'((eitest-B eitest-B-base1 eitest-B-base2
+                    eieio-default-superclass record atom t)
+                   (D D-base1 D-base2 D-base0
+                    eieio-default-superclass record atom t)
+                   (E E-base1 E-base2 E-base0
+                    eieio-default-superclass record atom t))",
+            ),
+            "EIEIO class precedence must preserve direct-parent order"
+        );
+        assert!(
+            interp.class_sibling_precedes("eitest-B-base1", "eitest-B-base2"),
+            "the first direct parent must be the more-specific sibling"
+        );
+        let selector = eval_str_with(
+            &mut interp,
+            r#"'(member
+                 eieio-test-cl-generic-1
+                 eieio-test-method-order-list-10
+                 eieio-test-method-order-list-3
+                 eieio-test-method-order-list-4
+                 eieio-test-method-order-list-5
+                 eieio-test-method-order-list-7
+                 eieio-test-method-order-list-8
+                 eieio-test-method-order-list-9)"#,
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+
+        assert_eq!(summary.total, 8, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 8, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn eieio_persistence_recurses_through_container_values_with_expected_reader_policy() {
+    run_with_large_stack(|| {
+        let mut interp =
+            upstream_lisp_test_interpreter("emacs-lisp/eieio-tests/eieio-test-persist.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(let* ((file (make-temp-file "emaxx-persist-probe-"))
+                          (jane (make-instance 'person :name "Jane"))
+                          (bob (make-instance 'person :name "Bob"))
+                          (object
+                           (make-instance
+                            'classy
+                            :teacher jane
+                            :janitors (list [tuesday nil] [friday nil])
+                            :random-vector [nil]
+                            :file file)))
+                     (puthash "Bob" bob (slot-value object 'students))
+                     (aset (slot-value object 'random-vector) 0
+                           (make-instance 'persistent-random-class))
+                     (unwind-protect
+                         (let ((save
+                                (condition-case error
+                                    (progn
+                                      (eieio-persistent-save object)
+                                      'save-ok)
+                                  (error (list 'save-error error)))))
+                           (list
+                            save
+                            (condition-case error
+                                (progn
+                                  (eieio-persistent-read file 'classy)
+                                  'read-ok)
+                              (error (list 'read-error error)))))
+                       (ignore-errors (delete-file file))))"#,
+            ),
+            eval_str("'(save-ok read-ok)"),
+            "nested persistence must survive both serialization phases"
+        );
+        let selector = eval_str_with(
+            &mut interp,
+            r#"'(member
+                 eieio-persist-hash-and-vector-backward-compatibility
+                 eieio-persist-hash-and-vector-no-backward-compatibility
+                 eieio-test-persist-interior-lists-backward-compatibility
+                 eieio-test-persist-interior-lists-no-backward-compatibility)"#,
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+
+        assert_eq!(summary.total, 4, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 2, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 2, "{:#?}", interp.test_results);
+        assert_eq!(summary.unexpected, 0, "{:#?}", interp.test_results);
+        assert!(
+            interp
+                .test_results
+                .iter()
+                .filter(|outcome| outcome.status == crate::compat::TestStatus::Failed)
+                .all(|outcome| outcome.condition_type.as_deref() == Some("invalid-read-syntax")),
+            "{:#?}",
+            interp.test_results
+        );
+    });
+}
+
+#[test]
+fn eieio_core_canonical_suite_preserves_cross_test_object_state() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("emacs-lisp/eieio-tests/eieio-tests.el");
+        let selector = eval_str_with(
+            &mut interp,
+            "'(not (member eieio-test-37-obsolete-name-in-constructor))",
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+
+        assert_eq!(summary.total, 41, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 40, "{:#?}", interp.test_results);
+        assert_eq!(summary.skipped, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
 fn cl_macrolet_expander_stays_lexical_inside_dynamic_eval() {
     assert_eq!(
         eval_str(

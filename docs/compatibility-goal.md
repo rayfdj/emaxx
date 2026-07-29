@@ -29,6 +29,34 @@ handoff and retry instruction are in
 
 ## Current State
 
+- Fresh 2026-07-29 current-code frontier is 2,016/7,080.  The eight selected
+  method-invocation tests match GNU in
+  `target/compat/run-1785279839594610000-24793`; all ten EIEIO persistence
+  tests match in `target/compat/run-1785280963027035000-25049`; and all 41
+  canonical core EIEIO outcomes match in
+  `target/compat/run-1785280978603626000-25219`.  Next is selector 2,017,
+  `test-font-lock-test-file--correct`, in
+  `test/lisp/emacs-lisp/ert-font-lock-tests.el`.  The grouped default replay
+  `target/compat/run-1785281002252375000-25381` identifies three Emaxx
+  `no-catch` failures where GNU passes: `test-font-lock-test-file--correct`,
+  `test-font-lock-test-string--correct`, and `test-macro-test--file`.
+  This batch fixed shared EIEIO boundaries: ordered class-precedence merging;
+  producer-boundary registration plus authoritative completed Lisp class
+  records; inherited slot validation across native/Lisp class
+  representations; callable normalization through observable byte-code
+  facades; strict separation of EIEIO objects from other host-backed records;
+  recursive object persistence; live descriptor/default-cache synchronization;
+  and one unbound-slot meaning across GNU's Lisp marker and Rust's sentinel.
+  The final clone failure proved to be default-cache construction returning
+  nil for a missing initform, not clone dispatch; fixing
+  `eieio-oref-default` at that producer made the already-correct GNU clone
+  chain pass.  Four fast Rust regressions pin method order, persistence, all
+  canonical core EIEIO outcomes with cross-test state, and the host-record
+  type boundary.  Rustfmt, strict Clippy, and diff checks are green.  The
+  publication gate passes 1,621/1,621 semantic library tests (1,617 inside the
+  socket-restricted sandbox and four exact localhost tests with permission),
+  28 compatibility-harness tests, 1 performance-harness test, 5 CLI tests,
+  and 3 ERT-runner tests, plus the zero-test main binary.
 - Fresh 2026-07-28 current-code frontier is 1,957/7,080.  The re-sweep reached
   1,911 through `easy-mmode-tests.el`; all 46 selected Edebug outcomes then
   matched GNU in

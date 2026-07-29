@@ -3469,7 +3469,7 @@ pub(super) fn call(
                         eieio_class_allocated_value(interp, &class_name, &slots[slot_index], env)?;
                     // GNU's class-allocated `oref-default' returns the raw
                     // storage without checking boundness.
-                    if matches!(value, Value::Unbound) {
+                    if interp.value_is_eieio_unbound(&value) {
                         return Ok(interp
                             .lookup_var("eieio--unbound", env)
                             .unwrap_or(Value::Unbound));
@@ -3479,11 +3479,41 @@ pub(super) fn call(
                 if let Some(initform) = &slots[slot_index].initform {
                     return interp.eval(initform, env);
                 }
+                if let Some(value) = interp
+                    .get_symbol_property(&class_name, &eieio_class_default_property(slot_name))
+                {
+                    if interp.value_is_eieio_unbound(&value) {
+                        return Ok(interp
+                            .lookup_var("eieio--unbound", env)
+                            .unwrap_or(Value::Unbound));
+                    }
+                    return Ok(value);
+                }
+                // While GNU builds a class's default-object cache it binds
+                // eieio-skip-typecheck and expects an absent initform to
+                // remain the unbound marker.  Returning nil here silently
+                // turns every unspecified slot into a bound-nil slot.
+                if interp
+                    .lookup_var("eieio-skip-typecheck", env)
+                    .is_some_and(|setting| setting.is_truthy())
+                {
+                    return Ok(interp
+                        .lookup_var("eieio--unbound", env)
+                        .unwrap_or(Value::Unbound));
+                }
+                return eieio_slot_unbound_dispatch(
+                    interp,
+                    env,
+                    &args[0],
+                    &class_name,
+                    slot_name,
+                    "oref-default",
+                );
             }
             if let Some(value) =
                 interp.get_symbol_property(&class_name, &eieio_class_default_property(slot_name))
             {
-                if matches!(value, Value::Unbound) {
+                if interp.value_is_eieio_unbound(&value) {
                     return Ok(interp
                         .lookup_var("eieio--unbound", env)
                         .unwrap_or(Value::Unbound));
@@ -3509,54 +3539,74 @@ pub(super) fn call(
             };
             let slot_name = args[1].as_symbol()?.to_string();
             let slots = eieio_slot_specs(interp, &class_name)?;
-            if let Some(slot_index) = eieio_slot_index(&slots, &slot_name)
-                && slots[slot_index].class_allocated
-                && set_eieio_class_allocated_value(
+            let Some(slot_index) = eieio_slot_index(&slots, &slot_name) else {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("invalid-slot-name".into()),
+                    Value::Symbol(class_name),
+                    Value::Symbol(slot_name),
+                ])));
+            };
+            let skip_typecheck = interp
+                .lookup_var("eieio-skip-typecheck", env)
+                .is_some_and(|setting| setting.is_truthy());
+            if !skip_typecheck
+                && !eieio_value_matches_type(interp, &args[2], &slots[slot_index].slot_type, env)?
+            {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("invalid-slot-type".into()),
+                    Value::Symbol(class_name),
+                    Value::Symbol(slots[slot_index].name.clone()),
+                    slots[slot_index].slot_type.clone(),
+                    args[2].clone(),
+                ])));
+            }
+            if slots[slot_index].class_allocated {
+                if set_eieio_class_allocated_value(
                     interp,
                     &class_name,
                     &slots[slot_index].name,
                     args[2].clone(),
-                )?
-            {
-                return Ok(args[2].clone());
-            }
-            interp.put_symbol_property(
-                &class_name,
-                &eieio_class_default_property(&slot_name),
-                args[2].clone(),
-            );
-            // GNU also stores the new default into the class's default
-            // object cache so later instances pick it up.
-            let cache =
-                interp
-                    .class_value(&class_name)
-                    .and_then(|class_record| match class_record {
-                        Value::Record(class_record_id) => interp
-                            .find_record(class_record_id)
-                            .and_then(|record| record.slots.get(4).cloned()),
-                        _ => None,
-                    });
-            if let Some(Value::Record(cache_id)) = cache {
-                let slots = eieio_slot_specs(interp, &class_name)?;
-                if let Some(slot_index) = eieio_slot_index(&slots, &slot_name)
-                    && !slots[slot_index].class_allocated
-                    && let Some(record) = interp.find_record_mut(cache_id)
-                    && let Some(slot) = record.slots.get_mut(slot_index)
-                {
-                    *slot = args[2].clone();
+                )? {
+                    return Ok(args[2].clone());
                 }
+                interp.put_symbol_property(
+                    &class_name,
+                    &eieio_class_allocation_property(&slots[slot_index].name),
+                    args[2].clone(),
+                );
+            } else {
+                set_eieio_instance_default(
+                    interp,
+                    &class_name,
+                    &slots[slot_index].name,
+                    slot_index,
+                    args[2].clone(),
+                )?;
             }
             Ok(args[2].clone())
         }
         "eieio--object-class" => {
             need_args(name, args, 1)?;
             match &args[0] {
-                Value::Record(id) => interp
-                    .find_record(*id)
-                    .map(|record| Value::Symbol(record.type_name.clone()))
-                    .ok_or_else(|| {
-                        LispError::TypeError("eieio-object".into(), args[0].type_name())
-                    }),
+                value if !interp.value_is_eieio_object(value) => Err(LispError::TypeError(
+                    "eieio-object".into(),
+                    value.type_name(),
+                )),
+                Value::Record(id) => {
+                    let class_name = interp
+                        .find_record(*id)
+                        .map(|record| record.type_name.clone())
+                        .ok_or_else(|| {
+                            LispError::TypeError("eieio-object".into(), args[0].type_name())
+                        })?;
+                    // GNU's Lisp helper resolves the object's record tag to
+                    // the live class object.  Returning only the tag symbol
+                    // makes every subsequent eieio--class accessor reject
+                    // an otherwise valid instance.
+                    Ok(interp
+                        .class_value(&class_name)
+                        .unwrap_or(Value::Symbol(class_name)))
+                }
                 _ => Err(LispError::TypeError(
                     "eieio-object".into(),
                     args[0].type_name(),
@@ -3584,18 +3634,11 @@ pub(super) fn call(
         }
         "eieio-object-p" => {
             need_args(name, args, 1)?;
-            // GNU requires the record's type to name a class; plain records
-            // (hash tables, defstruct-free record literals) are not objects.
-            Ok(
-                if matches!(&args[0], Value::Record(id) if interp
-                    .find_record(*id)
-                    .is_some_and(|record| interp.class_value(&record.type_name).is_some()))
-                {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
+            Ok(if interp.value_is_eieio_object(&args[0]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "slot-boundp" => {
             need_args(name, args, 2)?;
@@ -4036,9 +4079,7 @@ pub(super) fn call(
             let generic = args[1].clone();
             let kind = args[2].as_symbol()?.to_string();
             let call_args = args[3].to_vec()?;
-            let exhausted = matches!(next, Value::Nil)
-                || matches!(next, Value::BuiltinFunc(next_name) if next_name == "ignore")
-                || matches!(next, Value::Symbol(next_name) if next_name == "ignore");
+            let exhausted = matches!(next, Value::Nil) || interp.callable_is_ignore(next);
             if !exhausted {
                 return invoke_function_value(interp, next, &call_args, env);
             }
@@ -4052,8 +4093,7 @@ pub(super) fn call(
             };
             hook_args.extend(call_args.iter().cloned());
             if let Ok(hook_function) = interp.lookup_function(hook, env)
-                && hook_function != Value::BuiltinFunc("ignore".into())
-                && hook_function != Value::Symbol("ignore".into())
+                && !interp.callable_is_ignore(&hook_function)
             {
                 return invoke_function_value(interp, &hook_function, &hook_args, env);
             }
@@ -4075,12 +4115,8 @@ pub(super) fn call(
             let Some(class_name) = interp.class_name_from_value(&args[0]) else {
                 return Err(LispError::TypeError("class".into(), args[0].type_name()));
             };
-            let Some(Value::Record(class_record_id)) = interp.class_value(&class_name) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
             Ok(interp
-                .find_record(class_record_id)
-                .and_then(|record| record.slots.get(4).cloned())
+                .class_default_object_cache(&class_name)
                 .unwrap_or(Value::Nil))
         }
         "eieio--class-options" => {
@@ -7582,7 +7618,7 @@ fn cl_typep_matches(
         // vectors/hash-tables semantically (cl-generic must not dispatch
         // their `list' methods on them).
         || (target == "list" && value.is_list() && !is_vector_like_value(interp, value))
-        || (target == "eieio-object" && matches!(value, Value::Record(_)))
+        || (target == "eieio-object" && interp.value_is_eieio_object(value))
         // Every cl-defstruct inherits cl-structure-object in GNU.
         || (target == "cl-structure-object" && value_is_cl_struct_record(interp, value))
         // Oclosure types (nadvice's `advice' objects) dispatch by their
