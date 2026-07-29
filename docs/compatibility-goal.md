@@ -29,6 +29,23 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-07-29 native-audit checkpoint resumes the host primitive
+  frontier after publishing `702d1ae`: 1,300/1,420 configured GNU C
+  primitives now have native Rust surface contracts, leaving 120 missing.
+  The pure native-comp introspection boundary now supplies exact
+  `comp--subr-signature` behavior plus the three capability queries whose
+  correct no-backend result is nil.  The implementable portable-dumper
+  boundary supplies the ordinary relocation offset comparator and reports
+  nil statistics because Emaxx was not restored from a `.pdmp`.  Actual
+  native compilation, `.eln` loading, dump creation, and copied-object
+  address sorting remain deliberately unclaimed until their real backends
+  exist.  Fast Rust tests compare the pure helpers with GNU, pin the
+  capability/runtime-state contracts, and keep the complete sorted native
+  inventory fingerprinted.  The complete publication gate is green: rustfmt,
+  strict Clippy, and diff checks; 1,626 library tests (1,622 in the restricted
+  sandbox plus the four exact localhost socket tests with networking allowed);
+  28 compatibility-harness tests, 1 performance-harness test, 5 CLI tests,
+  and 3 ERT-runner tests (plus the zero-test main binary).
 - Fresh 2026-07-29 current-code frontier is 2,199/7,080.  The repaired
   `ert-font-lock-tests.el` matches all 40 GNU outcomes in
   `target/compat/run-1785290189192211000-29635`; the subsequent green grouped

@@ -18,6 +18,28 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-07-29 NATIVE-AUDIT CHECKPOINT: after publishing the semantic
+  checkpoint as `702d1ae`, the priority returned to the host primitive
+  frontier.  The exact generated inventory is now 1,300/1,420 mirrored, with
+  120 missing.  Six newly claimed primitives form two honest backend
+  boundaries: `comp--subr-signature` matches GNU exactly, while
+  `comp-native-driver-options-effective-p`,
+  `comp-native-compiler-options-effective-p`, and
+  `comp-libgccjit-version` return nil consistently with Emaxx's existing
+  `native-comp-available-p` result; `dump-emacs-portable--sort-predicate`
+  matches GNU's ordinary relocation-offset ordering, and `pdumper-stats`
+  returns nil because Emaxx was not restored from a portable dump.  Do not
+  claim actual native compilation, `.eln` loading, dump creation, or
+  copied-object address sorting: those still lack real backends.  Fast Rust
+  regressions
+  `native_comp_pure_introspection_family_matches_gnu_and_the_backend_boundary`
+  and `portable_dump_pure_introspection_observes_real_runtime_state` are
+  green, as is the exhaustive generated native inventory test.  The complete
+  publication gate is green: rustfmt, strict Clippy, and diff checks; 1,626
+  library tests (1,622 in the restricted sandbox plus the four exact localhost
+  socket tests with networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 5 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).
 - 2026-07-29 ERT/COMPLETION FRONTIER: the current source tree has a fresh
   contiguous 2,199/7,080 green prefix.  `ert-font-lock-tests.el` matches all
   40 GNU outcomes in `target/compat/run-1785290189192211000-29635`; subsequent

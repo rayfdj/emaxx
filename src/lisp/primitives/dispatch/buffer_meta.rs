@@ -136,7 +136,13 @@ pub(super) fn handles(name: &str) -> bool {
             | "subr-name"
             | "subr-native-lambda-list"
             | "native-comp-available-p"
+            | "comp--subr-signature"
+            | "comp-libgccjit-version"
+            | "comp-native-compiler-options-effective-p"
+            | "comp-native-driver-options-effective-p"
+            | "dump-emacs-portable--sort-predicate"
             | "native-comp-function-p"
+            | "pdumper-stats"
             | "subr-native-comp-unit"
             | "native-comp-unit-file"
             | "native-comp-unit-set-file"
@@ -989,6 +995,48 @@ pub(super) fn call(
         }
         "native-comp-available-p" => {
             need_args(name, args, 0)?;
+            Ok(Value::Nil)
+        }
+        "comp--subr-signature" => {
+            need_args(name, args, 1)?;
+            let Value::BuiltinFunc(symbol) = &args[0] else {
+                return Err(LispError::TypeError("subr".into(), args[0].type_name()));
+            };
+            let arity = builtin_arity_value(symbol)
+                .or_else(|| special_form_arity_value(symbol))
+                .unwrap_or_else(|| fallback_subr_arity_value(symbol));
+            Ok(Value::String(format!(
+                "{symbol}{}",
+                render_prin1(interp, &arity, env)?
+            )))
+        }
+        "comp-libgccjit-version"
+        | "comp-native-compiler-options-effective-p"
+        | "comp-native-driver-options-effective-p" => {
+            need_args(name, args, 0)?;
+            // These are capability queries, not compiler emulation.  Emaxx
+            // has no libgccjit/native-comp backend, as reported by
+            // `native-comp-available-p', so GNU's documented unavailable
+            // result is nil for all three.
+            Ok(Value::Nil)
+        }
+        "dump-emacs-portable--sort-predicate" => {
+            need_args(name, args, 2)?;
+            let relocation_offset =
+                |entry: &Value| -> Result<i64, LispError> { entry.cdr()?.car()?.as_integer() };
+            Ok(
+                if relocation_offset(&args[0])? < relocation_offset(&args[1])? {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "pdumper-stats" => {
+            need_args(name, args, 0)?;
+            // GNU returns nil when the running process was not restored from
+            // a portable dump.  Emaxx initializes its Rust/Lisp state
+            // directly and therefore has no dump file or restore time.
             Ok(Value::Nil)
         }
         "native-comp-function-p" => {
