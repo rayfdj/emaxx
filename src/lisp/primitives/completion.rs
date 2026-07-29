@@ -1515,26 +1515,39 @@ fn simulated_completing_read(
             }
             '\t' => {
                 let current: String = contents.iter().collect();
-                let matches = filtered_completion_matches(
-                    interp,
-                    &current,
-                    &collection,
-                    predicate.as_ref(),
-                    env,
-                )?;
-                if !matches.is_empty() {
-                    let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
-                    let lcp = common_prefix(&names);
-                    if lcp.chars().count() > contents.len() {
-                        contents = lcp.chars().collect();
-                        cursor = contents.len();
+                // GNU's minibuffer TAB command delegates to the Lisp
+                // completion-style engine.  Use that same boundary when it
+                // is loaded: programmed tables may return a completion base
+                // separate from their candidate strings, which cannot be
+                // reconstructed from `all-completions' alone.
+                if interp
+                    .lookup_function("completion-try-completion", env)
+                    .is_ok()
+                {
+                    let result = call_function_value(
+                        interp,
+                        &Value::Symbol("completion-try-completion".into()),
+                        &[
+                            Value::String(current),
+                            collection.clone(),
+                            predicate.clone().unwrap_or(Value::Nil),
+                            Value::Integer(cursor as i64),
+                        ],
+                        env,
+                    )?;
+                    if let Some((completed, completed_point)) = result.cons_values()
+                        && let Some(completed) = string_like(&completed)
+                        && let Value::Integer(completed_point) = completed_point
+                    {
+                        contents = completed.text.chars().collect();
+                        cursor = usize::try_from(completed_point)
+                            .unwrap_or(contents.len())
+                            .min(contents.len());
                     }
-                } else if let Some(trimmed) = current.strip_suffix('/') {
-                    // "dir-prefix/" — complete the component before the
-                    // trailing slash (partial-completion's trailing case).
+                } else {
                     let matches = filtered_completion_matches(
                         interp,
-                        trimmed,
+                        &current,
                         &collection,
                         predicate.as_ref(),
                         env,
@@ -1542,20 +1555,38 @@ fn simulated_completing_read(
                     if !matches.is_empty() {
                         let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
                         let lcp = common_prefix(&names);
-                        if lcp.chars().count() > trimmed.chars().count() {
+                        if lcp.chars().count() > contents.len() {
                             contents = lcp.chars().collect();
                             cursor = contents.len();
                         }
+                    } else if let Some(trimmed) = current.strip_suffix('/') {
+                        // "dir-prefix/" — complete the component before the
+                        // trailing slash (partial-completion's trailing case).
+                        let matches = filtered_completion_matches(
+                            interp,
+                            trimmed,
+                            &collection,
+                            predicate.as_ref(),
+                            env,
+                        )?;
+                        if !matches.is_empty() {
+                            let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
+                            let lcp = common_prefix(&names);
+                            if lcp.chars().count() > trimmed.chars().count() {
+                                contents = lcp.chars().collect();
+                                cursor = contents.len();
+                            }
+                        }
+                    } else if let Some(expanded) = partial_completion_expand(
+                        interp,
+                        &current,
+                        &collection,
+                        predicate.as_ref(),
+                        env,
+                    )? {
+                        contents = expanded.chars().collect();
+                        cursor = contents.len();
                     }
-                } else if let Some(expanded) = partial_completion_expand(
-                    interp,
-                    &current,
-                    &collection,
-                    predicate.as_ref(),
-                    env,
-                )? {
-                    contents = expanded.chars().collect();
-                    cursor = contents.len();
                 }
             }
             '\u{1}' => cursor = 0,                        // C-a

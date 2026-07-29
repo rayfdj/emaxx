@@ -339,6 +339,7 @@ fn isolated_test_support_inputs(repo_root: &Path) -> Result<Vec<PathBuf>, String
             "lisp",
             "lib-src",
             "etc/charsets",
+            "etc/DOC",
         ])
         .current_dir(repo_root)
         .output()
@@ -368,7 +369,8 @@ fn isolated_test_support_inputs(repo_root: &Path) -> Result<Vec<PathBuf>, String
     files.retain(|path| {
         (path.starts_with("lisp") && path.extension().is_some_and(|extension| extension == "el")
             || libexec_test_helper(path)
-            || generated_charset_map(path))
+            || generated_charset_map(path)
+            || path == Path::new("etc/DOC"))
             && repo_root.join(path).is_file()
     });
     files.sort();
@@ -2924,7 +2926,7 @@ mod tests {
         git_ok(&source, &["init", "--quiet"]);
         fs::write(
             source.join(".gitignore"),
-            "*.elc\nlisp/loaddefs.el\nlib-src/emacsclient\netc/charsets/*.map\n",
+            "*.elc\nlisp/loaddefs.el\nlib-src/emacsclient\netc/charsets/*.map\netc/DOC\n",
         )
         .unwrap();
         fs::write(source.join("fixture.el"), "(pristine)\n").unwrap();
@@ -2934,6 +2936,7 @@ mod tests {
         fs::write(source.join("lib-src/emacsclient"), "helper\n").unwrap();
         fs::create_dir_all(source.join("etc/charsets")).unwrap();
         fs::write(source.join("etc/charsets/IBM038.map"), "0x81 0x0061\n").unwrap();
+        fs::write(source.join("etc/DOC"), "generated-doc\n").unwrap();
         git_ok(&source, &["add", ".gitignore", "fixture.el"]);
         git_ok(
             &source,
@@ -2974,6 +2977,10 @@ mod tests {
             fs::read_to_string(checkout.file("etc/charsets/IBM038.map")).unwrap(),
             "0x81 0x0061\n"
         );
+        assert_eq!(
+            fs::read_to_string(checkout.file("etc/DOC")).unwrap(),
+            "generated-doc\n"
+        );
         fs::write(checkout.file("fixture.el"), "(mutated)\n").unwrap();
         fs::write(checkout.file("lisp/loaddefs.el"), "(generated-mutated)\n").unwrap();
         fs::write(checkout.file("lib-src/emacsclient"), "helper-mutated\n").unwrap();
@@ -2982,6 +2989,7 @@ mod tests {
             "generated-mutated\n",
         )
         .unwrap();
+        fs::write(checkout.file("etc/DOC"), "generated-doc-mutated\n").unwrap();
         fs::write(checkout.file("generated.elc"), "generated").unwrap();
 
         checkout.restore().unwrap();
@@ -3001,9 +3009,14 @@ mod tests {
             fs::read_to_string(checkout.file("etc/charsets/IBM038.map")).unwrap(),
             "0x81 0x0061\n"
         );
+        assert_eq!(
+            fs::read_to_string(checkout.file("etc/DOC")).unwrap(),
+            "generated-doc\n"
+        );
         assert!(!checkout.file("generated.elc").exists());
         fs::write(source.join("lisp/loaddefs.el"), "(generated-changed)\n").unwrap();
         fs::write(source.join("etc/charsets/IBM038.map"), "0x82 0x0061\n").unwrap();
+        fs::write(source.join("etc/DOC"), "generated-doc-changed\n").unwrap();
         assert_ne!(
             test_support_fingerprint(&source).unwrap(),
             support_fingerprint

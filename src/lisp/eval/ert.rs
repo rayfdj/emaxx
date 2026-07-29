@@ -378,10 +378,17 @@ impl Interpreter {
             // invoking the test body.  This is an ERT runner contract, not a
             // property to impose on every lexical closure invocation.
             let lexical_restore = self.bind_special_variable("lexical-binding", Value::T, &mut env);
+            // GNU's `ert--run-test-internal' evaluates the body inside
+            // `(catch 'ert--pass ...)'.  Register the catch while the body is
+            // running so Lisp `ert-pass' reaches this runner boundary instead
+            // of being rejected early as an unhandled `no-catch'.
+            self.active_catch_tags
+                .push(Value::Symbol("ert--pass".into()));
             let mut result = match lexical_restore.as_ref() {
                 Ok(_) => self.call_function_value(test.body.clone(), None, &[], &mut env),
                 Err(error) => Err(error.clone()),
             };
+            self.active_catch_tags.pop();
             // GNU's native `kill-emacs` exits immediately: ERT never turns it
             // into a failed test and never runs its ordinary per-test unwind
             // cleanup.  The process-owning batch boundary consumes the

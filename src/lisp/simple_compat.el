@@ -5463,6 +5463,38 @@ If that doesn't give a function, return nil."
                   (and (symbolp obj) (fboundp obj) obj))))
           (error nil)))))
 
+;; subr.el: these helpers are part of the dumped Lisp environment.  Keep the
+;; policy in Lisp; the host only supplies the ordinary thing-at-point and
+;; buffer primitives used here.
+(defun find-tag-default-bounds ()
+  "Return the boundaries of the plausible default tag at point."
+  (bounds-of-thing-at-point 'symbol))
+
+(defun find-tag-default ()
+  "Return the plausible default tag at point, or nil."
+  (let ((bounds (find-tag-default-bounds)))
+    (when bounds
+      (buffer-substring-no-properties (car bounds) (cdr bounds)))))
+
+(defun find-tag-default-as-regexp ()
+  "Return a regexp matching the default tag at point, or nil."
+  (let ((tag (funcall (or find-tag-default-function
+                          (get major-mode 'find-tag-default-function)
+                          #'find-tag-default))))
+    (when tag
+      (regexp-quote tag))))
+
+(defun find-tag-default-as-symbol-regexp ()
+  "Return a symbol regexp matching the default tag at point, or nil."
+  (let ((tag-regexp (find-tag-default-as-regexp)))
+    (if (and tag-regexp
+             (eq (or find-tag-default-function
+                     (get major-mode 'find-tag-default-function)
+                     #'find-tag-default)
+                 #'find-tag-default))
+        (format "\\_<%s\\_>" tag-regexp)
+      tag-regexp)))
+
 ;; help-fns.el: resolve a primitive's C source file from the DOC file.
 (defun help-C-file-name (subr-or-var kind)
   "Return the name of the C file where SUBR-OR-VAR is defined.

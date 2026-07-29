@@ -18,44 +18,42 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- 2026-07-29 EIEIO FRONTIER: the current source tree has a fresh contiguous
-  2,016/7,080 green prefix.  All eight selected method-invocation tests match
-  GNU in `target/compat/run-1785279839594610000-24793`, all ten persistence
-  tests match in `target/compat/run-1785280963027035000-25049`, and all 41
-  canonical core EIEIO outcomes match in
-  `target/compat/run-1785280978603626000-25219`.  NEXT is selector 2,017,
-  `test-font-lock-test-file--correct`, in
-  `test/lisp/emacs-lisp/ert-font-lock-tests.el`.  Its grouped default replay
-  artifact `target/compat/run-1785281002252375000-25381` has three real Emaxx
-  failures (`test-font-lock-test-file--correct`,
-  `test-font-lock-test-string--correct`, and `test-macro-test--file`): GNU
-  passes while Emaxx signals `no-catch`.
-  The EIEIO repairs are shared representation/lifecycle contracts, not test
-  exceptions.  Lisp-created classes enter native ClassState at the public
-  `cl--class` property producer, while their subsequently completed Lisp
-  records remain authoritative for ancestry and descriptors.  Class
-  precedence uses GNU's ordered merge rather than depth-first traversal, and
-  native children validate/merge inherited slots from completed Lisp parent
-  records.  The generic end-of-chain check resolves observable
-  `byte-code-function` facades to their underlying `ignore` callable, covering
-  dispatch, method insertion/removal, and `cl-next-method-p`.  Host-backed
-  records no longer leak into the `eieio-object` type, persistence recursively
-  serializes actual EIEIO objects inside containers, `oset-default` updates
-  both the live slot descriptor and cached default object, and GNU's Lisp
-  `eieio--unbound` marker is normalized with the Rust sentinel.  Crucially,
-  `eieio-oref-default` now preserves that marker while GNU constructs the
-  default-object cache; the rejected symptom-level clone special case was
-  unnecessary because the generic clone chain was already correct.
-  Fast Rust regressions are
-  `eieio_method_invocation_order_and_next_arguments_stay_coherent`,
-  `eieio_persistence_recurses_through_container_values_with_expected_reader_policy`,
-  `eieio_core_canonical_suite_preserves_cross_test_object_state`, and
-  `eieio_object_type_does_not_leak_the_host_record_representation`.  Final
-  gates are green: rustfmt, strict Clippy, diff check, 1,617
-  sandbox-compatible library tests plus four exact localhost tests
-  (1,621/1,621 semantic passes), 28 compatibility-harness tests, 1
-  performance-harness test, 5 CLI tests, and 3 ERT-runner tests (plus the
-  zero-test main binary).
+- 2026-07-29 ERT/COMPLETION FRONTIER: the current source tree has a fresh
+  contiguous 2,199/7,080 green prefix.  `ert-font-lock-tests.el` matches all
+  40 GNU outcomes in `target/compat/run-1785290189192211000-29635`; subsequent
+  green grouped artifacts are ERT-X 28/28
+  (`target/compat/run-1785290232431202000-29821`), Faceup 15/15 and 1/1
+  (`target/compat/run-1785290260618644000-29994` and
+  `target/compat/run-1785290274721823000-30198`), Find Function 6/6
+  (`target/compat/run-1785292073893687000-32147`), Float-Sup 1/1
+  (`target/compat/run-1785292201770742000-32661`), and Generator 92/92
+  (`target/compat/run-1785292226029589000-32836`).  NEXT is selector 2,200,
+  `gv-define-expander-in-file`, in `test/lisp/emacs-lisp/gv-tests.el`.  The
+  grouped artifact `target/compat/run-1785292257313614000-33008` has four
+  mismatching outcomes whose subprocesses all pass GNU's `-b` batch shorthand;
+  Emaxx's CLI currently rejects that option before GV logic runs.
+  The thematic repairs in the pending checkpoint are: install GNU's dynamic
+  `ert--pass` catch while the native runner invokes each test body; restore the
+  preloaded Lisp `find-tag-default*` family; route simulated minibuffer TAB
+  through the loaded Lisp completion-style engine so programmed completion
+  bases survive; and make native `file-name-all-completions` signal
+  `file-missing` before inventing `./` or `../` for an unopened directory.
+  The clean-checkout gate now copies generated `etc/DOC` and includes it in
+  the test-support fingerprint, fixing native-source lookup without allowing
+  stale or developer-tree state.  The fast in-process upstream helper sets
+  GNU's source/data/doc directories explicitly.  Rust regressions are
+  `ert_font_lock_success_paths_share_the_runners_pass_catch`,
+  `file_name_completion_rejects_a_missing_directory_before_adding_dot_entries`,
+  `find_function_suite_uses_preloaded_tag_helpers_and_the_upstream_doc_index`,
+  and the expanded
+  `isolated_test_checkout_excludes_ignored_state_and_restores_between_files`
+  harness test.  Final gates are green: rustfmt, strict Clippy, diff check,
+  1,624 library tests, 28 compatibility-harness tests, 1
+  performance-harness test, 5 CLI tests, and 3 ERT-runner tests, plus the
+  zero-test main binary.  The preceding EIEIO checkpoint is committed and
+  pushed as `2c6bec1`.  Per the current priority, publish this coherent
+  checkpoint and then resume the 126-missing native primitive inventory
+  before fixing the next GV oracle mismatch.
 - 2026-07-28 EDEBUG FRONTIER: the current source tree has a fresh contiguous
   1,957/7,080 green prefix.  The prefix through `easy-mmode-tests.el` was
   replayed through 1,911, and all 46 selected outcomes in

@@ -29,34 +29,42 @@ handoff and retry instruction are in
 
 ## Current State
 
-- Fresh 2026-07-29 current-code frontier is 2,016/7,080.  The eight selected
-  method-invocation tests match GNU in
-  `target/compat/run-1785279839594610000-24793`; all ten EIEIO persistence
-  tests match in `target/compat/run-1785280963027035000-25049`; and all 41
-  canonical core EIEIO outcomes match in
-  `target/compat/run-1785280978603626000-25219`.  Next is selector 2,017,
-  `test-font-lock-test-file--correct`, in
-  `test/lisp/emacs-lisp/ert-font-lock-tests.el`.  The grouped default replay
-  `target/compat/run-1785281002252375000-25381` identifies three Emaxx
-  `no-catch` failures where GNU passes: `test-font-lock-test-file--correct`,
-  `test-font-lock-test-string--correct`, and `test-macro-test--file`.
-  This batch fixed shared EIEIO boundaries: ordered class-precedence merging;
-  producer-boundary registration plus authoritative completed Lisp class
-  records; inherited slot validation across native/Lisp class
-  representations; callable normalization through observable byte-code
-  facades; strict separation of EIEIO objects from other host-backed records;
-  recursive object persistence; live descriptor/default-cache synchronization;
-  and one unbound-slot meaning across GNU's Lisp marker and Rust's sentinel.
-  The final clone failure proved to be default-cache construction returning
-  nil for a missing initform, not clone dispatch; fixing
-  `eieio-oref-default` at that producer made the already-correct GNU clone
-  chain pass.  Four fast Rust regressions pin method order, persistence, all
-  canonical core EIEIO outcomes with cross-test state, and the host-record
-  type boundary.  Rustfmt, strict Clippy, and diff checks are green.  The
-  publication gate passes 1,621/1,621 semantic library tests (1,617 inside the
-  socket-restricted sandbox and four exact localhost tests with permission),
-  28 compatibility-harness tests, 1 performance-harness test, 5 CLI tests,
-  and 3 ERT-runner tests, plus the zero-test main binary.
+- Fresh 2026-07-29 current-code frontier is 2,199/7,080.  The repaired
+  `ert-font-lock-tests.el` matches all 40 GNU outcomes in
+  `target/compat/run-1785290189192211000-29635`; the subsequent green grouped
+  replays are ERT-X 28/28
+  (`target/compat/run-1785290232431202000-29821`), Faceup 15/15 and 1/1
+  (`target/compat/run-1785290260618644000-29994` and
+  `target/compat/run-1785290274721823000-30198`), Find Function 6/6
+  (`target/compat/run-1785292073893687000-32147`), Float-Sup 1/1
+  (`target/compat/run-1785292201770742000-32661`), and Generator 92/92
+  (`target/compat/run-1785292226029589000-32836`).  NEXT is selector 2,200,
+  `gv-define-expander-in-file`, in `test/lisp/emacs-lisp/gv-tests.el`.  Its
+  grouped replay `target/compat/run-1785292257313614000-33008` has four
+  mismatching outcomes rooted in subprocesses passing GNU's `-b` batch
+  shorthand, which the Emaxx CLI currently rejects.
+  This batch repairs shared boundaries rather than those individual tests.
+  The native ERT runner now installs GNU's dynamic `ert--pass` catch while a
+  test body runs.  The dumped-Lisp façade supplies the complete preloaded
+  `find-tag-default*` family.  Simulated minibuffer TAB delegates to the loaded
+  Lisp completion-style engine, preserving programmed tables' completion
+  bases, while bare embedded interpreters retain the native fallback.
+  `file-name-all-completions` now opens the directory before producing dot
+  entries and signals GNU's `file-missing` contract for a missing directory.
+  Finally, generated `etc/DOC` is copied into each clean compatibility
+  checkout and included in the support fingerprint, so source lookup cannot
+  silently use a missing or stale documentation index.  Fast Rust regressions
+  cover the three real ERT success paths, the native missing-directory
+  contract, all six upstream Find Function outcomes, and DOC copy/restore/
+  fingerprint behavior.  The in-process upstream helper now sets GNU source,
+  data, and documentation directories explicitly instead of accidentally
+  inspecting the Emaxx working directory.  Final gates are green: rustfmt,
+  strict Clippy, diff check, 1,624 library tests, 28 compatibility-harness
+  tests, 1 performance-harness test, 5 CLI tests, and 3 ERT-runner tests,
+  plus the zero-test main binary.  The preceding EIEIO checkpoint was
+  committed and pushed as `2c6bec1`.  Per the current priority, publish this
+  coherent checkpoint and then resume the 126-missing native primitive
+  inventory before fixing the next GV oracle mismatch.
 - Fresh 2026-07-28 current-code frontier is 1,957/7,080.  The re-sweep reached
   1,911 through `easy-mmode-tests.el`; all 46 selected Edebug outcomes then
   matched GNU in
