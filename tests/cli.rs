@@ -30,6 +30,81 @@ fn empty_batch_invocation_succeeds_like_gnu_emacs() {
 }
 
 #[test]
+fn batch_accepts_gnu_single_dash_long_spelling_and_build_details_abbreviation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .args([
+            "-b",
+            "-batch",
+            "-eval",
+            r#"(progn
+                 (princ "single-dash-stdout")
+                 (message "single-dash-stderr")
+                 (kill-emacs 23))"#,
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(23),
+        "GNU single-dash options did not reach batch evaluation:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"single-dash-stdout");
+    assert_eq!(output.stderr, b"single-dash-stderr\n");
+}
+
+#[test]
+fn batch_preserves_eval_and_load_action_order() {
+    let source = unique_temp_path("emaxx-cli-action-order").with_extension("el");
+    let compiled = source.with_extension("elc");
+    std::fs::write(&source, ";;; -*- lexical-binding: t -*-\n(kill-emacs 31)\n").unwrap();
+    let compile = format!("(byte-compile-file {:?})", source.display().to_string());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .arg("-batch")
+        .arg("-eval")
+        .arg(compile)
+        .arg("-l")
+        .arg(&compiled)
+        .output()
+        .unwrap();
+
+    std::fs::remove_file(&source).unwrap();
+    if compiled.exists() {
+        std::fs::remove_file(&compiled).unwrap();
+    }
+    assert_eq!(
+        output.status.code(),
+        Some(31),
+        "batch actions did not run left-to-right:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn batch_eval_error_uses_gnu_stderr_and_exit_status() {
+    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .args([
+            "-Q",
+            "-batch",
+            "-eval",
+            "(let ((backtrace-on-error-noninteractive nil)) (funcall 'not-defined))",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(255));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Symbol's function definition is void: not-defined\n"
+    );
+}
+
+#[test]
 fn batch_accepts_gnu_quick_and_long_load_options() {
     let source = unique_temp_path("emaxx-cli-load").with_extension("el");
     std::fs::write(&source, "(provide 'emaxx-cli-load-test)\n").unwrap();

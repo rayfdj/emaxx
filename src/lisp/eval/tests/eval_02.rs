@@ -1629,6 +1629,55 @@ fn byte_compile_file_applies_function_put_before_macro_expansion() {
 }
 
 #[test]
+fn byte_compile_file_applies_gv_expanders_before_later_top_level_forms() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-gv-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("gv-source.el");
+    let dest_path = dir.join("gv-source.elc");
+    std::fs::write(
+        &source_path,
+        ";;; -*- lexical-binding: t -*-\n\
+         (gv-define-setter sample-bytecomp-gv (newval cons)\n\
+           `(setcar ,cons ,newval))\n\
+         (defvar sample-bytecomp-gv-pair (cons 1 2))\n\
+         (setf (sample-bytecomp-gv sample-bytecomp-gv-pair) 99)\n",
+    )
+    .unwrap();
+
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut compiler = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize compiler interpreter");
+    eval_str_with(
+        &mut compiler,
+        &format!(
+            "(byte-compile-file {:?})",
+            source_path.display().to_string()
+        ),
+    );
+
+    let mut loader = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize fresh loader interpreter");
+    crate::lisp::load_file_strict(&mut loader, &dest_path)
+        .expect("compiled GV file should load in a fresh interpreter");
+    let actual = eval_str_with(&mut loader, "sample-bytecomp-gv-pair");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(actual, Value::cons(Value::Integer(99), Value::Integer(2)));
+}
+
+#[test]
 fn byte_compile_warns_for_unused_args_and_ignored_assq_values() {
     assert_eq!(
         eval_str(

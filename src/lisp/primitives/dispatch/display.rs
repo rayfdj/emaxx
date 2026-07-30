@@ -1496,6 +1496,21 @@ pub(super) fn call(
             if capturable {
                 interp.append_message_capture(&text, true, env);
             }
+            // There is no echo area in batch mode.  GNU writes messages to
+            // the process stderr instead, including the newline used to
+            // clear an empty message.  Message capture remains independent
+            // of `inhibit-message', matching the advice used by ERT.
+            if interp
+                .lookup_var("noninteractive", env)
+                .is_some_and(|value| value.is_truthy())
+                && interp
+                    .lookup_var("inhibit-message", env)
+                    .is_none_or(|value| value.is_nil())
+            {
+                std::io::stderr()
+                    .write_all(format!("{text}\n").as_bytes())
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+            }
             if args.first().is_some_and(Value::is_nil) {
                 Ok(Value::Nil)
             } else {

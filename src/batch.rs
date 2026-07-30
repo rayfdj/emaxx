@@ -19,6 +19,12 @@ pub struct BatchRunOptions {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BatchAction {
+    Load(String),
+    Eval(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BatchRunOutcome {
     Exit(i32),
     Restart,
@@ -43,79 +49,106 @@ struct PerfRequest {
 }
 
 pub fn run_batch(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
+    let actions = options
+        .load
+        .iter()
+        .cloned()
+        .map(BatchAction::Load)
+        .chain(options.eval.iter().cloned().map(BatchAction::Eval))
+        .collect();
+    run_batch_with_actions(options, actions)
+}
+
+pub fn run_batch_with_actions(
+    options: BatchRunOptions,
+    actions: Vec<BatchAction>,
+) -> Result<BatchRunOutcome, String> {
     let options = BatchRunOptions {
         load_path: effective_batch_load_path(&options)?,
         ..options
     };
     let mut interpreter = initialize_batch_interpreter(&options)?;
     let mut loaded_test_file: Option<PathBuf> = None;
-    let (selector, saw_ert_runner) = parse_selector_requests(&options.eval)?;
-    let perf_request = parse_perf_request(&options.eval)?;
+    let eval_expressions = actions
+        .iter()
+        .filter_map(|action| match action {
+            BatchAction::Eval(expression) => Some(expression.clone()),
+            BatchAction::Load(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let (selector, saw_ert_runner) = parse_selector_requests(&eval_expressions)?;
+    let perf_request = parse_perf_request(&eval_expressions)?;
     let selector_string = selector.to_string();
     let compat_batch_report = env::var(compat::BATCH_RESULT_FILE_ENV).is_ok();
-
-    for target in &options.load {
-        let resolved = resolve_load_target(target, &options.load_path)?;
-        if target != "ert" && loaded_test_file.is_none() {
-            loaded_test_file = Some(resolved.clone());
-        }
-        if saw_ert_runner
-            && compat_batch_report
-            && compat::should_bridge_batch_report(&report_file_name(&resolved))
-        {
-            continue;
-        }
-        if let Err(error) = lisp::load_file_strict(&mut interpreter, &resolved) {
-            if let LispError::Terminate(termination) = error {
-                return Ok(termination.into());
-            }
-            let mut error_text = error.to_string();
-            let backtrace = format_backtrace_summary(&interpreter);
-            if !backtrace.is_empty() {
-                error_text.push_str(" | backtrace: ");
-                error_text.push_str(&backtrace);
-            }
-            let report = BatchReport {
-                runner: "emaxx".into(),
-                file: report_file_name(&resolved),
-                selector: selector_string.clone(),
-                file_status: FileStatus::LoadError,
-                file_error: Some(error_text),
-                discovered_tests: interpreter.discovered_tests(),
-                selected_tests: Vec::new(),
-                results: Vec::new(),
-                summary: Default::default(),
-            };
-            emit_artifacts(&report)?;
-            emit_human_log(&report);
-            write_junit_report_if_requested(&report)?;
-            return Ok(BatchRunOutcome::Exit(2));
-        }
-        if let Some(termination) = interpreter.take_pending_termination() {
-            return Ok(termination.into());
-        }
-    }
-
     let mut eval_env: Env = Vec::new();
-    for expression in &options.eval {
-        let forms = Reader::new(expression)
-            .read_all()
-            .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
-        for form in forms {
-            if extract_ert_batch_selector(&form).is_none()
-                && extract_perf_request_from_form(&form).is_none()
-            {
-                match interpreter.eval(&form, &mut eval_env) {
-                    Ok(_) => {}
-                    Err(LispError::Terminate(termination)) => return Ok(termination.into()),
-                    Err(error) => {
-                        return Err(format!(
-                            "evaluate --eval expression `{expression}`: {error}"
-                        ));
+    for action in &actions {
+        match action {
+            BatchAction::Load(target) => {
+                let resolved = resolve_load_target(target, &options.load_path)?;
+                if target != "ert" && loaded_test_file.is_none() {
+                    loaded_test_file = Some(resolved.clone());
+                }
+                if saw_ert_runner
+                    && compat_batch_report
+                    && compat::should_bridge_batch_report(&report_file_name(&resolved))
+                {
+                    continue;
+                }
+                if let Err(error) = lisp::load_file_strict(&mut interpreter, &resolved) {
+                    if let LispError::Terminate(termination) = error {
+                        return Ok(termination.into());
                     }
+                    let mut error_text = error.to_string();
+                    let backtrace = format_backtrace_summary(&interpreter);
+                    if !backtrace.is_empty() {
+                        error_text.push_str(" | backtrace: ");
+                        error_text.push_str(&backtrace);
+                    }
+                    let report = BatchReport {
+                        runner: "emaxx".into(),
+                        file: report_file_name(&resolved),
+                        selector: selector_string.clone(),
+                        file_status: FileStatus::LoadError,
+                        file_error: Some(error_text),
+                        discovered_tests: interpreter.discovered_tests(),
+                        selected_tests: Vec::new(),
+                        results: Vec::new(),
+                        summary: Default::default(),
+                    };
+                    emit_artifacts(&report)?;
+                    emit_human_log(&report);
+                    write_junit_report_if_requested(&report)?;
+                    return Ok(BatchRunOutcome::Exit(2));
                 }
                 if let Some(termination) = interpreter.take_pending_termination() {
                     return Ok(termination.into());
+                }
+            }
+            BatchAction::Eval(expression) => {
+                let forms = Reader::new(expression)
+                    .read_all()
+                    .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
+                for form in forms {
+                    if extract_ert_batch_selector(&form).is_some()
+                        || extract_perf_request_from_form(&form).is_some()
+                    {
+                        continue;
+                    }
+                    match interpreter.eval(&form, &mut eval_env) {
+                        Ok(_) => {}
+                        Err(LispError::Terminate(termination)) => return Ok(termination.into()),
+                        Err(error) => {
+                            // GNU's noninteractive command loop reports an
+                            // unhandled Lisp condition directly, without
+                            // decorating it with the command-line form, and
+                            // terminates with the conventional fatal status.
+                            eprintln!("{error}");
+                            return Ok(BatchRunOutcome::Exit(255));
+                        }
+                    }
+                    if let Some(termination) = interpreter.take_pending_termination() {
+                        return Ok(termination.into());
+                    }
                 }
             }
         }
