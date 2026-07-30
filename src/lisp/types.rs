@@ -96,6 +96,27 @@ pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
         .unwrap_or(symbol)
 }
 
+fn render_error_symbol_name(symbol: &str) -> String {
+    let visible = visible_symbol_name(symbol);
+    if visible.is_empty() {
+        return "##".into();
+    }
+
+    let mut rendered = String::new();
+    for ch in visible.chars() {
+        if matches!(
+            ch,
+            '"' | '\\' | '\'' | ';' | '#' | '(' | ')' | ',' | '`' | '[' | ']'
+        ) || ch <= ' '
+            || ch == '\u{00A0}'
+        {
+            rendered.push('\\');
+        }
+        rendered.push(ch);
+    }
+    rendered
+}
+
 pub(crate) fn interned_symbol_value(symbol: String) -> Value {
     match symbol.as_str() {
         "nil" => Value::Nil,
@@ -535,9 +556,17 @@ impl fmt::Display for LispError {
             LispError::TypeError(expected, got) => {
                 write!(f, "Wrong type argument: {}, {}", expected, got)
             }
-            LispError::Void(name) => write!(f, "Symbol's value as variable is void: {}", name),
+            LispError::Void(name) => write!(
+                f,
+                "Symbol's value as variable is void: {}",
+                render_error_symbol_name(name)
+            ),
             LispError::VoidFunction(name) => {
-                write!(f, "Symbol's function definition is void: {}", name)
+                write!(
+                    f,
+                    "Symbol's function definition is void: {}",
+                    render_error_symbol_name(name)
+                )
             }
             LispError::WrongNumberOfArgs(name, n) => {
                 write!(f, "Wrong number of arguments: {}, {}", name, n)
@@ -599,7 +628,7 @@ impl From<crate::buffer::BufferError> for LispError {
 
 #[cfg(test)]
 mod tests {
-    use super::Value;
+    use super::{LispError, Value};
 
     #[test]
     fn nil_and_t_count_as_symbols() {
@@ -607,5 +636,17 @@ mod tests {
         assert!(Value::T.is_symbol());
         assert_eq!(Value::Nil.as_symbol().expect("nil is a symbol"), "nil");
         assert_eq!(Value::T.as_symbol().expect("t is a symbol"), "t");
+    }
+
+    #[test]
+    fn void_function_errors_print_function_symbols_readably() {
+        assert_eq!(
+            LispError::VoidFunction("not-defined".into()).to_string(),
+            "Symbol's function definition is void: not-defined"
+        );
+        assert_eq!(
+            LispError::VoidFunction("(setf gv-test-foo)".into()).to_string(),
+            r"Symbol's function definition is void: \(setf\ gv-test-foo\)"
+        );
     }
 }

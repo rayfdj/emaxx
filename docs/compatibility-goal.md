@@ -29,6 +29,36 @@ handoff and retry instruction are in
 
 ## Current State
 
+- Fresh 2026-07-29 current-code frontier is 2,332/7,080.  The GV batch
+  repaired four shared subprocess boundaries: GNU single-dash long options
+  (including `-batch`) now parse without stealing `-b` from
+  `--no-build-details`; `--eval` and `--load` actions execute in their
+  original command-line order; top-level `gv-define-setter` declarations
+  update the byte compiler's expansion environment before later forms; and
+  noninteractive `message`/printer output reaches stderr/stdout.  Unhandled
+  batch Lisp conditions now use GNU's raw diagnostic and exit 255, including
+  readable escaping for compound function symbols such as
+  `\(setf\ gv-test-foo\)`.  The complete eight-outcome GV replay is green
+  (six passes plus the same two expected failures) in
+  `target/compat/run-1785410977097230000-12713`.
+  Current-code revalidation then passed hierarchy 68/68
+  (`target/compat/run-1785411070250562000-12998`), icons 2/2
+  (`target/compat/run-1785411094145466000-13125`), let-alist 7/7
+  (`target/compat/run-1785411113663745000-13246`), lisp-mnt 3/3
+  (`target/compat/run-1785411133415310000-13364`), and lisp-mode 21/21
+  (`target/compat/run-1785411565689624000-14556`).  That last replay also
+  found and repaired a later scanner regression: loaded Lisp modes delegate
+  to native `prog-mode`, which must install GNU's buffer-local
+  `parse-sexp-ignore-comments` setting.  The grouped `lisp-tests.el` artifact
+  `target/compat/run-1785411624225543000-14797` matches 35/37 outcomes and
+  proves the contiguous prefix through selector 2,332.  NEXT is selector
+  2,333, `lisp-forward-sexp-python-triple-quoted-string`; it and the adjacent
+  triple-quotes case currently fail with `void-function syntax-class`.  The
+  complete publication gate is green: rustfmt, strict Clippy, and diff checks;
+  1,628 library tests (1,624 in the restricted sandbox plus the four exact
+  localhost socket tests with networking allowed); 28 compatibility-harness
+  tests, 1 performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus
+  the zero-test main binary).
 - The 2026-07-29 native-audit checkpoint resumes the host primitive
   frontier after publishing `702d1ae`: 1,300/1,420 configured GNU C
   primitives now have native Rust surface contracts, leaving 120 missing.

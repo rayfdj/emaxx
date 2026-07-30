@@ -1,5 +1,6 @@
 #![deny(clippy::unwrap_used)]
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, stdout};
 #[cfg(unix)]
@@ -8,10 +9,10 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use std::thread;
 
-use clap::Parser;
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 use crossterm::terminal;
 
-use emaxx::batch::{self, BatchRunOptions, BatchRunOutcome};
+use emaxx::batch::{self, BatchAction, BatchRunOptions, BatchRunOutcome};
 use emaxx::buffer::Buffer;
 use emaxx::command::{self, CommandResult};
 use emaxx::display::{self, Screen};
@@ -22,6 +23,10 @@ use emaxx::keymap::{self, Key};
 struct Cli {
     #[arg(long)]
     batch: bool,
+    // GNU resolves `-b' to the no-build-details startup option.  Emaxx does
+    // not add build metadata, so parsing the flag is the complete behavior.
+    #[arg(short = 'b', long = "no-build-details")]
+    _no_build_details: bool,
     #[arg(long)]
     no_init_file: bool,
     #[arg(long)]
@@ -54,13 +59,19 @@ fn main() -> ExitCode {
 }
 
 fn try_main() -> Result<u8, String> {
-    let cli = Cli::parse();
+    let args = normalize_gnu_single_dash_long_options(std::env::args_os());
+    let matches = Cli::command().get_matches_from(args);
+    let actions = ordered_batch_actions(&matches);
+    let cli = Cli::from_arg_matches(&matches).map_err(|error| error.to_string())?;
     if cli.batch {
-        let outcome = run_batch_with_large_stack(BatchRunOptions {
-            load_path: cli.load_path,
-            load: cli.load,
-            eval: cli.eval,
-        })?;
+        let outcome = run_batch_with_large_stack(
+            BatchRunOptions {
+                load_path: cli.load_path,
+                load: cli.load,
+                eval: cli.eval,
+            },
+            actions,
+        )?;
         return match outcome {
             BatchRunOutcome::Exit(code) => Ok(code as u8),
             BatchRunOutcome::Restart => restart_current_process(),
@@ -83,14 +94,69 @@ fn try_main() -> Result<u8, String> {
     Ok(0)
 }
 
-fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
+fn normalize_gnu_single_dash_long_options(
+    args: impl IntoIterator<Item = OsString>,
+) -> Vec<OsString> {
+    args.into_iter()
+        .map(|arg| match arg.to_str() {
+            // GNU accepts the full spelling of long options with one dash.
+            // Normalize the subset Emaxx implements before Clap interprets
+            // each spelling as a cluster of unrelated short options.
+            Some("-batch") => OsString::from("--batch"),
+            Some("-eval") => OsString::from("--eval"),
+            Some("-help") => OsString::from("--help"),
+            Some("-load") => OsString::from("--load"),
+            Some("-no-build-details") => OsString::from("--no-build-details"),
+            Some("-no-init-file") => OsString::from("--no-init-file"),
+            Some("-no-site-file") => OsString::from("--no-site-file"),
+            Some("-no-site-lisp") => OsString::from("--no-site-lisp"),
+            Some("-quick") => OsString::from("--quick"),
+            Some("-version") => OsString::from("--version"),
+            _ => arg,
+        })
+        .collect()
+}
+
+fn ordered_batch_actions(matches: &ArgMatches) -> Vec<BatchAction> {
+    let mut indexed_actions = Vec::new();
+    if let (Some(indices), Some(values)) = (
+        matches.indices_of("load"),
+        matches.get_many::<String>("load"),
+    ) {
+        indexed_actions.extend(
+            indices
+                .zip(values)
+                .map(|(index, value)| (index, BatchAction::Load(value.clone()))),
+        );
+    }
+    if let (Some(indices), Some(values)) = (
+        matches.indices_of("eval"),
+        matches.get_many::<String>("eval"),
+    ) {
+        indexed_actions.extend(
+            indices
+                .zip(values)
+                .map(|(index, value)| (index, BatchAction::Eval(value.clone()))),
+        );
+    }
+    indexed_actions.sort_by_key(|(index, _)| *index);
+    indexed_actions
+        .into_iter()
+        .map(|(_, action)| action)
+        .collect()
+}
+
+fn run_batch_with_large_stack(
+    options: BatchRunOptions,
+    actions: Vec<BatchAction>,
+) -> Result<BatchRunOutcome, String> {
     // Dropping an N-element list recurses N deep through the cons chain;
     // upstream tests build 8-million-element lists (Bug#24264), so the
     // batch thread needs stack for the teardown as well as evaluation.
     // The stack is virtual memory: only touched pages ever commit.
     thread::Builder::new()
         .stack_size(8 * 1024 * 1024 * 1024)
-        .spawn(move || batch::run_batch(options))
+        .spawn(move || batch::run_batch_with_actions(options, actions))
         .map_err(|error| format!("start batch thread: {error}"))?
         .join()
         .map_err(|_| "batch thread panicked".to_string())?

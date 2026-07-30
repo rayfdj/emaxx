@@ -725,6 +725,15 @@ pub(super) fn call(
                 "mode-name",
                 Value::String("Prog".into()),
             );
+            // GNU prog-mode makes scanners ignore comments.  Loaded derived
+            // modes such as lisp-data-mode delegate to this native parent,
+            // so the setting must be installed here rather than only by
+            // individual native child modes.
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "parse-sexp-ignore-comments",
+                Value::T,
+            );
             Ok(Value::Nil)
         }
         "emacs-lisp-mode" => {

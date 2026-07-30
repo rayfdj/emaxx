@@ -10993,7 +10993,22 @@ fn byte_compile_expand_top_level_form(
             Ok(form.clone())
         }
         "defun" | "defsubst" => byte_compile_expand_defun(interp, env, &items),
-        _ => Ok(interp.macroexpand_all_form_with_environment(form, None, env)?),
+        _ => {
+            let expanded = interp.macroexpand_all_form_with_environment(form, None, env)?;
+            if matches!(
+                expanded.to_vec().ok().and_then(|items| items.first().cloned()),
+                Some(Value::Symbol(head)) if head == "function-put"
+            ) {
+                // Definition macros such as `gv-define-setter' lower to a
+                // top-level `function-put'.  GNU applies that declaration to
+                // the compiler environment before expanding the next form,
+                // while also emitting it for the eventual load.  Without the
+                // compile-time update a later `setf' falls back to a
+                // nonexistent `(setf NAME)' function.
+                interp.eval(&expanded, env)?;
+            }
+            Ok(expanded)
+        }
     }
 }
 

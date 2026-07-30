@@ -598,9 +598,18 @@ pub(crate) fn write_printer_output(
     match stream {
         // An explicit `t' stream prints to the echo area, which
         // `ert-with-message-capture' observes like the upstream print
-        // advice; it never inserts into the current buffer.
+        // advice; it never inserts into the current buffer.  In batch mode
+        // GNU also treats that echo-area stream as the process stdout.
         Some(Value::T) => {
             interp.append_message_capture(text, false, env);
+            if interp
+                .lookup_var("noninteractive", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                std::io::stdout()
+                    .write_all(text.as_bytes())
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+            }
             Ok(())
         }
         None | Some(Value::Nil) => {

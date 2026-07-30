@@ -18,6 +18,38 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-07-29 GV/BATCH FRONTIER: the current source tree has a fresh
+  contiguous 2,332/7,080 green prefix.  `gv-tests.el` (2200..2207) matches
+  all eight GNU outcomes in
+  `target/compat/run-1785410977097230000-12713` (six passes and the same two
+  expected failures).  The repair is shared infrastructure, not test-name
+  branching: normalize GNU's supported single-dash long CLI spellings while
+  preserving `-b` as `--no-build-details`; merge `--eval` and `--load` by
+  original argument index; apply top-level `function-put` declarations such
+  as `gv-define-setter` to the byte compiler environment before expanding the
+  next form; send batch `message` to stderr and a `t` print stream to stdout;
+  and report unhandled Lisp conditions directly with exit 255 and readable
+  compound-symbol escaping.  Fast regressions cover CLI spelling/output/
+  action order/fatal errors, fresh-interpreter loading of a compiled GV
+  setter, and ordinary/compound void-function diagnostics.
+  Current-code grouped replays are additionally green for hierarchy 68/68
+  (`target/compat/run-1785411070250562000-12998`), icons 2/2
+  (`target/compat/run-1785411094145466000-13125`), let-alist 7/7
+  (`target/compat/run-1785411113663745000-13246`), lisp-mnt 3/3
+  (`target/compat/run-1785411133415310000-13364`), and lisp-mode 21/21
+  (`target/compat/run-1785411565689624000-14556`).  `lisp-mode` initially
+  exposed a scanner regression because loaded derived modes delegate to the
+  native `prog-mode`; GNU's buffer-local `parse-sexp-ignore-comments = t`
+  setting is now installed by that parent and pinned by a Rust test.
+  `target/compat/run-1785411624225543000-14797` then matched 35/37
+  `lisp-tests.el` outcomes.  NEXT is selector 2,333,
+  `lisp-forward-sexp-python-triple-quoted-string`, followed by the adjacent
+  triple-quotes case; both currently fail at the honest missing boundary
+  `void-function syntax-class`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; 1,628 library tests (1,624 in the
+  restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
 - 2026-07-29 NATIVE-AUDIT CHECKPOINT: after publishing the semantic
   checkpoint as `702d1ae`, the priority returned to the host primitive
   frontier.  The exact generated inventory is now 1,300/1,420 mirrored, with

@@ -886,11 +886,17 @@ fn ruby_and_js_modes_are_callable_prog_modes() {
 fn prog_mode_is_callable_and_derived_from_fundamental_mode() {
     assert_eq!(
         eval_str(
-            "(with-temp-buffer (prog-mode) (list major-mode mode-name (derived-mode-p 'prog-mode 'fundamental-mode)))"
+            "(with-temp-buffer
+               (prog-mode)
+               (list major-mode
+                     mode-name
+                     parse-sexp-ignore-comments
+                     (derived-mode-p 'prog-mode 'fundamental-mode)))"
         ),
         Value::list([
             Value::Symbol("prog-mode".into()),
             Value::String("Prog".into()),
+            Value::T,
             Value::T,
         ])
     );
