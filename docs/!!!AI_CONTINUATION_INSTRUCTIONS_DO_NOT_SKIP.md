@@ -18,6 +18,25 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE DISPLAY-QUERY CHECKPOINT: the exact generated GNU C
+  inventory is now 1,319/1,420 mirrored, with 101 missing.  This theme adds 19
+  honest headless display contracts.  `x-display-list` and `x-hide-tip`
+  return nil; the 15 optional display/server queries and the two required
+  `xw-color-*` queries preserve GNU's arities and signal that the window
+  system is unavailable.  Do not claim `x-create-frame`, `x-show-tip`,
+  connection management, dialogs, drag-and-drop, or font selection without
+  their real stateful backends.  The exhaustive sorted inventory fingerprint
+  and `native_x_display_queries_observe_the_headless_backend_boundary` pin the
+  addition, with the latter comparing the complete result against GNU.
+  Tree-sitter remains unclaimed: use the mature official Rust `tree-sitter`
+  crate ecosystem when beginning that theme; never implement a replacement
+  parser runtime here.  The complete publication gate is green: rustfmt,
+  strict Clippy, and diff checks; all 1,629 library tests (1,625 in the
+  restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).  NEXT: publish this coherent theme, then immediately
+  select the next implementable native family and repeat until 1,420/1,420.
 - 2026-07-29 GV/BATCH FRONTIER: the current source tree has a fresh
   contiguous 2,332/7,080 green prefix.  `gv-tests.el` (2200..2207) matches
   all eight GNU outcomes in

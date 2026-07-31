@@ -29,6 +29,23 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native-audit checkpoint advances the GNU C primitive
+  frontier to 1,319/1,420, leaving 101 missing.  Nineteen display primitives
+  now expose the honest headless backend boundary: `x-display-list` and
+  `x-hide-tip` return nil, while the display/server capability queries and
+  `xw-color-*` lookups accept GNU's exact arities and signal that no window
+  system is initialized.  GUI creation, connection, dialogs, drag-and-drop,
+  and font-selection actions remain deliberately unclaimed until real
+  backends exist.  Tree-sitter is also still unclaimed; when that theme
+  starts, use the established official Rust `tree-sitter` ecosystem rather
+  than reimplementing its parser runtime.  The complete publication gate is
+  green: rustfmt, strict Clippy, and diff checks; all 1,629 library tests
+  (1,625 in the restricted sandbox plus the four exact localhost socket tests
+  with networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).  NEXT is another coherent native theme; commit and
+  push each theme, then return immediately to the remaining inventory until
+  all 1,420 are honest native surface contracts.
 - Fresh 2026-07-29 current-code frontier is 2,332/7,080.  The GV batch
   repaired four shared subprocess boundaries: GNU single-dash long options
   (including `-batch`) now parse without stealing `-b` from

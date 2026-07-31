@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_300, 12_870_226_212_509_892_759),
+        (1_319, 1_448_771_135_547_024_881),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (120, 14_341_592_377_143_660_421),
+        (101, 10_657_659_454_428_617_423),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -8593,6 +8593,64 @@ fn native_xdisp_headless_query_family_matches_gnu() {
             .read()
             .expect("xdisp.c expected value should parse")
             .expect("xdisp.c expected value should exist")
+    );
+}
+
+#[test]
+fn native_x_display_queries_observe_the_headless_backend_boundary() {
+    let program = r#"
+        (list
+         (x-display-list)
+         (x-hide-tip)
+         (mapcar
+          (lambda (name)
+            (condition-case error-data
+                (funcall name)
+              (error (car error-data))))
+          '(x-display-backing-store
+            x-display-color-cells
+            x-display-grayscale-p
+            x-display-mm-height
+            x-display-mm-width
+            x-display-pixel-height
+            x-display-pixel-width
+            x-display-planes
+            x-display-save-under
+            x-display-screens
+            x-display-visual-class
+            x-server-max-request-size
+            x-server-vendor
+            x-server-version
+            xw-display-color-p))
+         (condition-case error-data
+             (xw-color-defined-p "red")
+           (error (car error-data)))
+         (condition-case error-data
+             (xw-color-values "red")
+           (error (car error-data))))"#;
+    let expected = r#"
+        (nil nil
+         (error error error error error
+          error error error error error
+          error error error error error)
+         error error)"#;
+    let expected_printed = "(nil nil (error error error error error error error error error error error error error error error) error error)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("X display query contract should parse")
+        .expect("X display query contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("headless X display queries should preserve GNU's boundary"),
+        Reader::new(expected)
+            .read()
+            .expect("X display query result should parse")
+            .expect("X display query result should exist")
     );
 }
 
