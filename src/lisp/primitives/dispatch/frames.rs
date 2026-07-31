@@ -65,9 +65,28 @@ const FRAME_BUILTINS: &[&str] = &[
     "set-mouse-position",
     "tool-bar-pixel-width",
     "visible-frame-list",
+    "x-display-backing-store",
+    "x-display-color-cells",
+    "x-display-grayscale-p",
+    "x-display-list",
+    "x-display-mm-height",
+    "x-display-mm-width",
+    "x-display-pixel-height",
+    "x-display-pixel-width",
+    "x-display-planes",
+    "x-display-save-under",
+    "x-display-screens",
+    "x-display-visual-class",
     "x-focus-frame",
     "x-get-resource",
+    "x-hide-tip",
     "x-parse-geometry",
+    "x-server-max-request-size",
+    "x-server-vendor",
+    "x-server-version",
+    "xw-color-defined-p",
+    "xw-color-values",
+    "xw-display-color-p",
 ];
 
 pub(super) fn handles(name: &str) -> bool {
@@ -262,6 +281,10 @@ fn selected_frame_list(interp: &Interpreter) -> Value {
             .filter(|frame| interp.frame_is_live(frame.id))
             .map(|frame| frame_value(frame.id)),
     )
+}
+
+fn window_system_unavailable() -> LispError {
+    LispError::Signal("Window system is not in use or not initialized".into())
 }
 
 pub(super) fn call(
@@ -581,6 +604,32 @@ pub(super) fn call(
                 "Window system frame should be used".into(),
             ))
         }
+        "x-display-list" | "x-hide-tip" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Nil)
+        }
+        "x-display-backing-store"
+        | "x-display-color-cells"
+        | "x-display-grayscale-p"
+        | "x-display-mm-height"
+        | "x-display-mm-width"
+        | "x-display-pixel-height"
+        | "x-display-pixel-width"
+        | "x-display-planes"
+        | "x-display-save-under"
+        | "x-display-screens"
+        | "x-display-visual-class"
+        | "x-server-max-request-size"
+        | "x-server-vendor"
+        | "x-server-version"
+        | "xw-display-color-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            Err(window_system_unavailable())
+        }
+        "xw-color-defined-p" | "xw-color-values" => {
+            need_arg_range(name, args, 1, 2)?;
+            Err(window_system_unavailable())
+        }
         "frame-after-make-frame" => {
             need_args(name, args, 2)?;
             let id = decode_live_frame(interp, args.first(), true)?;
@@ -647,9 +696,7 @@ pub(super) fn call(
         }
         "x-get-resource" => {
             need_arg_range(name, args, 2, 4)?;
-            Err(LispError::Signal(
-                "Window system is not in use or not initialized".into(),
-            ))
+            Err(window_system_unavailable())
         }
         "x-parse-geometry" => {
             need_args(name, args, 1)?;
