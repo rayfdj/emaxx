@@ -29,6 +29,28 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 system-trash checkpoint advances the exact GNU C primitive
+  inventory to 1,364/1,420, leaving 56 missing.  The native
+  `system-move-file-to-trash` uses the established cross-platform `trash`
+  5.2.6 crate for Finder Trash, Windows Recycle Bin, and freedesktop.org Trash
+  semantics rather than recreating platform behavior.  The macOS path selects
+  the crate's non-interactive native `NSFileManager` backend instead of its
+  AppleScript default.  Shared file-name expansion, validation, watcher
+  invalidation, deletion notification, and GNU's exact structured
+  missing-file result remain in the Emaxx runtime.  A direct Emaxx smoke test
+  moved a unique empty file through the real macOS Trash, verified it there,
+  restored it, and cleaned the temporary artifact.  Exact inventory
+  fingerprints are mirrored `(1_364, 4_594_607_034_609_466_038)` and missing
+  `(56, 3_864_648_990_304_937_516)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,633 library tests (1,629 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  Per the latest user sequencing instruction, finish all non-bytecode native
+  primitives first.  When only `byte-code`, `internal-stack-stats`,
+  `make-byte-code`, and `make-closure` remain, leave that four-entry VM cluster
+  explicitly tracked and resume the ordered 7,080-selector frontier; return to
+  bytecode afterward or sooner if it directly blocks the selector frontier.
 - The 2026-08-01 Tree-sitter query/traversal checkpoint completes the
   Tree-sitter native frontier and advances the exact GNU C primitive inventory
   to 1,363/1,420, leaving 57 missing.  The final ten primitives use the
