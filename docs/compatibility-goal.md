@@ -29,6 +29,31 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-02 native display-connection checkpoint advances the exact GNU
+  C primitive inventory to 1,409/1,420, leaving 11 missing and no remaining
+  display-connection entry.  `x-open-connection` preserves arity and
+  display-string validation, including Nextstep's ignored optional arguments,
+  before reaching Emaxx's explicit catchable terminal-only backend boundary.
+  `x-close-connection` validates nil, live frame, live terminal, string, and
+  invalid designators before the same boundary.  Emaxx does not launch AppKit,
+  claim an unowned X11 event loop, or terminate itself to simulate a close.
+  A direct sibling-GNU oracle pins the safely probeable validation paths;
+  Emaxx-only assertions cover valid calls because GNU's corresponding
+  Nextstep paths can launch GUI state, block, or terminate the application.
+  Exact inventory fingerprints are mirrored
+  `(1_409, 16_993_417_039_166_424_446)` and missing
+  `(11, 886_131_030_095_800_352)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,646 library tests (1,642 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 11-item remainder is: `alloc.c` 3, `bytecode.c` 2, `module-load` 1,
+  `gnutls.c` 2, portable dumper 2, and `re--describe-compiled` 1.  Finish the
+  seven non-bytecode primitives first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, keep
+  those four visibly unresolved and switch immediately back to the ordered
+  7,080-selector frontier.  Return to bytecode afterward or sooner only if it
+  blocks that frontier.
 - The 2026-08-01 native headless menu/drag checkpoint advances the exact GNU
   C primitive inventory to 1,407/1,420, leaving 13 missing and no `menu.c` or
   drag entry.  `x-popup-menu` now preserves the nil-position no-op and parses

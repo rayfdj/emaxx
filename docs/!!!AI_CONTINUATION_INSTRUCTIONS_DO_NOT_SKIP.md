@@ -18,6 +18,36 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-02 NATIVE DISPLAY-CONNECTION CHECKPOINT: the exact generated GNU C
+  inventory is 1,409/1,420 mirrored, with 11 missing and no display-connection
+  entry left.  `x-open-connection` preserves exact arity and display-string
+  validation, including Nextstep's deliberate ignoring of the two optional
+  arguments, then stops at Emaxx's catchable "Window system is not in use or
+  not initialized" boundary.  `x-close-connection` accepts the selected
+  terminal, live frames, the live terminal object, and string designators,
+  preserves GNU Nextstep's safely probeable `frame-live-p` rejection, and
+  reaches the same explicit boundary.  Emaxx does not launch AppKit from its
+  terminal runtime, claim an X11 connection with no graphical event loop, or
+  terminate the process to simulate close.  A direct sibling-GNU oracle pins
+  the safe validation paths; Emaxx-only assertions cover every valid
+  designator because GNU's valid Nextstep open path launches platform GUI
+  state and can block, while close can terminate the application.  Exact
+  fingerprints are mirrored `(1_409, 16_993_417_039_166_424_446)` and missing
+  `(11, 886_131_030_095_800_352)`.  The 11-item remainder is: `alloc.c` 3,
+  `bytecode.c` 2, `module-load` 1, `gnutls.c` 2, portable dumper 2, and
+  `re--describe-compiled` 1.  Of those, seven are non-bytecode and four are
+  the explicit VM cluster.  The complete publication gate is green: rustfmt,
+  strict Clippy, and diff checks; all 1,646 library tests (1,642 in the
+  restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  SEQUENCING OVERRIDE remains authoritative: finish the seven non-bytecode
+  primitives; when only `byte-code`, `internal-stack-stats`, `make-byte-code`,
+  and `make-closure` remain, keep those four visibly unresolved and switch
+  immediately back to the ordered 7,080-selector frontier.  Return to the
+  bytecode VM cluster afterward, or earlier only if it becomes the concrete
+  blocker.  NEXT: commit and push this theme, then immediately select the next
+  non-bytecode native family.
 - 2026-08-01 NATIVE HEADLESS MENU/DRAG CHECKPOINT: the exact generated GNU C
   inventory is 1,407/1,420 mirrored, with 13 missing and no `menu.c` or drag
   entry left.  `x-popup-menu` preserves GNU's obsolete nil-position no-op,

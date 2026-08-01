@@ -607,12 +607,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_407, 2_037_779_427_493_928_198),
+        (1_409, 16_993_417_039_166_424_446),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (13, 2_153_934_993_855_764_762),
+        (11, 886_131_030_095_800_352),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -9722,6 +9722,67 @@ fn native_headless_menu_and_drag_actions_preserve_gnu_boundaries() {
                 Value::string("Window system frame should be used"),
             ]),
         ])
+    );
+}
+
+#[test]
+fn native_display_connection_management_stops_at_the_headless_backend() {
+    let validation = r#"
+        (list
+         (condition-case error-data
+             (x-open-connection 42)
+           (error error-data))
+         (condition-case error-data
+             (x-close-connection 42)
+           (error error-data)))"#;
+    let expected = "((wrong-type-argument stringp 42) (wrong-type-argument frame-live-p 42))";
+    assert_upstream_primitive_contract(&format!("(prin1 {validation})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let validation = Reader::new(validation)
+        .read()
+        .expect("display connection validation should parse")
+        .expect("display connection validation should contain a form");
+    let actual = interp
+        .eval(&validation, &mut env)
+        .expect("display connection validation errors should be catchable");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("display connection validation result should parse")
+        .expect("display connection validation result should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "display connection validation differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+
+    let boundary = Reader::new(
+        r#"
+        (mapcar
+         (lambda (operation)
+           (condition-case error-data
+               (funcall operation)
+             (error error-data)))
+         (list
+          (lambda () (x-open-connection "display"))
+          (lambda () (x-open-connection "display" 42 t))
+          (lambda () (x-close-connection nil))
+          (lambda () (x-close-connection (selected-frame)))
+          (lambda () (x-close-connection (frame-terminal)))
+          (lambda () (x-close-connection "missing"))))"#,
+    )
+    .read()
+    .expect("headless display connection boundary should parse")
+    .expect("headless display connection boundary should contain a form");
+    let unavailable = Value::list([
+        Value::symbol("error"),
+        Value::string("Window system is not in use or not initialized"),
+    ]);
+    assert_eq!(
+        interp
+            .eval(&boundary, &mut env)
+            .expect("headless display connection errors should be catchable"),
+        Value::list(std::iter::repeat_n(unavailable, 6))
     );
 }
 
