@@ -21,14 +21,20 @@ const FONT_SPEC_SIZE: usize = FONT_EXTRA_INDEX + 1;
 
 const FONT_BUILTINS: &[&str] = &[
     "clear-font-cache",
+    "close-font",
     "find-font",
     "font-at",
+    "font-face-attributes",
     "font-family-list",
     "font-get",
+    "font-get-glyphs",
+    "font-has-char-p",
     "font-info",
     "font-match-p",
     "font-put",
+    "font-shape-gstring",
     "font-spec",
+    "font-variation-glyphs",
     "font-xlfd-name",
     "fontp",
     "fontset-font",
@@ -37,6 +43,8 @@ const FONT_BUILTINS: &[&str] = &[
     "frame-font-cache",
     "list-fonts",
     "new-fontset",
+    "open-font",
+    "query-font",
     "query-fontset",
     "set-fontset-font",
 ];
@@ -90,6 +98,97 @@ fn font_spec_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
         .filter(|record| record.type_name == "font-spec")
         .map(|_| *id)
         .ok_or_else(|| wrong_type_argument("font-spec-p", value.clone()))
+}
+
+fn require_font_type(
+    interp: &Interpreter,
+    value: &Value,
+    record_type: &str,
+    predicate: &str,
+) -> Result<(), LispError> {
+    if font_record(interp, value).is_ok_and(|font| font.type_name == record_type) {
+        Ok(())
+    } else {
+        Err(wrong_type_argument(predicate, value.clone()))
+    }
+}
+
+fn require_font(interp: &Interpreter, value: &Value) -> Result<(), LispError> {
+    font_record(interp, value)
+        .map(|_| ())
+        .map_err(|_| wrong_type_argument("font", value.clone()))
+}
+
+fn require_character(value: &Value) -> Result<(), LispError> {
+    match value {
+        Value::Integer(character) if (0..=0x3f_ffff).contains(character) => Ok(()),
+        _ => Err(wrong_type_argument("characterp", value.clone())),
+    }
+}
+
+fn require_live_frame(interp: &Interpreter, frame: Option<&Value>) -> Result<(), LispError> {
+    match frame {
+        None | Some(Value::Nil) => Ok(()),
+        Some(Value::Frame(id)) if interp.frame_is_live(*id) => Ok(()),
+        Some(frame) => Err(wrong_type_argument("frame-live-p", frame.clone())),
+    }
+}
+
+fn require_frame(frame: Option<&Value>) -> Result<(), LispError> {
+    match frame {
+        None | Some(Value::Nil | Value::Frame(_)) => Ok(()),
+        Some(frame) => Err(wrong_type_argument("framep", frame.clone())),
+    }
+}
+
+fn window_system_frame_required() -> LispError {
+    LispError::Signal("Window system frame should be used".into())
+}
+
+fn invalid_glyph_string(gstring: &Value) -> LispError {
+    let mut data = vec![
+        Value::symbol("error"),
+        Value::string("Invalid glyph-string: "),
+    ];
+    if !gstring.is_nil() {
+        data.push(gstring.clone());
+    }
+    LispError::SignalValue(Value::list(data))
+}
+
+fn composition_gstring_parts(interp: &Interpreter, gstring: &Value) -> Option<(Value, Value)> {
+    if !is_vector_value(gstring) {
+        return None;
+    }
+    let body = vector_items(gstring).ok()?;
+    if body.len() < 2 || !is_vector_value(body.first()?) {
+        return None;
+    }
+    let header = vector_items(&body[0]).ok()?;
+    if header.len() < 2 {
+        return None;
+    }
+    let font = header[0].clone();
+    if !font.is_nil()
+        && !matches!(&font, Value::Symbol(name) if interp.has_coding_system(name))
+        && !font_record(interp, &font).is_ok_and(|record| record.type_name == "font-object")
+    {
+        return None;
+    }
+    if header
+        .iter()
+        .skip(1)
+        .any(|value| !matches!(value, Value::Integer(number) if *number >= 0))
+        || (!body[1].is_nil() && !matches!(&body[1], Value::Integer(number) if *number >= 0))
+    {
+        return None;
+    }
+    for glyph in body.iter().skip(2).take_while(|glyph| !glyph.is_nil()) {
+        if !is_vector_value(glyph) || !vector_items(glyph).is_ok_and(|items| items.len() == 10) {
+            return None;
+        }
+    }
+    Some((font, body[1].clone()))
 }
 
 fn invalid_font_property() -> LispError {
@@ -918,6 +1017,55 @@ pub(super) fn call(
                 }
             }
             Ok(Value::Nil)
+        }
+        "font-face-attributes" => {
+            need_arg_range(name, args, 1, 2)?;
+            require_live_frame(interp, args.get(1))?;
+            Err(window_system_frame_required())
+        }
+        "open-font" => {
+            need_arg_range(name, args, 1, 3)?;
+            require_live_frame(interp, args.get(2))?;
+            Err(window_system_frame_required())
+        }
+        "close-font" => {
+            need_arg_range(name, args, 1, 2)?;
+            require_font_type(interp, &args[0], "font-object", "font-object")?;
+            require_live_frame(interp, args.get(1))?;
+            Err(window_system_frame_required())
+        }
+        "query-font" => {
+            need_args(name, args, 1)?;
+            require_font_type(interp, &args[0], "font-object", "font-object")?;
+            Err(window_system_frame_required())
+        }
+        "font-has-char-p" => {
+            need_arg_range(name, args, 2, 3)?;
+            require_font(interp, &args[0])?;
+            require_character(&args[1])?;
+            require_frame(args.get(2))?;
+            Err(window_system_frame_required())
+        }
+        "font-get-glyphs" => {
+            need_arg_range(name, args, 3, 4)?;
+            require_font_type(interp, &args[0], "font-object", "font-object")?;
+            Err(window_system_frame_required())
+        }
+        "font-variation-glyphs" => {
+            need_args(name, args, 2)?;
+            require_font_type(interp, &args[0], "font-object", "font-object")?;
+            require_character(&args[1])?;
+            Err(window_system_frame_required())
+        }
+        "font-shape-gstring" => {
+            need_args(name, args, 2)?;
+            let (font, id) = composition_gstring_parts(interp, &args[0])
+                .ok_or_else(|| invalid_glyph_string(&args[0]))?;
+            if !id.is_nil() {
+                return Ok(args[0].clone());
+            }
+            require_font_type(interp, &font, "font-object", "font-object")?;
+            Err(window_system_frame_required())
         }
         "font-info" => {
             need_arg_range(name, args, 1, 2)?;
