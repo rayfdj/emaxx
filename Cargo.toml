@@ -37,6 +37,9 @@ serialport = { version = "4.9.0", default-features = false }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 unicode-segmentation = "1.13.3"
 unicode-normalization = "0.1.25"
+# Official upstream runtime/bindings; grammar modules remain independently
+# loadable, matching Emacs's Tree-sitter boundary.
+tree-sitter = "=0.26.11"
 
 [dev-dependencies]
 

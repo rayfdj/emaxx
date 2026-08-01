@@ -2078,6 +2078,28 @@ impl Interpreter {
         self.records.iter_mut().find(|record| record.id == id)
     }
 
+    pub(crate) fn create_treesit_query(&mut self, language: Value, source: Value) -> Value {
+        let query = self.create_record("tree-sitter-compiled-query", Vec::new());
+        let Value::Record(record_id) = query else {
+            unreachable!("Tree-sitter queries use opaque record identities");
+        };
+        self.treesit_queries.push(TreeSitterQueryState {
+            record_id,
+            language,
+            _source: source,
+        });
+        Value::Record(record_id)
+    }
+
+    pub(crate) fn treesit_query_state(&self, value: &Value) -> Option<&TreeSitterQueryState> {
+        let Value::Record(record_id) = value else {
+            return None;
+        };
+        self.treesit_queries
+            .iter()
+            .find(|query| query.record_id == *record_id)
+    }
+
     // GNU eieio objects carry the class OBJECT as their record tag unless
     // `make-instance' downgrades it to the class symbol for backward
     // compatibility; such records print with the class object expanded in

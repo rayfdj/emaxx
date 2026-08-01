@@ -29,6 +29,26 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 Tree-sitter runtime checkpoint advances the native GNU C
+  primitive frontier to 1,328/1,420, leaving 92 missing.  Emaxx now uses the
+  official MIT-licensed `tree-sitter` Rust crate, pinned at 0.26.11, rather
+  than implementing a parser runtime.  Nine newly mirrored primitives expose
+  GNU's exact runtime ABI boundary (latest 15, minimum compatible 13),
+  parser/node/compiled-query predicates, node/query ownership errors, and
+  identity-preserving lazy query compilation.  Language probes still report
+  unavailable grammars honestly; an eager compile reports
+  `treesit-load-language-error`, while a non-eager query remains a real
+  opaque object ready for later compilation.  The full matrix caught and
+  repaired the loaded GNU Semantic mode path that begins using lazy queries
+  once `treesit-available-p` truthfully becomes non-nil.  Thirty-five
+  Tree-sitter primitives remain for grammar loading, parser/tree/node state,
+  ranges, queries, and searches.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,630 library tests (1,626 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).  NEXT is the real grammar-loader and parser-state
+  slice on the same official runtime.
 - The 2026-08-01 native-audit checkpoint advances the GNU C primitive
   frontier to 1,319/1,420, leaving 101 missing.  Nineteen display primitives
   now expose the honest headless backend boundary: `x-display-list` and

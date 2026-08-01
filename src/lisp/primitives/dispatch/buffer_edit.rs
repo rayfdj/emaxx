@@ -395,7 +395,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "max-char"
             | "position-bytes"
             | "byte-to-position"
-            | "treesit-available-p"
             | "treesit-ready-p"
             | "buffer-name"
             | "set-buffer-multibyte"
@@ -1943,7 +1942,7 @@ pub(super) fn call(
                 .unwrap_or(Value::Nil))
         }
         _ if modes::is_major_mode_builtin(name) => modes::call_major_mode(interp, name),
-        "treesit-available-p" | "treesit-ready-p" => Ok(Value::Nil),
+        "treesit-ready-p" => Ok(Value::Nil),
         "buffer-name" => {
             if !args.is_empty()
                 && let Value::Buffer(_, name) = &args[0]

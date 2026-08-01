@@ -750,6 +750,13 @@ pub struct RecordState {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct TreeSitterQueryState {
+    pub(crate) record_id: u64,
+    pub(crate) language: Value,
+    pub(crate) _source: Value,
+}
+
+#[derive(Clone, Debug)]
 pub struct CodingSystemState {
     pub name: String,
     pub base: String,
@@ -1378,6 +1385,8 @@ pub struct Interpreter {
     records: Vec<RecordState>,
     /// SQLite objects keyed by record ID.
     sqlite_handles: Vec<(u64, SqliteHandleState)>,
+    /// Lazily compiled Tree-sitter queries keyed by opaque record identity.
+    treesit_queries: Vec<TreeSitterQueryState>,
     // nadvice state: per-symbol advice entries (newest first = outermost)
     // plus the unadvised base definition; entries added before the symbol
     // is defined stay pending until a defun/defalias installs a base.
@@ -2097,6 +2106,7 @@ impl Interpreter {
                 },
             ],
             sqlite_handles: Vec::new(),
+            treesit_queries: Vec::new(),
             advice_registry: std::collections::HashMap::new(),
             next_record_id: 3,
             next_finalizer_id: 1,

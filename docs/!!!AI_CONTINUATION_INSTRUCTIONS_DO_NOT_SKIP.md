@@ -18,6 +18,31 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 TREE-SITTER RUNTIME/QUERY CHECKPOINT: the exact generated GNU C
+  inventory is 1,328/1,420 mirrored, with 92 missing.  The implementation
+  deliberately uses the official MIT-licensed `tree-sitter` Rust crate pinned
+  at 0.26.11; do not replace it with a local parser runtime.  Nine formerly
+  missing primitives now cover ABI introspection (15 latest, 13 minimum),
+  parser/node/query predicates, node/query ownership checks, and lazy
+  `treesit-query-compile`.  Lazy compiled queries have stable opaque identity
+  and retain their language/source; eager compilation against an unavailable
+  grammar signals `treesit-load-language-error`.  Grammar availability and
+  language ABI still return the honest no-grammar result.  Changing
+  `treesit-available-p` to its truthful non-nil result exposed a loaded GNU
+  Semantic mode call to the previously missing query compiler; the real lazy
+  query boundary fixes that integration, and
+  `loaded_gnu_file_modes_run_semantic_parser_setup` is green both alone and
+  in the full matrix.  The GNU-comparison regression
+  `native_treesit_runtime_capabilities_and_query_predicates_match_gnu` pins
+  ABI, availability detail, all predicates, lazy identity/language, eager
+  failure, and type errors.  Thirty-five Tree-sitter primitives remain.  The
+  complete publication gate is green: rustfmt, strict Clippy, and diff
+  checks; all 1,630 library tests (1,626 in the restricted sandbox plus the
+  four exact localhost socket tests with networking allowed); 28
+  compatibility-harness tests, 1 performance-harness test, 8 CLI tests, and
+  3 ERT-runner tests (plus the zero-test main binary).  NEXT: publish this
+  theme, then add grammar loading and real parser/tree/node state on the same
+  official runtime.
 - 2026-08-01 NATIVE DISPLAY-QUERY CHECKPOINT: the exact generated GNU C
   inventory is now 1,319/1,420 mirrored, with 101 missing.  This theme adds 19
   honest headless display contracts.  `x-display-list` and `x-hide-tip`

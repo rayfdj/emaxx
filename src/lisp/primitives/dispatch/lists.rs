@@ -90,7 +90,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "seq-take"
             | "seq-position"
             | "cl-coerce"
-            | "treesit-language-available-p"
             | "treesit--linecol-cache"
             | "treesit--linecol-cache-set"
             | "treesit--linecol-at"
@@ -2221,10 +2220,6 @@ pub(super) fn call(
                     "cl-coerce unsupported type: {kind}"
                 ))),
             }
-        }
-        "treesit-language-available-p" => {
-            need_args(name, args, 1)?;
-            Ok(Value::Nil)
         }
         "treesit--linecol-cache" => {
             need_args(name, args, 0)?;

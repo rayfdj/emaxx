@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_319, 1_448_771_135_547_024_881),
+        (1_328, 18_107_802_684_722_147_967),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (101, 10_657_659_454_428_617_423),
+        (92, 12_239_999_980_721_051_501),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -8651,6 +8651,71 @@ fn native_x_display_queries_observe_the_headless_backend_boundary() {
             .read()
             .expect("X display query result should parse")
             .expect("X display query result should exist")
+    );
+}
+
+#[test]
+fn native_treesit_runtime_capabilities_and_query_predicates_match_gnu() {
+    let program = r#"
+        (let* ((detail
+                (treesit-language-available-p
+                 'emaxx-definitely-missing t))
+               (lazy
+                (treesit-query-compile
+                 'emaxx-definitely-missing
+                 "(identifier) @id")))
+          (list
+           (treesit-available-p)
+           (treesit-library-abi-version)
+           (treesit-library-abi-version t)
+           (treesit-language-abi-version)
+           (treesit-language-abi-version 'emaxx-definitely-missing)
+           (treesit-language-available-p 'emaxx-definitely-missing)
+           (list (car detail) (cadr detail))
+           (treesit-parser-p nil)
+           (treesit-node-p nil)
+           (treesit-compiled-query-p nil)
+           (treesit-query-p "(identifier) @id")
+           (treesit-query-p '((identifier) @id))
+           (treesit-query-p [])
+           (treesit-query-p nil)
+           (treesit-compiled-query-p lazy)
+           (treesit-query-p lazy)
+           (treesit-query-language lazy)
+           (eq lazy (treesit-query-compile 'other-language lazy))
+           (condition-case error-data
+               (treesit-query-compile
+                'emaxx-definitely-missing "(identifier)" t)
+             (error (car error-data)))
+           (condition-case error-data
+               (treesit-query-language nil)
+             (error (list (car error-data) (cadr error-data))))
+           (condition-case error-data
+               (treesit-node-parser nil)
+             (error (list (car error-data) (cadr error-data))))))"#;
+    let expected = r#"
+        (t 15 13 nil nil nil (nil not-found)
+         nil nil nil t t nil nil
+         t t emaxx-definitely-missing t treesit-load-language-error
+         (wrong-type-argument treesit-compiled-query-p)
+         (wrong-type-argument treesit-node-p))"#;
+    let expected_printed = "(t 15 13 nil nil nil (nil not-found) nil nil nil t t nil nil t t emaxx-definitely-missing t treesit-load-language-error (wrong-type-argument treesit-compiled-query-p) (wrong-type-argument treesit-node-p))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("Tree-sitter capability contract should parse")
+        .expect("Tree-sitter capability contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("Tree-sitter runtime introspection should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("Tree-sitter capability result should parse")
+            .expect("Tree-sitter capability result should exist")
     );
 }
 
