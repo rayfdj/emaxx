@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_390, 654_403_392_030_036_411),
+        (1_393, 4_948_632_708_221_859_943),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (30, 8_416_811_313_467_602_167),
+        (27, 3_849_663_693_217_878_483),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -5668,6 +5668,178 @@ fn native_gnutls_catalogs_and_error_diagnostics_use_the_host_library() {
     assert!(
         values_equal(&interp, &actual, &expected),
         "host GnuTLS catalog/error result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_gnutls_mac_uses_the_host_crypto_and_zeroizes_keys() {
+    let program = r#"
+        (let* ((key (copy-sequence "test"))
+               (descriptor (cdr (assq 'SHA256 (gnutls-macs))))
+               (first (gnutls-hash-mac 'SHA256 key "hello\n"))
+               (reference (gnutls-hash-mac 'SHA256 "test" "hello\n")))
+          (list
+           (secure-hash 'sha256 first)
+           (string-to-list key)
+           (list
+            (equal reference (gnutls-hash-mac "SHA256" "test" "hello\n"))
+            (equal reference (gnutls-hash-mac descriptor "test" "hello\n"))
+            (equal reference (gnutls-hash-mac 6 "test" "hello\n")))
+           (secure-hash
+            'sha256
+            (gnutls-hash-mac
+             'SHA256 '("--test++" 2 6) '("xxhello\nyy" 2 8)))
+           (mapcar
+            (lambda (method)
+              (condition-case error-data
+                  (gnutls-hash-mac method "test" "hello\n")
+                (error error-data)))
+            '(BOGUS "BOGUS" nil 999))
+           (condition-case error-data
+               (gnutls-hash-mac 'SHA256 42 "x")
+             (error error-data))
+           (condition-case error-data
+               (gnutls-hash-mac 'SHA256 "x" 42)
+             (error error-data))))"#;
+    let expected = concat!(
+        "(\"b76ce0731f8b3aaca7e3e1d0130c68cecd68ada35627dd8f7dad0c3b8e9339a0\" ",
+        "(0 0 0 0) (t t t) ",
+        "\"b76ce0731f8b3aaca7e3e1d0130c68cecd68ada35627dd8f7dad0c3b8e9339a0\" ",
+        "((error \"GnuTLS MAC-method is invalid or not found\" BOGUS) ",
+        "(error \"GnuTLS MAC-method is invalid or not found\" BOGUS) ",
+        "(error \"GnuTLS MAC-method is invalid or not found\" nil) ",
+        "(error \"GnuTLS MAC-method is invalid or not found\" 999)) ",
+        "(wrong-type-argument consp 42) (wrong-type-argument consp 42))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("GnuTLS MAC contract should parse")
+        .expect("GnuTLS MAC contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("host GnuTLS MAC contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("GnuTLS MAC expected result should parse")
+        .expect("GnuTLS MAC expected result should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "host GnuTLS MAC result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_gnutls_symmetric_crypto_round_trips_block_and_aead_ciphers() {
+    let program = r#"
+        (let* ((block (cdr (assq 'AES-128-CBC (gnutls-ciphers))))
+               (block-key (copy-sequence "0123456789abcdef"))
+               (block-dec-key (copy-sequence "0123456789abcdef"))
+               (block-out
+                (gnutls-symmetric-encrypt
+                 block block-key "0123456789abcdef" "abcdefghijklmnop"))
+               (block-back
+                (gnutls-symmetric-decrypt
+                 block block-dec-key (cadr block-out) (car block-out)))
+               (aead (cdr (assq 'AES-128-GCM (gnutls-ciphers))))
+               (aead-key (copy-sequence "0123456789abcdef"))
+               (aead-dec-key (copy-sequence "0123456789abcdef"))
+               (aead-out
+                (gnutls-symmetric-encrypt
+                 aead aead-key "0123456789ab" "plaintext" "auth"))
+               (aead-back
+                (gnutls-symmetric-decrypt
+                 aead aead-dec-key (cadr aead-out) (car aead-out) "auth"))
+               (auto
+                (gnutls-symmetric-encrypt
+                 'AES-128-CBC "0123456789abcdef"
+                 '(iv-auto 16) "abcdefghijklmnop")))
+          (list
+           (list
+            (secure-hash 'sha256 (car block-out))
+            (cadr block-out)
+            (car block-back)
+            (string= block-key (make-string 16 0))
+            (string= block-dec-key (make-string 16 0))
+            (equal
+             (car block-out)
+             (car (gnutls-symmetric-encrypt
+                   "AES-128-CBC" "0123456789abcdef"
+                   "0123456789abcdef" "abcdefghijklmnop")))
+            (equal
+             (car block-out)
+             (car (gnutls-symmetric-encrypt
+                   4 "0123456789abcdef"
+                   "0123456789abcdef" "abcdefghijklmnop"))))
+           (list
+            (length (car aead-out))
+            (secure-hash 'sha256 (car aead-out))
+            (cadr aead-out)
+            (car aead-back)
+            (string= aead-key (make-string 16 0))
+            (string= aead-dec-key (make-string 16 0)))
+           (list
+            (length (cadr auto))
+            (equal
+             (car (gnutls-symmetric-decrypt
+                   'AES-128-CBC "0123456789abcdef"
+                   (cadr auto) (car auto)))
+             "abcdefghijklmnop"))
+           (list
+            (condition-case error-data
+                (gnutls-symmetric-encrypt
+                 'BOGUS "0123456789abcdef"
+                 "0123456789abcdef" "abcdefghijklmnop")
+              (error error-data))
+            (condition-case error-data
+                (gnutls-symmetric-encrypt
+                 'AES-128-CBC "short"
+                 "0123456789abcdef" "abcdefghijklmnop")
+              (error error-data))
+            (condition-case error-data
+                (gnutls-symmetric-encrypt
+                 'AES-128-CBC "0123456789abcdef"
+                 "short" "abcdefghijklmnop")
+              (error error-data))
+            (condition-case error-data
+                (gnutls-symmetric-encrypt
+                 'AES-128-CBC "0123456789abcdef"
+                 "0123456789abcdef" "short")
+              (error error-data)))))"#;
+    let expected = concat!(
+        "((\"ee1a7e1e074ccb5430bd445f97f07b3f11dce56177c94252f41b532333e72817\" ",
+        "\"0123456789abcdef\" \"abcdefghijklmnop\" t t t t) ",
+        "(25 \"b53ae704131446902e9463827175e729d436cbf300882ddf2b25cc098c912952\" ",
+        "\"0123456789ab\" \"plaintext\" t t) (16 t) ",
+        "((error \"GnuTLS cipher is invalid or not found\" BOGUS) ",
+        "(error \"GnuTLS cipher AES-128-CBC/encrypt key length 5 is not equal ",
+        "to the required 16\") ",
+        "(error \"GnuTLS cipher AES-128-CBC/encrypt IV length 5 is not equal ",
+        "to the required 16\") ",
+        "(error \"GnuTLS cipher AES-128-CBC/encrypt input block length 5 is ",
+        "not a multiple of the required 16\")))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("GnuTLS symmetric contract should parse")
+        .expect("GnuTLS symmetric contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("host GnuTLS symmetric contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("GnuTLS symmetric expected result should parse")
+        .expect("GnuTLS symmetric expected result should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "host GnuTLS symmetric result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 

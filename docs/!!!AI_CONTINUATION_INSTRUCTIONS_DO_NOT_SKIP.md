@@ -18,6 +18,41 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE GNUTLS HOST-CRYPTO CHECKPOINT: the exact generated GNU C
+  inventory is 1,393/1,420 mirrored, with 27 missing.  Three more primitives
+  now use the installed GnuTLS library through the established `libloading`
+  boundary: `gnutls-hash-mac` streams real host HMAC, while
+  `gnutls-symmetric-encrypt` and `gnutls-symmetric-decrypt` use the host block
+  and AEAD cipher APIs, including authenticated decrypt, explicit and
+  `(iv-auto N)` nonces, and GNU's exact unibyte results.  All three accept
+  GNU's symbol, string, descriptor-plist, and numeric selectors and sliced
+  string/buffer inputs where applicable; mutable caller key strings are
+  cleared on GNU's paths.  Extracted Rust key buffers use the established
+  pinned RustCrypto `zeroize` 1.9.0 crate rather than a local wiping routine.
+  The shared FFI declarations also now use GnuTLS's exact C unsigned and
+  `size_t` return types for algorithm sizes.  Direct sibling-GNU oracles pin
+  HMAC results, AES-128-CBC ciphertext, AES-128-GCM ciphertext and
+  authentication, selector/slice behavior, automatic IVs, key clearing, and
+  validation errors.  Only session boot, shutdown, and certificate formatting
+  remain in `gnutls.c`; `gnutls-available-p` remains nil and no TLS transport
+  is claimed.  Exact fingerprints are mirrored
+  `(1_393, 4_948_632_708_221_859_943)` and missing
+  `(27, 3_849_663_693_217_878_483)`.  The 27-item remainder is: `alloc.c` 3,
+  `bytecode.c` 2, `comp.c` 9, `module-load` 1, `gnutls.c` 3, display
+  connections 2, menus 3, portable dumper 2, `re--describe-compiled` 1, and
+  drag-and-drop 1.  Of those, 23 are non-bytecode and four are the explicit
+  VM cluster.  The complete publication gate is green: rustfmt, strict Clippy,
+  and diff checks; all 1,641 library tests (1,637 in the restricted sandbox
+  plus the four exact localhost socket tests with networking allowed); 28
+  compatibility-harness tests, 1 performance-harness test, 8 CLI tests, and 3
+  ERT-runner tests (plus the zero-test main binary).  SEQUENCING OVERRIDE
+  remains authoritative: finish the 23 non-bytecode primitives; when only
+  `byte-code`, `internal-stack-stats`, `make-byte-code`, and `make-closure`
+  remain, keep those four visibly unresolved and switch immediately back to
+  the ordered 7,080-selector frontier.  Return to the bytecode VM cluster
+  afterward, or earlier only if it becomes the concrete blocker.  NEXT:
+  commit and push this theme, then immediately select the next non-bytecode
+  native family.
 - 2026-08-01 NATIVE GNUTLS HOST-CATALOG CHECKPOINT: the exact generated GNU C
   inventory is 1,390/1,420 mirrored, with 30 missing.  Four more GnuTLS
   primitives now use the installed library through the already established

@@ -29,6 +29,34 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native GnuTLS host-crypto checkpoint advances the exact GNU
+  C primitive inventory to 1,393/1,420, leaving 27 missing.  Three primitives
+  now use the installed GnuTLS through the established `libloading` boundary:
+  `gnutls-hash-mac` performs real streaming host HMAC, and
+  `gnutls-symmetric-encrypt`/`gnutls-symmetric-decrypt` use its real block and
+  AEAD cipher APIs with authentication and explicit or automatic IVs.  They
+  preserve GNU's selector, sliced-input, unibyte-output, validation, and
+  mutable-key-clearing contracts.  Temporary Rust key buffers use the pinned
+  RustCrypto `zeroize` 1.9.0 crate, and the shared FFI size declarations now
+  match GnuTLS's exact C unsigned and `size_t` ABI.  Direct sibling-GNU oracles
+  pin HMAC, AES-128-CBC, AES-128-GCM, automatic IV, authentication, slicing,
+  selectors, key clearing, and error behavior.  Only session boot, shutdown,
+  and certificate formatting remain in `gnutls.c`; this checkpoint still does
+  not claim a TLS transport.  Exact inventory fingerprints are mirrored
+  `(1_393, 4_948_632_708_221_859_943)` and missing
+  `(27, 3_849_663_693_217_878_483)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,641 library tests (1,637 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 27-item remainder is: `alloc.c` 3, `bytecode.c` 2, `comp.c` 9,
+  `module-load` 1, `gnutls.c` 3, display connections 2, menus 3, portable
+  dumper 2, `re--describe-compiled` 1, and drag-and-drop 1.  Finish the 23
+  non-bytecode primitives first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, keep
+  those four visibly unresolved and switch immediately back to the ordered
+  7,080-selector frontier.  Return to bytecode afterward or sooner only if it
+  blocks that frontier.
 - The 2026-08-01 native GnuTLS host-catalog checkpoint advances the exact GNU
   C primitive inventory to 1,390/1,420, leaving 30 missing.  Four new
   primitives use the installed GnuTLS through the existing `libloading`

@@ -37,6 +37,10 @@ sha3 = "0.10.8"
 streebog = "=0.10.2"
 gost94 = "=0.10.4"
 getrandom = "0.3"
+# Cryptographic input extraction creates temporary Rust buffers.  Use the
+# established compile-fenced implementation so key material is not left behind
+# or optimized out of an ordinary overwrite.
+zeroize = "=1.9.0"
 libc = "0.2"
 serialport = { version = "4.9.0", default-features = false }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
