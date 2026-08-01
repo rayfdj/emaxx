@@ -29,6 +29,28 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 Tree-sitter loader/parser checkpoint advances the native GNU
+  C primitive frontier to 1,353/1,420, leaving 67 missing.  Twenty-five
+  formerly missing primitives now provide GNU-compatible grammar discovery,
+  parser reuse/list/delete/tag/buffer/range/notifier lifecycle, real parse
+  trees, and safe node identity/traversal/introspection.  Dynamic grammar
+  modules are loaded in GNU's extra-path, user-directory, then system order
+  through the established `libloading` crate; their module handles stay alive
+  behind official `tree-sitter` `Language`, `Parser`, and `Tree` values.
+  Nodes resolve safely against their owning tree and become explicitly
+  outdated after reparsing.  The official `tree-sitter-json` grammar is a
+  test-only fixture proving real parse output, positions, field/sibling/parent
+  traversal, included ranges, edit invalidation, and deletion semantics.
+  GNU comparison also pins unavailable-grammar parser creation and load-error
+  detail.  Only ten higher-level Tree-sitter primitives remain: sparse-tree
+  induction, two range/node match helpers, pattern/query expansion and capture,
+  two searches, and subtree statistics.  The complete publication gate is
+  green: rustfmt, strict Clippy, and diff checks; all 1,631 library tests
+  (1,627 in the restricted sandbox plus the four exact localhost socket tests
+  with networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).  NEXT is the remaining ten-operation Tree-sitter
+  query/search theme on the same official runtime.
 - The 2026-08-01 Tree-sitter runtime checkpoint advances the native GNU C
   primitive frontier to 1,328/1,420, leaving 92 missing.  Emaxx now uses the
   official MIT-licensed `tree-sitter` Rust crate, pinned at 0.26.11, rather

@@ -33,6 +33,7 @@ mod resource_forms;
 pub(crate) mod runtime;
 mod rx;
 mod threads;
+mod treesit;
 mod variables;
 use bootstrap::*;
 pub(crate) use preload::*;
@@ -88,6 +89,9 @@ const GNU_LREAD_SPECIAL_VARIABLES: &[&str] = &[
 // Lisp package first happens to exercise locale setup.
 const GNU_EMACS_LOCALE_SPECIAL_VARIABLES: &[&str] =
     &["system-messages-locale", "system-time-locale"];
+
+const GNU_TREESIT_SPECIAL_VARIABLES: &[&str] =
+    &["treesit-extra-load-path", "treesit-load-name-override-list"];
 
 // buffer.c's complete GNU 30.2 DEFVAR_PER_BUFFER contract.  These variables
 // are both special under lexical binding and automatically local to the
@@ -749,11 +753,42 @@ pub struct RecordState {
     pub slots: Vec<Value>,
 }
 
-#[derive(Clone, Debug)]
 pub(crate) struct TreeSitterQueryState {
     pub(crate) record_id: u64,
     pub(crate) language: Value,
     pub(crate) _source: Value,
+}
+
+pub(crate) struct TreeSitterLanguageState {
+    pub(crate) symbol: String,
+    pub(crate) language: tree_sitter::Language,
+    // Drop the Language before unloading the module which owns its static data.
+    pub(crate) _library: Option<libloading::Library>,
+}
+
+pub(crate) struct TreeSitterParserState {
+    pub(crate) record_id: u64,
+    pub(crate) parser: tree_sitter::Parser,
+    pub(crate) tree: Option<tree_sitter::Tree>,
+    pub(crate) language: Value,
+    pub(crate) buffer_id: u64,
+    pub(crate) buffer: Value,
+    pub(crate) list_buffer_id: u64,
+    pub(crate) tag: Value,
+    pub(crate) deleted: bool,
+    pub(crate) included_ranges: Value,
+    pub(crate) notifiers: Vec<Value>,
+    pub(crate) parsed_tick: Option<crate::buffer::ModCount>,
+    pub(crate) visible_region: Option<(usize, usize)>,
+    pub(crate) generation: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TreeSitterNodeState {
+    pub(crate) record_id: u64,
+    pub(crate) parser_id: u64,
+    pub(crate) node_id: usize,
+    pub(crate) generation: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -1387,6 +1422,12 @@ pub struct Interpreter {
     sqlite_handles: Vec<(u64, SqliteHandleState)>,
     /// Lazily compiled Tree-sitter queries keyed by opaque record identity.
     treesit_queries: Vec<TreeSitterQueryState>,
+    /// Official Tree-sitter parsers keyed by opaque Lisp record identity.
+    treesit_parsers: Vec<TreeSitterParserState>,
+    /// Stable node identities resolved against their parser's current tree.
+    treesit_nodes: Vec<TreeSitterNodeState>,
+    /// Loaded grammar modules, deliberately dropped after parsers and trees.
+    treesit_languages: Vec<TreeSitterLanguageState>,
     // nadvice state: per-symbol advice entries (newest first = outermost)
     // plus the unadvised base definition; entries added before the symbol
     // is defined stay pending until a defun/defalias installs a base.
@@ -2107,6 +2148,9 @@ impl Interpreter {
             ],
             sqlite_handles: Vec::new(),
             treesit_queries: Vec::new(),
+            treesit_languages: Vec::new(),
+            treesit_parsers: Vec::new(),
+            treesit_nodes: Vec::new(),
             advice_registry: std::collections::HashMap::new(),
             next_record_id: 3,
             next_finalizer_id: 1,
@@ -2275,6 +2319,10 @@ impl Interpreter {
             interp.mark_special_variable(name);
         }
         for name in GNU_EMACS_LOCALE_SPECIAL_VARIABLES {
+            interp.set_global_binding(name, Value::Nil);
+            interp.mark_special_variable(name);
+        }
+        for name in GNU_TREESIT_SPECIAL_VARIABLES {
             interp.set_global_binding(name, Value::Nil);
             interp.mark_special_variable(name);
         }
