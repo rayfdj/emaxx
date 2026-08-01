@@ -18,6 +18,35 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE X-FACES CHECKPOINT: the exact generated GNU C inventory is
+  1,366/1,420 mirrored, with 54 missing.  `frame--face-hash-table` now returns
+  the selected frame's stable, real `eq` hash table of frame-local face
+  vectors; faces created after the table is materialized are synchronized
+  into that same table without changing its identity.  The direct GNU oracle
+  pins table identity/test, the global-versus-frame-local boundary, shared face
+  vector identity, live mutation, and type/frame errors.
+  `internal-face-x-get-resource` preserves GNU's string and live-frame
+  validation, then uses Emaxx's established catchable headless
+  window-system-unavailable boundary; GNU's internal accessor aborts the whole
+  batch process when called with otherwise valid strings on a tty-only frame,
+  which Emaxx deliberately does not reproduce.  Exact fingerprints are
+  mirrored `(1_366, 18_079_045_798_471_271_648)` and missing
+  `(54, 5_655_136_854_411_230_528)`.  The 54-item remainder is: `alloc.c` 3,
+  GUI frame/tip creation 2, `bytecode.c` 2, `comp.c` 9, `module-load` 1,
+  `font.c` 8, `gnutls.c` 18, display connections 2, `x-select-font` 1,
+  menus/dialogs 3, portable dumper 2, file dialog 1,
+  `re--describe-compiled` 1, and drag-and-drop 1.  The complete publication
+  gate is green: rustfmt, strict Clippy, and diff checks; all 1,634 library
+  tests (1,630 in the restricted sandbox plus the four exact localhost socket
+  tests with networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).  SEQUENCING OVERRIDE remains authoritative: finish
+  every non-bytecode primitive first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, leave
+  those four explicitly unresolved and switch back to the ordered
+  7,080-selector frontier.  Return to the bytecode VM cluster afterward, or
+  earlier only if it becomes the concrete blocker.  NEXT: commit and push this
+  theme, then immediately select the next non-bytecode native family.
 - 2026-08-01 NATIVE SYSTEM-TRASH CHECKPOINT: the exact generated GNU C
   inventory is 1,364/1,420 mirrored, with 56 missing.  The newly native
   `system-move-file-to-trash` expands and validates names through the shared

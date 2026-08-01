@@ -45,25 +45,71 @@ impl Interpreter {
         if self.lisp_face_states[index].global.is_none() {
             self.lisp_face_states[index].global = Some(empty_lisp_face_vector());
         }
-        let target = if selected_frame {
-            &mut self.lisp_face_states[index].selected_frame
-        } else {
-            &mut self.lisp_face_states[index].global
-        };
-        if target.is_none() {
-            *target = Some(empty_lisp_face_vector());
-        } else if reset {
-            let vector = target
-                .as_ref()
-                .expect("an existing Lisp face target must have a vector");
-            for slot in 1..LFACE_VECTOR_SIZE {
-                aset_vector_value(vector, slot, Value::symbol("unspecified"))?;
+        let vector = {
+            let target = if selected_frame {
+                &mut self.lisp_face_states[index].selected_frame
+            } else {
+                &mut self.lisp_face_states[index].global
+            };
+            if target.is_none() {
+                *target = Some(empty_lisp_face_vector());
+            } else if reset {
+                let vector = target
+                    .as_ref()
+                    .expect("an existing Lisp face target must have a vector");
+                for slot in 1..LFACE_VECTOR_SIZE {
+                    aset_vector_value(vector, slot, Value::symbol("unspecified"))?;
+                }
             }
+            target
+                .as_ref()
+                .expect("ensuring a Lisp face must produce a vector")
+                .clone()
+        };
+        if selected_frame {
+            self.sync_selected_frame_face_hash_entry(name, vector.clone())?;
         }
-        Ok(target
-            .as_ref()
-            .expect("ensuring a Lisp face must produce a vector")
-            .clone())
+        Ok(vector)
+    }
+
+    fn sync_selected_frame_face_hash_entry(
+        &mut self,
+        name: &str,
+        vector: Value,
+    ) -> Result<(), LispError> {
+        let Some(table) = self.selected_frame_face_hash_table.clone() else {
+            return Ok(());
+        };
+        let Some((_, mut entries)) = crate::lisp::json::hash_table_entries(self, &table) else {
+            unreachable!("the frame face table must remain a hash table");
+        };
+        if let Some((_, value)) = entries
+            .iter_mut()
+            .find(|(key, _)| matches!(key, Value::Symbol(symbol) if symbol == name))
+        {
+            *value = vector;
+        } else {
+            entries.push((Value::symbol(name), vector));
+        }
+        crate::lisp::primitives::set_hash_table_entries(self, &table, entries)
+    }
+
+    pub(crate) fn selected_frame_face_hash_table(&mut self) -> Value {
+        if let Some(table) = &self.selected_frame_face_hash_table {
+            return table.clone();
+        }
+        let entries = self
+            .lisp_face_states
+            .iter()
+            .filter_map(|face| {
+                face.selected_frame
+                    .clone()
+                    .map(|vector| (Value::symbol(&face.name), vector))
+            })
+            .collect();
+        let table = crate::lisp::json::make_hash_table(self, "eq", entries);
+        self.selected_frame_face_hash_table = Some(table.clone());
+        table
     }
 
     pub(crate) fn register_lisp_face_id(&mut self, name: &str) -> i64 {

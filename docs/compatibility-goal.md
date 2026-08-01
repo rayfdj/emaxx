@@ -29,6 +29,32 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native X-faces checkpoint advances the exact GNU C primitive
+  inventory to 1,366/1,420, leaving 54 missing.  The selected frame now owns a
+  stable, real `eq` table returned by `frame--face-hash-table`; it contains the
+  frame-local face vectors, preserves their identity, and is synchronized when
+  later frame-local faces are created.  A direct GNU oracle pins stable table
+  identity/test, global-versus-local visibility, shared vector identity,
+  mutation, and validation errors.  `internal-face-x-get-resource` preserves
+  GNU's string and live-frame validation, then reports Emaxx's established
+  catchable headless window-system error.  This intentionally avoids GNU's
+  internal batch-process abort for an otherwise valid call on a tty-only
+  frame.  Exact inventory fingerprints are mirrored
+  `(1_366, 18_079_045_798_471_271_648)` and missing
+  `(54, 5_655_136_854_411_230_528)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,634 library tests (1,630 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 54-item remainder is: `alloc.c` 3, GUI frame/tip creation 2,
+  `bytecode.c` 2, `comp.c` 9, `module-load` 1, `font.c` 8, `gnutls.c` 18,
+  display connections 2, `x-select-font` 1, menus/dialogs 3, portable dumper
+  2, file dialog 1, `re--describe-compiled` 1, and drag-and-drop 1.  Finish
+  every non-bytecode primitive first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, leave
+  those four explicitly tracked and resume the ordered 7,080-selector
+  frontier.  Return to bytecode afterward or sooner only if it blocks that
+  frontier.
 - The 2026-08-01 system-trash checkpoint advances the exact GNU C primitive
   inventory to 1,364/1,420, leaving 56 missing.  The native
   `system-move-file-to-trash` uses the established cross-platform `trash`
