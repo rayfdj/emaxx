@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_382, 9_974_182_275_177_395_014),
+        (1_386, 17_559_018_464_045_209_336),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (38, 5_533_127_793_467_509_550),
+        (34, 1_222_455_694_860_570_834),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -9094,6 +9094,64 @@ fn native_x_display_queries_observe_the_headless_backend_boundary() {
             .read()
             .expect("X display query result should parse")
             .expect("X display query result should exist")
+    );
+}
+
+#[test]
+fn native_gui_creation_tip_and_chooser_boundary_matches_gnu() {
+    let program = r#"
+        (list
+         (condition-case error-data
+             (x-create-frame 1)
+           (error error-data))
+         (condition-case error-data
+             (x-create-frame nil)
+           (error (car error-data)))
+         (condition-case error-data
+             (x-show-tip 1)
+           (error error-data))
+         (condition-case error-data
+             (x-show-tip "x" t)
+           (error error-data))
+         (condition-case error-data
+             (x-show-tip "x")
+           (error error-data))
+         (condition-case error-data
+             (x-file-dialog 1 2)
+           (error error-data))
+         (condition-case error-data
+             (x-select-font t)
+           (error error-data))
+         (condition-case error-data
+             (x-select-font)
+           (error error-data)))"#;
+    let expected = concat!(
+        "((wrong-type-argument listp 1) error ",
+        "(wrong-type-argument stringp 1) ",
+        "(wrong-type-argument frame-live-p t) ",
+        "(error \"Window system frame should be used\") ",
+        "(error \"Window system is not in use or not initialized\") ",
+        "(wrong-type-argument frame-live-p t) ",
+        "(error \"Window system frame should be used\"))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("headless GUI action contract should parse")
+        .expect("headless GUI action contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("headless GUI action failures should be catchable");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("headless GUI action expected value should parse")
+        .expect("headless GUI action expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "headless GUI action result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 
