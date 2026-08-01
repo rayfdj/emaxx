@@ -18,6 +18,37 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE GNUTLS PROCESS-STATE CHECKPOINT: the exact generated GNU
+  C inventory is 1,374/1,420 mirrored, with 46 missing.  Six GnuTLS control
+  and status primitives now share private state on every subprocess, network,
+  pipe, and serial process record.  `gnutls-asynchronous-parameters` stores
+  the future boot parameters without leaking them through `process-plist`;
+  `gnutls-get-initstage` and `gnutls-deinit` expose GNU's initial-stage and
+  inactive-session contracts; `gnutls-peer-status` returns GNU's honest
+  pre-READY nil; `gnutls-peer-status-warning-describe` implements all 16
+  certificate-warning descriptions; and `gnutls-errorp` preserves GNU's
+  deliberately broad predicate, including its two non-error exceptions.
+  A direct sibling-GNU oracle pins the process-state transitions, private
+  plist boundary, every warning string, arbitrary error values, and type
+  errors.  This remains a pre-session implementation: no primitive advances a
+  process to READY or claims a TLS transport yet.  Exact fingerprints are
+  mirrored `(1_374, 3_007_806_732_422_836_430)` and missing
+  `(46, 4_602_497_257_345_269_984)`.  The 46-item remainder is: `alloc.c` 3,
+  GUI frame/tip creation 2, `bytecode.c` 2, `comp.c` 9, `module-load` 1,
+  `font.c` 8, `gnutls.c` 10, display connections 2, `x-select-font` 1,
+  menus/dialogs 3, portable dumper 2, file dialog 1,
+  `re--describe-compiled` 1, and drag-and-drop 1.  The complete publication
+  gate is green: rustfmt, strict Clippy, and diff checks; all 1,636 library
+  tests (1,632 in the restricted sandbox plus the four exact localhost socket
+  tests with networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).  SEQUENCING OVERRIDE remains authoritative: finish
+  every non-bytecode primitive first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, leave
+  those four explicitly unresolved and switch back to the ordered
+  7,080-selector frontier.  Return to the bytecode VM cluster afterward, or
+  earlier only if it becomes the concrete blocker.  NEXT: commit and push this
+  theme, then immediately select the next non-bytecode native family.
 - 2026-08-01 NATIVE GNUTLS DIGEST CHECKPOINT: the exact generated GNU C
   inventory is 1,368/1,420 mirrored, with 52 missing.  `gnutls-digests`
   exposes GNU 30.2's exact stable descriptor order, numeric IDs, and lengths

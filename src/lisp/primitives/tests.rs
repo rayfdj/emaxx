@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_368, 7_429_719_598_662_435_112),
+        (1_374, 3_007_806_732_422_836_430),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (52, 11_972_645_001_314_988),
+        (46, 4_602_497_257_345_269_984),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -5430,6 +5430,96 @@ fn native_gnutls_digest_catalog_and_hashing_use_rustcrypto() {
             .read()
             .expect("GnuTLS digest expected value should parse")
             .expect("GnuTLS digest expected value should exist")
+    );
+}
+
+#[test]
+fn native_gnutls_pre_session_state_warnings_and_error_predicate_match_gnu() {
+    let program = r#"
+        (let ((process (make-pipe-process :name "gnutls-state" :noquery t)))
+          (unwind-protect
+              (list
+               (list
+                (gnutls-get-initstage process)
+                (gnutls-asynchronous-parameters
+                 process '(:hostname "example.test"))
+                (gnutls-get-initstage process)
+                (gnutls-peer-status process)
+                (process-plist process)
+                (gnutls-deinit process)
+                (gnutls-get-initstage process)
+                (gnutls-deinit process))
+               (mapcar
+                (lambda (status)
+                  (list status
+                        (gnutls-peer-status-warning-describe status)))
+                '(:invalid :revoked :self-signed :unknown-ca :not-ca
+                  :insecure :not-activated :expired :no-host-match
+                  :signature-failure :revocation-data-superseded
+                  :revocation-data-issued-in-future
+                  :signer-constraints-failure :purpose-mismatch
+                  :missing-ocsp-status :invalid-ocsp-status :bogus))
+               (mapcar
+                (lambda (error)
+                  (list error (gnutls-errorp error)))
+                '(t gnutls-e-again nil -1 0 foo 42 "x"))
+               (condition-case error-data
+                   (gnutls-peer-status-warning-describe 1)
+                 (error error-data))
+               (condition-case error-data
+                   (gnutls-get-initstage t)
+                 (error error-data))
+               (condition-case error-data
+                   (gnutls-asynchronous-parameters t nil)
+                 (error error-data))
+               (condition-case error-data
+                   (gnutls-deinit t)
+                 (error error-data))
+               (condition-case error-data
+                   (gnutls-peer-status t)
+                 (error error-data)))
+            (delete-process process)))"#;
+    let expected = concat!(
+        "((0 nil 0 nil nil nil 0 nil) ",
+        "((:invalid \"certificate could not be verified\") ",
+        "(:revoked \"certificate was revoked (CRL)\") ",
+        "(:self-signed \"certificate signer was not found (self-signed)\") ",
+        "(:unknown-ca \"the certificate was signed by an unknown and therefore ",
+        "untrusted authority\") (:not-ca \"certificate signer is not a CA\") ",
+        "(:insecure \"certificate was signed with an insecure algorithm\") ",
+        "(:not-activated \"certificate is not yet activated\") ",
+        "(:expired \"certificate has expired\") ",
+        "(:no-host-match \"certificate host does not match hostname\") ",
+        "(:signature-failure \"certificate signature could not be verified\") ",
+        "(:revocation-data-superseded \"certificate revocation data are old and ",
+        "have been superseded\") (:revocation-data-issued-in-future ",
+        "\"certificate revocation data have a future issue date\") ",
+        "(:signer-constraints-failure \"certificate signer constraints were ",
+        "violated\") (:purpose-mismatch \"certificate does not match the intended ",
+        "purpose\") (:missing-ocsp-status \"certificate requires the server to ",
+        "send a OCSP certificate status, but no status was received\") ",
+        "(:invalid-ocsp-status \"the received OCSP certificate status is invalid\") ",
+        "(:bogus nil)) ((t nil) (gnutls-e-again nil) (nil t) (-1 t) (0 t) ",
+        "(foo t) (42 t) (\"x\" t)) (wrong-type-argument symbolp 1) ",
+        "(wrong-type-argument processp t) (wrong-type-argument processp t) ",
+        "(wrong-type-argument processp t) (wrong-type-argument processp t))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("GnuTLS pre-session contract should parse")
+        .expect("GnuTLS pre-session contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("GnuTLS pre-session contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("GnuTLS pre-session expected value should parse")
+            .expect("GnuTLS pre-session expected value should exist")
     );
 }
 
