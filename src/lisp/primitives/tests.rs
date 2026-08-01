@@ -607,12 +607,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_403, 16_366_176_615_574_778_632),
+        (1_407, 2_037_779_427_493_928_198),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (17, 3_193_031_023_882_488_446),
+        (13, 2_153_934_993_855_764_762),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -9622,6 +9622,106 @@ fn native_gui_creation_tip_and_chooser_boundary_matches_gnu() {
     assert!(
         values_equal(&interp, &actual, &expected),
         "headless GUI action result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_headless_menu_and_drag_actions_preserve_gnu_boundaries() {
+    let program = r#"
+        (let ((menu
+               (list "Title"
+                     (list "Pane" (cons "One" 1) "break" nil))))
+          (list
+           (x-popup-menu nil 42)
+           (condition-case error-data
+               (x-popup-menu t 42)
+             (error error-data))
+           (condition-case error-data
+               (x-popup-menu t nil)
+             (error error-data))
+           (condition-case error-data
+               (x-popup-menu t (list 1))
+             (error error-data))
+           (x-popup-menu
+            (list (list 0 0) (selected-frame))
+            menu)
+           (x-popup-dialog
+            t
+            (list "Question" (cons "Yes" t)))
+           (condition-case error-data
+               (x-popup-dialog 42 nil)
+             (error error-data))
+           (condition-case error-data
+               (x-popup-dialog t 42)
+             (error error-data))
+           (condition-case error-data
+               (menu-bar-menu-at-x-y 0 0 42)
+             (error error-data))))"#;
+    let expected = concat!(
+        "(nil (wrong-type-argument listp 42) ",
+        "(wrong-type-argument stringp nil) ",
+        "(wrong-type-argument stringp 1) nil nil ",
+        "(wrong-type-argument windowp nil) ",
+        "(wrong-type-argument listp 42) ",
+        "(wrong-type-argument framep 42))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("headless menu contract should parse")
+        .expect("headless menu contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("headless menu contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("headless menu expected value should parse")
+        .expect("headless menu expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "headless menu result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+
+    let boundary = Reader::new(
+        r#"
+        (list
+         (menu-bar-menu-at-x-y 0 0)
+         (condition-case error-data
+             (menu-bar-menu-at-x-y nil 0)
+           (error error-data))
+         (condition-case error-data
+             (x-begin-drag nil)
+           (error error-data))
+         (condition-case error-data
+             (x-begin-drag 42 nil nil)
+           (error error-data)))"#,
+    )
+    .read()
+    .expect("headless menu/drag boundary should parse")
+    .expect("headless menu/drag boundary should contain a form");
+    assert_eq!(
+        interp
+            .eval(&boundary, &mut env)
+            .expect("headless menu/drag errors should be catchable"),
+        Value::list([
+            Value::Nil,
+            Value::list([
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("fixnump"),
+                Value::Nil,
+            ]),
+            Value::list([
+                Value::symbol("error"),
+                Value::string("Window system frame should be used"),
+            ]),
+            Value::list([
+                Value::symbol("error"),
+                Value::string("Window system frame should be used"),
+            ]),
+        ])
     );
 }
 
