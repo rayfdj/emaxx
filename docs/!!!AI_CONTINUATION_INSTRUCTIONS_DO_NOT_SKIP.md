@@ -18,6 +18,39 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE COMPILER-BOUNDARY CHECKPOINT: the exact generated GNU C
+  inventory is 1,402/1,420 mirrored, with 18 missing and no `comp.c` entry
+  left.  `comp-el-to-eln-rel-filename` now computes GNU's real canonical-path
+  and source-content MD5 prefixes, resolves symlinks, hashes decompressed gzip
+  contents, deliberately removes `.gz` before the path hash, and preserves
+  exact type and missing-file conditions.  The already mirrored
+  `comp-el-to-eln-filename` now builds on that real relative name and honors a
+  dynamically bound native version directory.  `comp--release-ctxt` preserves
+  GNU's idempotent `t` result.  The context compilation, trampoline,
+  registration, and existing-file `.eln` load entry points are native but stop
+  at one explicit "Native compiler backend is unavailable" boundary:
+  `native-comp-available-p` remains nil, and Emaxx neither pretends to run
+  libgccjit nor claims it can load GNU-ABI native code.  `native-elisp-load`
+  still preserves GNU's exact type and missing-file signals before that
+  boundary.  Direct sibling-GNU oracles pin raw/gzip naming, versioned paths,
+  validation, missing files, and safe release behavior; Emaxx-only regressions
+  pin every unavailable mutation/load path.  Exact fingerprints are mirrored
+  `(1_402, 18_222_472_919_885_261_439)` and missing
+  `(18, 14_706_921_403_225_780_709)`.  The 18-item remainder is: `alloc.c` 3,
+  `bytecode.c` 2, `module-load` 1, `gnutls.c` 3, display connections 2, menus
+  3, portable dumper 2, `re--describe-compiled` 1, and drag-and-drop 1.  Of
+  those, 14 are non-bytecode and four are the explicit VM cluster.  The
+  complete publication gate is green: rustfmt, strict Clippy, and diff checks;
+  all 1,643 library tests (1,639 in the restricted sandbox plus the four exact
+  localhost socket tests with networking allowed); 28 compatibility-harness
+  tests, 1 performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus
+  the zero-test main binary).  SEQUENCING OVERRIDE remains authoritative:
+  finish the 14 non-bytecode primitives; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, keep
+  those four visibly unresolved and switch immediately back to the ordered
+  7,080-selector frontier.  Return to the bytecode VM cluster afterward, or
+  earlier only if it becomes the concrete blocker.  NEXT: commit and push this
+  theme, then immediately select the next non-bytecode native family.
 - 2026-08-01 NATIVE GNUTLS HOST-CRYPTO CHECKPOINT: the exact generated GNU C
   inventory is 1,393/1,420 mirrored, with 27 missing.  Three more primitives
   now use the installed GnuTLS library through the established `libloading`
