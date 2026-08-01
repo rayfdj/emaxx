@@ -18,6 +18,34 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE HEADLESS GUI-ACTION CHECKPOINT: the exact generated GNU C
+  inventory is 1,386/1,420 mirrored, with 34 missing.  Four safely probeable
+  graphical entry points are now native: `x-create-frame`, `x-show-tip`,
+  `x-file-dialog`, and `x-select-font`.  Their dispatcher preserves GNU's
+  arities, proper-list, string, and live-frame validation and, critically,
+  each primitive's validation-versus-backend-check order before reaching
+  Emaxx's honest catchable headless errors.  A direct sibling-GNU oracle pins
+  every reachable pre-backend path; the valid headless paths deliberately use
+  Emaxx's safe error boundary where GNU can terminate a tty-only batch.
+  Display connection management, menu selection, and drag remain explicitly
+  unclaimed: probing `x-open-connection` reaches the real host display backend
+  and can block, so it was not replaced with a fake headless stub.  Exact
+  fingerprints are mirrored `(1_386, 17_559_018_464_045_209_336)` and missing
+  `(34, 1_222_455_694_860_570_834)`.  The 34-item remainder is: `alloc.c` 3,
+  `bytecode.c` 2, `comp.c` 9, `module-load` 1, `gnutls.c` 10, display
+  connections 2, menus 3, portable dumper 2, `re--describe-compiled` 1, and
+  drag-and-drop 1.  The complete publication gate is green: rustfmt, strict
+  Clippy, and diff checks; all 1,638 library tests (1,634 in the restricted
+  sandbox plus the four exact localhost socket tests with networking allowed);
+  28 compatibility-harness tests, 1 performance-harness test, 8 CLI tests, and
+  3 ERT-runner tests (plus the zero-test main binary).  SEQUENCING OVERRIDE
+  remains authoritative: finish every non-bytecode primitive first; when only
+  `byte-code`, `internal-stack-stats`, `make-byte-code`, and `make-closure`
+  remain, keep those four visibly unresolved and switch immediately back to
+  the ordered 7,080-selector frontier.  Return to the bytecode VM cluster
+  afterward, or earlier only if it becomes the concrete blocker.  NEXT:
+  commit and push this theme, then immediately select the next non-bytecode
+  native family.
 - 2026-08-01 NATIVE FONT-BACKEND CHECKPOINT: the exact generated GNU C
   inventory is 1,382/1,420 mirrored, with 38 missing; no `font.c` primitive
   remains.  The final eight are `font-face-attributes`,

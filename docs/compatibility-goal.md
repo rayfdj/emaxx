@@ -29,6 +29,31 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native headless GUI-action checkpoint advances the exact GNU
+  C primitive inventory to 1,386/1,420, leaving 34 missing.  Four safely
+  probeable graphical entry points are now native: `x-create-frame`,
+  `x-show-tip`, `x-file-dialog`, and `x-select-font`.  They preserve GNU's
+  arities, proper-list, string, and live-frame validation, including the
+  primitive-specific ordering of validation against the display-backend
+  check, before reaching Emaxx's honest catchable headless errors.  A direct
+  sibling-GNU oracle pins every reachable pre-backend path.  Real display
+  connection management, menu selection, and drag remain unclaimed:
+  `x-open-connection` reaches the host display backend and can block, so it was
+  not disguised as a headless stub.  Exact inventory fingerprints are mirrored
+  `(1_386, 17_559_018_464_045_209_336)` and missing
+  `(34, 1_222_455_694_860_570_834)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,638 library tests (1,634 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 34-item remainder is: `alloc.c` 3, `bytecode.c` 2, `comp.c` 9,
+  `module-load` 1, `gnutls.c` 10, display connections 2, menus 3, portable
+  dumper 2, `re--describe-compiled` 1, and drag-and-drop 1.  Finish every
+  non-bytecode primitive first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, keep
+  those four visibly unresolved and switch immediately back to the ordered
+  7,080-selector frontier.  Return to bytecode afterward or sooner only if it
+  blocks that frontier.
 - The 2026-08-01 native font-backend checkpoint advances the exact GNU C
   primitive inventory to 1,382/1,420, leaving 38 missing and no remaining
   `font.c` entry.  The final eight primitives preserve GNU's exact

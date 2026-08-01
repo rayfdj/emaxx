@@ -10,6 +10,7 @@ mod files_process;
 mod fonts;
 mod frames;
 mod gnutls;
+mod gui_actions;
 mod lists;
 mod misc;
 mod misc_keymaps;
@@ -48,6 +49,7 @@ enum DispatchModule {
     Terminals,
     Treesit,
     Gnutls,
+    GuiActions,
     Predicates,
     Lists,
     Composition,
@@ -89,6 +91,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::Treesit
     } else if gnutls::handles(name) {
         DispatchModule::Gnutls
+    } else if gui_actions::handles(name) {
+        DispatchModule::GuiActions
     } else if predicates::handles(name) {
         DispatchModule::Predicates
     } else if lists::handles(name) {
@@ -162,6 +166,7 @@ fn is_builtin_uncached(name: &str) -> bool {
         || terminals::handles(name)
         || treesit::handles(name)
         || gnutls::handles(name)
+        || gui_actions::handles(name)
         || matches!(
             name,
             // Arithmetic
@@ -1946,6 +1951,7 @@ pub fn call(
         DispatchModule::Terminals => terminals::call(interp, name, args, env),
         DispatchModule::Treesit => treesit::call(interp, name, args, env),
         DispatchModule::Gnutls => gnutls::call(interp, name, args),
+        DispatchModule::GuiActions => gui_actions::call(interp, name, args),
         DispatchModule::Predicates => predicates::call(interp, name, args, env),
         DispatchModule::Lists => lists::call(interp, name, args, env),
         DispatchModule::Composition => composition::call(interp, name, args, env),
