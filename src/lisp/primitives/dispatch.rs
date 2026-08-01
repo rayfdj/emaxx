@@ -3,6 +3,7 @@ use super::*;
 mod buffer_edit;
 mod buffer_meta;
 mod collections;
+mod comp;
 mod composition;
 mod display;
 mod faces;
@@ -50,6 +51,7 @@ enum DispatchModule {
     Treesit,
     Gnutls,
     GuiActions,
+    Comp,
     Predicates,
     Lists,
     Composition,
@@ -93,6 +95,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::Gnutls
     } else if gui_actions::handles(name) {
         DispatchModule::GuiActions
+    } else if comp::handles(name) {
+        DispatchModule::Comp
     } else if predicates::handles(name) {
         DispatchModule::Predicates
     } else if lists::handles(name) {
@@ -167,6 +171,7 @@ fn is_builtin_uncached(name: &str) -> bool {
         || treesit::handles(name)
         || gnutls::handles(name)
         || gui_actions::handles(name)
+        || comp::handles(name)
         || matches!(
             name,
             // Arithmetic
@@ -1952,6 +1957,7 @@ pub fn call(
         DispatchModule::Treesit => treesit::call(interp, name, args, env),
         DispatchModule::Gnutls => gnutls::call(interp, name, args),
         DispatchModule::GuiActions => gui_actions::call(interp, name, args),
+        DispatchModule::Comp => comp::call(interp, name, args, env),
         DispatchModule::Predicates => predicates::call(interp, name, args, env),
         DispatchModule::Lists => lists::call(interp, name, args, env),
         DispatchModule::Composition => composition::call(interp, name, args, env),

@@ -29,6 +29,36 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native compiler-boundary checkpoint advances the exact GNU C
+  primitive inventory to 1,402/1,420, leaving 18 missing and no remaining
+  `comp.c` entry.  `comp-el-to-eln-rel-filename` implements GNU's real
+  canonical-path/content MD5 naming, including symlink resolution and the
+  compressed-source rule that hashes decompressed contents after removing
+  `.gz` from the path.  `comp-el-to-eln-filename` now consumes that real name
+  and honors a dynamically bound native version directory.
+  `comp--release-ctxt` is safely idempotent.  Every context mutation,
+  trampoline/registration, and existing-file `.eln` load operation stops at
+  an explicit unavailable-backend error because Emaxx has neither libgccjit
+  nor GNU's native-code ABI; `native-comp-available-p` remains nil and no
+  compiler/load success is fabricated.  `native-elisp-load` preserves GNU's
+  type and missing-file conditions before that boundary.  Direct sibling-GNU
+  oracles pin raw/gzip names, versioned paths, validation, missing files, and
+  release, while Emaxx regressions pin every unavailable operation.  Exact
+  inventory fingerprints are mirrored
+  `(1_402, 18_222_472_919_885_261_439)` and missing
+  `(18, 14_706_921_403_225_780_709)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,643 library tests (1,639 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 18-item remainder is: `alloc.c` 3, `bytecode.c` 2, `module-load` 1,
+  `gnutls.c` 3, display connections 2, menus 3, portable dumper 2,
+  `re--describe-compiled` 1, and drag-and-drop 1.  Finish the 14 non-bytecode
+  primitives first; when only `byte-code`, `internal-stack-stats`,
+  `make-byte-code`, and `make-closure` remain, keep those four visibly
+  unresolved and switch immediately back to the ordered 7,080-selector
+  frontier.  Return to bytecode afterward or sooner only if it blocks that
+  frontier.
 - The 2026-08-01 native GnuTLS host-crypto checkpoint advances the exact GNU
   C primitive inventory to 1,393/1,420, leaving 27 missing.  Three primitives
   now use the installed GnuTLS through the established `libloading` boundary:

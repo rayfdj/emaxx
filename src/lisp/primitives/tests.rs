@@ -308,6 +308,168 @@ fn native_comp_pure_introspection_family_matches_gnu_and_the_backend_boundary() 
 }
 
 #[test]
+fn native_comp_source_names_hash_canonical_paths_and_real_contents() {
+    let root = std::env::temp_dir().join(format!(
+        "emaxx-native-comp-names-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).expect("create native-comp name fixture");
+    let source = root.join("sample.el");
+    let compressed = root.join("sample.el.gz");
+    let missing = root.join("missing.el");
+    let base = root.join("eln-cache");
+    let contents = b"(message \"native source\")\n";
+    fs::write(&source, contents).expect("write native-comp source fixture");
+    let mut encoder = flate2::write::GzEncoder::new(
+        fs::File::create(&compressed).expect("create compressed native-comp source"),
+        flate2::Compression::default(),
+    );
+    encoder
+        .write_all(contents)
+        .expect("compress native-comp source");
+    encoder.finish().expect("finish compressed source");
+
+    let relative_name = |path: &Path| {
+        let canonical = fs::canonicalize(path).expect("canonicalize native-comp source");
+        let canonical = canonical.display().to_string();
+        let hash_path = canonical.strip_suffix(".gz").unwrap_or(&canonical);
+        let path_hash = format!("{:x}", md5::compute(hash_path.as_bytes()));
+        let content_hash = format!("{:x}", md5::compute(contents));
+        format!("sample-{}-{}.eln", &path_hash[..8], &content_hash[..8])
+    };
+    let source_relative = relative_name(&source);
+    let compressed_relative = relative_name(&compressed);
+    let absolute = base.join("test-abi").join(&source_relative);
+    let program = format!(
+        r#"
+        (let ((comp-native-version-dir "test-abi"))
+          (list
+           (comp-el-to-eln-rel-filename {source:?})
+           (comp-el-to-eln-rel-filename {compressed:?})
+           (comp-el-to-eln-filename {source:?} {base:?})
+           (condition-case error-data
+               (comp-el-to-eln-rel-filename 42)
+             (error error-data))
+           (condition-case error-data
+               (comp-el-to-eln-rel-filename {missing:?})
+             (error error-data))))"#,
+        source = source.display().to_string(),
+        compressed = compressed.display().to_string(),
+        base = base.display().to_string(),
+        missing = missing.display().to_string(),
+    );
+    let expected = format!(
+        "({source_relative:?} {compressed_relative:?} {absolute:?} \
+         (wrong-type-argument stringp 42) (file-missing {missing:?}))",
+        absolute = absolute.display().to_string(),
+        missing = missing.display().to_string(),
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), &expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&program)
+        .read()
+        .expect("native-comp filename contract should parse")
+        .expect("native-comp filename contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("native-comp filename contract should evaluate");
+    let expected_value = Reader::new(&expected)
+        .read()
+        .expect("native-comp expected filenames should parse")
+        .expect("native-comp expected filenames should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected_value),
+        "native-comp filename result differs from GNU:\nactual: {actual:?}\nexpected: {expected_value:?}"
+    );
+
+    fs::remove_dir_all(root).expect("remove native-comp name fixture");
+}
+
+#[test]
+fn native_comp_mutating_entry_points_report_the_unavailable_backend_honestly() {
+    let missing = "/definitely/missing/emaxx-native.eln";
+    let upstream_program = format!(
+        r#"
+        (list
+         (comp--release-ctxt)
+         (condition-case error-data
+             (comp--compile-ctxt-to-file0 42)
+           (error error-data))
+         (condition-case error-data
+             (native-elisp-load 42)
+           (error error-data))
+         (condition-case error-data
+             (native-elisp-load {missing:?})
+           (error error-data)))"#
+    );
+    let upstream_expected = format!(
+        "(t (wrong-type-argument stringp 42) \
+         (wrong-type-argument stringp 42) \
+         (native-lisp-load-failed \"file does not exists\" {missing:?}))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {upstream_program})"), &upstream_expected);
+
+    let source = fs::canonicalize("src/lisp/simple_compat.el")
+        .expect("canonicalize existing non-ELN fixture")
+        .display()
+        .to_string();
+    let program = format!(
+        r#"
+        (list
+         (native-comp-available-p)
+         (comp--release-ctxt)
+         (condition-case error-data (comp--init-ctxt) (error error-data))
+         (condition-case error-data
+             (comp--compile-ctxt-to-file0 "output.eln")
+           (error error-data))
+         (condition-case error-data
+             (comp--install-trampoline 'car (symbol-function 'cdr))
+           (error error-data))
+         (condition-case error-data
+             (comp--register-lambda nil nil nil nil nil nil nil)
+           (error error-data))
+         (condition-case error-data
+             (comp--register-subr nil nil nil nil nil nil nil)
+           (error error-data))
+         (condition-case error-data
+             (comp--late-register-subr nil nil nil nil nil nil nil)
+           (error error-data))
+         (condition-case error-data
+             (native-elisp-load {source:?})
+           (error error-data)))"#
+    );
+    let unavailable = "(error \"Native compiler backend is unavailable\")";
+    let expected = format!(
+        "(nil t {unavailable} {unavailable} {unavailable} {unavailable} \
+         {unavailable} {unavailable} \
+         (native-lisp-load-failed {source:?} \
+          \"Native compiler backend is unavailable\"))"
+    );
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&program)
+        .read()
+        .expect("native-comp backend boundary should parse")
+        .expect("native-comp backend boundary should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("native-comp backend boundary should evaluate");
+    let expected = Reader::new(&expected)
+        .read()
+        .expect("native-comp backend expected result should parse")
+        .expect("native-comp backend expected result should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "native-comp backend boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
 fn portable_dump_pure_introspection_observes_real_runtime_state() {
     let sort_program = r#"
         (list
@@ -445,12 +607,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_393, 4_948_632_708_221_859_943),
+        (1_402, 18_222_472_919_885_261_439),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (27, 3_849_663_693_217_878_483),
+        (18, 14_706_921_403_225_780_709),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {

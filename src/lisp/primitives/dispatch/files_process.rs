@@ -218,7 +218,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "dired-buffer-stale-p"
             | "shell-quote-argument"
             | "locate-user-emacs-file"
-            | "comp-el-to-eln-filename"
             | "ert-resource-directory"
             | "ert-resource-file"
             | "ert-gcc-is-clang-p"
@@ -1709,27 +1708,6 @@ pub(super) fn call(
                 }
             }
             Ok(Value::String(resolved))
-        }
-        "comp-el-to-eln-filename" => {
-            need_arg_range(name, args, 1, 2)?;
-            let filename = string_text(&args[0])?;
-            let basename = file_name_sans_extension(&file_name_nondirectory(&filename));
-            let base_directory = match args.get(1).filter(|value| value.is_truthy()) {
-                Some(value) => string_text(value)?,
-                None => {
-                    let temporary_directory = interp
-                        .lookup_var("temporary-file-directory", env)
-                        .and_then(|value| string_like(&value).map(|value| value.text))
-                        .unwrap_or_else(|| std::env::temp_dir().display().to_string());
-                    expand_file_name_runtime(interp, env, "eln-cache", Some(&temporary_directory))?
-                }
-            };
-            Ok(Value::String(expand_file_name_runtime(
-                interp,
-                env,
-                &format!("{basename}.eln"),
-                Some(&base_directory),
-            )?))
         }
         "ert-resource-directory" => {
             need_args(name, args, 0)?;

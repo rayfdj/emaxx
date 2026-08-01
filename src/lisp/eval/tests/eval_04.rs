@@ -344,8 +344,10 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
     let newer = root.join("newer");
     let alias = root.join("newer-alias");
     let missing = root.join("missing");
+    let source = root.join("source.el");
     fs::write(&older, "older").expect("write older file");
     fs::write(&newer, "newer").expect("write newer file");
+    fs::write(&source, "source contents\n").expect("write native source file");
     fs::File::open(&older)
         .expect("open older file")
         .set_times(
@@ -371,13 +373,25 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
              (set-file-acl {newer:?} nil)
              (file-selinux-context {newer:?})
              (set-file-selinux-context {newer:?} '(nil nil nil nil))
-             (comp-el-to-eln-filename \"source.el\" {root:?})))",
+             (comp-el-to-eln-filename {source:?} {root:?})))",
         newer = newer.display().to_string(),
         older = older.display().to_string(),
         alias = alias.display().to_string(),
         missing = missing.display().to_string(),
+        source = source.display().to_string(),
         root = root.display().to_string(),
     ));
+    let canonical_source = fs::canonicalize(&source).expect("canonicalize native source");
+    let source_path_hash = format!(
+        "{:x}",
+        md5::compute(canonical_source.display().to_string().as_bytes())
+    );
+    let source_content_hash = format!("{:x}", md5::compute(b"source contents\n"));
+    let eln_name = format!(
+        "source-{}-{}.eln",
+        &source_path_hash[..8],
+        &source_content_hash[..8]
+    );
     assert_eq!(
         result,
         Value::list([
@@ -389,7 +403,7 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
             Value::Nil,
             Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil]),
             Value::Nil,
-            Value::String(root.join("source.eln").display().to_string()),
+            Value::String(root.join(eln_name).display().to_string()),
         ])
     );
     fs::write(&alias, "updated through hard link").expect("write hard-link alias");
