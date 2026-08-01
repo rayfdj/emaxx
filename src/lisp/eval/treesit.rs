@@ -571,6 +571,37 @@ impl Interpreter {
         })
     }
 
+    pub(crate) fn treesit_node_relative_byte(
+        &self,
+        node: &Value,
+        position: i64,
+    ) -> Result<usize, LispError> {
+        self.with_treesit_node(node, |_, parser| {
+            let buffer = self
+                .get_buffer_by_id(parser.buffer_id)
+                .expect("node buffer liveness was checked");
+            let Ok(position) = usize::try_from(position) else {
+                return Err(treesit_signal(
+                    "args-out-of-range",
+                    [Value::Integer(position)],
+                ));
+            };
+            if !(buffer.point_min()..=buffer.point_max()).contains(&position) {
+                return Err(treesit_signal(
+                    "args-out-of-range",
+                    [Value::Integer(position as i64)],
+                ));
+            }
+            let visible_start = buffer
+                .position_bytes(buffer.point_min())
+                .expect("point-min is a valid buffer position");
+            Ok(buffer
+                .position_bytes(position)
+                .expect("validated buffer position")
+                - visible_start)
+        })?
+    }
+
     pub(crate) fn set_treesit_included_ranges(
         &mut self,
         parser: &Value,
