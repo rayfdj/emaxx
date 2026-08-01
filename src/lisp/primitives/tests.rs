@@ -607,12 +607,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_402, 18_222_472_919_885_261_439),
+        (1_403, 16_366_176_615_574_778_632),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (18, 14_706_921_403_225_780_709),
+        (17, 3_193_031_023_882_488_446),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -5830,6 +5830,55 @@ fn native_gnutls_catalogs_and_error_diagnostics_use_the_host_library() {
     assert!(
         values_equal(&interp, &actual, &expected),
         "host GnuTLS catalog/error result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_gnutls_formats_x509_certificates_with_the_host_library() {
+    let certificate = fs::read_to_string(
+        upstream_emacs_repo().join("test/lisp/net/network-stream-resources/cert.pem"),
+    )
+    .expect("read upstream X.509 certificate fixture");
+    let program = format!(
+        r#"
+        (let ((formatted (gnutls-format-certificate {certificate:?})))
+          (list
+           (length formatted)
+           (secure-hash 'sha256 formatted)
+           (string-prefix-p
+            "X.509 Certificate Information:\n\tVersion: 3\n"
+            formatted)
+           (mapcar
+            (lambda (cert)
+              (condition-case error-data
+                  (gnutls-format-certificate cert)
+                (error error-data)))
+            '(42 "" "not a certificate"))))"#
+    );
+    let expected = concat!(
+        "(2863 \"2354c81d5fca4d5d2259514652d1254626f8722b6f682178cc9fce21b094fb26\" t ",
+        "((wrong-type-argument stringp 42) ",
+        "(error \"gnutls-format-certificate error: Base64 unexpected header error.\") ",
+        "(error \"gnutls-format-certificate error: Base64 unexpected header error.\")))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&program)
+        .read()
+        .expect("GnuTLS certificate-format contract should parse")
+        .expect("GnuTLS certificate-format contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("host GnuTLS certificate-format contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("GnuTLS certificate expected result should parse")
+        .expect("GnuTLS certificate expected result should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "host GnuTLS certificate result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 
