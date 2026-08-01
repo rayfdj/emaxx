@@ -74,6 +74,42 @@ fn system_group_names() -> Vec<String> {
     Vec::new()
 }
 
+fn removing_old_name_error(path: &str, error: &std::io::Error) -> LispError {
+    let condition = if error.kind() == ErrorKind::NotFound {
+        "file-missing"
+    } else {
+        "file-error"
+    };
+    let rendered = error.to_string();
+    let detail = rendered
+        .split_once(" (os error")
+        .map_or(rendered.as_str(), |(detail, _)| detail);
+    LispError::SignalValue(Value::list([
+        Value::Symbol(condition.into()),
+        Value::String("Removing old name".into()),
+        Value::String(detail.into()),
+        Value::String(path.into()),
+    ]))
+}
+
+fn move_to_system_trash(path: &str) -> Result<(), trash::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+
+        let mut context = trash::TrashContext::new();
+        // NSFileManager is the native, non-interactive backend.  The crate's
+        // Finder default shells out through AppleScript and can prompt for
+        // automation permission, which is wrong for a Lisp primitive.
+        context.set_delete_method(DeleteMethod::NsFileManager);
+        context.delete(path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        trash::delete(path)
+    }
+}
+
 fn remote_identification_prefix(remote: &RemoteFileNameParts) -> String {
     // Tramp canonicalizes the empty host in a mock connection to the local
     // system name when asked for the complete remote identification.  Keep
@@ -233,6 +269,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "add-name-to-file-internal"
             | "copy-file"
             | "rename-file"
+            | "system-move-file-to-trash"
             | "delete-file-internal"
             | "delete-directory"
             | "delete-directory-internal"
@@ -2220,6 +2257,24 @@ pub(super) fn call(
             interp.invalidate_file_notify_watches_for_path(&source);
             dispatch_file_notification(interp, env, &source, "deleted")?;
             dispatch_file_notification(interp, env, &target, "created")?;
+            Ok(Value::Nil)
+        }
+        "system-move-file-to-trash" => {
+            need_args(name, args, 1)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            validate_file_name(&path)?;
+            if let Err(error) = fs::symlink_metadata(&path) {
+                return Err(removing_old_name_error(&path, &error));
+            }
+            move_to_system_trash(&path).map_err(|error| {
+                LispError::SignalValue(file_error_with_detail_value(
+                    "Removing old name",
+                    &error.to_string(),
+                    &path,
+                ))
+            })?;
+            interp.invalidate_file_notify_watches_for_path(&path);
+            dispatch_file_notification(interp, env, &path, "deleted")?;
             Ok(Value::Nil)
         }
         "delete-file-internal" => {

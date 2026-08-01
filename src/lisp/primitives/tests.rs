@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_363, 787_443_652_193_165_785),
+        (1_364, 4_594_607_034_609_466_038),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (57, 9_533_698_609_109_745_145),
+        (56, 3_864_648_990_304_937_516),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -3158,6 +3158,39 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
     assert_eq!(error.condition_type(), "file-missing");
     assert_eq!(interp.buffer.file.as_deref(), Some(path.as_str()));
     assert!(!interp.buffer.is_modified());
+}
+
+#[test]
+fn system_move_file_to_trash_preserves_gnu_missing_file_contract() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-missing-trash-input-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let path = path.display().to_string();
+    let error = call(
+        &mut interp,
+        "system-move-file-to-trash",
+        &[Value::String(path.clone())],
+        &mut env,
+    )
+    .expect_err("moving a nonexistent file to trash must signal");
+    let LispError::SignalValue(condition) = error else {
+        panic!("expected a structured file-missing condition");
+    };
+    assert_eq!(
+        condition,
+        Value::list([
+            Value::Symbol("file-missing".into()),
+            Value::String("Removing old name".into()),
+            Value::String("No such file or directory".into()),
+            Value::String(path),
+        ])
+    );
 }
 
 #[cfg(unix)]

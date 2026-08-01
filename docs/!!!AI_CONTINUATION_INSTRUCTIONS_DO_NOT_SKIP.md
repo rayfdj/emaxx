@@ -18,6 +18,37 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE SYSTEM-TRASH CHECKPOINT: the exact generated GNU C
+  inventory is 1,364/1,420 mirrored, with 56 missing.  The newly native
+  `system-move-file-to-trash` expands and validates names through the shared
+  file runtime, preserves GNU's structured `file-missing` contract, updates
+  file-watch state, and delegates real desktop recycle-bin behavior to the
+  mature permissively licensed `trash` 5.2.6 crate.  On macOS it deliberately
+  uses the crate's native `NSFileManager` backend rather than its AppleScript
+  Finder default, avoiding automation prompts and subprocess policy inside a
+  Lisp primitive; Windows and freedesktop.org hosts use the crate's established
+  platform backends.  The focused regression exercises the exact GNU
+  missing-file result without littering the host Trash; a direct Emaxx smoke
+  test also moved a unique empty file through the real macOS Trash, verified
+  its destination, restored it, and removed the temporary artifact.  Exact
+  fingerprints are mirrored `(1_364, 4_594_607_034_609_466_038)` and missing
+  `(56, 3_864_648_990_304_937_516)`.  The 56-item remainder is: `alloc.c` 3,
+  GUI frame/tip creation 2, `bytecode.c` 2, `comp.c` 9, `module-load` 1,
+  `font.c` 8, `gnutls.c` 18, display connections 2, `x-select-font` 1,
+  menus/dialogs 3, portable dumper 2, file dialog 1,
+  `re--describe-compiled` 1, `xfaces.c` 2, and drag-and-drop 1.  The complete
+  publication gate is green: rustfmt, strict Clippy, and diff checks; all
+  1,633 library tests (1,629 in the restricted sandbox plus the four exact
+  localhost socket tests with networking allowed); 28 compatibility-harness
+  tests, 1 performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus
+  the zero-test main binary).  SEQUENCING OVERRIDE: finish every non-bytecode
+  primitive first; when only `byte-code`, `internal-stack-stats`,
+  `make-byte-code`, and `make-closure` remain, keep those four explicitly
+  unresolved and switch back to the ordered 7,080-selector frontier.  Return
+  to the bytecode VM cluster after that frontier, or earlier if it becomes the
+  concrete blocker.  This later user instruction supersedes older bullets
+  below that say not to switch before 1,420/1,420.  NEXT: commit and push this
+  theme, then immediately select the next non-bytecode native family.
 - 2026-08-01 TREE-SITTER QUERY/TRAVERSAL CHECKPOINT: the exact generated GNU C
   inventory is 1,363/1,420 mirrored, with 57 missing, and the Tree-sitter
   family is complete.  The final ten primitives are
