@@ -198,6 +198,40 @@ impl Interpreter {
         }
     }
 
+    pub fn set_process_gnutls_boot_parameters(
+        &mut self,
+        record_id: u64,
+        parameters: Value,
+    ) -> bool {
+        let parameters = Self::stored_value(parameters);
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
+        };
+        drop(std::mem::replace(
+            &mut process.gnutls.boot_parameters,
+            parameters,
+        ));
+        true
+    }
+
+    pub fn process_gnutls_initstage(&self, record_id: u64) -> Option<i64> {
+        self.find_process_state(record_id)
+            .map(|process| process.gnutls.initstage)
+    }
+
+    pub fn deinit_process_gnutls(&mut self, record_id: u64) -> Option<bool> {
+        self.find_process_state_mut(record_id).map(|process| {
+            let was_active = process.gnutls.active;
+            if was_active {
+                process.gnutls.active = false;
+                if process.gnutls.initstage >= GNUTLS_STAGE_INIT {
+                    process.gnutls.initstage = GNUTLS_STAGE_INIT - 1;
+                }
+            }
+            was_active
+        })
+    }
+
     pub(super) fn find_process_state_mut(&mut self, record_id: u64) -> Option<&mut ProcessState> {
         self.process_states
             .iter_mut()
@@ -322,6 +356,7 @@ impl Interpreter {
             pending_stderr: Vec::new(),
             output_delivery_count: 0,
             plist: Value::Nil,
+            gnutls: ProcessGnuTlsState::default(),
             contact: Value::T,
         });
         Ok(process)
@@ -397,6 +432,7 @@ impl Interpreter {
             pending_stderr: Vec::new(),
             output_delivery_count: 0,
             plist,
+            gnutls: ProcessGnuTlsState::default(),
             contact,
         });
         Ok(process)
@@ -465,6 +501,7 @@ impl Interpreter {
             pending_stderr: Vec::new(),
             output_delivery_count: 0,
             plist,
+            gnutls: ProcessGnuTlsState::default(),
             contact,
         });
         Ok(process)

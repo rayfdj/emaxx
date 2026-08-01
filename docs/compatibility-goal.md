@@ -29,6 +29,32 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native GnuTLS process-state checkpoint advances the exact GNU
+  C primitive inventory to 1,374/1,420, leaving 46 missing.  Every
+  subprocess, network, pipe, and serial process now owns private GnuTLS boot,
+  stage, and activity state.  Six newly native primitives cover asynchronous
+  boot-parameter storage, initial-stage reads, safe inactive deinitialization,
+  pre-READY peer status, all 16 certificate-warning descriptions, and GNU's
+  broad error predicate.  The future boot parameters remain correctly
+  invisible to `process-plist`, and this pre-session theme does not pretend a
+  TLS transport is active.  A direct sibling-GNU oracle pins state transitions,
+  every warning string, arbitrary error inputs, and validation failures.
+  Exact inventory fingerprints are mirrored
+  `(1_374, 3_007_806_732_422_836_430)` and missing
+  `(46, 4_602_497_257_345_269_984)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,636 library tests (1,632 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 46-item remainder is: `alloc.c` 3, GUI frame/tip creation 2,
+  `bytecode.c` 2, `comp.c` 9, `module-load` 1, `font.c` 8, `gnutls.c` 10,
+  display connections 2, `x-select-font` 1, menus/dialogs 3, portable dumper
+  2, file dialog 1, `re--describe-compiled` 1, and drag-and-drop 1.  Finish
+  every non-bytecode primitive first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, leave
+  those four explicitly tracked and resume the ordered 7,080-selector
+  frontier.  Return to bytecode afterward or sooner only if it blocks that
+  frontier.
 - The 2026-08-01 native GnuTLS digest checkpoint advances the exact GNU C
   primitive inventory to 1,368/1,420, leaving 52 missing.  The new
   `gnutls-digests` surface reproduces GNU 30.2's exact nine-entry descriptor

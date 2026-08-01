@@ -1056,6 +1056,24 @@ impl std::fmt::Debug for RunningProcess {
     }
 }
 
+const GNUTLS_STAGE_INIT: i64 = 4;
+
+struct ProcessGnuTlsState {
+    boot_parameters: Value,
+    initstage: i64,
+    active: bool,
+}
+
+impl Default for ProcessGnuTlsState {
+    fn default() -> Self {
+        Self {
+            boot_parameters: Value::Nil,
+            initstage: 0,
+            active: false,
+        }
+    }
+}
+
 struct ProcessState {
     record_id: u64,
     kind: ProcessKind,
@@ -1115,6 +1133,9 @@ struct ProcessState {
     output_delivery_count: u64,
     /// The process property list (process-put/process-get).
     plist: Value,
+    /// Private GnuTLS setup/session state, separate from the public process
+    /// property list just as it is in GNU's `Lisp_Process`.
+    gnutls: ProcessGnuTlsState,
     /// GNU p->childp: t for a real child process; for a network process
     /// the full keyword contact plist as make-network-process received
     /// it, with :service resolved and :local/:remote address vectors

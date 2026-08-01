@@ -67,7 +67,17 @@ const DIGESTS: &[DigestSpec] = &[
 ];
 
 pub(super) fn handles(name: &str) -> bool {
-    matches!(name, "gnutls-digests" | "gnutls-hash-digest")
+    matches!(
+        name,
+        "gnutls-asynchronous-parameters"
+            | "gnutls-deinit"
+            | "gnutls-digests"
+            | "gnutls-errorp"
+            | "gnutls-get-initstage"
+            | "gnutls-hash-digest"
+            | "gnutls-peer-status"
+            | "gnutls-peer-status-warning-describe"
+    )
 }
 
 fn descriptor(spec: &DigestSpec) -> Value {
@@ -153,15 +163,79 @@ fn digest_input_bytes(interp: &mut Interpreter, input: &Value) -> Result<Vec<u8>
     )
 }
 
+fn peer_status_warning_description(status: &str) -> Option<&'static str> {
+    Some(match status {
+        ":invalid" => "certificate could not be verified",
+        ":revoked" => "certificate was revoked (CRL)",
+        ":self-signed" => "certificate signer was not found (self-signed)",
+        ":unknown-ca" => {
+            "the certificate was signed by an unknown and therefore untrusted authority"
+        }
+        ":not-ca" => "certificate signer is not a CA",
+        ":insecure" => "certificate was signed with an insecure algorithm",
+        ":not-activated" => "certificate is not yet activated",
+        ":expired" => "certificate has expired",
+        ":no-host-match" => "certificate host does not match hostname",
+        ":signature-failure" => "certificate signature could not be verified",
+        ":revocation-data-superseded" => {
+            "certificate revocation data are old and have been superseded"
+        }
+        ":revocation-data-issued-in-future" => {
+            "certificate revocation data have a future issue date"
+        }
+        ":signer-constraints-failure" => "certificate signer constraints were violated",
+        ":purpose-mismatch" => "certificate does not match the intended purpose",
+        ":missing-ocsp-status" => {
+            "certificate requires the server to send a OCSP certificate status, but no status was received"
+        }
+        ":invalid-ocsp-status" => "the received OCSP certificate status is invalid",
+        _ => return None,
+    })
+}
+
 pub(super) fn call(
     interp: &mut Interpreter,
     name: &str,
     args: &[Value],
 ) -> Result<Value, LispError> {
     match name {
+        "gnutls-asynchronous-parameters" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp.set_process_gnutls_boot_parameters(process_id, args[1].clone());
+            Ok(Value::Nil)
+        }
+        "gnutls-deinit" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(if interp.deinit_process_gnutls(process_id) == Some(true) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "gnutls-digests" => {
             need_args(name, args, 0)?;
             Ok(Value::list(DIGESTS.iter().map(descriptor)))
+        }
+        "gnutls-errorp" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(&args[0], Value::T)
+                    || matches!(&args[0], Value::Symbol(symbol) if symbol == "gnutls-e-again")
+                {
+                    Value::Nil
+                } else {
+                    Value::T
+                },
+            )
+        }
+        "gnutls-get-initstage" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(Value::Integer(
+                interp.process_gnutls_initstage(process_id).unwrap_or(0),
+            ))
         }
         "gnutls-hash-digest" => {
             need_args(name, args, 2)?;
@@ -169,6 +243,22 @@ pub(super) fn call(
             let input = digest_input_bytes(interp, &args[1])?;
             let digest = secure_hash_digest(spec.algorithm, &input)?;
             Ok(bytes_to_shared_unibyte_value(&digest))
+        }
+        "gnutls-peer-status" => {
+            need_args(name, args, 1)?;
+            interp.resolve_process_id(&args[0])?;
+            // Until `gnutls-boot` advances a process to READY, GNU returns nil
+            // without attempting to inspect a certificate or session.
+            Ok(Value::Nil)
+        }
+        "gnutls-peer-status-warning-describe" => {
+            need_args(name, args, 1)?;
+            let Value::Symbol(status) = &args[0] else {
+                return Err(wrong_type_argument("symbolp", args[0].clone()));
+            };
+            Ok(peer_status_warning_description(status)
+                .map(Value::string)
+                .unwrap_or(Value::Nil))
         }
         _ => unreachable!("unhandled GnuTLS builtin {name}"),
     }
