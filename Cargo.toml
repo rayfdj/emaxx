@@ -31,6 +31,11 @@ md5 = "0.8.0"
 sha1 = "0.10.6"
 sha2 = "0.10.8"
 sha3 = "0.10.8"
+# GNU's GnuTLS digest catalog includes both generations of the GOST hash
+# standard.  Use the established RustCrypto implementations on the same
+# digest-trait generation as the existing SHA crates.
+streebog = "=0.10.2"
+gost94 = "=0.10.4"
 getrandom = "0.3"
 libc = "0.2"
 serialport = { version = "4.9.0", default-features = false }
