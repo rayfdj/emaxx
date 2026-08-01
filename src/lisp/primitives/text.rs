@@ -79,6 +79,9 @@ pub(crate) fn secure_hash_digest(algorithm: &str, input: &[u8]) -> Result<Vec<u8
         "sha3-256" => Sha3_256::digest(input).to_vec(),
         "sha3-384" => Sha3_384::digest(input).to_vec(),
         "sha3-512" => Sha3_512::digest(input).to_vec(),
+        "streebog-256" => streebog::Streebog256::digest(input).to_vec(),
+        "streebog-512" => streebog::Streebog512::digest(input).to_vec(),
+        "gost94-cryptopro" => gost94::Gost94CryptoPro::digest(input).to_vec(),
         _ => {
             return Err(LispError::Signal(format!(
                 "Invalid algorithm arg: {algorithm}"

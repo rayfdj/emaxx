@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_366, 18_079_045_798_471_271_648),
+        (1_368, 7_429_719_598_662_435_112),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (54, 5_655_136_854_411_230_528),
+        (52, 11_972_645_001_314_988),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -5328,6 +5328,108 @@ fn native_xfaces_frame_table_and_resource_boundary_match_gnu() {
             Value::symbol("error"),
             Value::string("Window system is not in use or not initialized"),
         ])
+    );
+}
+
+#[test]
+fn native_gnutls_digest_catalog_and_hashing_use_rustcrypto() {
+    let program = r#"
+        (let ((names '(SHA1 SHA224 SHA256 SHA384 SHA512 MD5
+                       STREEBOG-256 STREEBOG-512 GOSTR341194)))
+          (list
+           (gnutls-digests)
+           (mapcar
+            (lambda (name)
+              (let ((value (gnutls-hash-digest name "abc")))
+                (list name
+                      (length value)
+                      (string-bytes value)
+                      (multibyte-string-p value)
+                      (secure-hash 'sha256 value))))
+            names)
+           (let ((descriptor (cdr (assq 'SHA256 (gnutls-digests)))))
+             (list
+              (equal (gnutls-hash-digest 'SHA256 "abc")
+                     (gnutls-hash-digest "SHA256" "abc"))
+              (equal (gnutls-hash-digest 'SHA256 "abc")
+                     (gnutls-hash-digest descriptor "abc"))
+              (equal (gnutls-hash-digest 'SHA256 "abc")
+                     (gnutls-hash-digest 6 "abc"))))
+           (mapcar
+            (lambda (method)
+              (condition-case error-data
+                  (gnutls-hash-digest method "abc")
+                (error error-data)))
+            '(BOGUS nil 999))
+           (mapcar
+            (lambda (input)
+              (secure-hash
+               'sha256
+               (gnutls-hash-digest 'SHA256 input)))
+            (list (list "abcdef" 1 4)
+                  (list "abcdef" nil 3)
+                  (list "abcdef" 3 nil)
+                  (list "abcdef" nil nil)))
+           (condition-case error-data
+               (gnutls-hash-digest 'SHA256 42)
+             (error error-data))))"#;
+    let expected = concat!(
+        "(((STREEBOG-512 :digest-algorithm-id 17 :type gnutls-digest-algorithm ",
+        ":digest-algorithm-length 64) (STREEBOG-256 :digest-algorithm-id 16 ",
+        ":type gnutls-digest-algorithm :digest-algorithm-length 32) ",
+        "(GOSTR341194 :digest-algorithm-id 15 :type gnutls-digest-algorithm ",
+        ":digest-algorithm-length 32) (MD5 :digest-algorithm-id 2 :type ",
+        "gnutls-digest-algorithm :digest-algorithm-length 16) (SHA224 ",
+        ":digest-algorithm-id 9 :type gnutls-digest-algorithm ",
+        ":digest-algorithm-length 28) (SHA512 :digest-algorithm-id 8 :type ",
+        "gnutls-digest-algorithm :digest-algorithm-length 64) (SHA384 ",
+        ":digest-algorithm-id 7 :type gnutls-digest-algorithm ",
+        ":digest-algorithm-length 48) (SHA256 :digest-algorithm-id 6 :type ",
+        "gnutls-digest-algorithm :digest-algorithm-length 32) (SHA1 ",
+        ":digest-algorithm-id 3 :type gnutls-digest-algorithm ",
+        ":digest-algorithm-length 20)) ((SHA1 20 20 nil ",
+        "\"2c8e065d764096572cda7bd0923710a18e1b2985bf1b918b6fe0c0a21aa7f8b9\") ",
+        "(SHA224 28 28 nil ",
+        "\"a05a17b2ee93714f17d1d1cdcf7366729149ebc8f7198a467d8c6b0338f3ee54\") ",
+        "(SHA256 32 32 nil ",
+        "\"4f8b42c22dd3729b519ba6f68d2da7cc5b2d606d05daed5ad5128cc03e6c6358\") ",
+        "(SHA384 48 48 nil ",
+        "\"c47cc088b7f8657a65899f33c4a4192fc43dd4b10307d5fe45d0410b1cb6ef51\") ",
+        "(SHA512 64 64 nil ",
+        "\"2b8e2baefea41ddf88d7ccd66550cb9493970ea7854d2e74eb33e57cd3c73d9c\") ",
+        "(MD5 16 16 nil ",
+        "\"46e7e78bfc6972ccb3a94d62b387cd63bad9a94946df9c7caba1948664db0c62\") ",
+        "(STREEBOG-256 32 32 nil ",
+        "\"4c515144bceafec3517bcf6d7358ebac7550b2179fab64a3c988a1fb84d8e2f2\") ",
+        "(STREEBOG-512 64 64 nil ",
+        "\"3e54ae0f0792e194465c7a989d81fc121f64753c2e69c1082e538ab6f7355d17\") ",
+        "(GOSTR341194 32 32 nil ",
+        "\"788c46e0988fae25fe03f974ed4d4178ca017caff866599ef7f6b72132867661\")) ",
+        "(t t t) ((error \"GnuTLS digest-method is invalid or not found\" BOGUS) ",
+        "(error \"GnuTLS digest-method is invalid or not found\" nil) ",
+        "(error \"GnuTLS digest-method is invalid or not found\" 999)) ",
+        "(\"d93d8d21f0ecc7d040f6effe20c7ceb6347c814df496b74c028fea6754567d0a\" ",
+        "\"4f8b42c22dd3729b519ba6f68d2da7cc5b2d606d05daed5ad5128cc03e6c6358\" ",
+        "\"9f9d6d0ed77b6f7c21197ac03559feac1518ac1eaae18c47047d6ef950d25183\" ",
+        "\"ce65d4756128f0035cba4d8d7fae4e9fa93cf7fdf12c0f83ee4a0e84064bef8a\") ",
+        "(wrong-type-argument consp 42))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("GnuTLS digest contract should parse")
+        .expect("GnuTLS digest contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("GnuTLS digest contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("GnuTLS digest expected value should parse")
+            .expect("GnuTLS digest expected value should exist")
     );
 }
 

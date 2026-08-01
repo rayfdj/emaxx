@@ -9,6 +9,7 @@ mod faces;
 mod files_process;
 mod fonts;
 mod frames;
+mod gnutls;
 mod lists;
 mod misc;
 mod misc_keymaps;
@@ -46,6 +47,7 @@ enum DispatchModule {
     Frames,
     Terminals,
     Treesit,
+    Gnutls,
     Predicates,
     Lists,
     Composition,
@@ -85,6 +87,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::Terminals
     } else if treesit::handles(name) {
         DispatchModule::Treesit
+    } else if gnutls::handles(name) {
+        DispatchModule::Gnutls
     } else if predicates::handles(name) {
         DispatchModule::Predicates
     } else if lists::handles(name) {
@@ -157,6 +161,7 @@ fn is_builtin_uncached(name: &str) -> bool {
         || frames::handles(name)
         || terminals::handles(name)
         || treesit::handles(name)
+        || gnutls::handles(name)
         || matches!(
             name,
             // Arithmetic
@@ -1940,6 +1945,7 @@ pub fn call(
         DispatchModule::Frames => frames::call(interp, name, args, env),
         DispatchModule::Terminals => terminals::call(interp, name, args, env),
         DispatchModule::Treesit => treesit::call(interp, name, args, env),
+        DispatchModule::Gnutls => gnutls::call(interp, name, args),
         DispatchModule::Predicates => predicates::call(interp, name, args, env),
         DispatchModule::Lists => lists::call(interp, name, args, env),
         DispatchModule::Composition => composition::call(interp, name, args, env),

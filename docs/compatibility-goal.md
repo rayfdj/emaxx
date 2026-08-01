@@ -29,6 +29,34 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native GnuTLS digest checkpoint advances the exact GNU C
+  primitive inventory to 1,368/1,420, leaving 52 missing.  The new
+  `gnutls-digests` surface reproduces GNU 30.2's exact nine-entry descriptor
+  order, IDs, and lengths; `gnutls-hash-digest` accepts symbol, string,
+  descriptor-plist, and numeric selectors, supports GNU's direct and sliced
+  string/buffer inputs, and returns real unibyte digest bytes.  The
+  implementation builds on the established RustCrypto MD5/SHA crates plus
+  pinned digest-0.10-compatible `streebog` 0.10.2 and `gost94` 0.10.4 rather
+  than locally implementing cryptography.  A direct sibling-GNU oracle pins
+  all nine algorithms, selectors, slices, and validation errors.  Although
+  that sibling build does have GnuTLS enabled, this digest-only theme does not
+  claim a TLS session backend; `gnutls-available-p` remains nil until one
+  exists.  Exact inventory fingerprints are mirrored
+  `(1_368, 7_429_719_598_662_435_112)` and missing
+  `(52, 11_972_645_001_314_988)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,635 library tests (1,631 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 52-item remainder is: `alloc.c` 3, GUI frame/tip creation 2,
+  `bytecode.c` 2, `comp.c` 9, `module-load` 1, `font.c` 8, `gnutls.c` 16,
+  display connections 2, `x-select-font` 1, menus/dialogs 3, portable dumper
+  2, file dialog 1, `re--describe-compiled` 1, and drag-and-drop 1.  Finish
+  every non-bytecode primitive first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, leave
+  those four explicitly tracked and resume the ordered 7,080-selector
+  frontier.  Return to bytecode afterward or sooner only if it blocks that
+  frontier.
 - The 2026-08-01 native X-faces checkpoint advances the exact GNU C primitive
   inventory to 1,366/1,420, leaving 54 missing.  The selected frame now owns a
   stable, real `eq` table returned by `frame--face-hash-table`; it contains the

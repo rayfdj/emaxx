@@ -18,6 +18,37 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE GNUTLS DIGEST CHECKPOINT: the exact generated GNU C
+  inventory is 1,368/1,420 mirrored, with 52 missing.  `gnutls-digests`
+  exposes GNU 30.2's exact stable descriptor order, numeric IDs, and lengths
+  for STREEBOG-512, STREEBOG-256, GOSTR341194, MD5, SHA224, SHA512, SHA384,
+  SHA256, and SHA1.  `gnutls-hash-digest` accepts GNU's symbol, string,
+  descriptor-plist, and numeric selectors plus direct or sliced string/buffer
+  input, and returns real unibyte digest bytes with GNU's validation errors.
+  The backend reuses the established RustCrypto MD5/SHA implementations and
+  pins its digest-0.10-compatible `streebog` 0.10.2 and `gost94` 0.10.4
+  crates; it does not implement cryptography locally.  The sibling GNU build
+  does have GnuTLS enabled despite an older note that said otherwise, and a
+  direct oracle pins every descriptor, algorithm result, selector, slice, and
+  error.  This digest surface does not claim a TLS session backend:
+  `gnutls-available-p` remains nil until one exists.  Exact fingerprints are
+  mirrored `(1_368, 7_429_719_598_662_435_112)` and missing
+  `(52, 11_972_645_001_314_988)`.  The 52-item remainder is: `alloc.c` 3,
+  GUI frame/tip creation 2, `bytecode.c` 2, `comp.c` 9, `module-load` 1,
+  `font.c` 8, `gnutls.c` 16, display connections 2, `x-select-font` 1,
+  menus/dialogs 3, portable dumper 2, file dialog 1,
+  `re--describe-compiled` 1, and drag-and-drop 1.  The complete publication
+  gate is green: rustfmt, strict Clippy, and diff checks; all 1,635 library
+  tests (1,631 in the restricted sandbox plus the four exact localhost socket
+  tests with networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).  SEQUENCING OVERRIDE remains authoritative: finish
+  every non-bytecode primitive first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, leave
+  those four explicitly unresolved and switch back to the ordered
+  7,080-selector frontier.  Return to the bytecode VM cluster afterward, or
+  earlier only if it becomes the concrete blocker.  NEXT: commit and push this
+  theme, then immediately select the next non-bytecode native family.
 - 2026-08-01 NATIVE X-FACES CHECKPOINT: the exact generated GNU C inventory is
   1,366/1,420 mirrored, with 54 missing.  `frame--face-hash-table` now returns
   the selected frame's stable, real `eq` hash table of frame-local face
