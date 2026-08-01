@@ -5,8 +5,10 @@ pub(super) fn handles(name: &str) -> bool {
         name,
         "menu-bar-menu-at-x-y"
             | "x-begin-drag"
+            | "x-close-connection"
             | "x-create-frame"
             | "x-file-dialog"
+            | "x-open-connection"
             | "x-popup-dialog"
             | "x-popup-menu"
             | "x-select-font"
@@ -119,6 +121,18 @@ pub(super) fn call(
             require_live_frame(interp, args.get(2))?;
             Err(window_system_frame_required())
         }
+        "x-close-connection" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::Nil | Value::String(_) | Value::StringObject(_) => {}
+                Value::Frame(id) if interp.frame_is_live(*id) => {}
+                Value::Terminal(id) if *id == 0 && interp.terminal_live() => {}
+                terminal => {
+                    return Err(wrong_type_argument("frame-live-p", terminal.clone()));
+                }
+            }
+            Err(window_system_unavailable())
+        }
         "x-create-frame" => {
             need_args(name, args, 1)?;
             args[0]
@@ -137,6 +151,17 @@ pub(super) fn call(
         }
         "x-file-dialog" => {
             need_arg_range(name, args, 2, 5)?;
+            Err(window_system_unavailable())
+        }
+        "x-open-connection" => {
+            need_arg_range(name, args, 1, 3)?;
+            if !args[0].is_string() {
+                return Err(wrong_type_argument("stringp", args[0].clone()));
+            }
+            string_text(&args[0])?;
+            // The Nextstep implementation ignores the optional resource and
+            // must-succeed arguments.  Emaxx deliberately does not launch a
+            // platform GUI application from its terminal runtime.
             Err(window_system_unavailable())
         }
         "x-popup-dialog" => {
