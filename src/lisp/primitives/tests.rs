@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_374, 3_007_806_732_422_836_430),
+        (1_382, 9_974_182_275_177_395_014),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (46, 4_602_497_257_345_269_984),
+        (38, 5_533_127_793_467_509_550),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -1271,6 +1271,157 @@ fn native_font_at_and_info_match_the_headless_gnu_boundary() {
     assert!(
         values_equal(&interp, &actual, &expected),
         "headless font result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn native_font_backend_boundary_and_glyph_validation_match_gnu() {
+    let program = r#"
+        (let* ((spec (font-spec))
+               (gstring
+                (composition-get-gstring 0 1 nil "a")))
+          (list
+           (condition-case error-data
+               (font-shape-gstring nil nil)
+             (error error-data))
+           (condition-case error-data
+               (font-shape-gstring [] nil)
+             (error error-data))
+           (progn
+             (aset gstring 1 7)
+             (eq (font-shape-gstring gstring 'bogus)
+                 gstring))
+           (progn
+             (aset gstring 1 nil)
+             (condition-case error-data
+                 (font-shape-gstring gstring nil)
+               (error error-data)))
+           (condition-case error-data
+               (font-variation-glyphs nil 65)
+             (error error-data))
+           (condition-case error-data
+               (font-variation-glyphs spec 65)
+             (error
+              (list (car error-data)
+                    (cadr error-data)
+                    (eq (caddr error-data) spec))))
+           (condition-case error-data
+               (close-font nil)
+             (error error-data))
+           (condition-case error-data
+               (close-font spec)
+             (error
+              (list (car error-data)
+                    (cadr error-data)
+                    (eq (caddr error-data) spec))))
+           (condition-case error-data
+               (query-font nil)
+             (error error-data))
+           (condition-case error-data
+               (query-font spec)
+             (error
+              (list (car error-data)
+                    (cadr error-data)
+                    (eq (caddr error-data) spec))))
+           (condition-case error-data
+               (font-has-char-p nil 65)
+             (error error-data))
+           (condition-case error-data
+               (font-has-char-p spec "x")
+             (error
+              (list (car error-data)
+                    (cadr error-data)
+                    (eq (caddr error-data) "x"))))
+           (condition-case error-data
+               (font-has-char-p spec 65 t)
+             (error error-data))
+           (condition-case error-data
+               (font-get-glyphs nil 1 1)
+             (error error-data))
+           (condition-case error-data
+               (font-get-glyphs spec 1 1)
+             (error
+              (list (car error-data)
+                    (cadr error-data)
+                    (eq (caddr error-data) spec))))
+           (condition-case error-data
+               (font-face-attributes nil t)
+             (error error-data))
+           (condition-case error-data
+               (open-font nil nil t)
+             (error error-data))))"#;
+    let expected = concat!(
+        "((error \"Invalid glyph-string: \") ",
+        "(error \"Invalid glyph-string: \" []) t ",
+        "(wrong-type-argument font-object utf-8-unix) ",
+        "(wrong-type-argument font-object nil) ",
+        "(wrong-type-argument font-object t) ",
+        "(wrong-type-argument font-object nil) ",
+        "(wrong-type-argument font-object t) ",
+        "(wrong-type-argument font-object nil) ",
+        "(wrong-type-argument font-object t) ",
+        "(wrong-type-argument font nil) ",
+        "(wrong-type-argument characterp nil) ",
+        "(wrong-type-argument framep t) ",
+        "(wrong-type-argument font-object nil) ",
+        "(wrong-type-argument font-object t) ",
+        "(wrong-type-argument frame-live-p t) ",
+        "(wrong-type-argument frame-live-p t))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("font backend contract should parse")
+        .expect("font backend contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("font backend contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("font backend expected value should parse")
+            .expect("font backend expected value should exist")
+    );
+
+    let headless = Reader::new(
+        r#"
+        (let ((spec (font-spec)))
+          (mapcar
+           (lambda (thunk)
+             (condition-case error-data
+                 (funcall thunk)
+               (error
+                (list (car error-data)
+                      (cadr error-data)))))
+           (list
+            (lambda () (font-face-attributes spec))
+            (lambda () (open-font nil))
+            (lambda () (font-has-char-p spec 65)))))"#,
+    )
+    .read()
+    .expect("catchable headless font contract should parse")
+    .expect("catchable headless font contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&headless, &mut env)
+            .expect("headless font failures should be catchable"),
+        Value::list([
+            Value::list([
+                Value::symbol("error"),
+                Value::string("Window system frame should be used"),
+            ]),
+            Value::list([
+                Value::symbol("error"),
+                Value::string("Window system frame should be used"),
+            ]),
+            Value::list([
+                Value::symbol("error"),
+                Value::string("Window system frame should be used"),
+            ]),
+        ])
     );
 }
 

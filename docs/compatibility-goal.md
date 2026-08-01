@@ -29,6 +29,33 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native font-backend checkpoint advances the exact GNU C
+  primitive inventory to 1,382/1,420, leaving 38 missing and no remaining
+  `font.c` entry.  The final eight primitives preserve GNU's exact
+  font/entity/object, character, frame, glyph-string structure, cached-string
+  identity, and validation order.  Because Emaxx has no graphical font
+  entities or objects, real backend access stops at an explicit headless
+  boundary.  GNU 30.2 aborts its batch process when its frame-first calls or a
+  valid font spec reach a tty-only backend; Emaxx uses the established
+  catchable "Window system frame should be used" error.  A direct sibling-GNU
+  oracle pins all reachable pre-backend behavior, including the coding-system
+  glyph-string fast path, while an Emaxx-only assertion pins the safe
+  replacement for GNU's abort.  Exact inventory fingerprints are mirrored
+  `(1_382, 9_974_182_275_177_395_014)` and missing
+  `(38, 5_533_127_793_467_509_550)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,637 library tests (1,633 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 38-item remainder is: `alloc.c` 3, GUI frame/tip creation 2,
+  `bytecode.c` 2, `comp.c` 9, `module-load` 1, `gnutls.c` 10, display
+  connections 2, `x-select-font` 1, menus/dialogs 3, portable dumper 2, file
+  dialog 1, `re--describe-compiled` 1, and drag-and-drop 1.  Finish every
+  non-bytecode primitive first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, leave
+  those four explicitly tracked and resume the ordered 7,080-selector
+  frontier.  Return to bytecode afterward or sooner only if it blocks that
+  frontier.
 - The 2026-08-01 native GnuTLS process-state checkpoint advances the exact GNU
   C primitive inventory to 1,374/1,420, leaving 46 missing.  Every
   subprocess, network, pipe, and serial process now owns private GnuTLS boot,
