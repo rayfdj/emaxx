@@ -1546,6 +1546,7 @@ pub struct Interpreter {
     pub lossage_size: i64,
     interactive_call_depth: usize,
     pub(crate) lisp_face_states: Vec<LispFaceState>,
+    selected_frame_face_hash_table: Option<Value>,
     pub(crate) next_lisp_face_id: i64,
     pub(crate) font_selection_order: [String; 4],
     pub(crate) alternative_font_family_alist: Value,
@@ -2249,6 +2250,7 @@ impl Interpreter {
                 global: Some(empty_lisp_face_vector()),
                 selected_frame: Some(empty_lisp_face_vector()),
             }],
+            selected_frame_face_hash_table: None,
             next_lisp_face_id: 1,
             font_selection_order: [
                 ":width".into(),

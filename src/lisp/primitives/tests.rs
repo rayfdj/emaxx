@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_364, 4_594_607_034_609_466_038),
+        (1_366, 18_079_045_798_471_271_648),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (56, 3_864_648_990_304_937_516),
+        (54, 5_655_136_854_411_230_528),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -5261,6 +5261,73 @@ fn native_xfaces_lisp_face_registry_family_matches_gnu() {
     );
     let _ = std::fs::remove_file(
         serde_json::from_str::<String>(&color_file).expect("deserialize color filename"),
+    );
+}
+
+#[test]
+fn native_xfaces_frame_table_and_resource_boundary_match_gnu() {
+    let program = r#"
+        (let* ((name 'emaxx-frame-table-face)
+               (frame (selected-frame))
+               (table (frame--face-hash-table frame))
+               (_global (internal-make-lisp-face name nil))
+               (before (gethash name table 'missing))
+               (local (internal-make-lisp-face name frame)))
+          (internal-set-lisp-face-attribute
+           name :foreground "orange" frame)
+          (list
+           (hash-table-p table)
+           (eq table (frame--face-hash-table))
+           (hash-table-test table)
+           before
+           (eq (gethash name table) local)
+           (aref (gethash name table) 9)
+           (condition-case error-data
+               (frame--face-hash-table 42)
+             (error (car error-data)))
+           (condition-case error-data
+               (internal-face-x-get-resource nil "Class")
+             (error (car error-data)))
+           (condition-case error-data
+               (internal-face-x-get-resource "resource" nil)
+             (error (car error-data)))))"#;
+    let expected =
+        "(t t eq missing t \"orange\" wrong-type-argument wrong-type-argument wrong-type-argument)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("xfaces frame table contract should parse")
+        .expect("xfaces frame table contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("xfaces frame table contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("xfaces frame table expected value should parse")
+            .expect("xfaces frame table expected value should exist")
+    );
+
+    let resource = Reader::new(
+        r#"
+        (condition-case error-data
+            (internal-face-x-get-resource "foreground" "Foreground")
+          (error (list (car error-data) (cadr error-data))))"#,
+    )
+    .read()
+    .expect("headless face resource contract should parse")
+    .expect("headless face resource contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&resource, &mut env)
+            .expect("headless face resource error should be catchable"),
+        Value::list([
+            Value::symbol("error"),
+            Value::string("Window system is not in use or not initialized"),
+        ])
     );
 }
 

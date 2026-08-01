@@ -10,7 +10,9 @@ const XFACE_BUILTINS: &[&str] = &[
     "face-attribute-relative-p",
     "face-attributes-as-vector",
     "face-font",
+    "frame--face-hash-table",
     "internal-copy-lisp-face",
+    "internal-face-x-get-resource",
     "internal-get-lisp-face-attribute",
     "internal-lisp-face-attribute-values",
     "internal-lisp-face-empty-p",
@@ -426,6 +428,18 @@ pub(super) fn call(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     match name {
+        "frame--face-hash-table" => {
+            need_arg_range(name, args, 0, 1)?;
+            frames::decode_live_frame(interp, args.first(), true)?;
+            Ok(interp.selected_frame_face_hash_table())
+        }
+        "internal-face-x-get-resource" => {
+            need_arg_range(name, args, 2, 3)?;
+            string_text(&args[0])?;
+            string_text(&args[1])?;
+            frames::decode_live_frame(interp, args.get(2), true)?;
+            Err(frames::window_system_unavailable())
+        }
         "clear-face-cache" => {
             need_arg_range(name, args, 0, 1)?;
             Ok(Value::Nil)

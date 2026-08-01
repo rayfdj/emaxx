@@ -124,7 +124,7 @@ fn decode_frame(
     Ok(id)
 }
 
-fn decode_live_frame(
+pub(super) fn decode_live_frame(
     interp: &Interpreter,
     value: Option<&Value>,
     nil_defaults_to_selected: bool,
@@ -283,7 +283,7 @@ fn selected_frame_list(interp: &Interpreter) -> Value {
     )
 }
 
-fn window_system_unavailable() -> LispError {
+pub(super) fn window_system_unavailable() -> LispError {
     LispError::Signal("Window system is not in use or not initialized".into())
 }
 
