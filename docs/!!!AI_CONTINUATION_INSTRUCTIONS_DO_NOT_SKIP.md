@@ -18,6 +18,36 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE GNUTLS X.509 CHECKPOINT: the exact generated GNU C
+  inventory is 1,403/1,420 mirrored, with 17 missing.  The newly native
+  `gnutls-format-certificate` loads the host GnuTLS X.509 API through the
+  established `libloading` boundary, imports PEM certificates, requests
+  GnuTLS's full certificate rendering, and releases both the opaque
+  certificate and host-allocated result through the matching library
+  lifecycle.  It preserves GNU's string validation, first-NUL input behavior,
+  and `gnutls-format-certificate error: ...` failures.  A focused regression
+  uses the sibling GNU certificate fixture and pins the real 2,863-byte output
+  to SHA-256
+  `2354c81d5fca4d5d2259514652d1254626f8722b6f682178cc9fce21b094fb26`,
+  along with the exact prefix and error paths.  Only `gnutls-boot` and
+  `gnutls-bye` remain in `gnutls.c`; `gnutls-available-p` remains nil and no
+  TLS transport is claimed.  Exact fingerprints are mirrored
+  `(1_403, 16_366_176_615_574_778_632)` and missing
+  `(17, 3_193_031_023_882_488_446)`.  The 17-item remainder is: `alloc.c` 3,
+  `bytecode.c` 2, `module-load` 1, `gnutls.c` 2, display connections 2, menus
+  3, portable dumper 2, `re--describe-compiled` 1, and drag-and-drop 1.  Of
+  those, 13 are non-bytecode and four are the explicit VM cluster.  The
+  complete publication gate is green: rustfmt, strict Clippy, and diff checks;
+  all 1,644 library tests (1,640 in the restricted sandbox plus the four exact
+  localhost socket tests with networking allowed); 28 compatibility-harness
+  tests, 1 performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus
+  the zero-test main binary).  SEQUENCING OVERRIDE remains authoritative:
+  finish the 13 non-bytecode primitives; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, keep
+  those four visibly unresolved and switch immediately back to the ordered
+  7,080-selector frontier.  Return to the bytecode VM cluster afterward, or
+  earlier only if it becomes the concrete blocker.  NEXT: commit and push this
+  theme, then immediately select the next non-bytecode native family.
 - 2026-08-01 NATIVE COMPILER-BOUNDARY CHECKPOINT: the exact generated GNU C
   inventory is 1,402/1,420 mirrored, with 18 missing and no `comp.c` entry
   left.  `comp-el-to-eln-rel-filename` now computes GNU's real canonical-path

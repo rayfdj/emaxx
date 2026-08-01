@@ -29,6 +29,32 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native GnuTLS X.509 checkpoint advances the exact GNU C
+  primitive inventory to 1,403/1,420, leaving 17 missing.
+  `gnutls-format-certificate` now uses the host library's real X.509 import
+  and full-print APIs through the established `libloading` boundary, with the
+  matching GnuTLS allocator and certificate lifecycle.  It preserves GNU's
+  type checking, first-NUL behavior, and exact error prefix.  A focused
+  regression pins the sibling GNU certificate fixture's 2,863-byte formatted
+  result to SHA-256
+  `2354c81d5fca4d5d2259514652d1254626f8722b6f682178cc9fce21b094fb26`
+  and covers invalid inputs.  Only `gnutls-boot` and `gnutls-bye` remain in
+  `gnutls.c`; `gnutls-available-p` remains nil and no TLS transport is
+  fabricated.  Exact inventory fingerprints are mirrored
+  `(1_403, 16_366_176_615_574_778_632)` and missing
+  `(17, 3_193_031_023_882_488_446)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,644 library tests (1,640 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 17-item remainder is: `alloc.c` 3, `bytecode.c` 2, `module-load` 1,
+  `gnutls.c` 2, display connections 2, menus 3, portable dumper 2,
+  `re--describe-compiled` 1, and drag-and-drop 1.  Finish the 13 non-bytecode
+  primitives first; when only `byte-code`, `internal-stack-stats`,
+  `make-byte-code`, and `make-closure` remain, keep those four visibly
+  unresolved and switch immediately back to the ordered 7,080-selector
+  frontier.  Return to bytecode afterward or sooner only if it blocks that
+  frontier.
 - The 2026-08-01 native compiler-boundary checkpoint advances the exact GNU C
   primitive inventory to 1,402/1,420, leaving 18 missing and no remaining
   `comp.c` entry.  `comp-el-to-eln-rel-filename` implements GNU's real

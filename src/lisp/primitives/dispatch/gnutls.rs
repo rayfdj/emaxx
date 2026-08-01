@@ -33,6 +33,11 @@ type AeadCrypt = unsafe extern "C" fn(
     *mut usize,
 ) -> c_int;
 type AeadDeinit = unsafe extern "C" fn(*mut c_void);
+type X509CrtInit = unsafe extern "C" fn(*mut *mut c_void) -> c_int;
+type X509CrtDeinit = unsafe extern "C" fn(*mut c_void);
+type X509CrtImport = unsafe extern "C" fn(*mut c_void, *const GnuTlsDatum, c_int) -> c_int;
+type X509CrtPrint = unsafe extern "C" fn(*mut c_void, c_int, *mut GnuTlsDatum) -> c_int;
+type GnuTlsFree = unsafe extern "C" fn(*mut c_void);
 
 #[repr(C)]
 struct GnuTlsDatum {
@@ -70,6 +75,11 @@ struct GnuTlsApi {
     aead_encrypt: Option<AeadCrypt>,
     aead_decrypt: Option<AeadCrypt>,
     aead_deinit: Option<AeadDeinit>,
+    x509_crt_init: X509CrtInit,
+    x509_crt_deinit: X509CrtDeinit,
+    x509_crt_import: X509CrtImport,
+    x509_crt_print: X509CrtPrint,
+    free: GnuTlsFree,
     error_is_fatal: ErrorIsFatal,
     error_string: ErrorString,
 }
@@ -95,6 +105,19 @@ unsafe fn load_symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T, Lisp
 unsafe fn load_optional_symbol<T: Copy>(library: &Library, name: &[u8]) -> Option<T> {
     // SAFETY: The caller supplies the public signature paired with `name`.
     unsafe { library.get::<T>(name) }.ok().map(|symbol| *symbol)
+}
+
+unsafe fn load_data_symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T, LispError> {
+    // SAFETY: GnuTLS exposes allocator hooks as exported function-pointer
+    // variables.  libloading returns the address of that variable.
+    let symbol = unsafe { library.get::<*mut T>(name) }
+        .map_err(|error| gnutls_load_error(error.to_string()))?;
+    let pointer = *symbol;
+    if pointer.is_null() {
+        return Err(gnutls_load_error("exported data symbol is null"));
+    }
+    // SAFETY: The public data symbol stores a value with the requested type.
+    Ok(unsafe { *pointer })
 }
 
 fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
@@ -153,6 +176,11 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
                 aead_encrypt: load_optional_symbol(&library, b"gnutls_aead_cipher_encrypt"),
                 aead_decrypt: load_optional_symbol(&library, b"gnutls_aead_cipher_decrypt"),
                 aead_deinit: load_optional_symbol(&library, b"gnutls_aead_cipher_deinit"),
+                x509_crt_init: load_symbol(&library, b"gnutls_x509_crt_init")?,
+                x509_crt_deinit: load_symbol(&library, b"gnutls_x509_crt_deinit")?,
+                x509_crt_import: load_symbol(&library, b"gnutls_x509_crt_import")?,
+                x509_crt_print: load_symbol(&library, b"gnutls_x509_crt_print")?,
+                free: load_data_symbol(&library, b"gnutls_free")?,
                 error_is_fatal: load_symbol(&library, b"gnutls_error_is_fatal")?,
                 error_string: load_symbol(&library, b"gnutls_strerror")?,
             }
@@ -276,6 +304,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "gnutls-error-fatalp"
             | "gnutls-error-string"
             | "gnutls-errorp"
+            | "gnutls-format-certificate"
             | "gnutls-get-initstage"
             | "gnutls-hash-digest"
             | "gnutls-hash-mac"
@@ -508,6 +537,74 @@ fn clear_crypto_key(value: &Value) {
 fn gnutls_error_description(library: &GnuTlsLibrary, code: c_int) -> String {
     // SAFETY: GnuTLS accepts every C integer at its error-string boundary.
     c_string(unsafe { (library.api.error_string)(code) }).unwrap_or_else(|| "unknown".into())
+}
+
+fn gnutls_format_certificate(cert: &Value) -> Result<Value, LispError> {
+    let cert = string_like(cert)
+        .map(|string| string.text)
+        .ok_or_else(|| wrong_type_argument("stringp", cert.clone()))?;
+    let library = load_gnutls()?;
+    let mut certificate = std::ptr::null_mut();
+    // SAFETY: GnuTLS initializes the opaque certificate handle on success.
+    let result = unsafe { (library.api.x509_crt_init)(&mut certificate) };
+    if result < 0 {
+        return Err(LispError::Signal(format!(
+            "gnutls-format-certificate error: {}",
+            gnutls_error_description(&library, result)
+        )));
+    }
+
+    let cert_bytes = cert.as_bytes();
+    let cert_length = cert_bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(cert_bytes.len());
+    let cert_size = c_uint::try_from(cert_length)
+        .map_err(|_| LispError::Signal("gnutls-format-certificate input is too large".into()))?;
+    let input = GnuTlsDatum {
+        data: cert_bytes.as_ptr().cast_mut(),
+        size: cert_size,
+    };
+    // GNUTLS_X509_FMT_PEM is the public enum value 1.
+    // SAFETY: The datum borrows the live Lisp string for this import call.
+    let result = unsafe { (library.api.x509_crt_import)(certificate, &input, 1) };
+    if result < 0 {
+        // SAFETY: Successful initialization returned a live handle.
+        unsafe { (library.api.x509_crt_deinit)(certificate) };
+        return Err(LispError::Signal(format!(
+            "gnutls-format-certificate error: {}",
+            gnutls_error_description(&library, result)
+        )));
+    }
+
+    let mut output = GnuTlsDatum {
+        data: std::ptr::null_mut(),
+        size: 0,
+    };
+    // GNUTLS_CRT_PRINT_FULL is the public enum value 0.
+    // SAFETY: The imported certificate and output datum are valid.
+    let result = unsafe { (library.api.x509_crt_print)(certificate, 0, &mut output) };
+    if result < 0 {
+        // SAFETY: Successful initialization returned a live handle.
+        unsafe { (library.api.x509_crt_deinit)(certificate) };
+        return Err(LispError::Signal(format!(
+            "gnutls-format-certificate error: {}",
+            gnutls_error_description(&library, result)
+        )));
+    }
+
+    // SAFETY: GnuTLS returned `output.size` initialized bytes and transfers
+    // ownership to the caller through its exported allocator hook.
+    let text = String::from_utf8_lossy(unsafe {
+        std::slice::from_raw_parts(output.data, output.size as usize)
+    })
+    .into_owned();
+    // SAFETY: Both allocations are live and released exactly once.
+    unsafe {
+        (library.api.free)(output.data.cast());
+        (library.api.x509_crt_deinit)(certificate);
+    }
+    Ok(Value::String(text))
 }
 
 fn gnutls_symmetric(
@@ -936,6 +1033,10 @@ pub(super) fn call(
             Ok(peer_status_warning_description(status)
                 .map(Value::string)
                 .unwrap_or(Value::Nil))
+        }
+        "gnutls-format-certificate" => {
+            need_args(name, args, 1)?;
+            gnutls_format_certificate(&args[0])
         }
         "gnutls-symmetric-decrypt" | "gnutls-symmetric-encrypt" => {
             need_arg_range(name, args, 4, 5)?;
