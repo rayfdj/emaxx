@@ -20,6 +20,7 @@ mod predicates;
 mod search_coding;
 mod strings;
 mod terminals;
+mod treesit;
 
 /// Memoized per-name facts.  Every predicate cached here is a pure
 /// function of the name (giant static `matches!` lists), but they are
@@ -44,6 +45,7 @@ enum DispatchModule {
     Fonts,
     Frames,
     Terminals,
+    Treesit,
     Predicates,
     Lists,
     Composition,
@@ -81,6 +83,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::Frames
     } else if terminals::handles(name) {
         DispatchModule::Terminals
+    } else if treesit::handles(name) {
+        DispatchModule::Treesit
     } else if predicates::handles(name) {
         DispatchModule::Predicates
     } else if lists::handles(name) {
@@ -152,6 +156,7 @@ fn is_builtin_uncached(name: &str) -> bool {
         || fonts::handles(name)
         || frames::handles(name)
         || terminals::handles(name)
+        || treesit::handles(name)
         || matches!(
             name,
             // Arithmetic
@@ -446,7 +451,6 @@ fn is_builtin_uncached(name: &str) -> bool {
             | "seq-take"
             | "seq-position"
             | "cl-coerce"
-            | "treesit-language-available-p"
             | "treesit--linecol-cache"
             | "treesit--linecol-cache-set"
             | "treesit--linecol-at"
@@ -670,7 +674,6 @@ fn is_builtin_uncached(name: &str) -> bool {
             | "prog-mode"
             | "emacs-lisp-mode"
             | "special-mode"
-            | "treesit-available-p"
             | "treesit-ready-p"
             | "derived-mode-p"
             | "provided-mode-derived-p"
@@ -1936,6 +1939,7 @@ pub fn call(
         DispatchModule::Fonts => fonts::call(interp, name, args, env),
         DispatchModule::Frames => frames::call(interp, name, args, env),
         DispatchModule::Terminals => terminals::call(interp, name, args, env),
+        DispatchModule::Treesit => treesit::call(interp, name, args),
         DispatchModule::Predicates => predicates::call(interp, name, args, env),
         DispatchModule::Lists => lists::call(interp, name, args, env),
         DispatchModule::Composition => composition::call(interp, name, args, env),
