@@ -18,6 +18,37 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE HEADLESS MENU/DRAG CHECKPOINT: the exact generated GNU C
+  inventory is 1,407/1,420 mirrored, with 13 missing and no `menu.c` or drag
+  entry left.  `x-popup-menu` preserves GNU's obsolete nil-position no-op,
+  parses runtime keymaps, keymap lists, and legacy pane menus, and reproduces
+  the safely probeable list/string/window validation before returning nil on
+  Emaxx's hookless initial frame.  `x-popup-dialog` likewise validates its
+  position and dialog title before the honest no-selection result.
+  `menu-bar-menu-at-x-y` validates frame and fixnum inputs and returns nil
+  because Emaxx's terminal frame retains no native-toolkit or redisplay-time
+  menu geometry.  `x-begin-drag` preserves arity/frame validation and stops at
+  the established catchable "Window system frame should be used" boundary;
+  it does not fabricate a drag target or action.  A direct sibling-GNU oracle
+  pins every safe menu parsing/error path, while Emaxx-only assertions cover
+  the catchable menu-bar/drag replacements for GNU batch paths that can abort
+  or depend on platform selection state.  Exact fingerprints are mirrored
+  `(1_407, 2_037_779_427_493_928_198)` and missing
+  `(13, 2_153_934_993_855_764_762)`.  The 13-item remainder is: `alloc.c` 3,
+  `bytecode.c` 2, `module-load` 1, `gnutls.c` 2, display connections 2,
+  portable dumper 2, and `re--describe-compiled` 1.  Of those, nine are
+  non-bytecode and four are the explicit VM cluster.  The complete
+  publication gate is green: rustfmt, strict Clippy, and diff checks; all
+  1,645 library tests (1,641 in the restricted sandbox plus the four exact
+  localhost socket tests with networking allowed); 28 compatibility-harness
+  tests, 1 performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus
+  the zero-test main binary).  SEQUENCING OVERRIDE remains authoritative:
+  finish the nine non-bytecode primitives; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, keep
+  those four visibly unresolved and switch immediately back to the ordered
+  7,080-selector frontier.  Return to the bytecode VM cluster afterward, or
+  earlier only if it becomes the concrete blocker.  NEXT: commit and push this
+  theme, then immediately select the next non-bytecode native family.
 - 2026-08-01 NATIVE GNUTLS X.509 CHECKPOINT: the exact generated GNU C
   inventory is 1,403/1,420 mirrored, with 17 missing.  The newly native
   `gnutls-format-certificate` loads the host GnuTLS X.509 API through the

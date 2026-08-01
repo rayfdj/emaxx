@@ -29,6 +29,32 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native headless menu/drag checkpoint advances the exact GNU
+  C primitive inventory to 1,407/1,420, leaving 13 missing and no `menu.c` or
+  drag entry.  `x-popup-menu` now preserves the nil-position no-op and parses
+  runtime keymaps, keymap lists, and legacy menus with GNU's safely probeable
+  validation order; `x-popup-dialog` validates its position and title.  Both
+  return nil on Emaxx's hookless initial frame rather than inventing a
+  selection.  `menu-bar-menu-at-x-y` validates frame/fixnum arguments and
+  returns nil because no retained native menu geometry exists.
+  `x-begin-drag` preserves its frame boundary and reports the established
+  catchable headless error rather than pretending a drag occurred.  A direct
+  sibling-GNU oracle pins all safe parsing and error cases, with Emaxx-only
+  assertions for GNU batch paths that can abort or depend on platform
+  selection state.  Exact inventory fingerprints are mirrored
+  `(1_407, 2_037_779_427_493_928_198)` and missing
+  `(13, 2_153_934_993_855_764_762)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,645 library tests (1,641 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 13-item remainder is: `alloc.c` 3, `bytecode.c` 2, `module-load` 1,
+  `gnutls.c` 2, display connections 2, portable dumper 2, and
+  `re--describe-compiled` 1.  Finish the nine non-bytecode primitives first;
+  when only `byte-code`, `internal-stack-stats`, `make-byte-code`, and
+  `make-closure` remain, keep those four visibly unresolved and switch
+  immediately back to the ordered 7,080-selector frontier.  Return to
+  bytecode afterward or sooner only if it blocks that frontier.
 - The 2026-08-01 native GnuTLS X.509 checkpoint advances the exact GNU C
   primitive inventory to 1,403/1,420, leaving 17 missing.
   `gnutls-format-certificate` now uses the host library's real X.509 import
