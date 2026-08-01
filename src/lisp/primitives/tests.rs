@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_328, 18_107_802_684_722_147_967),
+        (1_353, 882_768_658_706_860_184),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (92, 12_239_999_980_721_051_501),
+        (67, 6_580_794_097_960_062_402),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -8692,14 +8692,19 @@ fn native_treesit_runtime_capabilities_and_query_predicates_match_gnu() {
              (error (list (car error-data) (cadr error-data))))
            (condition-case error-data
                (treesit-node-parser nil)
-             (error (list (car error-data) (cadr error-data))))))"#;
+             (error (list (car error-data) (cadr error-data))))
+           (condition-case error-data
+               (treesit-parser-create 'emaxx-definitely-missing)
+             (error (list (car error-data) (cadr error-data))))
+           (treesit-parser-list)))"#;
     let expected = r#"
         (t 15 13 nil nil nil (nil not-found)
          nil nil nil t t nil nil
          t t emaxx-definitely-missing t treesit-load-language-error
          (wrong-type-argument treesit-compiled-query-p)
-         (wrong-type-argument treesit-node-p))"#;
-    let expected_printed = "(t 15 13 nil nil nil (nil not-found) nil nil nil t t nil nil t t emaxx-definitely-missing t treesit-load-language-error (wrong-type-argument treesit-compiled-query-p) (wrong-type-argument treesit-node-p))";
+         (wrong-type-argument treesit-node-p)
+         (treesit-load-language-error not-found) nil)"#;
+    let expected_printed = "(t 15 13 nil nil nil (nil not-found) nil nil nil t t nil nil t t emaxx-definitely-missing t treesit-load-language-error (wrong-type-argument treesit-compiled-query-p) (wrong-type-argument treesit-node-p) (treesit-load-language-error not-found) nil)";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = Interpreter::new();
@@ -8716,6 +8721,109 @@ fn native_treesit_runtime_capabilities_and_query_predicates_match_gnu() {
             .read()
             .expect("Tree-sitter capability result should parse")
             .expect("Tree-sitter capability result should exist")
+    );
+}
+
+#[test]
+fn native_treesit_parser_lifecycle_and_real_json_nodes_use_official_runtime() {
+    let mut interp = Interpreter::new();
+    interp.buffer = crate::buffer::Buffer::from_text("*json*", r#"{"hello": [1, true]}"#);
+    interp.register_treesit_language_for_test("json", tree_sitter_json::LANGUAGE.into());
+
+    let program = r#"
+        (let* ((parser (treesit-parser-create 'json nil nil 'main))
+               (reused (treesit-parser-create 'json nil nil 'main))
+               (second (treesit-parser-create 'json nil t 'main)))
+          (treesit-parser-add-notifier parser 'first)
+          (treesit-parser-add-notifier parser 'second)
+          (treesit-parser-add-notifier parser 'first)
+          (treesit-parser-set-included-ranges parser '((1 . 21)))
+          (let* ((root (treesit-parser-root-node parser))
+                 (object (treesit-node-child root 0 t))
+                 (pair (treesit-node-child object 0 t))
+                 (key (treesit-node-child-by-field-name pair "key"))
+                 (value (treesit-node-child-by-field-name pair "value"))
+                 (same-key (treesit-node-child-by-field-name pair "key")))
+            (let ((before
+                   (list
+               (treesit-language-available-p 'json)
+               (treesit-language-available-p 'json t)
+               (treesit-language-abi-version 'json)
+               (treesit-parser-p parser)
+               (eq parser reused)
+               (not (eq parser second))
+               (eq (treesit-parser-buffer parser) (current-buffer))
+               (treesit-parser-language parser)
+               (treesit-parser-tag parser)
+               (treesit-parser-included-ranges parser)
+               (treesit-parser-notifiers parser)
+               (length (treesit-parser-list nil 'json 'main))
+               (treesit-node-p root)
+               (eq (treesit-node-parser root) parser)
+               (treesit-node-type root)
+               (treesit-node-start root)
+               (treesit-node-end root)
+               (treesit-node-string root)
+               (treesit-node-child-count root t)
+               (treesit-node-type object)
+               (treesit-node-type pair)
+               (treesit-node-field-name-for-child pair 0)
+               (treesit-node-field-name-for-child pair 2)
+               (treesit-node-type key)
+               (treesit-node-start key)
+               (treesit-node-end key)
+               (treesit-node-type value)
+               (treesit-node-eq key same-key)
+               (treesit-node-eq key value)
+               (treesit-node-check key 'named)
+               (treesit-node-check key 'missing)
+               (treesit-node-check key 'has-error)
+               (treesit-node-type (treesit-node-parent key))
+               (treesit-node-type (treesit-node-prev-sibling pair))
+               (treesit-node-type (treesit-node-next-sibling pair))
+               (treesit-node-next-sibling pair t))))
+              (goto-char (point-max))
+              (insert " ")
+              (let ((new-root (treesit-parser-root-node parser)))
+                (treesit-parser-delete second)
+                (append
+                 before
+                 (list
+                  (treesit-node-check root 'outdated)
+                  (treesit-node-type new-root)
+                  (treesit-node-end new-root)
+                  (length (treesit-parser-list nil 'json 'main))
+                  (treesit-parser-p second)
+                  (condition-case error-data
+                      (treesit-parser-language second)
+                    (error (car error-data)))
+                  (condition-case error-data
+                      (treesit-node-type root)
+                    (error (car error-data)))))))))"#;
+    let expected = r#"
+        (t (t) 14 t t t t json main ((1 . 21)) (first second) 2
+         t t "document" 1 21
+         "(document (object (pair key: (string (string_content)) value: (array (number) (true)))))"
+         1 "object" "pair" "key" "value" "string" 2 9 "array"
+         t nil t nil nil "pair" "{" "}" nil t "document" 21 1 t
+         treesit-parser-deleted treesit-node-outdated)"#;
+    let form = Reader::new(program)
+        .read()
+        .expect("Tree-sitter parser lifecycle program should parse")
+        .expect("Tree-sitter parser lifecycle form should exist");
+    let actual = interp
+        .eval(&form, &mut Vec::new())
+        .expect("official Tree-sitter JSON parser lifecycle should evaluate");
+    interp.set_global_binding("emaxx-treesit-result", actual);
+    let comparison = Reader::new(&format!("(equal emaxx-treesit-result '{expected})"))
+        .read()
+        .expect("Tree-sitter parser lifecycle comparison should parse")
+        .expect("Tree-sitter parser lifecycle comparison should exist");
+    assert_eq!(
+        interp
+            .eval(&comparison, &mut Vec::new())
+            .expect("Tree-sitter parser lifecycle result should compare"),
+        Value::T
     );
 }
 

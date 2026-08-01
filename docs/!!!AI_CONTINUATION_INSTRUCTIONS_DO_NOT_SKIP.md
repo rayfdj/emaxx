@@ -18,6 +18,37 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 TREE-SITTER LOADER/PARSER CHECKPOINT: the exact generated GNU C
+  inventory is 1,353/1,420 mirrored, with 67 missing.  Twenty-five newly
+  mirrored primitives implement real grammar discovery, parser lifecycle,
+  parse trees, and safe node state while continuing to use the official
+  `tree-sitter` runtime.  Grammar libraries are searched in GNU's
+  `treesit-extra-load-path`, user Tree-sitter directory, then system order;
+  the narrow established `libloading` crate owns the unavoidable dynamic
+  module boundary and library handles remain alive behind all cloned
+  languages/parsers.  Parser reuse, no-reuse, base-buffer lists, deletion,
+  accessors, included ranges, notifiers, and edit-triggered reparsing have
+  native state.  Node type/start/end/string, child/parent/field/sibling
+  traversal, equality, predicates, and outdated generations are backed by
+  actual official parse trees without forging `'static` node lifetimes.
+  `native_treesit_parser_lifecycle_and_real_json_nodes_use_official_runtime`
+  registers the official `tree-sitter-json` grammar as a test-only fixture and
+  proves the complete real lifecycle; the GNU-comparison test additionally
+  pins unavailable-grammar parser creation.  Only ten Tree-sitter primitives
+  remain: `treesit-induce-sparse-tree`,
+  `treesit-node-descendant-for-range`, `treesit-node-first-child-for-pos`,
+  `treesit-node-match-p`, `treesit-pattern-expand`, `treesit-query-capture`,
+  `treesit-query-expand`, `treesit-search-forward`,
+  `treesit-search-subtree`, and `treesit-subtree-stat`.  The exact inventory
+  fingerprints are mirrored `(1_353, 882_768_658_706_860_184)` and missing
+  `(67, 6_580_794_097_960_062_402)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,631 library tests (1,627 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).  NEXT: commit and push this coherent theme, then
+  implement the final ten Tree-sitter query/search operations before moving
+  to the next native family.
 - 2026-08-01 TREE-SITTER RUNTIME/QUERY CHECKPOINT: the exact generated GNU C
   inventory is 1,328/1,420 mirrored, with 92 missing.  The implementation
   deliberately uses the official MIT-licensed `tree-sitter` Rust crate pinned
