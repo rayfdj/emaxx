@@ -1,12 +1,44 @@
 use super::*;
 use libloading::Library;
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use zeroize::Zeroizing;
 
 type AlgorithmList = unsafe extern "C" fn() -> *const c_int;
 type AlgorithmName = unsafe extern "C" fn(c_int) -> *const c_char;
+type AlgorithmUnsigned = unsafe extern "C" fn(c_int) -> c_uint;
 type AlgorithmSize = unsafe extern "C" fn(c_int) -> usize;
 type ErrorIsFatal = unsafe extern "C" fn(c_int) -> c_int;
 type ErrorString = unsafe extern "C" fn(c_int) -> *const c_char;
+type HmacInit = unsafe extern "C" fn(*mut *mut c_void, c_int, *const c_void, usize) -> c_int;
+type HmacApply = unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> c_int;
+type HmacOutput = unsafe extern "C" fn(*mut c_void, *mut c_void);
+type HmacDeinit = unsafe extern "C" fn(*mut c_void, *mut c_void);
+type CipherInit =
+    unsafe extern "C" fn(*mut *mut c_void, c_int, *const GnuTlsDatum, *const GnuTlsDatum) -> c_int;
+type CipherSetIv = unsafe extern "C" fn(*mut c_void, *mut c_void, usize);
+type CipherCrypt =
+    unsafe extern "C" fn(*mut c_void, *const c_void, usize, *mut c_void, usize) -> c_int;
+type CipherDeinit = unsafe extern "C" fn(*mut c_void);
+type AeadInit = unsafe extern "C" fn(*mut *mut c_void, c_int, *const GnuTlsDatum) -> c_int;
+type AeadCrypt = unsafe extern "C" fn(
+    *mut c_void,
+    *const c_void,
+    usize,
+    *const c_void,
+    usize,
+    usize,
+    *const c_void,
+    usize,
+    *mut c_void,
+    *mut usize,
+) -> c_int;
+type AeadDeinit = unsafe extern "C" fn(*mut c_void);
+
+#[repr(C)]
+struct GnuTlsDatum {
+    data: *mut u8,
+    size: c_uint,
+}
 
 unsafe extern "C" fn no_nonce_size(_: c_int) -> usize {
     0
@@ -16,15 +48,28 @@ unsafe extern "C" fn no_nonce_size(_: c_int) -> usize {
 struct GnuTlsApi {
     cipher_list: AlgorithmList,
     cipher_name: AlgorithmName,
-    cipher_tag_size: AlgorithmSize,
-    cipher_block_size: AlgorithmSize,
+    cipher_tag_size: AlgorithmUnsigned,
+    cipher_block_size: AlgorithmUnsigned,
     cipher_key_size: AlgorithmSize,
-    cipher_iv_size: AlgorithmSize,
+    cipher_iv_size: AlgorithmUnsigned,
     mac_list: AlgorithmList,
     mac_name: AlgorithmName,
-    mac_length: AlgorithmSize,
+    mac_length: AlgorithmUnsigned,
     mac_key_size: AlgorithmSize,
     mac_nonce_size: AlgorithmSize,
+    hmac_init: HmacInit,
+    hmac_apply: HmacApply,
+    hmac_output: HmacOutput,
+    hmac_deinit: HmacDeinit,
+    cipher_init: CipherInit,
+    cipher_set_iv: CipherSetIv,
+    cipher_encrypt: CipherCrypt,
+    cipher_decrypt: CipherCrypt,
+    cipher_deinit: CipherDeinit,
+    aead_init: Option<AeadInit>,
+    aead_encrypt: Option<AeadCrypt>,
+    aead_decrypt: Option<AeadCrypt>,
+    aead_deinit: Option<AeadDeinit>,
     error_is_fatal: ErrorIsFatal,
     error_string: ErrorString,
 }
@@ -45,6 +90,11 @@ unsafe fn load_symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T, Lisp
     unsafe { library.get::<T>(name) }
         .map(|symbol| *symbol)
         .map_err(|error| gnutls_load_error(error.to_string()))
+}
+
+unsafe fn load_optional_symbol<T: Copy>(library: &Library, name: &[u8]) -> Option<T> {
+    // SAFETY: The caller supplies the public signature paired with `name`.
+    unsafe { library.get::<T>(name) }.ok().map(|symbol| *symbol)
 }
 
 fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
@@ -90,6 +140,19 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
                 mac_key_size: load_symbol(&library, b"gnutls_mac_get_key_size")?,
                 mac_nonce_size: load_symbol(&library, b"gnutls_mac_get_nonce_size")
                     .unwrap_or(no_nonce_size),
+                hmac_init: load_symbol(&library, b"gnutls_hmac_init")?,
+                hmac_apply: load_symbol(&library, b"gnutls_hmac")?,
+                hmac_output: load_symbol(&library, b"gnutls_hmac_output")?,
+                hmac_deinit: load_symbol(&library, b"gnutls_hmac_deinit")?,
+                cipher_init: load_symbol(&library, b"gnutls_cipher_init")?,
+                cipher_set_iv: load_symbol(&library, b"gnutls_cipher_set_iv")?,
+                cipher_encrypt: load_symbol(&library, b"gnutls_cipher_encrypt2")?,
+                cipher_decrypt: load_symbol(&library, b"gnutls_cipher_decrypt2")?,
+                cipher_deinit: load_symbol(&library, b"gnutls_cipher_deinit")?,
+                aead_init: load_optional_symbol(&library, b"gnutls_aead_cipher_init"),
+                aead_encrypt: load_optional_symbol(&library, b"gnutls_aead_cipher_encrypt"),
+                aead_decrypt: load_optional_symbol(&library, b"gnutls_aead_cipher_decrypt"),
+                aead_deinit: load_optional_symbol(&library, b"gnutls_aead_cipher_deinit"),
                 error_is_fatal: load_symbol(&library, b"gnutls_error_is_fatal")?,
                 error_string: load_symbol(&library, b"gnutls_strerror")?,
             }
@@ -215,9 +278,12 @@ pub(super) fn handles(name: &str) -> bool {
             | "gnutls-errorp"
             | "gnutls-get-initstage"
             | "gnutls-hash-digest"
+            | "gnutls-hash-mac"
             | "gnutls-macs"
             | "gnutls-peer-status"
             | "gnutls-peer-status-warning-describe"
+            | "gnutls-symmetric-decrypt"
+            | "gnutls-symmetric-encrypt"
     )
 }
 
@@ -347,6 +413,284 @@ fn mac_catalog(library: &GnuTlsLibrary) -> Value {
         .collect::<Vec<_>>();
     entries.reverse();
     Value::list(entries)
+}
+
+fn invalid_mac_method(method: &Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::symbol("error"),
+        Value::string("GnuTLS MAC-method is invalid or not found"),
+        method.clone(),
+    ]))
+}
+
+fn mac_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispError> {
+    let normalized = match method {
+        Value::String(_) | Value::StringObject(_) => Value::symbol(&string_text(method)?),
+        method => method.clone(),
+    };
+    let id = match &normalized {
+        Value::Integer(id) => c_int::try_from(*id).ok(),
+        Value::Symbol(name) => algorithm_ids(library.api.mac_list).into_iter().find(|id| {
+            // SAFETY: Every candidate came from `gnutls_mac_list`.
+            c_string(unsafe { (library.api.mac_name)(*id) }).as_deref() == Some(name)
+        }),
+        Value::Cons(..) => {
+            plist_integer(&normalized, ":mac-algorithm-id").and_then(|id| c_int::try_from(id).ok())
+        }
+        _ => None,
+    }
+    .ok_or_else(|| invalid_mac_method(&normalized))?;
+    // SAFETY: GnuTLS's length query accepts every C enum value and reports
+    // zero for unknown or non-HMAC methods.
+    if unsafe { (library.api.mac_length)(id) } == 0 {
+        return Err(invalid_mac_method(&normalized));
+    }
+    Ok(id)
+}
+
+fn invalid_cipher_method(method: &Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::symbol("error"),
+        Value::string("GnuTLS cipher is invalid or not found"),
+        method.clone(),
+    ]))
+}
+
+fn cipher_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispError> {
+    let normalized = match method {
+        Value::String(_) | Value::StringObject(_) => Value::symbol(&string_text(method)?),
+        method => method.clone(),
+    };
+    let id = match &normalized {
+        Value::Integer(id) => c_int::try_from(*id).ok(),
+        Value::Symbol(name) => algorithm_ids(library.api.cipher_list)
+            .into_iter()
+            .find(|id| {
+                // SAFETY: Every candidate came from `gnutls_cipher_list`.
+                c_string(unsafe { (library.api.cipher_name)(*id) }).as_deref() == Some(name)
+            }),
+        Value::Cons(..) => {
+            plist_integer(&normalized, ":cipher-id").and_then(|id| c_int::try_from(id).ok())
+        }
+        _ => None,
+    }
+    .ok_or_else(|| invalid_cipher_method(&normalized))?;
+    // SAFETY: GnuTLS's size query accepts every C enum value and reports zero
+    // for unknown or non-cipher methods.
+    if unsafe { (library.api.cipher_key_size)(id) } == 0 {
+        return Err(invalid_cipher_method(&normalized));
+    }
+    Ok(id)
+}
+
+fn require_crypto_input(value: &Value) -> Result<(), LispError> {
+    if value.is_string() || matches!(value, Value::Buffer(..)) || value.is_cons() {
+        Ok(())
+    } else {
+        Err(wrong_type_argument("consp", value.clone()))
+    }
+}
+
+fn clear_crypto_key(value: &Value) {
+    let source = if value.is_string() {
+        value.clone()
+    } else {
+        safe_car(value)
+    };
+    if let Value::StringObject(state) = &source {
+        let mut state = state.borrow_mut();
+        state.text = "\0".repeat(state.text.len());
+        state.props.clear();
+        state.multibyte = false;
+    }
+}
+
+fn gnutls_error_description(library: &GnuTlsLibrary, code: c_int) -> String {
+    // SAFETY: GnuTLS accepts every C integer at its error-string boundary.
+    c_string(unsafe { (library.api.error_string)(code) }).unwrap_or_else(|| "unknown".into())
+}
+
+fn gnutls_symmetric(
+    interp: &mut Interpreter,
+    args: &[Value],
+    encrypting: bool,
+) -> Result<Value, LispError> {
+    require_crypto_input(&args[1])?;
+    require_crypto_input(&args[3])?;
+    require_crypto_input(&args[2])?;
+
+    let library = load_gnutls()?;
+    let method = cipher_method_id(&args[0], &library)?;
+    // SAFETY: `method` was validated against the host cipher catalog.
+    let method_name = c_string(unsafe { (library.api.cipher_name)(method) })
+        .unwrap_or_else(|| method.to_string());
+    let operation = if encrypting { "encrypt" } else { "decrypt" };
+
+    let key = Zeroizing::new(digest_input_bytes(interp, &args[1])?);
+    // SAFETY: `method` was validated against the host cipher catalog.
+    let key_size = unsafe { (library.api.cipher_key_size)(method) };
+    if key.len() != key_size {
+        return Err(LispError::Signal(format!(
+            "GnuTLS cipher {method_name}/{operation} key length {} is not equal to the required {key_size}",
+            key.len()
+        )));
+    }
+
+    let iv = digest_input_bytes(interp, &args[2])?;
+    // SAFETY: `method` was validated against the host cipher catalog.
+    let iv_size = unsafe { (library.api.cipher_iv_size)(method) } as usize;
+    if iv.len() != iv_size {
+        return Err(LispError::Signal(format!(
+            "GnuTLS cipher {method_name}/{operation} IV length {} is not equal to the required {iv_size}",
+            iv.len()
+        )));
+    }
+    let actual_iv = bytes_to_shared_unibyte_value(&iv);
+    let input = digest_input_bytes(interp, &args[3])?;
+    // SAFETY: `method` was validated against the host cipher catalog.
+    let tag_size = unsafe { (library.api.cipher_tag_size)(method) } as usize;
+    let key_size = c_uint::try_from(key.len())
+        .map_err(|_| LispError::Signal("GnuTLS cipher key is too large".into()))?;
+    let key_datum = GnuTlsDatum {
+        data: key.as_ptr().cast_mut(),
+        size: key_size,
+    };
+
+    if tag_size > 0 {
+        let (Some(init), Some(crypt), Some(deinit)) = (
+            library.api.aead_init,
+            if encrypting {
+                library.api.aead_encrypt
+            } else {
+                library.api.aead_decrypt
+            },
+            library.api.aead_deinit,
+        ) else {
+            return Err(LispError::Signal(format!(
+                "GnuTLS AEAD cipher {method} is invalid or not found"
+            )));
+        };
+        let mut handle = std::ptr::null_mut();
+        // SAFETY: The key datum borrows the validated key for this call.
+        let result = unsafe { init(&mut handle, method, &key_datum) };
+        if result < 0 {
+            return Err(LispError::Signal(format!(
+                "GnuTLS AEAD cipher {method_name}/{operation} initialization failed: {}",
+                gnutls_error_description(&library, result)
+            )));
+        }
+
+        let auth = if args.get(4).is_none_or(Value::is_nil) {
+            Vec::new()
+        } else {
+            require_crypto_input(&args[4])?;
+            match digest_input_bytes(interp, &args[4]) {
+                Ok(auth) => auth,
+                Err(error) => {
+                    // SAFETY: Successful initialization returned a live handle.
+                    unsafe { deinit(handle) };
+                    return Err(error);
+                }
+            }
+        };
+        let mut output = Zeroizing::new(vec![0; input.len().saturating_add(tag_size)]);
+        let mut output_length = output.len();
+        // SAFETY: All pointers borrow live slices; GnuTLS writes at most the
+        // supplied output capacity and updates `output_length`.
+        let result = unsafe {
+            crypt(
+                handle,
+                iv.as_ptr().cast(),
+                iv.len(),
+                auth.as_ptr().cast(),
+                auth.len(),
+                tag_size,
+                input.as_ptr().cast(),
+                input.len(),
+                output.as_mut_ptr().cast(),
+                &mut output_length,
+            )
+        };
+        // SAFETY: Successful initialization returned a live handle.
+        unsafe { deinit(handle) };
+        if result < 0 {
+            let action = if encrypting {
+                "encryption"
+            } else {
+                "decryption"
+            };
+            return Err(LispError::Signal(format!(
+                "GnuTLS AEAD cipher {method_name} {action} failed: {}",
+                gnutls_error_description(&library, result)
+            )));
+        }
+        output.truncate(output_length);
+        clear_crypto_key(&args[1]);
+        return Ok(Value::list([
+            bytes_to_shared_unibyte_value(&output),
+            actual_iv,
+        ]));
+    }
+
+    // SAFETY: `method` was validated against the host cipher catalog.
+    let block_size = unsafe { (library.api.cipher_block_size)(method) } as usize;
+    if input.len() % block_size != 0 {
+        return Err(LispError::Signal(format!(
+            "GnuTLS cipher {method_name}/{operation} input block length {} is not a multiple of the required {block_size}",
+            input.len()
+        )));
+    }
+
+    let mut handle = std::ptr::null_mut();
+    // SAFETY: The key datum borrows the validated key for initialization; GNU
+    // sets the IV separately, so the optional IV datum is null here too.
+    let result =
+        unsafe { (library.api.cipher_init)(&mut handle, method, &key_datum, std::ptr::null()) };
+    if result < 0 {
+        return Err(LispError::Signal(format!(
+            "GnuTLS cipher {method_name}/{operation} initialization failed: {}",
+            gnutls_error_description(&library, result)
+        )));
+    }
+    // SAFETY: The initialized handle accepts the exact advertised IV length.
+    unsafe {
+        (library.api.cipher_set_iv)(handle, iv.as_ptr().cast_mut().cast(), iv.len());
+    }
+    let mut output = Zeroizing::new(vec![0; input.len()]);
+    let crypt = if encrypting {
+        library.api.cipher_encrypt
+    } else {
+        library.api.cipher_decrypt
+    };
+    // SAFETY: Input and output are equally sized live slices, as required by
+    // GnuTLS's no-padding `encrypt2`/`decrypt2` APIs.
+    let result = unsafe {
+        crypt(
+            handle,
+            input.as_ptr().cast(),
+            input.len(),
+            output.as_mut_ptr().cast(),
+            output.len(),
+        )
+    };
+    clear_crypto_key(&args[1]);
+    // SAFETY: Successful initialization returned a live handle.
+    unsafe { (library.api.cipher_deinit)(handle) };
+    if result < 0 {
+        let action = if encrypting {
+            "encryption"
+        } else {
+            "decryption"
+        };
+        return Err(LispError::Signal(format!(
+            "GnuTLS cipher {method_name} {action} failed: {}",
+            gnutls_error_description(&library, result)
+        )));
+    }
+    Ok(Value::list([
+        bytes_to_shared_unibyte_value(&output),
+        actual_iv,
+    ]))
 }
 
 fn gnutls_error_code(interp: &Interpreter, error: &Value) -> Result<c_int, &'static str> {
@@ -521,6 +865,58 @@ pub(super) fn call(
             let digest = secure_hash_digest(spec.algorithm, &input)?;
             Ok(bytes_to_shared_unibyte_value(&digest))
         }
+        "gnutls-hash-mac" => {
+            need_args(name, args, 3)?;
+            require_crypto_input(&args[2])?;
+            require_crypto_input(&args[1])?;
+            let library = load_gnutls()?;
+            let method = mac_method_id(&args[0], &library)?;
+            let key = Zeroizing::new(digest_input_bytes(interp, &args[1])?);
+            let mut handle = std::ptr::null_mut();
+            // SAFETY: GnuTLS receives borrowed byte slices for the duration of
+            // the call and initializes `handle` on success.
+            let result = unsafe {
+                (library.api.hmac_init)(&mut handle, method, key.as_ptr().cast(), key.len())
+            };
+            // SAFETY: `method` was validated against the host MAC catalog.
+            let method_name = c_string(unsafe { (library.api.mac_name)(method) })
+                .unwrap_or_else(|| method.to_string());
+            if result < 0 {
+                // SAFETY: Every GnuTLS error code is accepted by strerror.
+                let error = c_string(unsafe { (library.api.error_string)(result) })
+                    .unwrap_or_else(|| "unknown".into());
+                return Err(LispError::Signal(format!(
+                    "GnuTLS MAC {method_name} initialization failed: {error}"
+                )));
+            }
+
+            let input = digest_input_bytes(interp, &args[2])?;
+            // SAFETY: Successful initialization returned a live handle, and
+            // the input slice remains borrowed for this call.
+            let result =
+                unsafe { (library.api.hmac_apply)(handle, input.as_ptr().cast(), input.len()) };
+            clear_crypto_key(&args[1]);
+            if result < 0 {
+                // SAFETY: The initialized handle must be released exactly once.
+                unsafe { (library.api.hmac_deinit)(handle, std::ptr::null_mut()) };
+                // SAFETY: Every GnuTLS error code is accepted by strerror.
+                let error = c_string(unsafe { (library.api.error_string)(result) })
+                    .unwrap_or_else(|| "unknown".into());
+                return Err(LispError::Signal(format!(
+                    "GnuTLS MAC {method_name} application failed: {error}"
+                )));
+            }
+
+            // SAFETY: The validated method has a nonzero output size.
+            let mut digest = vec![0; unsafe { (library.api.mac_length)(method) } as usize];
+            // SAFETY: The live handle writes exactly the method's advertised
+            // digest length, then is deinitialized without a second output.
+            unsafe {
+                (library.api.hmac_output)(handle, digest.as_mut_ptr().cast());
+                (library.api.hmac_deinit)(handle, std::ptr::null_mut());
+            }
+            Ok(bytes_to_shared_unibyte_value(&digest))
+        }
         "gnutls-macs" => {
             need_args(name, args, 0)?;
             Ok(mac_catalog(&load_gnutls()?))
@@ -540,6 +936,10 @@ pub(super) fn call(
             Ok(peer_status_warning_description(status)
                 .map(Value::string)
                 .unwrap_or(Value::Nil))
+        }
+        "gnutls-symmetric-decrypt" | "gnutls-symmetric-encrypt" => {
+            need_arg_range(name, args, 4, 5)?;
+            gnutls_symmetric(interp, args, name == "gnutls-symmetric-encrypt")
         }
         _ => unreachable!("unhandled GnuTLS builtin {name}"),
     }
