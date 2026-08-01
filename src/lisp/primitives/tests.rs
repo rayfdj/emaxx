@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_386, 17_559_018_464_045_209_336),
+        (1_390, 654_403_392_030_036_411),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (34, 1_222_455_694_860_570_834),
+        (30, 8_416_811_313_467_602_167),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -5581,6 +5581,93 @@ fn native_gnutls_digest_catalog_and_hashing_use_rustcrypto() {
             .read()
             .expect("GnuTLS digest expected value should parse")
             .expect("GnuTLS digest expected value should exist")
+    );
+}
+
+#[test]
+fn native_gnutls_catalogs_and_error_diagnostics_use_the_host_library() {
+    let program = r#"
+        (progn
+          (put 'custom-fatal 'gnutls-code -10)
+          (put 'custom-again 'gnutls-code -28)
+          (put 'custom-zero 'gnutls-code 0)
+          (put 'custom-float 'gnutls-code 1.5)
+          (let ((ciphers (gnutls-ciphers))
+                (macs (gnutls-macs))
+                (errors (list t 'custom-fatal 'custom-again 'custom-zero
+                              -10 -28 0 'missing 1.5 "x")))
+            (list
+             (list
+              (length ciphers)
+              (car ciphers)
+              (car (last ciphers))
+              (assq 'CHACHA20-POLY1305 ciphers)
+              (assq 'AES-128-GCM ciphers))
+             (list
+              (length macs)
+              (car macs)
+              (car (last macs))
+              (assq 'AES-GMAC-128 macs)
+              (assq 'SHA256 macs))
+             (mapcar
+              (lambda (error)
+                (condition-case error-data
+                    (gnutls-error-fatalp error)
+                  (error error-data)))
+              errors)
+             (mapcar #'gnutls-error-string errors))))"#;
+    let expected = concat!(
+        "((44 (RC2-40 :cipher-id 17 :type gnutls-symmetric-cipher ",
+        ":cipher-aead-capable nil :cipher-tagsize 0 :cipher-blocksize 8 ",
+        ":cipher-keysize 5 :cipher-ivsize 8) (AES-256-CBC :cipher-id 5 ",
+        ":type gnutls-symmetric-cipher :cipher-aead-capable nil ",
+        ":cipher-tagsize 0 :cipher-blocksize 16 :cipher-keysize 32 ",
+        ":cipher-ivsize 16) (CHACHA20-POLY1305 :cipher-id 23 :type ",
+        "gnutls-symmetric-cipher :cipher-aead-capable t :cipher-tagsize 16 ",
+        ":cipher-blocksize 64 :cipher-keysize 32 :cipher-ivsize 12) ",
+        "(AES-128-GCM :cipher-id 10 :type gnutls-symmetric-cipher ",
+        ":cipher-aead-capable t :cipher-tagsize 16 :cipher-blocksize 16 ",
+        ":cipher-keysize 16 :cipher-ivsize 12)) (21 (PBMAC1 ",
+        ":mac-algorithm-id 213 :type gnutls-mac-algorithm ",
+        ":mac-algorithm-length 0 :mac-algorithm-keysize 0 ",
+        ":mac-algorithm-noncesize 0) (SHA1 :mac-algorithm-id 3 :type ",
+        "gnutls-mac-algorithm :mac-algorithm-length 20 ",
+        ":mac-algorithm-keysize 20 :mac-algorithm-noncesize 0) ",
+        "(AES-GMAC-128 :mac-algorithm-id 205 :type gnutls-mac-algorithm ",
+        ":mac-algorithm-length 16 :mac-algorithm-keysize 16 ",
+        ":mac-algorithm-noncesize 12) (SHA256 :mac-algorithm-id 6 :type ",
+        "gnutls-mac-algorithm :mac-algorithm-length 32 ",
+        ":mac-algorithm-keysize 32 :mac-algorithm-noncesize 0)) ",
+        "(nil t nil nil t nil nil ",
+        "(error \"Symbol has no numeric gnutls-code property\") ",
+        "(error \"Not an error symbol or code\") ",
+        "(error \"Not an error symbol or code\")) ",
+        "(\"Not an error\" ",
+        "\"The specified session has been invalidated for some reason.\" ",
+        "\"Resource temporarily unavailable, try again.\" \"Success.\" ",
+        "\"The specified session has been invalidated for some reason.\" ",
+        "\"Resource temporarily unavailable, try again.\" \"Success.\" ",
+        "\"Symbol has no numeric gnutls-code property\" ",
+        "\"Not an error symbol or code\" \"Not an error symbol or code\"))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("GnuTLS catalog and error contract should parse")
+        .expect("GnuTLS catalog and error contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("host GnuTLS catalog and error contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("GnuTLS catalog and error result should parse")
+        .expect("GnuTLS catalog and error result should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "host GnuTLS catalog/error result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 

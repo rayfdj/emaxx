@@ -18,6 +18,36 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 NATIVE GNUTLS HOST-CATALOG CHECKPOINT: the exact generated GNU C
+  inventory is 1,390/1,420 mirrored, with 30 missing.  Four more GnuTLS
+  primitives now use the installed library through the already established
+  `libloading` boundary rather than hard-coded or locally reimplemented
+  tables.  `gnutls-ciphers` and `gnutls-macs` expose the host library's real
+  algorithm order, IDs, sizes, AEAD tags, and nonces in GNU's exact plist
+  shapes; the nonce-size symbol remains optional to match GNU's older-library
+  fallback.  `gnutls-error-fatalp` and `gnutls-error-string` resolve numeric
+  `gnutls-code` symbol properties, preserve GNU's validation/error policy, and
+  delegate classification and text to that same library.  A direct sibling-GNU
+  oracle pins the 44-cipher and 21-MAC catalogs' boundaries and representative
+  descriptors plus exact fatality and diagnostic results.  This catalog/error
+  work does not claim a TLS transport: `gnutls-available-p` remains nil until
+  `gnutls-boot` is real.  Exact fingerprints are mirrored
+  `(1_390, 654_403_392_030_036_411)` and missing
+  `(30, 8_416_811_313_467_602_167)`.  The 30-item remainder is: `alloc.c` 3,
+  `bytecode.c` 2, `comp.c` 9, `module-load` 1, `gnutls.c` 6, display
+  connections 2, menus 3, portable dumper 2, `re--describe-compiled` 1, and
+  drag-and-drop 1.  The complete publication gate is green: rustfmt, strict
+  Clippy, and diff checks; all 1,639 library tests (1,635 in the restricted
+  sandbox plus the four exact localhost socket tests with networking allowed);
+  28 compatibility-harness tests, 1 performance-harness test, 8 CLI tests, and
+  3 ERT-runner tests (plus the zero-test main binary).  SEQUENCING OVERRIDE
+  remains authoritative: finish every non-bytecode primitive first; when only
+  `byte-code`, `internal-stack-stats`, `make-byte-code`, and `make-closure`
+  remain, keep those four visibly unresolved and switch immediately back to
+  the ordered 7,080-selector frontier.  Return to the bytecode VM cluster
+  afterward, or earlier only if it becomes the concrete blocker.  NEXT:
+  commit and push this theme, then immediately select the next non-bytecode
+  native family.
 - 2026-08-01 NATIVE HEADLESS GUI-ACTION CHECKPOINT: the exact generated GNU C
   inventory is 1,386/1,420 mirrored, with 34 missing.  Four safely probeable
   graphical entry points are now native: `x-create-frame`, `x-show-tip`,

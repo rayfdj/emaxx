@@ -29,6 +29,33 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 native GnuTLS host-catalog checkpoint advances the exact GNU
+  C primitive inventory to 1,390/1,420, leaving 30 missing.  Four new
+  primitives use the installed GnuTLS through the existing `libloading`
+  boundary rather than copying its version-specific tables into Rust.
+  `gnutls-ciphers` and `gnutls-macs` expose the real host algorithm order,
+  IDs, sizes, AEAD tags, and nonces in GNU's exact plist shapes, with GNU's
+  older-library zero-nonce fallback.  `gnutls-error-fatalp` and
+  `gnutls-error-string` preserve numeric `gnutls-code` symbol-property
+  resolution and validation while delegating fatality and text to GnuTLS.  A
+  direct sibling-GNU oracle pins catalog boundaries, representative
+  descriptors, and exact diagnostic behavior.  This does not claim a TLS
+  transport; `gnutls-available-p` remains nil until `gnutls-boot` is real.
+  Exact inventory fingerprints are mirrored
+  `(1_390, 654_403_392_030_036_411)` and missing
+  `(30, 8_416_811_313_467_602_167)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,639 library tests (1,635 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  The 30-item remainder is: `alloc.c` 3, `bytecode.c` 2, `comp.c` 9,
+  `module-load` 1, `gnutls.c` 6, display connections 2, menus 3, portable
+  dumper 2, `re--describe-compiled` 1, and drag-and-drop 1.  Finish every
+  non-bytecode primitive first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, keep
+  those four visibly unresolved and switch immediately back to the ordered
+  7,080-selector frontier.  Return to bytecode afterward or sooner only if it
+  blocks that frontier.
 - The 2026-08-01 native headless GUI-action checkpoint advances the exact GNU
   C primitive inventory to 1,386/1,420, leaving 34 missing.  Four safely
   probeable graphical entry points are now native: `x-create-frame`,
