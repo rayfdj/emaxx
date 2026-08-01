@@ -18,6 +18,41 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-01 TREE-SITTER QUERY/TRAVERSAL CHECKPOINT: the exact generated GNU C
+  inventory is 1,363/1,420 mirrored, with 57 missing, and the Tree-sitter
+  family is complete.  The final ten primitives are
+  `treesit-induce-sparse-tree`, `treesit-node-descendant-for-range`,
+  `treesit-node-first-child-for-pos`, `treesit-node-match-p`,
+  `treesit-pattern-expand`, `treesit-query-capture`, `treesit-query-expand`,
+  `treesit-search-forward`, `treesit-search-subtree`, and
+  `treesit-subtree-stat`.  They use official `tree-sitter` 0.26.11 `Query`,
+  `QueryCursor`, byte-range, descendant, and tree APIs.  Compiled queries cache
+  the official query object without extending grammar-library lifetimes
+  unsafely; uncompiled queries remain temporary official queries.  GNU sexp
+  expansion, string escaping, capture predicates, region filtering, named
+  `treesit-thing-settings`, function predicates, both traversal directions,
+  sparse-tree processing, and exact subtree statistics are native.  Official
+  0.26 requires predicate punctuation, so a narrow same-width spelling bridge
+  maps GNU's `#equal`/`#match`/`#pred` forms internally while preserving query
+  error byte offsets; do not replace it or the crate with a local query/parser
+  engine.  `native_treesit_queries_and_traversal_use_official_runtime` uses
+  `tree-sitter-json` to exercise every new primitive, while direct GNU probes
+  against the same temporary grammar module matched captures, predicates,
+  traversal, sparse trees, and stats.  Pattern/query expansion and control
+  character escaping are pinned by a committed GNU oracle assertion.  Exact
+  fingerprints are mirrored `(1_363, 787_443_652_193_165_785)` and missing
+  `(57, 9_533_698_609_109_745_145)`.  The 57-item remainder is:
+  `alloc.c` 3, GUI frame/tip creation 2, `bytecode.c` 2, `comp.c` 9,
+  `module-load` 1, `font.c` 8, `gnutls.c` 18, display connections 2,
+  `x-select-font` 1, menus/dialogs 3, portable dumper 2, file dialog 1,
+  `re--describe-compiled` 1, trash 1, `xfaces.c` 2, and drag-and-drop 1.
+  The complete publication gate is green: rustfmt, strict Clippy, and diff
+  checks; all 1,632 library tests (1,628 in the restricted sandbox plus the
+  four exact localhost socket tests with networking allowed); 28
+  compatibility-harness tests, 1 performance-harness test, 8 CLI tests, and
+  3 ERT-runner tests (plus the zero-test main binary).  NEXT: commit and push
+  this coherent theme, then immediately select and implement the next native
+  family; do not return to the 7,080-selector frontier.
 - 2026-08-01 TREE-SITTER LOADER/PARSER CHECKPOINT: the exact generated GNU C
   inventory is 1,353/1,420 mirrored, with 67 missing.  Twenty-five newly
   mirrored primitives implement real grammar discovery, parser lifecycle,

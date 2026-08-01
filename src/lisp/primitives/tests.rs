@@ -445,12 +445,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_353, 882_768_658_706_860_184),
+        (1_363, 787_443_652_193_165_785),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (67, 6_580_794_097_960_062_402),
+        (57, 9_533_698_609_109_745_145),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -8823,6 +8823,125 @@ fn native_treesit_parser_lifecycle_and_real_json_nodes_use_official_runtime() {
         interp
             .eval(&comparison, &mut Vec::new())
             .expect("Tree-sitter parser lifecycle result should compare"),
+        Value::T
+    );
+}
+
+#[test]
+fn native_treesit_queries_and_traversal_use_official_runtime() {
+    let expansion_program = r#"
+        (list
+         (treesit-pattern-expand :anchor)
+         (treesit-pattern-expand :equal)
+         (treesit-pattern-expand
+          '(type field: (_) @capture :anchor))
+         (treesit-pattern-expand '[(_) "return"])
+         (treesit-query-expand
+          '((type field: (_) @capture :anchor)
+            :? :* :+ "return"))
+         (treesit-pattern-expand "a\nb\rc\td\0e\"f\1g\\h\fi"))"#;
+    let expansion_expected =
+        r##"("." "#equal" "(type field: (_) @capture .)" "[(_) \"return\"]" "(type field: (_) @capture .) ? * + \"return\"" "\"a\\nb\\rc\\td\\0e\\\"f\1g\\\\h\fi\"")"##
+            .replace(r"\1", "\u{1}")
+            .replace(r"\f", "\u{c}");
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {expansion_program})"),
+        &expansion_expected,
+    );
+
+    let mut interp = Interpreter::new();
+    interp.buffer = crate::buffer::Buffer::from_text("*json-query*", r#"{"hello": [1, true]}"#);
+    interp.register_treesit_language_for_test("json", tree_sitter_json::LANGUAGE.into());
+
+    let program = r#"
+        (progn
+          (fset 'emaxx-treesit-last-p
+                (lambda (node)
+                  (not (treesit-node-next-sibling node t))))
+          (let* ((treesit-thing-settings
+                  '((json (scalar (or "number" "true")))))
+                 (parser (treesit-parser-create 'json))
+                 (root (treesit-parser-root-node parser))
+                 (object (treesit-node-child root 0 t))
+                 (pair (treesit-node-child object 0 t))
+                 (array
+                  (treesit-node-child-by-field-name pair "value"))
+                 (number (treesit-node-child array 0 t))
+                 (truth (treesit-node-child array 1 t))
+                 (query
+                  "((string_content) @hello (#match \"^hello$\" @hello))
+((number) @one (#equal \"1\" @one))
+((true) @last (#pred emaxx-treesit-last-p @last))")
+                 (compiled
+                  (treesit-query-compile 'json query t)))
+            (list
+             (treesit-query-language compiled)
+             (mapcar
+              (lambda (capture)
+                (cons (car capture)
+                      (treesit-node-type (cdr capture))))
+              (treesit-query-capture root compiled))
+             (mapcar
+              #'treesit-node-type
+              (treesit-query-capture
+               parser
+               "(number) @number
+(true) @truth"
+               12 13 t))
+             (mapcar
+              #'treesit-node-type
+              (treesit-query-capture
+               'json "(true) @truth" nil nil t))
+             (treesit-node-type
+              (treesit-node-first-child-for-pos object 1))
+             (treesit-node-type
+              (treesit-node-first-child-for-pos object 2 t))
+             (treesit-node-type
+              (treesit-node-descendant-for-range root 12 13 t))
+             (treesit-node-match-p number "number")
+             (treesit-node-match-p number '(not "number"))
+             (treesit-node-match-p truth 'scalar)
+             (treesit-node-match-p truth 'missing t)
+             (treesit-node-type
+              (treesit-search-subtree array "true"))
+             (treesit-node-type
+              (treesit-search-subtree array "number" t))
+             (treesit-node-type
+              (treesit-search-forward number "true"))
+             (treesit-node-type
+              (treesit-search-forward truth "number" t))
+             (treesit-induce-sparse-tree
+              root 'scalar #'treesit-node-type)
+             (treesit-subtree-stat array)
+             (condition-case error-data
+                 (treesit-query-compile 'json "(missing-node)" t)
+               (error (car error-data))))))"#;
+    let expected = r#"
+        (json
+         ((hello . "string_content") (one . "number") (last . "true"))
+         ("number") ("true")
+         "{" "pair" "number"
+         t nil t nil
+         "true" "number" "true" "number"
+         (nil ("number") ("true"))
+         (1 5 6)
+         treesit-query-error)"#;
+    let form = Reader::new(program)
+        .read()
+        .expect("Tree-sitter query and traversal program should parse")
+        .expect("Tree-sitter query and traversal form should exist");
+    let actual = interp
+        .eval(&form, &mut Vec::new())
+        .expect("official Tree-sitter query and traversal runtime should evaluate");
+    interp.set_global_binding("emaxx-treesit-query-result", actual);
+    let comparison = Reader::new(&format!("(equal emaxx-treesit-query-result '{expected})"))
+        .read()
+        .expect("Tree-sitter query result comparison should parse")
+        .expect("Tree-sitter query result comparison should exist");
+    assert_eq!(
+        interp
+            .eval(&comparison, &mut Vec::new())
+            .expect("Tree-sitter query and traversal result should compare"),
         Value::T
     );
 }

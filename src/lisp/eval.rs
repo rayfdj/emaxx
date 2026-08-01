@@ -756,7 +756,8 @@ pub struct RecordState {
 pub(crate) struct TreeSitterQueryState {
     pub(crate) record_id: u64,
     pub(crate) language: Value,
-    pub(crate) _source: Value,
+    pub(crate) source: Value,
+    pub(crate) query: Option<std::rc::Rc<tree_sitter::Query>>,
 }
 
 pub(crate) struct TreeSitterLanguageState {

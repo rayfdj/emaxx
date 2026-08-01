@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-01 Tree-sitter query/traversal checkpoint completes the
+  Tree-sitter native frontier and advances the exact GNU C primitive inventory
+  to 1,363/1,420, leaving 57 missing.  The final ten primitives use the
+  official `tree-sitter` 0.26.11 `Query`, `QueryCursor`, node range, and tree
+  APIs for eager/lazy compiled queries, GNU sexp expansion, captures and
+  `equal`/`match`/`pred` predicates, range filtering, child/descendant lookup,
+  named predicate settings, forward/backward searches, sparse-tree induction,
+  and subtree statistics.  A narrow same-width syntax bridge adapts GNU's
+  unpunctuated predicate spellings to the official runtime while preserving
+  GNU query-error byte offsets; it is not a query or parser implementation.
+  The real `tree-sitter-json` regression exercises every new primitive.
+  Direct GNU probes against the same grammar module match captures, custom
+  predicates, traversal order, sparse trees, and statistics; a committed
+  oracle assertion pins pattern/query expansion and string escaping.  Exact
+  inventory fingerprints are mirrored
+  `(1_363, 787_443_652_193_165_785)` and missing
+  `(57, 9_533_698_609_109_745_145)`.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,632 library tests (1,628 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
+  No Tree-sitter primitive remains; NEXT is the next coherent family in the
+  57-item native remainder.
 - The 2026-08-01 Tree-sitter loader/parser checkpoint advances the native GNU
   C primitive frontier to 1,353/1,420, leaving 67 missing.  Twenty-five
   formerly missing primitives now provide GNU-compatible grammar discovery,

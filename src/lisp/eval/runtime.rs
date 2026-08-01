@@ -2086,7 +2086,8 @@ impl Interpreter {
         self.treesit_queries.push(TreeSitterQueryState {
             record_id,
             language,
-            _source: source,
+            source,
+            query: None,
         });
         Value::Record(record_id)
     }
@@ -2098,6 +2099,21 @@ impl Interpreter {
         self.treesit_queries
             .iter()
             .find(|query| query.record_id == *record_id)
+    }
+
+    pub(crate) fn cache_treesit_query(
+        &mut self,
+        value: &Value,
+        query: std::rc::Rc<tree_sitter::Query>,
+    ) {
+        let Value::Record(record_id) = value else {
+            unreachable!("only compiled Tree-sitter query records are cached");
+        };
+        self.treesit_queries
+            .iter_mut()
+            .find(|state| state.record_id == *record_id)
+            .expect("compiled Tree-sitter query state exists")
+            .query = Some(query);
     }
 
     // GNU eieio objects carry the class OBJECT as their record tag unless

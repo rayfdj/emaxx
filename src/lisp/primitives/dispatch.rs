@@ -1939,7 +1939,7 @@ pub fn call(
         DispatchModule::Fonts => fonts::call(interp, name, args, env),
         DispatchModule::Frames => frames::call(interp, name, args, env),
         DispatchModule::Terminals => terminals::call(interp, name, args, env),
-        DispatchModule::Treesit => treesit::call(interp, name, args),
+        DispatchModule::Treesit => treesit::call(interp, name, args, env),
         DispatchModule::Predicates => predicates::call(interp, name, args, env),
         DispatchModule::Lists => lists::call(interp, name, args, env),
         DispatchModule::Composition => composition::call(interp, name, args, env),
