@@ -470,7 +470,7 @@ fn native_comp_mutating_entry_points_report_the_unavailable_backend_honestly() {
 }
 
 #[test]
-fn portable_dump_pure_introspection_observes_real_runtime_state() {
+fn portable_dump_introspection_and_backend_boundary_are_honest() {
     let sort_program = r#"
         (list
          (dump-emacs-portable--sort-predicate '(first 1) '(second 2))
@@ -511,6 +511,52 @@ fn portable_dump_pure_introspection_observes_real_runtime_state() {
             .expect("a directly initialized Emaxx has valid dump statistics"),
         Value::Nil,
         "Emaxx must not claim it restored from a portable dump"
+    );
+
+    let contract_program = r#"
+        (list
+         (subr-arity (symbol-function 'dump-emacs-portable))
+         (subr-arity
+          (symbol-function 'dump-emacs-portable--sort-predicate-copied))
+         (condition-case error-data
+             (dump-emacs-portable 42)
+           (error error-data)))"#;
+    let contract_expected = "((1 . 2) (2 . 2) (wrong-type-argument stringp 42))";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract_program})"), contract_expected);
+
+    let boundary_program = r#"
+        (list
+         (subr-arity (symbol-function 'dump-emacs-portable))
+         (subr-arity
+          (symbol-function 'dump-emacs-portable--sort-predicate-copied))
+         (condition-case error-data
+             (dump-emacs-portable 42)
+           (error error-data))
+         (condition-case error-data
+             (dump-emacs-portable "must-not-be-created.pdmp" t)
+           (error error-data))
+         (condition-case error-data
+             (dump-emacs-portable--sort-predicate-copied nil nil)
+           (error error-data)))"#;
+    let unavailable = "(error \"Portable dumper backend is unavailable\")";
+    let boundary_expected = format!(
+        "((1 . 2) (2 . 2) (wrong-type-argument stringp 42) \
+         {unavailable} {unavailable})"
+    );
+    let form = Reader::new(boundary_program)
+        .read()
+        .expect("portable-dumper boundary program should parse")
+        .expect("portable-dumper boundary program should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("portable-dumper boundary should be catchable");
+    let expected = Reader::new(&boundary_expected)
+        .read()
+        .expect("portable-dumper boundary expectation should parse")
+        .expect("portable-dumper boundary expectation should contain a form");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "portable-dumper boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 
@@ -607,12 +653,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_409, 16_993_417_039_166_424_446),
+        (1_411, 4_334_947_006_904_824_013),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (11, 886_131_030_095_800_352),
+        (9, 12_180_328_675_483_838_565),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {

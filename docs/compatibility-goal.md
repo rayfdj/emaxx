@@ -29,6 +29,27 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-02 portable-dumper checkpoint advances the exact GNU C primitive
+  inventory to 1,411/1,420, leaving nine missing and no `pdumper.c` entry.
+  `dump-emacs-portable` preserves GNU's arity and filename validation, then
+  reports an explicit catchable unavailable-backend error because Emaxx has no
+  compatible process-image writer/loader.  The copied-object sort predicate
+  reaches the same boundary because GNU orders raw objects from its static C
+  image, an identity Emaxx's Rust values do not have.  Emaxx neither creates a
+  corrupt lookalike dump nor invents pointer ordering.  A direct sibling-GNU
+  oracle pins both public contracts and the safe validation path.  Exact
+  inventory fingerprints are mirrored `(1_411, 4_334_947_006_904_824_013)` and
+  missing `(9, 12_180_328_675_483_838_565)`.  The nine-item remainder is:
+  `memory-use-counts`, `module-load`, `gnutls-boot`, `gnutls-bye`,
+  `re--describe-compiled`, and the four deferred bytecode primitives.  Finish
+  the five non-bytecode primitives first; when only `byte-code`,
+  `internal-stack-stats`, `make-byte-code`, and `make-closure` remain, keep
+  those four visibly unresolved and switch immediately back to the ordered
+  7,080-selector frontier.  The complete publication gate is green: rustfmt,
+  strict Clippy, and diff checks; all 1,646 library tests (1,642 in the
+  restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
 - The 2026-08-02 native display-connection checkpoint advances the exact GNU
   C primitive inventory to 1,409/1,420, leaving 11 missing and no remaining
   display-connection entry.  `x-open-connection` preserves arity and

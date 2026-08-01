@@ -18,6 +18,29 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-02 PORTABLE-DUMPER CHECKPOINT: the exact generated GNU C inventory is
+  1,411/1,420 mirrored, with nine missing and no `pdumper.c` entry left.
+  `dump-emacs-portable` preserves GNU's arity and filename validation before
+  reporting Emaxx's explicit catchable "Portable dumper backend is
+  unavailable" boundary.  GNU's real implementation serializes and relocates
+  the live C heap; Emaxx has no compatible image writer/loader and does not
+  create a corrupt lookalike file.  The copied-object sort predicate reaches
+  the same boundary because it orders raw addresses from GNU's static C image,
+  an identity Rust values do not possess outside a real dump.  A direct
+  sibling-GNU oracle pins both contracts and the safe type-error path.  Exact
+  fingerprints are mirrored `(1_411, 4_334_947_006_904_824_013)` and missing
+  `(9, 12_180_328_675_483_838_565)`.  The nine-item remainder is:
+  `memory-use-counts`, `module-load`, `gnutls-boot`, `gnutls-bye`,
+  `re--describe-compiled`, and the four explicit VM entries.  SEQUENCING
+  OVERRIDE remains authoritative: finish those five non-bytecode primitives;
+  when only `byte-code`, `internal-stack-stats`, `make-byte-code`, and
+  `make-closure` remain, keep them visibly unresolved and switch immediately
+  back to the ordered 7,080-selector frontier.  The complete publication gate
+  is green: rustfmt, strict Clippy, and diff checks; all 1,646 library tests
+  (1,642 in the restricted sandbox plus the four exact localhost socket tests
+  with networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).
 - 2026-08-02 NATIVE DISPLAY-CONNECTION CHECKPOINT: the exact generated GNU C
   inventory is 1,409/1,420 mirrored, with 11 missing and no display-connection
   entry left.  `x-open-connection` preserves exact arity and display-string

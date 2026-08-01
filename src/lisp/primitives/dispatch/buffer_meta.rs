@@ -1,5 +1,7 @@
 use super::*;
 
+const PORTABLE_DUMPER_UNAVAILABLE: &str = "Portable dumper backend is unavailable";
+
 /// Convert a resolved function value into a `help-function-arglist` result: the
 /// parameter list for a lambda, the inner lambda's parameters for a
 /// `(macro . lambda)` cons, and nil otherwise.
@@ -140,7 +142,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "comp-libgccjit-version"
             | "comp-native-compiler-options-effective-p"
             | "comp-native-driver-options-effective-p"
+            | "dump-emacs-portable"
             | "dump-emacs-portable--sort-predicate"
+            | "dump-emacs-portable--sort-predicate-copied"
             | "native-comp-function-p"
             | "pdumper-stats"
             | "subr-native-comp-unit"
@@ -1031,6 +1035,27 @@ pub(super) fn call(
                     Value::Nil
                 },
             )
+        }
+        "dump-emacs-portable" => {
+            need_arg_range(name, args, 1, 2)?;
+            if string_like(&args[0]).is_none() {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("wrong-type-argument"),
+                    Value::symbol("stringp"),
+                    args[0].clone(),
+                ])));
+            }
+            // GNU's implementation serializes the entire live C heap and
+            // later restores it with matching relocations.  Emaxx has no
+            // image writer/loader, so creating a lookalike file would be
+            // corrupt rather than compatible.
+            Err(LispError::Signal(PORTABLE_DUMPER_UNAVAILABLE.into()))
+        }
+        "dump-emacs-portable--sort-predicate-copied" => {
+            need_args(name, args, 2)?;
+            // GNU orders addresses of objects copied from its static C image.
+            // Rust values have no equivalent identity outside a real dump.
+            Err(LispError::Signal(PORTABLE_DUMPER_UNAVAILABLE.into()))
         }
         "pdumper-stats" => {
             need_args(name, args, 0)?;
