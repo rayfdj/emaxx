@@ -610,6 +610,46 @@ fn compiled_regexp_introspection_preserves_the_real_backend_boundary() {
 }
 
 #[test]
+fn memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly() {
+    let contract_program = r#"
+        (let ((counts (memory-use-counts)))
+          (list
+           (subr-arity (symbol-function 'memory-use-counts))
+           (length counts)
+           (mapcar #'integerp counts)))"#;
+    let contract_expected = "((0 . 0) 7 (t t t t t t t))";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract_program})"), contract_expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        r#"
+        (list
+         (subr-arity (symbol-function 'memory-use-counts))
+         (condition-case error-data
+             (memory-use-counts)
+           (error error-data)))"#,
+    )
+    .read()
+    .expect("allocation-counter boundary program should parse")
+    .expect("allocation-counter boundary program should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("allocation-counter boundary should be catchable");
+    let expected = Reader::new(
+        "((0 . 0) \
+         (error \"GNU allocation counters are unavailable in the Rust ownership backend\"))",
+    )
+    .read()
+    .expect("allocation-counter boundary expectation should parse")
+    .expect("allocation-counter boundary expectation should contain a form");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "allocation-counter boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
 fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
     use super::generated_gnu_c_primitives::{
         GNU_C_PRIMITIVE_AVAILABLE_COUNT, GNU_C_PRIMITIVE_SOURCE_COUNT, GNU_C_PRIMITIVES,
@@ -702,12 +742,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_412, 15_109_526_171_507_659_563),
+        (1_413, 9_702_192_709_240_017_211),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (8, 1_306_524_394_756_610_835),
+        (7, 17_013_614_379_476_872_707),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
