@@ -311,6 +311,43 @@ The batch frame always shows a single window."
   (declare (indent 1) (debug t))
   (list 'if condition nil (cons 'progn body)))
 
+;; GNU's dumped image already owns this compile.el macro when bytecomp.el
+;; loads.  Emaxx likewise preloads the `compile' feature, so keep the dumped
+;; definition here instead of leaving an autoload that can never materialize.
+(defmacro define-compilation-mode (mode name doc &rest body)
+  "Define MODE as a child of `compilation-mode'."
+  (declare (indent defun))
+  (let ((stem (replace-regexp-in-string "-mode\\'" "" (symbol-name mode))))
+    `(define-derived-mode ,mode compilation-mode ,name ,doc
+       ,@(mapcar
+          (lambda (variable)
+            (let ((mode-variable
+                   (intern-soft
+                    (replace-regexp-in-string
+                     "^compilation" stem (symbol-name variable)))))
+              (when (and mode-variable
+                         (or (boundp mode-variable)
+                             (and (boundp 'byte-compile-bound-variables)
+                                  (memq mode-variable
+                                        byte-compile-bound-variables))))
+                `(set (make-local-variable ',variable) ,mode-variable))))
+          '(compilation-directory-matcher
+            compilation-error
+            compilation-error-regexp-alist
+            compilation-error-regexp-alist-alist
+            compilation-error-screen-columns
+            compilation-finish-functions
+            compilation-first-column
+            compilation-mode-font-lock-keywords
+            compilation-page-delimiter
+            compilation-parse-errors-filename-function
+            compilation-process-setup-function
+            compilation-scroll-output
+            compilation-search-path
+            compilation-skip-threshold
+            compilation-window-height))
+       ,@body)))
+
 ;; GNU preloads this subr.el macro.  The evaluator also has a native fallback
 ;; for bootstrap use, but macro consumers (notably ERT's `should') must see the
 ;; public macro and recursively expand BODY with the normal macro environment.

@@ -842,11 +842,15 @@ impl Interpreter {
                 // re-expansion (pcase/rx/when-let machinery) dominated
                 // interpreted hot loops.
                 if let Value::Symbol(name) = &items[0] {
-                    if let Some(expanded) = self.cached_macro_expansion(expr) {
+                    let lexical = self.lambda_capture_override().unwrap_or_else(|| {
+                        self.lookup_var("lexical-binding", env)
+                            .is_some_and(|value| value.is_truthy())
+                    });
+                    if let Some(expanded) = self.cached_macro_expansion(expr, lexical) {
                         return self.eval(&expanded, env);
                     }
                     if let Some(expanded) = self.try_macroexpand(name, &items[1..], env)? {
-                        self.cache_macro_expansion(expr, expanded.clone());
+                        self.cache_macro_expansion(expr, lexical, expanded.clone());
                         return self.eval(&expanded, env);
                     }
                 }
@@ -1108,11 +1112,12 @@ impl Interpreter {
                 // that fact as closure metadata instead of an artificial
                 // environment binding, since instrumentation and capture
                 // analysis must see only real Lisp bindings.
-                let lexical_closure = self.closure_env_is_lexical(closure_env);
-                let mask_dynamic_eval =
-                    lexical_closure && self.lambda_capture_override() == Some(false);
-                if mask_dynamic_eval {
-                    self.push_lambda_eval_context(true, false);
+                let closure_eval_context = self.closure_eval_context(closure_env);
+                let lexical_closure = closure_eval_context == Some(true);
+                let call_capture_override = closure_eval_context
+                    .filter(|context| self.lambda_capture_override() != Some(*context));
+                if let Some(capture) = call_capture_override {
+                    self.push_lambda_eval_context(capture, false);
                 }
                 let previous_activation = self.enter_activation();
                 let result = if closure_env.borrow().is_empty() && !lexical_closure {
@@ -1229,7 +1234,7 @@ impl Interpreter {
                     result
                 };
                 self.leave_activation(previous_activation);
-                if mask_dynamic_eval {
+                if call_capture_override.is_some() {
                     self.pop_lambda_capture_override();
                 }
                 self.pop_backtrace_frame();

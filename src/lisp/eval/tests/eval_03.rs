@@ -405,6 +405,27 @@ fn eval_second_argument_controls_lambda_capture() {
 }
 
 #[test]
+fn eval_second_argument_controls_delayed_lambda_macroexpansion() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defmacro sample-variable-kind (var)
+                 (if (macroexp--dynamic-variable-p var) ''dyn ''lex))
+               (let ((form '(lambda (x)
+                              (let ((y 1))
+                                (list (sample-variable-kind x)
+                                      (sample-variable-kind y))))))
+                 (list (funcall (eval form nil) 0)
+                       (funcall (eval form t) 0))))"
+        ),
+        Value::list([
+            Value::list([Value::symbol("dyn"), Value::symbol("dyn")]),
+            Value::list([Value::symbol("lex"), Value::symbol("lex")]),
+        ])
+    );
+}
+
+#[test]
 fn eval_lambda_trims_unused_lexical_context_unless_marker_requests_it() {
     assert_eq!(
         eval_str(
@@ -2204,6 +2225,21 @@ fn cl_defmethod_lowers_specialized_arguments() {
     let items = result.to_vec().unwrap();
     assert_eq!(primitives::string_text(&items[0]).unwrap(), "ok");
     assert_eq!(items[1], Value::Integer(3));
+}
+
+#[test]
+fn cl_defmethod_dispatch_preserves_nested_lexical_callback_capture() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (setq lexical-binding t)
+               (cl-defgeneric sample-map-method (function value))
+               (cl-defmethod sample-map-method (function (value vector))
+                 (mapcar (lambda (element) (funcall function element)) value))
+               (sample-map-method #'1+ [1 2]))",
+        ),
+        Value::list([Value::Integer(2), Value::Integer(3)])
+    );
 }
 
 #[test]

@@ -29,6 +29,34 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-02 macroexp/map checkpoint advances the fresh contiguous
+  compatibility prefix to 2,411/7,080 and finishes all 4 selected outcomes
+  in `macroexp-tests.el` plus all 62 in `map-tests.el`.  Delayed lambdas made
+  by `(eval FORM LEXICAL)' now retain their explicit lexical or dynamic
+  evaluation context, while Rust-generated dispatch closures inherit their
+  caller; the tri-state weak metadata keeps nested generic callbacks lexical
+  without manufacturing environment bindings.  Macro expansion caching is
+  partitioned by effective lexical mode, so evaluating the same source form
+  dynamically and lexically cannot reuse the wrong expansion.  GNU batch
+  `-f`/`--funcall` is ordered with load/eval actions and exposes remaining
+  positional arguments through `command-line-args-left`.  The dumped
+  `define-compilation-mode` macro is present at startup, allowing bytecomp's
+  child process in the macroexp tests to load like GNU's preloaded image.
+  The complete macroexp replay passes in
+  `target/compat/run-1785659249244282000-7265`; the focused map regression
+  passes in `target/compat/run-1785660460930774000-8856`; and the complete
+  grouped map replay passes in
+  `target/compat/run-1785660525493882000-8987`.  NEXT is selector 2,412,
+  `memory-report-sizes`, with 4,669 selectors remaining.  Continue with
+  grouped manifest-file discovery and diagnose only the earliest mismatch;
+  do not repeat the full publication gate until the next meaningful grouped
+  checkpoint.  The native inventory remains honestly parked at 1,416/1,420
+  with only the separately tracked bytecode/VM quartet deferred.  The
+  complete publication gate is green: rustfmt, all-target check, strict
+  Clippy, and diff checks; all 1,655 library tests (1,649 in the restricted
+  sandbox plus the six exact localhost tests with networking allowed); 28
+  compatibility-harness tests, 1 performance-harness test, 9 CLI tests, and
+  3 ERT-runner tests (plus the zero-test main binary).
 - The 2026-08-02 syntax-descriptor checkpoint advances the fresh contiguous
   compatibility prefix to 2,345/7,080 and finishes all 37 selected outcomes
   in `lisp-tests.el`.  GNU's preloaded `syntax-after` and `syntax-class`

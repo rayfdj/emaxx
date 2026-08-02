@@ -16,12 +16,15 @@ pub struct BatchRunOptions {
     pub load_path: Vec<PathBuf>,
     pub load: Vec<String>,
     pub eval: Vec<String>,
+    pub funcall: Vec<String>,
+    pub args_left: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BatchAction {
     Load(String),
     Eval(String),
+    Funcall(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +58,7 @@ pub fn run_batch(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
         .cloned()
         .map(BatchAction::Load)
         .chain(options.eval.iter().cloned().map(BatchAction::Eval))
+        .chain(options.funcall.iter().cloned().map(BatchAction::Funcall))
         .collect();
     run_batch_with_actions(options, actions)
 }
@@ -73,7 +77,7 @@ pub fn run_batch_with_actions(
         .iter()
         .filter_map(|action| match action {
             BatchAction::Eval(expression) => Some(expression.clone()),
-            BatchAction::Load(_) => None,
+            BatchAction::Load(_) | BatchAction::Funcall(_) => None,
         })
         .collect::<Vec<_>>();
     let (selector, saw_ert_runner) = parse_selector_requests(&eval_expressions)?;
@@ -149,6 +153,20 @@ pub fn run_batch_with_actions(
                     if let Some(termination) = interpreter.take_pending_termination() {
                         return Ok(termination.into());
                     }
+                }
+            }
+            BatchAction::Funcall(function) => {
+                let form = Value::list([Value::Symbol(function.clone())]);
+                match interpreter.eval(&form, &mut eval_env) {
+                    Ok(_) => {}
+                    Err(LispError::Terminate(termination)) => return Ok(termination.into()),
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return Ok(BatchRunOutcome::Exit(255));
+                    }
+                }
+                if let Some(termination) = interpreter.take_pending_termination() {
+                    return Ok(termination.into());
                 }
             }
         }
@@ -253,7 +271,11 @@ pub(crate) fn initialize_batch_interpreter(
     // override and restore this state around loads.
     interpreter.set_variable("lexical-binding", Value::T, &mut Vec::new());
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
-    interpreter.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+    interpreter.set_variable(
+        "command-line-args-left",
+        Value::list(options.args_left.iter().cloned().map(Value::String)),
+        &mut Vec::new(),
+    );
     // Loading the dumped Lisp owners below corresponds to GNU's pre-dump
     // phase, where delayed Custom initializers accumulate until startup.
     interpreter.set_variable("custom-delayed-init-variables", Value::Nil, &mut Vec::new());

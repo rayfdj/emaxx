@@ -5658,7 +5658,9 @@ impl Interpreter {
             }
             closure_env
         } else {
-            shared_env(Vec::new())
+            let closure_env = shared_env(Vec::new());
+            self.mark_closure_eval_context(&closure_env, false);
+            closure_env
         };
         let body = match source_anchor {
             Some(source_anchor) => {

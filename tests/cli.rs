@@ -85,6 +85,30 @@ fn batch_preserves_eval_and_load_action_order() {
 }
 
 #[test]
+fn batch_funcall_receives_remaining_file_arguments() {
+    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .arg("--batch")
+        .arg("--eval")
+        .arg(
+            "(defun emaxx-cli-funcall ()
+               (unless (equal command-line-args-left '(\"remaining.el\"))
+                 (kill-emacs 41)))",
+        )
+        .arg("-f")
+        .arg("emaxx-cli-funcall")
+        .arg("remaining.el")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "GNU -f action did not see its remaining file argument:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn batch_eval_error_uses_gnu_stderr_and_exit_status() {
     let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
         .args([
