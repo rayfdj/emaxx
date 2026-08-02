@@ -18,6 +18,29 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-02 SYNTAX-DESCRIPTOR CHECKPOINT: the fresh contiguous ordered
+  frontier is 2,345/7,080, completing all 37 selected `lisp-tests.el`
+  outcomes.  `syntax-after` and `syntax-class` are GNU-preloaded Lisp policy;
+  Emaxx now defines them in `simple_compat.el` over its native syntax-table
+  and text-property substrate.  The primitive `syntax.c` switches
+  `parse-sexp-ignore-comments` and `parse-sexp-lookup-properties` are bound
+  and dynamically special in the Rust interpreter, so lexical callers can
+  bind them across separately defined helpers.  A focused Rust regression
+  pins normal delimiters, syntax text-property override, bounds, nil, and
+  dynamic binding.  Exact selectors 2,333 and 2,334 pass in
+  `target/compat/run-1785653718769724000-1819` and
+  `target/compat/run-1785653769021843000-2107`; the grouped 37/37 artifact is
+  `target/compat/run-1785653802030950000-2250`, proving the contiguous file
+  boundary through selector 2,345.  NEXT is 2,346,
+  `macroexp--test-obsolete-macro`; 4,735 selectors remain.  Advance by grouped
+  manifest files or coherent blocks, diagnose the earliest mismatch, and run
+  the full publication gate once per meaningful grouped checkpoint.  Keep
+  the four separately tracked bytecode/VM primitives deferred: native remains
+  1,416/1,420.  The publication gate is green: rustfmt, all-target check,
+  strict Clippy, and diff checks; all 1,653 library tests (1,647 restricted
+  plus the six exact localhost tests with networking allowed); 28
+  compatibility-harness tests, 1 performance-harness test, 8 CLI tests, and
+  3 ERT-runner tests (plus the zero-test main binary).
 - 2026-08-02 GNUTLS PROCESS-SESSION CHECKPOINT: the exact generated GNU C
   inventory is 1,416/1,420 mirrored, with only the four explicitly deferred
   VM primitives left: `byte-code`, `internal-stack-stats`, `make-byte-code`,

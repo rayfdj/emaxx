@@ -3361,6 +3361,13 @@ impl Interpreter {
         }
         interp.set_global_binding("char-property-alias-alist", Value::Nil);
         interp.mark_special_variable("char-property-alias-alist");
+        // syntax.c exposes both scanner switches as primitive DEFVAR_BOOLs.
+        // They must be special so a caller's lexical `let' remains visible
+        // through separately defined Lisp helpers such as `syntax-after'.
+        for name in ["parse-sexp-ignore-comments", "parse-sexp-lookup-properties"] {
+            interp.set_global_binding(name, Value::Nil);
+            interp.mark_special_variable(name);
+        }
         // GNU textprop.c supplies syntax-table/display, and the dumped Lisp
         // image adds composition/fill-space.  `insert-and-inherit' consults
         // this process-wide special when deciding which adjacent properties

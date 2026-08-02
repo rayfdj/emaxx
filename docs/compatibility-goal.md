@@ -29,6 +29,30 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-02 syntax-descriptor checkpoint advances the fresh contiguous
+  compatibility prefix to 2,345/7,080 and finishes all 37 selected outcomes
+  in `lisp-tests.el`.  GNU's preloaded `syntax-after` and `syntax-class`
+  helpers now live at the Lisp policy boundary, while the primitive
+  `parse-sexp-ignore-comments` and `parse-sexp-lookup-properties` switches
+  are bound as dynamically special Rust runtime state like their
+  `syntax.c` owners.  A focused regression pins ordinary syntax-table
+  descriptors, a `syntax-table` text-property override, buffer bounds, nil,
+  and cross-function dynamic binding.  Exact selectors 2,333 and 2,334 pass
+  in `target/compat/run-1785653718769724000-1819` and
+  `target/compat/run-1785653769021843000-2107`; the complete grouped replay
+  passes in `target/compat/run-1785653802030950000-2250`, proving the
+  remaining `mark-defun` and `up-list` selectors through the file boundary.
+  NEXT is selector 2,346, `macroexp--test-obsolete-macro`, with 4,735
+  selectors remaining.  Use grouped manifest-file discovery and diagnose
+  only the earliest mismatch; run the full publication gate once per
+  meaningful grouped checkpoint rather than per adjacent selector pair.
+  The native inventory remains honestly parked at 1,416/1,420 with only the
+  separately tracked bytecode/VM quartet deferred.  The complete publication
+  gate is green: rustfmt, all-target check, strict Clippy, and diff checks;
+  all 1,653 library tests (1,647 in the restricted sandbox plus the six exact
+  localhost tests with networking allowed); 28 compatibility-harness tests,
+  1 performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).
 - The 2026-08-02 GnuTLS process-session checkpoint advances the exact GNU C
   primitive inventory to 1,416/1,420, leaving only the four explicitly
   deferred VM primitives: `byte-code`, `internal-stack-stats`,
