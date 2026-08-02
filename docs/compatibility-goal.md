@@ -29,6 +29,28 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-02 dynamic-module checkpoint advances the exact GNU C primitive
+  inventory to 1,414/1,420, leaving six missing and no `emacs-module.c`
+  entry.  `module-load` uses the established `libloading` crate to open the
+  caller's real shared library and preserves GNU's distinct structured
+  conditions for open failure, a missing GPL-compatibility marker, and a
+  missing initialization function.  When both required symbols exist, Emaxx
+  stops at an explicit catchable value-ABI boundary instead of calling
+  `emacs_module_init` with a fabricated runtime.  GNU's versioned environment
+  requires opaque value handles, nonlocal exits, module functions, user
+  pointers/finalizers, and a complete callback table that Emaxx does not yet
+  implement.  A compiled probe proves that foreign initialization code is not
+  invoked, and a direct sibling-GNU oracle pins the public contract and error
+  hierarchy.  Exact inventory fingerprints are mirrored
+  `(1_414, 916_376_608_050_879_346)` and missing
+  `(6, 462_599_485_011_907_078)`.  Only `gnutls-boot` and `gnutls-bye` remain
+  outside the four deferred bytecode primitives.  Finish that TLS pair, then
+  switch immediately back to the ordered 7,080-selector frontier.  The
+  complete publication gate is green: rustfmt, strict Clippy, and diff checks;
+  all 1,649 library tests (1,645 in the restricted sandbox plus the four exact
+  localhost socket tests with networking allowed); 28 compatibility-harness
+  tests, 1 performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus
+  the zero-test main binary).
 - The 2026-08-02 allocation-telemetry checkpoint advances the exact GNU C
   primitive inventory to 1,413/1,420, leaving seven missing and no non-VM
   `alloc.c` entry.  `memory-use-counts` preserves GNU's zero-argument contract

@@ -649,6 +649,105 @@ fn memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn module_load_validates_real_libraries_without_fabricating_the_gnu_value_abi() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static PROBE_ID: AtomicU64 = AtomicU64::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "emaxx-module-probe-{}-{}",
+        std::process::id(),
+        PROBE_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("module probe directory should be created");
+    let source = directory.join("probe.c");
+    std::fs::write(
+        &source,
+        "int plugin_is_GPL_compatible;\n\
+         int emacs_module_init(void *runtime) { (void) runtime; return 0; }\n",
+    )
+    .expect("module probe source should be written");
+    #[cfg(target_os = "macos")]
+    let library = directory.join("probe.dylib");
+    #[cfg(not(target_os = "macos"))]
+    let library = directory.join("probe.so");
+    let mut compiler = std::process::Command::new(
+        std::env::var_os("CC").unwrap_or_else(|| std::ffi::OsString::from("cc")),
+    );
+    #[cfg(target_os = "macos")]
+    compiler.arg("-dynamiclib");
+    #[cfg(not(target_os = "macos"))]
+    compiler.args(["-shared", "-fPIC"]);
+    let status = compiler
+        .arg(&source)
+        .arg("-o")
+        .arg(&library)
+        .status()
+        .expect("module probe compiler should run");
+    assert!(status.success(), "module probe should compile");
+
+    let contract_program = r#"
+        (list
+         (subr-arity (symbol-function 'module-load))
+         (condition-case error-data
+             (module-load 1)
+           (error (car error-data)))
+         (condition-case error-data
+             (module-load "/definitely/missing/emaxx-module.so")
+           (error (car error-data)))
+         (get 'module-open-failed 'error-conditions)
+         (get 'module-not-gpl-compatible 'error-conditions)
+         (get 'missing-module-init-function 'error-conditions)
+         (get 'module-init-failed 'error-conditions))"#;
+    let contract_expected = "((1 . 1) wrong-type-argument module-open-failed \
+        (module-open-failed module-load-failed error) \
+        (module-not-gpl-compatible module-load-failed error) \
+        (missing-module-init-function module-load-failed error) \
+        (module-init-failed module-load-failed error))";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract_program})"), contract_expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let contract_form = Reader::new(contract_program)
+        .read()
+        .expect("dynamic-module contract should parse")
+        .expect("dynamic-module contract should contain a form");
+    let contract_actual = interp
+        .eval(&contract_form, &mut env)
+        .expect("dynamic-module validation conditions should be catchable");
+    let contract_expected = Reader::new(contract_expected)
+        .read()
+        .expect("dynamic-module expectation should parse")
+        .expect("dynamic-module expectation should contain a form");
+    assert!(
+        values_equal(&interp, &contract_actual, &contract_expected),
+        "dynamic-module validation conditions diverged:\nactual: {contract_actual:?}"
+    );
+
+    let form = Value::list([
+        Value::symbol("condition-case"),
+        Value::symbol("error-data"),
+        Value::list([
+            Value::symbol("module-load"),
+            Value::String(library.display().to_string()),
+        ]),
+        Value::list([Value::symbol("error"), Value::symbol("error-data")]),
+    ]);
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("dynamic-module ABI boundary should be catchable");
+    let expected = Value::list([
+        Value::symbol("error"),
+        Value::string("GNU dynamic module ABI is unavailable in the Rust value backend"),
+    ]);
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "module initializer must not receive a fabricated runtime:\nactual: {actual:?}"
+    );
+    std::fs::remove_dir_all(directory).expect("module probe directory should be removed");
+}
+
 #[test]
 fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
     use super::generated_gnu_c_primitives::{
@@ -742,12 +841,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_413, 9_702_192_709_240_017_211),
+        (1_414, 916_376_608_050_879_346),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (7, 17_013_614_379_476_872_707),
+        (6, 462_599_485_011_907_078),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {

@@ -567,6 +567,35 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             "Invalid regexp",
         ),
         ("scan-error", &["scan-error", "error"], "Scan error"),
+        (
+            "module-load-failed",
+            &["module-load-failed", "error"],
+            "Module load failed",
+        ),
+        (
+            "module-open-failed",
+            &["module-open-failed", "module-load-failed", "error"],
+            "Module could not be opened",
+        ),
+        (
+            "module-not-gpl-compatible",
+            &["module-not-gpl-compatible", "module-load-failed", "error"],
+            "Module is not GPL compatible",
+        ),
+        (
+            "missing-module-init-function",
+            &[
+                "missing-module-init-function",
+                "module-load-failed",
+                "error",
+            ],
+            "Module does not export an initialization function",
+        ),
+        (
+            "module-init-failed",
+            &["module-init-failed", "module-load-failed", "error"],
+            "Module initialization failed",
+        ),
         // cl-generic is dumped in GNU and native/preprovided in Emaxx.
         ("cl-no-method", &["cl-no-method", "error"], "No method"),
         (

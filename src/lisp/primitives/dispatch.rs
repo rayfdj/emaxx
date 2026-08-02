@@ -6,6 +6,7 @@ mod collections;
 mod comp;
 mod composition;
 mod display;
+mod emacs_module;
 mod faces;
 mod files_process;
 mod fonts;
@@ -60,6 +61,7 @@ enum DispatchModule {
     BufferMeta,
     FilesProcess,
     Display,
+    EmacsModule,
     Faces,
     Misc,
     MiscKeymaps,
@@ -113,6 +115,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::FilesProcess
     } else if display::handles(name) {
         DispatchModule::Display
+    } else if emacs_module::handles(name) {
+        DispatchModule::EmacsModule
     } else if faces::handles(name) {
         DispatchModule::Faces
     } else if misc::handles(name) {
@@ -170,6 +174,7 @@ fn is_builtin_uncached(name: &str) -> bool {
         || terminals::handles(name)
         || treesit::handles(name)
         || gnutls::handles(name)
+        || emacs_module::handles(name)
         || gui_actions::handles(name)
         || comp::handles(name)
         || matches!(
@@ -1966,6 +1971,7 @@ pub fn call(
         DispatchModule::BufferMeta => buffer_meta::call(interp, name, args, env),
         DispatchModule::FilesProcess => files_process::call(interp, name, args, env),
         DispatchModule::Display => display::call(interp, name, args, env),
+        DispatchModule::EmacsModule => emacs_module::call(name, args),
         DispatchModule::Faces => faces::call(interp, name, args, env),
         DispatchModule::Misc => misc::call(interp, name, args, env),
         DispatchModule::MiscKeymaps => misc_keymaps::call(interp, name, args, env),

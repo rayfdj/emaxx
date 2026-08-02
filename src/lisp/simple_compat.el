@@ -4299,6 +4299,21 @@ its argument list allows full Common Lisp conventions."
 (put 'invalid-regexp 'error-message "Invalid regexp")
 (put 'scan-error 'error-conditions '(scan-error error))
 (put 'scan-error 'error-message "Scan error")
+(put 'module-load-failed 'error-conditions '(module-load-failed error))
+(put 'module-load-failed 'error-message "Module load failed")
+(put 'module-open-failed 'error-conditions
+     '(module-open-failed module-load-failed error))
+(put 'module-open-failed 'error-message "Module could not be opened")
+(put 'module-not-gpl-compatible 'error-conditions
+     '(module-not-gpl-compatible module-load-failed error))
+(put 'module-not-gpl-compatible 'error-message "Module is not GPL compatible")
+(put 'missing-module-init-function 'error-conditions
+     '(missing-module-init-function module-load-failed error))
+(put 'missing-module-init-function 'error-message
+     "Module does not export an initialization function")
+(put 'module-init-failed 'error-conditions
+     '(module-init-failed module-load-failed error))
+(put 'module-init-failed 'error-message "Module initialization failed")
 
 ;; From GNU Emacs 30.2 subr.el
 (defun define-error (name message &optional parent)
