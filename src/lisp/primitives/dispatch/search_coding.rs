@@ -15,6 +15,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "looking-at-p"
             | "looking-back"
             | "newline-cache-check"
+            | "re--describe-compiled"
             | "replace-match"
             | "replace-buffer-contents"
             | "replace-region-contents"
@@ -516,6 +517,23 @@ pub(super) fn call(
             // Emaxx does not maintain GNU's optional long-line newline
             // cache.  GNU's documented result when no cache exists is nil.
             Ok(Value::Nil)
+        }
+        "re--describe-compiled" => {
+            need_arg_range(name, args, 1, 2)?;
+            let pattern = string_like(&args[0]).ok_or_else(|| {
+                LispError::SignalValue(Value::list([
+                    Value::symbol("wrong-type-argument"),
+                    Value::symbol("stringp"),
+                    args[0].clone(),
+                ]))
+            })?;
+            regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
+            // GNU exposes private bytecode from its own regexp engine.
+            // `fancy-regex` deliberately keeps both its VM program and
+            // delegated regex-automata state behind a private stable API.
+            Err(LispError::Signal(
+                "Compiled regexp introspection is unavailable from the fancy-regex backend".into(),
+            ))
         }
 
         "replace-match" => {
