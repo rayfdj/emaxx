@@ -18,6 +18,27 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-02 DYNAMIC-MODULE CHECKPOINT: the exact generated GNU C inventory is
+  1,414/1,420 mirrored, with six missing and no `emacs-module.c` entry left.
+  `module-load` uses the established mature `libloading` crate for real
+  shared-library opening and symbol inspection.  It preserves GNU's
+  structured open/GPL-marker/init-symbol failures and their
+  `module-load-failed` hierarchy.  A library exporting both required symbols
+  reaches Emaxx's explicit catchable value-ABI boundary; Emaxx never calls
+  `emacs_module_init` with an invented runtime.  GNU's versioned callback
+  table, opaque value handles, nonlocal exits, module functions, and user
+  pointer/finalizer lifetime model do not yet exist here.  A compiled probe
+  pins that safety property, while a direct sibling-GNU oracle pins arity and
+  validation conditions.  Exact fingerprints are mirrored
+  `(1_414, 916_376_608_050_879_346)` and missing
+  `(6, 462_599_485_011_907_078)`.  Only `gnutls-boot` and `gnutls-bye` remain
+  outside the four deferred VM primitives.  Finish that pair, then switch
+  immediately back to the ordered 7,080-selector frontier.  The complete
+  publication gate is green: rustfmt, strict Clippy, and diff checks; all
+  1,649 library tests (1,645 in the restricted sandbox plus the four exact
+  localhost socket tests with networking allowed); 28 compatibility-harness
+  tests, 1 performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus
+  the zero-test main binary).
 - 2026-08-02 ALLOCATION-TELEMETRY CHECKPOINT: the exact generated GNU C
   inventory is 1,413/1,420 mirrored, with seven missing and no non-VM
   `alloc.c` entry left.  `memory-use-counts` preserves GNU's zero-argument
