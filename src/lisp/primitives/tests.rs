@@ -841,12 +841,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_414, 916_376_608_050_879_346),
+        (1_416, 10_665_204_901_044_147_906),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (6, 462_599_485_011_907_078),
+        (4, 11_801_919_205_790_401_648),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -6376,6 +6376,324 @@ fn native_gnutls_pre_session_state_warnings_and_error_predicate_match_gnu() {
             .expect("GnuTLS pre-session expected value should parse")
             .expect("GnuTLS pre-session expected value should exist")
     );
+}
+
+#[test]
+fn native_gnutls_boot_and_bye_preserve_gnu_validation_contracts() {
+    let program = r#"
+        (let ((process (make-pipe-process :name "gnutls-validation" :noquery t)))
+          (unwind-protect
+              (list
+               (subr-arity (symbol-function 'gnutls-boot))
+               (subr-arity (symbol-function 'gnutls-bye))
+               (mapcar
+                (lambda (symbol) (get symbol 'gnutls-code))
+                '(gnutls-e-interrupted gnutls-e-again
+                  gnutls-e-invalid-session gnutls-e-not-ready-for-handshake))
+               (condition-case error-data
+                   (gnutls-boot 1 'gnutls-x509pki nil)
+                 (error error-data))
+               (condition-case error-data
+                   (gnutls-boot process 1 nil)
+                 (error error-data))
+               (condition-case error-data
+                   (gnutls-boot process 'gnutls-x509pki 1)
+                 (error error-data))
+               (condition-case error-data
+                   (gnutls-boot process 'bogus nil)
+                 (error error-data))
+               (condition-case error-data
+                   (gnutls-boot process 'gnutls-x509pki nil)
+                 (error error-data))
+               (condition-case error-data
+                   (gnutls-bye 1 nil)
+                 (error error-data)))
+            (delete-process process)))"#;
+    let expected = concat!(
+        "((3 . 3) (2 . 2) (-52 -28 -10 -65500) ",
+        "(wrong-type-argument processp 1) ",
+        "(wrong-type-argument symbolp 1) (wrong-type-argument listp 1) ",
+        "(error \"Invalid GnuTLS credential type\") ",
+        "(error \"gnutls-boot: invalid :hostname parameter (not a string)\") ",
+        "(wrong-type-argument processp 1))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("GnuTLS lifecycle validation should parse")
+        .expect("GnuTLS lifecycle validation should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("GnuTLS lifecycle validation should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("GnuTLS lifecycle expectation should parse")
+        .expect("GnuTLS lifecycle expectation should contain a form");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "GnuTLS lifecycle validation differs from GNU:\nactual: {actual:?}"
+    );
+}
+
+#[test]
+fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve localhost port for GnuTLS test server");
+    let port = listener.local_addr().expect("reserved address").port();
+    drop(listener);
+    let child = std::process::Command::new("gnutls-serv")
+        .args([
+            "--quiet",
+            "--echo",
+            "--priority",
+            "NORMAL:+ANON-ECDH",
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("gnutls-serv is required for the transport regression");
+    let mut server = Server(child);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        assert!(
+            server.0.try_wait().expect("poll GnuTLS server").is_none(),
+            "GnuTLS test server exited before accepting a connection"
+        );
+        if std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_ok() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "GnuTLS test server did not start listening"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let program = format!(
+        r#"
+        (let* ((buffer (generate-new-buffer " *gnutls-transport*"))
+               (process (make-network-process
+                         :name "gnutls-transport"
+                         :buffer buffer
+                         :host "127.0.0.1"
+                         :service {port}
+                         :family 'ipv4
+                         :coding 'binary
+                         :sentinel #'ignore
+                         :noquery t)))
+          (unwind-protect
+              (list
+               (gnutls-boot
+                process 'gnutls-anon
+               '(:hostname "localhost"
+                  :priority "NORMAL:+ANON-ECDH"
+                  :complete-negotiation t))
+               (gnutls-get-initstage process)
+               (let ((status (gnutls-peer-status process)))
+                 (list (stringp (plist-get status :key-exchange))
+                       (stringp (plist-get status :protocol))
+                       (stringp (plist-get status :cipher))
+                       (stringp (plist-get status :mac))
+                       (plist-get status :warnings)))
+               (progn
+                 (process-send-string process "encrypted round trip\n")
+                 (accept-process-output process 2)
+                 (with-current-buffer buffer (buffer-string)))
+               (gnutls-bye process t)
+               (gnutls-deinit process)
+               (gnutls-get-initstage process))
+            (delete-process process)
+            (kill-buffer buffer)))"#
+    );
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&program)
+        .read()
+        .expect("GnuTLS transport program should parse")
+        .expect("GnuTLS transport program should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("GnuTLS transport program should evaluate");
+    let expected = Reader::new("(t 9 (t t t t nil) \"encrypted round trip\\n\" t t 3)")
+        .read()
+        .expect("GnuTLS transport expectation should parse")
+        .expect("GnuTLS transport expectation should contain a form");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "GnuTLS process transport did not round-trip through one live session:\nactual: {actual:?}"
+    );
+}
+
+#[test]
+fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve localhost port for X.509 server");
+    let port = listener.local_addr().expect("reserved address").port();
+    drop(listener);
+    let directory = std::env::temp_dir().join(format!("emaxx-gnutls-x509-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create GnuTLS X.509 fixture directory");
+    let key = directory.join("key.pem");
+    let certificate = directory.join("certificate.pem");
+    let client_key = directory.join("client-key.pem");
+    let client_certificate = directory.join("client-certificate.pem");
+    let status = std::process::Command::new("openssl")
+        .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout"])
+        .arg(&key)
+        .arg("-out")
+        .arg(&certificate)
+        .args([
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("openssl is required for the X.509 transport regression");
+    assert!(status.success(), "generate self-signed X.509 fixture");
+    let status = std::process::Command::new("openssl")
+        .args(["req", "-x509", "-newkey", "rsa:2048", "-keyout"])
+        .arg(&client_key)
+        .arg("-out")
+        .arg(&client_certificate)
+        .args([
+            "-passout",
+            "pass:emaxx-secret",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=emaxx-client",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("openssl is required for the encrypted-key regression");
+    assert!(status.success(), "generate encrypted client-key fixture");
+
+    let child = std::process::Command::new("gnutls-serv")
+        .args(["--quiet", "--echo", "--port", &port.to_string()])
+        .arg("--x509keyfile")
+        .arg(&key)
+        .arg("--x509certfile")
+        .arg(&certificate)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("gnutls-serv is required for the X.509 regression");
+    let mut server = Server(child);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        assert!(
+            server.0.try_wait().expect("poll X.509 server").is_none(),
+            "X.509 server exited before accepting a connection"
+        );
+        if std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_ok() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "X.509 server did not start listening"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let program = format!(
+        r#"
+        (let ((trusted
+               (make-network-process :name "gnutls-x509-trusted"
+                                     :host "127.0.0.1" :service {port}
+                                     :family 'ipv4 :sentinel #'ignore :noquery t))
+              (mismatch nil))
+          (unwind-protect
+              (let* ((boot
+                      (gnutls-boot
+                       trusted 'gnutls-x509pki
+                       '(:hostname "localhost"
+                         :trustfiles ("{certificate}")
+                         :keylist (("{client_key}" "{client_certificate}"))
+                         :pass "emaxx-secret"
+                         :flags (unknown-flag)
+                         :loglevel 0
+                         :verify-flags 0
+                         :min-prime-bits 1024
+                         :verify-error t
+                         :complete-negotiation t)))
+                     (peer (gnutls-peer-status trusted)))
+                (gnutls-bye trusted t)
+                (gnutls-deinit trusted)
+                (delete-process trusted)
+                (setq mismatch
+                      (make-network-process :name "gnutls-x509-mismatch"
+                                            :host "127.0.0.1" :service {port}
+                                            :family 'ipv4 :sentinel #'ignore :noquery t))
+                (list boot
+                      (stringp (plist-get peer :protocol))
+                      (plist-get peer :warnings)
+                      (condition-case error-data
+                          (gnutls-boot
+                           mismatch 'gnutls-x509pki
+                           '(:hostname "wrong.example"
+                             :trustfiles ("{certificate}")
+                             :verify-error (:hostname)
+                             :complete-negotiation t))
+                        (error error-data))))
+            (delete-process trusted)
+            (when mismatch (delete-process mismatch))))"#,
+        certificate = certificate.display(),
+        client_key = client_key.display(),
+        client_certificate = client_certificate.display()
+    );
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&program)
+        .read()
+        .expect("X.509 verification program should parse")
+        .expect("X.509 verification program should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("X.509 verification program should evaluate");
+    let items = actual
+        .to_vec()
+        .expect("X.509 verification result should be a list");
+    assert_eq!(items.first(), Some(&Value::T));
+    assert_eq!(items.get(1), Some(&Value::T));
+    assert_eq!(items.get(2), Some(&Value::Nil));
+    assert!(
+        matches!(
+            items.get(3).and_then(|error| error.car().ok()),
+            Some(Value::Symbol(symbol)) if symbol == "error"
+        ),
+        "hostname mismatch should be a catchable error: {actual:?}"
+    );
+    std::fs::remove_dir_all(directory).expect("remove X.509 fixture directory");
 }
 
 #[test]

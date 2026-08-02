@@ -223,6 +223,8 @@ impl Interpreter {
         self.find_process_state_mut(record_id).map(|process| {
             let was_active = process.gnutls.active;
             if was_active {
+                process.gnutls.session = None;
+                process.gnutls.peer_status = Value::Nil;
                 process.gnutls.active = false;
                 if process.gnutls.initstage >= GNUTLS_STAGE_INIT {
                     process.gnutls.initstage = GNUTLS_STAGE_INIT - 1;
@@ -230,6 +232,63 @@ impl Interpreter {
             }
             was_active
         })
+    }
+
+    pub(crate) fn install_process_gnutls(
+        &mut self,
+        record_id: u64,
+        session: ProcessGnuTlsSession,
+        initstage: i64,
+        peer_status: Value,
+    ) -> Result<(), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        process.gnutls.session = Some(session);
+        process.gnutls.initstage = initstage;
+        process.gnutls.active = true;
+        process.gnutls.peer_status = peer_status;
+        Ok(())
+    }
+
+    pub(crate) fn process_gnutls_peer_status(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id)
+            .map(|process| process.gnutls.peer_status.clone())
+    }
+
+    pub(crate) fn process_gnutls_bye(
+        &mut self,
+        record_id: u64,
+        continue_transport: bool,
+    ) -> Result<std::ffi::c_int, LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        let session = process
+            .gnutls
+            .session
+            .as_mut()
+            .ok_or_else(|| LispError::Signal("GnuTLS session is not initialized".into()))?;
+        Ok(session.bye(continue_transport))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn process_network_transport_handle(
+        &self,
+        record_id: u64,
+    ) -> Result<usize, LispError> {
+        use std::os::fd::AsRawFd;
+
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        match process.network.as_ref() {
+            Some(NetworkRuntime::Stream(stream)) => Ok(stream.as_raw_fd() as usize),
+            Some(NetworkRuntime::UnixStream(stream)) => Ok(stream.as_raw_fd() as usize),
+            _ => Err(LispError::Signal(
+                "GnuTLS requires a connected stream process".into(),
+            )),
+        }
     }
 
     pub(super) fn find_process_state_mut(&mut self, record_id: u64) -> Option<&mut ProcessState> {
@@ -852,50 +911,59 @@ impl Interpreter {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return Ok((Vec::new(), false));
         };
-        let (out, closed) = match process.network.as_mut() {
-            Some(NetworkRuntime::Stream(stream)) => drain_nonblocking(stream),
-            Some(NetworkRuntime::UnixStream(stream)) => drain_nonblocking(stream),
-            Some(NetworkRuntime::Datagram { socket, remote }) => {
-                let mut bytes = vec![0; 65_535];
-                match socket.recv_from(&mut bytes) {
-                    Ok((length, peer)) => {
-                        bytes.truncate(length);
-                        *remote = Some(peer);
-                        (bytes, false)
+        let (out, closed) = if let Some(session) = process.gnutls.session.as_mut() {
+            session.receive()?
+        } else {
+            match process.network.as_mut() {
+                Some(NetworkRuntime::Stream(stream)) => drain_nonblocking(stream),
+                Some(NetworkRuntime::UnixStream(stream)) => drain_nonblocking(stream),
+                Some(NetworkRuntime::Datagram { socket, remote }) => {
+                    let mut bytes = vec![0; 65_535];
+                    match socket.recv_from(&mut bytes) {
+                        Ok((length, peer)) => {
+                            bytes.truncate(length);
+                            *remote = Some(peer);
+                            (bytes, false)
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            (Vec::new(), false)
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                            (Vec::new(), false)
+                        }
+                        Err(_) => (Vec::new(), false),
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        (Vec::new(), false)
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-                        (Vec::new(), false)
-                    }
-                    Err(_) => (Vec::new(), false),
                 }
-            }
-            _ => {
-                let Some(serial) = process.serial.as_mut() else {
-                    return Ok((Vec::new(), false));
-                };
-                let mut bytes = vec![0; 65_535];
-                match serial.port.read(&mut bytes) {
-                    Ok(0) => (Vec::new(), true),
-                    Ok(length) => {
-                        bytes.truncate(length);
-                        (bytes, false)
+                _ => {
+                    let Some(serial) = process.serial.as_mut() else {
+                        return Ok((Vec::new(), false));
+                    };
+                    let mut bytes = vec![0; 65_535];
+                    match serial.port.read(&mut bytes) {
+                        Ok(0) => (Vec::new(), true),
+                        Ok(length) => {
+                            bytes.truncate(length);
+                            (bytes, false)
+                        }
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                ErrorKind::WouldBlock
+                                    | ErrorKind::TimedOut
+                                    | ErrorKind::Interrupted
+                            ) =>
+                        {
+                            (Vec::new(), false)
+                        }
+                        Err(_) => (Vec::new(), true),
                     }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-                        ) =>
-                    {
-                        (Vec::new(), false)
-                    }
-                    Err(_) => (Vec::new(), true),
                 }
             }
         };
         if closed {
+            process.gnutls.session = None;
+            process.gnutls.active = false;
+            process.gnutls.peer_status = Value::Nil;
             process.status = ProcessStatus::Closed;
             process.network = None;
             process.serial = None;
@@ -907,6 +975,9 @@ impl Interpreter {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return Err(wrong_type_argument("processp", Value::Record(record_id)));
         };
+        if let Some(session) = process.gnutls.session.as_mut() {
+            return session.send_all(input);
+        }
         match process.network.as_mut() {
             Some(NetworkRuntime::Stream(stream)) => send_all(stream, input),
             Some(NetworkRuntime::UnixStream(stream)) => send_all(stream, input),
@@ -1376,6 +1447,9 @@ impl Interpreter {
         // GNU clears the connection flow-control marker while closing the
         // descriptor, so a stopped connection reports `closed' afterwards.
         process.traffic_stopped = false;
+        process.gnutls.session = None;
+        process.gnutls.active = false;
+        process.gnutls.peer_status = Value::Nil;
         if let Some(runtime) = process.runtime.as_mut() {
             let _ = runtime.child.kill();
             let _ = runtime.child.wait();
