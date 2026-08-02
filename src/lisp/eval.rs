@@ -1715,13 +1715,13 @@ pub struct Interpreter {
     /// the hot per-form path while any definition change invalidates all
     /// verdicts at once.
     not_macro_names: HashMap<String, u64>,
-    /// Per-callsite macro expansions, keyed by the form's car cell
-    /// address and validated against `definition_generation` (compiled
+    /// Per-callsite macro expansions, keyed by the form's car cell address
+    /// and effective lexical mode, and validated against `definition_generation` (compiled
     /// GNU code expands each macro call once; interpreted emaxx would
     /// otherwise re-expand per evaluation — the dominant cost under
     /// erc's message load).  The cached entry holds the ORIGINAL form
     /// too, so its cons stays alive and the address is never reused.
-    macro_expansion_cache: HashMap<usize, (u64, Value, Value)>,
+    macro_expansion_cache: HashMap<(usize, bool), (u64, Value, Value)>,
     /// Immutable lambda code keyed by the source form's car-cell identity.
     /// The weak source witness prevents a recycled allocator address from
     /// aliasing an unrelated form whose older closure is still alive.
@@ -1775,11 +1775,13 @@ pub struct Interpreter {
     /// genuinely captured lexical cell from an ordinary marked local without
     /// retaining every closure ever created.
     captured_lexical_frames: HashMap<i64, Vec<std::rc::Weak<std::cell::RefCell<Env>>>>,
-    /// Lexical evaluation context belongs to the closure object, not to its
-    /// captured variable frames.  Keep weak identities here so metadata can
-    /// never affect environment lookup, emptiness, or frame merging.
-    lexical_closure_envs: HashMap<usize, std::rc::Weak<std::cell::RefCell<Env>>>,
-    lexical_closure_registrations: usize,
+    /// Evaluation context belongs to the closure object, not to its captured
+    /// variable frames.  Keep weak identities here so metadata can never
+    /// affect environment lookup, emptiness, or frame merging.  Absence is
+    /// meaningful: Rust-generated dispatch lambdas inherit their caller,
+    /// while Lisp lambdas explicitly record lexical or dynamic evaluation.
+    closure_eval_contexts: HashMap<usize, (std::rc::Weak<std::cell::RefCell<Env>>, bool)>,
+    closure_eval_context_registrations: usize,
     pub lossage_size: i64,
     interactive_call_depth: usize,
     pub(crate) lisp_face_states: Vec<LispFaceState>,
@@ -2477,8 +2479,8 @@ impl Interpreter {
             closure_capture_cache: Vec::new(),
             lexical_cell_updates: HashMap::new(),
             captured_lexical_frames: HashMap::new(),
-            lexical_closure_envs: HashMap::new(),
-            lexical_closure_registrations: 0,
+            closure_eval_contexts: HashMap::new(),
+            closure_eval_context_registrations: 0,
             lossage_size: 300,
             interactive_call_depth: 0,
             lisp_face_states: vec![LispFaceState {
@@ -3777,23 +3779,33 @@ impl Interpreter {
         self.lambda_trim_overrides.last().copied().unwrap_or(false)
     }
 
-    pub(crate) fn mark_lexical_closure_env(&mut self, env: &SharedEnv) {
-        self.lexical_closure_registrations = self.lexical_closure_registrations.wrapping_add(1);
-        if self.lexical_closure_registrations.is_multiple_of(4096) {
-            self.lexical_closure_envs
-                .retain(|_, owner| owner.strong_count() > 0);
+    pub(crate) fn mark_closure_eval_context(&mut self, env: &SharedEnv, lexical: bool) {
+        self.closure_eval_context_registrations =
+            self.closure_eval_context_registrations.wrapping_add(1);
+        if self.closure_eval_context_registrations.is_multiple_of(4096) {
+            self.closure_eval_contexts
+                .retain(|_, (owner, _)| owner.strong_count() > 0);
         }
         let identity = Rc::as_ptr(env) as usize;
-        self.lexical_closure_envs
-            .insert(identity, Rc::downgrade(env));
+        self.closure_eval_contexts
+            .insert(identity, (Rc::downgrade(env), lexical));
+    }
+
+    pub(crate) fn mark_lexical_closure_env(&mut self, env: &SharedEnv) {
+        self.mark_closure_eval_context(env, true);
+    }
+
+    pub(crate) fn closure_eval_context(&self, env: &SharedEnv) -> Option<bool> {
+        let identity = Rc::as_ptr(env) as usize;
+        let (owner, lexical) = self.closure_eval_contexts.get(&identity)?;
+        owner
+            .upgrade()
+            .is_some_and(|owner| Rc::ptr_eq(&owner, env))
+            .then_some(*lexical)
     }
 
     pub(crate) fn closure_env_is_lexical(&self, env: &SharedEnv) -> bool {
-        let identity = Rc::as_ptr(env) as usize;
-        self.lexical_closure_envs
-            .get(&identity)
-            .and_then(std::rc::Weak::upgrade)
-            .is_some_and(|owner| Rc::ptr_eq(&owner, env))
+        self.closure_eval_context(env) == Some(true)
     }
 
     pub(crate) fn register_captured_lexical_frames(&mut self, closure_env: &SharedEnv) {

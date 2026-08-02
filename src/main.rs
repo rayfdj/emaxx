@@ -44,8 +44,10 @@ struct Cli {
     load: Vec<String>,
     #[arg(long = "eval", value_name = "EXPR")]
     eval: Vec<String>,
+    #[arg(short = 'f', long = "funcall", value_name = "FUNCTION")]
+    funcall: Vec<String>,
     #[arg(value_name = "FILE")]
-    file: Option<PathBuf>,
+    file: Vec<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -69,6 +71,12 @@ fn try_main() -> Result<u8, String> {
                 load_path: cli.load_path,
                 load: cli.load,
                 eval: cli.eval,
+                funcall: cli.funcall,
+                args_left: cli
+                    .file
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
             },
             actions,
         )?;
@@ -84,13 +92,14 @@ fn try_main() -> Result<u8, String> {
         || !cli.load_path.is_empty()
         || !cli.load.is_empty()
         || !cli.eval.is_empty()
+        || !cli.funcall.is_empty()
     {
         return Err(
-            "`--no-init-file`, `--no-site-file`, `--no-site-lisp`, `-L`, `-l`, and `--eval` are only supported together with `--batch`".into(),
+            "`--no-init-file`, `--no-site-file`, `--no-site-lisp`, `-L`, `-l`, `--eval`, and `-f` are only supported together with `--batch`".into(),
         );
     }
 
-    run_interactive(cli.file).map_err(|error| error.to_string())?;
+    run_interactive(cli.file.into_iter().next()).map_err(|error| error.to_string())?;
     Ok(0)
 }
 
@@ -104,6 +113,7 @@ fn normalize_gnu_single_dash_long_options(
             // each spelling as a cluster of unrelated short options.
             Some("-batch") => OsString::from("--batch"),
             Some("-eval") => OsString::from("--eval"),
+            Some("-funcall") => OsString::from("--funcall"),
             Some("-help") => OsString::from("--help"),
             Some("-load") => OsString::from("--load"),
             Some("-no-build-details") => OsString::from("--no-build-details"),
@@ -137,6 +147,16 @@ fn ordered_batch_actions(matches: &ArgMatches) -> Vec<BatchAction> {
             indices
                 .zip(values)
                 .map(|(index, value)| (index, BatchAction::Eval(value.clone()))),
+        );
+    }
+    if let (Some(indices), Some(values)) = (
+        matches.indices_of("funcall"),
+        matches.get_many::<String>("funcall"),
+    ) {
+        indexed_actions.extend(
+            indices
+                .zip(values)
+                .map(|(index, value)| (index, BatchAction::Funcall(value.clone()))),
         );
     }
     indexed_actions.sort_by_key(|(index, _)| *index);

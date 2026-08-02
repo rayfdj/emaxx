@@ -984,21 +984,21 @@ impl Interpreter {
 
     /// A still-current cached expansion for FORM (keyed by its car cell
     /// identity — the entry pins the form so the address can't be reused).
-    pub(crate) fn cached_macro_expansion(&self, form: &Value) -> Option<Value> {
+    pub(crate) fn cached_macro_expansion(&self, form: &Value, lexical: bool) -> Option<Value> {
         let Value::Cons(car, _) = form else {
             return None;
         };
-        let key = std::rc::Rc::as_ptr(car) as usize;
+        let key = (std::rc::Rc::as_ptr(car) as usize, lexical);
         let (generation, expanded, _) = self.macro_expansion_cache.get(&key)?;
         (*generation == self.definition_generation).then(|| expanded.clone())
     }
 
     /// Cache FORM's macro expansion at the current definition generation.
-    pub(crate) fn cache_macro_expansion(&mut self, form: &Value, expanded: Value) {
+    pub(crate) fn cache_macro_expansion(&mut self, form: &Value, lexical: bool, expanded: Value) {
         let Value::Cons(car, _) = form else {
             return;
         };
-        let key = std::rc::Rc::as_ptr(car) as usize;
+        let key = (std::rc::Rc::as_ptr(car) as usize, lexical);
         // A runaway cache would pin unbounded transient forms; the cap is
         // far above any real load (function bodies are finite).
         if self.macro_expansion_cache.len() >= (1 << 20) {
