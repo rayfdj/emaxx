@@ -29,6 +29,27 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-02 compiled-regexp checkpoint advances the exact GNU C primitive
+  inventory to 1,412/1,420, leaving eight missing and no `search.c` entry.
+  `re--describe-compiled` now preserves GNU's arity, current-buffer
+  compilation context, and invalid-regexp signaling by compiling through
+  Emaxx's established `fancy-regex`/`regex-automata` backend.  It then reports
+  an explicit catchable introspection boundary: GNU exposes private bytecode
+  from its own regexp engine, while the mature Rust backend deliberately
+  keeps both its backtracking VM and delegated automata private.  Emaxx does
+  not mislabel the translated source pattern as bytecode.  A direct
+  sibling-GNU oracle pins the public contract, invalid-regexp condition, and
+  known raw-bytecode result.  Exact inventory fingerprints are mirrored
+  `(1_412, 15_109_526_171_507_659_563)` and missing
+  `(8, 1_306_524_394_756_610_835)`.  The eight-item remainder is:
+  `memory-use-counts`, `module-load`, `gnutls-boot`, `gnutls-bye`, and the
+  four deferred bytecode primitives.  Finish those four non-bytecode entries
+  first; when only the VM cluster remains, switch immediately back to the
+  ordered 7,080-selector frontier.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,647 library tests (1,643 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1 performance-harness
+  test, 8 CLI tests, and 3 ERT-runner tests (plus the zero-test main binary).
 - The 2026-08-02 portable-dumper checkpoint advances the exact GNU C primitive
   inventory to 1,411/1,420, leaving nine missing and no `pdumper.c` entry.
   `dump-emacs-portable` preserves GNU's arity and filename validation, then
