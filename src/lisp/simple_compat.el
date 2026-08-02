@@ -5384,6 +5384,19 @@ Like GNU's `help--window-setup': BODY runs in the help buffer with
 
 ;; subr.el: GNU preloads these syntax-aware movement helpers.  Keep this
 ;; policy in Lisp; the Rust boundary supplies regexp and syntax-table motion.
+(defun syntax-after (pos)
+  "Return the raw syntax descriptor for the character after POS."
+  (unless (or (< pos (point-min)) (>= pos (point-max)))
+    (let ((syntax (and parse-sexp-lookup-properties
+                       (get-char-property pos 'syntax-table))))
+      (if (consp syntax)
+          syntax
+        (aref (or syntax (syntax-table)) (char-after pos))))))
+
+(defun syntax-class (syntax)
+  "Return the class code encoded by raw syntax descriptor SYNTAX."
+  (and syntax (logand (car syntax) 65535)))
+
 (defun forward-whitespace (arg)
   "Move point across ARG sequences of spaces, tabs, or newlines."
   (interactive "^p")

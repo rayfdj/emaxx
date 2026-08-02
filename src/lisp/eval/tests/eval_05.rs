@@ -1829,6 +1829,43 @@ fn syntax_ppss_reports_negative_depth_for_extra_closing_parens() {
 }
 
 #[test]
+fn preloaded_syntax_descriptor_helpers_match_subr_el() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compatibility prelude");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(with-temp-buffer
+               (insert \"(a)\")
+               (let ((parse-sexp-lookup-properties t))
+                 (put-text-property 2 3 'syntax-table (string-to-syntax \"_\"))
+                 (list (syntax-class (syntax-after 1))
+                       (syntax-class (syntax-after 2))
+                       (syntax-class (syntax-after 3))
+                       (syntax-after 0)
+                       (syntax-after 4)
+                       (syntax-class nil))))"
+        ),
+        Value::list([
+            Value::Integer(4),
+            Value::Integer(3),
+            Value::Integer(5),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn c_toggle_electric_state_updates_c_electric_flag() {
     assert_eq!(
         eval_str(
