@@ -412,6 +412,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "oclosure-type"
             | "garbage-collect"
             | "garbage-collect-maybe"
+            | "memory-use-counts"
             | "emaxx--oclosure-type-p"
             | "emaxx--oclosure-slot"
             | "emaxx--oclosure-set-slot"
@@ -3150,6 +3151,16 @@ pub(super) fn call(
             // Emaxx uses Rust ownership rather than GNU's byte-allocation GC
             // threshold, so no pending automatic collection can be due.
             Ok(Value::Nil)
+        }
+        "memory-use-counts" => {
+            need_args(name, args, 0)?;
+            // GNU's seven counters are incremented at type-specific C arena
+            // allocation sites and survive GC.  Rust ownership has neither
+            // those arenas nor equivalent category accounting; allocator
+            // byte totals or live-object scans would not implement this API.
+            Err(LispError::Signal(
+                "GNU allocation counters are unavailable in the Rust ownership backend".into(),
+            ))
         }
         "num-processors" => {
             need_args(name, args, 0)?;

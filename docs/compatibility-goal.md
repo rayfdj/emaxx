@@ -29,6 +29,26 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-02 allocation-telemetry checkpoint advances the exact GNU C
+  primitive inventory to 1,413/1,420, leaving seven missing and no non-VM
+  `alloc.c` entry.  `memory-use-counts` preserves GNU's zero-argument contract
+  and documents the upstream seven-counter result through a direct
+  sibling-GNU oracle.  Valid Emaxx calls stop at an explicit catchable
+  telemetry boundary because GNU increments type-specific counters at its C
+  GC-arena allocation sites, while Emaxx uses Rust ownership without
+  equivalent category accounting.  Emaxx does not substitute allocator bytes,
+  live-object scans, or zeros for cumulative counters that must survive GC.
+  Exact inventory fingerprints are mirrored
+  `(1_413, 9_702_192_709_240_017_211)` and missing
+  `(7, 17_013_614_379_476_872_707)`.  The seven-item remainder is
+  `module-load`, `gnutls-boot`, `gnutls-bye`, and the four deferred bytecode
+  primitives.  Finish those three non-bytecode entries first, then switch
+  immediately back to the ordered 7,080-selector frontier.  The complete
+  publication gate is green: rustfmt, strict Clippy, and diff checks; all
+  1,648 library tests (1,644 in the restricted sandbox plus the four exact
+  localhost socket tests with networking allowed); 28 compatibility-harness
+  tests, 1 performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus
+  the zero-test main binary).
 - The 2026-08-02 compiled-regexp checkpoint advances the exact GNU C primitive
   inventory to 1,412/1,420, leaving eight missing and no `search.c` entry.
   `re--describe-compiled` now preserves GNU's arity, current-buffer

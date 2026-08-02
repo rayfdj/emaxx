@@ -18,6 +18,25 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-02 ALLOCATION-TELEMETRY CHECKPOINT: the exact generated GNU C
+  inventory is 1,413/1,420 mirrored, with seven missing and no non-VM
+  `alloc.c` entry left.  `memory-use-counts` preserves GNU's zero-argument
+  contract and stops at Emaxx's explicit catchable allocation-telemetry
+  boundary.  GNU's seven cumulative counters are incremented at type-specific
+  C GC-arena allocation sites and never decrease after GC; Emaxx's Rust
+  ownership model has no equivalent category accounting.  Allocator bytes,
+  live-object scans, and constant zeros would all be dishonest replacements.
+  A direct sibling-GNU oracle pins the arity and seven-integer result shape.
+  Exact fingerprints are mirrored `(1_413, 9_702_192_709_240_017_211)` and
+  missing `(7, 17_013_614_379_476_872_707)`.  The remaining non-bytecode
+  entries are `module-load`, `gnutls-boot`, and `gnutls-bye`; finish them
+  before returning to the ordered 7,080-selector frontier with the four VM
+  primitives visibly deferred.  The complete publication gate is green:
+  rustfmt, strict Clippy, and diff checks; all 1,648 library tests (1,644 in
+  the restricted sandbox plus the four exact localhost socket tests with
+  networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).
 - 2026-08-02 COMPILED-REGEXP CHECKPOINT: the exact generated GNU C inventory
   is 1,412/1,420 mirrored, with eight missing and no `search.c` entry left.
   `re--describe-compiled` preserves GNU's arity, current-buffer compilation
