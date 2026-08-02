@@ -670,6 +670,21 @@ fn builtin_symbol_properties() -> Vec<(String, Value)> {
     properties.extend(builtin_edebug_declaration_specs());
     properties.extend(builtin_edebug_elem_specs());
     properties.extend(builtin_error_symbol_properties());
+    properties.extend(
+        [
+            ("gnutls-e-interrupted", -52),
+            ("gnutls-e-again", -28),
+            ("gnutls-e-invalid-session", -10),
+            ("gnutls-e-not-ready-for-handshake", -65_500),
+        ]
+        .into_iter()
+        .map(|(symbol, code)| {
+            (
+                symbol.to_string(),
+                vec![("gnutls-code".to_string(), Value::Integer(code))],
+            )
+        }),
+    );
     // GNU: (function-put 'lambda 'doc-string-elt 2); pp's code formatter
     // keeps only pre-docstring elements on the first line.  Merged into
     // lambda's existing entry (per-symbol entries replace wholesale).
@@ -1087,10 +1102,180 @@ impl std::fmt::Debug for RunningProcess {
 
 const GNUTLS_STAGE_INIT: i64 = 4;
 
+pub(crate) type GnuTlsDeinit = unsafe extern "C" fn(*mut std::ffi::c_void);
+pub(crate) type GnuTlsRecordRecv =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, usize) -> isize;
+pub(crate) type GnuTlsRecordSend =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_void, usize) -> isize;
+pub(crate) type GnuTlsHandshake = unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int;
+pub(crate) type GnuTlsBye =
+    unsafe extern "C" fn(*mut std::ffi::c_void, std::ffi::c_int) -> std::ffi::c_int;
+pub(crate) type GnuTlsErrorString =
+    unsafe extern "C" fn(std::ffi::c_int) -> *const std::ffi::c_char;
+pub(crate) type GnuTlsErrorIsFatal = unsafe extern "C" fn(std::ffi::c_int) -> std::ffi::c_int;
+
+pub(crate) struct GnuTlsSessionApi {
+    pub(crate) session_deinit: GnuTlsDeinit,
+    pub(crate) credential_deinit: GnuTlsDeinit,
+    pub(crate) record_recv: GnuTlsRecordRecv,
+    pub(crate) record_send: GnuTlsRecordSend,
+    pub(crate) handshake: GnuTlsHandshake,
+    pub(crate) bye: GnuTlsBye,
+    pub(crate) error_string: GnuTlsErrorString,
+    pub(crate) error_is_fatal: GnuTlsErrorIsFatal,
+}
+
+pub(crate) struct ProcessGnuTlsSession {
+    // Keep the library alive until every session and credential destructor has
+    // run; all stored function pointers are owned by this library.
+    _library: libloading::Library,
+    state: *mut std::ffi::c_void,
+    credential: *mut std::ffi::c_void,
+    api: GnuTlsSessionApi,
+    ready: bool,
+}
+
+impl ProcessGnuTlsSession {
+    pub(crate) fn new(
+        library: libloading::Library,
+        state: *mut std::ffi::c_void,
+        credential: *mut std::ffi::c_void,
+        api: GnuTlsSessionApi,
+        ready: bool,
+    ) -> Self {
+        Self {
+            _library: library,
+            state,
+            credential,
+            api,
+            ready,
+        }
+    }
+
+    fn error(&self, operation: &str, code: std::ffi::c_int) -> LispError {
+        // SAFETY: GnuTLS accepts every error code and returns a static C string.
+        let description = unsafe {
+            let pointer = (self.api.error_string)(code);
+            (!pointer.is_null()).then(|| {
+                std::ffi::CStr::from_ptr(pointer)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        }
+        .unwrap_or_else(|| code.to_string());
+        LispError::Signal(format!("GnuTLS {operation} failed: {description}"))
+    }
+
+    pub(crate) fn handshake(&mut self, complete: bool) -> Result<std::ffi::c_int, LispError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            // SAFETY: STATE is live until this owner is dropped.
+            let result = unsafe { (self.api.handshake)(self.state) };
+            match result {
+                0 => {
+                    self.ready = true;
+                    return Ok(0);
+                }
+                -28 if !complete => return Ok(result),
+                -28 | -52 if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                -28 | -52 => return Err(LispError::Signal("GnuTLS handshake timed out".into())),
+                error => return Ok(error),
+            }
+        }
+    }
+
+    pub(crate) fn receive(&mut self) -> Result<(Vec<u8>, bool), LispError> {
+        if !self.ready {
+            let result = self.handshake(false)?;
+            if matches!(result, -28 | -52) {
+                return Ok((Vec::new(), false));
+            }
+            if result < 0 {
+                return Err(self.error("handshake", result));
+            }
+        }
+        let mut output = Vec::new();
+        let mut chunk = [0_u8; 16_384];
+        loop {
+            // SAFETY: STATE is live and CHUNK is writable for its full length.
+            let result = unsafe {
+                (self.api.record_recv)(self.state, chunk.as_mut_ptr().cast(), chunk.len())
+            };
+            match result {
+                0 => return Ok((output, true)),
+                length if length > 0 => output.extend_from_slice(&chunk[..length as usize]),
+                -52 => continue,
+                -28 => return Ok((output, false)),
+                -9 => return Ok((output, true)),
+                error => {
+                    // GNU turns fatal record-layer failures into EOF and
+                    // leaves other repairable conditions for the next poll.
+                    // SAFETY: Every C integer is accepted by this classifier.
+                    let closed =
+                        unsafe { (self.api.error_is_fatal)(error as std::ffi::c_int) } != 0;
+                    return Ok((output, closed));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn send_all(&mut self, input: &[u8]) -> Result<(), LispError> {
+        if !self.ready {
+            let result = self.handshake(true)?;
+            if result < 0 {
+                return Err(self.error("handshake", result));
+            }
+        }
+        let mut written = 0;
+        while written < input.len() {
+            // SAFETY: STATE is live and the remaining input is borrowed for
+            // this call only.
+            let result = unsafe {
+                (self.api.record_send)(
+                    self.state,
+                    input[written..].as_ptr().cast(),
+                    input.len() - written,
+                )
+            };
+            match result {
+                length if length > 0 => written += length as usize,
+                -28 | -52 => std::thread::sleep(std::time::Duration::from_millis(1)),
+                error => return Err(self.error("send", error as std::ffi::c_int)),
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn bye(&mut self, continue_transport: bool) -> std::ffi::c_int {
+        // SAFETY: STATE is live.  GnuTLS defines 0 as SHUT_RDWR and 1 as
+        // SHUT_WR, matching GNU's CONT mapping.
+        unsafe { (self.api.bye)(self.state, if continue_transport { 1 } else { 0 }) }
+    }
+
+    pub(crate) fn raw_state(&self) -> *mut std::ffi::c_void {
+        self.state
+    }
+}
+
+impl Drop for ProcessGnuTlsSession {
+    fn drop(&mut self) {
+        // SAFETY: The constructor receives one live session and one live
+        // credential, each uniquely owned and released exactly once here.
+        unsafe {
+            (self.api.session_deinit)(self.state);
+            (self.api.credential_deinit)(self.credential);
+        }
+    }
+}
+
 struct ProcessGnuTlsState {
     boot_parameters: Value,
     initstage: i64,
     active: bool,
+    session: Option<ProcessGnuTlsSession>,
+    peer_status: Value,
 }
 
 impl Default for ProcessGnuTlsState {
@@ -1099,6 +1284,8 @@ impl Default for ProcessGnuTlsState {
             boot_parameters: Value::Nil,
             initstage: 0,
             active: false,
+            session: None,
+            peer_status: Value::Nil,
         }
     }
 }

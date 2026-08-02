@@ -29,6 +29,32 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-02 GnuTLS process-session checkpoint advances the exact GNU C
+  primitive inventory to 1,416/1,420, leaving only the four explicitly
+  deferred VM primitives: `byte-code`, `internal-stack-stats`,
+  `make-byte-code`, and `make-closure`.  `gnutls-boot` uses the existing
+  host-GnuTLS `libloading` boundary to create a real client session and keeps
+  its library, credentials, and session in one RAII ownership chain.  The
+  process event path sends and receives encrypted records through that same
+  session, while X.509/anonymous credentials, system and explicit trust,
+  CRLs, encrypted private keys, verification flags and errors, priority/SNI,
+  DH minimums, log level, peer metadata, `gnutls-bye`, deinit, EOF, and
+  deletion preserve the corresponding GNU lifecycle.  A direct sibling-GNU
+  probe pins validation and error-symbol properties; live `gnutls-serv`
+  regressions prove anonymous encrypted I/O and X.509 trust, encrypted-key,
+  and hostname-verification behavior.  Unix connected stream descriptors are
+  implemented; non-Unix builds retain an explicit catchable transport
+  boundary pending a platform callback adapter.  Exact inventory fingerprints
+  are mirrored `(1_416, 10_665_204_901_044_147_906)` and missing
+  `(4, 11_801_919_205_790_401_648)`.  Per the authoritative sequencing
+  override, keep the four VM entries unresolved and return now to the ordered
+  7,080-selector frontier.  The last published compatibility checkpoint is
+  2,332/7,080, so NEXT is selector 2,333; the stale deeper 3,554 note below is
+  not a published strict frontier.  The complete publication gate is green:
+  rustfmt, all-target check, strict Clippy, and diff checks; all 1,652 library
+  tests (1,646 restricted plus the six exact localhost tests with networking
+  allowed); 28 compatibility-harness tests, 1 performance-harness test, 8 CLI
+  tests, and 3 ERT-runner tests (plus the zero-test main binary).
 - The 2026-08-02 dynamic-module checkpoint advances the exact GNU C primitive
   inventory to 1,414/1,420, leaving six missing and no `emacs-module.c`
   entry.  `module-load` uses the established `libloading` crate to open the

@@ -18,6 +18,34 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-02 GNUTLS PROCESS-SESSION CHECKPOINT: the exact generated GNU C
+  inventory is 1,416/1,420 mirrored, with only the four explicitly deferred
+  VM primitives left: `byte-code`, `internal-stack-stats`, `make-byte-code`,
+  and `make-closure`.  `gnutls-boot` now creates a real client session through
+  the existing host-GnuTLS `libloading` boundary, owns the session,
+  credentials, and library together with RAII, and routes the process's
+  nonblocking reads and writes through `gnutls_record_recv` and
+  `gnutls_record_send`.  Anonymous and X.509 negotiation, priority/SNI,
+  system and explicit trust, CRLs, encrypted client keys and flags,
+  verification policy, minimum DH bits, logging, negotiated peer metadata,
+  `gnutls-bye`, deinit, EOF, and process deletion all use that same live
+  session.  Direct sibling-GNU probes pin arities, validation conditions, and
+  the four standard `gnutls-code` symbol properties; live `gnutls-serv`
+  regressions prove anonymous encrypted I/O plus explicit-trust X.509 success,
+  encrypted private-key loading, and hostname rejection.  Unix connected
+  stream descriptors are implemented; non-Unix builds report the explicit
+  catchable transport boundary until their platform callback adapter exists.
+  Exact fingerprints are mirrored `(1_416, 10_665_204_901_044_147_906)` and
+  missing `(4, 11_801_919_205_790_401_648)`.  SEQUENCING OVERRIDE: keep those
+  four VM entries visibly unresolved and resume the ordered 7,080-selector
+  frontier at the last published compatibility checkpoint, 2,332/7,080; NEXT
+  is selector 2,333.  Do not treat the stale deeper 3,554 note below as a
+  published strict frontier.  The complete publication gate is green:
+  rustfmt, all-target check, strict Clippy, and diff checks; all 1,652 library
+  tests (1,646 in the restricted sandbox plus the six exact localhost tests
+  with networking allowed); 28 compatibility-harness tests, 1
+  performance-harness test, 8 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).
 - 2026-08-02 DYNAMIC-MODULE CHECKPOINT: the exact generated GNU C inventory is
   1,414/1,420 mirrored, with six missing and no `emacs-module.c` entry left.
   `module-load` uses the established mature `libloading` crate for real
