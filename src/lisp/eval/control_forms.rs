@@ -458,6 +458,24 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         let _ = crate::lisp::load_file_strict(self, &path);
     }
 
+    /// Load a Lisp-owned macro advertised by an autoload before falling back
+    /// to Emaxx's file-less bootstrap implementation.
+    pub(crate) fn ensure_autoloaded_macro_loaded(&mut self, name: &str) {
+        if self.has_macro_binding(name) {
+            return;
+        }
+        let Some(binding) = self.logical_function_binding(name, &Env::new()) else {
+            return;
+        };
+        let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&binding) else {
+            return;
+        };
+        if !crate::lisp::primitives::autoload_is_macro(self, Some(name), &binding) {
+            return;
+        }
+        let _ = self.load_target(&file);
+    }
+
     pub(super) fn sf_pcase(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         self.sf_pcase_like(items, env, false)
     }

@@ -1181,23 +1181,12 @@ pub(super) fn call(
                 interp.set_function_binding(symbol, Some(macro_function.clone()));
                 return Ok(macro_function);
             }
-            if let Some(Value::BuiltinFunc(builtin)) = interp.logical_function_binding(symbol, env)
-                && builtin_is_gnu_preloaded_lisp(interp, &builtin)
-            {
+            if let Some(wrapper) = materialize_preloaded_lisp_function(interp, symbol, env) {
                 // The implementation stays native, but GNU's dumped
                 // function cell is compiled Lisp.  Materialize that stable
                 // observable wrapper on first inspection so help, advice,
                 // and byte-code-function-p see the dumped contract without
                 // moving the implementation across the Lisp/host boundary.
-                let slots = byte_code_function_slots(
-                    interp,
-                    Some(symbol),
-                    Value::BuiltinFunc(builtin),
-                    None,
-                    false,
-                );
-                let wrapper = interp.create_record("byte-code-function", slots);
-                interp.set_function_binding(symbol, Some(wrapper.clone()));
                 return Ok(wrapper);
             }
             Ok(match interp.logical_function_binding(symbol, env) {
@@ -10584,7 +10573,13 @@ fn byte_code_function_slots(
     dynamic_binding: bool,
 ) -> Vec<Value> {
     let doc = symbol
-        .and_then(|name| interp.get_symbol_property(name, "function-documentation"))
+        .and_then(|name| {
+            interp
+                .get_symbol_property(name, "function-documentation")
+                .or_else(|| {
+                    super::misc::fallback_function_documentation(interp, name).map(Value::String)
+                })
+        })
         .and_then(|value| byte_code_docstring(value, &callable));
     let interactive = symbol
         .and_then(|name| interp.get_symbol_property(name, "interactive-form"))
@@ -10603,6 +10598,29 @@ fn byte_code_function_slots(
         doc.unwrap_or(Value::Nil),
         interactive,
     ]
+}
+
+pub(super) fn materialize_preloaded_lisp_function(
+    interp: &mut Interpreter,
+    symbol: &str,
+    env: &Env,
+) -> Option<Value> {
+    let Value::BuiltinFunc(builtin) = interp.logical_function_binding(symbol, env)? else {
+        return None;
+    };
+    if !builtin_is_gnu_preloaded_lisp(interp, &builtin) {
+        return None;
+    }
+    let slots = byte_code_function_slots(
+        interp,
+        Some(symbol),
+        Value::BuiltinFunc(builtin),
+        None,
+        false,
+    );
+    let wrapper = interp.create_record("byte-code-function", slots);
+    interp.set_function_binding(symbol, Some(wrapper.clone()));
+    Some(wrapper)
 }
 
 fn byte_compile_capture_lexical(interp: &Interpreter, env: &Env) -> bool {

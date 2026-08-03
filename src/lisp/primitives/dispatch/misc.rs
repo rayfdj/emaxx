@@ -1591,9 +1591,7 @@ pub(super) fn call(
                 if docs.is_empty() {
                     // Same fallbacks as `documentation': the version's DOC
                     // file, then the lisp sources on the load path.
-                    if let Some(doc) = builtin_doc_from_doc_file(symbol)
-                        .or_else(|| builtin_doc_from_lisp_sources(symbol))
-                    {
+                    if let Some(doc) = fallback_function_documentation(interp, symbol) {
                         docs.push(doc);
                     }
                 }
@@ -2723,7 +2721,9 @@ fn documentation(
         Value::BuiltinFunc(name) => {
             let offset = ensure_builtin_doc_offset(interp, name, env)?;
             if offset == 0 {
-                Value::Nil
+                fallback_function_documentation(interp, name)
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil)
             } else {
                 resolve_doc_reference(interp, &Value::Integer(offset), env)?.unwrap_or(Value::Nil)
             }
@@ -2733,8 +2733,7 @@ fn documentation(
     if doc.is_nil()
         && let Value::Symbol(symbol) = &args[0]
     {
-        doc = builtin_doc_from_doc_file(symbol)
-            .or_else(|| builtin_doc_from_lisp_sources(symbol))
+        doc = fallback_function_documentation(interp, symbol)
             .map(Value::String)
             .unwrap_or(Value::Nil);
     }
@@ -2762,9 +2761,30 @@ thread_local! {
 /// Look up FUNCTION's docstring in the version's `DOC` file (the same file GNU
 /// Emacs distributes in its data directory).  Returns `None` when the DOC file
 /// cannot be located or has no entry for the function.
-fn builtin_doc_from_doc_file(function: &str) -> Option<String> {
-    let etc_dir = crate::lisp::primitives::compat_data_directory()?;
-    let path = std::path::Path::new(&etc_dir).join("DOC");
+fn lisp_source_root(interp: &Interpreter) -> Option<PathBuf> {
+    crate::lisp::primitives::compat_data_directory()
+        .map(PathBuf::from)
+        .and_then(|etc| etc.parent().map(|root| root.join("lisp")))
+        .filter(|root| root.is_dir())
+        .or_else(|| {
+            interp
+                .configured_load_path()
+                .iter()
+                .find(|path| path.file_name().is_some_and(|name| name == "lisp"))
+                .cloned()
+        })
+}
+
+fn builtin_doc_from_doc_file(interp: &Interpreter, function: &str) -> Option<String> {
+    let path = crate::lisp::primitives::compat_data_directory()
+        .map(PathBuf::from)
+        .map(|etc| etc.join("DOC"))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            lisp_source_root(interp)?
+                .parent()
+                .map(|root| root.join("etc/DOC"))
+        })?;
     let path_str = path.to_string_lossy().to_string();
 
     let map = DOC_FILE_CACHE.with(|cache| {
@@ -2796,9 +2816,8 @@ thread_local! {
 /// have no lambda body to read a docstring from, yet their docstrings are not in
 /// the `DOC` file either — they live inline in the byte-compiled sources.  We
 /// scan the `.el` sources once and cache a name → first-docstring map.
-fn builtin_doc_from_lisp_sources(function: &str) -> Option<String> {
-    let etc_dir = crate::lisp::primitives::compat_data_directory()?;
-    let lisp_root = std::path::Path::new(&etc_dir).parent()?.join("lisp");
+fn builtin_doc_from_lisp_sources(interp: &Interpreter, function: &str) -> Option<String> {
+    let lisp_root = lisp_source_root(interp)?;
     let root_str = lisp_root.to_string_lossy().to_string();
 
     let map = LISP_SOURCE_DOC_CACHE.with(|cache| {
@@ -2819,6 +2838,14 @@ fn builtin_doc_from_lisp_sources(function: &str) -> Option<String> {
     })?;
 
     map.get(function).cloned()
+}
+
+pub(crate) fn fallback_function_documentation(
+    interp: &Interpreter,
+    function: &str,
+) -> Option<String> {
+    builtin_doc_from_doc_file(interp, function)
+        .or_else(|| builtin_doc_from_lisp_sources(interp, function))
 }
 
 /// Recursively walk DIR collecting the first docstring of every top-level
@@ -2882,6 +2909,9 @@ fn parse_el_source_docstrings(text: &str, map: &mut std::collections::HashMap<St
         if idx >= bytes.len() || bytes[idx] != b'(' {
             continue;
         }
+        let Ok(Some(arglist)) = crate::lisp::reader::Reader::new(&text[idx..]).read() else {
+            continue;
+        };
         idx = match skip_balanced_parens(bytes, idx) {
             Some(next) => next,
             None => continue,
@@ -2891,7 +2921,27 @@ fn parse_el_source_docstrings(text: &str, map: &mut std::collections::HashMap<St
         if idx >= bytes.len() || bytes[idx] != b'"' {
             continue;
         }
-        if let Some(doc) = read_lisp_string(bytes, idx) {
+        if let Ok(Some(doc)) = crate::lisp::reader::Reader::new(&text[idx..]).read() {
+            let mut doc = match doc {
+                Value::String(text) => text,
+                Value::StringObject(state) => state.borrow().text.clone(),
+                _ => continue,
+            };
+            if !doc.contains("(fn") {
+                let parameters = arglist
+                    .to_vec()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|parameter| parameter.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                doc.push_str("\n\n(fn");
+                if !parameters.is_empty() {
+                    doc.push(' ');
+                    doc.push_str(&parameters);
+                }
+                doc.push(')');
+            }
             map.entry(name.to_string()).or_insert(doc);
         }
     }
@@ -2957,34 +3007,6 @@ fn skip_balanced_parens(bytes: &[u8], mut idx: usize) -> Option<usize> {
             }
         }
         idx += 1;
-    }
-    None
-}
-
-/// Read a Lisp string literal that starts at IDX (a `"`), returning the decoded
-/// contents (with `\"` and `\\` unescaped; other escapes kept verbatim).
-fn read_lisp_string(bytes: &[u8], mut idx: usize) -> Option<String> {
-    idx += 1; // skip opening quote
-    let mut out = Vec::new();
-    while idx < bytes.len() {
-        match bytes[idx] {
-            b'\\' if idx + 1 < bytes.len() => {
-                let next = bytes[idx + 1];
-                match next {
-                    b'"' | b'\\' => out.push(next),
-                    _ => {
-                        out.push(b'\\');
-                        out.push(next);
-                    }
-                }
-                idx += 2;
-            }
-            b'"' => return Some(String::from_utf8_lossy(&out).to_string()),
-            b => {
-                out.push(b);
-                idx += 1;
-            }
-        }
     }
     None
 }

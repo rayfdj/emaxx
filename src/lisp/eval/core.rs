@@ -337,10 +337,10 @@ impl Interpreter {
                         // prefer it once loaded and keep the native form
                         // as the no-file fallback.
                         "let-alist"
-                            if !self
-                                .macros
-                                .iter()
-                                .any(|binding| binding.name == "let-alist") =>
+                            if !{
+                                self.ensure_autoloaded_macro_loaded("let-alist");
+                                self.has_macro_binding("let-alist")
+                            } =>
                         {
                             return self.sf_let_alist(&items, env);
                         }

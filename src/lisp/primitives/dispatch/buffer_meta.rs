@@ -935,6 +935,13 @@ pub(super) fn call(
                             ])));
                         }
                         seen.push(symbol.clone());
+                        if let Some(function) =
+                            super::misc_keymaps::materialize_preloaded_lisp_function(
+                                interp, symbol, env,
+                            )
+                        {
+                            return Ok(function);
+                        }
                         match interp.lookup_function(symbol, env) {
                             Ok(resolved) if matches!(resolved, Value::Symbol(_)) => {
                                 current = resolved;

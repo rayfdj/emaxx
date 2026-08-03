@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-03 callable-introspection checkpoint advances the fresh
+  contiguous compatibility prefix to 2,669/7,080, leaving 4,411 selectors.
+  GNU-preloaded Lisp callables now expose their dumped byte-code-function
+  façade consistently through both `symbol-function' and `indirect-function';
+  slot zero carries GNU's encoded argument descriptor, while `func-arity',
+  `documentation', and `help-function-arglist' recover source/DOC metadata
+  from the configured GNU load path.  The source scanner uses the Lisp reader
+  for docstrings and appends a canonical `(fn ...)' usage derived from the
+  definition's argument list when needed.  Loading an autoloaded macro now
+  replaces that symbol's stale autoload cell, including every macro defined by
+  `rx.el'; the native `let-alist' bootstrap path first honors its real GNU
+  macro autoload.  Exact `shortdoc-all-groups-work' passes in
+  `target/compat/run-1785772693841335000-28237`; grouped Shortdoc, Subr-X,
+  Syntax, and Tabulated List replays pass in
+  `target/compat/run-1785772785877356000-28399`,
+  `target/compat/run-1785772832293102000-28531`,
+  `target/compat/run-1785772893382820000-28804`, and
+  `target/compat/run-1785772868478180000-28670`.  NEXT is selector 2,670 in
+  `test/lisp/emacs-lisp/testcover-tests.el'.  Native remains honestly parked
+  at 1,416/1,420 with only the separately tracked bytecode/VM quartet
+  deferred.  The proportional checkpoint gate is green: rustfmt, all-target
+  check, strict all-feature/all-target Clippy, diff checks, focused callable
+  regressions, and all 110 selectors from Seq through Tabulated List.
 - The 2026-08-03 generic-dispatch and literal-file checkpoint advances the
   fresh contiguous compatibility prefix to 2,559/7,080, leaving 4,521
   selectors.  Cold `cl-defmethod' registrations now build the normal
