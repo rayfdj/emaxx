@@ -588,6 +588,24 @@ pub(super) fn call(
                             .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                     }
                     if record.type_name == "byte-code-function" {
+                        if idx == 0 {
+                            let arity = function_arity_value(interp, &args[0], env)?;
+                            let minimum = arity.car()?.as_integer()?;
+                            let maximum = arity.cdr()?;
+                            let descriptor = match maximum {
+                                Value::Integer(maximum) => minimum + (maximum << 8),
+                                Value::Symbol(kind) if kind == "many" => {
+                                    minimum + (minimum << 8) + 128
+                                }
+                                _ => {
+                                    return Err(LispError::TypeError(
+                                        "function".into(),
+                                        args[0].type_name(),
+                                    ));
+                                }
+                            };
+                            return Ok(Value::Integer(descriptor));
+                        }
                         return record
                             .slots
                             .get(idx)

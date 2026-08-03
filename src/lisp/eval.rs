@@ -3756,6 +3756,10 @@ impl Interpreter {
         self.load_path = load_path;
     }
 
+    pub(crate) fn configured_load_path(&self) -> &[PathBuf] {
+        &self.load_path
+    }
+
     pub(crate) fn push_lambda_capture_override(&mut self, capture: bool) {
         self.lambda_capture_overrides.push(capture);
         self.lambda_trim_overrides.push(false);

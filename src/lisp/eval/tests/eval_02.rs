@@ -604,6 +604,27 @@ fn byte_compile_accepts_function_quoted_lambdas() {
 }
 
 #[test]
+fn byte_code_function_exposes_gnu_argument_descriptor_and_arity() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((function
+                       (byte-compile #'(lambda (required &optional optional)
+                                         (list required optional)))))
+                  (list (aref function 0)
+                        (func-arity function)
+                        (funcall function 'value)))
+                "#
+        ),
+        Value::list([
+            Value::Integer(513),
+            Value::cons(Value::Integer(1), Value::Integer(2)),
+            Value::list([Value::Symbol("value".into()), Value::Nil]),
+        ])
+    );
+}
+
+#[test]
 fn byte_compile_symbol_preserves_function_attributes() {
     assert_eq!(
         eval_str(

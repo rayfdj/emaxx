@@ -131,6 +131,9 @@ impl Interpreter {
             return Err(LispError::WrongNumberOfArgs("defmacro".into(), items.len()));
         }
         let name = items[1].as_symbol()?.to_string();
+        let replaces_autoload = self
+            .logical_function_binding(&name, env)
+            .is_some_and(|binding| crate::lisp::primitives::autoload_parts(&binding).is_some());
         let params_list = items[2].to_vec()?;
         let mut params = Vec::new();
         for p in &params_list {
@@ -192,6 +195,13 @@ impl Interpreter {
         {
             let cell = Value::cons(Value::Symbol("macro".into()), expander);
             self.defalias_fset_function_handles(&name, &cell, env);
+        } else if replaces_autoload {
+            // Loading an autoloaded macro replaces its ordinary function
+            // cell in GNU Emacs.  Preserve bootstrap macros in the compact
+            // expansion table, but do not leave the just-loaded symbol's
+            // stale `(autoload ...)' cell visible to help and introspection.
+            let cell = Value::cons(Value::Symbol("macro".into()), expander);
+            self.set_function_binding(&name, Some(cell));
         }
         Ok(Value::Symbol(name))
     }

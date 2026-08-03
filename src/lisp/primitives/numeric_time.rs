@@ -441,6 +441,11 @@ pub(crate) fn function_arity_value(
 ) -> Result<Value, LispError> {
     match function {
         Value::BuiltinFunc(name) => builtin_arity_value(name)
+            .or_else(|| special_form_arity_value(name))
+            .or_else(|| {
+                super::dispatch::misc::fallback_function_documentation(interp, name)
+                    .and_then(|doc| docstring_arity_text(&doc))
+            })
             .ok_or_else(|| LispError::TypeError("function".into(), function.type_name())),
         Value::Lambda(params, _, _) => Ok(lambda_arity_value(params)),
         Value::Symbol(symbol) => {
@@ -451,11 +456,64 @@ pub(crate) fn function_arity_value(
                 function_arity_value(interp, &resolved, env)
             }
         }
+        Value::Record(id)
+            if interp
+                .find_record(*id)
+                .is_some_and(|record| record.type_name == "byte-code-function") =>
+        {
+            let (callable, doc) = interp
+                .find_record(*id)
+                .map(|record| (record.slots.first().cloned(), record.slots.get(4).cloned()))
+                .ok_or_else(|| LispError::TypeError("function".into(), function.type_name()))?;
+            callable
+                .as_ref()
+                .ok_or_else(|| LispError::TypeError("function".into(), function.type_name()))
+                .and_then(|callable| function_arity_value(interp, callable, env))
+                .or_else(|_| {
+                    doc.as_ref().and_then(docstring_arity_value).ok_or_else(|| {
+                        LispError::TypeError("function".into(), function.type_name())
+                    })
+                })
+        }
         _ => Err(LispError::TypeError(
             "function".into(),
             function.type_name(),
         )),
     }
+}
+
+fn docstring_arity_value(doc: &Value) -> Option<Value> {
+    match doc {
+        Value::String(text) => docstring_arity_text(text),
+        Value::StringObject(state) => docstring_arity_text(&state.borrow().text),
+        _ => None,
+    }
+}
+
+fn docstring_arity_text(doc: &str) -> Option<Value> {
+    let usage = doc.rsplit_once("(fn")?.1.split_once(')')?.0;
+    let mut required = 0i64;
+    let mut optional = 0i64;
+    let mut optional_mode = false;
+    let mut variadic = false;
+    for parameter in usage.split_whitespace() {
+        match parameter.to_ascii_lowercase().as_str() {
+            "&optional" => optional_mode = true,
+            "&rest" | "&key" | "&body" => variadic = true,
+            _ if variadic => {}
+            _ if optional_mode || parameter.starts_with('[') => optional += 1,
+            _ => required += 1,
+        }
+        variadic |= parameter.ends_with("...");
+    }
+    Some(Value::cons(
+        Value::Integer(required),
+        if variadic {
+            Value::Symbol("many".into())
+        } else {
+            Value::Integer(required + optional)
+        },
+    ))
 }
 
 pub(crate) fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {

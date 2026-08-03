@@ -14,7 +14,7 @@ mod frames;
 mod gnutls;
 mod gui_actions;
 mod lists;
-mod misc;
+pub(super) mod misc;
 mod misc_keymaps;
 mod numeric;
 

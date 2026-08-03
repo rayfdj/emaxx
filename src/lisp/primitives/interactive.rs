@@ -62,6 +62,12 @@ pub(crate) fn function_documentation(
         Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok()?,
         other => other.clone(),
     };
+    if let Value::Record(id) = value
+        && let Some(record) = interp.find_record(id)
+        && record.type_name == "byte-code-function"
+    {
+        return record.slots.get(4).filter(|doc| !doc.is_nil()).cloned();
+    }
     let Value::Lambda(_, body, _) = value else {
         return None;
     };

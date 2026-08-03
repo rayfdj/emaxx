@@ -4322,6 +4322,72 @@ fn batch_startup_preloads_the_gnu_help_surface() {
 }
 
 #[test]
+fn batch_native_lisp_callables_preserve_help_arglists() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"
+                (let ((let-alist-state
+                       (let ((value (let-alist '((value . 42)) .value)))
+                         (list (= value 42)
+                               (featurep 'let-alist)
+                               (autoloadp (symbol-function 'let-alist))
+                               (listp (help-function-arglist 'let-alist t)))))
+                      (rx-state
+                       (let ((regexp (rx "x")))
+                         (list (string= regexp "x")
+                               (featurep 'rx)
+                               (autoloadp (symbol-function 'rx))
+                               (listp (help-function-arglist 'rx t))
+                               (autoloadp (symbol-function 'rx-define))
+                               (listp (help-function-arglist 'rx-define t))))))
+                  (require 'shortdoc)
+                  (list
+                   let-alist-state
+                   rx-state
+                   (let ((function (indirect-function 'defvar-keymap)))
+                     (list (aref function 0)
+                           (func-arity function)
+                           (listp (help-function-arglist 'defvar-keymap t))))
+                   (let ((function (indirect-function 'zerop)))
+                     (list (aref function 0)
+                           (func-arity function)
+                           (help-function-arglist 'zerop t)))
+                   (let ((function (indirect-function 'cl-oddp)))
+                     (list (func-arity function)
+                           (help-function-arglist 'cl-oddp t)))))
+                "#
+            ),
+            Value::list([
+                Value::list([Value::T, Value::T, Value::Nil, Value::T]),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::Nil,
+                    Value::T,
+                    Value::Nil,
+                    Value::T,
+                ]),
+                Value::list([
+                    Value::Integer(385),
+                    Value::cons(Value::Integer(1), Value::Symbol("many".into())),
+                    Value::T,
+                ]),
+                Value::list([
+                    Value::Integer(257),
+                    Value::cons(Value::Integer(1), Value::Integer(1)),
+                    Value::list([Value::Symbol("number".into())]),
+                ]),
+                Value::list([
+                    Value::cons(Value::Integer(1), Value::Integer(1)),
+                    Value::list([Value::Symbol("integer".into())]),
+                ]),
+            ])
+        );
+    });
+}
+
+#[test]
 fn backquote_splicing_uses_a_runtime_keymaps_public_list_shape() {
     assert_eq!(
         eval_str(

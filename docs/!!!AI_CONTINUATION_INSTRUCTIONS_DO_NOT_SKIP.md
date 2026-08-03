@@ -18,6 +18,30 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-03 CALLABLE-INTROSPECTION CHECKPOINT: the fresh contiguous ordered
+  frontier is 2,669/7,080, leaving 4,411 selectors.  Seq (52/52), Shadow
+  (1/1), Shortdoc (5/5), Subr-X (47/47), Syntax (1/1), and Tabulated List
+  (4/4) are green after the 2,559 checkpoint.  Preloaded Lisp callables expose
+  the same observable byte-code-function façade through `symbol-function' and
+  `indirect-function'; its slot-zero argument descriptor, `func-arity', docs,
+  and help arglists are derived from GNU DOC/source metadata on the configured
+  load path.  Lisp-source docstrings are decoded by the real reader and gain
+  `(fn ...)' usage from their source arglists when absent.  `defmacro' replaces
+  an existing autoload cell when that macro is loaded, so `rx', `rx-define',
+  and their siblings stop advertising stale stubs; `let-alist' likewise loads
+  GNU's macro before using the native file-less fallback.  Load-bearing
+  artifacts: exact Shortdoc
+  `target/compat/run-1785772693841335000-28237`; grouped Shortdoc
+  `target/compat/run-1785772785877356000-28399`; Subr-X
+  `target/compat/run-1785772832293102000-28531`; Syntax
+  `target/compat/run-1785772893382820000-28804`; Tabulated List
+  `target/compat/run-1785772868478180000-28670`.  NEXT is selector 2,670 in
+  `test/lisp/emacs-lisp/testcover-tests.el' (31 selectors).  Continue with its
+  earliest exact mismatch, then group the file.  Keep the four separately
+  tracked bytecode/VM primitives deferred: native remains 1,416/1,420.  The
+  proportional checkpoint gate is green: rustfmt, all-target check, strict
+  all-feature/all-target Clippy, diff checks, focused callable regressions,
+  and all 110 selectors from Seq through Tabulated List.
 - 2026-08-03 GENERIC-DISPATCH/LITERAL-FILE CHECKPOINT: the fresh contiguous
   ordered frontier is 2,559/7,080, leaving 4,521 selectors.  The published
   batch starts after 2,411 and verifies nadvice, oclosure, package, pcase, pp,
