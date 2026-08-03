@@ -299,11 +299,22 @@ impl ClDefmethodStoredSpecializer {
                 .iter()
                 .any(|parent| matches!(parent, Value::Symbol(parent) if parent == ancestor))
         };
+        // Oclosures add a semantic type on top of their callable storage.
+        // An interpreted or compiled oclosure therefore matches both its
+        // concrete type and the corresponding representation class, but GNU
+        // generic dispatch always prefers the concrete oclosure method.
+        let oclosure_precedes_representation = |child: &str, ancestor: &str| {
+            interp.class_is_oclosure_type(child)
+                && matches!(ancestor, "interpreted-function" | "byte-code-function")
+        };
         match (self, other) {
             (Self::Class(left), Self::Class(right)) => {
                 left != right
                     && (inherits(left, right)
-                        || (!inherits(right, left) && interp.class_sibling_precedes(left, right)))
+                        || oclosure_precedes_representation(left, right)
+                        || (!inherits(right, left)
+                            && !oclosure_precedes_representation(right, left)
+                            && interp.class_sibling_precedes(left, right)))
             }
             (Self::Eql(value), Self::Class(class_name)) => {
                 let Ok(actual) = primitives::cl_type_name(interp, value) else {
@@ -319,7 +330,10 @@ impl ClDefmethodStoredSpecializer {
             (Self::Subclass(left), Self::Subclass(right)) => {
                 left != right
                     && (inherits(left, right)
-                        || (!inherits(right, left) && interp.class_sibling_precedes(left, right)))
+                        || oclosure_precedes_representation(left, right)
+                        || (!inherits(right, left)
+                            && !oclosure_precedes_representation(right, left)
+                            && interp.class_sibling_precedes(left, right)))
             }
             (Self::Subclass(_), Self::Class(class_name)) => class_name == "t",
             (Self::Eql(_), Self::Subclass(_)) => true,
@@ -4114,6 +4128,9 @@ impl Interpreter {
             }
         }
         if body_start < items.len() {
+            let existing_dispatch = self
+                .get_symbol_property(&name, "emaxx-cl-defmethod-specializers")
+                .and_then(|_| self.lookup_function(&name, env).ok());
             let mut lowered = Vec::with_capacity(items.len() - body_start + 4);
             lowered.push(Value::Symbol("cl-defun".into()));
             lowered.push(Value::Symbol(name.clone()));
@@ -4126,6 +4143,12 @@ impl Interpreter {
             }
             lowered.extend(items[body_start..].iter().cloned());
             self.sf_cl_defun(&lowered, env)?;
+            if let Some(existing_dispatch) = existing_dispatch
+                && let Ok(new_default) = self.lookup_function(&name, env)
+                && cl_defmethod_replace_terminal_previous_bindings(&existing_dispatch, &new_default)
+            {
+                self.set_function_binding(&name, Some(existing_dispatch));
+            }
         } else if self.lookup_function(&name, env).is_err() {
             self.set_function_binding(&name, Some(Value::BuiltinFunc("ignore".into())));
         }
@@ -4552,10 +4575,10 @@ impl Interpreter {
             );
             return Ok(items[1].clone());
         }
-        if let Some(specializer) = ordered_method_specializers.first().cloned()
-            && let Ok(previous) =
-                self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
-        {
+        if let Some(specializer) = ordered_method_specializers.first().cloned() {
+            let previous = self
+                .lookup_function(&function_name_from_binding_form(&items[1])?, env)
+                .unwrap_or_else(|_| Value::BuiltinFunc("ignore".into()));
             let advice_original = cl_defmethod_advice_original_binding(&previous);
             let dispatch_root = advice_original
                 .as_ref()
@@ -4973,7 +4996,9 @@ impl Interpreter {
                 executable_method_forms.clone().into(),
                 shared_env(env.clone()),
             );
-            if cl_defmethod_replace_ignore_previous_bindings(self, &previous, &base_method) {
+            if cl_defmethod_replace_ignore_previous_bindings(self, &previous, &base_method)
+                || cl_defmethod_replace_terminal_previous_bindings(&previous, &base_method)
+            {
                 return Ok(items[1].clone());
             }
         }
@@ -5474,6 +5499,22 @@ impl Interpreter {
                 "(defalias '{type_name}--{slot}--emaxx-set (lambda (obj value) (emaxx--oclosure-set-slot obj '{slot} value)))\n\
                  (put '{type_name}--{slot} 'emaxx-gv-setter '{type_name}--{slot}--emaxx-set)\n"
             ));
+            // GNU's GV fallback calls the canonical `(setf ACCESSOR)'
+            // function with VALUE before the accessor's ordinary arguments.
+            self.set_function_binding(
+                &format!("(setf {type_name}--{slot})"),
+                Some(Value::Lambda(
+                    vec!["value".into(), "obj".into()],
+                    vec![Value::list([
+                        Value::Symbol("emaxx--oclosure-set-slot".into()),
+                        Value::Symbol("obj".into()),
+                        quoted_literal(&Value::Symbol(slot.clone())),
+                        Value::Symbol("value".into()),
+                    ])]
+                    .into(),
+                    shared_env(Vec::new()),
+                )),
+            );
         }
         for (copier_name, copier_slots) in &copiers {
             match copier_slots {

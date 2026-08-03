@@ -542,6 +542,11 @@ pub(super) fn call(
             };
             let current = file_modtime(path)?;
             let visited = buffer.visited_file_modtime();
+            // GNU's unknown timestamp sentinel means there is nothing to
+            // verify, so the file is considered unchanged.
+            if visited.is_none() {
+                return Ok(Value::T);
+            }
             // Tramp reports remote modification times with one-second
             // resolution; a same-second rewrite looks unchanged.
             let unchanged = if remote_visit {
@@ -2659,6 +2664,7 @@ pub(super) fn call(
             if args[0].is_nil() {
                 interp.buffer.file = None;
                 interp.buffer.file_truename = None;
+                interp.buffer.set_visited_file_modtime(None);
                 return Ok(Value::Nil);
             }
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
@@ -2666,6 +2672,10 @@ pub(super) fn call(
             let truename = canonical_file_name(&path);
             interp.buffer.file = Some(path.clone());
             interp.buffer.file_truename = Some(truename);
+            // This changes what the buffer will visit rather than visiting
+            // the file's contents, so GNU deliberately forgets the old
+            // timestamp until a visit, save, or explicit update records it.
+            interp.buffer.set_visited_file_modtime(None);
             // GNU renames the buffer to the file's base name (uniquely) and
             // marks it modified unless ALONG-WITH-FILE.
             let base = std::path::Path::new(&path)

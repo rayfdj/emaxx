@@ -29,6 +29,35 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-03 generic-dispatch and literal-file checkpoint advances the
+  fresh contiguous compatibility prefix to 2,559/7,080, leaving 4,521
+  selectors.  Cold `cl-defmethod' registrations now build the normal
+  replaceable dispatch graph, so a later `cl-defgeneric' default cannot erase
+  methods installed during startup; concrete oclosure types outrank their
+  interpreted representation, and generated oclosure accessors publish the
+  canonical `(setf ACCESSOR)' function used by GNU GV macros.  GNU's unknown
+  visited-file timestamp is represented explicitly across
+  `set-visited-file-name', verification, and the supersession guard, while
+  `coding-system-for-read = no-conversion' preserves CRLF/CR bytes for the
+  Lisp-owned literal reader.  Grouped nadvice and oclosure replays pass in
+  `target/compat/run-1785672235282253000-14202` and
+  `target/compat/run-1785672794209128000-14840`; exact package regressions pass
+  in `target/compat/run-1785679049720973000-16394` and
+  `target/compat/run-1785684197511587000-17342`; the complete selected package
+  replay passes in `target/compat/run-1785684248896863000-17474`.  Grouped
+  pcase, pp, range, regexp-opt, ring, rmc, and rx replays then establish the
+  unchanged prefix through rx in
+  `target/compat/run-1785684434559994000-18408`.  NEXT is selector 2,560,
+  `test-difference-with-nil`, in `test/lisp/emacs-lisp/seq-tests.el`.  Continue
+  with focused exact selectors and grouped files, paying the complete
+  publication gate only after roughly 100--150 newly verified selectors or a
+  high-risk shared-runtime change.  Native remains honestly parked at
+  1,416/1,420 with only the separately tracked bytecode/VM quartet deferred.
+  The publication gate is green: rustfmt, strict all-target Clippy, and diff
+  checks; 1,652 restricted library tests plus the six exact localhost tests
+  with networking allowed; 28 compatibility-harness tests, 1
+  performance-harness test, 9 CLI tests, and 3 ERT-runner tests (plus the
+  zero-test main binary).
 - The 2026-08-02 macroexp/map checkpoint advances the fresh contiguous
   compatibility prefix to 2,411/7,080 and finishes all 4 selected outcomes
   in `macroexp-tests.el` plus all 62 in `map-tests.el`.  Delayed lambdas made

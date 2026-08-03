@@ -1237,6 +1237,15 @@ impl Interpreter {
                     .iter()
                     .map(|parent| (*parent).to_string())
                     .collect()
+            } else if name == "oclosure" {
+                vec!["closure".into()]
+            } else if interp.class_is_oclosure_type(name) {
+                vec![
+                    interp
+                        .get_symbol_property(name, "emaxx-oclosure-parent")
+                        .and_then(|value| value.as_symbol().ok().map(String::from))
+                        .unwrap_or_else(|| "oclosure".into()),
+                ]
             } else if let Some(parents) = interp.raw_eieio_class_parent_names(name) {
                 parents
             } else {
@@ -1312,6 +1321,13 @@ impl Interpreter {
             .into_iter()
             .map(crate::lisp::types::interned_symbol_value)
             .collect()
+    }
+
+    pub(crate) fn class_is_oclosure_type(&self, name: &str) -> bool {
+        name == "oclosure"
+            || self
+                .get_symbol_property(name, "emaxx-oclosure-slots")
+                .is_some()
     }
 
     // Sibling classes (neither inherits the other) have no global
