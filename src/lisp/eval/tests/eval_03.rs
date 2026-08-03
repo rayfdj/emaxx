@@ -3938,6 +3938,47 @@ fn oclosure_lambda_lowers_to_plain_lambda() {
 }
 
 #[test]
+fn oclosure_methods_precede_callable_representation_methods() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (oclosure-define sample-dispatch-oclosure (value :mutable t))
+               (cl-defmethod sample-oclosure-dispatch
+                 ((object sample-dispatch-oclosure)) 'specific)
+               (cl-defgeneric sample-oclosure-dispatch (object))
+               (cl-defmethod sample-oclosure-dispatch (object) 'default)
+               (cl-defgeneric sample-oclosure-dispatch (object) 'redefined-default)
+               (cl-defmethod sample-oclosure-dispatch
+                 ((object interpreted-function)) 'representation)
+               (cl-defmethod cl-print-object
+                 ((object sample-dispatch-oclosure) stream)
+                 (princ \"#f(sample)\" stream))
+               (cl-defgeneric cl-print-object (object stream)
+                 (prin1 object stream))
+               (cl-defmethod cl-print-object
+                 ((object interpreted-function) stream)
+                 (princ \"#f(lambda)\" stream))
+               (let ((object
+                      (oclosure-lambda
+                          (sample-dispatch-oclosure (value 7)) ()
+                        value)))
+                 (list (cl-typep object 'interpreted-function)
+                       (sample-oclosure-dispatch object)
+                       (cl-prin1-to-string object)
+                       (progn
+                         (cl-incf (sample-dispatch-oclosure--value object) 2)
+                         (funcall object)))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::symbol("specific"),
+            Value::string("#f(sample)"),
+            Value::Integer(9),
+        ])
+    );
+}
+
+#[test]
 fn function_quote_returns_non_lambda_list_objects_literally() {
     assert_eq!(
         eval_str("#'(1 2)"),

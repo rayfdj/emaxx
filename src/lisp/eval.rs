@@ -5825,6 +5825,71 @@ fn cl_defmethod_replace_ignore_previous_bindings_inner(
     }
 }
 
+// Replace the terminal/default callable captured by an existing generic
+// dispatch graph.  Re-evaluating `cl-defgeneric' changes that default method
+// but preserves methods which other libraries have already registered.
+fn cl_defmethod_replace_terminal_previous_bindings(function: &Value, replacement: &Value) -> bool {
+    fn is_dispatch_chain(function: &Value) -> bool {
+        ["previous_method_", "before_method_", "after_method_"]
+            .iter()
+            .any(|fragment| cl_defmethod_contains_binding_fragment(function, fragment))
+    }
+
+    fn replace(
+        function: &Value,
+        replacement: &Value,
+        seen_envs: &mut HashSet<usize>,
+        seen_cons: &mut HashSet<usize>,
+    ) -> bool {
+        match function {
+            Value::Lambda(_, _, closure_env) => {
+                let env_id = closure_env.as_ptr() as usize;
+                if !seen_envs.insert(env_id) {
+                    return false;
+                }
+                let mut replaced = false;
+                let mut nested = Vec::new();
+                {
+                    let mut closure_env = closure_env.borrow_mut();
+                    for frame in closure_env.iter_mut() {
+                        for (name, value) in frame.iter_mut() {
+                            if (name.starts_with("__emaxx_previous_method_")
+                                || name.starts_with("__emaxx_before_method_")
+                                || name.starts_with("__emaxx_after_method_"))
+                                && !is_dispatch_chain(value)
+                            {
+                                *value = replacement.clone();
+                                replaced = true;
+                            } else if name.starts_with("__emaxx_") {
+                                nested.push(value.clone());
+                            }
+                        }
+                    }
+                }
+                nested.into_iter().fold(replaced, |replaced, value| {
+                    replace(&value, replacement, seen_envs, seen_cons) || replaced
+                })
+            }
+            Value::Cons(car, cdr) => {
+                let cons_id = car.as_ptr() as usize;
+                if !seen_cons.insert(cons_id) {
+                    return false;
+                }
+                replace(&car.borrow(), replacement, seen_envs, seen_cons)
+                    || replace(&cdr.borrow(), replacement, seen_envs, seen_cons)
+            }
+            _ => false,
+        }
+    }
+
+    replace(
+        function,
+        replacement,
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+    )
+}
+
 // A :before/:after wrapper's first closure frame binds the previous chain
 // under a `__emaxx_{before,after}_method_...' name plus its specializer
 // metadata, so registration can walk the qualifier stack and keep it

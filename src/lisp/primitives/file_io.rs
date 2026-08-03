@@ -1125,6 +1125,12 @@ pub(crate) fn decode_file_contents(
         requested = auto_coding_for_file(interp, env, bytes, filename)?;
     }
     if let Some(requested) = requested {
+        // `no-conversion' is the byte-preserving path used by the Lisp
+        // `insert-file-contents-literally' wrapper.  In particular, CRLF
+        // and CR bytes must not pass through the normal EOL decoder.
+        if requested == "no-conversion" {
+            return Ok((decode_raw_text_bytes(bytes), requested));
+        }
         if requested == "undecided" {
             let (detected, normalized) = auto_detect_coding(interp, bytes);
             return Ok((decode_text_bytes(interp, &normalized, &detected)?, detected));
@@ -1549,7 +1555,10 @@ pub(crate) fn ensure_no_supersession_threat(
     let Some(current_modtime) = file_modtime(&path)? else {
         return Ok(());
     };
-    if interp.buffer.visited_file_modtime() == Some(current_modtime) {
+    let visited_modtime = interp.buffer.visited_file_modtime();
+    // An unknown recorded timestamp is GNU's explicit "do not verify"
+    // state (used by `set-visited-file-name', among others).
+    if visited_modtime.is_none() || visited_modtime == Some(current_modtime) {
         return Ok(());
     }
     let (disk_text, _, _) = current_buffer_file_text(interp, env, &path)?;

@@ -18,6 +18,34 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-03 GENERIC-DISPATCH/LITERAL-FILE CHECKPOINT: the fresh contiguous
+  ordered frontier is 2,559/7,080, leaving 4,521 selectors.  The published
+  batch starts after 2,411 and verifies nadvice, oclosure, package, pcase, pp,
+  range, regexp-opt, ring, rmc, and rx.  Cold specialized `cl-defmethod'
+  registrations use a replaceable terminal even before a generic exists;
+  later `cl-defgeneric' definitions replace only that terminal, concrete
+  oclosure types precede interpreted/byte-code representation specializers,
+  and generated oclosure accessors expose canonical `(setf ACCESSOR)'
+  functions.  `set-visited-file-name' clears the recorded timestamp like GNU,
+  an unknown timestamp verifies true and suppresses supersession prompts, and
+  explicit `no-conversion' file reads preserve raw CRLF/CR bytes.  Load-bearing
+  artifacts: nadvice grouped
+  `target/compat/run-1785672235282253000-14202`; oclosure grouped
+  `target/compat/run-1785672794209128000-14840`; exact package regressions
+  `target/compat/run-1785679049720973000-16394` and
+  `target/compat/run-1785684197511587000-17342`; package grouped
+  `target/compat/run-1785684248896863000-17474`; final grouped rx
+  `target/compat/run-1785684434559994000-18408`.  NEXT is selector 2,560,
+  `test-difference-with-nil`, in `test/lisp/emacs-lisp/seq-tests.el`.  Use
+  exact selectors to diagnose the first mismatch, grouped files to bank
+  unchanged runs, one release subject build per source change, and the full
+  publication gate only every roughly 100--150 selectors or after a high-risk
+  shared-runtime change.  Keep the four separately tracked bytecode/VM
+  primitives deferred: native remains 1,416/1,420.  The publication gate is
+  green: rustfmt, strict all-target Clippy, and diff checks; 1,652 restricted
+  library tests plus the six exact localhost tests with networking allowed;
+  28 compatibility-harness tests, 1 performance-harness test, 9 CLI tests,
+  and 3 ERT-runner tests (plus the zero-test main binary).
 - 2026-08-02 SYNTAX-DESCRIPTOR CHECKPOINT: the fresh contiguous ordered
   frontier is 2,345/7,080, completing all 37 selected `lisp-tests.el`
   outcomes.  `syntax-after` and `syntax-class` are GNU-preloaded Lisp policy;

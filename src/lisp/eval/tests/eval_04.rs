@@ -1543,6 +1543,56 @@ fn insert_file_contents_visit_marks_buffer_as_visiting_file() {
 }
 
 #[test]
+fn set_visited_file_name_clears_the_recorded_modtime() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-set-visited-modtime-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(&path, b"\0binary\r\nbytes").expect("create set-visited source file");
+    let path_text = path.to_string_lossy();
+    let form = format!(
+        r#"(with-temp-buffer
+              (insert-file-contents-literally "{path_text}")
+              (set-visited-file-name "{path_text}")
+              (set-buffer-modified-p nil)
+              (list (visited-file-modtime)
+                    (verify-visited-file-modtime (current-buffer))))"#
+    );
+    assert_eq!(
+        eval_str_with_upstream_load_path(&form),
+        Value::list([Value::Integer(0), Value::T])
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn no_conversion_file_reads_preserve_crlf_bytes() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-no-conversion-read-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(&path, b"first\r\nsecond\r\n").expect("create CRLF source file");
+    let path_text = path.to_string_lossy();
+    let form = format!(
+        r#"(with-temp-buffer
+              (let ((coding-system-for-read 'no-conversion))
+                (insert-file-contents "{path_text}"))
+              (buffer-string))"#
+    );
+    assert_eq!(
+        eval_str_with_upstream_load_path(&form),
+        Value::String("first\r\nsecond\r\n".into())
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn revert_buffer_refreshes_related_indirect_buffers() {
     let path = std::env::temp_dir().join(format!(
         "emaxx-indirect-revert-{}",
