@@ -1366,7 +1366,7 @@ struct ProcessState {
 }
 
 #[derive(Clone, Debug)]
-struct WindowConfigurationSnapshot {
+pub(crate) struct WindowConfigurationSnapshot {
     current_buffer_id: u64,
     selected_window_id: u64,
     selected_window_slots: Vec<Value>,

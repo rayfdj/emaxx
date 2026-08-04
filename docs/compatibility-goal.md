@@ -42,8 +42,23 @@ handoff and retry instruction are in
   `target/compat/run-1785849032855974000-73035`, and core Eshell in
   `target/compat/run-1785849223462088000-74858`.  NEXT is selector 3,535,
   `faces--test-color-at-point', in `test/lisp/faces-tests.el` (5 selected
-  outcomes).  Native remains honestly parked at 1,416/1,420 with only the
-  separately tracked bytecode/VM quartet deferred.
+  outcomes).  The last verified native frontier is 1,416/1,420; re-sweep its
+  bytecode/VM quartet after this merge before updating that count.
+- The bytecode VM (issue #10, branch `claude/bytecode-vm`) executes genuine
+  GNU 30.2 `.elc` bytecode end to end: `src/lisp/bytecode.rs` ports the full
+  `bytecode.c` opcode set (decoder, validator, ELC classification, rejection
+  contract) and `src/lisp/bytecode/vm.rs` runs it — argument prologues for
+  packed and legacy list argspecs, a specpdl-style unwind stack (dynamic
+  binds, save-excursion/restriction/current-buffer, unwind-protect),
+  catch/condition-case handlers registered with the interpreter's
+  active-catch registry, constants materialization (nested `#[...]`
+  closures, `#s(hash-table)` Bswitch jump tables), and a `make-closure`
+  primitive.  `call_function_value` dispatches genuine byte-code-function
+  records to the VM; `load_file_strict` executes bytecode `.elc` directly
+  under `EMAXX_BYTECODE_VM=1` or when no sibling `.el` exists.  All fixture
+  suites are oracle-compiled artifacts proven against interpreted semantics.
+  The sibling-source loader default stays until a full compat sweep
+  validates the flip.
 - The 2026-08-04 Eshell process checkpoint advances the fresh contiguous
   compatibility prefix to 3,381/7,080, leaving 3,699 selectors.  Mode is 3/3,
   Options 13/13, and Process 24/24.  Batch `read-string' now reads one stdin

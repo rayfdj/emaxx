@@ -764,7 +764,7 @@ impl Interpreter {
         self.frame_and_buffer_state = state;
     }
 
-    pub(super) fn snapshot_window_configuration(&self) -> WindowConfigurationSnapshot {
+    pub(crate) fn snapshot_window_configuration(&self) -> WindowConfigurationSnapshot {
         WindowConfigurationSnapshot {
             current_buffer_id: self.current_buffer_id(),
             selected_window_id: self.selected_window_id,
@@ -909,7 +909,7 @@ impl Interpreter {
                 == layout_slots(&right.selected_window_slots))
     }
 
-    pub(super) fn restore_window_configuration(
+    pub(crate) fn restore_window_configuration(
         &mut self,
         snapshot: WindowConfigurationSnapshot,
     ) -> Result<(), LispError> {
