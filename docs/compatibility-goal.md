@@ -29,6 +29,20 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 Imenu/Info/International checkpoint advances the fresh
+  contiguous compatibility prefix to 3,974/7,080, leaving 3,106 selectors.
+  Imenu is 3/3, Info 1/1, canonical Info Xref 4/4, and International 82/82
+  across CCL, Mule, Mule Util, Text Security, and UCS Normalize.
+  `compare-buffer-substrings' now accepts GNU's nil current-buffer and
+  default-bound arguments.  Canonical combining classes come from the
+  established `unicode-normalization' crate instead of a partial handwritten
+  table, fixing multi-mark reordering and composition.  Representative
+  artifacts are Info Xref `target/compat/run-1785856391969354000-85715`, Mule
+  Util `target/compat/run-1785856607743622000-86165`, exact UCS part 0
+  `target/compat/run-1785857953103955000-87292`, and canonical UCS
+  `target/compat/run-1785858099604427000-87515`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 3,975 in `test/lisp/isearch-tests.el` (5
+  selected outcomes).
 - The 2026-08-04 Ido/Image checkpoint advances the fresh contiguous
   compatibility prefix to 3,884/7,080, leaving 3,196 selectors.  Ido is 2/2
   and the complete Image theme is 53/53 across EXIF, Gravatar, Image Dired,
