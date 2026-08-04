@@ -93,6 +93,12 @@ const GNU_EMACS_LOCALE_SPECIAL_VARIABLES: &[&str] =
 const GNU_TREESIT_SPECIAL_VARIABLES: &[&str] =
     &["treesit-extra-load-path", "treesit-load-name-override-list"];
 
+// keyboard.c owns both Lisp timer queues.  Like every native DEFVAR_LISP,
+// they are special: test harnesses deliberately bind private queue copies,
+// and timer.el must mutate and the event loop must drain that same dynamic
+// binding even though its helper functions were defined elsewhere.
+const GNU_KEYBOARD_TIMER_SPECIAL_VARIABLES: &[&str] = &["timer-list", "timer-idle-list"];
+
 // buffer.c's complete GNU 30.2 DEFVAR_PER_BUFFER contract.  These variables
 // are both special under lexical binding and automatically local to the
 // current buffer when assigned.  Keeping the manifest together prevents a
@@ -2568,6 +2574,9 @@ impl Interpreter {
         }
         for name in GNU_TREESIT_SPECIAL_VARIABLES {
             interp.set_global_binding(name, Value::Nil);
+            interp.mark_special_variable(name);
+        }
+        for name in GNU_KEYBOARD_TIMER_SPECIAL_VARIABLES {
             interp.mark_special_variable(name);
         }
         for name in GNU_NATIVE_PER_BUFFER_VARIABLES {

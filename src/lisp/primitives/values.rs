@@ -2535,6 +2535,34 @@ pub(crate) fn keymap_remove_binding(
     keymap: &Value,
     key: &str,
 ) -> Result<(), LispError> {
+    // Prefer the canonical key string stored by the corresponding define
+    // operation.  Re-parsing structured event names such as `mouse-5' can
+    // resemble a textual multi-event sequence; only descend when no exact
+    // entry exists in this map.
+    if let Some(id) = keymap_record_id(interp, keymap)
+        && let Some(record) = interp.find_record_mut(id)
+    {
+        let mut bindings = keymap_bindings(record)?;
+        let original_len = bindings.len();
+        bindings.retain(|existing| existing.key != key);
+        if bindings.len() != original_len {
+            if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
+                record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
+            }
+            record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
+            return Ok(());
+        }
+    }
+
+    let parts = approximate_key_parts(key);
+    if parts.len() > 1 {
+        let prefix = keymap_lookup_direct_binding_exact_parts(interp, keymap, &parts[..1])?;
+        let prefix = keymap_get_keyelt(interp, &prefix, false, &mut Vec::new())?;
+        if is_keymap_value(interp, &prefix) {
+            return keymap_remove_binding(interp, &prefix, &parts[1..].join(" "));
+        }
+        return Ok(());
+    }
     let Some(id) = keymap_record_id(interp, keymap) else {
         return Ok(());
     };
@@ -2542,7 +2570,9 @@ pub(crate) fn keymap_remove_binding(
         return Ok(());
     };
     let mut bindings = keymap_bindings(record)?;
-    bindings.retain(|existing| existing.key != key);
+    bindings.retain(|existing| {
+        existing.key != key && !key_parts_match(&binding_key_parts(existing), &parts)
+    });
     if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
         record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
