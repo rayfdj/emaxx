@@ -18,6 +18,17 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 ISEARCH CHECKPOINT: the fresh contiguous ordered frontier is
+  3,979/7,080, leaving 3,101 selectors.  All 5 canonical Isearch outcomes pass.
+  Native terminal state now supplies GNU's `baud-rate' and
+  `input-method-function' defaults; nil windows and `window-end' UPDATE are
+  accepted; and preloaded `with-local-quit' is present.  Overlay property
+  lookup now chooses the highest-priority overlay that defines the requested
+  property, so Isearch's face overlay no longer masks Outline invisibility.
+  The canonical artifact is
+  `target/compat/run-1785859639013792000-89421`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 3,980 in `test/lisp/jit-lock-tests.el` (3
+  selected outcomes), followed by `test/lisp/json-tests.el` (59 outcomes).
 - 2026-08-04 IMENU/INFO/INTERNATIONAL CHECKPOINT: the fresh contiguous ordered
   frontier is 3,974/7,080, leaving 3,106 selectors.  Imenu is 3/3, Info 1/1,
   canonical Info Xref 4/4, and International 82/82 across CCL, Mule, Mule

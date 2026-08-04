@@ -66,7 +66,7 @@ pub(crate) fn highest_priority_overlay_property_with_id(
             .cmp(&b.priority())
             .then_with(|| a.id.cmp(&b.id))
     });
-    overlays.last().and_then(|overlay| {
+    overlays.into_iter().rev().find_map(|overlay| {
         overlay_property_with_category(interp, overlay, prop).map(|value| (value, overlay.id))
     })
 }
@@ -1620,10 +1620,8 @@ pub(crate) fn column_after(
 }
 
 pub(crate) fn char_is_invisible(interp: &Interpreter, pos: usize, env: &Env) -> bool {
-    interp
-        .buffer
-        .text_property_at(pos, "invisible")
-        .is_some_and(|value| invisibility_value_is_hidden(interp, &value, env))
+    let value = buffer_char_property_at(interp, &interp.buffer, pos, "invisible");
+    invisibility_value_is_hidden(interp, &value, env)
 }
 
 pub(crate) fn invisibility_value_is_hidden(interp: &Interpreter, value: &Value, env: &Env) -> bool {

@@ -2180,6 +2180,30 @@ fn invisible_p_accepts_raw_invisibility_property_values() {
 }
 
 #[test]
+fn invisible_p_honors_symbolic_overlay_categories() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "ab")
+                  (let ((hidden (make-overlay 1 2))
+                        (highlight (make-overlay 1 2)))
+                    (overlay-put hidden 'invisible 'outline)
+                    (overlay-put highlight 'priority 1001)
+                    (overlay-put highlight 'face 'isearch)
+                    (setq buffer-invisibility-spec '(outline))
+                    (list (invisible-p 1)
+                          (invisible-p 2)
+                          (progn
+                            (setq buffer-invisibility-spec nil)
+                            (invisible-p 1)))))
+                "#
+        ),
+        Value::list([Value::T, Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
 fn forward_comment_moves_over_c_comments_in_both_directions() {
     assert_eq!(
         eval_str(
