@@ -32,6 +32,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "cl-struct-p"
             | "compiled-function-p"
             | "byte-code-function-p"
+            | "make-closure"
+            | "make-byte-code"
+            | "byte-code"
+            | "internal-stack-stats"
             | "closurep"
             | "interpreted-function-p"
             | "module-function-p"
@@ -405,6 +409,74 @@ pub(super) fn call(
         }
         "module-function-p" => {
             need_args(name, args, 1)?;
+            Ok(Value::Nil)
+        }
+        "make-closure" => {
+            // GNU Fmake_closure (alloc.c): copy PROTOTYPE, replacing the
+            // first CLOSURE-VARS elements of its constants vector.
+            need_args(name, args, 1)?;
+            let Value::Record(id) = &args[0] else {
+                return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
+            };
+            let Some(record) = interp.find_record(*id) else {
+                return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
+            };
+            if record.type_name != "byte-code-function" {
+                return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
+            }
+            let mut slots = record.slots.clone();
+            let mut constants = slots
+                .get(2)
+                .and_then(|slot| slot.to_vec().ok())
+                .filter(|items| {
+                    matches!(items.first(), Some(Value::Symbol(marker)) if marker == "vector-literal")
+                })
+                .map(|items| items[1..].to_vec())
+                .ok_or_else(|| {
+                    LispError::Signal("make-closure prototype has no constants vector".into())
+                })?;
+            let vars = &args[1..];
+            if vars.len() > constants.len() {
+                return Err(LispError::Signal(
+                    "Closure vars do not fit in constvec".into(),
+                ));
+            }
+            constants[..vars.len()].clone_from_slice(vars);
+            slots[2] =
+                Value::list(std::iter::once(Value::symbol("vector-literal")).chain(constants));
+            Ok(interp.create_record("byte-code-function", slots))
+        }
+        "make-byte-code" => {
+            // GNU Fmake_byte_code (alloc.c): the arguments become the
+            // closure's elements verbatim (arglist, code, constants,
+            // depth, docstring, interactive-spec, extras).
+            need_args(name, args, 4)?;
+            Ok(interp.create_record("byte-code-function", args.to_vec()))
+        }
+        "byte-code" => {
+            // GNU Fbyte_code (bytecode.c): execute BYTESTR against VECTOR
+            // with MAXDEPTH as an argumentless program.
+            need_args(name, args, 3)?;
+            let slots = [
+                Value::Integer(0),
+                args[0].clone(),
+                args[1].clone(),
+                args[2].clone(),
+            ];
+            let object = crate::lisp::bytecode::ByteCodeObject::from_slots(&slots)
+                .map_err(|error| LispError::Signal(error.to_string()))?
+                .ok_or_else(|| {
+                    LispError::SignalValue(Value::list([
+                        Value::Symbol("error".into()),
+                        Value::String("Invalid byte-code".into()),
+                    ]))
+                })?;
+            crate::lisp::bytecode::vm::execute(interp, &object, &[], env)
+        }
+        "internal-stack-stats" => {
+            // GNU logs bytecode-stack telemetry to stderr and returns nil;
+            // the Emaxx VM keeps per-frame stacks, so there is no shared
+            // stack to report.
             Ok(Value::Nil)
         }
         "user-ptrp" => {

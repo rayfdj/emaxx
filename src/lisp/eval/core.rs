@@ -1001,6 +1001,17 @@ impl Interpreter {
                     let Some(record) = self.find_record(id) else {
                         unreachable!("checked record presence");
                     };
+                    // Genuine GNU bytecode (argspec/code/constants/depth
+                    // slots) executes on the VM; Emaxx byte-compile facade
+                    // objects carry an executable lambda in slot 0 instead.
+                    if crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots) {
+                        let object = crate::lisp::bytecode::ByteCodeObject::from_slots(
+                            &record.slots.clone(),
+                        )
+                        .map_err(|error| LispError::Signal(error.to_string()))?
+                        .expect("slots_are_genuine_bytecode checked");
+                        return crate::lisp::bytecode::vm::execute(self, &object, args, env);
+                    }
                     let Some(inner) = record.slots.first().cloned() else {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("invalid-function".into()),
