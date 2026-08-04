@@ -4880,6 +4880,10 @@ struct ClKeyBinding {
     supplied_name: Option<String>,
 }
 
+fn cl_keyword_name_for_variable(variable_name: &str) -> String {
+    format!(":{}", variable_name.trim_start_matches('_'))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ClDefunSection {
     Required,
@@ -4981,7 +4985,7 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
             ClDefunSection::Key => match item {
                 Value::Symbol(symbol) => keyword_bindings.push(ClKeyBinding {
                     variable_name: symbol.clone(),
-                    keyword_name: format!(":{symbol}"),
+                    keyword_name: cl_keyword_name_for_variable(&symbol),
                     default_value: Value::Nil,
                     supplied_name: None,
                 }),
@@ -5079,6 +5083,14 @@ fn parse_cl_defun_optional_binding(spec: Value) -> Result<ClOptionalBinding, Lis
 }
 
 fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
+    if let Value::Symbol(variable_name) = spec {
+        return Ok(ClKeyBinding {
+            keyword_name: cl_keyword_name_for_variable(&variable_name),
+            variable_name,
+            default_value: Value::Nil,
+            supplied_name: None,
+        });
+    }
     let items = spec.to_vec()?;
     if items.is_empty() {
         return Err(LispError::Signal(
@@ -5088,13 +5100,13 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
 
     let (keyword_name, variable_name, default_value, supplied_name) = match items.as_slice() {
         [Value::Symbol(variable_name)] => (
-            format!(":{variable_name}"),
+            cl_keyword_name_for_variable(variable_name),
             variable_name.clone(),
             Value::Nil,
             None,
         ),
         [Value::Symbol(variable_name), default_value] => (
-            format!(":{variable_name}"),
+            cl_keyword_name_for_variable(variable_name),
             variable_name.clone(),
             default_value.clone(),
             None,
@@ -5104,7 +5116,7 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
             default_value,
             Value::Symbol(supplied_name),
         ] => (
-            format!(":{variable_name}"),
+            cl_keyword_name_for_variable(variable_name),
             variable_name.clone(),
             default_value.clone(),
             Some(supplied_name.clone()),
@@ -5180,12 +5192,30 @@ fn is_lambda_list_keyword(symbol: &str) -> bool {
     )
 }
 
-fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
+fn cl_defmethod_destructuring_parameter_name(index: usize) -> String {
+    format!("emaxx--cl-defmethod-arg-{index}")
+}
+
+struct LoweredClDefmethodLambdaList {
+    value: Value,
+    destructuring_bindings: Vec<(Value, String)>,
+}
+
+fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<LoweredClDefmethodLambdaList, LispError> {
     let items = spec.to_vec()?;
     let mut lowered = Vec::with_capacity(items.len());
+    let mut destructuring_bindings = Vec::new();
     let mut skipping_context = false;
+    let mut required = true;
+    let mut expecting_rest_parameter = false;
+    let mut rest_parameter = None;
+    let mut key_pattern: Option<Vec<Value>> = None;
 
-    for item in items {
+    for (index, item) in items.into_iter().enumerate() {
+        if let Some(pattern) = &mut key_pattern {
+            pattern.push(item);
+            continue;
+        }
         match item {
             Value::Symbol(symbol) if symbol == "&context" => {
                 skipping_context = true;
@@ -5198,6 +5228,20 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
                         continue;
                     }
                 }
+                if symbol == "&key" {
+                    required = false;
+                    key_pattern = Some(vec![Value::Symbol(symbol)]);
+                    continue;
+                }
+                if expecting_rest_parameter {
+                    rest_parameter = Some(symbol.clone());
+                    expecting_rest_parameter = false;
+                } else if matches!(symbol.as_str(), "&rest" | "&body") {
+                    expecting_rest_parameter = true;
+                }
+                if is_lambda_list_keyword(&symbol) {
+                    required = false;
+                }
                 lowered.push(Value::Symbol(symbol));
             }
             Value::Cons(_, _) => {
@@ -5205,8 +5249,19 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
                     continue;
                 }
                 let parts = item.to_vec()?;
-                if let Some(Value::Symbol(variable_name)) = parts.first() {
+                if required
+                    && let Some(pattern @ Value::Cons(_, _)) = parts.first()
+                    && cl_defmethod_specializer_kind(parts.get(1)).is_some()
+                {
+                    let parameter = cl_defmethod_destructuring_parameter_name(index);
+                    lowered.push(Value::Symbol(parameter.clone()));
+                    destructuring_bindings.push((pattern.clone(), parameter));
+                } else if let Some(Value::Symbol(variable_name)) = parts.first() {
                     lowered.push(Value::Symbol(variable_name.clone()));
+                } else if required {
+                    let parameter = cl_defmethod_destructuring_parameter_name(index);
+                    lowered.push(Value::Symbol(parameter.clone()));
+                    destructuring_bindings.push((item, parameter));
                 } else {
                     lowered.push(item);
                 }
@@ -5219,7 +5274,22 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
         }
     }
 
-    Ok(Value::list(lowered))
+    if let Some(pattern) = key_pattern {
+        let parameter = if let Some(parameter) = rest_parameter {
+            parameter
+        } else {
+            let parameter = cl_defmethod_destructuring_parameter_name(lowered.len());
+            lowered.push(Value::Symbol("&rest".into()));
+            lowered.push(Value::Symbol(parameter.clone()));
+            parameter
+        };
+        destructuring_bindings.push((Value::list(pattern), parameter));
+    }
+
+    Ok(LoweredClDefmethodLambdaList {
+        value: Value::list(lowered),
+        destructuring_bindings,
+    })
 }
 
 fn lambda_list_fixed_params(params: &[String]) -> Vec<String> {
@@ -5240,6 +5310,26 @@ fn lambda_list_rest_param_from_params(params: &[String]) -> Option<String> {
         [keyword, name] if keyword == "&rest" || keyword == "&body" => Some(name.clone()),
         _ => None,
     })
+}
+
+fn lambda_list_arity_range(params: &[String]) -> (usize, Option<usize>) {
+    let mut required = 0;
+    let mut maximum = 0;
+    let mut optional = false;
+    for param in params {
+        match param.as_str() {
+            "&optional" => optional = true,
+            "&rest" | "&body" => return (required, None),
+            keyword if is_lambda_list_keyword(keyword) => {}
+            _ => {
+                maximum += 1;
+                if !optional {
+                    required += 1;
+                }
+            }
+        }
+    }
+    (required, Some(maximum))
 }
 
 fn cl_defmethod_dispatch_wrapper_params(
@@ -5373,7 +5463,7 @@ fn cl_defmethod_specializer_kind(spec: Option<&Value>) -> Option<ClDefmethodSpec
 fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>, LispError> {
     let mut next_is_context = false;
     let mut specializers = Vec::new();
-    for item in spec.to_vec()? {
+    for (index, item) in spec.to_vec()?.into_iter().enumerate() {
         if matches!(&item, Value::Symbol(symbol) if symbol == "&context") {
             next_is_context = true;
             continue;
@@ -5401,6 +5491,18 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
                     context_expr: Some(expr.clone()),
                 });
             }
+            next_is_context = false;
+            continue;
+        }
+        if let Some(Value::Cons(_, _)) = parts.first()
+            && let Some(kind) = cl_defmethod_specializer_kind(parts.get(1))
+        {
+            specializers.push(ClDefmethodSpecializer {
+                variable: cl_defmethod_destructuring_parameter_name(index),
+                kind,
+                is_context: false,
+                context_expr: None,
+            });
             next_is_context = false;
             continue;
         }

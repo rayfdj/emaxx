@@ -4024,7 +4024,13 @@ impl Interpreter {
             ));
         }
         let name = function_name_from_binding_form(&items[1])?;
-        self.put_symbol_property(&name, "emaxx-cl-defgeneric-lambda-list", items[2].clone());
+        let dispatch_lambda_list =
+            Value::list(lower_cl_defun_lambda_list(&name, &items[2])?.params);
+        self.put_symbol_property(
+            &name,
+            "emaxx-cl-defgeneric-lambda-list",
+            dispatch_lambda_list,
+        );
         let mut body_start = 3;
         if matches!(
             items.get(3),
@@ -4328,7 +4334,8 @@ impl Interpreter {
         let mut lowered = Vec::with_capacity(items.len());
         lowered.push(Value::Symbol("cl-defun".into()));
         lowered.push(Value::Symbol(name));
-        let lowered_lambda_list = lower_cl_defmethod_lambda_list(&items[lambda_list_index])?;
+        let lowered_method_lambda_list = lower_cl_defmethod_lambda_list(&items[lambda_list_index])?;
+        let lowered_lambda_list = lowered_method_lambda_list.value;
         lowered.push(lowered_lambda_list.clone());
         let (method_doc, normalized_method_forms) =
             self.normalize_function_body_documentation(&items[lambda_list_index + 1..], env)?;
@@ -4343,10 +4350,23 @@ impl Interpreter {
         // (Edebug's pcase-let* matcher consumed gensyms from the first
         // caller's dynamic binding).  Store the already-expanded body, just
         // as sf_defun does for an ordinary loaded function.
-        let executable_method_forms = executable_method_forms
+        let mut executable_method_forms = executable_method_forms
             .iter()
             .map(|form| self.macroexpand_all_form_with_environment(form, None, env))
             .collect::<Result<Vec<_>, _>>()?;
+        for (pattern, parameter) in lowered_method_lambda_list
+            .destructuring_bindings
+            .into_iter()
+            .rev()
+        {
+            let mut destructured = vec![
+                Value::Symbol("cl-destructuring-bind".into()),
+                pattern,
+                Value::Symbol(parameter),
+            ];
+            destructured.append(&mut executable_method_forms);
+            executable_method_forms = vec![Value::list(destructured)];
+        }
         if let Some(doc) = method_doc.clone() {
             self.add_cl_defmethod_documentation(&function_name_from_binding_form(&items[1])?, doc);
         }
@@ -4366,6 +4386,23 @@ impl Interpreter {
                 "emaxx-cl-defgeneric-lambda-list",
                 lowered_lambda_list.clone(),
             );
+        } else if let Some(generic_lambda_list) = self.cl_defgeneric_lambda_list(&method_name) {
+            let method_params = self.parse_params(&lowered_lambda_list)?;
+            let generic_params = self.parse_params(&generic_lambda_list)?;
+            let (method_min, method_max) = lambda_list_arity_range(&method_params);
+            let (generic_min, generic_max) = lambda_list_arity_range(&generic_params);
+            let widens_maximum = match (method_max, generic_max) {
+                (None, Some(_)) => true,
+                (Some(method_max), Some(generic_max)) => method_max > generic_max,
+                _ => false,
+            };
+            if method_min <= generic_min && widens_maximum {
+                self.put_symbol_property(
+                    &method_name,
+                    "emaxx-cl-defgeneric-lambda-list",
+                    lowered_lambda_list.clone(),
+                );
+            }
         }
         let precedence_order = self.cl_defgeneric_argument_precedence_order(&method_name);
         let method_specializers = cl_defmethod_specializers(&items[lambda_list_index])?;
