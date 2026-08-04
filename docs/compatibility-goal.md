@@ -29,6 +29,17 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 Eshell command checkpoint advances the fresh contiguous
+  compatibility prefix to 3,297/7,080, leaving 3,783 selectors.  All 159
+  outcomes after 3,138 are green without implementation changes: Predicates
+  38/38, Prompt 9/9, Script 12/12, TRAMP 11/11, Unix 5/5, Argument 17/17, and
+  Command 67/67.  Predicates are recorded in
+  `target/compat/run-1785831480009889000-53210`, Argument in
+  `target/compat/run-1785831996413238000-56714`, and Command in
+  `target/compat/run-1785832021173514000-56836`.  NEXT is selector 3,298 in
+  `test/lisp/eshell/esh-ext-tests.el` (5 selected outcomes), followed by
+  Eshell I/O (39).  Native remains honestly parked at 1,416/1,420 with only
+  the separately tracked bytecode/VM quartet deferred.
 - The 2026-08-04 Eshell completion checkpoint advances the fresh contiguous
   compatibility prefix to 3,138/7,080, leaving 3,942 selectors.  All 108
   selected outcomes after 3,030 are green across Eshell Alias, Basic,
