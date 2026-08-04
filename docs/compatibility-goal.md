@@ -29,6 +29,21 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The bytecode VM (issue #10, branch `claude/bytecode-vm`) executes genuine
+  GNU 30.2 `.elc` bytecode end to end: `src/lisp/bytecode.rs` ports the full
+  `bytecode.c` opcode set (decoder, validator, ELC classification, rejection
+  contract) and `src/lisp/bytecode/vm.rs` runs it — argument prologues for
+  packed and legacy list argspecs, a specpdl-style unwind stack (dynamic
+  binds, save-excursion/restriction/current-buffer, unwind-protect),
+  catch/condition-case handlers registered with the interpreter's
+  active-catch registry, constants materialization (nested `#[...]`
+  closures, `#s(hash-table)` Bswitch jump tables), and a `make-closure`
+  primitive.  `call_function_value` dispatches genuine byte-code-function
+  records to the VM; `load_file_strict` executes bytecode `.elc` directly
+  under `EMAXX_BYTECODE_VM=1` or when no sibling `.el` exists.  All fixture
+  suites are oracle-compiled artifacts proven against interpreted semantics.
+  The sibling-source loader default stays until a full compat sweep
+  validates the flip.
 - The 2026-08-04 Eshell process checkpoint advances the fresh contiguous
   compatibility prefix to 3,381/7,080, leaving 3,699 selectors.  Mode is 3/3,
   Options 13/13, and Process 24/24.  Batch `read-string' now reads one stdin

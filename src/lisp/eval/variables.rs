@@ -1362,7 +1362,7 @@ impl Interpreter {
     }
 
     /// The `error-conditions' of CONDITION, or empty when undefined.
-    pub(super) fn error_condition_names(&mut self, condition: &str) -> Vec<String> {
+    pub(crate) fn error_condition_names(&mut self, condition: &str) -> Vec<String> {
         self.get_symbol_property(condition, "error-conditions")
             .and_then(|value| value.to_vec().ok())
             .map(|items| {
@@ -1391,7 +1391,7 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn clause_head_matches(
+    pub(crate) fn clause_head_matches(
         head: &Value,
         error_type: &str,
         condition_list: &[String],

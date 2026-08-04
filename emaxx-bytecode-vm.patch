@@ -1,0 +1,2701 @@
+diff --git a/docs/compatibility-goal.md b/docs/compatibility-goal.md
+index 0b93b0a..d7bc1f3 100644
+--- a/docs/compatibility-goal.md
++++ b/docs/compatibility-goal.md
+@@ -29,6 +29,21 @@ handoff and retry instruction are in
+ 
+ ## Current State
+ 
++- The bytecode VM (issue #10, branch `claude/bytecode-vm`) executes genuine
++  GNU 30.2 `.elc` bytecode end to end: `src/lisp/bytecode.rs` ports the full
++  `bytecode.c` opcode set (decoder, validator, ELC classification, rejection
++  contract) and `src/lisp/bytecode/vm.rs` runs it — argument prologues for
++  packed and legacy list argspecs, a specpdl-style unwind stack (dynamic
++  binds, save-excursion/restriction/current-buffer, unwind-protect),
++  catch/condition-case handlers registered with the interpreter's
++  active-catch registry, constants materialization (nested `#[...]`
++  closures, `#s(hash-table)` Bswitch jump tables), and a `make-closure`
++  primitive.  `call_function_value` dispatches genuine byte-code-function
++  records to the VM; `load_file_strict` executes bytecode `.elc` directly
++  under `EMAXX_BYTECODE_VM=1` or when no sibling `.el` exists.  All fixture
++  suites are oracle-compiled artifacts proven against interpreted semantics.
++  The sibling-source loader default stays until a full compat sweep
++  validates the flip.
+ - The 2026-08-04 Eshell process checkpoint advances the fresh contiguous
+   compatibility prefix to 3,381/7,080, leaving 3,699 selectors.  Mode is 3/3,
+   Options 13/13, and Process 24/24.  Batch `read-string' now reads one stdin
+diff --git a/src/lisp/bytecode.rs b/src/lisp/bytecode.rs
+new file mode 100644
+index 0000000..40c2258
+--- /dev/null
++++ b/src/lisp/bytecode.rs
+@@ -0,0 +1,1099 @@
++//! GNU Emacs 30.2 bytecode decoding and validation.
++//!
++//! Ports the opcode set and operand encodings of GNU `src/bytecode.c`
++//! (`BYTE_CODES`, `exec_byte_code`) so genuine `.elc` byte-code-function
++//! objects can be decoded, validated, and — in a later phase — executed.
++//! This phase covers decoding only: recognizing genuine objects, walking
++//! their opcode stream, and rejecting unsupported or corrupt bytecode
++//! with precise errors instead of misexecuting it (issue #10).
++
++pub mod vm;
++
++use super::types::Value;
++
++/// Why a byte-code object or its opcode stream was rejected.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum ByteCodeError {
++    /// A byte value GNU 30.2 leaves undefined (its exec loop signals
++    /// "Invalid byte opcode"), at this offset in the code string.
++    UnknownOpcode { offset: usize, byte: u8 },
++    /// The code string ended inside an instruction's operand bytes.
++    TruncatedOperand { offset: usize, byte: u8 },
++    /// A constants-vector reference is out of range.
++    ConstantOutOfRange {
++        offset: usize,
++        index: usize,
++        constants_len: usize,
++    },
++    /// A jump destination lies outside the code string.
++    JumpOutOfRange {
++        offset: usize,
++        target: usize,
++        code_len: usize,
++    },
++    /// A jump destination lands inside another instruction; the GNU
++    /// compiler only ever emits instruction-boundary targets, so this
++    /// indicates corruption.
++    JumpIntoInstruction { offset: usize, target: usize },
++    /// The object's slots do not form a genuine GNU byte-code function
++    /// (wrong types or too few slots).
++    MalformedObject(String),
++    /// The code string contains a char above U+00FF, so it cannot be a
++    /// unibyte opcode string.
++    NonUnibyteCode { char_index: usize },
++}
++
++impl std::fmt::Display for ByteCodeError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            ByteCodeError::UnknownOpcode { offset, byte } => {
++                write!(f, "invalid byte opcode: op={byte}, ptr={offset}")
++            }
++            ByteCodeError::TruncatedOperand { offset, byte } => {
++                write!(f, "truncated operand for opcode {byte} at {offset}")
++            }
++            ByteCodeError::ConstantOutOfRange {
++                offset,
++                index,
++                constants_len,
++            } => write!(
++                f,
++                "constant index {index} out of range (vector length {constants_len}) at {offset}"
++            ),
++            ByteCodeError::JumpOutOfRange {
++                offset,
++                target,
++                code_len,
++            } => write!(
++                f,
++                "jump target {target} out of range (code length {code_len}) at {offset}"
++            ),
++            ByteCodeError::JumpIntoInstruction { offset, target } => {
++                write!(
++                    f,
++                    "jump target {target} not an instruction boundary at {offset}"
++                )
++            }
++            ByteCodeError::MalformedObject(detail) => {
++                write!(f, "malformed byte-code object: {detail}")
++            }
++            ByteCodeError::NonUnibyteCode { char_index } => {
++                write!(f, "byte-code string is not unibyte at char {char_index}")
++            }
++        }
++    }
++}
++
++/// A decoded instruction: the semantic operation with its operand
++/// resolved from immediate bits or trailing bytes.  Families that GNU
++/// spreads over eight opcode values (`Bvarref`..`Bvarref7`) collapse to
++/// one variant carrying the resolved operand.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Op {
++    /// Push the stack slot OPERAND below the top (Bstack_ref1..7).
++    StackRef(u16),
++    /// Push the dynamic value of constants[OPERAND] (Bvarref family).
++    VarRef(u16),
++    /// Set the dynamic value of constants[OPERAND] from popped TOS.
++    VarSet(u16),
++    /// Dynamically bind constants[OPERAND] to popped TOS.
++    VarBind(u16),
++    /// Call with OPERAND argument values (function below them on stack).
++    Call(u16),
++    /// Unbind OPERAND special bindings.
++    Unbind(u16),
++    /// Pop one handler (Bpophandler).
++    PopHandler,
++    /// Push a condition-case handler jumping to TARGET on signal.
++    PushConditionCase {
++        target: u16,
++    },
++    /// Push a catch handler jumping to TARGET on throw.
++    PushCatch {
++        target: u16,
++    },
++    Nth,
++    Symbolp,
++    Consp,
++    Stringp,
++    Listp,
++    Eq,
++    Memq,
++    Not,
++    Car,
++    Cdr,
++    Cons,
++    List1,
++    List2,
++    List3,
++    List4,
++    Length,
++    Aref,
++    Aset,
++    SymbolValue,
++    SymbolFunction,
++    Set,
++    Fset,
++    Get,
++    Substring,
++    Concat2,
++    Concat3,
++    Concat4,
++    Sub1,
++    Add1,
++    Eqlsign,
++    Gtr,
++    Lss,
++    Leq,
++    Geq,
++    Diff,
++    Negate,
++    Plus,
++    Max,
++    Min,
++    Mult,
++    Point,
++    /// Bsave_current_buffer_OBSOLETE (executes identically in GNU 30).
++    SaveCurrentBufferObsolete,
++    GotoChar,
++    Insert,
++    PointMax,
++    PointMin,
++    CharAfter,
++    FollowingChar,
++    PrecedingChar,
++    CurrentColumn,
++    IndentTo,
++    Eolp,
++    Eobp,
++    Bolp,
++    Bobp,
++    CurrentBuffer,
++    SetBuffer,
++    SaveCurrentBuffer,
++    /// Binteractive_p (obsolete since 24.1 but still executed).
++    InteractiveP,
++    ForwardChar,
++    ForwardWord,
++    SkipCharsForward,
++    SkipCharsBackward,
++    ForwardLine,
++    CharSyntax,
++    BufferSubstring,
++    DeleteRegion,
++    NarrowToRegion,
++    Widen,
++    EndOfLine,
++    /// Push constants[OPERAND] (Bconstant2, two-byte index).
++    Constant2(u16),
++    Goto {
++        target: u16,
++    },
++    GotoIfNil {
++        target: u16,
++    },
++    GotoIfNonNil {
++        target: u16,
++    },
++    GotoIfNilElsePop {
++        target: u16,
++    },
++    GotoIfNonNilElsePop {
++        target: u16,
++    },
++    Return,
++    Discard,
++    Dup,
++    SaveExcursion,
++    /// Bsave_window_excursion (obsolete since 24.1 but still executed).
++    SaveWindowExcursion,
++    SaveRestriction,
++    /// Bcatch (obsolete since 25 but still executed).
++    Catch,
++    UnwindProtect,
++    /// Bcondition_case (obsolete since 25 but still executed).
++    ConditionCase,
++    /// Btemp_output_buffer_setup (obsolete since 24.1).
++    TempOutputBufferSetup,
++    /// Btemp_output_buffer_show (obsolete since 24.1).
++    TempOutputBufferShow,
++    SetMarker,
++    MatchBeginning,
++    MatchEnd,
++    Upcase,
++    Downcase,
++    StringEqlsign,
++    StringLss,
++    Equal,
++    Nthcdr,
++    Elt,
++    Member,
++    Assq,
++    Nreverse,
++    Setcar,
++    Setcdr,
++    CarSafe,
++    CdrSafe,
++    Nconc,
++    Quo,
++    Rem,
++    Numberp,
++    Integerp,
++    /// Pop OPERAND-1 extra values and push (list OPERAND-values) (BlistN).
++    ListN(u8),
++    /// Concat of OPERAND values (BconcatN).
++    ConcatN(u8),
++    /// Insert of OPERAND values (BinsertN).
++    InsertN(u8),
++    /// Store popped TOS into the slot OPERAND below the (new) top.
++    StackSet(u16),
++    /// Discard OPERAND values; when PRESERVE_TOS, keep TOS on top of the
++    /// remaining stack (BdiscardN with bit 0x80).
++    DiscardN {
++        count: u8,
++        preserve_tos: bool,
++    },
++    /// Jump via the hash-table jump table on TOS (Bswitch).
++    Switch,
++    /// Push constants[OPERAND] (Bconstant, index packed in the opcode).
++    Constant(u16),
++}
++
++/// A decoded instruction and where it sits in the code string.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct Instr {
++    /// Byte offset of the opcode within the code string.
++    pub offset: usize,
++    /// Total encoded length (opcode plus operand bytes).
++    pub len: usize,
++    pub op: Op,
++}
++
++// GNU bytecode.c opcode values (octal, as in BYTE_CODES).
++const B_STACK_REF: u8 = 0o000;
++const B_VARREF: u8 = 0o010;
++const B_VARSET: u8 = 0o020;
++const B_VARBIND: u8 = 0o030;
++const B_CALL: u8 = 0o040;
++const B_UNBIND: u8 = 0o050;
++const B_POPHANDLER: u8 = 0o060;
++const B_PUSHCONDITIONCASE: u8 = 0o061;
++const B_PUSHCATCH: u8 = 0o062;
++const B_NTH: u8 = 0o070;
++const B_CONSTANT2: u8 = 0o201;
++const B_GOTO: u8 = 0o202;
++const B_RETURN: u8 = 0o207;
++const B_LISTN: u8 = 0o257;
++const B_CONCATN: u8 = 0o260;
++const B_INSERTN: u8 = 0o261;
++const B_STACK_SET: u8 = 0o262;
++const B_STACK_SET2: u8 = 0o263;
++const B_DISCARDN: u8 = 0o266;
++const B_SWITCH: u8 = 0o267;
++const B_CONSTANT: u8 = 0o300;
++
++/// Operand reader over the code string (GNU's FETCH/FETCH2), carrying
++/// the instruction context so truncation errors are precise.
++struct OperandReader<'a> {
++    code: &'a [u8],
++    cursor: usize,
++    offset: usize,
++    byte: u8,
++}
++
++impl OperandReader<'_> {
++    fn fetch(&mut self) -> Result<u16, ByteCodeError> {
++        let value = *self
++            .code
++            .get(self.cursor)
++            .ok_or(ByteCodeError::TruncatedOperand {
++                offset: self.offset,
++                byte: self.byte,
++            })?;
++        self.cursor += 1;
++        Ok(value as u16)
++    }
++
++    fn fetch2(&mut self) -> Result<u16, ByteCodeError> {
++        let low = self.fetch()?;
++        let high = self.fetch()?;
++        Ok(low | (high << 8))
++    }
++
++    /// The six operand-in-opcode families share one layout: +0..+5 pack
++    /// the operand into the opcode, +6 takes one trailing byte, +7 two.
++    fn family_operand(&mut self, base: u8) -> Result<u16, ByteCodeError> {
++        match self.byte - base {
++            immediate @ 0..=5 => Ok(immediate as u16),
++            6 => self.fetch(),
++            _ => self.fetch2(),
++        }
++    }
++}
++
++/// Decode one instruction starting at `offset`.  `code` is the whole
++/// string so jump validation can happen later against full bounds.
++fn decode_instr(code: &[u8], offset: usize) -> Result<Instr, ByteCodeError> {
++    let byte = code[offset];
++    let mut reader = OperandReader {
++        code,
++        cursor: offset + 1,
++        offset,
++        byte,
++    };
++
++    let op = match byte {
++        // Bstack_ref+0 is deliberately unimplemented in GNU (its slot is
++        // the CASE_ABORT arm): the compiler emits Bdup instead.
++        B_STACK_REF => return Err(ByteCodeError::UnknownOpcode { offset, byte }),
++        0o001..=0o007 => Op::StackRef(reader.family_operand(B_STACK_REF)?),
++        0o010..=0o017 => Op::VarRef(reader.family_operand(B_VARREF)?),
++        0o020..=0o027 => Op::VarSet(reader.family_operand(B_VARSET)?),
++        0o030..=0o037 => Op::VarBind(reader.family_operand(B_VARBIND)?),
++        0o040..=0o047 => Op::Call(reader.family_operand(B_CALL)?),
++        0o050..=0o057 => Op::Unbind(reader.family_operand(B_UNBIND)?),
++        B_POPHANDLER => Op::PopHandler,
++        B_PUSHCONDITIONCASE => Op::PushConditionCase {
++            target: reader.fetch2()?,
++        },
++        B_PUSHCATCH => Op::PushCatch {
++            target: reader.fetch2()?,
++        },
++        B_NTH => Op::Nth,
++        0o071 => Op::Symbolp,
++        0o072 => Op::Consp,
++        0o073 => Op::Stringp,
++        0o074 => Op::Listp,
++        0o075 => Op::Eq,
++        0o076 => Op::Memq,
++        0o077 => Op::Not,
++        0o100 => Op::Car,
++        0o101 => Op::Cdr,
++        0o102 => Op::Cons,
++        0o103 => Op::List1,
++        0o104 => Op::List2,
++        0o105 => Op::List3,
++        0o106 => Op::List4,
++        0o107 => Op::Length,
++        0o110 => Op::Aref,
++        0o111 => Op::Aset,
++        0o112 => Op::SymbolValue,
++        0o113 => Op::SymbolFunction,
++        0o114 => Op::Set,
++        0o115 => Op::Fset,
++        0o116 => Op::Get,
++        0o117 => Op::Substring,
++        0o120 => Op::Concat2,
++        0o121 => Op::Concat3,
++        0o122 => Op::Concat4,
++        0o123 => Op::Sub1,
++        0o124 => Op::Add1,
++        0o125 => Op::Eqlsign,
++        0o126 => Op::Gtr,
++        0o127 => Op::Lss,
++        0o130 => Op::Leq,
++        0o131 => Op::Geq,
++        0o132 => Op::Diff,
++        0o133 => Op::Negate,
++        0o134 => Op::Plus,
++        0o135 => Op::Max,
++        0o136 => Op::Min,
++        0o137 => Op::Mult,
++        0o140 => Op::Point,
++        0o141 => Op::SaveCurrentBufferObsolete,
++        0o142 => Op::GotoChar,
++        0o143 => Op::Insert,
++        0o144 => Op::PointMax,
++        0o145 => Op::PointMin,
++        0o146 => Op::CharAfter,
++        0o147 => Op::FollowingChar,
++        0o150 => Op::PrecedingChar,
++        0o151 => Op::CurrentColumn,
++        0o152 => Op::IndentTo,
++        0o154 => Op::Eolp,
++        0o155 => Op::Eobp,
++        0o156 => Op::Bolp,
++        0o157 => Op::Bobp,
++        0o160 => Op::CurrentBuffer,
++        0o161 => Op::SetBuffer,
++        0o162 => Op::SaveCurrentBuffer,
++        0o164 => Op::InteractiveP,
++        0o165 => Op::ForwardChar,
++        0o166 => Op::ForwardWord,
++        0o167 => Op::SkipCharsForward,
++        0o170 => Op::SkipCharsBackward,
++        0o171 => Op::ForwardLine,
++        0o172 => Op::CharSyntax,
++        0o173 => Op::BufferSubstring,
++        0o174 => Op::DeleteRegion,
++        0o175 => Op::NarrowToRegion,
++        0o176 => Op::Widen,
++        0o177 => Op::EndOfLine,
++        B_CONSTANT2 => Op::Constant2(reader.fetch2()?),
++        B_GOTO => Op::Goto {
++            target: reader.fetch2()?,
++        },
++        0o203 => Op::GotoIfNil {
++            target: reader.fetch2()?,
++        },
++        0o204 => Op::GotoIfNonNil {
++            target: reader.fetch2()?,
++        },
++        0o205 => Op::GotoIfNilElsePop {
++            target: reader.fetch2()?,
++        },
++        0o206 => Op::GotoIfNonNilElsePop {
++            target: reader.fetch2()?,
++        },
++        B_RETURN => Op::Return,
++        0o210 => Op::Discard,
++        0o211 => Op::Dup,
++        0o212 => Op::SaveExcursion,
++        0o213 => Op::SaveWindowExcursion,
++        0o214 => Op::SaveRestriction,
++        0o215 => Op::Catch,
++        0o216 => Op::UnwindProtect,
++        0o217 => Op::ConditionCase,
++        0o220 => Op::TempOutputBufferSetup,
++        0o221 => Op::TempOutputBufferShow,
++        0o223 => Op::SetMarker,
++        0o224 => Op::MatchBeginning,
++        0o225 => Op::MatchEnd,
++        0o226 => Op::Upcase,
++        0o227 => Op::Downcase,
++        0o230 => Op::StringEqlsign,
++        0o231 => Op::StringLss,
++        0o232 => Op::Equal,
++        0o233 => Op::Nthcdr,
++        0o234 => Op::Elt,
++        0o235 => Op::Member,
++        0o236 => Op::Assq,
++        0o237 => Op::Nreverse,
++        0o240 => Op::Setcar,
++        0o241 => Op::Setcdr,
++        0o242 => Op::CarSafe,
++        0o243 => Op::CdrSafe,
++        0o244 => Op::Nconc,
++        0o245 => Op::Quo,
++        0o246 => Op::Rem,
++        0o247 => Op::Numberp,
++        0o250 => Op::Integerp,
++        B_LISTN => Op::ListN(reader.fetch()? as u8),
++        B_CONCATN => Op::ConcatN(reader.fetch()? as u8),
++        B_INSERTN => Op::InsertN(reader.fetch()? as u8),
++        B_STACK_SET => Op::StackSet(reader.fetch()?),
++        B_STACK_SET2 => Op::StackSet(reader.fetch2()?),
++        B_DISCARDN => {
++            let raw = reader.fetch()? as u8;
++            Op::DiscardN {
++                count: raw & 0x7F,
++                preserve_tos: raw & 0x80 != 0,
++            }
++        }
++        B_SWITCH => Op::Switch,
++        B_CONSTANT.. => Op::Constant((byte - B_CONSTANT) as u16),
++        // Undefined byte values: 0o063-0o067, 0o153, 0o163, 0o200,
++        // 0o222, 0o251-0o256, 0o264, 0o265, 0o270-0o277.  GNU's exec
++        // loop signals "Invalid byte opcode" for all of them.
++        _ => return Err(ByteCodeError::UnknownOpcode { offset, byte }),
++    };
++    Ok(Instr {
++        offset,
++        len: reader.cursor - offset,
++        op,
++    })
++}
++
++/// Decode and validate a whole opcode stream against its constants
++/// vector: every opcode known, no truncated operands, constant indices
++/// in range, jump targets at instruction boundaries within the code.
++pub fn decode_program(code: &[u8], constants_len: usize) -> Result<Vec<Instr>, ByteCodeError> {
++    let mut instrs = Vec::new();
++    let mut offset = 0;
++    while offset < code.len() {
++        let instr = decode_instr(code, offset)?;
++        offset += instr.len;
++        instrs.push(instr);
++    }
++
++    let boundaries: std::collections::HashSet<usize> =
++        instrs.iter().map(|instr| instr.offset).collect();
++    let check_jump = |offset: usize, target: u16| -> Result<(), ByteCodeError> {
++        let target = target as usize;
++        if target >= code.len() {
++            return Err(ByteCodeError::JumpOutOfRange {
++                offset,
++                target,
++                code_len: code.len(),
++            });
++        }
++        if !boundaries.contains(&target) {
++            return Err(ByteCodeError::JumpIntoInstruction { offset, target });
++        }
++        Ok(())
++    };
++    let check_constant = |offset: usize, index: u16| -> Result<(), ByteCodeError> {
++        let index = index as usize;
++        if index >= constants_len {
++            return Err(ByteCodeError::ConstantOutOfRange {
++                offset,
++                index,
++                constants_len,
++            });
++        }
++        Ok(())
++    };
++
++    for instr in &instrs {
++        match instr.op {
++            Op::VarRef(index) | Op::VarSet(index) | Op::VarBind(index) => {
++                check_constant(instr.offset, index)?;
++            }
++            Op::Constant(index) | Op::Constant2(index) => check_constant(instr.offset, index)?,
++            Op::Goto { target }
++            | Op::GotoIfNil { target }
++            | Op::GotoIfNonNil { target }
++            | Op::GotoIfNilElsePop { target }
++            | Op::GotoIfNonNilElsePop { target }
++            | Op::PushCatch { target }
++            | Op::PushConditionCase { target } => check_jump(instr.offset, target)?,
++            _ => {}
++        }
++    }
++    Ok(instrs)
++}
++
++/// The argument contract of a byte-code function.
++#[derive(Clone, Debug, PartialEq)]
++pub enum ArgSpec {
++    /// Lexical-binding packed integer: bits 0..6 = minimum arguments,
++    /// bit 7 = &rest present, bits 8..14 = maximum non-rest arguments
++    /// (exec_byte_code's ARGS_TEMPLATE).
++    Packed {
++        mandatory: u8,
++        nonrest: u8,
++        rest: bool,
++    },
++    /// Old-style dynamic-binding argument list; arguments are
++    /// dynamically bound by the VM prologue rather than pushed.
++    Legacy(Value),
++}
++
++impl ArgSpec {
++    fn from_value(value: &Value) -> Result<ArgSpec, ByteCodeError> {
++        match value {
++            Value::Integer(packed) => {
++                let packed = *packed;
++                if !(0..=0x7FFF).contains(&packed) {
++                    return Err(ByteCodeError::MalformedObject(format!(
++                        "argument template {packed} out of range"
++                    )));
++                }
++                Ok(ArgSpec::Packed {
++                    mandatory: (packed & 0x7F) as u8,
++                    nonrest: ((packed >> 8) & 0x7F) as u8,
++                    rest: packed & 0x80 != 0,
++                })
++            }
++            Value::Nil | Value::Cons(_, _) => Ok(ArgSpec::Legacy(value.clone())),
++            other => Err(ByteCodeError::MalformedObject(format!(
++                "argument spec must be an integer or list, got {}",
++                other.type_name()
++            ))),
++        }
++    }
++}
++
++/// A validated genuine GNU byte-code function: the CLOSURE_* slots of
++/// GNU's `Lisp_Closure` (lisp.h) with the opcode string decoded.
++#[derive(Clone, Debug)]
++pub struct ByteCodeObject {
++    pub argspec: ArgSpec,
++    pub code: Vec<u8>,
++    pub constants: Vec<Value>,
++    pub stack_depth: usize,
++    pub doc: Option<Value>,
++    pub interactive: Option<Value>,
++}
++
++// The reader stores raw high bytes of unibyte strings (`\200`-style
++// escapes) as private-use chars U+E000+byte (reader.rs
++// RAW_BYTE_REGEX_BASE); decoding must map them back.
++const RAW_BYTE_BASE: u32 = 0xE000;
++
++/// Extract the unibyte bytes of a code string.  Chars are either plain
++/// U+0000..U+00FF or the reader's U+E000+byte raw-byte encoding;
++/// anything else cannot be an opcode byte.
++fn unibyte_bytes(text: &str) -> Result<Vec<u8>, ByteCodeError> {
++    let mut bytes = Vec::with_capacity(text.len());
++    for (char_index, ch) in text.chars().enumerate() {
++        let code_point = u32::from(ch);
++        if code_point <= 0xFF {
++            bytes.push(code_point as u8);
++        } else if (RAW_BYTE_BASE..=RAW_BYTE_BASE + 0xFF).contains(&code_point) {
++            bytes.push((code_point - RAW_BYTE_BASE) as u8);
++        } else {
++            return Err(ByteCodeError::NonUnibyteCode { char_index });
++        }
++    }
++    Ok(bytes)
++}
++
++fn string_text(value: &Value) -> Option<String> {
++    match value {
++        Value::String(text) => Some(text.clone()),
++        Value::StringObject(state) => Some(state.borrow().text.clone()),
++        _ => None,
++    }
++}
++
++/// Whether record slots look like a GENUINE GNU byte-code function
++/// (argspec, opcode string, constants vector, stack depth) rather than
++/// Emaxx's byte-compile facade (an executable lambda in slot 0).
++pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
++    slots.len() >= 4
++        && matches!(slots[0], Value::Integer(_) | Value::Nil | Value::Cons(_, _))
++        && string_text(&slots[1]).is_some()
++        && vector_items(&slots[2]).is_some()
++        && matches!(slots[3], Value::Integer(_))
++}
++
++fn vector_items(value: &Value) -> Option<Vec<Value>> {
++    let items = value.to_vec().ok()?;
++    match items.split_first() {
++        Some((Value::Symbol(marker), rest)) if marker == "vector-literal" => Some(rest.to_vec()),
++        _ => None,
++    }
++}
++
++impl ByteCodeObject {
++    /// Parse and validate a genuine byte-code function from record
++    /// slots ([argspec, code, constants, depth, doc?, interactive?]).
++    /// Returns `Ok(None)` for Emaxx facade objects, which are executed
++    /// through their embedded lambda instead.
++    pub fn from_slots(slots: &[Value]) -> Result<Option<ByteCodeObject>, ByteCodeError> {
++        if !slots_are_genuine_bytecode(slots) {
++            return Ok(None);
++        }
++        let argspec = ArgSpec::from_value(&slots[0])?;
++        let code_text = string_text(&slots[1])
++            .ok_or_else(|| ByteCodeError::MalformedObject("code slot is not a string".into()))?;
++        let code = unibyte_bytes(&code_text)?;
++        let constants = vector_items(&slots[2]).ok_or_else(|| {
++            ByteCodeError::MalformedObject("constants slot is not a vector".into())
++        })?;
++        let Value::Integer(depth) = slots[3] else {
++            return Err(ByteCodeError::MalformedObject(
++                "stack depth slot is not an integer".into(),
++            ));
++        };
++        if depth < 0 {
++            return Err(ByteCodeError::MalformedObject(format!(
++                "negative stack depth {depth}"
++            )));
++        }
++        decode_program(&code, constants.len())?;
++        Ok(Some(ByteCodeObject {
++            argspec,
++            code,
++            constants,
++            stack_depth: depth as usize,
++            doc: slots.get(4).cloned(),
++            interactive: slots.get(5).cloned(),
++        }))
++    }
++}
++
++/// How an `.elc` payload should be treated by the loader.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ElcKind {
++    /// No ELC header: ordinary Lisp source.
++    PlainLisp,
++    /// Emaxx's own textual compiled stub (`;ELC` + newline, no
++    /// version byte): readable macro-expanded Lisp.
++    EmaxxStub,
++    /// GNU `byte-compile-insert-header` versioned header
++    /// (`;ELC<0x1e>`); the forms may still be ordinary readable Lisp
++    /// (headered plain files) or contain genuine `#[...]` bytecode —
++    /// distinguishing those requires reading the forms.
++    GnuVersioned,
++}
++
++/// Classify raw `.elc` file bytes by header alone.
++pub fn classify_elc_header(bytes: &[u8]) -> ElcKind {
++    if bytes.starts_with(b";ELC\x1e") {
++        ElcKind::GnuVersioned
++    } else if bytes.starts_with(b";ELC") {
++        ElcKind::EmaxxStub
++    } else {
++        ElcKind::PlainLisp
++    }
++}
++
++#[cfg(test)]
++#[allow(clippy::unwrap_used)]
++pub(crate) mod tests {
++    use super::*;
++
++    #[test]
++    fn decodes_operand_in_opcode_families() {
++        // varref3; constant0; return
++        let code = [0o013, 0o300, 0o207];
++        let instrs = decode_program(&code, 4).unwrap();
++        assert_eq!(
++            instrs.iter().map(|instr| instr.op).collect::<Vec<_>>(),
++            vec![Op::VarRef(3), Op::Constant(0), Op::Return]
++        );
++        assert_eq!(instrs[1].offset, 1);
++        assert_eq!(instrs[2].offset, 2);
++    }
++
++    #[test]
++    fn decodes_one_and_two_byte_operands() {
++        // varref6 200; varref7 0x0102; return
++        let code = [0o016, 200, 0o017, 0x02, 0x01, 0o207];
++        let instrs = decode_program(&code, 300).unwrap();
++        assert_eq!(instrs[0].op, Op::VarRef(200));
++        assert_eq!(instrs[0].len, 2);
++        assert_eq!(instrs[1].op, Op::VarRef(0x0102));
++        assert_eq!(instrs[1].len, 3);
++    }
++
++    #[test]
++    fn rejects_undefined_opcodes() {
++        for byte in [
++            0o000u8, 0o063, 0o067, 0o153, 0o163, 0o200, 0o222, 0o251, 0o256, 0o264, 0o265, 0o270,
++            0o277,
++        ] {
++            let err = decode_program(&[byte], 0).unwrap_err();
++            assert_eq!(
++                err,
++                ByteCodeError::UnknownOpcode { offset: 0, byte },
++                "byte {byte:o}"
++            );
++        }
++    }
++
++    #[test]
++    fn rejects_truncated_operands() {
++        // goto needs two operand bytes; only one present.
++        let err = decode_program(&[0o202, 0x00], 0).unwrap_err();
++        assert_eq!(
++            err,
++            ByteCodeError::TruncatedOperand {
++                offset: 0,
++                byte: 0o202
++            }
++        );
++    }
++
++    #[test]
++    fn rejects_constant_out_of_range() {
++        // constant2 index 7 with a 3-entry vector.
++        let err = decode_program(&[0o201, 7, 0, 0o207], 3).unwrap_err();
++        assert_eq!(
++            err,
++            ByteCodeError::ConstantOutOfRange {
++                offset: 0,
++                index: 7,
++                constants_len: 3
++            }
++        );
++    }
++
++    #[test]
++    fn rejects_jump_out_of_range_and_mid_instruction() {
++        // goto 99 in a 4-byte program.
++        let err = decode_program(&[0o202, 99, 0, 0o207], 0).unwrap_err();
++        assert!(matches!(
++            err,
++            ByteCodeError::JumpOutOfRange { target: 99, .. }
++        ));
++        // goto 1 targets its own operand byte.
++        let err = decode_program(&[0o202, 1, 0, 0o207], 0).unwrap_err();
++        assert!(matches!(
++            err,
++            ByteCodeError::JumpIntoInstruction { target: 1, .. }
++        ));
++        // goto 3 (the return) is a valid boundary.
++        decode_program(&[0o202, 3, 0, 0o207], 0).unwrap();
++    }
++
++    #[test]
++    fn decodes_discardn_preserve_tos_flag() {
++        let instrs = decode_program(&[0o266, 0x83, 0o207], 0).unwrap();
++        assert_eq!(
++            instrs[0].op,
++            Op::DiscardN {
++                count: 3,
++                preserve_tos: true
++            }
++        );
++        let instrs = decode_program(&[0o266, 0x03, 0o207], 0).unwrap();
++        assert_eq!(
++            instrs[0].op,
++            Op::DiscardN {
++                count: 3,
++                preserve_tos: false
++            }
++        );
++    }
++
++    #[test]
++    fn decodes_handler_targets() {
++        // pushcatch -> offset 4 (the return); pophandler; return
++        let code = [0o062, 4, 0, 0o060, 0o207];
++        let instrs = decode_program(&code, 0).unwrap();
++        assert_eq!(instrs[0].op, Op::PushCatch { target: 4 });
++        assert_eq!(instrs[1].op, Op::PopHandler);
++    }
++
++    #[test]
++    fn argspec_unpacks_gnu_template() {
++        // (a b &optional c &rest d) = mandatory 2, nonrest 3, rest.
++        let spec = ArgSpec::from_value(&Value::Integer(0x0382)).unwrap();
++        assert_eq!(
++            spec,
++            ArgSpec::Packed {
++                mandatory: 2,
++                nonrest: 3,
++                rest: true
++            }
++        );
++    }
++
++    #[test]
++    fn classifies_elc_headers() {
++        assert_eq!(
++            classify_elc_header(b";ELC\x1e\x17\x00\x00\x00"),
++            ElcKind::GnuVersioned
++        );
++        assert_eq!(classify_elc_header(b";ELC\n(progn)"), ElcKind::EmaxxStub);
++        assert_eq!(
++            classify_elc_header(b";; plain -*- lexical-binding: t -*-"),
++            ElcKind::PlainLisp
++        );
++    }
++
++    /// Genuine `.elc` produced by the pinned GNU Emacs 30.2 oracle from
++    /// trivial source (arithmetic, branch, condition-case, while loop,
++    /// &rest) — every embedded `#[...]` object must decode cleanly.
++    const ORACLE_ELC: &str = include_str!("bytecode/fixture-oracle-30.2.elc");
++
++    fn collect_byte_code_slot_lists(value: &Value, found: &mut Vec<Vec<Value>>) {
++        let Ok(items) = value.to_vec() else { return };
++        if let [Value::Symbol(marker), kind, slots @ ..] = items.as_slice()
++            && marker == super::super::reader::RECORD_LITERAL_SYMBOL
++            && kind.to_vec().is_ok_and(|kind_items| {
++                matches!(
++                    kind_items.as_slice(),
++                    [Value::Symbol(quote), Value::Symbol(name)]
++                        if quote == "quote" && name == "byte-code-function"
++                )
++            })
++        {
++            // Undo the reader's slot-eval wrapping: `(quote X)` -> X.
++            let unwrapped = slots
++                .iter()
++                .map(|slot| match slot.to_vec().ok().as_deref() {
++                    Some([Value::Symbol(quote), inner]) if quote == "quote" => inner.clone(),
++                    _ => slot.clone(),
++                })
++                .collect();
++            found.push(unwrapped);
++            return;
++        }
++        for item in items {
++            collect_byte_code_slot_lists(&item, found);
++        }
++    }
++
++    /// Second fixture set: buffer ops, save-excursion, unwind-protect,
++    /// catch/throw, dynamic binding, and a Bswitch jump table.
++    pub(crate) const ORACLE_ELC2: &str = include_str!("bytecode/fixture-oracle2-30.2.elc");
++
++    /// Parse an oracle fixture into named byte-code objects
++    /// ((defalias 'NAME #[...]) pairs), shared with the VM tests.
++    pub(crate) fn named_objects(elc: &str) -> std::collections::HashMap<String, ByteCodeObject> {
++        let source = super::super::preprocess_lazy_doc_source(
++            std::path::Path::new("fixture-oracle-30.2.elc"),
++            elc,
++            false,
++        );
++        let forms = super::super::reader::Reader::new(&source)
++            .read_all()
++            .unwrap();
++        let mut objects = std::collections::HashMap::new();
++        for form in &forms {
++            let Ok(items) = form.to_vec() else { continue };
++            let [Value::Symbol(head), name_form, object_form] = items.as_slice() else {
++                continue;
++            };
++            if head != "defalias" {
++                continue;
++            }
++            let Ok(name_items) = name_form.to_vec() else {
++                continue;
++            };
++            let [Value::Symbol(quote), Value::Symbol(name)] = name_items.as_slice() else {
++                continue;
++            };
++            if quote != "quote" {
++                continue;
++            }
++            let mut slot_lists = Vec::new();
++            collect_byte_code_slot_lists(object_form, &mut slot_lists);
++            if let Some(slots) = slot_lists.first()
++                && let Ok(Some(object)) = ByteCodeObject::from_slots(slots)
++            {
++                objects.insert(name.clone(), object);
++            }
++        }
++        objects
++    }
++
++    pub(crate) fn fixture_objects() -> std::collections::HashMap<String, ByteCodeObject> {
++        named_objects(ORACLE_ELC)
++    }
++
++    /// Third fixture: dynamic-binding (legacy list argspec) bytecode.
++    pub(crate) const ORACLE_ELC3: &str = include_str!("bytecode/fixture-oracle3-30.2.elc");
++
++    #[test]
++    fn loader_executes_genuine_elc_without_sibling_source() {
++        // End to end: a genuine GNU `.elc` with NO sibling `.el` loads
++        // through load_file_strict, its defaliases resolve to byte-code
++        // records, and calls execute on the VM.
++        let dir =
++            std::env::temp_dir().join(format!("emaxx-bytecode-loader-{}", std::process::id()));
++        std::fs::create_dir_all(&dir).unwrap();
++        let elc = dir.join("fixture-src2.elc");
++        std::fs::write(&elc, ORACLE_ELC2).unwrap();
++        let mut interp = super::super::eval::Interpreter::new();
++        super::super::load_file_strict(&mut interp, &elc).unwrap();
++        let mut env = super::super::types::Env::new();
++        let value = interp
++            .eval(&Value::list([Value::symbol("emaxx-fx2-buffer")]), &mut env)
++            .unwrap();
++        assert_eq!(format!("{value}"), "(6 \"hello\" 12)");
++        let value = interp
++            .eval(
++                &Value::list([
++                    Value::symbol("emaxx-fx2-switch"),
++                    Value::list([Value::symbol("quote"), Value::symbol("gamma")]),
++                ]),
++                &mut env,
++            )
++            .unwrap();
++        assert_eq!(format!("{value}"), "3");
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[test]
++    fn oracle_elc_fixture_decodes_cleanly() {
++        assert_eq!(
++            classify_elc_header(ORACLE_ELC.as_bytes()),
++            ElcKind::GnuVersioned
++        );
++        // Same preprocessing the loader applies before reading `.elc`
++        // text: `#@N` lazy docs and `#$` current-file references.
++        let source = super::super::preprocess_lazy_doc_source(
++            std::path::Path::new("fixture-oracle-30.2.elc"),
++            ORACLE_ELC,
++            false,
++        );
++        let forms = super::super::reader::Reader::new(&source)
++            .read_all()
++            .unwrap();
++        let mut slot_lists = Vec::new();
++        for form in &forms {
++            collect_byte_code_slot_lists(form, &mut slot_lists);
++        }
++        assert_eq!(slot_lists.len(), 5, "five compiled fixture functions");
++        for slots in &slot_lists {
++            let object = ByteCodeObject::from_slots(slots)
++                .expect("oracle bytecode must validate")
++                .expect("oracle objects are genuine bytecode");
++            assert!(matches!(object.argspec, ArgSpec::Packed { .. }));
++            assert!(object.stack_depth > 0);
++            let instrs = decode_program(&object.code, object.constants.len()).unwrap();
++            assert!(matches!(
++                instrs.last().map(|instr| instr.op),
++                Some(Op::Return)
++            ));
++        }
++        // The &rest fixture must carry the rest flag.
++        let rest_specs: Vec<bool> = slot_lists
++            .iter()
++            .filter_map(|slots| match ArgSpec::from_value(&slots[0]) {
++                Ok(ArgSpec::Packed { rest, .. }) => Some(rest),
++                _ => None,
++            })
++            .collect();
++        assert!(rest_specs.contains(&true));
++    }
++
++    #[test]
++    fn from_slots_ignores_emaxx_facade_objects() {
++        // Emaxx facade: slot 0 is an executable lambda, not an argspec.
++        let slots = [
++            Value::Lambda(
++                Vec::new(),
++                std::rc::Rc::new(Vec::new()),
++                std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
++            ),
++            Value::Nil,
++            Value::Nil,
++            Value::Nil,
++        ];
++        assert!(ByteCodeObject::from_slots(&slots).unwrap().is_none());
++    }
++
++    #[test]
++    fn from_slots_parses_genuine_object() {
++        // #[257 "\211\207" [] 3] — identity: stack-ref1; return... using
++        // real GNU compiler output shape: argspec 257 = 1 mandatory, 1 max.
++        let slots = [
++            Value::Integer(257),
++            Value::String("\u{89}\u{87}".into()),
++            Value::list([Value::symbol("vector-literal")]),
++            Value::Integer(3),
++        ];
++        let object = ByteCodeObject::from_slots(&slots).unwrap().unwrap();
++        assert_eq!(
++            object.argspec,
++            ArgSpec::Packed {
++                mandatory: 1,
++                nonrest: 1,
++                rest: false
++            }
++        );
++        assert_eq!(object.code, vec![0o211, 0o207]);
++        assert_eq!(object.stack_depth, 3);
++    }
++
++    #[test]
++    fn from_slots_rejects_corrupt_code() {
++        // Genuine shape but with an undefined opcode byte.
++        let slots = [
++            Value::Integer(0),
++            Value::String("\u{53}".into()), // 0o123 is Sub1 — fine; use 0o153
++            Value::list([Value::symbol("vector-literal")]),
++            Value::Integer(2),
++        ];
++        assert!(ByteCodeObject::from_slots(&slots).unwrap().is_some());
++        let slots = [
++            Value::Integer(0),
++            Value::String("\u{6B}".into()), // 0o153: undefined in GNU 30.2
++            Value::list([Value::symbol("vector-literal")]),
++            Value::Integer(2),
++        ];
++        assert_eq!(
++            ByteCodeObject::from_slots(&slots).unwrap_err(),
++            ByteCodeError::UnknownOpcode {
++                offset: 0,
++                byte: 0o153
++            }
++        );
++    }
++}
+diff --git a/src/lisp/bytecode/fixture-oracle-30.2.elc b/src/lisp/bytecode/fixture-oracle-30.2.elc
+new file mode 100644
+index 0000000000000000000000000000000000000000..b17e587c96c10c636f8282788f94a28fb725ac44
+GIT binary patch
+literal 588
+zcmZ{hJ5R$f6h>nfkXLrNY7rzuD?j>zEPe8jDi$h))O0Y3+gi$_a@<n!>v5t$>Cnl#
+z{-ksKUHg;i=*n>%?E5~9vSg!T8I^-dVUmb2hn>{9%2ME@$;#wQnKg(whHPV0qP~T(
+zao)rj*ZY(K#_lqO0Svus>_&1aVkL68lZn{x8_Rt|L=n{IZQ6nwLP0PK80pqvzJM0E
+z^&4nHk9!NxqDY1MI05?9A`RD;#oAq{1&q=M%i`xwzd#mqzzG>wd?QvX87+WU7TWF|
+zYaUN%LSg<{ERkL~1sq7J;e?`L<#46enf4$Q+tu0}8nF&NcD<f(#aXubD`Zv3HlXj8
+z&MzHQXgUm`x8gXnmkim5l*>z14CLVBo%_<qTGa}lCxbEEYMC3D4PK@v>}6h`^Ip67
+fny24Z2X3oZ^uX>$XFC;1xLc~d*=pIyb?D(Ao0FE1
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/lisp/bytecode/fixture-oracle2-30.2.elc b/src/lisp/bytecode/fixture-oracle2-30.2.elc
+new file mode 100644
+index 0000000000000000000000000000000000000000..d5dd24829b0dfbbde28dbc880d5f2208e9b27624
+GIT binary patch
+literal 1307
+zcmc&!O>5gg5Osa4k3IF2PUS)@gMze{<QiWbj48B%UfMv31X)SrNM!X9?fN6>pYN<B
+zCuxZ(^isiUKehATn>U)TE|w>~UT-j;&tX~SRVFZLCRqWioW~NjSj(&|U}B%KW@neF
+z6u1yjRw~Q02d-#ao(<?3CAi-58ZhVky|vymE4eS=bW=!FX0yvh#wDCS9f&sTHP$e^
+zvcU)@woT2U#sZ@bnB&~hORr6+x&6SPsZT>M*6SE`yZ%-WuJQV3GF}DDo*Hm<g9X-H
+zp;h3{>Y^AhR+v{~0~F-^7Ohy6a#Q1Dcpch)Pd9k4do*N+slM>ihV~k(;5ou=CPa5{
+z2rL96MIlPqm9<C=a6)jyBb0F;Z(2?Ni8W#JTjI=NNn|$E$N!5pk77!?0h5OCaN#f@
+zAFK<w`1;9w_j1lR#V#un5}kR|r>q~cOIcqKsV0dpCaLuZbDi!GB_<Zg3rut(2nURY
+zAK(nU+0+cpXOO;~{{@nz(z@I|2ey30-e@N@o;)BVJNEmFz%cE`e=St0czwiG2f%c^
+zVf8y;Xo7~|b+D(d+roA`B`?n}zORmHNd*=?7n9U`t6lr~AmLM~(NPkpi!x(>i1TIj
+z<5&zyB_F4cvQP*eAz=QL2p#kxYP8BUMd~MA?{>Y{^?ujuFLhB3<tXJcwG@v8f<mbP
+z@1UZZjLYht$~57M!-$J2<={hvH2VlQJkL2eHY6x$fjozm%mn?V92Xw+8OJwGaER@M
+p?BLOtWKzBnDx`(h9gfXrr1M}@)#Wxz5Kh<GUQu96)-f{&zW@=$ZE64j
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/lisp/bytecode/fixture-oracle3-30.2.elc b/src/lisp/bytecode/fixture-oracle3-30.2.elc
+new file mode 100644
+index 0000000000000000000000000000000000000000..c57c4f22de705bcf47b6fee202147e50240a2b84
+GIT binary patch
+literal 187
+zcmW;D%?g4*6oz4!H5U<w0)G~YXwYJoVnK8V>f$txbzpR4W-{yQGr!%-!^g{8vGY8S
+zan7O8{YXl-YtR5?kHW$vjU_!mo+jBUZ*osSr9h94ditVU*d}aQ*vbwSp@l&9IL~o6
+z=dqFx6dyQLA%g$^=m8bn!8g)65E1M*+j_Xvd756&b(Ws?P~qaDfnyV~a5Q?NRzlFx
+M>|RF3)`&b}KT<O|5C8xG
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/lisp/bytecode/vm.rs b/src/lisp/bytecode/vm.rs
+new file mode 100644
+index 0000000..13668a1
+--- /dev/null
++++ b/src/lisp/bytecode/vm.rs
+@@ -0,0 +1,1262 @@
++//! Execution of decoded GNU 30.2 bytecode (exec_byte_code port).
++//!
++//! Runs a validated [`ByteCodeObject`] against the interpreter: operand
++//! stack, argument prologue, dynamic binds with a specpdl-style unwind
++//! stack, and catch/condition-case handlers that unwind to an in-function
++//! destination exactly like GNU's `pushhandler`/`sys_setjmp` pairs.
++//! The dispatch match is exhaustive over the decoded opcode set, so the
++//! compiler proves every GNU 30.2 opcode has an execution arm.
++
++use super::super::eval::Interpreter;
++use super::super::primitives;
++use super::super::types::{Env, LispError, Value};
++use super::{ArgSpec, ByteCodeObject, Instr, Op};
++
++/// One specpdl-style entry the VM must undo on Bunbind or error unwind.
++enum UnwindEntry {
++    Binding(super::super::eval::SpecialBindingRestore),
++    /// Bsave_excursion: restore buffer and (marker-tracked) point.
++    Excursion {
++        buffer_id: u64,
++        marker_id: u64,
++        saved_pt: usize,
++    },
++    /// Bsave_current_buffer: restore the current buffer only.
++    CurrentBuffer {
++        buffer_id: u64,
++    },
++    /// Bsave_restriction on a wide buffer: re-widen on exit.
++    RestrictionWide {
++        buffer_id: u64,
++    },
++    /// Bsave_restriction on a narrowed buffer: marker-tracked bounds.
++    Restriction {
++        buffer_id: u64,
++        beg_id: u64,
++        end_id: u64,
++        saved_begv: usize,
++        saved_zv: usize,
++    },
++    /// Bunwind_protect: a handler function (24.4+) or list of forms.
++    Protect(Value),
++}
++
++/// Undo one specpdl-style entry (GNU's do_one_unbind).
++fn unwind_one(
++    interp: &mut Interpreter,
++    entry: UnwindEntry,
++    env: &mut Env,
++) -> Result<(), LispError> {
++    match entry {
++        UnwindEntry::Binding(restore) => interp.restore_special_binding(restore, env),
++        UnwindEntry::Excursion {
++            buffer_id,
++            marker_id,
++            saved_pt,
++        } => {
++            if interp.has_buffer_id(buffer_id) {
++                let _ = interp.set_current_buffer_id(buffer_id);
++                let restore_pt = interp
++                    .marker_position(marker_id)
++                    .unwrap_or(saved_pt)
++                    .clamp(interp.buffer.point_min(), interp.buffer.point_max());
++                interp.buffer.goto_char(restore_pt);
++            }
++            let _ = interp.set_marker(marker_id, None, None);
++            Ok(())
++        }
++        UnwindEntry::CurrentBuffer { buffer_id } => {
++            if interp.has_buffer_id(buffer_id) {
++                let _ = interp.set_current_buffer_id(buffer_id);
++            }
++            Ok(())
++        }
++        UnwindEntry::RestrictionWide { buffer_id } => {
++            let final_buffer_id = interp.current_buffer_id();
++            if interp.has_buffer_id(buffer_id) {
++                if final_buffer_id != buffer_id {
++                    let _ = interp.set_current_buffer_id(buffer_id);
++                }
++                let full_end = interp.buffer.size_total() + 1;
++                interp.buffer.restore_restriction(1, full_end);
++                if final_buffer_id != buffer_id && interp.has_buffer_id(final_buffer_id) {
++                    let _ = interp.set_current_buffer_id(final_buffer_id);
++                }
++            }
++            Ok(())
++        }
++        UnwindEntry::Restriction {
++            buffer_id,
++            beg_id,
++            end_id,
++            saved_begv,
++            saved_zv,
++        } => {
++            let final_buffer_id = interp.current_buffer_id();
++            let restore_begv = interp.marker_position(beg_id).unwrap_or(saved_begv);
++            let restore_zv = interp.marker_position(end_id).unwrap_or(saved_zv);
++            if interp.has_buffer_id(buffer_id) {
++                if final_buffer_id != buffer_id {
++                    let _ = interp.set_current_buffer_id(buffer_id);
++                }
++                interp.buffer.restore_restriction(restore_begv, restore_zv);
++                if final_buffer_id != buffer_id && interp.has_buffer_id(final_buffer_id) {
++                    let _ = interp.set_current_buffer_id(final_buffer_id);
++                }
++            }
++            let _ = interp.set_marker(beg_id, None, None);
++            let _ = interp.set_marker(end_id, None, None);
++            Ok(())
++        }
++        UnwindEntry::Protect(handler) => {
++            // GNU records bcall0 for functions (24.4+) and prog_ignore
++            // for the obsolete forms-list shape.
++            let is_function = prim(interp, "functionp", &[handler.clone()], env)?;
++            if is_function.is_truthy() {
++                interp.call_function_value(handler, None, &[], env)?;
++            } else if let Ok(forms) = handler.to_vec() {
++                for form in &forms {
++                    interp.eval(form, env)?;
++                }
++            }
++            Ok(())
++        }
++    }
++}
++
++enum HandlerKind {
++    /// Bpushcatch: TAG caught by `eq`.
++    Catch(Value),
++    /// Bpushconditioncase: the popped conditions clause head.
++    ConditionCase(Value),
++}
++
++struct Handler {
++    kind: HandlerKind,
++    dest: usize,
++    stack_len: usize,
++    unwind_len: usize,
++}
++
++/// Materialize a constant still in reader form: record literals
++/// (`#[...]` nested closures, `#s(hash-table ...)` jump tables) become
++/// live objects; vectors materialize elementwise.  Everything else is
++/// already a value.
++fn materialize_constant(
++    interp: &mut Interpreter,
++    constant: &Value,
++    env: &mut Env,
++) -> Result<Value, LispError> {
++    let Ok(items) = constant.to_vec() else {
++        return Ok(constant.clone());
++    };
++    match items.first() {
++        Some(Value::Symbol(marker)) if marker == "emaxx--record-literal" => {
++            interp.eval(constant, env)
++        }
++        Some(Value::Symbol(marker)) if marker == "emaxx--hash-table-literal" => {
++            // Same materialization `sf_quote' applies to quoted literals.
++            primitives::materialize_read_hash_table_literals(interp, constant)
++        }
++        // The reader wraps `#s(hash-table ...)' in a quote; GNU constants
++        // hold the table itself, so unwrap exactly that artifact.
++        Some(Value::Symbol(quote))
++            if quote == "quote"
++                && items.len() == 2
++                && items[1].to_vec().ok().is_some_and(|inner| {
++                    matches!(
++                        inner.first(),
++                        Some(Value::Symbol(marker)) if marker == "emaxx--hash-table-literal"
++                    )
++                }) =>
++        {
++            primitives::materialize_read_hash_table_literals(interp, &items[1])
++        }
++        Some(Value::Symbol(marker)) if marker == "vector-literal" => {
++            let mut rebuilt = Vec::with_capacity(items.len());
++            rebuilt.push(Value::symbol("vector-literal"));
++            for item in &items[1..] {
++                rebuilt.push(materialize_constant(interp, item, env)?);
++            }
++            Ok(Value::list(rebuilt))
++        }
++        _ => Ok(constant.clone()),
++    }
++}
++
++/// Call a named Emaxx primitive with stack values (the Bcar/Bplus-style
++/// single-instruction function ops).
++fn prim(
++    interp: &mut Interpreter,
++    name: &str,
++    args: &[Value],
++    env: &mut Env,
++) -> Result<Value, LispError> {
++    primitives::call(interp, name, args, env)
++}
++
++/// Execute OBJECT with ARGS, returning the value of Breturn.
++pub fn execute(
++    interp: &mut Interpreter,
++    object: &ByteCodeObject,
++    args: &[Value],
++    env: &mut Env,
++) -> Result<Value, LispError> {
++    let instrs = super::decode_program(&object.code, object.constants.len())
++        .map_err(|error| LispError::Signal(error.to_string()))?;
++    // pc-by-offset dispatch: jumps target byte offsets.
++    let mut index_of_offset = std::collections::HashMap::new();
++    for (index, instr) in instrs.iter().enumerate() {
++        index_of_offset.insert(instr.offset, index);
++    }
++
++    // Constants still in reader form (nested `#[...]` closures,
++    // `#s(hash-table ...)` jump tables) materialize once here, like GNU
++    // load evaluating the literal before the function ever runs.
++    let mut constants = Vec::with_capacity(object.constants.len());
++    for constant in &object.constants {
++        constants.push(materialize_constant(interp, constant, env)?);
++    }
++    let object = &ByteCodeObject {
++        argspec: object.argspec.clone(),
++        code: object.code.clone(),
++        constants,
++        stack_depth: object.stack_depth,
++        doc: object.doc.clone(),
++        interactive: object.interactive.clone(),
++    };
++
++    let mut stack: Vec<Value> = Vec::with_capacity(object.stack_depth.max(8));
++    let mut unwinds: Vec<UnwindEntry> = Vec::new();
++
++    // Argument prologue (exec_byte_code's ARGS_TEMPLATE handling).
++    match &object.argspec {
++        ArgSpec::Packed {
++            mandatory,
++            nonrest,
++            rest,
++        } => {
++            let mandatory = *mandatory as usize;
++            let nonrest = *nonrest as usize;
++            if args.len() < mandatory || (!rest && args.len() > nonrest) {
++                return Err(LispError::WrongNumberOfArgs(
++                    "byte-code function".into(),
++                    args.len(),
++                ));
++            }
++            let pushed = args.len().min(nonrest);
++            stack.extend(args[..pushed].iter().cloned());
++            if args.len() > nonrest {
++                stack.push(Value::list(args[nonrest..].iter().cloned()));
++            } else {
++                for _ in args.len()..nonrest {
++                    stack.push(Value::Nil);
++                }
++                if *rest {
++                    stack.push(Value::Nil);
++                }
++            }
++        }
++        // Old-style dynamic bytecode: funcall_lambda specbinds each
++        // formal (honoring &optional/&rest) and runs the body with an
++        // empty stack; the exit balance below is GNU's unbind_to.
++        ArgSpec::Legacy(arglist) => {
++            let formals = arglist.to_vec().unwrap_or_default();
++            let mut index = 0usize;
++            let mut optional = false;
++            let mut rest = false;
++            for formal in &formals {
++                let name = match formal {
++                    Value::Symbol(name) => name.clone(),
++                    other => {
++                        let error = LispError::SignalValue(Value::list([
++                            Value::Symbol("invalid-function".into()),
++                            other.clone(),
++                        ]));
++                        while let Some(entry) = unwinds.pop() {
++                            unwind_one(interp, entry, env)?;
++                        }
++                        return Err(error);
++                    }
++                };
++                if name == "&optional" {
++                    optional = true;
++                    continue;
++                }
++                if name == "&rest" {
++                    rest = true;
++                    continue;
++                }
++                let value = if rest {
++                    Value::list(args[index.min(args.len())..].iter().cloned())
++                } else if index < args.len() {
++                    args[index].clone()
++                } else if optional {
++                    Value::Nil
++                } else {
++                    while let Some(entry) = unwinds.pop() {
++                        unwind_one(interp, entry, env)?;
++                    }
++                    return Err(LispError::WrongNumberOfArgs(
++                        "byte-code function".into(),
++                        args.len(),
++                    ));
++                };
++                if rest {
++                    index = args.len();
++                } else {
++                    index += 1;
++                }
++                let restore = interp.bind_special_variable(&name, value, env)?;
++                unwinds.push(UnwindEntry::Binding(restore));
++                if rest {
++                    break;
++                }
++            }
++            if !rest && index < args.len() {
++                while let Some(entry) = unwinds.pop() {
++                    unwind_one(interp, entry, env)?;
++                }
++                return Err(LispError::WrongNumberOfArgs(
++                    "byte-code function".into(),
++                    args.len(),
++                ));
++            }
++        }
++    }
++    let mut handlers: Vec<Handler> = Vec::new();
++    let mut pc = 0usize;
++
++    macro_rules! pop {
++        () => {
++            stack.pop().expect("validated bytecode never underflows")
++        };
++    }
++
++    let result = 'run: loop {
++        let Some(instr) = instrs.get(pc) else {
++            break Err(LispError::Signal(
++                "byte code ran off the end of its program".into(),
++            ));
++        };
++        let Instr { op, .. } = *instr;
++        pc += 1;
++
++        // Every fallible operation funnels through here so handler
++        // unwinding (GNU's sys_setjmp arm) is applied uniformly.
++        let step: Result<(), LispError> = (|| {
++            match op {
++                Op::StackRef(n) => {
++                    let value = stack[stack.len() - 1 - n as usize].clone();
++                    stack.push(value);
++                }
++                Op::StackSet(n) => {
++                    let value = pop!();
++                    let slot = stack.len() - 1 - (n as usize - 1);
++                    // stack-set N stores relative to the *pre-pop* top.
++                    stack[slot] = value;
++                }
++                Op::DiscardN {
++                    count,
++                    preserve_tos,
++                } => {
++                    if preserve_tos {
++                        let top = pop!();
++                        for _ in 0..count {
++                            pop!();
++                        }
++                        stack.push(top);
++                    } else {
++                        for _ in 0..count {
++                            pop!();
++                        }
++                    }
++                }
++                Op::Discard => {
++                    pop!();
++                }
++                Op::Dup => {
++                    let top = stack.last().expect("validated bytecode").clone();
++                    stack.push(top);
++                }
++                Op::Constant(index) | Op::Constant2(index) => {
++                    stack.push(object.constants[index as usize].clone());
++                }
++                Op::VarRef(index) => {
++                    let name = object.constants[index as usize].clone();
++                    let value = prim(interp, "symbol-value", &[name], env)?;
++                    stack.push(value);
++                }
++                Op::VarSet(index) => {
++                    let name = object.constants[index as usize].clone();
++                    let value = pop!();
++                    prim(interp, "set", &[name, value], env)?;
++                }
++                Op::VarBind(index) => {
++                    let name = object.constants[index as usize]
++                        .as_symbol()
++                        .map_err(|_| LispError::Signal("varbind constant must be a symbol".into()))?
++                        .to_string();
++                    let value = pop!();
++                    let restore = interp.bind_special_variable(&name, value, env)?;
++                    unwinds.push(UnwindEntry::Binding(restore));
++                }
++                Op::Unbind(count) => {
++                    for _ in 0..count {
++                        match unwinds.pop() {
++                            Some(entry) => unwind_one(interp, entry, env)?,
++                            None => {
++                                return Err(LispError::Signal("byte code unbind underflow".into()));
++                            }
++                        }
++                    }
++                }
++                Op::SaveExcursion => {
++                    let buffer_id = interp.current_buffer_id();
++                    let saved_pt = interp.buffer.point();
++                    let Value::Marker(marker_id) = interp.make_marker() else {
++                        unreachable!("make_marker returns a marker")
++                    };
++                    interp.set_marker(marker_id, Some(saved_pt), Some(buffer_id))?;
++                    unwinds.push(UnwindEntry::Excursion {
++                        buffer_id,
++                        marker_id,
++                        saved_pt,
++                    });
++                }
++                Op::SaveCurrentBuffer | Op::SaveCurrentBufferObsolete => {
++                    unwinds.push(UnwindEntry::CurrentBuffer {
++                        buffer_id: interp.current_buffer_id(),
++                    });
++                }
++                Op::SaveRestriction => {
++                    let buffer_id = interp.current_buffer_id();
++                    let saved_begv = interp.buffer.point_min();
++                    let saved_zv = interp.buffer.point_max();
++                    // Mirrors sf_save_restriction: a wide buffer records "no
++                    // restriction" (marker-tracking would spuriously
++                    // re-narrow after edits at BEGV).
++                    if saved_begv == 1 && saved_zv == interp.buffer.size_total() + 1 {
++                        unwinds.push(UnwindEntry::RestrictionWide { buffer_id });
++                    } else {
++                        let Value::Marker(beg_id) = interp.make_marker() else {
++                            unreachable!("make_marker returns a marker")
++                        };
++                        let Value::Marker(end_id) = interp.make_marker() else {
++                            unreachable!("make_marker returns a marker")
++                        };
++                        let _ = interp.set_marker(beg_id, Some(saved_begv), Some(buffer_id));
++                        let _ = interp.set_marker(end_id, Some(saved_zv), Some(buffer_id));
++                        interp.set_marker_insertion_type(end_id, true);
++                        interp.buffer.push_undo_meta(Value::cons(
++                            Value::Marker(beg_id),
++                            Value::Integer(-(saved_begv as i64)),
++                        ));
++                        interp.buffer.push_undo_meta(Value::cons(
++                            Value::Marker(end_id),
++                            Value::Integer(saved_zv as i64),
++                        ));
++                        unwinds.push(UnwindEntry::Restriction {
++                            buffer_id,
++                            beg_id,
++                            end_id,
++                            saved_begv,
++                            saved_zv,
++                        });
++                    }
++                }
++                Op::UnwindProtect => {
++                    let handler = pop!();
++                    unwinds.push(UnwindEntry::Protect(handler));
++                }
++                Op::SaveWindowExcursion => {
++                    // Obsolete since 24.1: TOP is a list of body forms;
++                    // evaluate them inside a window-configuration save.
++                    let body = pop!();
++                    let snapshot = interp.snapshot_window_configuration();
++                    let mut value = Value::Nil;
++                    let result: Result<(), LispError> = (|| {
++                        for form in &body.to_vec()? {
++                            value = interp.eval(form, env)?;
++                        }
++                        Ok(())
++                    })();
++                    let _ = interp.restore_window_configuration(snapshot);
++                    result?;
++                    stack.push(value);
++                }
++                Op::Catch => {
++                    // Obsolete since 25: TAG below an unevaluated body form.
++                    let body = pop!();
++                    let tag = pop!();
++                    let value = match interp.eval(&body, env) {
++                        Err(LispError::Throw(thrown, thrown_value))
++                            if prim(interp, "eq", &[tag.clone(), thrown.clone()], env)?
++                                .is_truthy() =>
++                        {
++                            thrown_value
++                        }
++                        other => other?,
++                    };
++                    stack.push(value);
++                }
++                Op::ConditionCase => {
++                    // Obsolete since 25: VAR, BODY form, HANDLERS list —
++                    // exactly `(condition-case VAR BODY . HANDLERS)`.
++                    let handlers = pop!();
++                    let body = pop!();
++                    let var = pop!();
++                    let mut form = vec![Value::symbol("condition-case"), var, body];
++                    form.extend(handlers.to_vec()?);
++                    let value = interp.eval(&Value::list(form), env)?;
++                    stack.push(value);
++                }
++                Op::TempOutputBufferSetup => {
++                    // Obsolete since 24.1: create/erase the temp buffer and
++                    // bind standard-output to it (GNU temp_output_buffer_setup
++                    // specbinds, so Bunbind pops it).
++                    let name = pop!();
++                    let buffer = prim(interp, "get-buffer-create", &[name], env)?;
++                    let saved = interp.current_buffer_id();
++                    let buffer_id = interp.resolve_buffer_id(&buffer)?;
++                    let _ = interp.set_current_buffer_id(buffer_id);
++                    prim(interp, "erase-buffer", &[], env)?;
++                    let _ = interp.set_current_buffer_id(saved);
++                    let restore =
++                        interp.bind_special_variable("standard-output", buffer.clone(), env)?;
++                    unwinds.push(UnwindEntry::Binding(restore));
++                    stack.push(buffer);
++                }
++                Op::TempOutputBufferShow => {
++                    // Obsolete since 24.1: show the buffer at TOP, replace it
++                    // with the saved value below, pop the standard-output bind.
++                    let value = pop!();
++                    let buffer = pop!();
++                    let show = interp
++                        .lookup_var("temp-buffer-show-function", env)
++                        .unwrap_or(Value::Nil);
++                    if show.is_truthy() {
++                        interp.call_function_value(show, None, &[buffer.clone()], env)?;
++                    } else {
++                        prim(interp, "display-buffer", &[buffer], env)?;
++                    }
++                    stack.push(value);
++                    match unwinds.pop() {
++                        Some(entry) => unwind_one(interp, entry, env)?,
++                        None => {
++                            return Err(LispError::Signal("byte code unbind underflow".into()));
++                        }
++                    }
++                }
++                Op::InteractiveP => {
++                    // Obsolete since 24.1: GNU call0s the Lisp function.
++                    let value = interp.call_function_value(
++                        Value::symbol("interactive-p"),
++                        Some("interactive-p"),
++                        &[],
++                        env,
++                    )?;
++                    stack.push(value);
++                }
++                // Zero-argument push ops.
++                Op::Point
++                | Op::PointMax
++                | Op::PointMin
++                | Op::FollowingChar
++                | Op::PrecedingChar
++                | Op::CurrentColumn
++                | Op::Eolp
++                | Op::Eobp
++                | Op::Bolp
++                | Op::Bobp
++                | Op::CurrentBuffer
++                | Op::Widen => {
++                    let name = match op {
++                        Op::Point => "point",
++                        Op::PointMax => "point-max",
++                        Op::PointMin => "point-min",
++                        Op::FollowingChar => "following-char",
++                        Op::PrecedingChar => "preceding-char",
++                        Op::CurrentColumn => "current-column",
++                        Op::Eolp => "eolp",
++                        Op::Eobp => "eobp",
++                        Op::Bolp => "bolp",
++                        Op::Bobp => "bobp",
++                        Op::CurrentBuffer => "current-buffer",
++                        _ => "widen",
++                    };
++                    let value = prim(interp, name, &[], env)?;
++                    stack.push(value);
++                }
++                // One-argument buffer/navigation ops (TOP = F(TOP)).
++                Op::GotoChar
++                | Op::Insert
++                | Op::CharAfter
++                | Op::SetBuffer
++                | Op::ForwardChar
++                | Op::ForwardWord
++                | Op::ForwardLine
++                | Op::CharSyntax
++                | Op::EndOfLine
++                | Op::MatchBeginning
++                | Op::MatchEnd => {
++                    let a = pop!();
++                    let name = match op {
++                        Op::GotoChar => "goto-char",
++                        Op::Insert => "insert",
++                        Op::CharAfter => "char-after",
++                        Op::SetBuffer => "set-buffer",
++                        Op::ForwardChar => "forward-char",
++                        Op::ForwardWord => "forward-word",
++                        Op::ForwardLine => "forward-line",
++                        Op::CharSyntax => "char-syntax",
++                        Op::EndOfLine => "end-of-line",
++                        Op::MatchBeginning => "match-beginning",
++                        _ => "match-end",
++                    };
++                    let value = prim(interp, name, &[a], env)?;
++                    stack.push(value);
++                }
++                Op::IndentTo => {
++                    // GNU passes an explicit nil MINIMUM.
++                    let column = pop!();
++                    let value = prim(interp, "indent-to", &[column, Value::Nil], env)?;
++                    stack.push(value);
++                }
++                // Two-argument region/motion ops.
++                Op::SkipCharsForward
++                | Op::SkipCharsBackward
++                | Op::BufferSubstring
++                | Op::DeleteRegion
++                | Op::NarrowToRegion => {
++                    let b = pop!();
++                    let a = pop!();
++                    let name = match op {
++                        Op::SkipCharsForward => "skip-chars-forward",
++                        Op::SkipCharsBackward => "skip-chars-backward",
++                        Op::BufferSubstring => "buffer-substring",
++                        Op::DeleteRegion => "delete-region",
++                        _ => "narrow-to-region",
++                    };
++                    let value = prim(interp, name, &[a, b], env)?;
++                    stack.push(value);
++                }
++                Op::SetMarker => {
++                    let position_buffer = pop!();
++                    let position = pop!();
++                    let marker = pop!();
++                    let value = prim(
++                        interp,
++                        "set-marker",
++                        &[marker, position, position_buffer],
++                        env,
++                    )?;
++                    stack.push(value);
++                }
++                Op::InsertN(n) => {
++                    let items: Vec<Value> = stack.drain(stack.len() - n as usize..).collect();
++                    let value = prim(interp, "insert", &items, env)?;
++                    stack.push(value);
++                }
++                Op::Call(argc) => {
++                    let argc = argc as usize;
++                    let call_args: Vec<Value> = stack.drain(stack.len() - argc..).collect();
++                    let func = pop!();
++                    let value = interp.call_function_value(func, None, &call_args, env)?;
++                    stack.push(value);
++                }
++                Op::Goto { target } => {
++                    pc = index_of_offset[&(target as usize)];
++                }
++                Op::GotoIfNil { target } => {
++                    if pop!().is_nil() {
++                        pc = index_of_offset[&(target as usize)];
++                    }
++                }
++                Op::GotoIfNonNil { target } => {
++                    if !pop!().is_nil() {
++                        pc = index_of_offset[&(target as usize)];
++                    }
++                }
++                Op::GotoIfNilElsePop { target } => {
++                    if stack.last().expect("validated bytecode").is_nil() {
++                        pc = index_of_offset[&(target as usize)];
++                    } else {
++                        pop!();
++                    }
++                }
++                Op::GotoIfNonNilElsePop { target } => {
++                    if !stack.last().expect("validated bytecode").is_nil() {
++                        pc = index_of_offset[&(target as usize)];
++                    } else {
++                        pop!();
++                    }
++                }
++                Op::Return => {
++                    return Err(LispError::Throw(
++                        Value::Symbol("--emaxx-bytecode-return--".into()),
++                        pop!(),
++                    ));
++                }
++                Op::PushCatch { target } => {
++                    let tag = pop!();
++                    // `throw' consults the interpreter's active-catch
++                    // registry before unwinding; a VM catch frame must be
++                    // visible there like any `sf_catch' frame.
++                    interp.push_active_catch_tag(tag.clone());
++                    handlers.push(Handler {
++                        kind: HandlerKind::Catch(tag),
++                        dest: target as usize,
++                        stack_len: stack.len(),
++                        unwind_len: unwinds.len(),
++                    });
++                }
++                Op::PushConditionCase { target } => {
++                    let conditions = pop!();
++                    handlers.push(Handler {
++                        kind: HandlerKind::ConditionCase(conditions),
++                        dest: target as usize,
++                        stack_len: stack.len(),
++                        unwind_len: unwinds.len(),
++                    });
++                }
++                Op::PopHandler => {
++                    if let Some(handler) = handlers.pop()
++                        && matches!(handler.kind, HandlerKind::Catch(_))
++                    {
++                        interp.pop_active_catch_tag();
++                    }
++                }
++                Op::Switch => {
++                    let table = pop!();
++                    let value = pop!();
++                    let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
++                    if let Value::Integer(dest) = dest {
++                        pc = index_of_offset[&(dest as usize)];
++                    }
++                }
++                Op::ListN(n) => {
++                    let items: Vec<Value> = stack.drain(stack.len() - n as usize..).collect();
++                    stack.push(Value::list(items));
++                }
++                Op::ConcatN(n) => {
++                    let items: Vec<Value> = stack.drain(stack.len() - n as usize..).collect();
++                    let value = prim(interp, "concat", &items, env)?;
++                    stack.push(value);
++                }
++                Op::List1 | Op::List2 | Op::List3 | Op::List4 => {
++                    let n = match op {
++                        Op::List1 => 1,
++                        Op::List2 => 2,
++                        Op::List3 => 3,
++                        _ => 4,
++                    };
++                    let items: Vec<Value> = stack.drain(stack.len() - n..).collect();
++                    stack.push(Value::list(items));
++                }
++                Op::Not => {
++                    let value = pop!();
++                    stack.push(if value.is_nil() { Value::T } else { Value::Nil });
++                }
++                // Two-argument primitive ops.
++                Op::Eq
++                | Op::Memq
++                | Op::Cons
++                | Op::Nth
++                | Op::Aref
++                | Op::Setcar
++                | Op::Setcdr
++                | Op::Nthcdr
++                | Op::Elt
++                | Op::Member
++                | Op::Assq
++                | Op::Equal
++                | Op::Get
++                | Op::Eqlsign
++                | Op::Gtr
++                | Op::Lss
++                | Op::Leq
++                | Op::Geq
++                | Op::Diff
++                | Op::Plus
++                | Op::Max
++                | Op::Min
++                | Op::Mult
++                | Op::Quo
++                | Op::Rem
++                | Op::StringEqlsign
++                | Op::StringLss
++                | Op::Concat2
++                | Op::Set
++                | Op::Fset
++                | Op::Nconc => {
++                    let b = pop!();
++                    let a = pop!();
++                    let name = match op {
++                        Op::Eq => "eq",
++                        Op::Memq => "memq",
++                        Op::Cons => "cons",
++                        Op::Nth => "nth",
++                        Op::Aref => "aref",
++                        Op::Setcar => "setcar",
++                        Op::Setcdr => "setcdr",
++                        Op::Nthcdr => "nthcdr",
++                        Op::Elt => "elt",
++                        Op::Member => "member",
++                        Op::Assq => "assq",
++                        Op::Equal => "equal",
++                        Op::Get => "get",
++                        Op::Eqlsign => "=",
++                        Op::Gtr => ">",
++                        Op::Lss => "<",
++                        Op::Leq => "<=",
++                        Op::Geq => ">=",
++                        Op::Diff => "-",
++                        Op::Plus => "+",
++                        Op::Max => "max",
++                        Op::Min => "min",
++                        Op::Mult => "*",
++                        Op::Quo => "/",
++                        Op::Rem => "%",
++                        Op::StringEqlsign => "string-equal",
++                        Op::StringLss => "string-lessp",
++                        Op::Concat2 => "concat",
++                        Op::Set => "set",
++                        Op::Fset => "fset",
++                        _ => "nconc",
++                    };
++                    let value = prim(interp, name, &[a, b], env)?;
++                    stack.push(value);
++                }
++                // One-argument primitive ops.
++                Op::Car
++                | Op::Cdr
++                | Op::CarSafe
++                | Op::CdrSafe
++                | Op::Symbolp
++                | Op::Consp
++                | Op::Stringp
++                | Op::Listp
++                | Op::Length
++                | Op::SymbolValue
++                | Op::SymbolFunction
++                | Op::Sub1
++                | Op::Add1
++                | Op::Negate
++                | Op::Nreverse
++                | Op::Numberp
++                | Op::Integerp
++                | Op::Upcase
++                | Op::Downcase => {
++                    let a = pop!();
++                    let name = match op {
++                        Op::Car => "car",
++                        Op::Cdr => "cdr",
++                        Op::CarSafe => "car-safe",
++                        Op::CdrSafe => "cdr-safe",
++                        Op::Symbolp => "symbolp",
++                        Op::Consp => "consp",
++                        Op::Stringp => "stringp",
++                        Op::Listp => "listp",
++                        Op::Length => "length",
++                        Op::SymbolValue => "symbol-value",
++                        Op::SymbolFunction => "symbol-function",
++                        Op::Sub1 => "1-",
++                        Op::Add1 => "1+",
++                        Op::Negate => "-",
++                        Op::Nreverse => "nreverse",
++                        Op::Numberp => "numberp",
++                        Op::Integerp => "integerp",
++                        Op::Upcase => "upcase",
++                        _ => "downcase",
++                    };
++                    let value = prim(interp, name, &[a], env)?;
++                    stack.push(value);
++                }
++                // Three-argument primitive ops.
++                Op::Aset | Op::Substring | Op::Concat3 => {
++                    let c = pop!();
++                    let b = pop!();
++                    let a = pop!();
++                    let name = match op {
++                        Op::Aset => "aset",
++                        Op::Substring => "substring",
++                        _ => "concat",
++                    };
++                    let value = prim(interp, name, &[a, b, c], env)?;
++                    stack.push(value);
++                }
++                Op::Concat4 => {
++                    let d = pop!();
++                    let c = pop!();
++                    let b = pop!();
++                    let a = pop!();
++                    let value = prim(interp, "concat", &[a, b, c, d], env)?;
++                    stack.push(value);
++                }
++            }
++            Ok(())
++        })();
++
++        match step {
++            Ok(()) => {}
++            Err(LispError::Throw(tag, value)) if matches!(&tag, Value::Symbol(name) if name == "--emaxx-bytecode-return--") =>
++            {
++                break 'run Ok(value);
++            }
++            Err(error) => {
++                // GNU's handler search: innermost first; Bpushcatch
++                // handles `throw' by tag eq, Bpushconditioncase handles
++                // signals whose condition list matches the clause head.
++                let mut handled = false;
++                while let Some(handler) = handlers.pop() {
++                    if matches!(handler.kind, HandlerKind::Catch(_)) {
++                        interp.pop_active_catch_tag();
++                    }
++                    let matched_value = match (&handler.kind, &error) {
++                        (HandlerKind::Catch(tag), LispError::Throw(thrown, value)) => {
++                            let same = prim(interp, "eq", &[tag.clone(), thrown.clone()], env)?;
++                            if same.is_truthy() {
++                                Some(value.clone())
++                            } else {
++                                None
++                            }
++                        }
++                        (HandlerKind::ConditionCase(_), LispError::Throw(_, _))
++                        | (HandlerKind::ConditionCase(_), LispError::Terminate(_))
++                        | (HandlerKind::Catch(_), _) => None,
++                        (HandlerKind::ConditionCase(clause), error) => {
++                            let condition = error.condition_type();
++                            let condition_list = interp.error_condition_names(&condition);
++                            if Interpreter::clause_head_matches(clause, &condition, &condition_list)
++                            {
++                                Some(super::super::eval::error_condition_value(error))
++                            } else {
++                                None
++                            }
++                        }
++                    };
++                    if let Some(value) = matched_value {
++                        while unwinds.len() > handler.unwind_len {
++                            match unwinds.pop() {
++                                Some(entry) => unwind_one(interp, entry, env)?,
++                                None => break,
++                            }
++                        }
++                        stack.truncate(handler.stack_len);
++                        stack.push(value);
++                        pc = index_of_offset[&handler.dest];
++                        handled = true;
++                        break;
++                    }
++                }
++                if !handled {
++                    break 'run Err(error);
++                }
++            }
++        }
++    };
++
++    // Balance any entries left by an abnormal exit (GNU unbind_to on
++    // the frame's specpdl watermark), running unwind-protect handlers
++    // and restoring saved buffer state on the way out; catch tags of
++    // still-pushed handlers leave the registry with their frame.
++    for handler in handlers {
++        if matches!(handler.kind, HandlerKind::Catch(_)) {
++            interp.pop_active_catch_tag();
++        }
++    }
++    while let Some(entry) = unwinds.pop() {
++        unwind_one(interp, entry, env)?;
++    }
++    result
++}
++
++#[cfg(test)]
++#[allow(clippy::unwrap_used)]
++mod tests {
++    use super::super::tests::fixture_objects;
++    use super::*;
++
++    fn run(name: &str, args: &[Value]) -> Result<Value, LispError> {
++        let mut interp = Interpreter::new();
++        let mut env = Env::new();
++        let object = fixture_objects()
++            .remove(name)
++            .unwrap_or_else(|| panic!("fixture {name} missing"));
++        execute(&mut interp, &object, args, &mut env)
++    }
++
++    #[test]
++    fn executes_arithmetic_fixture() {
++        // (defun emaxx-fx-add (a b) (+ a b 1))
++        let value = run("emaxx-fx-add", &[Value::Integer(2), Value::Integer(3)]).unwrap();
++        assert_eq!(value, Value::Integer(6));
++    }
++
++    #[test]
++    fn executes_branching_fixture() {
++        // (defun emaxx-fx-branch (x) (if (consp x) (car x) (list x 'tagged)))
++        let value = run(
++            "emaxx-fx-branch",
++            &[Value::list([Value::Integer(7), Value::Integer(8)])],
++        )
++        .unwrap();
++        assert_eq!(value, Value::Integer(7));
++        let value = run("emaxx-fx-branch", &[Value::Integer(5)]).unwrap();
++        assert_eq!(
++            format!("{value}"),
++            format!(
++                "{}",
++                Value::list([Value::Integer(5), Value::symbol("tagged")])
++            )
++        );
++    }
++
++    #[test]
++    fn executes_loop_fixture() {
++        // (defun emaxx-fx-loop (n) (let ((acc nil)) (while (> n 0) (push n acc) (setq n (1- n))) acc))
++        let value = run("emaxx-fx-loop", &[Value::Integer(3)]).unwrap();
++        assert_eq!(
++            format!("{value}"),
++            format!(
++                "{}",
++                Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)])
++            )
++        );
++    }
++
++    #[test]
++    fn executes_rest_args_fixture() {
++        // (defun emaxx-fx-rest (head &rest tail) (cons head (length tail)))
++        let value = run(
++            "emaxx-fx-rest",
++            &[Value::symbol("a"), Value::symbol("b"), Value::symbol("c")],
++        )
++        .unwrap();
++        assert_eq!(format!("{value}"), "(a . 2)");
++        let value = run("emaxx-fx-rest", &[Value::symbol("solo")]).unwrap();
++        assert_eq!(format!("{value}"), "(solo . 0)");
++    }
++
++    #[test]
++    fn executes_condition_case_fixture() {
++        // (defun emaxx-fx-catch (f) (condition-case err (funcall f) (error (cons 'caught err))))
++        let mut interp = Interpreter::new();
++        let mut env = Env::new();
++        let object = fixture_objects().remove("emaxx-fx-catch").unwrap();
++        // Non-signaling: (lambda () 42) via a builtin-friendly stand-in.
++        let ok = execute(
++            &mut interp,
++            &object,
++            &[Value::Lambda(
++                Vec::new(),
++                std::rc::Rc::new(vec![Value::Integer(42)]),
++                std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
++            )],
++            &mut env,
++        )
++        .unwrap();
++        assert_eq!(ok, Value::Integer(42));
++        // Signaling: `car` of a non-list signals wrong-type-argument,
++        // which the (error ...) clause catches.
++        let caught = execute(
++            &mut interp,
++            &object,
++            &[Value::Lambda(
++                Vec::new(),
++                std::rc::Rc::new(vec![Value::list([Value::symbol("car"), Value::Integer(9)])]),
++                std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
++            )],
++            &mut env,
++        )
++        .unwrap();
++        assert!(format!("{caught}").starts_with("(caught wrong-type-argument"));
++    }
++}
++
++#[cfg(test)]
++#[allow(clippy::unwrap_used)]
++mod phase_c_tests {
++    use super::super::tests::{ORACLE_ELC2, named_objects};
++    use super::*;
++
++    fn run2(name: &str, args: &[Value]) -> Result<Value, LispError> {
++        let mut interp = Interpreter::new();
++        let mut env = Env::new();
++        let object = named_objects(ORACLE_ELC2)
++            .remove(name)
++            .unwrap_or_else(|| panic!("fixture {name} missing"));
++        execute(&mut interp, &object, args, &mut env)
++    }
++
++    #[test]
++    fn executes_buffer_ops_fixture() {
++        // (with-temp-buffer (insert "hello world") (goto-char (point-min))
++        //   (forward-word 1) (list (point) (buffer-substring ...) (point-max)))
++        let value = run2("emaxx-fx2-buffer", &[]).unwrap();
++        assert_eq!(format!("{value}"), "(6 \"hello\" 12)");
++    }
++
++    #[test]
++    fn executes_save_excursion_fixture() {
++        // Point restored to 3 after save-excursion moves to point-max.
++        let value = run2("emaxx-fx2-excursion", &[]).unwrap();
++        assert_eq!(value, Value::Integer(3));
++    }
++
++    #[test]
++    fn executes_unwind_protect_fixture() {
++        // Normal exit: handler still runs (setcdr log 'cleaned).
++        let mut interp = Interpreter::new();
++        let mut env = Env::new();
++        let object = named_objects(ORACLE_ELC2)
++            .remove("emaxx-fx2-unwind")
++            .unwrap();
++        let log = Value::list([Value::symbol("payload"), Value::symbol("untouched")]);
++        let value = execute(&mut interp, &object, &[log.clone()], &mut env).unwrap();
++        assert_eq!(format!("{value}"), "payload");
++        assert_eq!(format!("{log}"), "(payload . cleaned)");
++    }
++
++    #[test]
++    fn executes_unwind_protect_through_throw() {
++        // The handler must run while the throw unwinds to the catch.
++        let value = run2("emaxx-fx2-unwind-throw", &[Value::symbol("tag")]).unwrap();
++        assert_eq!(format!("{value}"), "(cleaned)");
++    }
++
++    #[test]
++    fn executes_dynamic_binding_fixture() {
++        // (let ((emaxx-fx2-dyn value)) (symbol-value 'emaxx-fx2-dyn))
++        let mut interp = Interpreter::new();
++        let mut env = Env::new();
++        // The defvar lives in the fixture file, not the test interp:
++        // declare it as GNU load would.
++        interp
++            .eval(
++                &Value::list([
++                    Value::symbol("defvar"),
++                    Value::symbol("emaxx-fx2-dyn"),
++                    Value::list([Value::symbol("quote"), Value::symbol("unset")]),
++                ]),
++                &mut env,
++            )
++            .unwrap();
++        let object = named_objects(ORACLE_ELC2)
++            .remove("emaxx-fx2-dynbind")
++            .unwrap();
++        let value = execute(&mut interp, &object, &[Value::symbol("bound")], &mut env).unwrap();
++        assert_eq!(format!("{value}"), "bound");
++        // The binding must be undone after the call.
++        let after = interp
++            .eval(&Value::symbol("emaxx-fx2-dyn"), &mut env)
++            .unwrap();
++        assert_eq!(format!("{after}"), "unset");
++    }
++
++    #[test]
++    fn executes_legacy_dynamic_argspec_fixture() {
++        // (defun emaxx-fx3-legacy (a &optional b &rest c)
++        //   (list a b (length c) (symbol-value 'a))) — dynamic binding:
++        // formals are specbound, so symbol-value sees `a'.
++        let mut interp = Interpreter::new();
++        let mut env = Env::new();
++        let object = super::super::tests::named_objects(super::super::tests::ORACLE_ELC3)
++            .remove("emaxx-fx3-legacy")
++            .unwrap();
++        assert!(matches!(object.argspec, ArgSpec::Legacy(_)));
++        let value = execute(
++            &mut interp,
++            &object,
++            &[
++                Value::Integer(1),
++                Value::Integer(2),
++                Value::Integer(3),
++                Value::Integer(4),
++            ],
++            &mut env,
++        )
++        .unwrap();
++        assert_eq!(format!("{value}"), "(1 2 2 1)");
++        // Optional/rest defaults, and bindings must not leak out.
++        let value = execute(&mut interp, &object, &[Value::Integer(9)], &mut env).unwrap();
++        assert_eq!(format!("{value}"), "(9 nil 0 9)");
++        assert!(interp.eval(&Value::symbol("a"), &mut env).is_err());
++        // Too few arguments signals like GNU.
++        assert!(execute(&mut interp, &object, &[], &mut env).is_err());
++    }
++
++    #[test]
++    fn executes_switch_fixture() {
++        for (key, expected) in [
++            ("alpha", "1"),
++            ("gamma", "3"),
++            ("zeta", "6"),
++            ("nomatch", "default"),
++        ] {
++            let value = run2("emaxx-fx2-switch", &[Value::symbol(key)]).unwrap();
++            assert_eq!(format!("{value}"), expected, "case {key}");
++        }
++    }
++}
++
++#[cfg(test)]
++#[allow(clippy::unwrap_used)]
++mod native_surface_tests {
++    use super::*;
++
++    /// `make-byte-code` output must execute through `byte-code`-adjacent
++    /// dispatch: build (lambda (x) (1+ x)) by hand and funcall it.
++    #[test]
++    fn make_byte_code_object_is_callable() {
++        let mut interp = Interpreter::new();
++        let mut env = Env::new();
++        // argspec 257: one mandatory arg; code: dup; add1; return.
++        let object = prim(
++            &mut interp,
++            "make-byte-code",
++            &[
++                Value::Integer(257),
++                Value::String("\u{89}\u{54}\u{87}".into()),
++                Value::list([Value::symbol("vector-literal")]),
++                Value::Integer(3),
++            ],
++            &mut env,
++        )
++        .unwrap();
++        let value = interp
++            .call_function_value(object, None, &[Value::Integer(41)], &mut env)
++            .unwrap();
++        assert_eq!(value, Value::Integer(42));
++    }
++
++    /// GNU's `byte-code' executes a bare program against a constants
++    /// vector; `internal-stack-stats' is a nil-returning telemetry stub.
++    #[test]
++    fn byte_code_primitive_executes_program() {
++        let mut interp = Interpreter::new();
++        let mut env = Env::new();
++        // constant0; constant1; plus; return  with constants [40 2].
++        let value = prim(
++            &mut interp,
++            "byte-code",
++            &[
++                Value::String("\u{c0}\u{c1}\u{5c}\u{87}".into()),
++                Value::list([
++                    Value::symbol("vector-literal"),
++                    Value::Integer(40),
++                    Value::Integer(2),
++                ]),
++                Value::Integer(4),
++            ],
++            &mut env,
++        )
++        .unwrap();
++        assert_eq!(value, Value::Integer(42));
++        assert_eq!(
++            prim(&mut interp, "internal-stack-stats", &[], &mut env).unwrap(),
++            Value::Nil
++        );
++    }
++}
+diff --git a/src/lisp/eval.rs b/src/lisp/eval.rs
+index 792ce7b..a3359fc 100644
+--- a/src/lisp/eval.rs
++++ b/src/lisp/eval.rs
+@@ -1366,7 +1366,7 @@ struct ProcessState {
+ }
+ 
+ #[derive(Clone, Debug)]
+-struct WindowConfigurationSnapshot {
++pub(crate) struct WindowConfigurationSnapshot {
+     current_buffer_id: u64,
+     selected_window_id: u64,
+     selected_window_slots: Vec<Value>,
+diff --git a/src/lisp/eval/control_forms.rs b/src/lisp/eval/control_forms.rs
+index aa5b5b5..d821704 100644
+--- a/src/lisp/eval/control_forms.rs
++++ b/src/lisp/eval/control_forms.rs
+@@ -634,6 +634,16 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
+         }
+     }
+ 
++    /// Register/unregister a VM `Bpushcatch' tag so `throw' sees it as an
++    /// active catch exactly like `sf_catch' frames.
++    pub(crate) fn push_active_catch_tag(&mut self, tag: Value) {
++        self.active_catch_tags.push(tag);
++    }
++
++    pub(crate) fn pop_active_catch_tag(&mut self) {
++        self.active_catch_tags.pop();
++    }
++
+     pub(crate) fn throw_value(
+         &mut self,
+         tag: Value,
+diff --git a/src/lisp/eval/core.rs b/src/lisp/eval/core.rs
+index 3133c5d..c8814ee 100644
+--- a/src/lisp/eval/core.rs
++++ b/src/lisp/eval/core.rs
+@@ -1001,6 +1001,17 @@ impl Interpreter {
+                     let Some(record) = self.find_record(id) else {
+                         unreachable!("checked record presence");
+                     };
++                    // Genuine GNU bytecode (argspec/code/constants/depth
++                    // slots) executes on the VM; Emaxx byte-compile facade
++                    // objects carry an executable lambda in slot 0 instead.
++                    if crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots) {
++                        let object = crate::lisp::bytecode::ByteCodeObject::from_slots(
++                            &record.slots.clone(),
++                        )
++                        .map_err(|error| LispError::Signal(error.to_string()))?
++                        .expect("slots_are_genuine_bytecode checked");
++                        return crate::lisp::bytecode::vm::execute(self, &object, args, env);
++                    }
+                     let Some(inner) = record.slots.first().cloned() else {
+                         return Err(LispError::SignalValue(Value::list([
+                             Value::Symbol("invalid-function".into()),
+diff --git a/src/lisp/eval/runtime.rs b/src/lisp/eval/runtime.rs
+index e01401f..c6db851 100644
+--- a/src/lisp/eval/runtime.rs
++++ b/src/lisp/eval/runtime.rs
+@@ -764,7 +764,7 @@ impl Interpreter {
+         self.frame_and_buffer_state = state;
+     }
+ 
+-    pub(super) fn snapshot_window_configuration(&self) -> WindowConfigurationSnapshot {
++    pub(crate) fn snapshot_window_configuration(&self) -> WindowConfigurationSnapshot {
+         WindowConfigurationSnapshot {
+             current_buffer_id: self.current_buffer_id(),
+             selected_window_id: self.selected_window_id,
+@@ -909,7 +909,7 @@ impl Interpreter {
+                 == layout_slots(&right.selected_window_slots))
+     }
+ 
+-    pub(super) fn restore_window_configuration(
++    pub(crate) fn restore_window_configuration(
+         &mut self,
+         snapshot: WindowConfigurationSnapshot,
+     ) -> Result<(), LispError> {
+diff --git a/src/lisp/eval/variables.rs b/src/lisp/eval/variables.rs
+index 3fdb2d3..e5dea39 100644
+--- a/src/lisp/eval/variables.rs
++++ b/src/lisp/eval/variables.rs
+@@ -1362,7 +1362,7 @@ impl Interpreter {
+     }
+ 
+     /// The `error-conditions' of CONDITION, or empty when undefined.
+-    pub(super) fn error_condition_names(&mut self, condition: &str) -> Vec<String> {
++    pub(crate) fn error_condition_names(&mut self, condition: &str) -> Vec<String> {
+         self.get_symbol_property(condition, "error-conditions")
+             .and_then(|value| value.to_vec().ok())
+             .map(|items| {
+@@ -1391,7 +1391,7 @@ impl Interpreter {
+         }
+     }
+ 
+-    pub(super) fn clause_head_matches(
++    pub(crate) fn clause_head_matches(
+         head: &Value,
+         error_type: &str,
+         condition_list: &[String],
+diff --git a/src/lisp/mod.rs b/src/lisp/mod.rs
+index 9270ce6..0a5240c 100644
+--- a/src/lisp/mod.rs
++++ b/src/lisp/mod.rs
+@@ -1,3 +1,4 @@
++pub mod bytecode;
+ pub mod eval;
+ pub mod json;
+ pub mod primitives;
+@@ -144,7 +145,11 @@ fn rewrite_lazy_doc_refs(
+     out
+ }
+ 
+-fn preprocess_lazy_doc_source(path: &Path, source: &str, force_load_doc_strings: bool) -> String {
++pub(crate) fn preprocess_lazy_doc_source(
++    path: &Path,
++    source: &str,
++    force_load_doc_strings: bool,
++) -> String {
+     let bytes = source.as_bytes();
+     let mut docs = HashMap::new();
+     let mut out = String::new();
+@@ -353,14 +358,16 @@ pub fn load_file_strict(
+     let requested_source = read_source_bytes(path)?;
+     // A versioned `;ELC' header does not by itself imply bytecode:
+     // `byte-compile-insert-header' is also used for files containing ordinary
+-    // readable Lisp.  Execute those directly.  Only fall back to sibling
+-    // source when parsed forms contain an actual `#[...]' byte-code object
+-    // (or cannot be decoded as Lisp); Emaxx does not yet implement GNU's VM.
++    // readable Lisp.  Execute those directly.  Genuine `#[...]' bytecode
++    // executes on the VM when EMAXX_BYTECODE_VM=1 or when no sibling `.el'
++    // exists; otherwise the sibling source remains the default until the
++    // VM path is sweep-validated end to end.
+     let compiled_source_path = path.with_extension("el");
+     let versioned_elc = requested_source.starts_with(b";ELC\x1e");
+     let source = if versioned_elc && compiled_source_path.is_file() {
++        let vm_enabled = std::env::var_os("EMAXX_BYTECODE_VM").is_some_and(|flag| flag == "1");
+         match String::from_utf8(requested_source) {
+-            Ok(source) if headered_elc_is_interpretable_lisp(path, &source) => source,
++            Ok(source) if vm_enabled || headered_elc_is_interpretable_lisp(path, &source) => source,
+             Ok(_) | Err(_) => read_source(&compiled_source_path)?,
+         }
+     } else {
+diff --git a/src/lisp/primitives/dispatch/predicates.rs b/src/lisp/primitives/dispatch/predicates.rs
+index a484f66..83b225a 100644
+--- a/src/lisp/primitives/dispatch/predicates.rs
++++ b/src/lisp/primitives/dispatch/predicates.rs
+@@ -32,6 +32,10 @@ pub(super) fn handles(name: &str) -> bool {
+             | "cl-struct-p"
+             | "compiled-function-p"
+             | "byte-code-function-p"
++            | "make-closure"
++            | "make-byte-code"
++            | "byte-code"
++            | "internal-stack-stats"
+             | "closurep"
+             | "interpreted-function-p"
+             | "module-function-p"
+@@ -407,6 +411,74 @@ pub(super) fn call(
+             need_args(name, args, 1)?;
+             Ok(Value::Nil)
+         }
++        "make-closure" => {
++            // GNU Fmake_closure (alloc.c): copy PROTOTYPE, replacing the
++            // first CLOSURE-VARS elements of its constants vector.
++            need_args(name, args, 1)?;
++            let Value::Record(id) = &args[0] else {
++                return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
++            };
++            let Some(record) = interp.find_record(*id) else {
++                return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
++            };
++            if record.type_name != "byte-code-function" {
++                return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
++            }
++            let mut slots = record.slots.clone();
++            let mut constants = slots
++                .get(2)
++                .and_then(|slot| slot.to_vec().ok())
++                .filter(|items| {
++                    matches!(items.first(), Some(Value::Symbol(marker)) if marker == "vector-literal")
++                })
++                .map(|items| items[1..].to_vec())
++                .ok_or_else(|| {
++                    LispError::Signal("make-closure prototype has no constants vector".into())
++                })?;
++            let vars = &args[1..];
++            if vars.len() > constants.len() {
++                return Err(LispError::Signal(
++                    "Closure vars do not fit in constvec".into(),
++                ));
++            }
++            constants[..vars.len()].clone_from_slice(vars);
++            slots[2] =
++                Value::list(std::iter::once(Value::symbol("vector-literal")).chain(constants));
++            Ok(interp.create_record("byte-code-function", slots))
++        }
++        "make-byte-code" => {
++            // GNU Fmake_byte_code (alloc.c): the arguments become the
++            // closure's elements verbatim (arglist, code, constants,
++            // depth, docstring, interactive-spec, extras).
++            need_args(name, args, 4)?;
++            Ok(interp.create_record("byte-code-function", args.to_vec()))
++        }
++        "byte-code" => {
++            // GNU Fbyte_code (bytecode.c): execute BYTESTR against VECTOR
++            // with MAXDEPTH as an argumentless program.
++            need_args(name, args, 3)?;
++            let slots = [
++                Value::Integer(0),
++                args[0].clone(),
++                args[1].clone(),
++                args[2].clone(),
++            ];
++            let object = crate::lisp::bytecode::ByteCodeObject::from_slots(&slots)
++                .map_err(|error| LispError::Signal(error.to_string()))?
++                .ok_or_else(|| {
++                    LispError::SignalValue(Value::list([
++                        Value::Symbol("error".into()),
++                        Value::String("Invalid byte-code".into()),
++                    ]))
++                })?;
++            crate::lisp::bytecode::vm::execute(interp, &object, &[], env)
++        }
++        "internal-stack-stats" => {
++            // GNU logs bytecode-stack telemetry to stderr and returns nil;
++            // the Emaxx VM keeps per-frame stacks, so there is no shared
++            // stack to report.
++            Ok(Value::Nil)
++        }
+         "user-ptrp" => {
+             need_args(name, args, 1)?;
+             // GNU's true case is the PVEC_USER_PTR variant created by a
+diff --git a/src/lisp/primitives/tests.rs b/src/lisp/primitives/tests.rs
+index dac6d32..2b67c21 100644
+--- a/src/lisp/primitives/tests.rs
++++ b/src/lisp/primitives/tests.rs
+@@ -841,12 +841,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
+         .collect::<Vec<_>>();
+     assert_eq!(
+         (mirrored.len(), fingerprint(&mirrored)),
+-        (1_416, 10_665_204_901_044_147_906),
++        (1_420, 4_253_707_965_298_194_171),
+         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
+     );
+     assert_eq!(
+         (missing_names.len(), fingerprint(&missing_names)),
+-        (4, 11_801_919_205_790_401_648),
++        (0, 14_695_981_039_346_656_037),
+         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
+     );
+     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
