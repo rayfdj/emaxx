@@ -18,6 +18,29 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 ERT/WINDOW-ISOLATION CHECKPOINT: the fresh contiguous ordered
+  frontier is 2,870/7,080, leaving 4,210 selectors.  The 201-outcome batch
+  after 2,669 verifies Testcover, Text Property Search, Thunk, Timer, Track
+  Changes, Unsafep, Vtable, Warnings, Viper, Env, EPG Config, EPG, and ERC
+  Button/DCC/Fill/Goodies/Join/Match/Networks/Nicks.  Key lookup ranks the
+  shortest character sequence before longer prefixes and function-key
+  aliases when GNU asks for the first binding.  Only `defcustom', not
+  `defvar' or `defvar-local', installs fallback `standard-value' metadata;
+  this keeps ERC's buffer-local module modes out of the global Custom path.
+  The native Rust ERT runner now includes GNU's per-test
+  `save-window-excursion', backed by complete window-tree snapshots that
+  restore the root, every preexisting window record, selection, displayed
+  buffer state, and current buffer while retiring windows created by the
+  test.  Load-bearing artifacts: ERC Networks 43/43
+  `target/compat/run-1785794082967853000-33255`; final ERC Nicks 16/16
+  `target/compat/run-1785805313626999000-35587`.  NEXT is selector 2,871,
+  `erc-sasl--mechanism-offered-p', in `test/lisp/erc/erc-sasl-tests.el' (9
+  selected outcomes).  Keep the four separately tracked bytecode/VM
+  primitives deferred: native remains 1,416/1,420.  The complete publication
+  gate is green: rustfmt, diff checks, all-target check, strict
+  all-feature/all-target Clippy, all 1,658 non-network library tests in the
+  restricted sandbox, the six exact localhost/TLS/UDP tests with networking
+  allowed, focused regressions, and grouped ERC Nicks.
 - 2026-08-03 CALLABLE-INTROSPECTION CHECKPOINT: the fresh contiguous ordered
   frontier is 2,669/7,080, leaving 4,411 selectors.  Seq (52/52), Shadow
   (1/1), Shortdoc (5/5), Subr-X (47/47), Syntax (1/1), and Tabulated List

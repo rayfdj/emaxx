@@ -1364,6 +1364,8 @@ struct WindowConfigurationSnapshot {
     current_buffer_id: u64,
     selected_window_id: u64,
     selected_window_slots: Vec<Value>,
+    window_records: Vec<(u64, Vec<Value>)>,
+    root_window: Value,
     frame_width: i64,
     frame_height: i64,
 }

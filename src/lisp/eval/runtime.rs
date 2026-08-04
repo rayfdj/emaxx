@@ -772,6 +772,15 @@ impl Interpreter {
                 .find_record(self.selected_window_id)
                 .map(|record| record.slots.clone())
                 .unwrap_or_default(),
+            window_records: self
+                .records
+                .iter()
+                .filter(|record| record.type_name == "window")
+                .map(|record| (record.id, record.slots.clone()))
+                .collect(),
+            root_window: self
+                .global_binding_value("emaxx-root-window")
+                .unwrap_or(Value::Nil),
             frame_width: self.frame_width(),
             frame_height: self.frame_height(),
         }
@@ -787,6 +796,12 @@ impl Interpreter {
                 Value::list(snapshot.selected_window_slots),
                 Value::Integer(snapshot.frame_width),
                 Value::Integer(snapshot.frame_height),
+                snapshot.root_window,
+                Value::list(
+                    snapshot.window_records.into_iter().map(|(id, slots)| {
+                        Value::cons(Value::Integer(id as i64), Value::list(slots))
+                    }),
+                ),
             ],
         )
     }
@@ -813,19 +828,39 @@ impl Interpreter {
             .find_record(*id)
             .filter(|record| record.type_name == "window-configuration")?;
         let slots = &record.slots;
+        let selected_window_id = slots
+            .get(1)
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or_default() as u64;
+        let selected_window_slots = slots
+            .get(2)
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default();
+        let window_records = slots
+            .get(6)
+            .and_then(|value| value.to_vec().ok())
+            .map(|records| {
+                records
+                    .into_iter()
+                    .filter_map(|record| {
+                        let (id, slots) = record.cons_values()?;
+                        Some((id.as_integer().ok()?.max(0) as u64, slots.to_vec().ok()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![(selected_window_id, selected_window_slots.clone())]);
         Some(WindowConfigurationSnapshot {
             current_buffer_id: slots
                 .first()
                 .and_then(|value| value.as_integer().ok())
                 .unwrap_or_default() as u64,
-            selected_window_id: slots
-                .get(1)
-                .and_then(|value| value.as_integer().ok())
-                .unwrap_or_default() as u64,
-            selected_window_slots: slots
-                .get(2)
-                .and_then(|value| value.to_vec().ok())
-                .unwrap_or_default(),
+            selected_window_id,
+            selected_window_slots,
+            window_records,
+            root_window: slots
+                .get(5)
+                .cloned()
+                .unwrap_or(Value::Record(selected_window_id)),
             frame_width: slots
                 .get(3)
                 .and_then(|value| value.as_integer().ok())
@@ -878,12 +913,38 @@ impl Interpreter {
         &mut self,
         snapshot: WindowConfigurationSnapshot,
     ) -> Result<(), LispError> {
-        if self.has_buffer_id(snapshot.current_buffer_id) {
-            self.switch_to_buffer_id(snapshot.current_buffer_id)?;
+        let saved_windows = snapshot
+            .window_records
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        for record in self
+            .records
+            .iter_mut()
+            .filter(|record| record.type_name == "window")
+        {
+            if let Some(slots) = saved_windows.get(&record.id) {
+                record.slots.clone_from(slots);
+            } else {
+                record
+                    .slots
+                    .resize(primitives::WINDOW_FIRST_CHILD_SLOT + 1, Value::Nil);
+                record.slots[primitives::WINDOW_BUFFER_SLOT] = Value::Nil;
+                record.slots[primitives::WINDOW_KIND_SLOT] =
+                    Value::Symbol(primitives::DELETED_WINDOW_KIND.into());
+                for slot in [
+                    primitives::WINDOW_PARENT_SLOT,
+                    primitives::WINDOW_PREV_SIBLING_SLOT,
+                    primitives::WINDOW_NEXT_SIBLING_SLOT,
+                    primitives::WINDOW_FIRST_CHILD_SLOT,
+                ] {
+                    record.slots[slot] = Value::Nil;
+                }
+            }
         }
+        self.set_global_binding("emaxx-root-window", snapshot.root_window);
         self.selected_window_id = snapshot.selected_window_id;
-        if let Some(window) = self.find_record_mut(snapshot.selected_window_id) {
-            window.slots = snapshot.selected_window_slots;
+        if self.has_buffer_id(snapshot.current_buffer_id) {
+            self.set_current_buffer_id(snapshot.current_buffer_id)?;
         }
         // GNU records frame dimensions for configuration equality, but
         // `set-window-configuration' does not rewind a frame resize.  Restore

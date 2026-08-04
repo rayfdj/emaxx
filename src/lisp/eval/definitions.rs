@@ -1762,9 +1762,10 @@ impl Interpreter {
                 (self.eval(&items[2], env)?, false)
             };
             self.set_default_toplevel_value(&resolved, val);
-            if self
-                .get_symbol_property(&resolved, "standard-value")
-                .is_none()
+            if is_defcustom
+                && self
+                    .get_symbol_property(&resolved, "standard-value")
+                    .is_none()
             {
                 let stored = self.lookup_var(&resolved, env).unwrap_or(Value::Nil);
                 self.put_symbol_property(
