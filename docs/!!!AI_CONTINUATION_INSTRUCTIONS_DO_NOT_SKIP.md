@@ -18,6 +18,19 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 ESHELL PROCESS-I/O CHECKPOINT: the fresh contiguous ordered
+  frontier is 3,341/7,080, leaving 3,739 selectors.  External Commands is 5/5
+  and I/O is 39/39.  `process-send-eof' now keeps an input-only PTY master
+  alive after queueing canonical Ctrl-D, allowing the pipeline head to consume
+  its queued input and forward final output instead of being killed early by
+  SIGHUP; a native split-PTY regression covers the contract.  Load-bearing
+  artifacts: External Commands 5/5
+  `target/compat/run-1785832123190423000-57167`; I/O 39/39
+  `target/compat/run-1785832545135382000-58086`.  NEXT is selector 3,342,
+  `esh-mode-test/handle-control-codes/backspace`, in
+  `test/lisp/eshell/esh-mode-tests.el` (3 selected outcomes), followed by
+  Options (13) and Process (24).  Native remains honestly parked at
+  1,416/1,420 with only the separately tracked bytecode/VM quartet deferred.
 - 2026-08-04 ESHELL COMMAND CHECKPOINT: the fresh contiguous ordered frontier
   is 3,297/7,080, leaving 3,783 selectors.  All 159 outcomes after 3,138 are
   green without implementation changes: Predicates 38/38, Prompt 9/9, Script

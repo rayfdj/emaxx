@@ -4117,6 +4117,67 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
 
 #[cfg(unix)]
 #[test]
+fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let (buffer_id, buffer_name) = interp.create_buffer("*split-pty-eof*");
+    let process = call(
+        &mut interp,
+        "make-process",
+        &[
+            Value::Symbol(":name".into()),
+            Value::String("split-pty-eof".into()),
+            Value::Symbol(":buffer".into()),
+            Value::Buffer(buffer_id, buffer_name),
+            Value::Symbol(":command".into()),
+            Value::list([Value::String("/bin/cat".into())]),
+            Value::Symbol(":connection-type".into()),
+            Value::cons(Value::Nil, Value::Symbol("pipe".into())),
+            Value::Symbol(":sentinel".into()),
+            Value::symbol("ignore"),
+        ],
+        &mut env,
+    )
+    .expect("create cat with PTY input and pipe output");
+    call(
+        &mut interp,
+        "process-send-string",
+        &[process.clone(), Value::String("hello\n".into())],
+        &mut env,
+    )
+    .expect("send split PTY input");
+    call(
+        &mut interp,
+        "process-send-eof",
+        std::slice::from_ref(&process),
+        &mut env,
+    )
+    .expect("send split PTY EOF");
+    let process_id = interp
+        .resolve_process_id(&process)
+        .expect("split PTY process id");
+    while interp.process_is_live(process_id) {
+        call(
+            &mut interp,
+            "accept-process-output",
+            &[process.clone(), Value::Float(0.1)],
+            &mut env,
+        )
+        .expect("wait for split PTY output");
+    }
+    pump_external_process_output(&mut interp, &mut env).expect("drain split PTY output");
+
+    assert_eq!(
+        interp
+            .get_buffer_by_id(buffer_id)
+            .expect("split PTY process buffer")
+            .buffer_string(),
+        "hello\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn signal_process_preserves_os_signal_status_and_sentinel_event() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
