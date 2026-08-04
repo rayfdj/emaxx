@@ -29,6 +29,19 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 Files/bytecode checkpoint advances the fresh contiguous
+  compatibility prefix to 3,669/7,080, leaving 3,411 selectors.  Faces is
+  5/5, FFAP 10/10, canonical File Notify 4/4, and Files 116/116.  The merged
+  bytecode VM closes the former `files-load-elc-gz-file' gap end to end and
+  completes the exact GNU C primitive frontier at 1,420/1,420 with zero
+  missing primitives.  Load-bearing artifacts: Faces
+  `target/compat/run-1785853916194279000-79537`; FFAP
+  `target/compat/run-1785854008773218000-79711`; File Notify
+  `target/compat/run-1785854267456436000-80142`; exact compressed bytecode
+  `target/compat/run-1785854301511383000-80297`; and full Files
+  `target/compat/run-1785854329647874000-80425`.  The exact native-surface
+  audit and executable `make-byte-code'/`byte-code' VM regressions are green.
+  NEXT is selector 3,670 in `test/lisp/files-x-tests.el` (7 selected outcomes).
 - The 2026-08-04 completed Eshell checkpoint advances the fresh contiguous
   compatibility prefix to 3,534/7,080, leaving 3,546 selectors.  Utilities is
   21/21, Variables 114/114, Unload 3/3, and core Eshell 15/15.  Nil `defalias'
