@@ -2574,13 +2574,11 @@ pub(super) fn call(
             Ok(Value::Integer(window_start(interp, args.first())? as i64))
         }
         "window-end" => {
-            need_arg_range(name, args, 0, 1)?;
-            let buffer_id = if let Some(window) = args.first() {
-                window_buffer_id(interp, window)
-                    .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))?
-            } else {
-                interp.selected_window_buffer_id()
-            };
+            need_arg_range(name, args, 0, 2)?;
+            // GNU accepts an UPDATE flag here.  Emaxx computes the current
+            // headless extent eagerly, so accepting it requires no extra
+            // invalidation step.
+            let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
             let (_, point_max) = buffer_point_bounds(interp, buffer_id);
             Ok(Value::Integer(point_max as i64))
         }

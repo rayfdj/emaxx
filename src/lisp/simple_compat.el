@@ -383,6 +383,17 @@ The batch frame always shows a single window."
                   (message "%s" ,current-message)
                 (message nil)))))))
 
+;; GNU subr.el preloads this macro.  Async callers use it to let BODY observe
+;; a quit locally while preserving the pending quit for the outer command.
+(defmacro with-local-quit (&rest body)
+  "Execute BODY, allowing quits to terminate BODY but not escape further."
+  (declare (debug t) (indent 0))
+  `(condition-case nil
+       (let ((inhibit-quit nil))
+         ,@body)
+     (quit (setq quit-flag t)
+           (eval '(ignore nil) t))))
+
 (defmacro dolist (spec &rest body)
   "Loop over a list according to SPEC, evaluating BODY for each element."
   (declare (indent 1) (debug ((symbolp form &optional form) body)))

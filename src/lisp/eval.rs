@@ -3302,6 +3302,14 @@ impl Interpreter {
         // (Viper does); lexical isolation must not hide that binding.
         interp.mark_special_variable("noninteractive");
         interp.mark_special_variable("delete-terminal-functions");
+        // dispnew.c publishes this DEFVAR_INT before isearch.el is dumped.
+        // Batch terminals have no output baud rate, represented by zero.
+        interp.set_global_binding("baud-rate", Value::Integer(0));
+        interp.mark_special_variable("baud-rate");
+        // keyboard.c installs `list' as the pass-through input method before
+        // dumped Lisp loads.  Isearch saves and buffer-locally suppresses it.
+        interp.set_global_binding("input-method-function", Value::Symbol("list".into()));
+        interp.mark_special_variable("input-method-function");
         // GNU keeps this dynamically scoped variable globally bound to nil;
         // loading a lexical file binds it to t only for that load.
         interp.set_global_binding("lexical-binding", Value::Nil);

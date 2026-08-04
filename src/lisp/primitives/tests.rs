@@ -105,6 +105,40 @@ fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
 }
 
 #[test]
+fn redisplay_defaults_match_native_terminal_and_input_state() {
+    let mut interp = Interpreter::new();
+    let form = Reader::new(
+        "(list baud-rate
+               (let ((baud-rate 9600)) baud-rate)
+               baud-rate
+               (= (window-start nil) (window-start))
+               (= (window-end nil t) (window-end))
+               input-method-function
+               (let ((input-method-function nil)) input-method-function)
+               input-method-function)",
+    )
+    .read()
+    .expect("read redisplay defaults probe")
+    .expect("redisplay defaults probe should contain one form");
+
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate redisplay defaults probe"),
+        Value::list([
+            Value::Integer(0),
+            Value::Integer(9600),
+            Value::Integer(0),
+            Value::T,
+            Value::T,
+            Value::Symbol("list".into()),
+            Value::Nil,
+            Value::Symbol("list".into()),
+        ])
+    );
+}
+
+#[test]
 fn sort_recognizes_an_evaluated_numeric_lambda_without_interpreting_each_comparison() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

@@ -145,7 +145,7 @@ pub(crate) fn window_start(
     value: Option<&Value>,
 ) -> Result<usize, LispError> {
     match value {
-        None => Ok(current_window_start(interp)),
+        None | Some(Value::Nil) => Ok(current_window_start(interp)),
         Some(value) => {
             let Some(id) = window_record_id_from_value(interp, value) else {
                 return Err(LispError::TypeError("window".into(), value.type_name()));
