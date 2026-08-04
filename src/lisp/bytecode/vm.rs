@@ -111,7 +111,7 @@ fn unwind_one(
         UnwindEntry::Protect(handler) => {
             // GNU records bcall0 for functions (24.4+) and prog_ignore
             // for the obsolete forms-list shape.
-            let is_function = prim(interp, "functionp", &[handler.clone()], env)?;
+            let is_function = prim(interp, "functionp", std::slice::from_ref(&handler), env)?;
             if is_function.is_truthy() {
                 interp.call_function_value(handler, None, &[], env)?;
             } else if let Ok(forms) = handler.to_vec() {
@@ -536,7 +536,12 @@ pub fn execute(
                         .lookup_var("temp-buffer-show-function", env)
                         .unwrap_or(Value::Nil);
                     if show.is_truthy() {
-                        interp.call_function_value(show, None, &[buffer.clone()], env)?;
+                        interp.call_function_value(
+                            show,
+                            None,
+                            std::slice::from_ref(&buffer),
+                            env,
+                        )?;
                     } else {
                         prim(interp, "display-buffer", &[buffer], env)?;
                     }
@@ -1114,7 +1119,7 @@ mod phase_c_tests {
             .remove("emaxx-fx2-unwind")
             .unwrap();
         let log = Value::list([Value::symbol("payload"), Value::symbol("untouched")]);
-        let value = execute(&mut interp, &object, &[log.clone()], &mut env).unwrap();
+        let value = execute(&mut interp, &object, std::slice::from_ref(&log), &mut env).unwrap();
         assert_eq!(format!("{value}"), "payload");
         assert_eq!(format!("{log}"), "(payload . cleaned)");
     }

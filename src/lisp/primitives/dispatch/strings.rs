@@ -2088,10 +2088,8 @@ fn unicode_decomposition_entries() -> Vec<(u32, Vec<Value>)> {
 }
 
 fn canonical_combining_class(ch: u32) -> Option<i64> {
-    match ch {
-        0x0300..=0x0314 | 0x031b | 0x0323..=0x0328 | 0x032d..=0x0338 | 0x0342 | 0x0345 => Some(230),
-        0x0315 | 0x031a => Some(232),
-        0x0316..=0x0319 | 0x031c..=0x0322 | 0x0329..=0x032c => Some(220),
-        _ => None,
-    }
+    char::from_u32(ch)
+        .map(unicode_normalization::char::canonical_combining_class)
+        .filter(|class| *class != 0)
+        .map(i64::from)
 }

@@ -74,6 +74,37 @@ fn record_literal_detection_does_not_traverse_vector_storage() {
 }
 
 #[test]
+fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String("abcabc".into())],
+        &mut env,
+    )
+    .expect("insert comparison text");
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "compare-buffer-substrings",
+            &[
+                Value::Nil,
+                Value::Nil,
+                Value::Integer(4),
+                Value::Nil,
+                Value::Integer(4),
+                Value::Nil,
+            ],
+            &mut env,
+        )
+        .expect("compare current-buffer halves"),
+        Value::Integer(0)
+    );
+}
+
+#[test]
 fn sort_recognizes_an_evaluated_numeric_lambda_without_interpreting_each_comparison() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -6892,6 +6923,27 @@ fn native_syntax_description_decodes_the_shared_descriptor_bits() {
             Value::list([Value::Symbol("arg1".into())]),
         ])
     );
+}
+
+#[test]
+fn canonical_combining_classes_come_from_complete_unicode_data() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for (character, expected) in [(0x0307, 230), (0x0323, 220)] {
+        assert_eq!(
+            call(
+                &mut interp,
+                "get-char-code-property",
+                &[
+                    Value::Integer(character),
+                    Value::Symbol("canonical-combining-class".into()),
+                ],
+                &mut env,
+            )
+            .expect("read canonical combining class"),
+            Value::Integer(expected)
+        );
+    }
 }
 
 #[test]

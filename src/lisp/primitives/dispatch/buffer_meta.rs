@@ -92,6 +92,35 @@ fn coding_category_name(kind: &str, args: &[Value]) -> &'static str {
     }
 }
 
+fn comparison_substring(
+    interp: &Interpreter,
+    buffer: &Value,
+    start: &Value,
+    end: &Value,
+) -> Result<String, LispError> {
+    let buffer_id = if buffer.is_nil() {
+        interp.current_buffer_id()
+    } else {
+        interp.resolve_buffer_id(buffer)?
+    };
+    let buffer = interp
+        .get_buffer_by_id(buffer_id)
+        .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+    let start = if start.is_nil() {
+        buffer.point_min()
+    } else {
+        position_from_value(interp, start)?
+    };
+    let end = if end.is_nil() {
+        buffer.point_max()
+    } else {
+        position_from_value(interp, end)?
+    };
+    buffer
+        .buffer_substring(start, end)
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -241,22 +270,8 @@ pub(super) fn call(
         }
         "compare-buffer-substrings" => {
             need_args(name, args, 6)?;
-            let left_id = interp.resolve_buffer_id(&args[0])?;
-            let left_start = position_from_value(interp, &args[1])?;
-            let left_end = position_from_value(interp, &args[2])?;
-            let right_id = interp.resolve_buffer_id(&args[3])?;
-            let right_start = position_from_value(interp, &args[4])?;
-            let right_end = position_from_value(interp, &args[5])?;
-            let left = interp
-                .get_buffer_by_id(left_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?
-                .buffer_substring(left_start, left_end)
-                .map_err(|e| LispError::Signal(e.to_string()))?;
-            let right = interp
-                .get_buffer_by_id(right_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?
-                .buffer_substring(right_start, right_end)
-                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let left = comparison_substring(interp, &args[0], &args[1], &args[2])?;
+            let right = comparison_substring(interp, &args[3], &args[4], &args[5])?;
             Ok(Value::Integer(compare_buffer_substrings(&left, &right)))
         }
         "field-beginning" | "field-end" => {
