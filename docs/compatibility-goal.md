@@ -29,6 +29,15 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 Ido/Image checkpoint advances the fresh contiguous
+  compatibility prefix to 3,884/7,080, leaving 3,196 selectors.  Ido is 2/2
+  and the complete Image theme is 53/53 across EXIF, Gravatar, Image Dired,
+  Wallpaper, Image File, and core Image.  Representative artifacts are Ido
+  `target/compat/run-1785855891708444000-84303`, Wallpaper
+  `target/compat/run-1785856077932618000-84972`, and core Image
+  `target/compat/run-1785856130345501000-85220`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 3,885 in `test/lisp/imenu-tests.el` (3
+  selected outcomes).
 - The 2026-08-04 highlighting/Ibuffer checkpoint advances the fresh
   contiguous compatibility prefix to 3,829/7,080, leaving 3,251 selectors.
   Hfy Color Map is 2/2, Hi Lock 4/4, HL Line 2/2, HTML Fontify 1/1, and Ibuffer
