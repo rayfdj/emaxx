@@ -335,26 +335,6 @@ pub(crate) fn textual_key_sequence_binding_text(value: &Value) -> Result<String,
     Ok(textual_key_sequence_binding_parts(value)?.join(" "))
 }
 
-pub(crate) fn looks_like_textual_key_spec(text: &str) -> bool {
-    // A space separates keys in a textual spec, but a string that is
-    // nothing but spaces is a raw key sequence (like `" "' for SPC).
-    // Other whitespace chars are raw control keys: "\C-c\C-j" contains a
-    // newline that must stay a C-j event, not a separator.
-    if text.contains(' ') && !text.chars().all(|ch| ch == ' ') {
-        return true;
-    }
-    if text.contains('<') || text.contains('>') {
-        return true;
-    }
-    // Named keys parse as single events so stored bindings and lookups
-    // agree on parts like ["SPC"].
-    if matches!(text, "SPC" | "RET" | "TAB" | "DEL" | "ESC" | "LFD" | "NUL") {
-        return true;
-    }
-    let (_, _, saw_prefix) = parse_kbd_prefixes(text);
-    saw_prefix
-}
-
 pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, LispError> {
     if let Ok(events) = vector_items(value)
         && let [event] = events.as_slice()
@@ -381,6 +361,23 @@ pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, L
 /// events, just as they do in GNU.
 pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, LispError> {
     keymap_parts_from_display_parts(key_sequence_binding_parts(value)?)
+}
+
+pub(crate) fn key_sequence_prefix_event_count(
+    value: &Value,
+    keymap_prefix_len: usize,
+) -> Result<usize, LispError> {
+    let mut consumed_parts = 0;
+    let mut consumed_events = 0;
+    for event in key_description_events(value)? {
+        let sequence = Value::list([Value::Symbol("vector-literal".into()), event]);
+        consumed_parts += key_sequence_keymap_parts(&sequence)?.len();
+        if consumed_parts > keymap_prefix_len {
+            break;
+        }
+        consumed_events += 1;
+    }
+    Ok(consumed_events)
 }
 
 pub(crate) fn textual_key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, LispError> {

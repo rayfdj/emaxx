@@ -4141,11 +4141,15 @@ pub(super) fn call(
         }
         "region-beginning" => match interp.buffer.region() {
             Some((beg, _)) => Ok(Value::Integer(beg as i64)),
-            None => Err(LispError::Signal("The mark is not set now".into())),
+            None => Err(LispError::Signal(
+                "The mark is not set now, so there is no region".into(),
+            )),
         },
         "region-end" => match interp.buffer.region() {
             Some((_, end)) => Ok(Value::Integer(end as i64)),
-            None => Err(LispError::Signal("The mark is not set now".into())),
+            None => Err(LispError::Signal(
+                "The mark is not set now, so there is no region".into(),
+            )),
         },
         "deactivate-mark" => {
             interp.buffer.deactivate_mark();

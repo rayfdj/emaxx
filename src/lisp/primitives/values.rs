@@ -2593,11 +2593,12 @@ pub(crate) fn binding_key_parts(binding: &RuntimeKeymapBinding) -> Vec<String> {
 }
 
 pub(crate) fn canonical_key_part(part: &str) -> String {
-    part.trim_start_matches('<')
-        .trim_end_matches('>')
-        .replace("\\ ", "-")
-        .replace(' ', "-")
-        .to_lowercase()
+    let part = part
+        .strip_prefix('<')
+        .and_then(|part| part.strip_suffix('>'))
+        .filter(|part| !part.is_empty())
+        .unwrap_or(part);
+    part.replace("\\ ", "-").replace(' ', "-").to_lowercase()
 }
 
 pub(crate) fn key_parts_match(binding_parts: &[String], requested_parts: &[String]) -> bool {
@@ -2711,6 +2712,19 @@ fn keymap_lookup_direct_binding_exact_parts(
     Ok(Value::Nil)
 }
 
+fn keymap_binding_map(interp: &Interpreter, binding: &Value) -> Option<Value> {
+    if is_keymap_value(interp, binding) {
+        return Some(binding.clone());
+    }
+    let Value::Symbol(name) = binding else {
+        return None;
+    };
+    interp
+        .lookup_function(name, &Vec::new())
+        .ok()
+        .filter(|function| is_keymap_value(interp, function))
+}
+
 fn keymap_lookup_binding_exact_parts_bounded(
     interp: &Interpreter,
     keymap: &Value,
@@ -2746,11 +2760,11 @@ fn keymap_lookup_binding_exact_parts_bounded(
         if !binding_parts.is_empty()
             && binding_parts.len() < key_parts.len()
             && key_parts_match(&binding_parts, &key_parts[..binding_parts.len()])
-            && is_keymap_value(interp, &binding.value)
+            && let Some(prefix_map) = keymap_binding_map(interp, &binding.value)
         {
             let nested = keymap_lookup_binding_exact_parts_bounded(
                 interp,
-                &binding.value,
+                &prefix_map,
                 &key_parts[binding_parts.len()..],
                 accept_default,
                 depth,
@@ -3855,6 +3869,19 @@ pub(crate) fn key_sequence_is_prefix(
     // removes its last C-c binding, so the command loop reports the complete
     // unbound sequence rather than declaring C-c itself undefined.
     if matches!(key, "C-c" | "C-x" | "C-x 4" | "C-x 5" | "ESC") {
+        return Ok(true);
+    }
+    // Autoloaded prefix commands have a non-nil binding whose function cell
+    // is `(autoload ... keymap)'.  GNU treats that as a keymap before loading
+    // the owner; once loaded, the same symbol resolves directly to the map.
+    let binding = key_binding(interp, key, false, true, env)?;
+    if let Value::Symbol(name) = &binding
+        && let Ok(function) = interp.lookup_function(name, env)
+        && (is_keymap_value(interp, &function)
+            || autoload_parts(&function).is_some_and(
+                |(_, _, kind)| matches!(kind, Value::Symbol(kind) if kind == "keymap"),
+            ))
+    {
         return Ok(true);
     }
     let requested = approximate_key_parts(key);

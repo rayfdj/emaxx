@@ -698,13 +698,21 @@ pub(super) fn call(
         "lookup-key" => {
             need_arg_range(name, args, 2, 3)?;
             let key_parts = key_sequence_keymap_parts(&args[1])?;
-            keymap_lookup_sequence_value_with_default(
+            let result = keymap_lookup_sequence_value_with_default(
                 interp,
                 &args[0],
                 &key_parts,
                 args.get(2).is_some_and(Value::is_truthy),
                 env,
-            )
+            )?;
+            if let Value::Integer(prefix_len) = result {
+                let prefix_len = usize::try_from(prefix_len).unwrap_or(0);
+                Ok(Value::Integer(
+                    key_sequence_prefix_event_count(&args[1], prefix_len)? as i64,
+                ))
+            } else {
+                Ok(result)
+            }
         }
         "keymap-lookup" => {
             if args.len() < 2 || args.len() > 5 {

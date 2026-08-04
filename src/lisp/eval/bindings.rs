@@ -593,6 +593,7 @@ impl Interpreter {
             "real-last-command" => Some(Value::Nil),
             "this-command" => Some(Value::Nil),
             "this-original-command" => Some(Value::Nil),
+            "num-input-keys" | "num-nonmacro-input-events" => Some(Value::Integer(0)),
             "this-single-command-keys" => Some(Value::list([Value::Symbol("vector-literal".into())])),
             "unread-command-events" => Some(Value::Nil),
             "deactivate-mark" => Some(Value::Nil),

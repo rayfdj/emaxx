@@ -1803,7 +1803,11 @@ impl Interpreter {
             "standard-value",
             Value::list([items.get(2).cloned().unwrap_or(Value::Nil)]),
         );
-        let mut initialize = None;
+        // `defcustom' expands to `custom-declare-variable' with
+        // `custom-initialize-reset' when no explicit :initialize function is
+        // supplied.  Setters often initialize companion runtime state (for
+        // example register.el selects its register reader this way).
+        let mut initialize = Some(Value::Symbol("custom-initialize-reset".into()));
         while index + 1 < items.len() {
             let Some(keyword) = items[index].as_symbol().ok() else {
                 break;

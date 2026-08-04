@@ -1933,18 +1933,68 @@ fn execute_kbd_macro_self_insert_binding_sets_last_command_event() {
 }
 
 #[test]
-fn keyboard_macro_incremental_search_honors_the_uppercase_case_fold_rule() {
+fn kmacro_frontier_incremental_search_exposes_each_command_loop_step() {
     assert_eq!(
         eval_str(
-            r#"(with-temp-buffer
-                 (set-window-buffer nil (current-buffer))
-                 (insert "Windows Indic")
-                 (goto-char (point-min))
-                 (execute-kbd-macro (kbd "C-s Ind ESC"))
-                 (list (point)
-                       (buffer-substring (- (point) 3) (point))))"#
+            r#"(let (commands)
+                 (add-hook 'pre-command-hook
+                           (lambda () (push this-command commands)))
+                 (with-temp-buffer
+                   (set-window-buffer nil (current-buffer))
+                   (insert "Windows Indic")
+                   (goto-char (point-min))
+                   (execute-kbd-macro (kbd "C-s Ind ESC"))
+                   (list (point)
+                         (buffer-substring (- (point) 3) (point))
+                         (nreverse commands))))"#
         ),
-        Value::list([Value::Integer(12), Value::String("Ind".into())])
+        Value::list([
+            Value::Integer(12),
+            Value::String("Ind".into()),
+            Value::list([
+                Value::Symbol("isearch-forward".into()),
+                Value::Symbol("isearch-printing-char".into()),
+                Value::Symbol("isearch-printing-char".into()),
+                Value::Symbol("isearch-printing-char".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn kmacro_frontier_lookup_key_reports_meta_prefixes_in_input_event_units() {
+    assert_eq!(
+        eval_str("(lookup-key global-map [134217848 ?a])"),
+        Value::Integer(1)
+    );
+}
+
+#[test]
+fn kmacro_frontier_literal_angle_bracket_bindings_remain_distinct() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((map (make-sparse-keymap)))
+                 (define-key map "<" 'less-command)
+                 (define-key map ">" 'greater-command)
+                 (list (lookup-key map "<") (lookup-key map ">")))"#
+        ),
+        Value::list([
+            Value::Symbol("less-command".into()),
+            Value::Symbol("greater-command".into()),
+        ])
+    );
+}
+
+#[test]
+fn kmacro_frontier_num_input_keys_counts_prefix_events_and_macro_eof() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((num-input-keys 0))
+                 (with-temp-buffer
+                   (execute-kbd-macro (kbd "a C-u 2 b"))
+                   (list (buffer-string) num-input-keys)))"#
+        ),
+        Value::list([Value::String("abb".into()), Value::Integer(5)])
     );
 }
 

@@ -29,6 +29,17 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 Kmacro checkpoint advances the fresh contiguous compatibility
+  prefix to 4,104/7,080, leaving 2,976 selectors.  All 58 canonical Kmacro
+  outcomes match GNU.  Keyboard-macro playback now preserves command-loop key
+  counters, hook-visible Isearch and minibuffer steps, rewritten commands,
+  multi-event key state, autoloaded prefix maps, and input-event indices.
+  Dumped Kmacro bindings and Register ownership are restored from their GNU
+  sources; literal angle-bracket keys, quoted insertion, extended commands,
+  and region extraction follow their standard Lisp boundaries.  The canonical
+  artifact is `target/compat/run-1785867688283305000-98693`.  Native remains
+  complete at 1,420/1,420.  NEXT is selector 4,105 in
+  `test/lisp/loadhist-tests.el` (9 selected outcomes).
 - The 2026-08-04 JSON-RPC checkpoint advances the fresh contiguous
   compatibility prefix to 4,046/7,080, leaving 3,034 selectors.  All 5
   canonical JSON-RPC outcomes pass.  CL method lowering now supports

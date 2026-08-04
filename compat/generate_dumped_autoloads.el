@@ -132,6 +132,11 @@ Quoted data and function bodies are not executable initializer calls."
                       ;; the source forms in order rather than copying
                       ;; individual Python/AWK/etc. entries into Rust.
                       (eq (car form) 'add-to-list)
+                      ;; Key-binding autoload cookies install the startup
+                      ;; bindings as well as the function stubs.  Keeping the
+                      ;; generated forms preserves the dumped global map
+                      ;; without duplicating package-specific keys in Rust.
+                      (eq (car form) 'global-set-key)
                       (and (eq (car form) 'dolist)
                            (emaxx--form-contains-call-p form 'add-to-list))
                       ;; A generated helper can be followed by a top-level
@@ -140,10 +145,10 @@ Quoted data and function bodies are not executable initializer calls."
                      (emaxx--dumped-literal-p form))
                 (let* ((rendered (prin1-to-string form))
                        (round-trip (car (read-from-string rendered))))
-                  (when (and (equal form round-trip)
-                             (not (string-match-p
-                                   "[\0-\x08\x0b\x0c\x0e-\x1f\r]"
-                                   rendered)))
+                  ;; Initializer source is passed through
+                  ;; `emaxx--rust-string-literal', which safely escapes
+                  ;; control characters used by legacy key strings.
+                  (when (equal form round-trip)
                     (push rendered initializers)))))))
         (end-of-file nil)))
     (let (names)

@@ -5514,6 +5514,41 @@ fn region_extension_function_variables_are_bound() {
 }
 
 #[test]
+fn kmacro_frontier_region_extractor_copies_deletes_and_rejects_an_unset_mark() {
+    assert_eq!(
+        eval_str(
+            r#"(list
+                 (condition-case err
+                     (funcall region-extract-function 'bounds)
+                   (error err))
+                 (with-temp-buffer
+                   (insert "abcd")
+                   (goto-char 2)
+                   (push-mark 4)
+                   (list (funcall region-extract-function 'bounds)
+                         (funcall region-extract-function nil)))
+                 (with-temp-buffer
+                   (insert "abcd")
+                   (goto-char 2)
+                   (push-mark 4)
+                   (list (funcall region-extract-function 'delete-only)
+                         (buffer-string))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("error".into()),
+                Value::String("The mark is not set now, so there is no region".into()),
+            ]),
+            Value::list([
+                Value::list([Value::cons(Value::Integer(2), Value::Integer(4))]),
+                Value::String("bc".into()),
+            ]),
+            Value::list([Value::Nil, Value::String("ad".into())]),
+        ])
+    );
+}
+
+#[test]
 fn built_in_prefix_keymaps_are_full_keymaps() {
     assert_eq!(
         eval_str(
