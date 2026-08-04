@@ -394,6 +394,26 @@ The batch frame always shows a single window."
      (quit (setq quit-flag t)
            (eval '(ignore nil) t))))
 
+;; GNU simple.el: append the source region at the destination's point while
+;; preserving text properties and keeping displayed window points in sync.
+(defun append-to-buffer (buffer start end)
+  "Append the region from START to END before point in BUFFER."
+  (interactive
+   (list (read-buffer "Append to buffer: " (other-buffer (current-buffer) t))
+         (region-beginning) (region-end)))
+  (let* ((source (current-buffer))
+         (destination (get-buffer-create buffer))
+         (windows (get-buffer-window-list destination t t))
+         point)
+    (save-excursion
+      (with-current-buffer destination
+        (setq point (point))
+        (barf-if-buffer-read-only)
+        (insert-buffer-substring source start end)
+        (dolist (window windows)
+          (when (= (window-point window) point)
+            (set-window-point window (point))))))))
+
 (defmacro dolist (spec &rest body)
   "Loop over a list according to SPEC, evaluating BODY for each element."
   (declare (indent 1) (debug ((symbolp form &optional form) body)))
