@@ -18,6 +18,15 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 JIT LOCK/JSON CHECKPOINT: the fresh contiguous ordered frontier
+  is 4,041/7,080, leaving 3,039 selectors.  Jit Lock is 3/3 and JSON is 59/59.
+  The preloaded compatibility layer now provides GNU simple.el's
+  `append-to-buffer', preserving source text properties and the destination
+  point so `json-pretty-print' keeps its standard temporary-buffer pipeline.
+  Artifacts are `target/compat/run-1785859846363080000-89706` and
+  `target/compat/run-1785860042244302000-90032`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 4,042 in `test/lisp/jsonrpc-tests.el` (5
+  selected outcomes), followed by `test/lisp/kmacro-tests.el` (58 outcomes).
 - 2026-08-04 ISEARCH CHECKPOINT: the fresh contiguous ordered frontier is
   3,979/7,080, leaving 3,101 selectors.  All 5 canonical Isearch outcomes pass.
   Native terminal state now supplies GNU's `baud-rate' and
