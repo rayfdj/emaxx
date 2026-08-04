@@ -1826,6 +1826,11 @@ pub struct Interpreter {
     class_object_tagged_records: HashSet<u64>,
     generalizer_states: Vec<GenericGeneralizerState>,
     pending_timers: Vec<ScheduledTimer>,
+    /// Source-loaded callbacks stand in for GNU's byte-compiled Lisp.  Keep
+    /// defsubst definitions removed by loadhist alive until the active timer
+    /// returns, matching calls that GNU compiled inline into the callback.
+    timer_callback_depth: usize,
+    deferred_defsubst_unbindings: Vec<(String, Value)>,
     /// Quoted templates already scanned and found free of reader marker
     /// forms; `quote' returns them as-is (keyed by car-cell address, the
     /// stored Value keeps the template alive so keys stay unique).
@@ -2542,6 +2547,8 @@ impl Interpreter {
             class_object_tagged_records: HashSet::new(),
             generalizer_states: Vec::new(),
             pending_timers: Vec::new(),
+            timer_callback_depth: 0,
+            deferred_defsubst_unbindings: Vec::new(),
             plain_quote_templates: HashMap::new(),
             pending_file_notifications: Vec::new(),
             file_notify_watches: HashMap::new(),

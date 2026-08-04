@@ -3288,6 +3288,14 @@ impl Interpreter {
         let (docstring, normalized_forms) =
             self.normalize_function_body_documentation(&items[3..], env)?;
 
+        if matches!(items.first(), Some(Value::Symbol(head)) if head == "defsubst") {
+            self.put_symbol_property(
+                &name,
+                "byte-optimizer",
+                Value::Symbol("byte-compile-inline-expand".into()),
+            );
+        }
+
         if let Some(docstring) = docstring.clone() {
             self.put_symbol_property(&name, "function-documentation", docstring);
         } else {

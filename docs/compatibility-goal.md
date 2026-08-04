@@ -29,6 +29,21 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 completed Eshell checkpoint advances the fresh contiguous
+  compatibility prefix to 3,534/7,080, leaving 3,546 selectors.  Utilities is
+  21/21, Variables 114/114, Unload 3/3, and core Eshell 15/15.  Nil `defalias'
+  definitions now void ordinary function cells and reveal dumped autoloads;
+  source-loaded timer callbacks retain unload-time `defsubst' definitions
+  until return, matching GNU's compiled inline calls; and assignments to
+  `features' synchronize the native feature index, so a later `provide' cannot
+  resurrect unloaded packages.  Utilities is recorded in
+  `target/compat/run-1785834665550841000-63445`, Variables in
+  `target/compat/run-1785834755413742000-63884`, Unload in
+  `target/compat/run-1785849032855974000-73035`, and core Eshell in
+  `target/compat/run-1785849223462088000-74858`.  NEXT is selector 3,535,
+  `faces--test-color-at-point', in `test/lisp/faces-tests.el` (5 selected
+  outcomes).  Native remains honestly parked at 1,416/1,420 with only the
+  separately tracked bytecode/VM quartet deferred.
 - The 2026-08-04 Eshell process checkpoint advances the fresh contiguous
   compatibility prefix to 3,381/7,080, leaving 3,699 selectors.  Mode is 3/3,
   Options 13/13, and Process 24/24.  Batch `read-string' now reads one stdin

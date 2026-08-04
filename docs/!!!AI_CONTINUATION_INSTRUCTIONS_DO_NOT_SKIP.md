@@ -18,6 +18,22 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 COMPLETED ESHELL CHECKPOINT: the fresh contiguous ordered
+  frontier is 3,534/7,080, leaving 3,546 selectors.  Utilities is 21/21,
+  Variables 114/114, Unload 3/3, and core Eshell 15/15.  Nil `defalias'
+  definitions now void ordinary function cells and expose dumped autoloads;
+  source-loaded callbacks retain an unloaded `defsubst' until both native and
+  timer.el timer callbacks return, matching GNU's compiled inline behavior;
+  and the public `features' list stays synchronized with native feature
+  bookkeeping, preventing later `provide' calls from resurrecting unloaded
+  packages.  Load-bearing artifacts: Utilities 21/21
+  `target/compat/run-1785834665550841000-63445`; Variables 114/114
+  `target/compat/run-1785834755413742000-63884`; Unload 3/3
+  `target/compat/run-1785849032855974000-73035`; core Eshell 15/15
+  `target/compat/run-1785849223462088000-74858`.  NEXT is selector 3,535,
+  `faces--test-color-at-point', in `test/lisp/faces-tests.el` (5 selected
+  outcomes).  Native remains honestly parked at 1,416/1,420 with only the
+  separately tracked bytecode/VM quartet deferred.
 - 2026-08-04 ESHELL PROCESS CHECKPOINT: the fresh contiguous ordered frontier
   is 3,381/7,080, leaving 3,699 selectors.  Mode is 3/3, Options 13/13, and
   Process 24/24.  Batch `read-string' now consumes one line from stdin (and

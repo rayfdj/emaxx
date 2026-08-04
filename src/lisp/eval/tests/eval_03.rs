@@ -5912,6 +5912,30 @@ fn defalias_evaluates_computed_names_and_optional_docstrings() {
 }
 
 #[test]
+fn defalias_nil_voids_ordinary_functions_and_reveals_dumped_autoloads() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defalias 'sample-voided-function (lambda () t))
+               (defalias 'sample-voided-function nil)
+               (defalias 'eshell (lambda (&optional _arg) 'loaded))
+               (defalias 'eshell nil)
+               (list
+                (fboundp 'sample-voided-function)
+                (condition-case error
+                    (sample-voided-function)
+                  (error (car error)))
+                (car (symbol-function 'eshell))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Symbol("void-function".into()),
+            Value::Symbol("autoload".into()),
+        ])
+    );
+}
+
+#[test]
 fn function_quote_allows_forward_symbol_references() {
     assert_eq!(
         eval_str(
