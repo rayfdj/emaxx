@@ -634,6 +634,16 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         }
     }
 
+    /// Register/unregister a VM `Bpushcatch' tag so `throw' sees it as an
+    /// active catch exactly like `sf_catch' frames.
+    pub(crate) fn push_active_catch_tag(&mut self, tag: Value) {
+        self.active_catch_tags.push(tag);
+    }
+
+    pub(crate) fn pop_active_catch_tag(&mut self) {
+        self.active_catch_tags.pop();
+    }
+
     pub(crate) fn throw_value(
         &mut self,
         tag: Value,

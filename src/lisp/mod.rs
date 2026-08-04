@@ -1,3 +1,4 @@
+pub mod bytecode;
 pub mod eval;
 pub mod json;
 pub mod primitives;
@@ -144,7 +145,11 @@ fn rewrite_lazy_doc_refs(
     out
 }
 
-fn preprocess_lazy_doc_source(path: &Path, source: &str, force_load_doc_strings: bool) -> String {
+pub(crate) fn preprocess_lazy_doc_source(
+    path: &Path,
+    source: &str,
+    force_load_doc_strings: bool,
+) -> String {
     let bytes = source.as_bytes();
     let mut docs = HashMap::new();
     let mut out = String::new();
@@ -353,14 +358,16 @@ pub fn load_file_strict(
     let requested_source = read_source_bytes(path)?;
     // A versioned `;ELC' header does not by itself imply bytecode:
     // `byte-compile-insert-header' is also used for files containing ordinary
-    // readable Lisp.  Execute those directly.  Only fall back to sibling
-    // source when parsed forms contain an actual `#[...]' byte-code object
-    // (or cannot be decoded as Lisp); Emaxx does not yet implement GNU's VM.
+    // readable Lisp.  Execute those directly.  Genuine `#[...]' bytecode
+    // executes on the VM when EMAXX_BYTECODE_VM=1 or when no sibling `.el'
+    // exists; otherwise the sibling source remains the default until the
+    // VM path is sweep-validated end to end.
     let compiled_source_path = path.with_extension("el");
     let versioned_elc = requested_source.starts_with(b";ELC\x1e");
     let source = if versioned_elc && compiled_source_path.is_file() {
+        let vm_enabled = std::env::var_os("EMAXX_BYTECODE_VM").is_some_and(|flag| flag == "1");
         match String::from_utf8(requested_source) {
-            Ok(source) if headered_elc_is_interpretable_lisp(path, &source) => source,
+            Ok(source) if vm_enabled || headered_elc_is_interpretable_lisp(path, &source) => source,
             Ok(_) | Err(_) => read_source(&compiled_source_path)?,
         }
     } else {
