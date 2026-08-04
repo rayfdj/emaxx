@@ -18,6 +18,27 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 ESHELL COMPLETION CHECKPOINT: the fresh contiguous ordered
+  frontier is 3,138/7,080, leaving 3,942 selectors.  The 108 outcomes after
+  3,030 complete Eshell Alias, Basic, Completion, Directories, External
+  Pipelines, Glob, History, and LS.  `file-name-completion' now honors its GNU
+  predicate contract in the requested directory and shares the ordinary
+  completion engine's regexp, case, and exact-match behavior; it also prefers
+  ordinary entries over dot entries and ignored suffixes while retaining the
+  required fallback.  Native keyboard state now publishes
+  `minibuffer-message-timeout' with default 2 and special-variable semantics,
+  so lexical completion code can dynamically shorten it.  Load-bearing
+  artifacts: Completion 27/27
+  `target/compat/run-1785831277911978000-52809`; Directories 11/11
+  `target/compat/run-1785830446214611000-51555`; External Pipelines 17/17
+  `target/compat/run-1785830480197013000-51670`; Glob 27/27
+  `target/compat/run-1785830510899141000-51814`; History 9/9
+  `target/compat/run-1785830545854654000-52081`; LS 4/4
+  `target/compat/run-1785830571310245000-52195`.  NEXT is selector 3,139,
+  `em-pred-test/combine-predicate-and-modifier', in
+  `test/lisp/eshell/em-pred-tests.el' (38 selected outcomes).  Native remains
+  honestly parked at 1,416/1,420 with only the separately tracked bytecode/VM
+  quartet deferred.
 - 2026-08-04 ERC EVENT-LOOP CHECKPOINT: the fresh contiguous ordered frontier
   is 3,030/7,080, leaving 4,050 selectors.  The 160-outcome ERC batch after
   2,870 completes SASL, StatusMsg, ZNC reconnection, scenario internals,

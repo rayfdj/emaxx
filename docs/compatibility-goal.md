@@ -29,6 +29,20 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 Eshell completion checkpoint advances the fresh contiguous
+  compatibility prefix to 3,138/7,080, leaving 3,942 selectors.  All 108
+  selected outcomes after 3,030 are green across Eshell Alias, Basic,
+  Completion, Directories, External Pipelines, Glob, History, and LS.
+  `file-name-completion' now applies predicates with GNU's requested-directory
+  dynamic context and consistently handles regexp/case/exact matching, dot
+  entries, and ignored suffixes.  Native `minibuffer-message-timeout' now has
+  keyboard.c's default 2 and special-variable contract.  Completion is 27/27
+  in `target/compat/run-1785831277911978000-52809`, Glob is 27/27 in
+  `target/compat/run-1785830510899141000-51814`, and LS is 4/4 in
+  `target/compat/run-1785830571310245000-52195`.  NEXT is selector 3,139 in
+  `test/lisp/eshell/em-pred-tests.el' (38 selected outcomes).  Native remains
+  honestly parked at 1,416/1,420 with only the separately tracked bytecode/VM
+  quartet deferred.
 - The 2026-08-04 ERC event-loop checkpoint advances the fresh contiguous
   compatibility prefix to 3,030/7,080, leaving 4,050 selectors.  All 160
   selected outcomes after 2,870 are green, completing ERC SASL through Track.

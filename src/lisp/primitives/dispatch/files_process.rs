@@ -2606,15 +2606,31 @@ pub(super) fn call(
                     Value::String(directory.clone()),
                 ]))
             })?;
+            let ignore_case = completion_ignores_case(interp, env);
+            let regexp_list = interp
+                .lookup_var("completion-regexp-list", env)
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default();
+            let matches = |candidate: &str| -> Result<bool, LispError> {
+                if !completion_matches_prefix(&prefix, candidate, ignore_case) {
+                    return Ok(false);
+                }
+                for pattern in &regexp_list {
+                    if !completion_regex_matches(interp, env, candidate, pattern)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            };
             let mut names: Vec<String> = Vec::new();
-            for special in ["./", "../"] {
-                if special.starts_with(&prefix) {
-                    names.push(special.to_string());
+            for (candidate, rendered) in [(".", "./"), ("..", "../")] {
+                if matches(candidate)? {
+                    names.push(rendered.to_string());
                 }
             }
             for entry in entries.flatten() {
                 let file_name = entry.file_name().to_string_lossy().into_owned();
-                if !file_name.starts_with(&prefix) {
+                if !matches(&file_name)? {
                     continue;
                 }
                 // Directories (following symlinks) get a trailing slash.
@@ -2632,32 +2648,77 @@ pub(super) fn call(
         }
         "file-name-completion" => {
             need_arg_range(name, args, 2, 3)?;
+            let directory = file_name_as_directory(&resolve_file_name_in_env(
+                interp,
+                env,
+                &string_text(&args[1])?,
+            ));
             let names = super::call(
                 interp,
                 "file-name-all-completions",
                 &[args[0].clone(), args[1].clone()],
                 env,
-            )?
-            .to_vec()?
-            .iter()
-            .map(string_text)
-            .collect::<Result<Vec<_>, _>>()?;
-            let Some(first) = names.first() else {
-                return Ok(Value::Nil);
-            };
-            let requested = string_text(&args[0])?;
-            if names.len() == 1 && first == &requested {
-                return Ok(Value::T);
+            )?;
+            // GNU dired.c specbinds DIRECTORY while its optional predicate
+            // examines each relative candidate.  Reuse the ordinary
+            // completion engine so predicates, regexp filters, case folding,
+            // and exact-match results share one implementation.
+            let restore =
+                interp.bind_special_dynamic("default-directory", Value::String(directory), env)?;
+            let result = (|| {
+                let matches = all_completions(
+                    interp,
+                    &[
+                        args[0].clone(),
+                        names,
+                        args.get(2).cloned().unwrap_or(Value::Nil),
+                    ],
+                    env,
+                )?
+                .to_vec()?;
+                // dired.c prefers ordinary entries over `.' / `..' and
+                // completion-ignored-extensions, but falls back to ignored
+                // candidates when they are the only matches.
+                let ignored_extensions = interp
+                    .lookup_var("completion-ignored-extensions", env)
+                    .and_then(|value| value.to_vec().ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|value| string_text(&value).ok())
+                    .collect::<Vec<_>>();
+                let requested_len = string_text(&args[0])?.chars().count();
+                let preferred = matches
+                    .iter()
+                    .filter(|candidate| {
+                        let Ok(candidate) = string_text(candidate) else {
+                            return true;
+                        };
+                        candidate != "./"
+                            && candidate != "../"
+                            && !(candidate.chars().count() > requested_len
+                                && ignored_extensions
+                                    .iter()
+                                    .any(|suffix| candidate.ends_with(suffix)))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let candidates = if preferred.is_empty() {
+                    matches
+                } else {
+                    preferred
+                };
+                try_completion(
+                    interp,
+                    &[args[0].clone(), Value::list(candidates), Value::Nil],
+                    env,
+                )
+            })();
+            let restore_result = interp.restore_special_dynamic(restore, env);
+            match (result, restore_result) {
+                (Err(error), _) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+                (Ok(value), Ok(())) => Ok(value),
             }
-            let common_len = names.iter().skip(1).fold(first.len(), |length, name| {
-                first
-                    .bytes()
-                    .zip(name.bytes())
-                    .take(length)
-                    .take_while(|(left, right)| left == right)
-                    .count()
-            });
-            Ok(Value::String(first[..common_len].to_string()))
         }
         "set-visited-file-name" => {
             need_arg_range(name, args, 1, 3)?;

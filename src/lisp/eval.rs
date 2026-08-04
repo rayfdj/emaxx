@@ -3480,6 +3480,11 @@ impl Interpreter {
         interp.mark_special_variable("minibuffer-prompt-properties");
         interp.set_global_binding("minibuffer-auto-raise", Value::Nil);
         interp.mark_special_variable("minibuffer-auto-raise");
+        // keyboard.c defines this before minibuffer.el.  Completion callers
+        // dynamically shorten it, so both the native default and special
+        // binding contract must exist before their lexical code is loaded.
+        interp.set_global_binding("minibuffer-message-timeout", Value::Integer(2));
+        interp.mark_special_variable("minibuffer-message-timeout");
         // minibuffer.el preloads these dispatch hooks.  Callers dynamically
         // override them around a separately defined reader (ERT does this to
         // make prompts deterministic), so lexical fallback bindings are not
