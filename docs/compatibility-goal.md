@@ -29,6 +29,16 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 JSON-RPC checkpoint advances the fresh contiguous
+  compatibility prefix to 4,046/7,080, leaving 3,034 selectors.  All 5
+  canonical JSON-RPC outcomes pass.  CL method lowering now supports
+  specialized destructuring arguments, rest-plus-key method signatures,
+  normalized generic dispatch signatures, and compatible arity widening.
+  Implicit CL keyword names also ignore leading underscores like GNU, so an
+  ignored `_params' binding consumes `:params'.  The canonical artifact is
+  `target/compat/run-1785861789177638000-91867`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 4,047 in `test/lisp/kmacro-tests.el` (58
+  selected outcomes).
 - The 2026-08-04 Jit Lock/JSON checkpoint advances the fresh contiguous
   compatibility prefix to 4,041/7,080, leaving 3,039 selectors.  Jit Lock is
   3/3 and JSON is 59/59.  The preloaded compatibility layer now provides GNU

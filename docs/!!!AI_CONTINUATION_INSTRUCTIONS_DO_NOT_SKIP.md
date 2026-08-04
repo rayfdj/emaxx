@@ -18,6 +18,16 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 JSON-RPC CHECKPOINT: the fresh contiguous ordered frontier is
+  4,046/7,080, leaving 3,034 selectors.  All 5 canonical JSON-RPC outcomes
+  pass.  `cl-defmethod' now lowers specialized destructuring arguments and
+  rest-plus-key method lambda lists through the standard CL destructuring
+  path; generic dispatch signatures are normalized, compatible methods may
+  widen a generic's arity, and implicit CL keyword names ignore leading
+  underscores like GNU (`_params' accepts `:params').  The canonical artifact
+  is `target/compat/run-1785861789177638000-91867`.  Native remains complete
+  at 1,420/1,420.  NEXT is selector 4,047 in `test/lisp/kmacro-tests.el` (58
+  selected outcomes).
 - 2026-08-04 JIT LOCK/JSON CHECKPOINT: the fresh contiguous ordered frontier
   is 4,041/7,080, leaving 3,039 selectors.  Jit Lock is 3/3 and JSON is 59/59.
   The preloaded compatibility layer now provides GNU simple.el's

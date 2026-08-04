@@ -1604,6 +1604,27 @@ fn cl_destructuring_bind_supports_nested_keys_defaults_and_supplied_flags() {
 }
 
 #[test]
+fn cl_destructuring_bind_supports_plain_and_ignored_key_variables() {
+    assert_eq!(
+        eval_str(
+            r#"(cl-destructuring-bind
+                   (&key id method _params (_result nil result-supplied-p) error _partial)
+                   '(:id 1 :method + :params (a b))
+                 (list id method _params _result result-supplied-p error _partial))"#
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Symbol("+".into()),
+            Value::list([Value::Symbol("a".into()), Value::Symbol("b".into())]),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn cl_destructuring_bind_supports_dotted_tail_patterns() {
     assert_eq!(
         eval_str("(cl-destructuring-bind (_ _ xy . rest) '(a b (184 . 95) tail) (list xy rest))"),
@@ -1676,6 +1697,24 @@ fn cl_defun_supports_basic_key_arguments() {
                    (register-test 7 :jump-func 'jump))"
         ),
         Value::list([Value::Integer(7), Value::Nil, Value::Symbol("jump".into()),])
+    );
+}
+
+#[test]
+fn cl_defun_ignores_leading_underscores_when_deriving_key_names() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (cl-defun ignored-key-test
+                     (&key id _params (_result nil result-supplied-p))
+                   (list id _params _result result-supplied-p))
+                 (list (ignored-key-test :id 1 :params 2)
+                       (ignored-key-test :result 3)))"#
+        ),
+        Value::list([
+            Value::list([Value::Integer(1), Value::Integer(2), Value::Nil, Value::Nil,]),
+            Value::list([Value::Nil, Value::Nil, Value::Integer(3), Value::T,]),
+        ])
     );
 }
 
@@ -2225,6 +2264,73 @@ fn cl_defmethod_lowers_specialized_arguments() {
     let items = result.to_vec().unwrap();
     assert_eq!(primitives::string_text(&items[0]).unwrap(), "ok");
     assert_eq!(items[1], Value::Integer(3));
+}
+
+#[test]
+fn cl_defmethod_destructures_specialized_required_arguments() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (cl-defgeneric sample-destructured-method
+                      (object payload &rest keys))
+                  (cl-defmethod sample-destructured-method
+                      (object ((&key (size 10 size-p) &allow-other-keys) t)
+                              &rest options
+                              &key (scale 2 scale-p) &allow-other-keys)
+                    (list object size size-p scale scale-p options))
+                  (list (sample-destructured-method 'first
+                                                     '(:size 4 :extra ignored)
+                                                     :scale 3 :other 'ignored)
+                        (sample-destructured-method 'second
+                                                    '(:extra ignored))))
+                "#
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("first".into()),
+                Value::Integer(4),
+                Value::T,
+                Value::Integer(3),
+                Value::T,
+                Value::list([
+                    Value::Symbol(":scale".into()),
+                    Value::Integer(3),
+                    Value::Symbol(":other".into()),
+                    Value::Symbol("ignored".into()),
+                ]),
+            ]),
+            Value::list([
+                Value::Symbol("second".into()),
+                Value::Integer(10),
+                Value::Nil,
+                Value::Integer(2),
+                Value::Nil,
+                Value::Nil,
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn cl_defmethod_can_widen_a_generic_with_an_optional_argument() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (cl-defgeneric sample-optional-method (object))
+                  (cl-defmethod sample-optional-method
+                      ((object string) &optional cleanup)
+                    (list object cleanup))
+                  (list (sample-optional-method "first")
+                        (sample-optional-method "second" t)))
+                "#
+        ),
+        Value::list([
+            Value::list([Value::String("first".into()), Value::Nil]),
+            Value::list([Value::String("second".into()), Value::T]),
+        ])
+    );
 }
 
 #[test]
