@@ -29,6 +29,17 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 Files-X/core/Gnus checkpoint advances the fresh contiguous
+  compatibility prefix to 3,735/7,080, leaving 3,345 selectors.  Files-X is
+  7/7; Find Cmd 3/3, Font Lock 2/2, and Format Spec 12/12; and the complete
+  canonical Gnus slice is 42/42 across Group, iCalendar, Search, Headers,
+  Util, Message, MIME Decode, MML Security, and NN-RSS.  Representative
+  artifacts are Files-X `target/compat/run-1785854709207758000-80982`, Format
+  Spec `target/compat/run-1785854813850067000-81176`, MML Security
+  `target/compat/run-1785855091829971000-82618`, and NN-RSS
+  `target/compat/run-1785855121973687000-82769`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 3,736 in `test/lisp/help-fns-tests.el` (20
+  selected outcomes).
 - The 2026-08-04 Files/bytecode checkpoint advances the fresh contiguous
   compatibility prefix to 3,669/7,080, leaving 3,411 selectors.  Faces is
   5/5, FFAP 10/10, canonical File Notify 4/4, and Files 116/116.  The merged
