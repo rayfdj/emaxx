@@ -1561,9 +1561,10 @@ impl Interpreter {
             return Ok((Vec::new(), Vec::new()));
         };
         // A PTY uses canonical Ctrl-D for EOF (as GNU's child_setup_tty
-        // configures it); merely closing one duplicate master does not send
-        // EOF when the output side shares that master.
-        if let Some(mut pty) = runtime.pty_input.take() {
+        // configures it).  Keep the master alive until the child consumes
+        // the queued input: closing an input-only PTY here can deliver SIGHUP
+        // before the pipeline head has forwarded its final output.
+        if let Some(pty) = runtime.pty_input.as_mut() {
             pty.write_all(&[4])
                 .map_err(|error| LispError::Signal(error.to_string()))?;
             pty.flush()

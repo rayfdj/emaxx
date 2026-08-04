@@ -29,6 +29,17 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 Eshell process-I/O checkpoint advances the fresh contiguous
+  compatibility prefix to 3,341/7,080, leaving 3,739 selectors.  External
+  Commands is 5/5 and I/O is 39/39.  `process-send-eof' now retains an
+  input-only PTY master after queueing canonical Ctrl-D, so a pipeline head
+  consumes queued input and forwards its final output instead of receiving an
+  early SIGHUP; a native split-PTY regression covers this behavior.  External
+  Commands is recorded in `target/compat/run-1785832123190423000-57167` and
+  I/O in `target/compat/run-1785832545135382000-58086`.  NEXT is selector
+  3,342 in `test/lisp/eshell/esh-mode-tests.el` (3 selected outcomes), followed
+  by Options (13) and Process (24).  Native remains honestly parked at
+  1,416/1,420 with only the separately tracked bytecode/VM quartet deferred.
 - The 2026-08-04 Eshell command checkpoint advances the fresh contiguous
   compatibility prefix to 3,297/7,080, leaving 3,783 selectors.  All 159
   outcomes after 3,138 are green without implementation changes: Predicates
