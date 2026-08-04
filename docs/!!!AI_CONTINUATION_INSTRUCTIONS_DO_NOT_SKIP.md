@@ -18,6 +18,20 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 ESHELL PROCESS CHECKPOINT: the fresh contiguous ordered frontier
+  is 3,381/7,080, leaving 3,699 selectors.  Mode is 3/3, Options 13/13, and
+  Process 24/24.  Batch `read-string' now consumes one line from stdin (and
+  reports stdin EOF like GNU), so synchronous Eshell pipelines can feed a
+  downstream Emaxx process.  `process-send-eof' also avoids a redundant child
+  status poll immediately after `process-live-p', matching GNU's event-loop
+  status transition and removing a pipeline-teardown race.  Load-bearing
+  artifacts: Mode 3/3 `target/compat/run-1785832713510275000-58362`; Options
+  13/13 `target/compat/run-1785832792038709000-58502`; Process 24/24
+  `target/compat/run-1785834044148643000-62423`.  NEXT is selector 3,382,
+  `esh-util-test/eshell-convert-to-number/floating-point`, in
+  `test/lisp/eshell/esh-util-tests.el` (21 selected outcomes), followed by
+  Variables (114).  Native remains honestly parked at 1,416/1,420 with only
+  the separately tracked bytecode/VM quartet deferred.
 - 2026-08-04 ESHELL PROCESS-I/O CHECKPOINT: the fresh contiguous ordered
   frontier is 3,341/7,080, leaving 3,739 selectors.  External Commands is 5/5
   and I/O is 39/39.  `process-send-eof' now keeps an input-only PTY master

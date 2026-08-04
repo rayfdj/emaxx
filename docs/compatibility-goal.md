@@ -29,6 +29,17 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 Eshell process checkpoint advances the fresh contiguous
+  compatibility prefix to 3,381/7,080, leaving 3,699 selectors.  Mode is 3/3,
+  Options 13/13, and Process 24/24.  Batch `read-string' now reads one stdin
+  line and reports stdin EOF like GNU, enabling synchronous pipelines whose
+  downstream command is Emaxx.  `process-send-eof' no longer re-polls child
+  status immediately after `process-live-p', matching GNU's event-loop status
+  transition and avoiding a teardown race.  Process is recorded in
+  `target/compat/run-1785834044148643000-62423`.  NEXT is selector 3,382 in
+  `test/lisp/eshell/esh-util-tests.el` (21 selected outcomes), followed by
+  Variables (114).  Native remains honestly parked at 1,416/1,420 with only
+  the separately tracked bytecode/VM quartet deferred.
 - The 2026-08-04 Eshell process-I/O checkpoint advances the fresh contiguous
   compatibility prefix to 3,341/7,080, leaving 3,739 selectors.  External
   Commands is 5/5 and I/O is 39/39.  `process-send-eof' now retains an

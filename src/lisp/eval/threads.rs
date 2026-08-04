@@ -1550,7 +1550,9 @@ impl Interpreter {
     }
 
     pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
-        self.refresh_process_id(record_id)?;
+        // GNU reaps child status in its event loop.  Polling again here can
+        // invalidate Eshell's immediately preceding `process-live-p' check
+        // and turn normal pipeline teardown into a spurious race error.
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
