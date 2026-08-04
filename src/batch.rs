@@ -519,6 +519,16 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .map_err(|error| format!("preload isearch: {error}"))?;
     }
 
+    // register.el is dumped shortly after isearch.el.  Kmacro and other
+    // preloaded clients call its public register accessors without requiring
+    // the feature themselves, so preserve the owning Lisp library here.
+    if !interpreter.has_feature("register") && interpreter.resolve_load_target("register").is_some()
+    {
+        interpreter
+            .load_target("register")
+            .map_err(|error| format!("preload register: {error}"))?;
+    }
+
     // GNU loads this VC/uniquify cluster immediately before Electric.
     // Downstream dumped files call its Lisp-owned helpers without requiring
     // the features, so preserve the complete owners and their load order.
@@ -1221,6 +1231,38 @@ mod tests {
                     .eval(&form, &mut Vec::new())
                     .expect("evaluate isearch startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn kmacro_frontier_preloads_subr_conversion_and_register_owners() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(list (featurep 'register)
+                       (fboundp 'get-register)
+                       (fboundp 'set-register)
+                       (equal (string-to-vector "ab") [?a ?b])
+                       (eq (key-binding "\C-x(") 'kmacro-start-macro)
+                       (eq (key-binding "\C-x\C-k") 'kmacro-keymap))"#,
+            )
+            .read_all()
+            .expect("read dumped register startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate dumped register startup probe"),
+                Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
             );
         });
     }

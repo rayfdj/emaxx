@@ -4079,6 +4079,32 @@ fn defcustom_initializer_runs_setter_at_declaration_time() {
 }
 
 #[test]
+fn kmacro_frontier_defcustom_uses_the_standard_reset_initializer_by_default() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defvar sample-default-initializer-side-effect nil)
+                 (defun sample-default-initializer-setter (symbol value)
+                   (set-default symbol value)
+                   (setq sample-default-initializer-side-effect value))
+                 (defcustom sample-default-initializer-option 42 "doc"
+                   :set #'sample-default-initializer-setter
+                   :type 'integer)
+                 (list sample-default-initializer-option
+                       sample-default-initializer-side-effect))"#
+        ),
+        Value::list([Value::Integer(42), Value::Integer(42)])
+    );
+}
+
+#[test]
 fn delayed_defcustom_initializer_runs_setter_after_startup() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(

@@ -1231,18 +1231,24 @@ pub(super) fn call(
 
         "emaxx-default-region-extract-function" => {
             need_args(name, args, 1)?;
+            let (start, end) = interp.buffer.region().ok_or_else(|| {
+                LispError::Signal("The mark is not set now, so there is no region".into())
+            })?;
+            let start = Value::Integer(start as i64);
+            let end = Value::Integer(end as i64);
             match &args[0] {
                 Value::Symbol(method) if method == "bounds" => {
-                    let (start, end) = interp
-                        .buffer
-                        .region()
-                        .unwrap_or((interp.buffer.point(), interp.buffer.point()));
-                    Ok(Value::list([Value::cons(
-                        Value::Integer(start as i64),
-                        Value::Integer(end as i64),
-                    )]))
+                    Ok(Value::list([Value::cons(start, end)]))
                 }
-                _ => Ok(Value::String(String::new())),
+                Value::Symbol(method) if method == "delete-only" => {
+                    super::call(interp, "delete-region", &[start, end], env)
+                }
+                method => super::call(
+                    interp,
+                    "filter-buffer-substring",
+                    &[start, end, method.clone()],
+                    env,
+                ),
             }
         }
 

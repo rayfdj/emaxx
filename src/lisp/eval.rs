@@ -3566,6 +3566,13 @@ impl Interpreter {
             interp.set_global_binding(name, Value::Nil);
             interp.mark_special_variable(name);
         }
+        // keyboard.c's integer command-loop counters are ordinary special
+        // variables at the Lisp boundary.  Keyboard-macro playback updates
+        // the active dynamic binding once for every complete key sequence.
+        for name in ["num-input-keys", "num-nonmacro-input-events"] {
+            interp.set_global_binding(name, Value::Integer(0));
+            interp.mark_special_variable(name);
+        }
         // eval.c defines the debugger controls before loading dumped Lisp.
         // Their special declarations are part of the evaluator boundary:
         // ERT, Edebug, and command-loop code let-bind `debugger' or its

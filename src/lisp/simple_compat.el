@@ -35,6 +35,13 @@
 ;; metadata consumers such as `function-alias-p' follow the alias.
 (defalias 'string= #'string-equal)
 
+;; This tiny subr.el conversion helper is part of the dumped image.  Keep the
+;; definition in Lisp and let the native sequence primitive own representation.
+(defsubst string-to-vector (string)
+  "Return a vector of characters in STRING."
+  (declare (side-effect-free t))
+  (vconcat string))
+
 ;; GNU preloads this subr.el helper.  Keep it on the Lisp side of the
 ;; keymap boundary: all three operations below are already native primitives.
 (defun define-prefix-command (command &optional mapvar name)
@@ -215,6 +222,7 @@ INSERT-VALUE prints into the current buffer instead of the echo
 area.  NO-TRUNCATE disables `eval-expression-print-length' and
 `eval-expression-print-level' truncation.  CHAR-PRINT-LIMIT adds
 the extra integer formats for values it covers."
+  (interactive (list (read--expression "Eval: ")))
   (let ((result (values--store-value (eval exp t))))
     (let ((print-length (unless no-truncate eval-expression-print-length))
           (print-level (unless no-truncate eval-expression-print-level))
@@ -240,6 +248,57 @@ the extra integer formats for values it covers."
 PROMPT and INITIAL-CONTENTS are as in `read-from-minibuffer'."
   (read-from-minibuffer prompt initial-contents read-expression-map
                         t 'read-expression-history))
+
+(defun execute-extended-command (prefixarg &optional command-name _typed)
+  "Read a command name, then call that command interactively."
+  (interactive "P")
+  (unless command-name
+    (setq command-name (read-from-minibuffer "M-x ")))
+  (let ((command (intern command-name))
+        (current-prefix-arg prefixarg))
+    (unless (commandp command)
+      (error "`%s' is not a valid command name" command-name))
+    (setq this-command command
+          real-this-command command)
+    (call-interactively command)))
+
+(defcustom read-quoted-char-radix 8
+  "Radix used by `read-quoted-char'."
+  :type '(choice (const 8) (const 10) (const 16)))
+
+(defun read-quoted-char (&optional prompt)
+  "Read a character, accepting a numeric code in `read-quoted-char-radix'."
+  (let ((char (read-char prompt))
+        (code 0)
+        digit
+        seen-digit)
+    (while
+        (setq digit
+              (cond
+               ((and (>= char ?0)
+                     (< char (+ ?0 (min 10 read-quoted-char-radix))))
+                (- char ?0))
+               ((and (> read-quoted-char-radix 10)
+                     (>= (downcase char) ?a)
+                     (< (downcase char) (+ ?a (- read-quoted-char-radix 10))))
+                (+ 10 (- (downcase char) ?a)))))
+      (setq seen-digit t
+            code (+ (* code read-quoted-char-radix) digit)
+            char (read-char prompt)))
+    (cond
+     ((not seen-digit) char)
+     ((= char ?\r) code)
+     (t (setq unread-command-events (list char)) code))))
+
+(defun quoted-insert (arg)
+  "Read a quoted character and insert ARG copies of it."
+  (interactive "*p")
+  (let ((char (read-quoted-char)))
+    (unless (characterp char)
+      (user-error "%s is not a valid character"
+                  (key-description (vector char))))
+    (when (> arg 0)
+      (insert-char char arg))))
 
 (defun subr-primitive-p (object)
   "Return non-nil if OBJECT is a built-in primitive function."
@@ -10035,6 +10094,55 @@ visual feedback indicating the extent of the region being copied."
   ;; controls just gives the user visual feedback.
   (if (called-interactively-p 'interactive)
       (indicate-copied-region)))
+
+(defcustom copy-region-blink-delay 1
+  "Time in seconds to delay after showing the other end of the region.
+It's used by the command `kill-ring-save' and the function
+`indicate-copied-region' to blink the cursor between point and mark.
+The value 0 disables blinking."
+  :type 'number
+  :group 'killing
+  :version "28.1")
+
+(defcustom copy-region-blink-predicate #'region-indistinguishable-p
+  "Whether the current region should blink after being copied."
+  :type '(radio (function-item region-indistinguishable-p)
+                (function-item :doc "Always blink point and mark." always)
+                (function-item :doc "Never blink point and mark." ignore)
+                (function :tag "Other predicate function"))
+  :group 'killing
+  :version "29.1")
+
+(defun region-indistinguishable-p ()
+  "Whether the current region is not denoted visually."
+  (not (and (region-active-p)
+            (face-differs-from-default-p 'region))))
+
+(defun indicate-copied-region (&optional message-len)
+  "Indicate that the region text has been copied interactively."
+  (let ((mark (mark t))
+        (point (point))
+        (inhibit-quit t))
+    (if (pos-visible-in-window-p mark (selected-window))
+        (when (and (numberp copy-region-blink-delay)
+                   (> copy-region-blink-delay 0)
+                   (funcall copy-region-blink-predicate))
+          (set-marker (mark-marker) (point) (current-buffer))
+          (goto-char mark)
+          (sit-for copy-region-blink-delay)
+          (set-marker (mark-marker) mark (current-buffer))
+          (goto-char point)
+          (and quit-flag (region-active-p)
+               (deactivate-mark)))
+      (let ((len (min (abs (- mark point))
+                      (or message-len 40))))
+        (if (< point mark)
+            (message "Copied text until \"%s\""
+                     (query-replace-descr
+                      (buffer-substring-no-properties (- mark len) mark)))
+          (message "Copied text from \"%s\""
+                   (query-replace-descr
+                    (buffer-substring-no-properties mark (+ mark len)))))))))
 
 
 ;; GNU simple.el (verbatim): yanking.

@@ -3465,6 +3465,12 @@ const GENERATED_DUMPED_INITIALIZERS: &[&str] = &[
     "(add-to-list 'auto-mode-alist '(\"\\\\.scss\\\\'\" . scss-mode))",
     "(add-to-list 'auto-mode-alist '(\"\\\\.editorconfig\\\\'\" . editorconfig-conf-mode))",
     "(dolist (name (list \"node\" \"nodejs\" \"gjs\" \"rhino\")) (add-to-list 'interpreter-mode-alist (cons (purecopy name) 'js-mode)))",
+    "(global-set-key \"\u{18}(\" #'kmacro-start-macro)",
+    "(global-set-key \"\u{18})\" #'kmacro-end-macro)",
+    "(global-set-key \"\u{18}e\" #'kmacro-end-and-call-macro)",
+    "(global-set-key [f3] #'kmacro-start-macro-or-insert-counter)",
+    "(global-set-key [f4] #'kmacro-end-or-call-macro)",
+    "(global-set-key \"\u{18}\u{b}\" #'kmacro-keymap)",
     "(add-to-list 'auto-mode-alist '(\"\\\\.less\\\\'\" . less-css-mode))",
     "(add-to-list 'auto-mode-alist '(\"\\\\.m\\\\'\" . octave-maybe-mode))",
     "(add-to-list 'auto-mode-alist (cons (purecopy \"\\\\.py[iw]?\\\\'\") 'python-mode))",
@@ -3477,6 +3483,8 @@ const GENERATED_DUMPED_INITIALIZERS: &[&str] = &[
     "(add-to-list 'major-mode-remap-defaults '(plain-TeX-mode . plain-tex-mode))",
     "(add-to-list 'major-mode-remap-defaults '(LaTeX-mode . latex-mode))",
     "(tramp-register-autoload-file-name-handlers)",
+    "(global-set-key \"\u{18}6\" #'2C-command)",
+    "(global-set-key [f2] #'2C-command)",
     "(add-to-list 'auto-mode-alist (cons (purecopy \"\\\\.vr[hi]?\\\\'\") 'vera-mode))",
 ];
 

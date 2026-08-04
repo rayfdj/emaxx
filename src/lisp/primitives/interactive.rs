@@ -364,6 +364,22 @@ pub(crate) fn parse_interactive_string(
                         .unwrap_or(Value::Nil),
                 );
             }
+            'N' => {
+                let prefix = interp
+                    .lookup_var("current-prefix-arg", env)
+                    .unwrap_or(Value::Nil);
+                if prefix.is_truthy() {
+                    values.push(prefix_numeric_value(&prefix)?);
+                } else {
+                    let prompt = chars.collect::<String>();
+                    values.push(interp.call_function_value(
+                        Value::Symbol("read-number".into()),
+                        Some("read-number"),
+                        &[Value::String(prompt)],
+                        env,
+                    )?);
+                }
+            }
             _ => return Err(invalid_interactive_control_letter(code)),
         }
     }
