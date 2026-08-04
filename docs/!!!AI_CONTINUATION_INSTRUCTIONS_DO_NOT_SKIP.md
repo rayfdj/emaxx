@@ -18,6 +18,14 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 HELP CHECKPOINT: the fresh contiguous ordered frontier is
+  3,801/7,080, leaving 3,279 selectors.  Help Functions is 20/20, Help Mode
+  15/15, and core Help 31/31.  Artifacts are
+  `target/compat/run-1785855279477113000-82990`,
+  `target/compat/run-1785855376976277000-83167`, and
+  `target/compat/run-1785855401473161000-83291`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 3,802 in `test/lisp/hfy-cmap-tests.el` (2
+  selected outcomes).
 - 2026-08-04 FILES-X/CORE/GNUS CHECKPOINT: the fresh contiguous ordered
   frontier is 3,735/7,080, leaving 3,345 selectors.  Files-X is 7/7; Find Cmd
   3/3, Font Lock 2/2, and Format Spec 12/12; and the canonical Gnus slice is
