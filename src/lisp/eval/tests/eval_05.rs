@@ -5082,6 +5082,46 @@ fn file_name_completion_rejects_a_missing_directory_before_adding_dot_entries() 
 }
 
 #[test]
+fn file_name_completion_honors_predicates_case_and_regexps_in_the_requested_directory() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((directory (make-temp-file "emaxx-file-completion-" t)))
+                 (unwind-protect
+                     (let ((directory (file-name-as-directory directory)))
+                       (make-directory (expand-file-name "dir" directory))
+                       (write-region "" nil (expand-file-name "file" directory))
+                       (list
+                        (file-name-completion
+                         "" directory
+                         (lambda (candidate)
+                           (and (equal default-directory directory)
+                                (file-directory-p candidate))))
+                        (let ((completion-ignore-case t))
+                          (file-name-completion "D" directory))
+                        (let ((completion-regexp-list '("file")))
+                          (file-name-all-completions "" directory))))
+                   (delete-directory directory t)))"#
+        ),
+        Value::list([
+            Value::String("dir/".into()),
+            Value::String("dir/".into()),
+            Value::list([Value::String("file".into())]),
+        ])
+    );
+}
+
+#[test]
+fn minibuffer_message_timeout_has_its_native_default_and_special_contract() {
+    assert_eq!(
+        eval_str(
+            "(list minibuffer-message-timeout
+                   (special-variable-p 'minibuffer-message-timeout))"
+        ),
+        Value::list([Value::Integer(2), Value::T])
+    );
+}
+
+#[test]
 fn find_function_suite_uses_preloaded_tag_helpers_and_the_upstream_doc_index() {
     run_with_large_stack(|| {
         let mut interp = upstream_lisp_test_interpreter("emacs-lisp/find-func-tests.el");
