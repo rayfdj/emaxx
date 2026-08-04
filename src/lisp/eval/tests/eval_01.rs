@@ -4476,6 +4476,23 @@ fn define_minor_mode_enables_buffer_local_state_and_runs_body() {
 }
 
 #[test]
+fn only_defcustom_declarations_gain_a_standard_value() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar sample-ordinary-variable nil)
+               (defvar-local sample-local-variable nil)
+               (defcustom sample-custom-variable nil \"doc\" :type 'boolean)
+               (list (get 'sample-ordinary-variable 'standard-value)
+                     (get 'sample-local-variable 'standard-value)
+                     (not (null (get 'sample-custom-variable
+                                     'standard-value)))))"
+        ),
+        Value::list([Value::Nil, Value::Nil, Value::T])
+    );
+}
+
+#[test]
 fn define_minor_mode_registers_mode_line_and_keymap_metadata() {
     assert_eq!(
         eval_str(

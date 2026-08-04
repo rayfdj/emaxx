@@ -590,7 +590,7 @@ pub(super) fn call(
             let command = args[0].as_symbol()?;
             let first_only = args.get(2).is_some_and(Value::is_truthy);
             let keymaps = where_is_internal_maps(interp, args.get(1), env)?;
-            let matches = where_is_internal(interp, command, &keymaps, env)?;
+            let matches = where_is_internal(interp, command, &keymaps, first_only, env)?;
             if first_only {
                 Ok(matches.into_iter().next().unwrap_or(Value::Nil))
             } else {

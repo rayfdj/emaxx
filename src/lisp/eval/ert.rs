@@ -371,8 +371,12 @@ impl Interpreter {
                 .ok()
                 .and_then(|buffer| self.resolve_buffer_id(&buffer).ok());
             if let Some(id) = temp_buffer_id {
-                let _ = self.switch_to_buffer_id(id);
+                let _ = self.set_current_buffer_id(id);
             }
+            // GNU runs every test inside `save-window-excursion', nested in
+            // the per-test `with-temp-buffer'.  Keep window creation,
+            // selection, and display-buffer side effects test-local too.
+            let window_configuration = self.snapshot_window_configuration();
             // GNU `ert--run-test-internal' explicitly binds
             // `lexical-binding' to t inside the per-test temp buffer before
             // invoking the test body.  This is an ERT runner contract, not a
@@ -402,8 +406,13 @@ impl Interpreter {
             {
                 result = Err(error);
             }
+            if let Err(error) = self.restore_window_configuration(window_configuration)
+                && result.is_ok()
+            {
+                result = Err(error);
+            }
             if self.has_buffer_id(saved_buffer_id) {
-                let _ = self.switch_to_buffer_id(saved_buffer_id);
+                let _ = self.set_current_buffer_id(saved_buffer_id);
             }
             if let Some(id) = temp_buffer_id
                 && self.has_buffer_id(id)

@@ -8339,8 +8339,14 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
     )
     .expect("keymap-set should accept control-prefixed textual specs");
     assert_eq!(
-        where_is_internal(&mut interp, "keymap-tests-command", &[keymap], &mut env,)
-            .expect("where-is-internal should find control-prefixed binding"),
+        where_is_internal(
+            &mut interp,
+            "keymap-tests-command",
+            &[keymap],
+            false,
+            &mut env,
+        )
+        .expect("where-is-internal should find control-prefixed binding"),
         vec![Value::list([
             Value::Symbol("vector-literal".into()),
             Value::Integer(3),

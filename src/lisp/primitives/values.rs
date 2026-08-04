@@ -3113,6 +3113,15 @@ pub(crate) fn key_parts_to_sequence_value(parts: &[String]) -> Value {
     Value::list(items)
 }
 
+fn where_is_binding_rank(parts: &[String]) -> (usize, bool) {
+    let events = key_parts_to_sequence_value(parts)
+        .to_vec()
+        .unwrap_or_default();
+    let event_count = events.len().saturating_sub(1);
+    let starts_with_function_key = !matches!(events.get(1), Some(Value::Integer(_)));
+    (event_count, starts_with_function_key)
+}
+
 pub(crate) fn accessible_keymaps(
     interp: &mut Interpreter,
     args: &[Value],
@@ -3435,6 +3444,7 @@ pub(crate) fn where_is_internal(
     interp: &mut Interpreter,
     command: &str,
     keymaps: &[Value],
+    first_only: bool,
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
     let maps_value = Value::list(keymaps.iter().cloned());
@@ -3474,6 +3484,7 @@ pub(crate) fn where_is_internal(
             || (target_keymap_id.is_some() && keymap_record_id(interp, &value) == target_keymap_id)
     });
 
+    let mut advertised_preferred = false;
     if remapped_command.is_none()
         && let Some(advertised) = interp
             .get_symbol_property(command, ":advertised-binding")
@@ -3483,6 +3494,11 @@ pub(crate) fn where_is_internal(
     {
         let preferred = matches.remove(index);
         matches.insert(0, preferred);
+        advertised_preferred = true;
+    }
+
+    if first_only && !advertised_preferred {
+        matches.sort_by_key(|parts| where_is_binding_rank(parts));
     }
 
     Ok(matches
@@ -3853,10 +3869,19 @@ pub(crate) fn keymap_binding_text_for_command(
 ) -> Option<String> {
     let id = keymap_record_id(interp, keymap)?;
     let record = interp.find_record(id)?;
+    let mut best = None::<((usize, bool), String)>;
     for binding in keymap_bindings(record).ok()?.into_iter().rev() {
-        if keymap_binding_matches_command(&binding.value, command) {
-            return Some(binding.key);
+        if !keymap_binding_matches_command(&binding.value, command) {
+            continue;
         }
+        let parts = binding_key_parts(&binding);
+        let rank = where_is_binding_rank(&parts);
+        if best.as_ref().is_none_or(|(current, _)| rank < *current) {
+            best = Some((rank, binding.key));
+        }
+    }
+    if let Some((_, key)) = best {
+        return Some(key);
     }
     match record.slots.get(KEYMAP_PARENT_SLOT) {
         Some(Value::Nil) | None => None,

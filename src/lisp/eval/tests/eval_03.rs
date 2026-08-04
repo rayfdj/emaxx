@@ -4989,6 +4989,24 @@ fn save_window_excursion_restores_window_start() {
 }
 
 #[test]
+fn save_window_excursion_restores_the_window_tree() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((original (selected-window)))
+                  (save-window-excursion
+                    (select-window (split-window-internal original 12 nil 0.5))
+                    (should (= (length (window-list)) 2)))
+                  (list (eq (selected-window) original)
+                        (eq (frame-root-window) original)
+                        (length (window-list))))
+                "#
+        ),
+        Value::list([Value::T, Value::T, Value::Integer(1)])
+    );
+}
+
+#[test]
 fn preloaded_window_contract_restores_context_and_defines_resize_mode() {
     assert_eq!(
         eval_str_with_upstream_batch(
@@ -5613,6 +5631,26 @@ fn ert_selector_excludes_expensive_tests_by_tag() {
     let summary = interp.run_ert_tests_with_selector(Some(&selector));
     assert_eq!(summary.total, 1);
     assert_eq!(interp.last_selected_tests, vec!["cheap-test".to_string()]);
+}
+
+#[test]
+fn ert_tests_get_independent_window_excursions() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        r#"
+            (setq ert-original-window (selected-window))
+            (ert-deftest first-window-mutator ()
+              (select-window
+               (split-window-internal (selected-window) 12 nil 0.5)))
+            (ert-deftest second-window-observer ()
+              (should (eq (selected-window) ert-original-window))
+              (should (= (length (window-list)) 1)))
+            "#,
+    );
+    let summary = interp.run_ert_tests_with_selector(None);
+    assert_eq!(summary.passed, 2);
+    assert_eq!(summary.failed, 0);
 }
 
 #[test]

@@ -4322,6 +4322,34 @@ fn batch_startup_preloads_the_gnu_help_surface() {
 }
 
 #[test]
+fn where_is_first_prefers_a_short_character_binding() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (setq emaxx-substitute-map (make-sparse-keymap))
+                 (define-key emaxx-substitute-map "\C-a"
+                   'emaxx-substitute-command)
+                 (define-key emaxx-substitute-map [home]
+                   'emaxx-substitute-command)
+                 (define-key emaxx-substitute-map "\C-c\C-a"
+                   'emaxx-substitute-command)
+                 (list
+                  (string=
+                   (key-description
+                    (where-is-internal
+                     'emaxx-substitute-command
+                     (list emaxx-substitute-map) t))
+                   "C-a")
+                  (string=
+                   (substitute-command-keys
+                    "\\<emaxx-substitute-map>\\[emaxx-substitute-command]")
+                   "C-a")))"#,
+        ),
+        Value::list([Value::T, Value::T]),
+    );
+}
+
+#[test]
 fn batch_native_lisp_callables_preserve_help_arglists() {
     run_with_large_stack(|| {
         assert_eq!(

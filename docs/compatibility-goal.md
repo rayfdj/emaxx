@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 ERT/window-isolation checkpoint advances the fresh
+  contiguous compatibility prefix to 2,870/7,080, leaving 4,210 selectors.
+  The 201 newly verified outcomes cover Testcover through EPG and ERC Button,
+  DCC, Fill, Goodies, Join, Match, Networks, and Nicks.  `where-is-internal'
+  and command-key substitution now choose GNU's shortest character binding
+  ahead of longer prefixes and function-key aliases.  Ordinary `defvar' and
+  `defvar-local' declarations no longer acquire `standard-value' metadata,
+  so ERC correctly treats its local module modes as local instead of Custom
+  options.  The Rust ERT runner now mirrors GNU's per-test
+  `save-window-excursion'; window configurations preserve and restore the
+  complete window tree, root, selection, displayed buffers, and current
+  buffer, preventing one test's Help/Customize windows from leaking into the
+  next.  Grouped ERC Networks passes in
+  `target/compat/run-1785794082967853000-33255`; the final ERC Nicks replay is
+  16/16 in `target/compat/run-1785805313626999000-35587`.  NEXT is selector
+  2,871, `erc-sasl--mechanism-offered-p', in
+  `test/lisp/erc/erc-sasl-tests.el' (9 selected outcomes).  Native remains
+  honestly parked at 1,416/1,420 with only the separately tracked bytecode/VM
+  quartet deferred.  The complete publication gate is green: rustfmt, diff
+  checks, all-target check, strict all-feature/all-target Clippy, all 1,658
+  non-network library tests in the restricted sandbox, the six exact
+  localhost/TLS/UDP tests with networking allowed, focused regressions, and
+  the grouped ERC Nicks compatibility replay.
 - The 2026-08-03 callable-introspection checkpoint advances the fresh
   contiguous compatibility prefix to 2,669/7,080, leaving 4,411 selectors.
   GNU-preloaded Lisp callables now expose their dumped byte-code-function
