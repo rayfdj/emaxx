@@ -694,6 +694,14 @@ impl Interpreter {
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
         let value = Self::stored_value(value);
+        if name == "features" {
+            self.provided_features = value
+                .to_vec()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|feature| feature.as_symbol().ok().map(str::to_string))
+                .collect();
+        }
         if name == "ascii-case-table"
             && let Value::CharTable(id) = &value
         {

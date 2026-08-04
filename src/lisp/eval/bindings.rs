@@ -1151,15 +1151,7 @@ impl Interpreter {
             }
             return;
         }
-        // Set in globals
-        self.globals_index.insert(resolved.clone(), value.clone());
-        for (k, v) in self.globals.iter_mut().rev() {
-            if k == &resolved {
-                *v = value;
-                return;
-            }
-        }
-        self.globals.push((resolved, value));
+        self.set_global_binding(&resolved, value);
     }
 
     // Two advice functions match when `equal' (GNU advice--member-p) or,
@@ -1405,6 +1397,47 @@ impl Interpreter {
         match function {
             Some(function) => self.push_function_binding(name, function),
             None => self.reindex_function_binding(name),
+        }
+    }
+
+    pub(crate) fn begin_timer_callback(&mut self) {
+        self.timer_callback_depth += 1;
+    }
+
+    pub(crate) fn defer_unloaded_defsubst(&mut self, name: &str, env: &Env) -> bool {
+        if self.timer_callback_depth == 0
+            || !self
+                .lookup_var("loadhist-unload-filename", env)
+                .is_some_and(|value| value.is_truthy())
+            || self.get_symbol_property(name, "byte-optimizer")
+                != Some(Value::Symbol("byte-compile-inline-expand".into()))
+        {
+            return false;
+        }
+        let Some(definition) = self.functions_index.get(name).cloned() else {
+            return false;
+        };
+        if !self
+            .deferred_defsubst_unbindings
+            .iter()
+            .any(|(queued, _)| queued == name)
+        {
+            self.deferred_defsubst_unbindings
+                .push((name.to_string(), definition));
+        }
+        true
+    }
+
+    pub(crate) fn end_timer_callback(&mut self) {
+        debug_assert!(self.timer_callback_depth > 0);
+        self.timer_callback_depth -= 1;
+        if self.timer_callback_depth != 0 {
+            return;
+        }
+        for (name, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
+            if self.functions_index.get(&name) == Some(&definition) {
+                self.set_function_binding(&name, None);
+            }
         }
     }
 

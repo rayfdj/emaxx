@@ -1827,12 +1827,14 @@ impl Interpreter {
                     repeat: timer.repeat,
                 });
             }
+            self.begin_timer_callback();
             let outcome = self.call_function_value(
                 timer.function,
                 timer.original_name.as_deref(),
                 &timer.args,
                 env,
             );
+            self.end_timer_callback();
             match outcome {
                 Ok(_) => {}
                 Err(error @ LispError::Throw(_, _)) => {
@@ -1894,12 +1896,15 @@ impl Interpreter {
             )?;
             let future = primitives::call(self, "time-less-p", &[Value::Nil, timer_time], env)?;
             if future.is_nil() {
-                self.call_function_value(
+                self.begin_timer_callback();
+                let outcome = self.call_function_value(
                     Value::Symbol("timer-event-handler".into()),
                     Some("timer-event-handler"),
                     std::slice::from_ref(&timer),
                     env,
-                )?;
+                );
+                self.end_timer_callback();
+                outcome?;
             }
         }
         Ok(())

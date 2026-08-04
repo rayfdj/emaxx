@@ -297,7 +297,20 @@ impl Interpreter {
             if !keeps_macro {
                 self.shadow_macro_binding(&name);
             }
-            self.set_function_binding(&name, Some(function));
+            // A nil function definition voids the cell.  In particular,
+            // loadhist uses `(defalias NAME nil)' while unloading; leaving
+            // a literal nil binding here would hide any dumped autoload and
+            // turn the next call into `(invalid-function nil)'.
+            if !function.is_nil() || !self.defer_unloaded_defsubst(&name, env) {
+                self.set_function_binding(
+                    &name,
+                    if function.is_nil() {
+                        None
+                    } else {
+                        Some(function)
+                    },
+                );
+            }
             self.record_definition_in_load_history("defun", &name);
             self.advice_note_new_definition(&name);
         }

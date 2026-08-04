@@ -310,6 +310,21 @@ fn require_and_provide_evaluate_feature_variables() {
 }
 
 #[test]
+fn assigning_features_stays_authoritative_across_later_provides() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (provide 'sample-removed-feature)
+               (setq features (delq 'sample-removed-feature features))
+               (provide 'sample-later-feature)
+               (list (featurep 'sample-removed-feature)
+                     (featurep 'sample-later-feature)))"
+        ),
+        Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
 fn provide_subfeatures_and_require_noerror_match_gnu_primitive_contracts() {
     assert_eq!(
         eval_str(
@@ -879,6 +894,34 @@ fn loaded_timer_queue_fires_during_waits() {
                    fired)"
         ),
         Value::T
+    );
+}
+
+#[test]
+fn timer_callbacks_finish_with_defsubsts_from_their_unloaded_feature() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (load "seq" nil nil)
+                 (require 'loadhist)
+                 (require 'timer)
+                 (let ((file (make-temp-file "emaxx-timer-unload-" nil ".el")))
+                   (unwind-protect
+                       (progn
+                         (write-region
+                          "(defsubst emaxx-timer-unload-helper () 'finished)\n(defun emaxx-timer-unload-callback ()\n  (unload-feature 'emaxx-timer-unload)\n  (setq emaxx-timer-unload-result (emaxx-timer-unload-helper)))\n(provide 'emaxx-timer-unload)\n"
+                          nil file)
+                         (load file nil nil)
+                         (setq emaxx-timer-unload-result nil)
+                         (setq debug-on-error t)
+                         (run-at-time 0 nil #'emaxx-timer-unload-callback)
+                         (sleep-for 0.05)
+                         (list emaxx-timer-unload-result
+                               (featurep 'emaxx-timer-unload)
+                               (fboundp 'emaxx-timer-unload-helper)))
+                     (delete-file file))))"#
+        ),
+        Value::list([Value::Symbol("finished".into()), Value::Nil, Value::Nil])
     );
 }
 
