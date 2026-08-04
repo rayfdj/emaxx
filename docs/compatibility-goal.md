@@ -29,6 +29,15 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 highlighting/Ibuffer checkpoint advances the fresh
+  contiguous compatibility prefix to 3,829/7,080, leaving 3,251 selectors.
+  Hfy Color Map is 2/2, Hi Lock 4/4, HL Line 2/2, HTML Fontify 1/1, and Ibuffer
+  19/19.  Representative artifacts are
+  `target/compat/run-1785855547234590000-83496`,
+  `target/compat/run-1785855642337373000-83681`, and
+  `target/compat/run-1785855723476299000-84089`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 3,830 in `test/lisp/ido-tests.el` (2 selected
+  outcomes), followed by the Image theme.
 - The 2026-08-04 Help checkpoint advances the fresh contiguous compatibility
   prefix to 3,801/7,080, leaving 3,279 selectors.  Help Functions is 20/20,
   Help Mode 15/15, and core Help 31/31.  Artifacts are
