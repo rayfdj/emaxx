@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn unique_temp_path(stem: &str) -> std::path::PathBuf {
@@ -27,6 +28,31 @@ fn empty_batch_invocation_succeeds_like_gnu_emacs() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn batch_read_string_consumes_a_line_from_piped_stdin() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .args([
+            "--quick",
+            "--batch",
+            "--eval",
+            r#"(prin1 (read-string "Input: "))"#,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"hello\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "batch read-string failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"Input: \"hello\"");
 }
 
 #[test]

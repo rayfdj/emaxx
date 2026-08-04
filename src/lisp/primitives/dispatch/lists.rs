@@ -351,6 +351,31 @@ fn read_minibuffer_text_from_kbd_macro(
     Some(text.into_iter().collect())
 }
 
+fn read_minibuffer_text_from_batch_stdin(prompt: &str) -> Result<String, LispError> {
+    print!("{prompt}");
+    std::io::stdout()
+        .flush()
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let mut line = String::new();
+    if std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|error| LispError::Signal(error.to_string()))?
+        == 0
+    {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("end-of-file".into()),
+            Value::String("Error reading from stdin".into()),
+        ])));
+    }
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
+    Ok(line)
+}
+
 // `ert-simulate-keys' drives a real GNU minibuffer through
 // `unread-command-events', not through `execute-kbd-macro'.  Resolve command
 // prefixes before treating events as text so global commands such as
@@ -2839,9 +2864,17 @@ pub(super) fn call(
                 .and_then(string_like)
                 .map(|string| string.text)
                 .unwrap_or_default();
-            if let Some(contents) = read_minibuffer_text_from_unread_events(interp, env, &initial)?
-                .or_else(|| read_minibuffer_text_from_kbd_macro(interp, env, &initial))
+            let mut contents = read_minibuffer_text_from_unread_events(interp, env, &initial)?
+                .or_else(|| read_minibuffer_text_from_kbd_macro(interp, env, &initial));
+            if contents.is_none()
+                && interp
+                    .lookup_var("noninteractive", env)
+                    .is_some_and(|value| value.is_truthy())
             {
+                let prompt = string_text(&args[0])?;
+                contents = Some(read_minibuffer_text_from_batch_stdin(&prompt)?);
+            }
+            if let Some(contents) = contents {
                 if name == "read-from-minibuffer" && args.get(3).is_some_and(Value::is_truthy) {
                     let parsed =
                         super::call(interp, "read-from-string", &[Value::String(contents)], env)?;
