@@ -360,6 +360,24 @@ fn read_minibuffer_text_from_unread_events(
     env: &mut Env,
     initial: &str,
 ) -> Result<Option<String>, LispError> {
+    // A recursive minibuffer command loop has its own prefix state.  Preserve
+    // the caller's prefix (which may control what the prompting command asks)
+    // while simulated keys start unprefixed and may build a fresh C-u prefix.
+    let restore = interp.bind_special_dynamic("current-prefix-arg", Value::Nil, env)?;
+    let result = read_minibuffer_text_from_unread_events_inner(interp, env, initial);
+    let restore_result = interp.restore_special_dynamic(restore, env);
+    match (result, restore_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+fn read_minibuffer_text_from_unread_events_inner(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    initial: &str,
+) -> Result<Option<String>, LispError> {
     let unread = crate::lisp::primitives::unread_command_events(interp, env)?;
     if unread.is_empty() {
         return Ok(None);
@@ -673,9 +691,9 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         // The command loop reports an unbound complete sequence and stops
         // the executing macro.  ERC's keymap tests observe this through
         // ert-with-message-capture after removing module bindings.
-        super::call(
+        call_function_value(
             interp,
-            "message",
+            &Value::Symbol("message".into()),
             &[Value::String(format!("{binding_key} is undefined"))],
             env,
         )?;

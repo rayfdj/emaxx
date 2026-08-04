@@ -753,6 +753,21 @@ fn read_string_preserves_non_string_defaults_on_empty_input() {
 }
 
 #[test]
+fn simulated_minibuffer_keys_preserve_the_callers_prefix_argument() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((current-prefix-arg '(4)))
+                 (ert-simulate-keys "nick\r"
+                   (list (read-string "Nick: ") current-prefix-arg)))"#
+        ),
+        Value::list([
+            Value::String("nick".into()),
+            Value::list([Value::Integer(4)]),
+        ])
+    );
+}
+
+#[test]
 fn call_interactively_skips_interactive_guard_prefixes() {
     assert_eq!(
         eval_str(
@@ -830,6 +845,25 @@ fn timer_queue_variables_default_to_empty_lists() {
     assert_eq!(
         eval_str("(list timer-list timer-idle-list)"),
         Value::list([Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
+fn native_timer_queues_are_special_and_waits_drain_the_dynamic_queue() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+                 (require 'timer)
+                 (let ((timer-list (copy-sequence timer-list))
+                       (timer-idle-list (copy-sequence timer-idle-list))
+                       (fired nil))
+                   (run-at-time 0.01 nil (lambda () (setq fired t)))
+                   (accept-process-output nil 0.05)
+                   (list (special-variable-p 'timer-list)
+                         (special-variable-p 'timer-idle-list)
+                         fired)))"
+        ),
+        Value::list([Value::T, Value::T, Value::T])
     );
 }
 

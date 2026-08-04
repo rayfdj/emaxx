@@ -29,6 +29,24 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-04 ERC event-loop checkpoint advances the fresh contiguous
+  compatibility prefix to 3,030/7,080, leaving 4,050 selectors.  All 160
+  selected outcomes after 2,870 are green, completing ERC SASL through Track.
+  GNU's native timer queues now have their required special-variable contract,
+  so private dynamic queues are shared correctly across timer.el helpers and
+  event waits.  Interactive end-of-line motion crosses timestamp fields;
+  recursive keymap removal descends through prefix maps; simulated minibuffers
+  isolate command-prefix state without destroying the caller's prefix; and
+  undefined keyboard-macro reports flow through advised `message'.  StatusMsg
+  passes in `target/compat/run-1785810395046978000-40219`, Stamp is 12/12 in
+  `target/compat/run-1785810964264012000-41569`, core ERC is 94/94 in
+  `target/compat/run-1785829193123249000-49380`, and Track is 7/7 in
+  `target/compat/run-1785829305709710000-49703`.  The publication gate is
+  green: 1,663 unrestricted library tests pass in the restricted run, and all
+  six localhost/TLS/UDP tests pass with network access.  NEXT is selector 3,031 in
+  `test/lisp/eshell/em-alias-tests.el' (8 selected outcomes).  Native remains
+  honestly parked at 1,416/1,420 with only the separately tracked bytecode/VM
+  quartet deferred.
 - The 2026-08-04 ERT/window-isolation checkpoint advances the fresh
   contiguous compatibility prefix to 2,870/7,080, leaving 4,210 selectors.
   The 201 newly verified outcomes cover Testcover through EPG and ERC Button,

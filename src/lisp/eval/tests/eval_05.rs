@@ -1688,6 +1688,24 @@ fn line_edge_motion_stops_at_field_boundaries() {
 }
 
 #[test]
+fn move_end_of_line_crosses_a_leading_timestamp_field() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert (propertize "[00:00] "
+                                     'field 'erc-timestamp
+                                     'cursor-intangible t))
+                 (insert "Welcome")
+                 (goto-char (point-min))
+                 (let ((end (pos-eol)))
+                   (move-end-of-line 1)
+                   (list end (point))))"#
+        ),
+        Value::list([Value::Integer(16), Value::Integer(16)])
+    );
+}
+
+#[test]
 fn preloaded_mark_whole_buffer_is_interactive_and_sets_region() {
     assert_eq!(
         eval_str_with_upstream_batch(
@@ -1941,6 +1959,42 @@ fn execute_kbd_macro_reports_an_undefined_key_sequence() {
                 "#
         ),
         Value::String("C-c C-z is undefined\n".into())
+    );
+}
+
+#[test]
+fn recursive_keymap_unset_removes_the_nested_binding() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((map (make-sparse-keymap)))
+                 (keymap-set map "C-c C-c" #'ignore)
+                 (keymap-unset map "C-c C-c" t)
+                 (with-temp-buffer
+                   (use-local-map map)
+                   (ert-with-message-capture messages
+                     (execute-kbd-macro (kbd "C-c C-c"))
+                     (list (keymap-lookup map "C-c C-c") messages))))"#
+        ),
+        Value::list([Value::Nil, Value::String("C-c C-c is undefined\n".into()),])
+    );
+}
+
+#[test]
+fn execute_kbd_macro_reports_undefined_keys_through_message_advice() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((seen nil)
+                       (capture (lambda (original &rest args)
+                                  (setq seen (apply #'format args))
+                                  (apply original args))))
+                 (unwind-protect
+                     (progn
+                       (advice-add 'message :around capture)
+                       (execute-kbd-macro (kbd "C-c C-z"))
+                       seen)
+                   (advice-remove 'message capture)))"#
+        ),
+        Value::String("C-c C-z is undefined".into())
     );
 }
 

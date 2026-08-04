@@ -18,6 +18,28 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-04 ERC EVENT-LOOP CHECKPOINT: the fresh contiguous ordered frontier
+  is 3,030/7,080, leaving 4,050 selectors.  The 160-outcome ERC batch after
+  2,870 completes SASL, StatusMsg, ZNC reconnection, scenario internals,
+  Match, Misc Commands, scenario Stamp, Services, Stamp, core ERC, and Track.
+  Native `keyboard.c' timer queues are special variables, so dynamically
+  isolated test queues remain visible to timer.el and event waits; this fixes
+  StatusMsg without advice or polling workarounds.  `move-end-of-line' crosses
+  leading timestamp fields like GNU, recursive `keymap-unset' descends through
+  prefix maps, simulated minibuffers preserve the caller's prefix argument,
+  and undefined-key reports use the ordinary advised `message' call path.
+  Load-bearing artifacts: StatusMsg
+  `target/compat/run-1785810395046978000-40219`; final Stamp 12/12
+  `target/compat/run-1785810964264012000-41569`; core ERC 94/94
+  `target/compat/run-1785829193123249000-49380`; Track 7/7
+  `target/compat/run-1785829305709710000-49703`.  The publication gate is
+  green: 1,663 unrestricted library tests pass in the restricted run, and all
+  six localhost/TLS/UDP tests pass when rerun with network access.  NEXT is
+  selector 3,031,
+  `em-alias-test/alias-all-args-var', in
+  `test/lisp/eshell/em-alias-tests.el' (8 selected outcomes).  Keep the four
+  separately tracked bytecode/VM primitives deferred: native remains
+  1,416/1,420.
 - 2026-08-04 ERT/WINDOW-ISOLATION CHECKPOINT: the fresh contiguous ordered
   frontier is 2,870/7,080, leaving 4,210 selectors.  The 201-outcome batch
   after 2,669 verifies Testcover, Text Property Search, Thunk, Timer, Track

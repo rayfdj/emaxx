@@ -1128,7 +1128,12 @@ pub(super) fn call(
                 super::call(interp, "forward-line", &[Value::Integer(count - 1)], env)?;
             }
             let target = if name == "move-end-of-line" {
-                super::call(interp, "line-end-position", &[], env)?
+                // The interactive command crosses fields (notably an ERC
+                // timestamp at BOL); `line-end-position' intentionally does
+                // not.  GNU's simple.el implementation computes the real
+                // displayed EOL before moving point, matching `pos-eol' for
+                // the logical-line subset implemented here.
+                super::call(interp, "pos-eol", &[], env)?
             } else {
                 super::call(interp, "line-beginning-position", &[], env)?
             };
