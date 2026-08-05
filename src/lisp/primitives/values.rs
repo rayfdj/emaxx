@@ -40,6 +40,17 @@ pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
 }
 
 pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
+    // Scalar fast paths: identical outcome to the recursive walk below, but
+    // without paying for a fresh seen-set and the aggregate-type probes.
+    match (left, right) {
+        (Value::Integer(a), Value::Integer(b)) => return a == b,
+        (Value::Symbol(a), Value::Symbol(b)) => return a == b,
+        (Value::Nil, Value::Nil) | (Value::T, Value::T) => return true,
+        (Value::Nil | Value::T, Value::Integer(_)) | (Value::Integer(_), Value::Nil | Value::T) => {
+            return false;
+        }
+        _ => {}
+    }
     values_equal_recursive(interp, left, right, &mut HashSet::new())
 }
 
@@ -501,12 +512,12 @@ pub(crate) fn plist_type_error(plist: &Value) -> LispError {
 pub(crate) fn safe_list_length(list: &Value) -> i64 {
     let mut len = 0i64;
     let mut current = list.clone();
-    let mut seen = HashSet::new();
+    let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         match current {
             Value::Cons(car, cdr) => {
                 let cell_id = Rc::as_ptr(&car) as usize;
-                if !seen.insert(cell_id) {
+                if seen.step(cell_id) {
                     return len;
                 }
                 len += 1;
@@ -1397,13 +1408,13 @@ pub(crate) struct ClDeleteIfOptions {
 pub(crate) fn collect_list_cells(value: &Value) -> Result<(Vec<Value>, Value), LispError> {
     let mut cells = Vec::new();
     let mut current = value.clone();
-    let mut seen = HashSet::new();
+    let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         match current.clone() {
             Value::Nil => return Ok((cells, Value::Nil)),
             Value::Cons(car, cdr) => {
                 let cell_id = Rc::as_ptr(&car) as usize;
-                if !seen.insert(cell_id) {
+                if seen.step(cell_id) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("circular-list"),
                         Value::string("Circular list"),
@@ -1503,13 +1514,13 @@ pub(crate) fn cl_delete_if_values(
 
 pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
     let mut current = value.clone();
-    let mut seen = HashSet::new();
+    let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         let Value::Cons(car, cdr) = current.clone() else {
             return Err(LispError::TypeError("consp".into(), current.type_name()));
         };
         let cell_id = Rc::as_ptr(&car) as usize;
-        if !seen.insert(cell_id) {
+        if seen.step(cell_id) {
             return Err(LispError::SignalValue(Value::list([
                 Value::symbol("circular-list"),
                 Value::string("Circular list"),

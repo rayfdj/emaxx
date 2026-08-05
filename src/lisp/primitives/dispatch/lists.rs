@@ -1630,46 +1630,59 @@ pub(super) fn call(
         }
         "memq" | "memql" | "member" => {
             need_args(name, args, 2)?;
+            #[derive(Clone, Copy)]
+            enum MemTest {
+                Equal,
+                Eql,
+                Eq,
+            }
+            let test = match name {
+                "member" => MemTest::Equal,
+                "memql" => MemTest::Eql,
+                _ => MemTest::Eq,
+            };
             let mut current = args[1].clone();
-            let mut seen = HashSet::new();
+            let mut seen = crate::lisp::types::CycleGuard::new();
             loop {
-                match current.clone() {
+                let next = match &current {
                     Value::Cons(car, cdr) => {
-                        let cell_id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(cell_id) {
+                        if seen.step(Rc::as_ptr(car) as usize) {
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("circular-list".into()),
                                 Value::String("Circular list".into()),
                             ])));
                         }
-                        let item = car.borrow().clone();
-                        let matches = match name {
-                            "member" => values_equal(interp, &item, &args[0]),
-                            "memql" => values_eql(&item, &args[0]),
-                            _ => values_eq_in_env(interp, &item, &args[0], env),
+                        let matches = {
+                            let item = car.borrow();
+                            match test {
+                                MemTest::Equal => values_equal(interp, &item, &args[0]),
+                                MemTest::Eql => values_eql(&item, &args[0]),
+                                MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
+                            }
                         };
                         if matches {
-                            return Ok(current);
+                            return Ok(current.clone());
                         }
-                        current = cdr.borrow().clone();
+                        cdr.borrow().clone()
                     }
                     Value::Nil => return Ok(Value::Nil),
                     other => {
                         let matches = match name {
-                            "member" => values_equal(interp, &other, &args[0]),
-                            "memql" => values_eql(&other, &args[0]),
-                            _ => values_eq_in_env(interp, &other, &args[0], env),
+                            "member" => values_equal(interp, other, &args[0]),
+                            "memql" => values_eql(other, &args[0]),
+                            _ => values_eq_in_env(interp, other, &args[0], env),
                         };
                         if matches {
-                            return Ok(other);
+                            return Ok(other.clone());
                         }
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("wrong-type-argument".into()),
                             Value::Symbol("listp".into()),
-                            other,
+                            other.clone(),
                         ])));
                     }
-                }
+                };
+                current = next;
             }
         }
         "cl-member" => {
@@ -1695,12 +1708,12 @@ pub(super) fn call(
             }
             let needle = args[0].clone();
             let mut current = args[1].clone();
-            let mut seen = HashSet::new();
+            let mut seen = crate::lisp::types::CycleGuard::new();
             loop {
                 match current.clone() {
                     Value::Cons(car, cdr) => {
                         let cell_id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(cell_id) {
+                        if seen.step(cell_id) {
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("circular-list".into()),
                                 Value::String("Circular list".into()),
@@ -1756,78 +1769,79 @@ pub(super) fn call(
             }
             Ok(Value::Nil)
         }
-        "assq" => {
+        "assq" | "rassq" => {
             need_args(name, args, 2)?;
-            let mut current = args[1].clone();
-            let mut seen = HashSet::new();
+            let want_car = name == "assq";
+            let key = &args[0];
+            let mut seen = crate::lisp::types::CycleGuard::new();
+            // Walk by cons cells rather than by cloned Values: one Rc
+            // bump per step and no whole-Value churn.
+            let mut cells = match &args[1] {
+                Value::Nil => return Ok(Value::Nil),
+                Value::Cons(car, cdr) => (Rc::clone(car), Rc::clone(cdr)),
+                other => {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("wrong-type-argument".into()),
+                        Value::Symbol("listp".into()),
+                        other.clone(),
+                    ])));
+                }
+            };
             loop {
-                match current {
-                    Value::Nil => return Ok(Value::Nil),
-                    Value::Cons(car, cdr) => {
-                        let cell_id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(cell_id) {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::Symbol("circular-list".into()),
-                                Value::String("Circular list".into()),
-                            ])));
+                let (car, cdr) = cells;
+                if seen.step(Rc::as_ptr(&car) as usize) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        Value::String("Circular list".into()),
+                    ])));
+                }
+                let matched = {
+                    let item = car.borrow();
+                    match &*item {
+                        Value::Cons(item_car, item_cdr) => {
+                            let slot = if want_car { item_car } else { item_cdr };
+                            let entry_key = slot.borrow();
+                            match (&*entry_key, key) {
+                                (Value::Integer(a), Value::Integer(b)) => a == b,
+                                (Value::Symbol(a), Value::Symbol(b)) => a == b,
+                                (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+                                (Value::Nil | Value::T, _)
+                                | (_, Value::Nil | Value::T)
+                                | (Value::Integer(_), Value::Symbol(_))
+                                | (Value::Symbol(_), Value::Integer(_)) => false,
+                                (a, b) => *a == *b,
+                            }
                         }
-                        let item = car.borrow().clone();
-                        if matches!(item, Value::Cons(_, _)) && item.car()? == args[0] {
-                            return Ok(item);
-                        }
-                        current = cdr.borrow().clone();
+                        _ => false,
                     }
+                };
+                if matched {
+                    return Ok(car.borrow().clone());
+                }
+                let tail = cdr.borrow();
+                cells = match &*tail {
+                    Value::Nil => return Ok(Value::Nil),
+                    Value::Cons(next_car, next_cdr) => (Rc::clone(next_car), Rc::clone(next_cdr)),
                     other => {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("wrong-type-argument".into()),
                             Value::Symbol("listp".into()),
-                            other,
+                            other.clone(),
                         ])));
                     }
-                }
-            }
-        }
-        "rassq" => {
-            need_args(name, args, 2)?;
-            let mut current = args[1].clone();
-            let mut seen = HashSet::new();
-            loop {
-                match current {
-                    Value::Nil => return Ok(Value::Nil),
-                    Value::Cons(car, cdr) => {
-                        let cell_id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(cell_id) {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::Symbol("circular-list".into()),
-                                Value::String("Circular list".into()),
-                            ])));
-                        }
-                        let item = car.borrow().clone();
-                        if matches!(item, Value::Cons(_, _)) && item.cdr()? == args[0] {
-                            return Ok(item);
-                        }
-                        current = cdr.borrow().clone();
-                    }
-                    other => {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("wrong-type-argument".into()),
-                            Value::Symbol("listp".into()),
-                            other,
-                        ])));
-                    }
-                }
+                };
             }
         }
         "rassoc" => {
             need_args(name, args, 2)?;
             let mut current = args[1].clone();
-            let mut seen = HashSet::new();
+            let mut seen = crate::lisp::types::CycleGuard::new();
             loop {
                 match current {
                     Value::Nil => return Ok(Value::Nil),
                     Value::Cons(car, cdr) => {
                         let cell_id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(cell_id) {
+                        if seen.step(cell_id) {
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("circular-list".into()),
                                 Value::String("Circular list".into()),
@@ -1866,13 +1880,13 @@ pub(super) fn call(
         "assoc" => {
             need_arg_range(name, args, 2, 3)?;
             let mut current = args[1].clone();
-            let mut seen = HashSet::new();
+            let mut seen = crate::lisp::types::CycleGuard::new();
             loop {
                 match current {
                     Value::Nil => return Ok(Value::Nil),
                     Value::Cons(car, cdr) => {
                         let cell_id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(cell_id) {
+                        if seen.step(cell_id) {
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("circular-list".into()),
                                 Value::String("Circular list".into()),

@@ -1664,6 +1664,9 @@ pub struct Interpreter {
     next_char_table_id: u64,
     /// Allocated record objects.
     records: Vec<RecordState>,
+    /// Decoded byte-code programs keyed by record ID (see bytecode::vm).
+    pub(crate) bytecode_program_cache:
+        std::collections::HashMap<u64, std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>,
     /// SQLite objects keyed by record ID.
     sqlite_handles: Vec<(u64, SqliteHandleState)>,
     /// Lazily compiled Tree-sitter queries keyed by opaque record identity.
@@ -2404,6 +2407,7 @@ impl Interpreter {
                 },
             ],
             sqlite_handles: Vec::new(),
+            bytecode_program_cache: std::collections::HashMap::new(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),
             treesit_parsers: Vec::new(),

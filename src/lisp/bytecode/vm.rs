@@ -195,6 +195,83 @@ fn prim(
     primitives::call(interp, name, args, env)
 }
 
+/// A byte-code function decoded, validated, and materialized once:
+/// instructions, an O(1) byte-offset -> instruction-index table for
+/// jumps, and live constants.  Cached per record so repeated calls skip
+/// all of that setup (GNU decodes lazily inside its dispatch loop and
+/// its closures are already live objects).
+pub struct CachedProgram {
+    pub argspec: ArgSpec,
+    pub instrs: Vec<Instr>,
+    pub offset_index: Vec<u32>,
+    pub constants: Vec<Value>,
+    pub stack_depth: usize,
+}
+
+impl CachedProgram {
+    #[inline]
+    fn instr_at(&self, byte_offset: usize) -> usize {
+        self.offset_index[byte_offset] as usize
+    }
+}
+
+fn build_cached(
+    interp: &mut Interpreter,
+    object: &ByteCodeObject,
+    env: &mut Env,
+) -> Result<CachedProgram, LispError> {
+    let instrs = super::decode_program(&object.code, object.constants.len())
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let mut offset_index = vec![u32::MAX; object.code.len() + 1];
+    for (index, instr) in instrs.iter().enumerate() {
+        offset_index[instr.offset] = index as u32;
+    }
+    let mut constants = Vec::with_capacity(object.constants.len());
+    for constant in &object.constants {
+        constants.push(materialize_constant(interp, constant, env)?);
+    }
+    Ok(CachedProgram {
+        argspec: object.argspec.clone(),
+        instrs,
+        offset_index,
+        constants,
+        stack_depth: object.stack_depth,
+    })
+}
+
+/// Execute the genuine byte-code function stored in RECORD_ID, decoding
+/// and materializing it once and reusing the cached program afterwards.
+pub fn execute_record(
+    interp: &mut Interpreter,
+    record_id: u64,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    // Mutation of a record's slots goes through find_record_mut, which
+    // drops the cached program, so a cache hit is always current.
+    if let Some(program) = interp.bytecode_program_cache.get(&record_id) {
+        let program = std::rc::Rc::clone(program);
+        return run(interp, &program, args, env);
+    }
+    let slots = interp
+        .find_record(record_id)
+        .map(|record| record.slots.clone())
+        .ok_or_else(|| LispError::Signal("byte-code record vanished".into()))?;
+    let object = super::ByteCodeObject::from_slots(&slots)
+        .map_err(|error| LispError::Signal(error.to_string()))?
+        .ok_or_else(|| {
+            LispError::SignalValue(Value::list([
+                Value::Symbol("invalid-function".into()),
+                Value::Record(record_id),
+            ]))
+        })?;
+    let program = std::rc::Rc::new(build_cached(interp, &object, env)?);
+    interp
+        .bytecode_program_cache
+        .insert(record_id, std::rc::Rc::clone(&program));
+    run(interp, &program, args, env)
+}
+
 /// Execute OBJECT with ARGS, returning the value of Breturn.
 pub fn execute(
     interp: &mut Interpreter,
@@ -202,30 +279,16 @@ pub fn execute(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let instrs = super::decode_program(&object.code, object.constants.len())
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    // pc-by-offset dispatch: jumps target byte offsets.
-    let mut index_of_offset = std::collections::HashMap::new();
-    for (index, instr) in instrs.iter().enumerate() {
-        index_of_offset.insert(instr.offset, index);
-    }
+    let program = build_cached(interp, object, env)?;
+    run(interp, &program, args, env)
+}
 
-    // Constants still in reader form (nested `#[...]` closures,
-    // `#s(hash-table ...)` jump tables) materialize once here, like GNU
-    // load evaluating the literal before the function ever runs.
-    let mut constants = Vec::with_capacity(object.constants.len());
-    for constant in &object.constants {
-        constants.push(materialize_constant(interp, constant, env)?);
-    }
-    let object = &ByteCodeObject {
-        argspec: object.argspec.clone(),
-        code: object.code.clone(),
-        constants,
-        stack_depth: object.stack_depth,
-        doc: object.doc.clone(),
-        interactive: object.interactive.clone(),
-    };
-
+fn run(
+    interp: &mut Interpreter,
+    object: &CachedProgram,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let mut stack: Vec<Value> = Vec::with_capacity(object.stack_depth.max(8));
     let mut unwinds: Vec<UnwindEntry> = Vec::new();
 
@@ -334,13 +397,167 @@ pub fn execute(
     }
 
     let result = 'run: loop {
-        let Some(instr) = instrs.get(pc) else {
+        let Some(instr) = object.instrs.get(pc) else {
             break Err(LispError::Signal(
                 "byte code ran off the end of its program".into(),
             ));
         };
         let Instr { op, .. } = *instr;
         pc += 1;
+
+        // Hot pre-dispatch: the ops below either cannot fail or only take
+        // this path when their operands make failure impossible, so they
+        // skip the fallible-step closure (and its Result plumbing)
+        // entirely.  Anything that falls through runs the full arm below.
+        match op {
+            Op::StackRef(n) => {
+                let value = stack[stack.len() - 1 - n as usize].clone();
+                stack.push(value);
+                continue;
+            }
+            Op::StackSet(n) => {
+                let value = pop!();
+                let slot = stack.len() - 1 - (n as usize - 1);
+                stack[slot] = value;
+                continue;
+            }
+            Op::Dup => {
+                let top = stack.last().expect("validated bytecode").clone();
+                stack.push(top);
+                continue;
+            }
+            Op::Discard => {
+                pop!();
+                continue;
+            }
+            Op::Constant(index) | Op::Constant2(index) => {
+                stack.push(object.constants[index as usize].clone());
+                continue;
+            }
+            Op::Goto { target } => {
+                pc = object.instr_at(target as usize);
+                continue;
+            }
+            Op::GotoIfNil { target } => {
+                if pop!().is_nil() {
+                    pc = object.instr_at(target as usize);
+                }
+                continue;
+            }
+            Op::GotoIfNonNil { target } => {
+                if !pop!().is_nil() {
+                    pc = object.instr_at(target as usize);
+                }
+                continue;
+            }
+            Op::GotoIfNilElsePop { target } => {
+                if stack.last().expect("validated bytecode").is_nil() {
+                    pc = object.instr_at(target as usize);
+                } else {
+                    pop!();
+                }
+                continue;
+            }
+            Op::GotoIfNonNilElsePop { target } => {
+                if !stack.last().expect("validated bytecode").is_nil() {
+                    pc = object.instr_at(target as usize);
+                } else {
+                    pop!();
+                }
+                continue;
+            }
+            Op::Return => {
+                break 'run Ok(pop!());
+            }
+            Op::Not => {
+                let value = pop!();
+                stack.push(if value.is_nil() { Value::T } else { Value::Nil });
+                continue;
+            }
+            Op::Cons => {
+                let b = pop!();
+                let a = pop!();
+                stack.push(Value::cons(a, b));
+                continue;
+            }
+            Op::Eq => {
+                let b = pop!();
+                let a = pop!();
+                let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
+                stack.push(if equal { Value::T } else { Value::Nil });
+                continue;
+            }
+            Op::Consp => {
+                let a = pop!();
+                stack.push(if matches!(a, Value::Cons(..)) {
+                    Value::T
+                } else {
+                    Value::Nil
+                });
+                continue;
+            }
+            Op::Plus | Op::Diff | Op::Mult => {
+                let len = stack.len();
+                if let (Value::Integer(x), Value::Integer(y)) = (&stack[len - 2], &stack[len - 1]) {
+                    let fast = match op {
+                        Op::Plus => x.checked_add(*y),
+                        Op::Diff => x.checked_sub(*y),
+                        _ => x.checked_mul(*y),
+                    };
+                    if let Some(n) = fast {
+                        stack.truncate(len - 2);
+                        stack.push(Value::Integer(n));
+                        continue;
+                    }
+                }
+            }
+            Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
+                let len = stack.len();
+                if let (Value::Integer(x), Value::Integer(y)) = (&stack[len - 2], &stack[len - 1]) {
+                    let holds = match op {
+                        Op::Eqlsign => x == y,
+                        Op::Gtr => x > y,
+                        Op::Lss => x < y,
+                        Op::Leq => x <= y,
+                        _ => x >= y,
+                    };
+                    stack.truncate(len - 2);
+                    stack.push(if holds { Value::T } else { Value::Nil });
+                    continue;
+                }
+            }
+            Op::Add1 | Op::Sub1 | Op::Negate => {
+                if let Some(Value::Integer(x)) = stack.last() {
+                    let fast = match op {
+                        Op::Add1 => x.checked_add(1),
+                        Op::Sub1 => x.checked_sub(1),
+                        _ => x.checked_neg(),
+                    };
+                    if let Some(n) = fast {
+                        *stack.last_mut().expect("validated bytecode") = Value::Integer(n);
+                        continue;
+                    }
+                }
+            }
+            Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => match stack.last() {
+                Some(Value::Cons(car, cdr)) => {
+                    let value = if matches!(op, Op::Car | Op::CarSafe) {
+                        car.borrow().clone()
+                    } else {
+                        cdr.borrow().clone()
+                    };
+                    *stack.last_mut().expect("validated bytecode") = value;
+                    continue;
+                }
+                Some(Value::Nil) => continue,
+                Some(_) if matches!(op, Op::CarSafe | Op::CdrSafe) => {
+                    *stack.last_mut().expect("validated bytecode") = Value::Nil;
+                    continue;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
 
         // Every fallible operation funnels through here so handler
         // unwinding (GNU's sys_setjmp arm) is applied uniformly.
@@ -665,34 +882,39 @@ pub fn execute(
                 }
                 Op::Call(argc) => {
                     let argc = argc as usize;
-                    let call_args: Vec<Value> = stack.drain(stack.len() - argc..).collect();
-                    let func = pop!();
-                    let value = interp.call_function_value(func, None, &call_args, env)?;
+                    let args_start = stack.len() - argc;
+                    // Call with the arguments still on the stack (GNU's
+                    // exec_byte_code does the same); an error unwind
+                    // truncates to the handler's recorded depth anyway.
+                    let func = std::mem::replace(&mut stack[args_start - 1], Value::Nil);
+                    let value =
+                        interp.call_function_value(func, None, &stack[args_start..], env)?;
+                    stack.truncate(args_start - 1);
                     stack.push(value);
                 }
                 Op::Goto { target } => {
-                    pc = index_of_offset[&(target as usize)];
+                    pc = object.instr_at(target as usize);
                 }
                 Op::GotoIfNil { target } => {
                     if pop!().is_nil() {
-                        pc = index_of_offset[&(target as usize)];
+                        pc = object.instr_at(target as usize);
                     }
                 }
                 Op::GotoIfNonNil { target } => {
                     if !pop!().is_nil() {
-                        pc = index_of_offset[&(target as usize)];
+                        pc = object.instr_at(target as usize);
                     }
                 }
                 Op::GotoIfNilElsePop { target } => {
                     if stack.last().expect("validated bytecode").is_nil() {
-                        pc = index_of_offset[&(target as usize)];
+                        pc = object.instr_at(target as usize);
                     } else {
                         pop!();
                     }
                 }
                 Op::GotoIfNonNilElsePop { target } => {
                     if !stack.last().expect("validated bytecode").is_nil() {
-                        pc = index_of_offset[&(target as usize)];
+                        pc = object.instr_at(target as usize);
                     } else {
                         pop!();
                     }
@@ -737,7 +959,7 @@ pub fn execute(
                     let value = pop!();
                     let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
                     if let Value::Integer(dest) = dest {
-                        pc = index_of_offset[&(dest as usize)];
+                        pc = object.instr_at(dest as usize);
                     }
                 }
                 Op::ListN(n) => {
@@ -763,10 +985,82 @@ pub fn execute(
                     let value = pop!();
                     stack.push(if value.is_nil() { Value::T } else { Value::Nil });
                 }
+                // Two-argument ops with inline fast paths.
+                Op::Eq => {
+                    let b = pop!();
+                    let a = pop!();
+                    let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
+                    stack.push(if equal { Value::T } else { Value::Nil });
+                }
+                Op::Cons => {
+                    let b = pop!();
+                    let a = pop!();
+                    stack.push(Value::cons(a, b));
+                }
+                Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
+                    let b = pop!();
+                    let a = pop!();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&a, &b) {
+                        let holds = match op {
+                            Op::Eqlsign => x == y,
+                            Op::Gtr => x > y,
+                            Op::Lss => x < y,
+                            Op::Leq => x <= y,
+                            _ => x >= y,
+                        };
+                        stack.push(if holds { Value::T } else { Value::Nil });
+                        return Ok(());
+                    }
+                    let name = match op {
+                        Op::Eqlsign => "=",
+                        Op::Gtr => ">",
+                        Op::Lss => "<",
+                        Op::Leq => "<=",
+                        _ => ">=",
+                    };
+                    let value = prim(interp, name, &[a, b], env)?;
+                    stack.push(value);
+                }
+                Op::Plus | Op::Diff | Op::Mult => {
+                    let b = pop!();
+                    let a = pop!();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&a, &b) {
+                        let fast = match op {
+                            Op::Plus => x.checked_add(*y),
+                            Op::Diff => x.checked_sub(*y),
+                            _ => x.checked_mul(*y),
+                        };
+                        if let Some(n) = fast {
+                            stack.push(Value::Integer(n));
+                            return Ok(());
+                        }
+                    }
+                    let name = match op {
+                        Op::Plus => "+",
+                        Op::Diff => "-",
+                        _ => "*",
+                    };
+                    let value = prim(interp, name, &[a, b], env)?;
+                    stack.push(value);
+                }
+                Op::Max | Op::Min => {
+                    let b = pop!();
+                    let a = pop!();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&a, &b) {
+                        let n = if matches!(op, Op::Max) {
+                            (*x).max(*y)
+                        } else {
+                            (*x).min(*y)
+                        };
+                        stack.push(Value::Integer(n));
+                        return Ok(());
+                    }
+                    let name = if matches!(op, Op::Max) { "max" } else { "min" };
+                    let value = prim(interp, name, &[a, b], env)?;
+                    stack.push(value);
+                }
                 // Two-argument primitive ops.
-                Op::Eq
-                | Op::Memq
-                | Op::Cons
+                Op::Memq
                 | Op::Nth
                 | Op::Aref
                 | Op::Setcar
@@ -777,16 +1071,6 @@ pub fn execute(
                 | Op::Assq
                 | Op::Equal
                 | Op::Get
-                | Op::Eqlsign
-                | Op::Gtr
-                | Op::Lss
-                | Op::Leq
-                | Op::Geq
-                | Op::Diff
-                | Op::Plus
-                | Op::Max
-                | Op::Min
-                | Op::Mult
                 | Op::Quo
                 | Op::Rem
                 | Op::StringEqlsign
@@ -798,9 +1082,7 @@ pub fn execute(
                     let b = pop!();
                     let a = pop!();
                     let name = match op {
-                        Op::Eq => "eq",
                         Op::Memq => "memq",
-                        Op::Cons => "cons",
                         Op::Nth => "nth",
                         Op::Aref => "aref",
                         Op::Setcar => "setcar",
@@ -811,16 +1093,6 @@ pub fn execute(
                         Op::Assq => "assq",
                         Op::Equal => "equal",
                         Op::Get => "get",
-                        Op::Eqlsign => "=",
-                        Op::Gtr => ">",
-                        Op::Lss => "<",
-                        Op::Leq => "<=",
-                        Op::Geq => ">=",
-                        Op::Diff => "-",
-                        Op::Plus => "+",
-                        Op::Max => "max",
-                        Op::Min => "min",
-                        Op::Mult => "*",
                         Op::Quo => "/",
                         Op::Rem => "%",
                         Op::StringEqlsign => "string-equal",
@@ -833,21 +1105,62 @@ pub fn execute(
                     let value = prim(interp, name, &[a, b], env)?;
                     stack.push(value);
                 }
+                // One-argument ops with inline fast paths.
+                Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
+                    let a = pop!();
+                    match (&a, op) {
+                        (Value::Cons(car, _), Op::Car | Op::CarSafe) => {
+                            let value = car.borrow().clone();
+                            stack.push(value);
+                        }
+                        (Value::Cons(_, cdr), _) => {
+                            let value = cdr.borrow().clone();
+                            stack.push(value);
+                        }
+                        (Value::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => stack.push(Value::Nil),
+                        _ => {
+                            let name = if matches!(op, Op::Car) { "car" } else { "cdr" };
+                            let value = prim(interp, name, &[a], env)?;
+                            stack.push(value);
+                        }
+                    }
+                }
+                Op::Add1 | Op::Sub1 | Op::Negate => {
+                    let a = pop!();
+                    if let Value::Integer(x) = &a {
+                        let fast = match op {
+                            Op::Add1 => x.checked_add(1),
+                            Op::Sub1 => x.checked_sub(1),
+                            _ => x.checked_neg(),
+                        };
+                        if let Some(n) = fast {
+                            stack.push(Value::Integer(n));
+                            return Ok(());
+                        }
+                    }
+                    let name = match op {
+                        Op::Add1 => "1+",
+                        Op::Sub1 => "1-",
+                        _ => "-",
+                    };
+                    let value = prim(interp, name, &[a], env)?;
+                    stack.push(value);
+                }
+                Op::Consp => {
+                    let a = pop!();
+                    stack.push(if matches!(a, Value::Cons(..)) {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    });
+                }
                 // One-argument primitive ops.
-                Op::Car
-                | Op::Cdr
-                | Op::CarSafe
-                | Op::CdrSafe
-                | Op::Symbolp
-                | Op::Consp
+                Op::Symbolp
                 | Op::Stringp
                 | Op::Listp
                 | Op::Length
                 | Op::SymbolValue
                 | Op::SymbolFunction
-                | Op::Sub1
-                | Op::Add1
-                | Op::Negate
                 | Op::Nreverse
                 | Op::Numberp
                 | Op::Integerp
@@ -855,20 +1168,12 @@ pub fn execute(
                 | Op::Downcase => {
                     let a = pop!();
                     let name = match op {
-                        Op::Car => "car",
-                        Op::Cdr => "cdr",
-                        Op::CarSafe => "car-safe",
-                        Op::CdrSafe => "cdr-safe",
                         Op::Symbolp => "symbolp",
-                        Op::Consp => "consp",
                         Op::Stringp => "stringp",
                         Op::Listp => "listp",
                         Op::Length => "length",
                         Op::SymbolValue => "symbol-value",
                         Op::SymbolFunction => "symbol-function",
-                        Op::Sub1 => "1-",
-                        Op::Add1 => "1+",
-                        Op::Negate => "-",
                         Op::Nreverse => "nreverse",
                         Op::Numberp => "numberp",
                         Op::Integerp => "integerp",
@@ -950,7 +1255,7 @@ pub fn execute(
                         }
                         stack.truncate(handler.stack_len);
                         stack.push(value);
-                        pc = index_of_offset[&handler.dest];
+                        pc = object.instr_at(handler.dest);
                         handled = true;
                         break;
                     }

@@ -2182,11 +2182,26 @@ impl Interpreter {
     }
 
     pub fn find_record(&self, id: u64) -> Option<&RecordState> {
-        self.records.iter().find(|record| record.id == id)
+        // Ids are handed out densely starting at 1 (main thread, standard
+        // obarray, then next_record_id onward) and records are never
+        // removed, so the id doubles as an index; the linear scan is a
+        // safety net in case that invariant ever changes.
+        let index = (id as usize).checked_sub(1)?;
+        match self.records.get(index) {
+            Some(record) if record.id == id => Some(record),
+            _ => self.records.iter().find(|record| record.id == id),
+        }
     }
 
     pub fn find_record_mut(&mut self, id: u64) -> Option<&mut RecordState> {
-        self.records.iter_mut().find(|record| record.id == id)
+        // The caller may rewrite the slots, so a decoded byte-code program
+        // for this record can no longer be trusted (see bytecode::vm).
+        self.bytecode_program_cache.remove(&id);
+        let index = (id as usize).checked_sub(1)?;
+        match self.records.get(index) {
+            Some(record) if record.id == id => self.records.get_mut(index),
+            _ => self.records.iter_mut().find(|record| record.id == id),
+        }
     }
 
     pub(crate) fn create_treesit_query(&mut self, language: Value, source: Value) -> Value {

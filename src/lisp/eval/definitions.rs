@@ -1234,7 +1234,7 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let mut current = plist.clone();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = crate::lisp::types::CycleGuard::new();
         loop {
             match current {
                 Value::Nil => {
@@ -1242,7 +1242,7 @@ impl Interpreter {
                 }
                 Value::Cons(car, cdr) => {
                     let cell_id = std::rc::Rc::as_ptr(&car) as usize;
-                    if !seen.insert(cell_id) {
+                    if seen.step(cell_id) {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("circular-list".into()),
                             Value::String("Circular list".into()),

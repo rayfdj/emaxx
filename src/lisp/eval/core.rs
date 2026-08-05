@@ -934,17 +934,18 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let mut resolved_original_name = original_name.map(str::to_string);
+        let mut owned_name: Option<String> = None;
         let func = match func {
             Value::Symbol(name) => {
-                if resolved_original_name.is_none() {
-                    resolved_original_name = Some(name.clone());
+                let resolved = self.lookup_function(&name, env)?;
+                if original_name.is_none() {
+                    owned_name = Some(name);
                 }
-                self.lookup_function(&name, env)?
+                resolved
             }
             other => other,
         };
-        let original_name = resolved_original_name.as_deref();
+        let original_name = original_name.or(owned_name.as_deref());
         let func = match func {
             Value::Cons(_, _) => {
                 let func = if is_lambda_form(&func) {
@@ -1011,13 +1012,12 @@ impl Interpreter {
                     // Genuine GNU bytecode (argspec/code/constants/depth
                     // slots) executes on the VM; Emaxx byte-compile facade
                     // objects carry an executable lambda in slot 0 instead.
-                    if crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots) {
-                        let object = crate::lisp::bytecode::ByteCodeObject::from_slots(
-                            &record.slots.clone(),
-                        )
-                        .map_err(|error| LispError::Signal(error.to_string()))?
-                        .expect("slots_are_genuine_bytecode checked");
-                        return crate::lisp::bytecode::vm::execute(self, &object, args, env);
+                    // A cached program implies the slots already passed the
+                    // genuineness check, so skip re-walking them.
+                    if self.bytecode_program_cache.contains_key(&id)
+                        || crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots)
+                    {
+                        return crate::lisp::bytecode::vm::execute_record(self, id, args, env);
                     }
                     let Some(inner) = record.slots.first().cloned() else {
                         return Err(LispError::SignalValue(Value::list([

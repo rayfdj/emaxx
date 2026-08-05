@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashSet;
 
 /// Hidden binding stamped into lexical binding frames to give them an
 /// identity: frames are plain vectors, and without a marker two unrelated
@@ -20,13 +19,13 @@ impl Interpreter {
     fn dolist_items(value: &Value) -> Result<Vec<Value>, LispError> {
         let mut items = Vec::new();
         let mut current = value.clone();
-        let mut seen = HashSet::new();
+        let mut seen = crate::lisp::types::CycleGuard::new();
         loop {
             match current {
                 Value::Nil => return Ok(items),
                 Value::Cons(car, cdr) => {
                     let cell_id = std::rc::Rc::as_ptr(&car) as usize;
-                    if !seen.insert(cell_id) {
+                    if seen.step(cell_id) {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("circular-list".into()),
                             Value::String("Circular list".into()),
