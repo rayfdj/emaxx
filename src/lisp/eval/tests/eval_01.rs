@@ -4420,13 +4420,14 @@ fn display_warning_records_message_and_returns_nil() {
 fn deactivate_mark_clears_active_region() {
     assert_eq!(
         eval_str(
-            r#"(with-temp-buffer
-                     (insert "abc")
-                     (set-mark 1)
-                     (goto-char 3)
-                     (list (region-active-p)
-                           (deactivate-mark)
-                           (region-active-p)))"#
+            r#"(let ((transient-mark-mode t))
+                  (with-temp-buffer
+                    (insert "abc")
+                    (set-mark 1)
+                    (goto-char 3)
+                    (list (region-active-p)
+                          (deactivate-mark)
+                          (region-active-p))))"#
         ),
         Value::list([Value::T, Value::Nil, Value::Nil])
     );

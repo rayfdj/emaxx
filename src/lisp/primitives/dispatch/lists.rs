@@ -794,15 +794,27 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         // GNU's local-function-key-map translates unbound function-key
         // symbols to their ASCII equivalents ([escape] a1 ESC dispatches
         // viper's ESC binding, not an `escape' text insertion).
+        let default_translation = match &event {
+            Value::Symbol(name) => function_key_default_translation(name).map(Value::Integer),
+            Value::Integer(code)
+                if *code
+                    == (crate::lisp::primitives::KEY_DESCRIPTION_SHIFT_BIT | i64::from(b'\t')) =>
+            {
+                Some(Value::Symbol("backtab".into()))
+            }
+            _ => None,
+        };
         if pending_keys.is_empty()
-            && let Value::Symbol(name) = &event
-            && let Some(code) = function_key_default_translation(name)
+            && let Some(translated_event) = default_translation
             && key_binding(interp, &event_key, false, false, env)?.is_nil()
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
-            event = Value::Integer(code);
+            event = translated_event;
             let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
             event_key = key_sequence_binding_text(&translated)?;
+            if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
+                event_key = format!("<{event_key}>");
+            }
         }
         if pending_keys.is_empty() && event_key == "C-s" {
             advance_kbd_macro_index(interp, 1, env);
@@ -1265,6 +1277,14 @@ fn finish_kbd_macro_command(
             .lookup_var("real-last-command", env)
             .unwrap_or(Value::Nil);
         interp.set_variable("last-repeatable-command", real_last_command, env);
+    }
+    // The command loop re-establishes the selected window's buffer after
+    // every command.  Lisp commands commonly use `save-current-buffer', so
+    // selecting another window inside them can otherwise leave the command
+    // loop's current buffer pointing at the window that was just quit.
+    let selected_buffer = interp.selected_window_buffer_id();
+    if interp.has_buffer_id(selected_buffer) {
+        let _ = interp.set_current_buffer_id(selected_buffer);
     }
 }
 

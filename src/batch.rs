@@ -478,6 +478,17 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         }
     }
 
+    // GNU dumps simple.el before minibuffer.el.  It owns the completion-list
+    // navigation and selection commands used by Minibuffer's M-up/M-down
+    // bindings.  Keep those command policies in the standard GNU library
+    // instead of maintaining local copies alongside the native minibuffer
+    // substrate.
+    if !interpreter.has_feature("simple") && interpreter.resolve_load_target("simple").is_some() {
+        interpreter
+            .load_target("simple")
+            .map_err(|error| format!("preload simple: {error}"))?;
+    }
+
     // These map-owning libraries are also part of GNU's dumped image.  Keep
     // their definitions on the Lisp side and load them in loadup order; Help
     // legitimately refers to the maps without first requiring either file.
@@ -1078,6 +1089,75 @@ mod tests {
                     Value::T,
                     Value::Symbol("b".into()),
                     Value::Symbol("b".into()),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_gnu_simple_and_event_position_helpers() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'simple)
+                       (equal (get 'cconv--interactive-helper
+                                   'emaxx-oclosure-slots)
+                              '(fun if))
+                       (fboundp 'next-completion)
+                       (fboundp 'choose-completion)
+                       (fboundp 'event-start)
+                       (fboundp 'posn-point)
+                       (catch 'state
+                         (minibuffer-with-setup-hook
+                             (lambda ()
+                               (throw 'state
+                                 (list (minibuffer-depth)
+                                       (minibuffer-prompt)
+                                       (point)
+                                       (minibuffer-contents)
+                                       (windowp (active-minibuffer-window))
+                                       (eq (current-local-map)
+                                           minibuffer-local-completion-map)
+                                       (equal minibuffer-completion-table
+                                              '(\"a\")))))
+                           (let ((executing-kbd-macro t))
+                             (completing-read \"Prompt: \" '(\"a\")))))
+                       (minibuffer-depth)
+                       (active-minibuffer-window))",
+            )
+            .read_all()
+            .expect("read simple startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate simple startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::list([
+                        Value::Integer(1),
+                        Value::String("Prompt: ".into()),
+                        Value::Integer(9),
+                        Value::String(String::new()),
+                        Value::T,
+                        Value::T,
+                        Value::T,
+                    ]),
+                    Value::Integer(0),
+                    Value::Nil,
                 ])
             );
         });

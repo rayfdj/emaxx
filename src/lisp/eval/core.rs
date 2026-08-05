@@ -5,27 +5,6 @@ fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
     matches!(record.slots.get(2), Some(Value::Symbol(symbol)) if symbol == "dynamic-binding")
 }
 
-fn minibuffer_prompt_literal(form: &Value) -> Option<Value> {
-    let items = form.to_vec().ok()?;
-    if matches!(
-        items.first(),
-        Some(Value::Symbol(function))
-            if matches!(
-                function.as_str(),
-                "read-from-minibuffer"
-                    | "read-string"
-                    | "read-no-blanks-input"
-                    | "completing-read"
-            )
-    ) {
-        return items
-            .get(1)
-            .filter(|value| matches!(value, Value::String(_) | Value::StringObject(_)))
-            .cloned();
-    }
-    items.iter().find_map(minibuffer_prompt_literal)
-}
-
 // ── Dev-only flat profiler (EMAXX_PROFILE=<path>) ──
 // Per-name call counts, cumulative and self wall time; the report file is
 // rewritten every few thousand calls.  Zero cost unless the variable is
@@ -781,63 +760,6 @@ impl Interpreter {
                             let result = self.sf_progn(&items[2..], env);
                             self.restore_special_binding(restore, env)?;
                             return result;
-                        }
-                        "minibuffer-with-setup-hook" => {
-                            if items.len() < 3 {
-                                return Err(LispError::WrongNumberOfArgs(
-                                    "minibuffer-with-setup-hook".into(),
-                                    items.len().saturating_sub(1),
-                                ));
-                            }
-                            let hook = self.eval(&items[1], env)?;
-                            // GNU runs the hook when BODY activates a
-                            // minibuffer, with that minibuffer current and
-                            // `active-minibuffer-window' non-nil.
-                            let previous_depth = self
-                                .lookup_var("emaxx--minibuffer-depth", env)
-                                .and_then(|value| value.as_integer().ok())
-                                .unwrap_or(0);
-                            let depth = previous_depth + 1;
-                            let minibuffer_id = self
-                                .find_buffer(&format!(" *Minibuf-{depth}*"))
-                                .map(|(id, _)| id)
-                                .unwrap_or_else(|| {
-                                    self.create_buffer(&format!(" *Minibuf-{depth}*")).0
-                                });
-                            let saved_buffer_id = self.current_buffer_id();
-                            let previous_active = self
-                                .lookup_var("emaxx--active-minibuffer", env)
-                                .unwrap_or(Value::Nil);
-                            let previous_prompt = self
-                                .lookup_var("emaxx--minibuffer-prompt", env)
-                                .unwrap_or(Value::Nil);
-                            let prompt = items
-                                .get(2)
-                                .and_then(minibuffer_prompt_literal)
-                                .unwrap_or(Value::Nil);
-                            let _ = self.switch_to_buffer_id(minibuffer_id);
-                            let active = self
-                                .buffer_identity_value(minibuffer_id)
-                                .unwrap_or(Value::Nil);
-                            self.set_global_binding("emaxx--active-minibuffer", active);
-                            self.set_global_binding(
-                                "emaxx--minibuffer-depth",
-                                Value::Integer(depth),
-                            );
-                            self.set_global_binding("emaxx--minibuffer-prompt", prompt);
-                            let call = vec![hook];
-                            let hook_result = self.eval_call(&call, env);
-                            self.set_global_binding("emaxx--active-minibuffer", previous_active);
-                            self.set_global_binding(
-                                "emaxx--minibuffer-depth",
-                                Value::Integer(previous_depth),
-                            );
-                            self.set_global_binding("emaxx--minibuffer-prompt", previous_prompt);
-                            if self.has_buffer_id(saved_buffer_id) {
-                                let _ = self.switch_to_buffer_id(saved_buffer_id);
-                            }
-                            hook_result?;
-                            return self.sf_progn(&items[2..], env);
                         }
                         _ => {}
                     }

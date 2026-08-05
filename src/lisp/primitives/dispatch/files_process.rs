@@ -1279,9 +1279,11 @@ pub(super) fn call(
         }
         "substitute-in-file-name" => {
             need_args(name, args, 1)?;
-            Ok(Value::String(substitute_in_file_name(&string_text(
-                &args[0],
-            )?)))
+            Ok(Value::String(substitute_in_file_name_in_env(
+                interp,
+                env,
+                &string_text(&args[0])?,
+            )))
         }
         "file-name-directory" => {
             need_args(name, args, 1)?;
@@ -2957,7 +2959,9 @@ pub(super) fn call(
                 Some(value) if !value.is_nil() => match value {
                     Value::Integer(0) => None,
                     _ => {
-                        let infile = string_text(value)?;
+                        let requested_infile = string_text(value)?;
+                        let infile =
+                            unquote_local_file_name(&requested_infile).unwrap_or(requested_infile);
                         // GNU report_file_error: an unreadable INFILE is a
                         // `file-error' (epg's tty probe catches those).
                         Some(fs::read(&infile).map_err(|error| {
@@ -4077,10 +4081,7 @@ pub(super) fn call(
         "point-marker" => {
             interp.copy_marker_value(&Value::Integer(interp.buffer.point() as i64), false)
         }
-        "mark-marker" => match interp.buffer.mark() {
-            Some(pos) => interp.copy_marker_value(&Value::Integer(pos as i64), false),
-            None => interp.copy_marker_value(&Value::Nil, false),
-        },
+        "mark-marker" => Ok(interp.buffer_mark_marker_value()),
         "point-min-marker" => {
             interp.copy_marker_value(&Value::Integer(interp.buffer.point_min() as i64), false)
         }

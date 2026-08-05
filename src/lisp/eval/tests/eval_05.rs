@@ -2349,9 +2349,74 @@ fn char_before_and_after_nil_default_to_point() {
 fn mark_sexp_activates_region_without_moving_point() {
     assert_eq!(
         eval_str(
-            "(with-temp-buffer (insert \"foo\") (goto-char 1) (mark-sexp 1) (list (point) (mark) (use-region-p)))"
+            "(let ((transient-mark-mode t))
+               (with-temp-buffer
+                 (insert \"foo\")
+                 (goto-char 1)
+                 (mark-sexp 1)
+                 (list (point) (mark) (use-region-p))))"
         ),
         Value::list([Value::Integer(1), Value::Integer(4), Value::T])
+    );
+}
+
+#[test]
+fn transient_mark_mode_uses_the_gnu_batch_default_and_call_contract() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"abcd\")
+               (set-mark 1)
+               (goto-char 4)
+               (let ((initial transient-mark-mode))
+                 (list initial
+                       (use-region-p)
+                       (progn (transient-mark-mode) transient-mark-mode)
+                       (use-region-p)
+                       (progn (transient-mark-mode) transient-mark-mode)
+                       (use-region-p)
+                       (progn (transient-mark-mode 'toggle) transient-mark-mode)
+                       (use-region-p))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn gnu_simple_set_mark_updates_the_persistent_buffer_mark_marker() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(with-temp-buffer
+               (insert \"abcd\")
+               (let ((marker (mark-marker)))
+                 (set-mark 2)
+                 (list (eq marker (mark-marker))
+                       (mark)
+                       mark-active
+                       (marker-position marker)
+                       (eq (marker-buffer marker) (current-buffer))
+                       (progn
+                         (set-mark nil)
+                         (list (mark t) mark-active
+                               (marker-buffer marker))))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Integer(2),
+            Value::T,
+            Value::Integer(2),
+            Value::T,
+            Value::list([Value::Nil, Value::Nil, Value::Nil]),
+        ])
     );
 }
 
@@ -4259,6 +4324,28 @@ fn simple_compat_exposes_ignore_errors_as_a_preloaded_macro() {
         ),
         Value::list([Value::T, Value::Nil, Value::Nil])
     );
+}
+
+#[test]
+fn simple_compat_macroexp_file_name_keeps_the_ert_defining_file() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    let test_file = "/tmp/emaxx-simple-compat-resource-tests.el";
+    interp.set_current_load_file(Some(test_file.into()));
+    eval_str_with(
+        &mut interp,
+        &format!(
+            r#"(ert-deftest simple-compat-keeps-ert-source ()
+                  (should (string= (macroexp-file-name) "{test_file}")))"#
+        ),
+    );
+    interp.set_current_load_file(None);
+
+    assert_eq!(interp.run_ert_tests(), (1, 0, 1));
 }
 
 #[test]

@@ -278,10 +278,10 @@ impl Buffer {
         self.begv = remap(self.begv);
         self.zv = remap(self.zv);
         self.mark = self.mark.map(remap);
-        for overlay in &mut self.overlays {
-            overlay.beg = remap(overlay.beg);
-            overlay.end = remap(overlay.end);
-        }
+        // Overlay endpoints already use the rope's character coordinates.
+        // The unibyte overlay API translates those coordinates at its public
+        // boundary, so remapping them here would apply the byte-to-character
+        // conversion twice.
         for span in &mut self.text_properties {
             span.start = remap(span.start);
             span.end = remap(span.end);
@@ -503,6 +503,15 @@ impl Buffer {
     pub fn set_mark(&mut self, pos: usize) {
         self.mark = Some(pos.clamp(self.begv, self.zv));
         self.mark_active = true;
+    }
+
+    pub fn set_mark_active(&mut self, active: bool) {
+        self.mark_active = active && self.mark.is_some();
+    }
+
+    pub fn clear_mark(&mut self) {
+        self.mark = None;
+        self.mark_active = false;
     }
 
     pub fn deactivate_mark(&mut self) {

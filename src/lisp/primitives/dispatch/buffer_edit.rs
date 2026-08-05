@@ -1557,7 +1557,24 @@ pub(super) fn call(
         )),
         "minibuffer-contents" | "minibuffer-contents-no-properties" => {
             need_arg_range(name, args, 0, 0)?;
-            let start = interp.buffer.point_min();
+            let active_minibuffer = interp
+                .lookup_var("emaxx--active-minibuffer", env)
+                .and_then(|value| interp.resolve_buffer_id(&value).ok())
+                == Some(interp.current_buffer_id());
+            let prompt_length = if active_minibuffer {
+                interp
+                    .lookup_var("emaxx--minibuffer-prompt", env)
+                    .and_then(|value| string_like(&value))
+                    .map(|prompt| prompt.text.chars().count())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let start = interp
+                .buffer
+                .point_min()
+                .saturating_add(prompt_length)
+                .min(interp.buffer.point_max());
             let end = interp.buffer.point_max();
             let text = interp
                 .buffer

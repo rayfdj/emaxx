@@ -1617,6 +1617,8 @@ pub struct Interpreter {
     next_marker_id: u64,
     /// All markers currently known to the interpreter.
     markers: Vec<MarkerState>,
+    /// Stable GNU `mark-marker' identities, one for each live buffer.
+    buffer_mark_marker_ids: HashMap<u64, u64>,
     /// Char tables allocated by the interpreter.
     char_tables: Vec<CharTableState>,
     /// Stable lazy tables returned by `unicode-property-table-internal'.
@@ -2269,6 +2271,7 @@ impl Interpreter {
             next_overlay_id: 1,
             next_marker_id: 1,
             markers: Vec::new(),
+            buffer_mark_marker_ids: HashMap::new(),
             char_tables: vec![
                 CharTableState {
                     id: standard_syntax_table_id,

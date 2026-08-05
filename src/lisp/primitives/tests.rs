@@ -9386,20 +9386,27 @@ fn native_minibuffer_stack_queries_match_gnu_minibuf_c() {
     assert_upstream_primitive_contract(&format!("(prin1 {inactive})"), inactive_expected);
 
     let active = r#"(catch 'state
-                      (minibuffer-with-setup-hook
-                          (lambda ()
-                            (throw
-                             'state
+                      (let ((minibuffer-setup-hook
                              (list
-                              (minibuffer-depth)
-                              (minibuffer-prompt)
-                              (innermost-minibuffer-p)
-                              (minibuffer-innermost-command-loop-p)
-                              (minibuffer-prompt-end)
-                              (minibufferp nil t))))
+                              (lambda ()
+                                (throw
+                                 'state
+                                 (list
+                                  (minibuffer-depth)
+                                  (minibuffer-prompt)
+                                  (innermost-minibuffer-p)
+                                  (minibuffer-innermost-command-loop-p)
+                                  (minibuffer-prompt-end)
+                                  (point)
+                                  (minibuffer-contents)
+                                  (windowp (active-minibuffer-window))
+                                  (minibufferp nil t)
+                                  (eq (current-local-map)
+                                      minibuffer-local-completion-map)
+                                  (equal minibuffer-completion-table '("a"))))))))
                         (let ((executing-kbd-macro t))
                           (completing-read "Prompt: " '("a")))))"#;
-    let active_expected = r#"(1 "Prompt: " t t 9 t)"#;
+    let active_expected = r#"(1 "Prompt: " t t 9 9 "" t t t t)"#;
     assert_upstream_primitive_contract(&format!("(prin1 {active})"), active_expected);
 
     let mut interp = Interpreter::new();

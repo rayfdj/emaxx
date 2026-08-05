@@ -815,6 +815,28 @@ fn select_window_value(
     norecord: bool,
 ) -> Result<Value, LispError> {
     let window_id = live_window_id_or_selected(interp, Some(window))?;
+    let previous_window_id = interp.selected_window_id();
+    if window_id != previous_window_id {
+        let previous_buffer_id = interp.selected_window_buffer_id();
+        let previous_point = if previous_buffer_id == interp.current_buffer_id() {
+            interp.buffer.point()
+        } else {
+            interp
+                .get_buffer_by_id(previous_buffer_id)
+                .map(|buffer| buffer.point())
+                .unwrap_or(1)
+        };
+        set_window_slot_value(
+            interp,
+            previous_window_id,
+            WINDOW_POINT_SLOT,
+            Value::Integer(previous_point as i64),
+        )?;
+    }
+    let target_point = window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
+        .as_integer()
+        .unwrap_or(1)
+        .max(1) as usize;
     interp.set_selected_window_id(window_id);
     if !norecord {
         interp.record_window_selection(window_id);
@@ -823,6 +845,13 @@ fn select_window_value(
         && interp.has_buffer_id(buffer_id)
     {
         interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
+        interp.buffer.goto_char(target_point);
+        set_window_slot_value(
+            interp,
+            window_id,
+            WINDOW_POINT_SLOT,
+            Value::Integer(interp.buffer.point() as i64),
+        )?;
         if !norecord {
             interp.record_buffer_front(buffer_id);
         }
@@ -2293,7 +2322,16 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "transient-mark-mode" => {
-            let enabled = args.first().is_some_and(Value::is_truthy);
+            need_arg_range(name, args, 0, 1)?;
+            let current = interp
+                .lookup_var("transient-mark-mode", env)
+                .is_some_and(|value| value.is_truthy());
+            let enabled = match args.first() {
+                None | Some(Value::Nil) => true,
+                Some(Value::Symbol(toggle)) if toggle == "toggle" => !current,
+                Some(Value::Integer(value)) => *value > 0,
+                Some(_) => true,
+            };
             interp.set_variable(
                 "transient-mark-mode",
                 if enabled { Value::T } else { Value::Nil },
@@ -2584,19 +2622,23 @@ pub(super) fn call(
         }
         "window-point" => {
             need_arg_range(name, args, 0, 1)?;
-            let buffer_id = if let Some(window) = args.first() {
-                window_buffer_id(interp, window)
-                    .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))?
+            let window_id = live_window_id_or_selected(interp, args.first())?;
+            let buffer_id = window_buffer_id(interp, &Value::Record(window_id))
+                .ok_or_else(|| LispError::TypeError("window".into(), "deleted".into()))?;
+            let point = if window_id == interp.selected_window_id() {
+                if buffer_id == interp.current_buffer_id() {
+                    interp.buffer.point()
+                } else {
+                    interp
+                        .get_buffer_by_id(buffer_id)
+                        .map(|buffer| buffer.point())
+                        .unwrap_or(1)
+                }
             } else {
-                interp.selected_window_buffer_id()
-            };
-            let point = if buffer_id == interp.current_buffer_id() {
-                interp.buffer.point()
-            } else {
-                interp
-                    .get_buffer_by_id(buffer_id)
-                    .map(|buffer| buffer.point())
-                    .unwrap_or_else(|| interp.buffer.point())
+                window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
+                    .as_integer()
+                    .unwrap_or(1)
+                    .max(1) as usize
             };
             Ok(Value::Integer(point as i64))
         }
@@ -3798,6 +3840,12 @@ pub(super) fn call(
                 set_window_slot_value(
                     interp,
                     window_id,
+                    WINDOW_POINT_SLOT,
+                    Value::Integer(point as i64),
+                )?;
+                set_window_slot_value(
+                    interp,
+                    window_id,
                     WINDOW_OLD_POINT_SLOT,
                     Value::Integer(point as i64),
                 )?;
@@ -4468,7 +4516,9 @@ pub(super) fn call(
                 .lookup_var("emaxx--active-minibuffer", env)
                 .is_some_and(|value| value.is_truthy())
             {
-                Ok(interp.selected_window_value())
+                Ok(interp
+                    .lookup_var("emaxx--active-minibuffer-window", env)
+                    .unwrap_or_else(|| interp.selected_window_value()))
             } else {
                 Ok(Value::Nil)
             }
@@ -4494,6 +4544,12 @@ pub(super) fn call(
                     buffer.goto_char(pos);
                 }
             }
+            set_window_slot_value(
+                interp,
+                window_id,
+                WINDOW_POINT_SLOT,
+                Value::Integer(pos as i64),
+            )?;
             Ok(args[1].clone())
         }
         "set-window-vscroll" => {

@@ -329,6 +329,9 @@ impl Interpreter {
             "gc-cons-threshold" => Some(Value::Integer(800_000)),
             "auto-save-timeout" => Some(Value::Integer(30)),
             "auto-save-interval" => Some(Value::Integer(300)),
+            // GNU fileio.c defvar; simple.el reads it before files.el policy
+            // is necessarily loaded.
+            "auto-save-visited-file-name" => Some(Value::Nil),
             "load-read-function" => Some(Value::Symbol("read".into())),
             // GNU xdisp.c defvar; simple.el reads it at load time
             // ((when (eq pre-redisplay-function #'ignore) ...)).
@@ -462,7 +465,9 @@ impl Interpreter {
                 Value::Symbol("tiff".into()),
             ])),
             "ls-lisp-use-insert-directory-program" => Some(Value::T),
-            "transient-mark-mode" => Some(Value::T),
+            "transient-mark-mode" => Some(Value::Nil),
+            "select-active-regions" => Some(Value::T),
+            "saved-region-selection" => Some(Value::Nil),
             "desktop-buffer-mode-handlers" => Some(Value::Nil),
             "find-file-visit-truename" => Some(Value::Nil),
             "insert-directory-wildcard-in-dir-p" => Some(Value::Nil),
@@ -1154,6 +1159,10 @@ impl Interpreter {
                 Value::StringObject(state) => Some(state.borrow().text.clone()),
                 other => Some(other.to_string()),
             };
+            return;
+        }
+        if resolved == "mark-active" {
+            self.buffer.set_mark_active(value.is_truthy());
             return;
         }
         if resolved == "buffer-undo-list" {
