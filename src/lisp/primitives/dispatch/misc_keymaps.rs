@@ -10223,13 +10223,13 @@ fn widget_put(
 
 fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, LispError> {
     let mut current = plist.clone();
-    let mut seen = HashSet::new();
+    let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         match current {
             Value::Nil => return Ok(None),
             Value::Cons(car, cdr) => {
                 let cell_id = Rc::as_ptr(&car) as usize;
-                if !seen.insert(cell_id) {
+                if seen.step(cell_id) {
                     return Ok(None);
                 }
                 if car.borrow().clone() == *property {
@@ -10250,13 +10250,13 @@ fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, Lis
 
 fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value, LispError> {
     let mut current = plist.clone();
-    let mut seen = HashSet::new();
+    let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         match current {
             Value::Nil => return Ok(Value::list([property, value])),
             Value::Cons(car, cdr) => {
                 let cell_id = Rc::as_ptr(&car) as usize;
-                if !seen.insert(cell_id) {
+                if seen.step(cell_id) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("circular-list".into()),
                         Value::String("Circular list".into()),

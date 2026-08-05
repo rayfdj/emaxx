@@ -202,13 +202,13 @@ pub(super) fn call(
             let key = &args[1];
             let testfn = args.get(2);
             let mut current = plist.clone();
-            let mut seen = HashSet::new();
+            let mut seen = crate::lisp::types::CycleGuard::new();
             loop {
                 match current {
                     Value::Nil => return Ok(Value::Nil),
                     Value::Cons(car, cdr) => {
                         let cell_id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(cell_id) {
+                        if seen.step(cell_id) {
                             return Ok(Value::Nil);
                         }
                         let property = car.borrow().clone();
@@ -236,7 +236,7 @@ pub(super) fn call(
             let val = &args[2];
             let testfn = args.get(3);
             let mut current = plist.clone();
-            let mut seen = HashSet::new();
+            let mut seen = crate::lisp::types::CycleGuard::new();
             loop {
                 match current {
                     Value::Nil => {
@@ -247,7 +247,7 @@ pub(super) fn call(
                     }
                     Value::Cons(car, cdr) => {
                         let cell_id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(cell_id) {
+                        if seen.step(cell_id) {
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("circular-list".into()),
                                 Value::String("Circular list".into()),
@@ -287,13 +287,13 @@ pub(super) fn call(
             let key = &args[1];
             let testfn = args.get(2);
             let mut current = plist.clone();
-            let mut seen = HashSet::new();
+            let mut seen = crate::lisp::types::CycleGuard::new();
             loop {
                 match current {
                     Value::Nil => return Ok(Value::Nil),
                     Value::Cons(car, cdr) => {
                         let cell_id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(cell_id) {
+                        if seen.step(cell_id) {
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("circular-list".into()),
                                 Value::String("Circular list".into()),

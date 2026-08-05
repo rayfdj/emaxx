@@ -28,6 +28,44 @@ pub struct SharedStringState {
     pub multibyte: bool,
 }
 
+/// Detects circular lists during traversal with Brent's algorithm, the same
+/// scheme GNU's FOR_EACH_TAIL uses: constant memory and no hashing.
+pub struct CycleGuard {
+    tortoise: usize,
+    power: usize,
+    lam: usize,
+}
+
+impl CycleGuard {
+    pub fn new() -> Self {
+        CycleGuard {
+            tortoise: 0,
+            power: 1,
+            lam: 0,
+        }
+    }
+
+    /// Advance past a cons cell; returns true when the cell closes a cycle.
+    pub fn step(&mut self, cell_id: usize) -> bool {
+        if cell_id == self.tortoise {
+            return true;
+        }
+        if self.lam == self.power {
+            self.tortoise = cell_id;
+            self.power <<= 1;
+            self.lam = 0;
+        }
+        self.lam += 1;
+        false
+    }
+}
+
+impl Default for CycleGuard {
+    fn default() -> Self {
+        CycleGuard::new()
+    }
+}
+
 /// A Lisp value. This covers the subset we need for ERT tests.
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -283,21 +321,13 @@ impl Value {
     pub fn to_vec(&self) -> Result<Vec<Value>, LispError> {
         let mut result = Vec::new();
         let mut current = self.clone();
-        // Cycle detection only kicks in past a threshold so short lists —
-        // the overwhelmingly common case — never pay for the hash set.
-        // Once tracking starts every node is recorded, so any cycle is
-        // still caught within one lap.
-        let mut seen: Option<HashSet<usize>> = None;
+        let mut seen = CycleGuard::new();
         loop {
             match current {
                 Value::Nil => return Ok(result),
                 Value::Cons(car, cdr) => {
-                    if result.len() >= 64 {
-                        let seen = seen.get_or_insert_with(HashSet::new);
-                        let id = Rc::as_ptr(&car) as usize;
-                        if !seen.insert(id) {
-                            return Err(circular_list_error());
-                        }
+                    if seen.step(Rc::as_ptr(&car) as usize) {
+                        return Err(circular_list_error());
                     }
                     result.push(car.borrow().clone());
                     current = cdr.borrow().clone();
@@ -335,7 +365,7 @@ impl Value {
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
-        values_equal_recursive(self, other, &mut HashSet::new())
+        values_equal_recursive(self, other, &mut None)
     }
 }
 
@@ -356,7 +386,11 @@ fn cons_identity(car: &Rc<RefCell<Value>>) -> usize {
     Rc::as_ptr(car) as usize
 }
 
-fn values_equal_recursive(left: &Value, right: &Value, seen: &mut HashSet<(usize, usize)>) -> bool {
+fn values_equal_recursive(
+    left: &Value,
+    right: &Value,
+    seen: &mut Option<HashSet<(usize, usize)>>,
+) -> bool {
     match (left, right) {
         (Value::Nil, Value::Nil) => true,
         (Value::T, Value::T) => true,
@@ -376,7 +410,7 @@ fn values_equal_recursive(left: &Value, right: &Value, seen: &mut HashSet<(usize
                 return true;
             }
             let ids = (cons_identity(a_car), cons_identity(b_car));
-            if !seen.insert(ids) {
+            if !seen.get_or_insert_with(HashSet::new).insert(ids) {
                 return true;
             }
             values_equal_recursive(&a_car.borrow(), &b_car.borrow(), seen)

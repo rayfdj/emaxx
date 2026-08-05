@@ -469,25 +469,23 @@ pub(crate) fn nreverse_sequence_value(
 fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
     let mut current = value.clone();
     let mut reversed = Value::Nil;
-    let mut seen = HashSet::new();
+    let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        match current.clone() {
+        let (car, cdr) = match &current {
             Value::Nil => return Ok(reversed),
-            Value::Cons(car, cdr) => {
-                let identity = Rc::as_ptr(&car) as usize;
-                if !seen.insert(identity) {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("circular-list".into()),
-                        Value::String("Circular list".into()),
-                    ])));
-                }
-                let next = cdr.borrow().clone();
-                *cdr.borrow_mut() = reversed;
-                reversed = current;
-                current = next;
-            }
+            Value::Cons(car, cdr) => (Rc::clone(car), Rc::clone(cdr)),
             other => return Err(LispError::TypeError("list".into(), other.type_name())),
+        };
+        if seen.step(Rc::as_ptr(&car) as usize) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("circular-list".into()),
+                Value::String("Circular list".into()),
+            ])));
         }
+        let next = cdr.borrow().clone();
+        *cdr.borrow_mut() = reversed;
+        reversed = Value::Cons(car, cdr);
+        current = next;
     }
 }
 

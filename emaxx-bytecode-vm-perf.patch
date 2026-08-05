@@ -1,0 +1,1348 @@
+diff --git a/docs/compatibility-goal.md b/docs/compatibility-goal.md
+index 31b4681..d49ac53 100644
+--- a/docs/compatibility-goal.md
++++ b/docs/compatibility-goal.md
+@@ -234,7 +234,17 @@ handoff and retry instruction are in
+   under `EMAXX_BYTECODE_VM=1` or when no sibling `.el` exists.  All fixture
+   suites are oracle-compiled artifacts proven against interpreted semantics.
+   The sibling-source loader default stays until a full compat sweep
+-  validates the flip.
++  validates the flip.  The follow-up performance series caches each
++  record's decoded program (invalidated through `find_record_mut`, the
++  single record-mutation chokepoint), pre-dispatches hot infallible ops
++  and fixnum arithmetic ahead of the fallible-step closure, calls with
++  arguments in place on the operand stack, and replaces per-node hash-set
++  cycle detection with Brent's algorithm (`CycleGuard`) across the list
++  primitives; same-machine microbenchmarks moved from 174x/36x/12x/26x
++  slower than GNU's engine (fib/loop/list-build/assq) to 14x/4x/4x/9x,
++  with string building ~4-7x faster than GNU throughout.  Full parity on
++  cons-heavy loops is bounded by the boxed `Rc<RefCell>` value
++  representation, not by the VM.
+ - The 2026-08-04 Eshell process checkpoint advances the fresh contiguous
+   compatibility prefix to 3,381/7,080, leaving 3,699 selectors.  Mode is 3/3,
+   Options 13/13, and Process 24/24.  Batch `read-string' now reads one stdin
+diff --git a/src/lisp/bytecode/vm.rs b/src/lisp/bytecode/vm.rs
+index 1c1f57d..3f944a5 100644
+--- a/src/lisp/bytecode/vm.rs
++++ b/src/lisp/bytecode/vm.rs
+@@ -195,37 +195,100 @@ fn prim(
+     primitives::call(interp, name, args, env)
+ }
+ 
+-/// Execute OBJECT with ARGS, returning the value of Breturn.
+-pub fn execute(
++/// A byte-code function decoded, validated, and materialized once:
++/// instructions, an O(1) byte-offset -> instruction-index table for
++/// jumps, and live constants.  Cached per record so repeated calls skip
++/// all of that setup (GNU decodes lazily inside its dispatch loop and
++/// its closures are already live objects).
++pub struct CachedProgram {
++    pub argspec: ArgSpec,
++    pub instrs: Vec<Instr>,
++    pub offset_index: Vec<u32>,
++    pub constants: Vec<Value>,
++    pub stack_depth: usize,
++}
++
++impl CachedProgram {
++    #[inline]
++    fn instr_at(&self, byte_offset: usize) -> usize {
++        self.offset_index[byte_offset] as usize
++    }
++}
++
++fn build_cached(
+     interp: &mut Interpreter,
+     object: &ByteCodeObject,
+-    args: &[Value],
+     env: &mut Env,
+-) -> Result<Value, LispError> {
++) -> Result<CachedProgram, LispError> {
+     let instrs = super::decode_program(&object.code, object.constants.len())
+         .map_err(|error| LispError::Signal(error.to_string()))?;
+-    // pc-by-offset dispatch: jumps target byte offsets.
+-    let mut index_of_offset = std::collections::HashMap::new();
++    let mut offset_index = vec![u32::MAX; object.code.len() + 1];
+     for (index, instr) in instrs.iter().enumerate() {
+-        index_of_offset.insert(instr.offset, index);
++        offset_index[instr.offset] = index as u32;
+     }
+-
+-    // Constants still in reader form (nested `#[...]` closures,
+-    // `#s(hash-table ...)` jump tables) materialize once here, like GNU
+-    // load evaluating the literal before the function ever runs.
+     let mut constants = Vec::with_capacity(object.constants.len());
+     for constant in &object.constants {
+         constants.push(materialize_constant(interp, constant, env)?);
+     }
+-    let object = &ByteCodeObject {
++    Ok(CachedProgram {
+         argspec: object.argspec.clone(),
+-        code: object.code.clone(),
++        instrs,
++        offset_index,
+         constants,
+         stack_depth: object.stack_depth,
+-        doc: object.doc.clone(),
+-        interactive: object.interactive.clone(),
+-    };
++    })
++}
++
++/// Execute the genuine byte-code function stored in RECORD_ID, decoding
++/// and materializing it once and reusing the cached program afterwards.
++pub fn execute_record(
++    interp: &mut Interpreter,
++    record_id: u64,
++    args: &[Value],
++    env: &mut Env,
++) -> Result<Value, LispError> {
++    // Mutation of a record's slots goes through find_record_mut, which
++    // drops the cached program, so a cache hit is always current.
++    if let Some(program) = interp.bytecode_program_cache.get(&record_id) {
++        let program = std::rc::Rc::clone(program);
++        return run(interp, &program, args, env);
++    }
++    let slots = interp
++        .find_record(record_id)
++        .map(|record| record.slots.clone())
++        .ok_or_else(|| LispError::Signal("byte-code record vanished".into()))?;
++    let object = super::ByteCodeObject::from_slots(&slots)
++        .map_err(|error| LispError::Signal(error.to_string()))?
++        .ok_or_else(|| {
++            LispError::SignalValue(Value::list([
++                Value::Symbol("invalid-function".into()),
++                Value::Record(record_id),
++            ]))
++        })?;
++    let program = std::rc::Rc::new(build_cached(interp, &object, env)?);
++    interp
++        .bytecode_program_cache
++        .insert(record_id, std::rc::Rc::clone(&program));
++    run(interp, &program, args, env)
++}
++
++/// Execute OBJECT with ARGS, returning the value of Breturn.
++pub fn execute(
++    interp: &mut Interpreter,
++    object: &ByteCodeObject,
++    args: &[Value],
++    env: &mut Env,
++) -> Result<Value, LispError> {
++    let program = build_cached(interp, object, env)?;
++    run(interp, &program, args, env)
++}
+ 
++fn run(
++    interp: &mut Interpreter,
++    object: &CachedProgram,
++    args: &[Value],
++    env: &mut Env,
++) -> Result<Value, LispError> {
+     let mut stack: Vec<Value> = Vec::with_capacity(object.stack_depth.max(8));
+     let mut unwinds: Vec<UnwindEntry> = Vec::new();
+ 
+@@ -334,7 +397,7 @@ pub fn execute(
+     }
+ 
+     let result = 'run: loop {
+-        let Some(instr) = instrs.get(pc) else {
++        let Some(instr) = object.instrs.get(pc) else {
+             break Err(LispError::Signal(
+                 "byte code ran off the end of its program".into(),
+             ));
+@@ -342,6 +405,160 @@ pub fn execute(
+         let Instr { op, .. } = *instr;
+         pc += 1;
+ 
++        // Hot pre-dispatch: the ops below either cannot fail or only take
++        // this path when their operands make failure impossible, so they
++        // skip the fallible-step closure (and its Result plumbing)
++        // entirely.  Anything that falls through runs the full arm below.
++        match op {
++            Op::StackRef(n) => {
++                let value = stack[stack.len() - 1 - n as usize].clone();
++                stack.push(value);
++                continue;
++            }
++            Op::StackSet(n) => {
++                let value = pop!();
++                let slot = stack.len() - 1 - (n as usize - 1);
++                stack[slot] = value;
++                continue;
++            }
++            Op::Dup => {
++                let top = stack.last().expect("validated bytecode").clone();
++                stack.push(top);
++                continue;
++            }
++            Op::Discard => {
++                pop!();
++                continue;
++            }
++            Op::Constant(index) | Op::Constant2(index) => {
++                stack.push(object.constants[index as usize].clone());
++                continue;
++            }
++            Op::Goto { target } => {
++                pc = object.instr_at(target as usize);
++                continue;
++            }
++            Op::GotoIfNil { target } => {
++                if pop!().is_nil() {
++                    pc = object.instr_at(target as usize);
++                }
++                continue;
++            }
++            Op::GotoIfNonNil { target } => {
++                if !pop!().is_nil() {
++                    pc = object.instr_at(target as usize);
++                }
++                continue;
++            }
++            Op::GotoIfNilElsePop { target } => {
++                if stack.last().expect("validated bytecode").is_nil() {
++                    pc = object.instr_at(target as usize);
++                } else {
++                    pop!();
++                }
++                continue;
++            }
++            Op::GotoIfNonNilElsePop { target } => {
++                if !stack.last().expect("validated bytecode").is_nil() {
++                    pc = object.instr_at(target as usize);
++                } else {
++                    pop!();
++                }
++                continue;
++            }
++            Op::Return => {
++                break 'run Ok(pop!());
++            }
++            Op::Not => {
++                let value = pop!();
++                stack.push(if value.is_nil() { Value::T } else { Value::Nil });
++                continue;
++            }
++            Op::Cons => {
++                let b = pop!();
++                let a = pop!();
++                stack.push(Value::cons(a, b));
++                continue;
++            }
++            Op::Eq => {
++                let b = pop!();
++                let a = pop!();
++                let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
++                stack.push(if equal { Value::T } else { Value::Nil });
++                continue;
++            }
++            Op::Consp => {
++                let a = pop!();
++                stack.push(if matches!(a, Value::Cons(..)) {
++                    Value::T
++                } else {
++                    Value::Nil
++                });
++                continue;
++            }
++            Op::Plus | Op::Diff | Op::Mult => {
++                let len = stack.len();
++                if let (Value::Integer(x), Value::Integer(y)) = (&stack[len - 2], &stack[len - 1]) {
++                    let fast = match op {
++                        Op::Plus => x.checked_add(*y),
++                        Op::Diff => x.checked_sub(*y),
++                        _ => x.checked_mul(*y),
++                    };
++                    if let Some(n) = fast {
++                        stack.truncate(len - 2);
++                        stack.push(Value::Integer(n));
++                        continue;
++                    }
++                }
++            }
++            Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
++                let len = stack.len();
++                if let (Value::Integer(x), Value::Integer(y)) = (&stack[len - 2], &stack[len - 1]) {
++                    let holds = match op {
++                        Op::Eqlsign => x == y,
++                        Op::Gtr => x > y,
++                        Op::Lss => x < y,
++                        Op::Leq => x <= y,
++                        _ => x >= y,
++                    };
++                    stack.truncate(len - 2);
++                    stack.push(if holds { Value::T } else { Value::Nil });
++                    continue;
++                }
++            }
++            Op::Add1 | Op::Sub1 | Op::Negate => {
++                if let Some(Value::Integer(x)) = stack.last() {
++                    let fast = match op {
++                        Op::Add1 => x.checked_add(1),
++                        Op::Sub1 => x.checked_sub(1),
++                        _ => x.checked_neg(),
++                    };
++                    if let Some(n) = fast {
++                        *stack.last_mut().expect("validated bytecode") = Value::Integer(n);
++                        continue;
++                    }
++                }
++            }
++            Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => match stack.last() {
++                Some(Value::Cons(car, cdr)) => {
++                    let value = if matches!(op, Op::Car | Op::CarSafe) {
++                        car.borrow().clone()
++                    } else {
++                        cdr.borrow().clone()
++                    };
++                    *stack.last_mut().expect("validated bytecode") = value;
++                    continue;
++                }
++                Some(Value::Nil) => continue,
++                Some(_) if matches!(op, Op::CarSafe | Op::CdrSafe) => {
++                    *stack.last_mut().expect("validated bytecode") = Value::Nil;
++                    continue;
++                }
++                _ => {}
++            },
++            _ => {}
++        }
++
+         // Every fallible operation funnels through here so handler
+         // unwinding (GNU's sys_setjmp arm) is applied uniformly.
+         let step: Result<(), LispError> = (|| {
+@@ -665,34 +882,39 @@ pub fn execute(
+                 }
+                 Op::Call(argc) => {
+                     let argc = argc as usize;
+-                    let call_args: Vec<Value> = stack.drain(stack.len() - argc..).collect();
+-                    let func = pop!();
+-                    let value = interp.call_function_value(func, None, &call_args, env)?;
++                    let args_start = stack.len() - argc;
++                    // Call with the arguments still on the stack (GNU's
++                    // exec_byte_code does the same); an error unwind
++                    // truncates to the handler's recorded depth anyway.
++                    let func = std::mem::replace(&mut stack[args_start - 1], Value::Nil);
++                    let value =
++                        interp.call_function_value(func, None, &stack[args_start..], env)?;
++                    stack.truncate(args_start - 1);
+                     stack.push(value);
+                 }
+                 Op::Goto { target } => {
+-                    pc = index_of_offset[&(target as usize)];
++                    pc = object.instr_at(target as usize);
+                 }
+                 Op::GotoIfNil { target } => {
+                     if pop!().is_nil() {
+-                        pc = index_of_offset[&(target as usize)];
++                        pc = object.instr_at(target as usize);
+                     }
+                 }
+                 Op::GotoIfNonNil { target } => {
+                     if !pop!().is_nil() {
+-                        pc = index_of_offset[&(target as usize)];
++                        pc = object.instr_at(target as usize);
+                     }
+                 }
+                 Op::GotoIfNilElsePop { target } => {
+                     if stack.last().expect("validated bytecode").is_nil() {
+-                        pc = index_of_offset[&(target as usize)];
++                        pc = object.instr_at(target as usize);
+                     } else {
+                         pop!();
+                     }
+                 }
+                 Op::GotoIfNonNilElsePop { target } => {
+                     if !stack.last().expect("validated bytecode").is_nil() {
+-                        pc = index_of_offset[&(target as usize)];
++                        pc = object.instr_at(target as usize);
+                     } else {
+                         pop!();
+                     }
+@@ -737,7 +959,7 @@ pub fn execute(
+                     let value = pop!();
+                     let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
+                     if let Value::Integer(dest) = dest {
+-                        pc = index_of_offset[&(dest as usize)];
++                        pc = object.instr_at(dest as usize);
+                     }
+                 }
+                 Op::ListN(n) => {
+@@ -763,10 +985,82 @@ pub fn execute(
+                     let value = pop!();
+                     stack.push(if value.is_nil() { Value::T } else { Value::Nil });
+                 }
++                // Two-argument ops with inline fast paths.
++                Op::Eq => {
++                    let b = pop!();
++                    let a = pop!();
++                    let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
++                    stack.push(if equal { Value::T } else { Value::Nil });
++                }
++                Op::Cons => {
++                    let b = pop!();
++                    let a = pop!();
++                    stack.push(Value::cons(a, b));
++                }
++                Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
++                    let b = pop!();
++                    let a = pop!();
++                    if let (Value::Integer(x), Value::Integer(y)) = (&a, &b) {
++                        let holds = match op {
++                            Op::Eqlsign => x == y,
++                            Op::Gtr => x > y,
++                            Op::Lss => x < y,
++                            Op::Leq => x <= y,
++                            _ => x >= y,
++                        };
++                        stack.push(if holds { Value::T } else { Value::Nil });
++                        return Ok(());
++                    }
++                    let name = match op {
++                        Op::Eqlsign => "=",
++                        Op::Gtr => ">",
++                        Op::Lss => "<",
++                        Op::Leq => "<=",
++                        _ => ">=",
++                    };
++                    let value = prim(interp, name, &[a, b], env)?;
++                    stack.push(value);
++                }
++                Op::Plus | Op::Diff | Op::Mult => {
++                    let b = pop!();
++                    let a = pop!();
++                    if let (Value::Integer(x), Value::Integer(y)) = (&a, &b) {
++                        let fast = match op {
++                            Op::Plus => x.checked_add(*y),
++                            Op::Diff => x.checked_sub(*y),
++                            _ => x.checked_mul(*y),
++                        };
++                        if let Some(n) = fast {
++                            stack.push(Value::Integer(n));
++                            return Ok(());
++                        }
++                    }
++                    let name = match op {
++                        Op::Plus => "+",
++                        Op::Diff => "-",
++                        _ => "*",
++                    };
++                    let value = prim(interp, name, &[a, b], env)?;
++                    stack.push(value);
++                }
++                Op::Max | Op::Min => {
++                    let b = pop!();
++                    let a = pop!();
++                    if let (Value::Integer(x), Value::Integer(y)) = (&a, &b) {
++                        let n = if matches!(op, Op::Max) {
++                            (*x).max(*y)
++                        } else {
++                            (*x).min(*y)
++                        };
++                        stack.push(Value::Integer(n));
++                        return Ok(());
++                    }
++                    let name = if matches!(op, Op::Max) { "max" } else { "min" };
++                    let value = prim(interp, name, &[a, b], env)?;
++                    stack.push(value);
++                }
+                 // Two-argument primitive ops.
+-                Op::Eq
+-                | Op::Memq
+-                | Op::Cons
++                Op::Memq
+                 | Op::Nth
+                 | Op::Aref
+                 | Op::Setcar
+@@ -777,16 +1071,6 @@ pub fn execute(
+                 | Op::Assq
+                 | Op::Equal
+                 | Op::Get
+-                | Op::Eqlsign
+-                | Op::Gtr
+-                | Op::Lss
+-                | Op::Leq
+-                | Op::Geq
+-                | Op::Diff
+-                | Op::Plus
+-                | Op::Max
+-                | Op::Min
+-                | Op::Mult
+                 | Op::Quo
+                 | Op::Rem
+                 | Op::StringEqlsign
+@@ -798,9 +1082,7 @@ pub fn execute(
+                     let b = pop!();
+                     let a = pop!();
+                     let name = match op {
+-                        Op::Eq => "eq",
+                         Op::Memq => "memq",
+-                        Op::Cons => "cons",
+                         Op::Nth => "nth",
+                         Op::Aref => "aref",
+                         Op::Setcar => "setcar",
+@@ -811,16 +1093,6 @@ pub fn execute(
+                         Op::Assq => "assq",
+                         Op::Equal => "equal",
+                         Op::Get => "get",
+-                        Op::Eqlsign => "=",
+-                        Op::Gtr => ">",
+-                        Op::Lss => "<",
+-                        Op::Leq => "<=",
+-                        Op::Geq => ">=",
+-                        Op::Diff => "-",
+-                        Op::Plus => "+",
+-                        Op::Max => "max",
+-                        Op::Min => "min",
+-                        Op::Mult => "*",
+                         Op::Quo => "/",
+                         Op::Rem => "%",
+                         Op::StringEqlsign => "string-equal",
+@@ -833,21 +1105,62 @@ pub fn execute(
+                     let value = prim(interp, name, &[a, b], env)?;
+                     stack.push(value);
+                 }
++                // One-argument ops with inline fast paths.
++                Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
++                    let a = pop!();
++                    match (&a, op) {
++                        (Value::Cons(car, _), Op::Car | Op::CarSafe) => {
++                            let value = car.borrow().clone();
++                            stack.push(value);
++                        }
++                        (Value::Cons(_, cdr), _) => {
++                            let value = cdr.borrow().clone();
++                            stack.push(value);
++                        }
++                        (Value::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => stack.push(Value::Nil),
++                        _ => {
++                            let name = if matches!(op, Op::Car) { "car" } else { "cdr" };
++                            let value = prim(interp, name, &[a], env)?;
++                            stack.push(value);
++                        }
++                    }
++                }
++                Op::Add1 | Op::Sub1 | Op::Negate => {
++                    let a = pop!();
++                    if let Value::Integer(x) = &a {
++                        let fast = match op {
++                            Op::Add1 => x.checked_add(1),
++                            Op::Sub1 => x.checked_sub(1),
++                            _ => x.checked_neg(),
++                        };
++                        if let Some(n) = fast {
++                            stack.push(Value::Integer(n));
++                            return Ok(());
++                        }
++                    }
++                    let name = match op {
++                        Op::Add1 => "1+",
++                        Op::Sub1 => "1-",
++                        _ => "-",
++                    };
++                    let value = prim(interp, name, &[a], env)?;
++                    stack.push(value);
++                }
++                Op::Consp => {
++                    let a = pop!();
++                    stack.push(if matches!(a, Value::Cons(..)) {
++                        Value::T
++                    } else {
++                        Value::Nil
++                    });
++                }
+                 // One-argument primitive ops.
+-                Op::Car
+-                | Op::Cdr
+-                | Op::CarSafe
+-                | Op::CdrSafe
+-                | Op::Symbolp
+-                | Op::Consp
++                Op::Symbolp
+                 | Op::Stringp
+                 | Op::Listp
+                 | Op::Length
+                 | Op::SymbolValue
+                 | Op::SymbolFunction
+-                | Op::Sub1
+-                | Op::Add1
+-                | Op::Negate
+                 | Op::Nreverse
+                 | Op::Numberp
+                 | Op::Integerp
+@@ -855,20 +1168,12 @@ pub fn execute(
+                 | Op::Downcase => {
+                     let a = pop!();
+                     let name = match op {
+-                        Op::Car => "car",
+-                        Op::Cdr => "cdr",
+-                        Op::CarSafe => "car-safe",
+-                        Op::CdrSafe => "cdr-safe",
+                         Op::Symbolp => "symbolp",
+-                        Op::Consp => "consp",
+                         Op::Stringp => "stringp",
+                         Op::Listp => "listp",
+                         Op::Length => "length",
+                         Op::SymbolValue => "symbol-value",
+                         Op::SymbolFunction => "symbol-function",
+-                        Op::Sub1 => "1-",
+-                        Op::Add1 => "1+",
+-                        Op::Negate => "-",
+                         Op::Nreverse => "nreverse",
+                         Op::Numberp => "numberp",
+                         Op::Integerp => "integerp",
+@@ -950,7 +1255,7 @@ pub fn execute(
+                         }
+                         stack.truncate(handler.stack_len);
+                         stack.push(value);
+-                        pc = index_of_offset[&handler.dest];
++                        pc = object.instr_at(handler.dest);
+                         handled = true;
+                         break;
+                     }
+diff --git a/src/lisp/eval.rs b/src/lisp/eval.rs
+index 4aef603..cabe6be 100644
+--- a/src/lisp/eval.rs
++++ b/src/lisp/eval.rs
+@@ -1664,6 +1664,9 @@ pub struct Interpreter {
+     next_char_table_id: u64,
+     /// Allocated record objects.
+     records: Vec<RecordState>,
++    /// Decoded byte-code programs keyed by record ID (see bytecode::vm).
++    pub(crate) bytecode_program_cache:
++        std::collections::HashMap<u64, std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>,
+     /// SQLite objects keyed by record ID.
+     sqlite_handles: Vec<(u64, SqliteHandleState)>,
+     /// Lazily compiled Tree-sitter queries keyed by opaque record identity.
+@@ -2404,6 +2407,7 @@ impl Interpreter {
+                 },
+             ],
+             sqlite_handles: Vec::new(),
++            bytecode_program_cache: std::collections::HashMap::new(),
+             treesit_queries: Vec::new(),
+             treesit_languages: Vec::new(),
+             treesit_parsers: Vec::new(),
+diff --git a/src/lisp/eval/core.rs b/src/lisp/eval/core.rs
+index 066ab30..31ff53e 100644
+--- a/src/lisp/eval/core.rs
++++ b/src/lisp/eval/core.rs
+@@ -934,17 +934,18 @@ impl Interpreter {
+         args: &[Value],
+         env: &mut Env,
+     ) -> Result<Value, LispError> {
+-        let mut resolved_original_name = original_name.map(str::to_string);
++        let mut owned_name: Option<String> = None;
+         let func = match func {
+             Value::Symbol(name) => {
+-                if resolved_original_name.is_none() {
+-                    resolved_original_name = Some(name.clone());
++                let resolved = self.lookup_function(&name, env)?;
++                if original_name.is_none() {
++                    owned_name = Some(name);
+                 }
+-                self.lookup_function(&name, env)?
++                resolved
+             }
+             other => other,
+         };
+-        let original_name = resolved_original_name.as_deref();
++        let original_name = original_name.or(owned_name.as_deref());
+         let func = match func {
+             Value::Cons(_, _) => {
+                 let func = if is_lambda_form(&func) {
+@@ -1011,13 +1012,12 @@ impl Interpreter {
+                     // Genuine GNU bytecode (argspec/code/constants/depth
+                     // slots) executes on the VM; Emaxx byte-compile facade
+                     // objects carry an executable lambda in slot 0 instead.
+-                    if crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots) {
+-                        let object = crate::lisp::bytecode::ByteCodeObject::from_slots(
+-                            &record.slots.clone(),
+-                        )
+-                        .map_err(|error| LispError::Signal(error.to_string()))?
+-                        .expect("slots_are_genuine_bytecode checked");
+-                        return crate::lisp::bytecode::vm::execute(self, &object, args, env);
++                    // A cached program implies the slots already passed the
++                    // genuineness check, so skip re-walking them.
++                    if self.bytecode_program_cache.contains_key(&id)
++                        || crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots)
++                    {
++                        return crate::lisp::bytecode::vm::execute_record(self, id, args, env);
+                     }
+                     let Some(inner) = record.slots.first().cloned() else {
+                         return Err(LispError::SignalValue(Value::list([
+diff --git a/src/lisp/eval/definitions.rs b/src/lisp/eval/definitions.rs
+index 979618e..d0cbb97 100644
+--- a/src/lisp/eval/definitions.rs
++++ b/src/lisp/eval/definitions.rs
+@@ -1234,7 +1234,7 @@ impl Interpreter {
+         env: &mut Env,
+     ) -> Result<Value, LispError> {
+         let mut current = plist.clone();
+-        let mut seen = std::collections::HashSet::new();
++        let mut seen = crate::lisp::types::CycleGuard::new();
+         loop {
+             match current {
+                 Value::Nil => {
+@@ -1242,7 +1242,7 @@ impl Interpreter {
+                 }
+                 Value::Cons(car, cdr) => {
+                     let cell_id = std::rc::Rc::as_ptr(&car) as usize;
+-                    if !seen.insert(cell_id) {
++                    if seen.step(cell_id) {
+                         return Err(LispError::SignalValue(Value::list([
+                             Value::Symbol("circular-list".into()),
+                             Value::String("Circular list".into()),
+diff --git a/src/lisp/eval/loops.rs b/src/lisp/eval/loops.rs
+index 3d35474..6cadb37 100644
+--- a/src/lisp/eval/loops.rs
++++ b/src/lisp/eval/loops.rs
+@@ -1,5 +1,4 @@
+ use super::*;
+-use std::collections::HashSet;
+ 
+ /// Hidden binding stamped into lexical binding frames to give them an
+ /// identity: frames are plain vectors, and without a marker two unrelated
+@@ -20,13 +19,13 @@ impl Interpreter {
+     fn dolist_items(value: &Value) -> Result<Vec<Value>, LispError> {
+         let mut items = Vec::new();
+         let mut current = value.clone();
+-        let mut seen = HashSet::new();
++        let mut seen = crate::lisp::types::CycleGuard::new();
+         loop {
+             match current {
+                 Value::Nil => return Ok(items),
+                 Value::Cons(car, cdr) => {
+                     let cell_id = std::rc::Rc::as_ptr(&car) as usize;
+-                    if !seen.insert(cell_id) {
++                    if seen.step(cell_id) {
+                         return Err(LispError::SignalValue(Value::list([
+                             Value::Symbol("circular-list".into()),
+                             Value::String("Circular list".into()),
+diff --git a/src/lisp/eval/runtime.rs b/src/lisp/eval/runtime.rs
+index 97a2371..60bcb1f 100644
+--- a/src/lisp/eval/runtime.rs
++++ b/src/lisp/eval/runtime.rs
+@@ -2182,11 +2182,26 @@ impl Interpreter {
+     }
+ 
+     pub fn find_record(&self, id: u64) -> Option<&RecordState> {
+-        self.records.iter().find(|record| record.id == id)
++        // Ids are handed out densely starting at 1 (main thread, standard
++        // obarray, then next_record_id onward) and records are never
++        // removed, so the id doubles as an index; the linear scan is a
++        // safety net in case that invariant ever changes.
++        let index = (id as usize).checked_sub(1)?;
++        match self.records.get(index) {
++            Some(record) if record.id == id => Some(record),
++            _ => self.records.iter().find(|record| record.id == id),
++        }
+     }
+ 
+     pub fn find_record_mut(&mut self, id: u64) -> Option<&mut RecordState> {
+-        self.records.iter_mut().find(|record| record.id == id)
++        // The caller may rewrite the slots, so a decoded byte-code program
++        // for this record can no longer be trusted (see bytecode::vm).
++        self.bytecode_program_cache.remove(&id);
++        let index = (id as usize).checked_sub(1)?;
++        match self.records.get(index) {
++            Some(record) if record.id == id => self.records.get_mut(index),
++            _ => self.records.iter_mut().find(|record| record.id == id),
++        }
+     }
+ 
+     pub(crate) fn create_treesit_query(&mut self, language: Value, source: Value) -> Value {
+diff --git a/src/lisp/primitives/dispatch.rs b/src/lisp/primitives/dispatch.rs
+index f4e78d3..4e132f6 100644
+--- a/src/lisp/primitives/dispatch.rs
++++ b/src/lisp/primitives/dispatch.rs
+@@ -143,10 +143,38 @@ fn compute_name_facts(name: &str) -> NameFacts {
+     }
+ }
+ 
++/// FNV-1a, keyed by short primitive names: far cheaper than SipHash for
++/// the per-call cache lookups below, and DoS resistance is irrelevant for
++/// a cache of function-name metadata.
++#[derive(Default)]
++pub(crate) struct FnvHasher(u64);
++
++impl std::hash::Hasher for FnvHasher {
++    fn finish(&self) -> u64 {
++        self.0
++    }
++
++    fn write(&mut self, bytes: &[u8]) {
++        let mut hash = if self.0 == 0 {
++            0xcbf2_9ce4_8422_2325
++        } else {
++            self.0
++        };
++        for byte in bytes {
++            hash ^= u64::from(*byte);
++            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
++        }
++        self.0 = hash;
++    }
++}
++
++pub(crate) type FnvBuildHasher = std::hash::BuildHasherDefault<FnvHasher>;
++
+ pub(crate) fn name_facts(name: &str) -> NameFacts {
+     thread_local! {
+-        static NAME_FACTS: std::cell::RefCell<std::collections::HashMap<String, NameFacts>> =
+-            std::cell::RefCell::new(std::collections::HashMap::new());
++        static NAME_FACTS: std::cell::RefCell<
++            std::collections::HashMap<String, NameFacts, FnvBuildHasher>,
++        > = std::cell::RefCell::new(std::collections::HashMap::default());
+     }
+     NAME_FACTS.with(|cache| {
+         if let Some(facts) = cache.borrow().get(name) {
+diff --git a/src/lisp/primitives/dispatch/collections.rs b/src/lisp/primitives/dispatch/collections.rs
+index 282e327..9f7f213 100644
+--- a/src/lisp/primitives/dispatch/collections.rs
++++ b/src/lisp/primitives/dispatch/collections.rs
+@@ -202,13 +202,13 @@ pub(super) fn call(
+             let key = &args[1];
+             let testfn = args.get(2);
+             let mut current = plist.clone();
+-            let mut seen = HashSet::new();
++            let mut seen = crate::lisp::types::CycleGuard::new();
+             loop {
+                 match current {
+                     Value::Nil => return Ok(Value::Nil),
+                     Value::Cons(car, cdr) => {
+                         let cell_id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(cell_id) {
++                        if seen.step(cell_id) {
+                             return Ok(Value::Nil);
+                         }
+                         let property = car.borrow().clone();
+@@ -236,7 +236,7 @@ pub(super) fn call(
+             let val = &args[2];
+             let testfn = args.get(3);
+             let mut current = plist.clone();
+-            let mut seen = HashSet::new();
++            let mut seen = crate::lisp::types::CycleGuard::new();
+             loop {
+                 match current {
+                     Value::Nil => {
+@@ -247,7 +247,7 @@ pub(super) fn call(
+                     }
+                     Value::Cons(car, cdr) => {
+                         let cell_id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(cell_id) {
++                        if seen.step(cell_id) {
+                             return Err(LispError::SignalValue(Value::list([
+                                 Value::Symbol("circular-list".into()),
+                                 Value::String("Circular list".into()),
+@@ -287,13 +287,13 @@ pub(super) fn call(
+             let key = &args[1];
+             let testfn = args.get(2);
+             let mut current = plist.clone();
+-            let mut seen = HashSet::new();
++            let mut seen = crate::lisp::types::CycleGuard::new();
+             loop {
+                 match current {
+                     Value::Nil => return Ok(Value::Nil),
+                     Value::Cons(car, cdr) => {
+                         let cell_id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(cell_id) {
++                        if seen.step(cell_id) {
+                             return Err(LispError::SignalValue(Value::list([
+                                 Value::Symbol("circular-list".into()),
+                                 Value::String("Circular list".into()),
+diff --git a/src/lisp/primitives/dispatch/lists.rs b/src/lisp/primitives/dispatch/lists.rs
+index a0a860a..23c8180 100644
+--- a/src/lisp/primitives/dispatch/lists.rs
++++ b/src/lisp/primitives/dispatch/lists.rs
+@@ -1630,46 +1630,59 @@ pub(super) fn call(
+         }
+         "memq" | "memql" | "member" => {
+             need_args(name, args, 2)?;
++            #[derive(Clone, Copy)]
++            enum MemTest {
++                Equal,
++                Eql,
++                Eq,
++            }
++            let test = match name {
++                "member" => MemTest::Equal,
++                "memql" => MemTest::Eql,
++                _ => MemTest::Eq,
++            };
+             let mut current = args[1].clone();
+-            let mut seen = HashSet::new();
++            let mut seen = crate::lisp::types::CycleGuard::new();
+             loop {
+-                match current.clone() {
++                let next = match &current {
+                     Value::Cons(car, cdr) => {
+-                        let cell_id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(cell_id) {
++                        if seen.step(Rc::as_ptr(car) as usize) {
+                             return Err(LispError::SignalValue(Value::list([
+                                 Value::Symbol("circular-list".into()),
+                                 Value::String("Circular list".into()),
+                             ])));
+                         }
+-                        let item = car.borrow().clone();
+-                        let matches = match name {
+-                            "member" => values_equal(interp, &item, &args[0]),
+-                            "memql" => values_eql(&item, &args[0]),
+-                            _ => values_eq_in_env(interp, &item, &args[0], env),
++                        let matches = {
++                            let item = car.borrow();
++                            match test {
++                                MemTest::Equal => values_equal(interp, &item, &args[0]),
++                                MemTest::Eql => values_eql(&item, &args[0]),
++                                MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
++                            }
+                         };
+                         if matches {
+-                            return Ok(current);
++                            return Ok(current.clone());
+                         }
+-                        current = cdr.borrow().clone();
++                        cdr.borrow().clone()
+                     }
+                     Value::Nil => return Ok(Value::Nil),
+                     other => {
+                         let matches = match name {
+-                            "member" => values_equal(interp, &other, &args[0]),
+-                            "memql" => values_eql(&other, &args[0]),
+-                            _ => values_eq_in_env(interp, &other, &args[0], env),
++                            "member" => values_equal(interp, other, &args[0]),
++                            "memql" => values_eql(other, &args[0]),
++                            _ => values_eq_in_env(interp, other, &args[0], env),
+                         };
+                         if matches {
+-                            return Ok(other);
++                            return Ok(other.clone());
+                         }
+                         return Err(LispError::SignalValue(Value::list([
+                             Value::Symbol("wrong-type-argument".into()),
+                             Value::Symbol("listp".into()),
+-                            other,
++                            other.clone(),
+                         ])));
+                     }
+-                }
++                };
++                current = next;
+             }
+         }
+         "cl-member" => {
+@@ -1695,12 +1708,12 @@ pub(super) fn call(
+             }
+             let needle = args[0].clone();
+             let mut current = args[1].clone();
+-            let mut seen = HashSet::new();
++            let mut seen = crate::lisp::types::CycleGuard::new();
+             loop {
+                 match current.clone() {
+                     Value::Cons(car, cdr) => {
+                         let cell_id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(cell_id) {
++                        if seen.step(cell_id) {
+                             return Err(LispError::SignalValue(Value::list([
+                                 Value::Symbol("circular-list".into()),
+                                 Value::String("Circular list".into()),
+@@ -1756,78 +1769,79 @@ pub(super) fn call(
+             }
+             Ok(Value::Nil)
+         }
+-        "assq" => {
++        "assq" | "rassq" => {
+             need_args(name, args, 2)?;
+-            let mut current = args[1].clone();
+-            let mut seen = HashSet::new();
++            let want_car = name == "assq";
++            let key = &args[0];
++            let mut seen = crate::lisp::types::CycleGuard::new();
++            // Walk by cons cells rather than by cloned Values: one Rc
++            // bump per step and no whole-Value churn.
++            let mut cells = match &args[1] {
++                Value::Nil => return Ok(Value::Nil),
++                Value::Cons(car, cdr) => (Rc::clone(car), Rc::clone(cdr)),
++                other => {
++                    return Err(LispError::SignalValue(Value::list([
++                        Value::Symbol("wrong-type-argument".into()),
++                        Value::Symbol("listp".into()),
++                        other.clone(),
++                    ])));
++                }
++            };
+             loop {
+-                match current {
+-                    Value::Nil => return Ok(Value::Nil),
+-                    Value::Cons(car, cdr) => {
+-                        let cell_id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(cell_id) {
+-                            return Err(LispError::SignalValue(Value::list([
+-                                Value::Symbol("circular-list".into()),
+-                                Value::String("Circular list".into()),
+-                            ])));
+-                        }
+-                        let item = car.borrow().clone();
+-                        if matches!(item, Value::Cons(_, _)) && item.car()? == args[0] {
+-                            return Ok(item);
++                let (car, cdr) = cells;
++                if seen.step(Rc::as_ptr(&car) as usize) {
++                    return Err(LispError::SignalValue(Value::list([
++                        Value::Symbol("circular-list".into()),
++                        Value::String("Circular list".into()),
++                    ])));
++                }
++                let matched = {
++                    let item = car.borrow();
++                    match &*item {
++                        Value::Cons(item_car, item_cdr) => {
++                            let slot = if want_car { item_car } else { item_cdr };
++                            let entry_key = slot.borrow();
++                            match (&*entry_key, key) {
++                                (Value::Integer(a), Value::Integer(b)) => a == b,
++                                (Value::Symbol(a), Value::Symbol(b)) => a == b,
++                                (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
++                                (Value::Nil | Value::T, _)
++                                | (_, Value::Nil | Value::T)
++                                | (Value::Integer(_), Value::Symbol(_))
++                                | (Value::Symbol(_), Value::Integer(_)) => false,
++                                (a, b) => *a == *b,
++                            }
+                         }
+-                        current = cdr.borrow().clone();
+-                    }
+-                    other => {
+-                        return Err(LispError::SignalValue(Value::list([
+-                            Value::Symbol("wrong-type-argument".into()),
+-                            Value::Symbol("listp".into()),
+-                            other,
+-                        ])));
++                        _ => false,
+                     }
++                };
++                if matched {
++                    return Ok(car.borrow().clone());
+                 }
+-            }
+-        }
+-        "rassq" => {
+-            need_args(name, args, 2)?;
+-            let mut current = args[1].clone();
+-            let mut seen = HashSet::new();
+-            loop {
+-                match current {
++                let tail = cdr.borrow();
++                cells = match &*tail {
+                     Value::Nil => return Ok(Value::Nil),
+-                    Value::Cons(car, cdr) => {
+-                        let cell_id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(cell_id) {
+-                            return Err(LispError::SignalValue(Value::list([
+-                                Value::Symbol("circular-list".into()),
+-                                Value::String("Circular list".into()),
+-                            ])));
+-                        }
+-                        let item = car.borrow().clone();
+-                        if matches!(item, Value::Cons(_, _)) && item.cdr()? == args[0] {
+-                            return Ok(item);
+-                        }
+-                        current = cdr.borrow().clone();
+-                    }
++                    Value::Cons(next_car, next_cdr) => (Rc::clone(next_car), Rc::clone(next_cdr)),
+                     other => {
+                         return Err(LispError::SignalValue(Value::list([
+                             Value::Symbol("wrong-type-argument".into()),
+                             Value::Symbol("listp".into()),
+-                            other,
++                            other.clone(),
+                         ])));
+                     }
+-                }
++                };
+             }
+         }
+         "rassoc" => {
+             need_args(name, args, 2)?;
+             let mut current = args[1].clone();
+-            let mut seen = HashSet::new();
++            let mut seen = crate::lisp::types::CycleGuard::new();
+             loop {
+                 match current {
+                     Value::Nil => return Ok(Value::Nil),
+                     Value::Cons(car, cdr) => {
+                         let cell_id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(cell_id) {
++                        if seen.step(cell_id) {
+                             return Err(LispError::SignalValue(Value::list([
+                                 Value::Symbol("circular-list".into()),
+                                 Value::String("Circular list".into()),
+@@ -1866,13 +1880,13 @@ pub(super) fn call(
+         "assoc" => {
+             need_arg_range(name, args, 2, 3)?;
+             let mut current = args[1].clone();
+-            let mut seen = HashSet::new();
++            let mut seen = crate::lisp::types::CycleGuard::new();
+             loop {
+                 match current {
+                     Value::Nil => return Ok(Value::Nil),
+                     Value::Cons(car, cdr) => {
+                         let cell_id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(cell_id) {
++                        if seen.step(cell_id) {
+                             return Err(LispError::SignalValue(Value::list([
+                                 Value::Symbol("circular-list".into()),
+                                 Value::String("Circular list".into()),
+diff --git a/src/lisp/primitives/dispatch/misc_keymaps.rs b/src/lisp/primitives/dispatch/misc_keymaps.rs
+index 69f211c..1eb98b4 100644
+--- a/src/lisp/primitives/dispatch/misc_keymaps.rs
++++ b/src/lisp/primitives/dispatch/misc_keymaps.rs
+@@ -10223,13 +10223,13 @@ fn widget_put(
+ 
+ fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, LispError> {
+     let mut current = plist.clone();
+-    let mut seen = HashSet::new();
++    let mut seen = crate::lisp::types::CycleGuard::new();
+     loop {
+         match current {
+             Value::Nil => return Ok(None),
+             Value::Cons(car, cdr) => {
+                 let cell_id = Rc::as_ptr(&car) as usize;
+-                if !seen.insert(cell_id) {
++                if seen.step(cell_id) {
+                     return Ok(None);
+                 }
+                 if car.borrow().clone() == *property {
+@@ -10250,13 +10250,13 @@ fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, Lis
+ 
+ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value, LispError> {
+     let mut current = plist.clone();
+-    let mut seen = HashSet::new();
++    let mut seen = crate::lisp::types::CycleGuard::new();
+     loop {
+         match current {
+             Value::Nil => return Ok(Value::list([property, value])),
+             Value::Cons(car, cdr) => {
+                 let cell_id = Rc::as_ptr(&car) as usize;
+-                if !seen.insert(cell_id) {
++                if seen.step(cell_id) {
+                     return Err(LispError::SignalValue(Value::list([
+                         Value::Symbol("circular-list".into()),
+                         Value::String("Circular list".into()),
+diff --git a/src/lisp/primitives/strings.rs b/src/lisp/primitives/strings.rs
+index 7cce6e5..d1f72fd 100644
+--- a/src/lisp/primitives/strings.rs
++++ b/src/lisp/primitives/strings.rs
+@@ -469,25 +469,23 @@ pub(crate) fn nreverse_sequence_value(
+ fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
+     let mut current = value.clone();
+     let mut reversed = Value::Nil;
+-    let mut seen = HashSet::new();
++    let mut seen = crate::lisp::types::CycleGuard::new();
+     loop {
+-        match current.clone() {
++        let (car, cdr) = match &current {
+             Value::Nil => return Ok(reversed),
+-            Value::Cons(car, cdr) => {
+-                let identity = Rc::as_ptr(&car) as usize;
+-                if !seen.insert(identity) {
+-                    return Err(LispError::SignalValue(Value::list([
+-                        Value::Symbol("circular-list".into()),
+-                        Value::String("Circular list".into()),
+-                    ])));
+-                }
+-                let next = cdr.borrow().clone();
+-                *cdr.borrow_mut() = reversed;
+-                reversed = current;
+-                current = next;
+-            }
++            Value::Cons(car, cdr) => (Rc::clone(car), Rc::clone(cdr)),
+             other => return Err(LispError::TypeError("list".into(), other.type_name())),
++        };
++        if seen.step(Rc::as_ptr(&car) as usize) {
++            return Err(LispError::SignalValue(Value::list([
++                Value::Symbol("circular-list".into()),
++                Value::String("Circular list".into()),
++            ])));
+         }
++        let next = cdr.borrow().clone();
++        *cdr.borrow_mut() = reversed;
++        reversed = Value::Cons(car, cdr);
++        current = next;
+     }
+ }
+ 
+diff --git a/src/lisp/primitives/values.rs b/src/lisp/primitives/values.rs
+index 768601f..d0bdad4 100644
+--- a/src/lisp/primitives/values.rs
++++ b/src/lisp/primitives/values.rs
+@@ -40,6 +40,17 @@ pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
+ }
+ 
+ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
++    // Scalar fast paths: identical outcome to the recursive walk below, but
++    // without paying for a fresh seen-set and the aggregate-type probes.
++    match (left, right) {
++        (Value::Integer(a), Value::Integer(b)) => return a == b,
++        (Value::Symbol(a), Value::Symbol(b)) => return a == b,
++        (Value::Nil, Value::Nil) | (Value::T, Value::T) => return true,
++        (Value::Nil | Value::T, Value::Integer(_)) | (Value::Integer(_), Value::Nil | Value::T) => {
++            return false;
++        }
++        _ => {}
++    }
+     values_equal_recursive(interp, left, right, &mut HashSet::new())
+ }
+ 
+@@ -501,12 +512,12 @@ pub(crate) fn plist_type_error(plist: &Value) -> LispError {
+ pub(crate) fn safe_list_length(list: &Value) -> i64 {
+     let mut len = 0i64;
+     let mut current = list.clone();
+-    let mut seen = HashSet::new();
++    let mut seen = crate::lisp::types::CycleGuard::new();
+     loop {
+         match current {
+             Value::Cons(car, cdr) => {
+                 let cell_id = Rc::as_ptr(&car) as usize;
+-                if !seen.insert(cell_id) {
++                if seen.step(cell_id) {
+                     return len;
+                 }
+                 len += 1;
+@@ -1397,13 +1408,13 @@ pub(crate) struct ClDeleteIfOptions {
+ pub(crate) fn collect_list_cells(value: &Value) -> Result<(Vec<Value>, Value), LispError> {
+     let mut cells = Vec::new();
+     let mut current = value.clone();
+-    let mut seen = HashSet::new();
++    let mut seen = crate::lisp::types::CycleGuard::new();
+     loop {
+         match current.clone() {
+             Value::Nil => return Ok((cells, Value::Nil)),
+             Value::Cons(car, cdr) => {
+                 let cell_id = Rc::as_ptr(&car) as usize;
+-                if !seen.insert(cell_id) {
++                if seen.step(cell_id) {
+                     return Err(LispError::SignalValue(Value::list([
+                         Value::symbol("circular-list"),
+                         Value::string("Circular list"),
+@@ -1503,13 +1514,13 @@ pub(crate) fn cl_delete_if_values(
+ 
+ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
+     let mut current = value.clone();
+-    let mut seen = HashSet::new();
++    let mut seen = crate::lisp::types::CycleGuard::new();
+     loop {
+         let Value::Cons(car, cdr) = current.clone() else {
+             return Err(LispError::TypeError("consp".into(), current.type_name()));
+         };
+         let cell_id = Rc::as_ptr(&car) as usize;
+-        if !seen.insert(cell_id) {
++        if seen.step(cell_id) {
+             return Err(LispError::SignalValue(Value::list([
+                 Value::symbol("circular-list"),
+                 Value::string("Circular list"),
+diff --git a/src/lisp/types.rs b/src/lisp/types.rs
+index ac41d02..63b64ad 100644
+--- a/src/lisp/types.rs
++++ b/src/lisp/types.rs
+@@ -28,6 +28,44 @@ pub struct SharedStringState {
+     pub multibyte: bool,
+ }
+ 
++/// Detects circular lists during traversal with Brent's algorithm, the same
++/// scheme GNU's FOR_EACH_TAIL uses: constant memory and no hashing.
++pub struct CycleGuard {
++    tortoise: usize,
++    power: usize,
++    lam: usize,
++}
++
++impl CycleGuard {
++    pub fn new() -> Self {
++        CycleGuard {
++            tortoise: 0,
++            power: 1,
++            lam: 0,
++        }
++    }
++
++    /// Advance past a cons cell; returns true when the cell closes a cycle.
++    pub fn step(&mut self, cell_id: usize) -> bool {
++        if cell_id == self.tortoise {
++            return true;
++        }
++        if self.lam == self.power {
++            self.tortoise = cell_id;
++            self.power <<= 1;
++            self.lam = 0;
++        }
++        self.lam += 1;
++        false
++    }
++}
++
++impl Default for CycleGuard {
++    fn default() -> Self {
++        CycleGuard::new()
++    }
++}
++
+ /// A Lisp value. This covers the subset we need for ERT tests.
+ #[derive(Clone, Debug)]
+ pub enum Value {
+@@ -283,21 +321,13 @@ impl Value {
+     pub fn to_vec(&self) -> Result<Vec<Value>, LispError> {
+         let mut result = Vec::new();
+         let mut current = self.clone();
+-        // Cycle detection only kicks in past a threshold so short lists —
+-        // the overwhelmingly common case — never pay for the hash set.
+-        // Once tracking starts every node is recorded, so any cycle is
+-        // still caught within one lap.
+-        let mut seen: Option<HashSet<usize>> = None;
++        let mut seen = CycleGuard::new();
+         loop {
+             match current {
+                 Value::Nil => return Ok(result),
+                 Value::Cons(car, cdr) => {
+-                    if result.len() >= 64 {
+-                        let seen = seen.get_or_insert_with(HashSet::new);
+-                        let id = Rc::as_ptr(&car) as usize;
+-                        if !seen.insert(id) {
+-                            return Err(circular_list_error());
+-                        }
++                    if seen.step(Rc::as_ptr(&car) as usize) {
++                        return Err(circular_list_error());
+                     }
+                     result.push(car.borrow().clone());
+                     current = cdr.borrow().clone();
+@@ -335,7 +365,7 @@ impl Value {
+ 
+ impl PartialEq for Value {
+     fn eq(&self, other: &Self) -> bool {
+-        values_equal_recursive(self, other, &mut HashSet::new())
++        values_equal_recursive(self, other, &mut None)
+     }
+ }
+ 
+@@ -356,7 +386,11 @@ fn cons_identity(car: &Rc<RefCell<Value>>) -> usize {
+     Rc::as_ptr(car) as usize
+ }
+ 
+-fn values_equal_recursive(left: &Value, right: &Value, seen: &mut HashSet<(usize, usize)>) -> bool {
++fn values_equal_recursive(
++    left: &Value,
++    right: &Value,
++    seen: &mut Option<HashSet<(usize, usize)>>,
++) -> bool {
+     match (left, right) {
+         (Value::Nil, Value::Nil) => true,
+         (Value::T, Value::T) => true,
+@@ -376,7 +410,7 @@ fn values_equal_recursive(left: &Value, right: &Value, seen: &mut HashSet<(usize
+                 return true;
+             }
+             let ids = (cons_identity(a_car), cons_identity(b_car));
+-            if !seen.insert(ids) {
++            if !seen.get_or_insert_with(HashSet::new).insert(ids) {
+                 return true;
+             }
+             values_equal_recursive(&a_car.borrow(), &b_car.borrow(), seen)

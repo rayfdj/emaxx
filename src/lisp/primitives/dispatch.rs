@@ -143,10 +143,38 @@ fn compute_name_facts(name: &str) -> NameFacts {
     }
 }
 
+/// FNV-1a, keyed by short primitive names: far cheaper than SipHash for
+/// the per-call cache lookups below, and DoS resistance is irrelevant for
+/// a cache of function-name metadata.
+#[derive(Default)]
+pub(crate) struct FnvHasher(u64);
+
+impl std::hash::Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self.0 = hash;
+    }
+}
+
+pub(crate) type FnvBuildHasher = std::hash::BuildHasherDefault<FnvHasher>;
+
 pub(crate) fn name_facts(name: &str) -> NameFacts {
     thread_local! {
-        static NAME_FACTS: std::cell::RefCell<std::collections::HashMap<String, NameFacts>> =
-            std::cell::RefCell::new(std::collections::HashMap::new());
+        static NAME_FACTS: std::cell::RefCell<
+            std::collections::HashMap<String, NameFacts, FnvBuildHasher>,
+        > = std::cell::RefCell::new(std::collections::HashMap::default());
     }
     NAME_FACTS.with(|cache| {
         if let Some(facts) = cache.borrow().get(name) {

@@ -234,7 +234,17 @@ handoff and retry instruction are in
   under `EMAXX_BYTECODE_VM=1` or when no sibling `.el` exists.  All fixture
   suites are oracle-compiled artifacts proven against interpreted semantics.
   The sibling-source loader default stays until a full compat sweep
-  validates the flip.
+  validates the flip.  The follow-up performance series caches each
+  record's decoded program (invalidated through `find_record_mut`, the
+  single record-mutation chokepoint), pre-dispatches hot infallible ops
+  and fixnum arithmetic ahead of the fallible-step closure, calls with
+  arguments in place on the operand stack, and replaces per-node hash-set
+  cycle detection with Brent's algorithm (`CycleGuard`) across the list
+  primitives; same-machine microbenchmarks moved from 174x/36x/12x/26x
+  slower than GNU's engine (fib/loop/list-build/assq) to 14x/4x/4x/9x,
+  with string building ~4-7x faster than GNU throughout.  Full parity on
+  cons-heavy loops is bounded by the boxed `Rc<RefCell>` value
+  representation, not by the VM.
 - The 2026-08-04 Eshell process checkpoint advances the fresh contiguous
   compatibility prefix to 3,381/7,080, leaving 3,699 selectors.  Mode is 3/3,
   Options 13/13, and Process 24/24.  Batch `read-string' now reads one stdin
