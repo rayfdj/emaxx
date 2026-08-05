@@ -29,6 +29,28 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-05 Minibuffer/Misc checkpoint advances the fresh contiguous
+  compatibility prefix to 4,255/7,080, leaving 2,825 selectors.  All 38
+  canonical outcomes match GNU: Minibuffer 31/31 and Misc 7/7.  GNU
+  `simple.el` now owns its normal preloaded completion behavior; native
+  `completing-read` establishes the real minibuffer buffer, window, depth,
+  prompt, local completion state, setup hook, and nonlocal-exit cleanup.
+  Completion recognizes programmed symbol tables and duplicate exact matches,
+  while file-name substitution observes Lisp `process-environment`.  Windows
+  preserve independent points, command playback follows the selected window
+  and shifted TAB event, and each buffer exposes a stable mark marker with
+  GNU's batch transient-mark defaults and call contract.  Canonical artifacts
+  are Minibuffer `target/compat/run-1785963235570921000-37124` and Misc
+  `target/compat/run-1785963323138729000-37339`.  Formatting, diff check,
+  all-target/all-feature check, strict Clippy, focused regressions, and
+  regenerated/rustfmt-normalized autoload validation pass.  A 72-minute full
+  Rust audit passed 1,717 tests and reported 16 failures: six sandbox-blocked
+  socket tests, the inherited CCL and recursive-Edebug failures, one
+  unchanged process-output timing test that passed immediately in isolation,
+  and seven checkpoint-adjacent contracts repaired and replayed exact-green.
+  Native remains complete at 1,420/1,420.  NEXT is selector 4,256,
+  `bug23288-translate-to-mouse-2`, in `test/lisp/mouse-tests.el` (6 selected
+  outcomes), followed by `test/lisp/mwheel-tests.el` (2 outcomes).
 - The 2026-08-05 Man/MD4/MH-E checkpoint advances the fresh contiguous
   compatibility prefix to 4,217/7,080, leaving 2,863 selectors.  All 30
   canonical outcomes match GNU: Man 3/3, MD4 1/1, MH Limit 1/1, MH Thread

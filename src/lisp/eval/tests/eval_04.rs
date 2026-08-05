@@ -3766,6 +3766,10 @@ fn regexp_syntax_classes_match_lisp_definition_forms() {
 
 fn assert_minibuffer_completion_primitives_cover_batch_cases() {
     assert_eq!(
+        eval_str(r#"(try-completion "same" '("same" "same"))"#),
+        Value::T
+    );
+    assert_eq!(
         eval_str(r#"(try-completion "a" '("abc" "abba" "def"))"#),
         Value::String("ab".into())
     );
@@ -3872,6 +3876,18 @@ fn assert_minibuffer_completion_primitives_cover_batch_cases() {
     );
     assert_eq!(eval_str(r#"(minibuffer-prompt-end)"#), Value::Integer(1));
     assert_eq!(eval_str(r#"case-replace"#), Value::T);
+}
+
+#[test]
+fn substitute_in_file_name_uses_the_lisp_process_environment() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((process-environment '("EMAXX_DYNAMIC_SUBST=dynamic")))
+                  (substitute-in-file-name
+                   "${EMAXX_DYNAMIC_SUBST}/$EMAXX_DYNAMIC_SUBST"))"#,
+        ),
+        Value::String("dynamic/dynamic".into())
+    );
 }
 
 #[test]

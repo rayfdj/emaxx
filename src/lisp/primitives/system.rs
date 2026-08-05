@@ -583,7 +583,10 @@ fn lisp_environment_string(interp: &Interpreter, env: &Env, variable: &str) -> O
         .and_then(|value| string_like(&value).map(|string| string.text))
 }
 
-pub(crate) fn substitute_in_file_name(path: &str) -> String {
+fn substitute_in_file_name_with(
+    path: &str,
+    mut environment_value: impl FnMut(&str) -> Option<String>,
+) -> String {
     let mut result = String::new();
     let chars: Vec<char> = path.chars().collect();
     let mut index = 0usize;
@@ -605,7 +608,7 @@ pub(crate) fn substitute_in_file_name(path: &str) -> String {
             }
             if end < chars.len() && chars[end] == '}' {
                 let name: String = chars[index + 2..end].iter().collect();
-                result.push_str(&std::env::var(&name).unwrap_or_default());
+                result.push_str(&environment_value(&name).unwrap_or_default());
                 index = end + 1;
                 continue;
             }
@@ -620,10 +623,23 @@ pub(crate) fn substitute_in_file_name(path: &str) -> String {
             continue;
         }
         let name: String = chars[index + 1..end].iter().collect();
-        result.push_str(&std::env::var(&name).unwrap_or_default());
+        result.push_str(&environment_value(&name).unwrap_or_default());
         index = end;
     }
     result
+}
+
+#[cfg(test)]
+pub(crate) fn substitute_in_file_name(path: &str) -> String {
+    substitute_in_file_name_with(path, |name| std::env::var(name).ok())
+}
+
+pub(crate) fn substitute_in_file_name_in_env(
+    interp: &Interpreter,
+    env: &Env,
+    path: &str,
+) -> String {
+    substitute_in_file_name_with(path, |name| lisp_environment_string(interp, env, name))
 }
 
 pub(crate) fn expand_home_prefix(path: &str) -> String {

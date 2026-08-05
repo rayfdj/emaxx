@@ -2276,7 +2276,9 @@ pub(super) fn forward_comment_impl(
 // GNU `backward-prefix-chars': move point backward over any number of
 // characters with quote or prefix syntax (', #, \` and , in Lisp).
 pub(super) fn backward_prefix_chars(interp: &mut Interpreter) -> Result<Value, LispError> {
-    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    // Point and point-min are absolute buffer positions even while narrowed.
+    // Index the full buffer rather than the accessible substring.
+    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
     let minimum = interp.buffer.point_min();
     let mut position = interp.buffer.point();

@@ -5143,6 +5143,69 @@ fn preloaded_window_contract_restores_context_and_defines_resize_mode() {
 }
 
 #[test]
+fn windows_preserve_independent_points_across_selection() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (let* ((original-window (selected-window))
+                       (buffer (temp-buffer-window-setup "*window-point*"))
+                       (window
+                        (with-current-buffer buffer
+                          (insert "abcdef")
+                          (temp-buffer-window-show buffer))))
+                  (list
+                   (with-current-buffer buffer (point))
+                   (window-point window)
+                   (progn (select-window window) (point))
+                   (progn (goto-char 4)
+                          (select-window original-window)
+                          (select-window window)
+                          (point))))
+                "#
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(4),
+        ])
+    );
+}
+
+#[test]
+fn keyboard_macro_normalizes_shift_tab_and_selected_window_context() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (let* ((map (make-sparse-keymap))
+                       (origin (selected-window))
+                       (other-window
+                        (split-window-internal origin 12 nil 0.5))
+                       (other-buffer (get-buffer-create "*command-window*"))
+                       shifted-tab-ran)
+                  (set-window-buffer other-window other-buffer)
+                  (define-key map [backtab]
+                    (lambda ()
+                      (interactive)
+                      (setq shifted-tab-ran t)))
+                  (use-local-map map)
+                  (execute-kbd-macro (kbd "S-TAB"))
+                  (define-key map "x"
+                    (lambda ()
+                      (interactive)
+                      (select-window other-window)
+                      (save-current-buffer (set-buffer (window-buffer origin)))))
+                  (execute-kbd-macro "x")
+                  (list shifted-tab-ran
+                        (eq (current-buffer)
+                            (window-buffer (selected-window)))))
+                "#
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
 fn window_configuration_equality_ignores_view_position_but_compares_layout() {
     assert_eq!(
         eval_str(

@@ -1453,7 +1453,7 @@ pub(super) fn call(
             if let Some(text) = value.as_mut()
                 && args.get(2).is_some_and(Value::is_truthy)
             {
-                *text = substitute_in_file_name(text);
+                *text = substitute_in_file_name_in_env(interp, env, text);
             }
             let process_environment = interp
                 .lookup_var("process-environment", env)

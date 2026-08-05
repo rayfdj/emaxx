@@ -868,7 +868,7 @@ pub(crate) fn try_completion(
         {
             return Ok(Value::String(candidate.name.clone()));
         }
-    } else if matches.len() == 1 && matches[0].name == input {
+    } else if matches.iter().all(|candidate| candidate.name == input) {
         return Ok(Value::T);
     }
 
@@ -1046,13 +1046,171 @@ pub(crate) fn completing_read(
     }
     ensure_interaction_allowed(interp, env)?;
 
-    // With simulated input queued (ert-simulate-keys), run a minibuffer
-    // key loop: self-inserting chars, TAB completion, RET submits.
-    if !crate::lisp::primitives::unread_command_events(interp, env)?.is_empty() {
-        return simulated_completing_read(interp, args, env);
-    }
+    let minibuffer = activate_completing_read_minibuffer(interp, args, env)?;
+    let result = (|| {
+        run_named_hooks(
+            interp,
+            "minibuffer-setup-hook",
+            env,
+            Some(minibuffer.buffer_id),
+        )?;
 
-    let initial_input = args.get(4).and_then(|value| {
+        // A setup hook may temporarily select another buffer (most notably
+        // *Completions*).  The command loop itself starts in the minibuffer.
+        if interp.has_buffer_id(minibuffer.buffer_id) {
+            interp.set_current_buffer_id(minibuffer.buffer_id)?;
+        }
+
+        completing_read_contents(interp, args, env)
+    })();
+    restore_completing_read_minibuffer(interp, minibuffer);
+    result
+}
+
+struct ActiveCompletingRead {
+    buffer_id: u64,
+    saved_buffer_id: u64,
+    saved_selected_window_id: u64,
+    saved_selected_window_buffer_id: u64,
+    previous_active: Value,
+    previous_active_window: Value,
+    previous_depth: i64,
+    previous_prompt: Value,
+}
+
+fn activate_completing_read_minibuffer(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<ActiveCompletingRead, LispError> {
+    let prompt = args
+        .first()
+        .and_then(string_like)
+        .ok_or_else(|| {
+            LispError::TypeError(
+                "string".into(),
+                args.first().map_or_else(|| "nil".into(), Value::type_name),
+            )
+        })?
+        .text;
+    let previous_depth = interp
+        .lookup_var("emaxx--minibuffer-depth", env)
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(0);
+    let depth = previous_depth + 1;
+    let buffer_id = interp
+        .find_buffer(&format!(" *Minibuf-{depth}*"))
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| interp.create_buffer(&format!(" *Minibuf-{depth}*")).0);
+    let saved_buffer_id = interp.current_buffer_id();
+    let saved_selected_window_id = interp.selected_window_id();
+    let saved_selected_window_buffer_id = interp.selected_window_buffer_id();
+    let default_directory = interp.lookup_var("default-directory", env);
+    let previous_active = interp
+        .lookup_var("emaxx--active-minibuffer", env)
+        .unwrap_or(Value::Nil);
+    let previous_active_window = interp
+        .lookup_var("emaxx--active-minibuffer-window", env)
+        .unwrap_or(Value::Nil);
+    let previous_prompt = interp
+        .lookup_var("emaxx--minibuffer-prompt", env)
+        .unwrap_or(Value::Nil);
+
+    interp.clear_buffer_local_state(buffer_id);
+    if let Some(default_directory) = default_directory {
+        interp.set_buffer_local_value(buffer_id, "default-directory", default_directory);
+    }
+    interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::Nil);
+    interp.switch_to_buffer_id(buffer_id)?;
+    let end = interp.buffer.point_max();
+    if end > interp.buffer.point_min() {
+        interp
+            .buffer
+            .delete_region(interp.buffer.point_min(), end)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+    }
+    interp.buffer.goto_char(interp.buffer.point_min());
+    interp.buffer.insert(&prompt);
+    if let Some(initial_input) = completing_read_initial_input(args) {
+        interp.buffer.insert(&initial_input);
+    }
+    interp.buffer.goto_char(interp.buffer.point_max());
+
+    let require_match = args.get(3).is_some_and(Value::is_truthy);
+    let map_name = if require_match {
+        "minibuffer-local-must-match-map"
+    } else {
+        "minibuffer-local-completion-map"
+    };
+    let local_map = interp.lookup_var(map_name, env).unwrap_or(Value::Nil);
+    interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
+    interp.set_buffer_local_value(
+        buffer_id,
+        "minibuffer-completion-table",
+        args.get(1).cloned().unwrap_or(Value::Nil),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "minibuffer-completion-predicate",
+        args.get(2).cloned().unwrap_or(Value::Nil),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "minibuffer--require-match",
+        args.get(3).cloned().unwrap_or(Value::Nil),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "minibuffer-default",
+        args.get(6).cloned().unwrap_or(Value::Nil),
+    );
+
+    let active = interp
+        .buffer_identity_value(buffer_id)
+        .unwrap_or(Value::Nil);
+    interp.set_global_binding("emaxx--active-minibuffer", active);
+    interp.set_global_binding(
+        "emaxx--active-minibuffer-window",
+        interp.selected_window_value(),
+    );
+    interp.set_global_binding("emaxx--minibuffer-depth", Value::Integer(depth));
+    interp.set_global_binding("emaxx--minibuffer-prompt", Value::String(prompt));
+
+    Ok(ActiveCompletingRead {
+        buffer_id,
+        saved_buffer_id,
+        saved_selected_window_id,
+        saved_selected_window_buffer_id,
+        previous_active,
+        previous_active_window,
+        previous_depth,
+        previous_prompt,
+    })
+}
+
+fn restore_completing_read_minibuffer(interp: &mut Interpreter, state: ActiveCompletingRead) {
+    interp.set_global_binding("emaxx--active-minibuffer", state.previous_active);
+    interp.set_global_binding(
+        "emaxx--active-minibuffer-window",
+        state.previous_active_window,
+    );
+    interp.set_global_binding(
+        "emaxx--minibuffer-depth",
+        Value::Integer(state.previous_depth),
+    );
+    interp.set_global_binding("emaxx--minibuffer-prompt", state.previous_prompt);
+
+    interp.set_selected_window_id(state.saved_selected_window_id);
+    if interp.has_buffer_id(state.saved_selected_window_buffer_id) {
+        interp.set_selected_window_buffer_id(state.saved_selected_window_buffer_id);
+    }
+    if interp.has_buffer_id(state.saved_buffer_id) {
+        let _ = interp.set_current_buffer_id(state.saved_buffer_id);
+    }
+}
+
+fn completing_read_initial_input(args: &[Value]) -> Option<String> {
+    args.get(4).and_then(|value| {
         let value = if matches!(value, Value::Cons(_, _)) {
             value.car().ok()?
         } else {
@@ -1061,7 +1219,21 @@ pub(crate) fn completing_read(
         string_like(&value)
             .map(|string| string.text)
             .filter(|text| !text.is_empty())
-    });
+    })
+}
+
+fn completing_read_contents(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    // With simulated input queued (ert-simulate-keys), run a minibuffer
+    // key loop: self-inserting chars, TAB completion, RET submits.
+    if !crate::lisp::primitives::unread_command_events(interp, env)?.is_empty() {
+        return simulated_completing_read(interp, args, env);
+    }
+
+    let initial_input = completing_read_initial_input(args);
     if let Some(initial_input) = initial_input {
         return Ok(Value::String(initial_input));
     }
@@ -1267,7 +1439,7 @@ pub(crate) fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
 // Whether COLLECTION is a programmed completion table (a function).
 pub(crate) fn completion_table_is_function(_interp: &Interpreter, collection: &Value) -> bool {
     match collection {
-        Value::Lambda(_, _, _) | Value::BuiltinFunc(_) => true,
+        Value::Symbol(_) | Value::Lambda(_, _, _) | Value::BuiltinFunc(_) => true,
         Value::Cons(_, _) => matches!(
             collection.car(),
             Ok(Value::Symbol(head)) if head == "lambda" || head == "closure"

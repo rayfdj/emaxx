@@ -116,6 +116,12 @@
 (defvar values nil
   "List of values returned by expressions evaluated with `eval-expression'.")
 
+(defvar minibuffer-default nil
+  "The current default value or list of default values in the minibuffer.")
+
+(defvar minibuffer-history nil
+  "Default history list used by minibuffer input commands.")
+
 (defun values--store-value (value)
   "Store VALUE at the front of the `values' list, then return VALUE."
   (setq values (cons value values))
@@ -1975,6 +1981,9 @@ Other uses risk returning non-nil value that point to the wrong file."
   ;; so prefer using it over using `load-file-name'.
   (let ((file (car (last current-load-list))))
     (or (if (stringp file) file)
+        ;; The native ERT runner retains the defining source while it lazily
+        ;; expands a test body after that file has finished loading.
+        (and (boundp 'macroexp-file-name) macroexp-file-name)
         (bound-and-true-p byte-compile-current-file))))
 
 (defvar macroexp--warned (make-hash-table :test #'equal :weakness 'key))
@@ -5705,6 +5714,16 @@ KIND should be `var' for a variable or `subr' for a subroutine."
 ;; GNU cl-print.el's generic and its default method (cl-print.el itself is
 ;; not loaded; the native cl-prin1 renderer dispatches oclosures here, and
 ;; nadvice.el adds its own `advice' method for "#f(advice ...)").
+(oclosure-define (cconv--interactive-helper) fun if)
+(defun cconv--interactive-helper (fun if)
+  "Add interactive form IF to FUN."
+  (oclosure-lambda (cconv--interactive-helper (fun fun) (if if))
+      (&rest args)
+    (apply (if (called-interactively-p 'any)
+               #'funcall-interactively
+             #'funcall)
+           fun args)))
+
 (cl-defgeneric cl-print-object (object stream)
   "Dispatcher to print OBJECT on STREAM according to its type.")
 (cl-defmethod cl-print-object (object stream)
@@ -7231,6 +7250,11 @@ as they do in GNU Emacs."
     (process-file
      shell-file-name infile buffer display shell-command-switch
      (mapconcat #'identity (cons command args) " "))))
+
+(defun call-shell-region (start end command &optional delete buffer)
+  "Send text from START to END to a shell running COMMAND."
+  (call-process-region start end shell-file-name delete buffer nil
+                       shell-command-switch command))
 
 (defun shell-command-to-string (command)
   "Execute shell command COMMAND and return its output as a string.
@@ -9595,6 +9619,30 @@ PARENT if non-nil should be a keymap."
 ;; GNU keyboard.c: position info for a buffer shown in WINDOW; nil when
 ;; the buffer isn't displayed there (like an off-screen position).
 ;; `kill-visual-line' reads the (COL . ROW) slot to detect line wraps.
+(defun event--posn-at-point ()
+  "Return a GNU event position describing point in the selected window."
+  (let* ((pos (window-point))
+         (posn (posn-at-point pos (if (minibufferp (current-buffer))
+                                      (minibuffer-window)))))
+    (or posn (list (selected-window) pos '(0 . 0) 0))))
+
+(defun event-start (event)
+  "Return the starting position of EVENT, or the position at point."
+  (if (and (consp event)
+           (memq (car event) '(touchscreen-begin touchscreen-end)))
+      (cdadr event)
+    (or (and (consp event)
+             (not (eq (car event) 'touchscreen-update))
+             (nth 1 event))
+        (event--posn-at-point))))
+
+(defun posn-point (position)
+  "Return the buffer position recorded in POSITION."
+  (or (nth 5 position)
+      (let ((point (nth 1 position)))
+        (or (car-safe point)
+            (and (integerp point) point)))))
+
 (unless (fboundp 'posn-window)
   ;; subr.el preloads this defsubst as compiled Lisp.  Keep that observable
   ;; function type while retaining the policy on the Lisp side.

@@ -18,6 +18,28 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-05 MINIBUFFER/MISC CHECKPOINT: the fresh contiguous ordered frontier
+  is 4,255/7,080, leaving 2,825 selectors.  All 38 canonical outcomes match
+  GNU: Minibuffer 31/31 and Misc 7/7.  GNU `simple.el` supplies the standard
+  completion-list behavior; `completing-read` now owns a real native
+  minibuffer lifecycle, including the active buffer/window/depth and prompt,
+  buffer-local completion state, setup hooks, and nonlocal-exit cleanup.
+  Programmed symbol completion tables, duplicate exact matches, and Lisp
+  `process-environment` file substitution match GNU.  Independent window
+  points, selected-window command context, shifted TAB events, stable
+  per-buffer mark markers, and GNU batch transient-mark semantics complete the
+  adjacent contracts.  Canonical artifacts are Minibuffer
+  `target/compat/run-1785963235570921000-37124` and Misc
+  `target/compat/run-1785963323138729000-37339`.  Formatting, diff check,
+  focused regressions, all-target/all-feature check, strict Clippy, and
+  regenerated/rustfmt-normalized autoload validation pass.  The 72-minute
+  full Rust audit passed 1,717 tests and reported 16 failures: six
+  sandbox-blocked socket tests, inherited CCL and recursive-Edebug failures,
+  one unchanged process-output timing test that passed immediately in
+  isolation, and seven checkpoint-adjacent contracts repaired and replayed
+  exact-green.  Native remains complete at 1,420/1,420.  NEXT is selector 4,256,
+  `bug23288-translate-to-mouse-2`, in `test/lisp/mouse-tests.el` (6 selected
+  outcomes), followed by `test/lisp/mwheel-tests.el` (2 outcomes).
 - 2026-08-05 MAN/MD4/MH-E CHECKPOINT: the fresh contiguous ordered frontier
   is 4,217/7,080, leaving 2,863 selectors.  All 30 canonical outcomes match
   GNU: Man 3/3, MD4 1/1, MH Limit 1/1, MH Thread 4/4, MH Utils 19/19, and MH

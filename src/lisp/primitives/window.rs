@@ -34,6 +34,7 @@ pub(crate) const WINDOW_HSCROLL_SLOT: usize = 25;
 pub(crate) const WINDOW_MIN_HSCROLL_SLOT: usize = 26;
 pub(crate) const WINDOW_SUSPEND_AUTO_HSCROLL_SLOT: usize = 27;
 pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 28;
+pub(crate) const WINDOW_POINT_SLOT: usize = 29;
 pub(crate) const MINIBUFFER_WINDOW_KIND: &str = "minibuffer";
 pub(crate) const INTERNAL_HORIZONTAL_WINDOW_KIND: &str = "internal-horizontal";
 pub(crate) const INTERNAL_VERTICAL_WINDOW_KIND: &str = "internal-vertical";
@@ -78,6 +79,7 @@ pub(crate) fn window_record_slots(
         Value::Integer(0),
         Value::Nil,
         Value::Nil,
+        Value::Integer(start as i64),
     ]
 }
 

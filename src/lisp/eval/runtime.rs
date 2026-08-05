@@ -1729,6 +1729,29 @@ impl Interpreter {
         Value::Marker(id)
     }
 
+    pub fn buffer_mark_marker_value(&mut self) -> Value {
+        let buffer_id = self.current_buffer_id();
+        let mark = self.buffer.mark();
+        let marker_id = match self.buffer_mark_marker_ids.get(&buffer_id).copied() {
+            Some(marker_id) => marker_id,
+            None => {
+                let Value::Marker(marker_id) = self.make_marker() else {
+                    unreachable!("make_marker always returns a marker")
+                };
+                self.buffer_mark_marker_ids.insert(buffer_id, marker_id);
+                marker_id
+            }
+        };
+        if let Some(marker) = self.find_marker_mut(marker_id) {
+            marker.position = mark;
+            marker.buffer_id = mark.map(|_| buffer_id);
+            if let Some(mark) = mark {
+                marker.last_position = Some(mark);
+            }
+        }
+        Value::Marker(marker_id)
+    }
+
     pub fn find_marker(&self, id: u64) -> Option<&MarkerState> {
         self.markers.iter().find(|marker| marker.id == id)
     }
@@ -1765,6 +1788,10 @@ impl Interpreter {
         position: Option<usize>,
         buffer_id: Option<u64>,
     ) -> Result<(), LispError> {
+        let mark_buffer_id = self
+            .buffer_mark_marker_ids
+            .iter()
+            .find_map(|(buffer_id, marker_id)| (*marker_id == id).then_some(*buffer_id));
         let marker = self
             .find_marker_mut(id)
             .ok_or_else(|| LispError::TypeError("marker".into(), format!("marker<{}>", id)))?;
@@ -1772,6 +1799,19 @@ impl Interpreter {
         marker.position = position;
         if let Some(pos) = position {
             marker.last_position = Some(pos);
+        }
+        if let Some(mark_buffer_id) = mark_buffer_id
+            && let Some(buffer) = self.get_buffer_by_id_mut(mark_buffer_id)
+        {
+            if buffer_id == Some(mark_buffer_id) {
+                if let Some(position) = position {
+                    buffer.set_mark(position);
+                } else {
+                    buffer.clear_mark();
+                }
+            } else {
+                buffer.clear_mark();
+            }
         }
         Ok(())
     }
