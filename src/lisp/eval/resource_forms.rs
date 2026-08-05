@@ -1310,8 +1310,100 @@ impl Interpreter {
         items: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "combine-change-calls".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+
+        let beg = self.eval(&items[1], env)?;
+        let end = self.eval(&items[2], env)?;
+        let beg = crate::lisp::primitives::position_from_value(self, &beg)?;
+        let end = crate::lisp::primitives::position_from_value(self, &end)?;
+
+        // The outer call owns hook coalescing and the combined undo entry.
+        // Nested calls merely evaluate their bodies, matching GNU's
+        // `undo--combining-change-calls' guard.
+        if self
+            .lookup_var("undo--combining-change-calls", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            return self.sf_progn(&items[3..], env);
+        }
+
+        let buffer_id = self.current_buffer_id();
+        let end_marker = self.make_marker();
+        let Value::Marker(end_marker_id) = end_marker else {
+            unreachable!("make_marker returns a marker");
+        };
+        let _ = self.set_marker(end_marker_id, Some(end), Some(buffer_id));
+        self.set_marker_insertion_type(end_marker_id, true);
+
+        let hooks_inhibited = self
+            .lookup_var("inhibit-modification-hooks", env)
+            .is_some_and(|value| value.is_truthy());
+        if !hooks_inhibited
+            && let Err(error) = crate::lisp::primitives::run_change_hooks(
+                self,
+                "before-change-functions",
+                &[Value::Integer(beg as i64), Value::Integer(end as i64)],
+                env,
+            )
+        {
+            let _ = self.set_marker(end_marker_id, None, None);
+            return Err(error);
+        }
+
+        // Keep GNU's syntax cache exception: searches or sexp movement in
+        // BODY may trigger on-demand syntax propertization, so retain only
+        // its cache flusher while suppressing ordinary per-edit hooks.
+        let before_hooks = crate::lisp::primitives::hook_values(
+            self,
+            "before-change-functions",
+            env,
+            Some(buffer_id),
+        );
+        let syntax_cache_hook = before_hooks
+            .into_iter()
+            .find(|hook| matches!(hook, Value::Symbol(name) if name == "syntax-ppss-flush-cache"));
+        let body_before_hooks = syntax_cache_hook
+            .map(|hook| Value::list([hook]))
+            .unwrap_or(Value::Nil);
+
+        let restore_combining =
+            self.bind_special_variable("undo--combining-change-calls", Value::T, env)?;
+        let restore_before =
+            match self.bind_special_variable("before-change-functions", body_before_hooks, env) {
+                Ok(restore) => restore,
+                Err(error) => {
+                    let _ = self.restore_special_binding(restore_combining, env);
+                    let _ = self.set_marker(end_marker_id, None, None);
+                    return Err(error);
+                }
+            };
+        let restore_after =
+            match self.bind_special_variable("after-change-functions", Value::Nil, env) {
+                Ok(restore) => restore,
+                Err(error) => {
+                    let _ = self.restore_special_binding(restore_before, env);
+                    let _ = self.restore_special_binding(restore_combining, env);
+                    let _ = self.set_marker(end_marker_id, None, None);
+                    return Err(error);
+                }
+            };
+
         let start_undo = self.buffer.undo_len();
-        let result = self.sf_progn(&items[3..], env)?;
+        let result = self.sf_progn(&items[3..], env);
+        let restore_after_result = self.restore_special_binding(restore_after, env);
+        let restore_before_result = self.restore_special_binding(restore_before, env);
+        let restore_combining_result = self.restore_special_binding(restore_combining, env);
+
+        let result = result?;
+        restore_after_result?;
+        restore_before_result?;
+        restore_combining_result?;
+
         let entries = self.buffer.take_undo_entries_since(start_undo);
         if !entries.is_empty() {
             self.buffer
@@ -1319,6 +1411,21 @@ impl Interpreter {
                     display: combined_undo_display(&entries),
                     entries,
                 });
+        }
+
+        let new_end = self.marker_position(end_marker_id).unwrap_or(end);
+        let _ = self.set_marker(end_marker_id, None, None);
+        if !hooks_inhibited {
+            crate::lisp::primitives::run_change_hooks(
+                self,
+                "after-change-functions",
+                &[
+                    Value::Integer(beg as i64),
+                    Value::Integer(new_end as i64),
+                    Value::Integer(end as i64 - beg as i64),
+                ],
+                env,
+            )?;
         }
         Ok(result)
     }

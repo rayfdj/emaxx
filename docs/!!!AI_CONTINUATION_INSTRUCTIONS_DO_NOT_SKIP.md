@@ -18,6 +18,24 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-05 LPR/LS-LISP CHECKPOINT: the fresh contiguous ordered frontier is
+  4,120/7,080, leaving 2,960 selectors.  LPR is 2/2 and LS-Lisp is 5/5.
+  `combine-change-calls' now follows GNU's outer hook/undo and moving-end
+  contract; Rope scans and line indexing avoid repeated tree walks; field
+  property checks borrow spans instead of cloning them; and loaded GNU Dired
+  replaces the old native `dired-move-to-filename' heuristic.  The dumped
+  directory-listing regexp is GNU's locale-complete grammar, including the
+  omitted-year ISO form that previously trapped Dired alignment.  Unix file
+  attributes now expose ctime, while `set-file-times' changes both atime and
+  mtime.  Canonical artifacts are LPR
+  `target/compat/run-1785896057302736000-12788` and LS-Lisp
+  `target/compat/run-1785902675033220000-17761`; exact Bug#27762 is green in
+  `target/compat/run-1785902582311550000-17553`.  Formatting, diff check,
+  focused GNU-contract tests, all-target/all-feature check, strict Clippy, and
+  regenerated/rustfmt-normalized autoload validation pass.  Native remains
+  complete at 1,420/1,420.  NEXT is selector 4,121,
+  `fill-flow-tests-fill-flowed-decode', in
+  `test/lisp/mail/flow-fill-tests.el` (3 outcomes), followed by Footnote (1).
 - 2026-08-05 LOAD HISTORY CHECKPOINT: the fresh contiguous ordered frontier is
   4,113/7,080, leaving 2,967 selectors.  All 9 canonical outcomes in
   `test/lisp/loadhist-tests.el` match GNU.  `require' records file dependencies

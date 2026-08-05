@@ -4015,13 +4015,19 @@ fn remove_function_is_a_safe_noop_for_nil_function_slots() {
 
 #[test]
 fn directory_listing_regexp_matches_common_ls_output() {
-    assert_ne!(
-        eval_str(
-            r#"(string-match-p directory-listing-before-filename-regexp
-                                    "-rw-r--r--@    1 alpha  staff      0 Mar 16 04:57 foo.c")"#
-        ),
-        Value::Nil
-    );
+    for listing in [
+        "-rw-r--r--@    1 alpha  staff      0 Mar 16 04:57 foo.c",
+        "-rw-r--r--     1 501    20    238779 06-12 13:35 src/alloc.c",
+        "-rw-r--r--     1 alpha  staff      0 2026-06-12 13:35 foo.c",
+    ] {
+        assert_ne!(
+            eval_str(&format!(
+                "(string-match-p directory-listing-before-filename-regexp {listing:?})"
+            )),
+            Value::Nil,
+            "listing should match: {listing}"
+        );
+    }
 }
 
 #[test]

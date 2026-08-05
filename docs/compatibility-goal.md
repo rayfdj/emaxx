@@ -29,6 +29,26 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-05 LPR/LS-Lisp checkpoint advances the fresh contiguous
+  compatibility prefix to 4,120/7,080, leaving 2,960 selectors.  LPR is 2/2
+  and LS-Lisp is 5/5 in canonical order.  GNU `combine-change-calls' now
+  coalesces change hooks around its body, tracks the moving region end, and
+  groups only the outer undo sequence.  Rope-native skip and line indexing
+  remove repeated tree walks, field-property probes no longer clone every
+  span, and loaded GNU Dired owns `dired-move-to-filename' instead of the old
+  native heuristic.  The dumped directory-listing regexp now covers GNU's
+  complete locale/date grammar, including omitted-year ISO dates.  Unix
+  `file-attributes' reports ctime and `set-file-times' sets both atime and
+  mtime, matching GNU.  Canonical artifacts are LPR
+  `target/compat/run-1785896057302736000-12788` and LS-Lisp
+  `target/compat/run-1785902675033220000-17761`; the formerly timing-out exact
+  Bug#27762 replay is green in
+  `target/compat/run-1785902582311550000-17553`.  Formatting, diff check,
+  focused GNU-contract regressions, all-target/all-feature check, strict
+  Clippy, and regenerated/rustfmt-normalized autoload-manifest validation all
+  pass.  Native remains complete at 1,420/1,420.  NEXT is selector 4,121,
+  `fill-flow-tests-fill-flowed-decode', in
+  `test/lisp/mail/flow-fill-tests.el` (3 selected outcomes).
 - The 2026-08-05 Load History checkpoint advances the fresh contiguous
   compatibility prefix to 4,113/7,080, leaving 2,967 selectors.  All 9
   canonical Load History outcomes match GNU.  Source loads now record

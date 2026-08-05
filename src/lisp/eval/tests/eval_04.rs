@@ -1053,6 +1053,58 @@ fn auto_revert_mode_reloads_changed_file() {
     let _ = fs::remove_file(path);
 }
 
+#[cfg(unix)]
+#[test]
+fn file_attributes_and_set_file_times_use_unix_timestamp_fields() {
+    use std::os::unix::fs::MetadataExt;
+
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-file-ctime-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(&path, "ctime").expect("create ctime fixture");
+    let metadata = fs::metadata(&path).expect("stat ctime fixture");
+    let expected =
+        crate::lisp::primitives::unix_time_list_value(metadata.ctime(), metadata.ctime_nsec());
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(&mut interp, &format!("(nth 6 (file-attributes {path:?}))")),
+        expected
+    );
+
+    let timestamp = 1_700_000_000u64;
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            &format!("(set-file-times {path:?} {timestamp})")
+        ),
+        Value::T
+    );
+    let metadata = fs::metadata(&path).expect("stat retimed fixture");
+    assert_eq!(
+        metadata
+            .accessed()
+            .expect("fixture atime")
+            .duration_since(UNIX_EPOCH)
+            .expect("atime after epoch")
+            .as_secs(),
+        timestamp
+    );
+    assert_eq!(
+        metadata
+            .modified()
+            .expect("fixture mtime")
+            .duration_since(UNIX_EPOCH)
+            .expect("mtime after epoch")
+            .as_secs(),
+        timestamp
+    );
+    fs::remove_file(path).expect("remove ctime fixture");
+}
+
 #[test]
 fn insert_file_contents_replace_never_prompts_about_supersession() {
     let path = std::env::temp_dir().join(format!(

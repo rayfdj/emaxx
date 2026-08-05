@@ -66,15 +66,19 @@ pub(crate) fn system_time_list_value(time: SystemTime) -> Result<Value, LispErro
     let duration = time
         .duration_since(UNIX_EPOCH)
         .map_err(|error| LispError::Signal(error.to_string()))?;
-    let seconds = duration.as_secs() as i64;
-    let micros = duration.subsec_micros() as i64;
-    let picos = (duration.subsec_nanos() as i64 % 1_000) * 1_000;
-    Ok(Value::list([
+    Ok(unix_time_list_value(
+        duration.as_secs() as i64,
+        duration.subsec_nanos() as i64,
+    ))
+}
+
+pub(crate) fn unix_time_list_value(seconds: i64, nanoseconds: i64) -> Value {
+    Value::list([
         Value::Integer(seconds >> 16),
         Value::Integer(seconds & 0xffff),
-        Value::Integer(micros),
-        Value::Integer(picos),
-    ]))
+        Value::Integer(nanoseconds.div_euclid(1_000)),
+        Value::Integer(nanoseconds.rem_euclid(1_000) * 1_000),
+    ])
 }
 
 pub(crate) fn file_attribute_field(attributes: &Value, index: usize) -> Result<Value, LispError> {
@@ -127,17 +131,9 @@ pub(crate) fn set_file_times_path(
     {
         let c_path = CString::new(Path::new(path).as_os_str().as_bytes())
             .map_err(|_| LispError::Signal("File name contains nul byte".into()))?;
-        let metadata = if nofollow {
-            fs::symlink_metadata(path)
-        } else {
-            fs::metadata(path)
-        }
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-        let accessed = metadata.accessed().unwrap_or(modified);
-        let times = [
-            system_time_to_timeval(accessed)?,
-            system_time_to_timeval(modified)?,
-        ];
+        let timestamp = system_time_to_timeval(modified)?;
+        // GNU set-file-times sets both atime and mtime to TIMESTAMP.
+        let times = [timestamp, timestamp];
         let result = if nofollow {
             // SAFETY: c_path is a valid nul-terminated path, and times points to
             // two initialized timeval values for the duration of this call.

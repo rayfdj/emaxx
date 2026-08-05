@@ -33,6 +33,48 @@ fn module_file_suffix_value() -> Value {
     Value::String(suffix.into())
 }
 
+fn directory_listing_before_filename_regexp() -> &'static str {
+    static REGEXP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    REGEXP
+        .get_or_init(|| {
+            let letter = "\\([A-Za-z]\\|[^\0-\u{7f}]\\)";
+            let letter_or_quote = "\\([A-Za-z']\\|[^\0-\u{7f}]\\)";
+            let month = format!("{letter_or_quote}{letter_or_quote}+\\.?");
+            let year = "[0-9][0-9][0-9][0-9]";
+            let day = "[ 0-3][0-9]";
+            let hour_minute = "[ 0-2][0-9][:.][0-5][0-9]";
+            let seconds = "[0-6][0-9]\\([.,][0-9]+\\)?";
+            let zone = "[-+][0-2][0-9][0-5][0-9]";
+            let iso_month_day = "[01][0-9]-[0-3][0-9]";
+            let iso_time = format!("{hour_minute}\\(:{seconds}\\( ?{zone}\\)?\\)?");
+            let iso = format!(
+                "\\(\\({year}-\\)?{iso_month_day}[ T]{iso_time}\\|{year}-{iso_month_day}\\)"
+            );
+            let western = format!(
+                "\\({month} +{day}\\|{day}\\.? {month}\\) +\\({hour_minute}\\|{year}\\)"
+            );
+            let western_comma = format!("{month} +{day}, +{year}");
+            let day_month_year = format!("{day}-{month}-{year} {hour_minute}");
+            let east_asian = format!(
+                "\\([ 0-1]?[0-9]{letter}? {day}{letter}? +\\|{day} [ 0-1]?[0-9] +\\)\\({hour_minute}\\|{year}{letter}?\\)"
+            );
+
+            format!(
+                concat!(
+                    "\\([0-9][BkKMGTPEZYRQ]? {iso}",
+                    "\\|.*[0-9][BkKMGTPEZYRQ]? ",
+                    "\\({western}\\|{western_comma}\\|{day_month_year}\\|{east_asian}\\)\\) +"
+                ),
+                iso = iso,
+                western = western,
+                western_comma = western_comma,
+                day_month_year = day_month_year,
+                east_asian = east_asian,
+            )
+        })
+        .as_str()
+}
+
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
         // Cow avoids a per-lookup String allocation for the overwhelmingly
@@ -113,12 +155,12 @@ impl Interpreter {
             "region-extract-function" => Some(Value::Symbol(
                 "emaxx-default-region-extract-function".into(),
             )),
-            "region-insert-function" => Some(Value::Symbol(
-                "emaxx-default-region-insert-function".into(),
-            )),
-            "redisplay-highlight-region-function" => {
-                Some(Value::Symbol("redisplay--highlight-overlay-function".into()))
+            "region-insert-function" => {
+                Some(Value::Symbol("emaxx-default-region-insert-function".into()))
             }
+            "redisplay-highlight-region-function" => Some(Value::Symbol(
+                "redisplay--highlight-overlay-function".into(),
+            )),
             "redisplay-unhighlight-region-function" => Some(Value::Symbol(
                 "redisplay--unhighlight-overlay-function".into(),
             )),
@@ -282,9 +324,7 @@ impl Interpreter {
             "display-hourglass" => Some(Value::Nil),
             "page-delimiter" => Some(Value::String("^\u{000c}".into())),
             "adaptive-fill-mode" => Some(Value::T),
-            "adaptive-fill-regexp" => Some(Value::String(
-                "[-–!|#%;>*·•‣⁃◦ \t]*".into(),
-            )),
+            "adaptive-fill-regexp" => Some(Value::String("[-–!|#%;>*·•‣⁃◦ \t]*".into())),
             "adaptive-fill-first-line-regexp" => Some(Value::String("\\`[ \t]*\\'".into())),
             "gc-cons-threshold" => Some(Value::Integer(800_000)),
             "auto-save-timeout" => Some(Value::Integer(30)),
@@ -310,7 +350,9 @@ impl Interpreter {
             "search-default-mode" => Some(Value::Nil),
             // GNU keyboard.c keymaps; simple.el define-keys them at load
             // time (event-apply-*-modifier bindings).
-            "function-key-map" | "key-translation-map" | "input-decode-map"
+            "function-key-map"
+            | "key-translation-map"
+            | "input-decode-map"
             | "local-function-key-map" => Some(Value::list([Value::Symbol("keymap".into())])),
             "values" => Some(Value::Nil),
             "read-circle" => Some(Value::T),
@@ -335,9 +377,7 @@ impl Interpreter {
                     .map(Value::String)
                     .unwrap_or(Value::Nil),
             ),
-            "load-source-file-function" => {
-                Some(Value::Symbol("load-with-code-conversion".into()))
-            }
+            "load-source-file-function" => Some(Value::Symbol("load-with-code-conversion".into())),
             "load-force-doc-strings" | "load-convert-to-unibyte" => Some(Value::Nil),
             "preloaded-file-list" | "byte-boolean-vars" => Some(Value::Nil),
             "load-dangerous-libraries" | "force-load-messages" => Some(Value::Nil),
@@ -431,25 +471,12 @@ impl Interpreter {
             "line-move-visual" => Some(Value::T),
             "file-name-invalid-regexp" => Some(Value::String("\0".into())),
             "directory-listing-before-filename-regexp" => Some(Value::String(
-                concat!(
-                    ".*[0-9][BkKMGTPEZYRQ]? ",
-                    "\\(",
-                    "[0-9][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]\\([ T][ 0-2][0-9][:.][0-5][0-9]\\)?",
-                    "\\|",
-                    "[A-Za-z][A-Za-z][A-Za-z] +[ 0-3][0-9] +\\([ 0-2][0-9][:.][0-5][0-9]\\|[0-9][0-9][0-9][0-9]\\)",
-                    "\\)",
-                    " +"
-                )
-                .into(),
+                directory_listing_before_filename_regexp().into(),
             )),
             "minor-mode-alist" => Some(Value::Nil),
             "timer-list" | "timer-idle-list" => Some(Value::Nil),
-            "revert-buffer-function" => {
-                Some(Value::Symbol("revert-buffer--default".into()))
-            }
-            "buffer-stale-function" => Some(Value::Symbol(
-                "buffer-stale--default-function".into(),
-            )),
+            "revert-buffer-function" => Some(Value::Symbol("revert-buffer--default".into())),
+            "buffer-stale-function" => Some(Value::Symbol("buffer-stale--default-function".into())),
             "buffer-auto-revert-by-notification" => Some(Value::Nil),
             "non-essential" => Some(Value::Nil),
             "remote-file-name-inhibit-cache" => Some(Value::Nil),
@@ -467,19 +494,29 @@ impl Interpreter {
             // font-lock.el: the standard face variables are self-quoting
             // defvars that keyword FACENAME expressions evaluate.
             "font-lock-comment-face" => Some(Value::Symbol("font-lock-comment-face".into())),
-            "font-lock-comment-delimiter-face" => Some(Value::Symbol("font-lock-comment-delimiter-face".into())),
+            "font-lock-comment-delimiter-face" => {
+                Some(Value::Symbol("font-lock-comment-delimiter-face".into()))
+            }
             "font-lock-string-face" => Some(Value::Symbol("font-lock-string-face".into())),
             "font-lock-doc-face" => Some(Value::Symbol("font-lock-doc-face".into())),
             "font-lock-doc-markup-face" => Some(Value::Symbol("font-lock-doc-markup-face".into())),
             "font-lock-keyword-face" => Some(Value::Symbol("font-lock-keyword-face".into())),
             "font-lock-builtin-face" => Some(Value::Symbol("font-lock-builtin-face".into())),
-            "font-lock-function-name-face" => Some(Value::Symbol("font-lock-function-name-face".into())),
-            "font-lock-variable-name-face" => Some(Value::Symbol("font-lock-variable-name-face".into())),
+            "font-lock-function-name-face" => {
+                Some(Value::Symbol("font-lock-function-name-face".into()))
+            }
+            "font-lock-variable-name-face" => {
+                Some(Value::Symbol("font-lock-variable-name-face".into()))
+            }
             "font-lock-type-face" => Some(Value::Symbol("font-lock-type-face".into())),
             "font-lock-constant-face" => Some(Value::Symbol("font-lock-constant-face".into())),
             "font-lock-warning-face" => Some(Value::Symbol("font-lock-warning-face".into())),
-            "font-lock-negation-char-face" => Some(Value::Symbol("font-lock-negation-char-face".into())),
-            "font-lock-preprocessor-face" => Some(Value::Symbol("font-lock-preprocessor-face".into())),
+            "font-lock-negation-char-face" => {
+                Some(Value::Symbol("font-lock-negation-char-face".into()))
+            }
+            "font-lock-preprocessor-face" => {
+                Some(Value::Symbol("font-lock-preprocessor-face".into()))
+            }
             "overriding-local-map" => Some(Value::Nil),
             "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
@@ -488,7 +525,8 @@ impl Interpreter {
             "window-display-table" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
             "text-mode-syntax-table" => Some(Value::CharTable(2)),
-            "emacs-lisp-mode-syntax-table" | "lisp-mode-syntax-table"
+            "emacs-lisp-mode-syntax-table"
+            | "lisp-mode-syntax-table"
             | "lisp-data-mode-syntax-table" => {
                 Some(Value::CharTable(self.lisp_data_syntax_table_id()))
             }
@@ -594,7 +632,9 @@ impl Interpreter {
             "this-command" => Some(Value::Nil),
             "this-original-command" => Some(Value::Nil),
             "num-input-keys" | "num-nonmacro-input-events" => Some(Value::Integer(0)),
-            "this-single-command-keys" => Some(Value::list([Value::Symbol("vector-literal".into())])),
+            "this-single-command-keys" => {
+                Some(Value::list([Value::Symbol("vector-literal".into())]))
+            }
             "unread-command-events" => Some(Value::Nil),
             "deactivate-mark" => Some(Value::Nil),
             "line-spacing" => Some(Value::Nil),

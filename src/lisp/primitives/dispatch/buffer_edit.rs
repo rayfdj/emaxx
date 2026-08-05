@@ -3850,11 +3850,7 @@ fn simple_c_family_indent_line(interp: &mut Interpreter, env: &mut Env) -> Resul
 }
 
 fn buffer_has_field_property(interp: &Interpreter) -> bool {
-    interp
-        .buffer
-        .full_property_spans()
-        .iter()
-        .any(|span| span.props.iter().any(|(name, _)| name == "field"))
+    interp.buffer.has_text_property_named("field")
 }
 
 /// Column width of a display spec form: integers are columns, one-element

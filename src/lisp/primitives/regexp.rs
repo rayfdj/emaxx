@@ -1926,19 +1926,10 @@ pub(super) fn skip_chars_forward_impl(
     } else {
         interp.buffer.point_max()
     };
-    let start = interp.buffer.point();
-    while interp.buffer.point() < limit {
-        let Some(ch) = interp.buffer.char_at(interp.buffer.point()) else {
-            break;
-        };
-        if !skip_char_matches_spec(ch, &spec) {
-            break;
-        }
-        let _ = interp.buffer.forward_char(1);
-    }
-    Ok(Value::Integer(
-        interp.buffer.point().saturating_sub(start) as i64
-    ))
+    let skipped = interp
+        .buffer
+        .skip_forward_while(limit, |ch| skip_char_matches_spec(ch, &spec));
+    Ok(Value::Integer(skipped as i64))
 }
 
 pub(super) fn skip_chars_backward_impl(
@@ -1956,17 +1947,10 @@ pub(super) fn skip_chars_backward_impl(
     } else {
         interp.buffer.point_min()
     };
-    let start = interp.buffer.point();
-    while interp.buffer.point() > limit {
-        let Some(ch) = interp.buffer.char_before() else {
-            break;
-        };
-        if !skip_char_matches_spec(ch, &spec) {
-            break;
-        }
-        let _ = interp.buffer.forward_char(-1);
-    }
-    Ok(Value::Integer(interp.buffer.point() as i64 - start as i64))
+    let skipped = interp
+        .buffer
+        .skip_backward_while(limit, |ch| skip_char_matches_spec(ch, &spec));
+    Ok(Value::Integer(-(skipped as i64)))
 }
 
 pub(super) fn match_string_impl(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
