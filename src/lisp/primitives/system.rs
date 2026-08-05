@@ -1628,7 +1628,9 @@ pub(crate) fn directory_files(
 pub(crate) fn charset_for_char(code: u32) -> &'static str {
     if code <= 0x7f {
         "ascii"
-    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff).contains(&code) {
+    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff).contains(&code)
+        || (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&code)
+    {
         "eight-bit"
     } else {
         "unicode"

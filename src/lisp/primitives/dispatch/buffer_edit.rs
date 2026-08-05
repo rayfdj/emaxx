@@ -121,6 +121,89 @@ fn search_noerror_moves(noerror: Option<&Value>) -> bool {
     noerror.is_some_and(|value| value.is_truthy() && !matches!(value, Value::T))
 }
 
+fn character_byte_value(character: Option<char>, multibyte: bool) -> Result<Value, LispError> {
+    let Some(character) = character else {
+        // GNU exposes the terminating NUL at point-max and at the end of an
+        // empty string when no explicit position was supplied.
+        return Ok(Value::Integer(0));
+    };
+    let raw_byte = raw_byte_from_regex_char(character);
+    let code = raw_byte.map_or(character as u32, u32::from);
+    if multibyte && raw_byte.is_none() && code > 0x7f {
+        return Err(LispError::Signal(format!(
+            "Not an ASCII nor an 8-bit character: {code}"
+        )));
+    }
+    Ok(Value::Integer(i64::from(code & 0xff)))
+}
+
+fn utf8_sequence_width(first: u8) -> usize {
+    match first {
+        0x00..=0x7f => 1,
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => 0,
+    }
+}
+
+fn unibyte_text_bytes(text: &str) -> Vec<u8> {
+    text.chars()
+        .flat_map(|character| {
+            raw_byte_from_regex_char(character)
+                .map(|byte| vec![byte])
+                .or_else(|| u8::try_from(character as u32).ok().map(|byte| vec![byte]))
+                .unwrap_or_else(|| character.to_string().into_bytes())
+        })
+        .collect()
+}
+
+fn multibyte_buffer_text(text: &str, preserve_utf8_sequences: bool) -> (String, Vec<usize>) {
+    let bytes = unibyte_text_bytes(text);
+    let mut converted = String::new();
+    let mut position_map = vec![1; bytes.len() + 1];
+    let mut byte_index = 0;
+    let mut new_position = 1;
+
+    while byte_index < bytes.len() {
+        position_map[byte_index] = new_position;
+        let width = if preserve_utf8_sequences {
+            utf8_sequence_width(bytes[byte_index])
+        } else {
+            0
+        };
+        let character = (width > 0 && byte_index + width <= bytes.len())
+            .then(|| std::str::from_utf8(&bytes[byte_index..byte_index + width]).ok())
+            .flatten()
+            .and_then(|valid| valid.chars().next());
+        let consumed = if let Some(character) = character {
+            converted.push(character);
+            width
+        } else {
+            converted.push(raw_byte_regex_char(bytes[byte_index]));
+            1
+        };
+        new_position += 1;
+        position_map[byte_index + 1..=byte_index + consumed].fill(new_position);
+        byte_index += consumed;
+    }
+    (converted, position_map)
+}
+
+fn unibyte_buffer_text(text: &str) -> (String, Vec<usize>) {
+    let mut converted = String::new();
+    let mut position_map = Vec::with_capacity(text.chars().count() + 1);
+    position_map.push(1);
+    for character in text.chars() {
+        let bytes = raw_byte_from_regex_char(character)
+            .map(|byte| vec![byte])
+            .unwrap_or_else(|| character.to_string().into_bytes());
+        converted.extend(bytes.into_iter().map(char::from));
+        position_map.push(converted.chars().count() + 1);
+    }
+    (converted, position_map)
+}
+
 fn column_zero_list_starts(interp: &Interpreter) -> Result<Vec<usize>, LispError> {
     let start = interp.buffer.point_min();
     let text = interp
@@ -1465,11 +1548,12 @@ pub(super) fn call(
                 env,
             )
         }
-        "buffer-string" => Ok(string_like_value(
+        "buffer-string" => Ok(string_like_value_with_multibyte(
             interp.buffer.buffer_string(),
             interp
                 .buffer
                 .substring_property_spans(interp.buffer.point_min(), interp.buffer.point_max()),
+            interp.buffer.is_multibyte(),
         )),
         "minibuffer-contents" | "minibuffer-contents-no-properties" => {
             need_arg_range(name, args, 0, 0)?;
@@ -1484,7 +1568,11 @@ pub(super) fn call(
             } else {
                 Vec::new()
             };
-            Ok(string_like_value(text, props))
+            Ok(string_like_value_with_multibyte(
+                text,
+                props,
+                interp.buffer.is_multibyte(),
+            ))
         }
         "buffer-substring" | "buffer-substring-no-properties" => {
             need_args(name, args, 2)?;
@@ -1494,12 +1582,17 @@ pub(super) fn call(
             match interp.buffer.buffer_substring(start, end) {
                 Ok(s) => {
                     if name == "buffer-substring" {
-                        Ok(string_like_value(
+                        Ok(string_like_value_with_multibyte(
                             s,
                             interp.buffer.substring_property_spans(start, end),
+                            interp.buffer.is_multibyte(),
                         ))
                     } else {
-                        Ok(Value::String(s))
+                        Ok(string_like_value_with_multibyte(
+                            s,
+                            Vec::new(),
+                            interp.buffer.is_multibyte(),
+                        ))
                     }
                 }
                 Err(e) => Err(LispError::Signal(e.to_string())),
@@ -1961,20 +2054,55 @@ pub(super) fn call(
             Ok(Value::String(interp.buffer.name.clone()))
         }
         "set-buffer-multibyte" => {
-            let enabled = args.first().is_none_or(Value::is_truthy);
-            interp.buffer.set_multibyte(enabled);
-            interp
-                .buffer
-                .push_undo_entry(crate::buffer::UndoEntry::Combined {
-                    display: Value::Nil,
-                    entries: Vec::new(),
-                });
-            Ok(if enabled { Value::T } else { Value::Nil })
+            need_args(name, args, 1)?;
+            let enabled = args[0].is_truthy();
+            if enabled == interp.buffer.is_multibyte() {
+                return Ok(args[0].clone());
+            }
+            if interp.buffer.restriction()
+                != (1, interp.buffer.full_buffer_string().chars().count() + 1)
+            {
+                return Err(LispError::Signal(
+                    "Changing multibyteness in a narrowed buffer".into(),
+                ));
+            }
+
+            let original = interp.buffer.full_buffer_string();
+            let saved = interp.buffer.saved_text().to_string();
+            let preserve_utf8_sequences = matches!(args[0], Value::T);
+            let (converted, positions) = if enabled {
+                multibyte_buffer_text(&original, preserve_utf8_sequences)
+            } else {
+                unibyte_buffer_text(&original)
+            };
+            let converted_saved = if enabled {
+                multibyte_buffer_text(&saved, preserve_utf8_sequences).0
+            } else {
+                unibyte_buffer_text(&saved).0
+            };
+            let buffer_id = interp.current_buffer_id();
+            let markers = interp.live_marker_positions_for_buffer(buffer_id);
+            interp.buffer.set_multibyte_representation(
+                enabled,
+                converted,
+                converted_saved,
+                &positions,
+            );
+            for (marker_id, position) in markers {
+                let position = position
+                    .and_then(|position| positions.get(position.saturating_sub(1)).copied());
+                interp.set_marker(marker_id, position, Some(buffer_id))?;
+            }
+            Ok(args[0].clone())
         }
         "toggle-enable-multibyte-characters" => {
             let enabled = !interp.buffer.is_multibyte();
-            interp.buffer.set_multibyte(enabled);
-            Ok(if enabled { Value::T } else { Value::Nil })
+            super::call(
+                interp,
+                "set-buffer-multibyte",
+                &[if enabled { Value::T } else { Value::Nil }],
+                env,
+            )
         }
         "char-after" => {
             let pos = match args.first() {
@@ -2025,13 +2153,50 @@ pub(super) fn call(
                 .unwrap_or(Value::Nil))
         }
         "get-byte" => {
-            need_args(name, args, 1)?;
-            let pos = position_from_value(interp, &args[0])?;
-            Ok(interp
-                .buffer
-                .char_at(pos)
-                .map(|ch| Value::Integer((ch as u32 & 0xFF) as i64))
-                .unwrap_or(Value::Nil))
+            if let Some(string_value) = args.get(1).filter(|value| !value.is_nil()) {
+                let string = string_like(string_value).ok_or_else(|| {
+                    LispError::TypeError("string".into(), string_value.type_name())
+                })?;
+                let position = match args.first().filter(|value| !value.is_nil()) {
+                    Some(Value::Integer(position)) if *position >= 0 => *position as usize,
+                    Some(value) => {
+                        return Err(wrong_type_argument("wholenump", value.clone()));
+                    }
+                    None => 0,
+                };
+                let mut characters = string.text.chars();
+                let character = characters.nth(position);
+                if character.is_none() && (position != 0 || !string.text.is_empty()) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("args-out-of-range".into()),
+                        string_value.clone(),
+                        Value::Integer(position as i64),
+                    ])));
+                }
+                character_byte_value(character, string.multibyte)
+            } else {
+                let position = match args.first().filter(|value| !value.is_nil()) {
+                    Some(value) => {
+                        let position = position_from_value(interp, value)?;
+                        if position < interp.buffer.point_min()
+                            || position >= interp.buffer.point_max()
+                        {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("args-out-of-range".into()),
+                                value.clone(),
+                                Value::Integer(interp.buffer.point_min() as i64),
+                                Value::Integer(interp.buffer.point_max() as i64),
+                            ])));
+                        }
+                        position
+                    }
+                    None => interp.buffer.point(),
+                };
+                character_byte_value(
+                    interp.buffer.char_at(position),
+                    interp.buffer.is_multibyte(),
+                )
+            }
         }
         "bobp" => Ok(if interp.buffer.bobp() {
             Value::T
@@ -2068,9 +2233,11 @@ pub(super) fn call(
             ensure_region_modifiable(interp, from, to, env)?;
             let (start, end) = if from <= to { (from, to) } else { (to, from) };
             let props = interp.buffer.substring_property_spans(start, end);
-            Ok(string_like_value(
+            let multibyte = interp.buffer.is_multibyte();
+            Ok(string_like_value_with_multibyte(
                 delete_region_with_hooks(interp, from, to, env)?,
                 props,
+                multibyte,
             ))
         }
         "kill-region" => {

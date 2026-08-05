@@ -404,12 +404,17 @@ pub(super) fn call(
                 .buffer_substring(start, end)
                 .map_err(|e| LispError::Signal(e.to_string()))?;
             if name == "field-string" {
-                Ok(string_like_value(
+                Ok(string_like_value_with_multibyte(
                     text,
                     interp.buffer.substring_property_spans(start, end),
+                    interp.buffer.is_multibyte(),
                 ))
             } else {
-                Ok(Value::String(text))
+                Ok(string_like_value_with_multibyte(
+                    text,
+                    Vec::new(),
+                    interp.buffer.is_multibyte(),
+                ))
             }
         }
         "delete-field" => {
@@ -1152,7 +1157,16 @@ pub(super) fn call(
             let code = u32::try_from(args[1].as_integer()?)
                 .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
             Ok(decode_charset_code(interp, charset, code)
-                .map(|character| Value::Integer(character.into()))
+                .map(|character| {
+                    let public = if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff)
+                        .contains(&character)
+                    {
+                        RAW_BYTE8_BASE + character - RAW_BYTE_REGEX_BASE
+                    } else {
+                        character
+                    };
+                    Value::Integer(public.into())
+                })
                 .unwrap_or(Value::Nil))
         }
         "encode-char" => {
@@ -1160,7 +1174,12 @@ pub(super) fn call(
             let character = u32::try_from(args[0].as_integer()?)
                 .map_err(|_| LispError::Signal("Invalid character".into()))?;
             let charset = args[1].as_symbol()?;
-            Ok(encode_charset_char(interp, charset, character)
+            let internal = if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&character) {
+                RAW_BYTE_REGEX_BASE + character - RAW_BYTE8_BASE
+            } else {
+                character
+            };
+            Ok(encode_charset_char(interp, charset, internal)
                 .map(|code| Value::Integer(code.into()))
                 .unwrap_or(Value::Nil))
         }

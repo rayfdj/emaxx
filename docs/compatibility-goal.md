@@ -29,6 +29,25 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-05 Mail checkpoint advances the fresh contiguous compatibility
+  prefix to 4,187/7,080, leaving 2,893 selectors.  All 67 canonical Mail
+  outcomes after LS-Lisp match GNU across Flow Fill, Footnote, IETF Drums,
+  Mail Extract/Parse/Utils, Quoted Printable, RFC 2045/2047/6068/822, Rmail,
+  Rmail MIME, Undigest, and Uudecode.  Native `get-byte' now honors its full
+  optional position/string contract; buffer-derived strings retain their
+  byte mode; and `set-buffer-multibyte' preserves bytes while remapping
+  characters, positions, markers, overlays, and properties.  GNU's preloaded
+  `ignore-errors' and `ignore-error' macro identities are restored, and the
+  eight-bit charset exposes only public raw-byte character codes.  Canonical
+  artifacts include Quoted Printable
+  `target/compat/run-1785913345037102000-23749`, RFC 6068
+  `target/compat/run-1785913436933290000-23965`, Rmail MIME
+  `target/compat/run-1785913454366481000-24092`, Undigest
+  `target/compat/run-1785913474593149000-24228`, and Uudecode
+  `target/compat/run-1785913496460098000-24364`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 4,188,
+  `man-bgproc-filter-buttonize-includes', in `test/lisp/man-tests.el` (3
+  selected outcomes).
 - The 2026-08-05 LPR/LS-Lisp checkpoint advances the fresh contiguous
   compatibility prefix to 4,120/7,080, leaving 2,960 selectors.  LPR is 2/2
   and LS-Lisp is 5/5 in canonical order.  GNU `combine-change-calls' now

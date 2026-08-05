@@ -828,6 +828,77 @@ fn get_byte_reads_unibyte_buffer_positions() {
         call(&mut interp, "get-byte", &[Value::Integer(1)], &mut env).expect("read first byte"),
         Value::Integer(0xFF)
     );
+
+    assert_eq!(
+        call(&mut interp, "get-byte", &[], &mut env).expect("read byte at point"),
+        Value::Integer(0xFF)
+    );
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "get-byte",
+            &[Value::Nil, Value::String("A".into())],
+            &mut env,
+        )
+        .expect("read first string byte"),
+        Value::Integer(b'A' as i64)
+    );
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "get-byte",
+            &[Value::Nil, Value::String(String::new())],
+            &mut env,
+        )
+        .expect("read terminating NUL from an empty string"),
+        Value::Integer(0)
+    );
+}
+
+#[test]
+fn extracted_strings_preserve_the_buffer_multibyte_mode() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.buffer = crate::buffer::Buffer::from_text("*text*", "ASCII");
+
+    let multibyte =
+        call(&mut interp, "buffer-string", &[], &mut env).expect("extract multibyte buffer string");
+    assert!(string_like(&multibyte).expect("string result").multibyte);
+
+    interp.buffer = crate::buffer::Buffer::from_text("*bytes*", "caf\u{00c3}\u{00a9}");
+    interp.buffer.set_multibyte(false);
+    let unibyte =
+        call(&mut interp, "buffer-string", &[], &mut env).expect("extract unibyte buffer string");
+    assert!(!string_like(&unibyte).expect("string result").multibyte);
+
+    let decoded = call(
+        &mut interp,
+        "decode-coding-string",
+        &[unibyte, Value::Symbol("utf-8".into())],
+        &mut env,
+    )
+    .expect("decode extracted UTF-8 bytes");
+    assert_eq!(string_text(&decoded).expect("decoded string"), "café");
+}
+
+#[test]
+fn set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.buffer = crate::buffer::Buffer::from_text("*bytes*", "\u{00d0}\u{0097}");
+    interp.buffer.set_multibyte(false);
+
+    call(&mut interp, "set-buffer-multibyte", &[Value::T], &mut env)
+        .expect("reinterpret valid UTF-8 bytes");
+    assert_eq!(interp.buffer.buffer_string(), "З");
+    assert!(interp.buffer.is_multibyte());
+
+    call(&mut interp, "set-buffer-multibyte", &[Value::Nil], &mut env)
+        .expect("expose the same UTF-8 byte sequence");
+    assert_eq!(interp.buffer.buffer_string(), "\u{00d0}\u{0097}");
+    assert!(!interp.buffer.is_multibyte());
 }
 
 #[test]

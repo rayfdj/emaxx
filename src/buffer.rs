@@ -257,6 +257,42 @@ impl Buffer {
         self.multibyte = enabled;
     }
 
+    /// Replace the internal character view while preserving the underlying
+    /// byte sequence.  POSITION_MAP contains the new 1-based position for
+    /// every old character boundary, including point-max.
+    pub fn set_multibyte_representation(
+        &mut self,
+        enabled: bool,
+        text: String,
+        saved_text: String,
+        position_map: &[usize],
+    ) {
+        let remap = |position: usize| {
+            position_map
+                .get(position.saturating_sub(1))
+                .copied()
+                .unwrap_or_else(|| text.chars().count() + 1)
+        };
+
+        self.pt = remap(self.pt);
+        self.begv = remap(self.begv);
+        self.zv = remap(self.zv);
+        self.mark = self.mark.map(remap);
+        for overlay in &mut self.overlays {
+            overlay.beg = remap(overlay.beg);
+            overlay.end = remap(overlay.end);
+        }
+        for span in &mut self.text_properties {
+            span.start = remap(span.start);
+            span.end = remap(span.end);
+        }
+
+        self.text = Rope::from_str(&text);
+        self.saved_text = saved_text;
+        self.multibyte = enabled;
+        self.clear_undo_history();
+    }
+
     /// Total characters in the buffer (ignoring narrowing).
     pub fn size_total(&self) -> usize {
         self.text.len_chars()

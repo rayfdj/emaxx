@@ -4242,6 +4242,26 @@ fn simple_compat_exposes_condition_case_unless_debug_as_a_macro() {
 }
 
 #[test]
+fn simple_compat_exposes_ignore_errors_as_a_preloaded_macro() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (macrop 'ignore-errors)
+                   (special-form-p 'ignore-errors)
+                   (ignore-errors (error \"boom\")))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
 fn simple_compat_exposes_with_temp_buffer_as_a_preloaded_macro() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(
