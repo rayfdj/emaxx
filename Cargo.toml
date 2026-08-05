@@ -55,6 +55,7 @@ libloading = "=0.8.9"
 # Delegate platform recycle-bin semantics (Finder Trash, Windows Recycle Bin,
 # and the freedesktop.org Trash specification) to the established backend.
 trash = "=5.2.6"
+mimalloc = { version = "0.1.52", default-features = false }
 
 [dev-dependencies]
 tree-sitter-json = "=0.24.8"
@@ -65,3 +66,10 @@ tree-sitter-json = "=0.24.8"
 # dependency builds and debug assertions remain unchanged.
 [profile.dev.package.emaxx]
 opt-level = 1
+
+# Whole-program optimization for release binaries: fat LTO plus a single
+# codegen unit lets the VM dispatch loop inline Value clone/drop and the
+# hot primitive paths across module boundaries.
+[profile.release]
+lto = "fat"
+codegen-units = 1

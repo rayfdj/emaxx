@@ -1664,9 +1664,11 @@ pub struct Interpreter {
     next_char_table_id: u64,
     /// Allocated record objects.
     records: Vec<RecordState>,
-    /// Decoded byte-code programs keyed by record ID (see bytecode::vm).
+    /// Decoded byte-code programs indexed by record ID minus one — ids are
+    /// dense and never freed, so the slot vector doubles as the cache map
+    /// (see bytecode::vm).
     pub(crate) bytecode_program_cache:
-        std::collections::HashMap<u64, std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>,
+        Vec<Option<std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>>,
     /// SQLite objects keyed by record ID.
     sqlite_handles: Vec<(u64, SqliteHandleState)>,
     /// Lazily compiled Tree-sitter queries keyed by opaque record identity.
@@ -1708,12 +1710,12 @@ pub struct Interpreter {
     macros: Vec<MacroBinding>,
     /// Occurrence counts per macro name so the hot macroexpansion path can
     /// reject non-macro heads without scanning the positional table.
-    macros_name_counts: HashMap<String, u32>,
+    macros_name_counts: HashMap<String, u32, crate::lisp::primitives::FnvBuildHasher>,
     /// User-defined functions in the function namespace.
     functions: Vec<(String, Value)>,
     /// Last-wins index over `functions` so the hot function-lookup path is
     /// O(1); every mutation of `functions` keeps this in sync.
-    functions_index: HashMap<String, Value>,
+    functions_index: HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
@@ -2407,7 +2409,7 @@ impl Interpreter {
                 },
             ],
             sqlite_handles: Vec::new(),
-            bytecode_program_cache: std::collections::HashMap::new(),
+            bytecode_program_cache: Vec::new(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),
             treesit_parsers: Vec::new(),
@@ -2438,9 +2440,9 @@ impl Interpreter {
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
             macros: Vec::new(),
-            macros_name_counts: HashMap::new(),
+            macros_name_counts: HashMap::default(),
             functions: Vec::new(),
-            functions_index: HashMap::new(),
+            functions_index: HashMap::default(),
             network_connect_counter: 0,
             definition_generation: 0,
             not_macro_names: HashMap::new(),

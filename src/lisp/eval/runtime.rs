@@ -2196,7 +2196,12 @@ impl Interpreter {
     pub fn find_record_mut(&mut self, id: u64) -> Option<&mut RecordState> {
         // The caller may rewrite the slots, so a decoded byte-code program
         // for this record can no longer be trusted (see bytecode::vm).
-        self.bytecode_program_cache.remove(&id);
+        if let Some(slot) = (id as usize)
+            .checked_sub(1)
+            .and_then(|index| self.bytecode_program_cache.get_mut(index))
+        {
+            *slot = None;
+        }
         let index = (id as usize).checked_sub(1)?;
         match self.records.get(index) {
             Some(record) if record.id == id => self.records.get_mut(index),

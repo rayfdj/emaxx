@@ -248,8 +248,10 @@ pub fn execute_record(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     // Mutation of a record's slots goes through find_record_mut, which
-    // drops the cached program, so a cache hit is always current.
-    if let Some(program) = interp.bytecode_program_cache.get(&record_id) {
+    // drops the cached program, so a cache hit is always current.  Ids are
+    // dense from 1, so id-1 indexes the slot vector directly.
+    let index = (record_id as usize).saturating_sub(1);
+    if let Some(Some(program)) = interp.bytecode_program_cache.get(index) {
         let program = std::rc::Rc::clone(program);
         return run(interp, &program, args, env);
     }
@@ -266,9 +268,10 @@ pub fn execute_record(
             ]))
         })?;
     let program = std::rc::Rc::new(build_cached(interp, &object, env)?);
-    interp
-        .bytecode_program_cache
-        .insert(record_id, std::rc::Rc::clone(&program));
+    if interp.bytecode_program_cache.len() <= index {
+        interp.bytecode_program_cache.resize(index + 1, None);
+    }
+    interp.bytecode_program_cache[index] = Some(std::rc::Rc::clone(&program));
     run(interp, &program, args, env)
 }
 

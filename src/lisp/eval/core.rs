@@ -934,6 +934,17 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        // A record with a cached program is a genuine byte-code function
+        // (only execute_record populates the cache), so skip the
+        // lambda/autoload probes and the record-type guards below.
+        if let Value::Record(id) = &func
+            && (*id as usize)
+                .checked_sub(1)
+                .and_then(|index| self.bytecode_program_cache.get(index))
+                .is_some_and(|slot| slot.is_some())
+        {
+            return crate::lisp::bytecode::vm::execute_record(self, *id, args, env);
+        }
         let mut owned_name: Option<String> = None;
         let func = match func {
             Value::Symbol(name) => {
@@ -1014,7 +1025,10 @@ impl Interpreter {
                     // objects carry an executable lambda in slot 0 instead.
                     // A cached program implies the slots already passed the
                     // genuineness check, so skip re-walking them.
-                    if self.bytecode_program_cache.contains_key(&id)
+                    if (id as usize)
+                        .checked_sub(1)
+                        .and_then(|index| self.bytecode_program_cache.get(index))
+                        .is_some_and(|slot| slot.is_some())
                         || crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots)
                     {
                         return crate::lisp::bytecode::vm::execute_record(self, id, args, env);
