@@ -325,53 +325,58 @@ impl Buffer {
         Ok(self.pt)
     }
 
+    /// Advance toward LIMIT while PREDICATE accepts each character.
+    ///
+    /// Iterating a Rope slice avoids paying for a tree lookup per character,
+    /// which matters for primitives such as `skip-chars-forward' that often
+    /// scan long regions of a large buffer.
+    pub fn skip_forward_while(
+        &mut self,
+        limit: usize,
+        mut predicate: impl FnMut(char) -> bool,
+    ) -> usize {
+        let start = self.pt;
+        let end = limit.clamp(start, self.zv);
+        let count = self
+            .text
+            .slice(start - 1..end - 1)
+            .chars()
+            .take_while(|ch| predicate(*ch))
+            .count();
+        self.pt += count;
+        count
+    }
+
+    /// Retreat toward LIMIT while PREDICATE accepts each character.
+    pub fn skip_backward_while(
+        &mut self,
+        limit: usize,
+        mut predicate: impl FnMut(char) -> bool,
+    ) -> usize {
+        let start = self.pt;
+        let end = limit.clamp(self.begv, start);
+        let slice = self.text.slice(end - 1..start - 1);
+        let count = slice
+            .chars_at(slice.len_chars())
+            .reversed()
+            .take_while(|ch| predicate(*ch))
+            .count();
+        self.pt -= count;
+        count
+    }
+
     /// Move to the beginning of the current line. Returns new point.
     pub fn beginning_of_line(&mut self) -> usize {
-        if self.pt == self.begv {
-            return self.pt;
-        }
-        // Search backwards for newline
-        let idx0 = self.pt - 1; // 0-based index of char before point
-        if idx0 == 0 {
-            self.pt = self.begv;
-            return self.pt;
-        }
-        // Walk backwards from char before point
-        let slice = self.text.slice(..idx0);
-        // Find the last newline in the slice
-        let mut pos = idx0;
-        for ch in slice.chars_at(idx0).reversed() {
-            pos -= 1;
-            if ch == '\n' {
-                // newline found at pos (0-based), line starts at pos+1
-                self.pt = (pos + 1) + 1; // to 1-based
-                return self.pt;
-            }
-        }
-        // No newline found, go to beginning
-        self.pt = self.begv;
+        self.pt = self.line_start_at(self.pt);
         self.pt
     }
 
     /// Return the beginning of the line containing POS without moving point.
     pub fn line_start_at(&self, pos: usize) -> usize {
         let pt = pos.clamp(self.begv, self.zv);
-        if pt == self.begv {
-            return pt;
-        }
-        let idx0 = pt - 1;
-        if idx0 == 0 {
-            return self.begv;
-        }
-        let slice = self.text.slice(..idx0);
-        let mut index = idx0;
-        for ch in slice.chars_at(idx0).reversed() {
-            index -= 1;
-            if ch == '\n' {
-                return (index + 1) + 1;
-            }
-        }
-        self.begv
+        let char_index = pt.saturating_sub(1).min(self.text.len_chars());
+        let line = self.text.char_to_line(char_index);
+        (self.text.line_to_char(line) + 1).max(self.begv)
     }
 
     /// Move to the end of the current line. Returns new point.
@@ -559,6 +564,12 @@ impl Buffer {
 
     pub fn full_property_spans(&self) -> Vec<TextPropertySpan> {
         self.text_properties.clone()
+    }
+
+    pub fn has_text_property_named(&self, property: &str) -> bool {
+        self.text_properties
+            .iter()
+            .any(|span| span.props.iter().any(|(name, _)| name == property))
     }
 
     pub fn text_property_at(&self, pos: usize, prop: &str) -> Option<Value> {
@@ -1950,6 +1961,26 @@ mod tests {
     }
 
     #[test]
+    fn skip_while_walks_long_rope_slices_in_both_directions() {
+        let mut buf = Buffer::from_text(
+            "test",
+            &format!("{}x{}", " ".repeat(10_000), "\t".repeat(10_000)),
+        );
+        assert_eq!(
+            buf.skip_forward_while(buf.point_max(), |ch| ch == ' '),
+            10_000
+        );
+        assert_eq!(buf.char_after(), Some('x'));
+
+        buf.goto_char(buf.point_max());
+        assert_eq!(
+            buf.skip_backward_while(buf.point_min(), |ch| ch == '\t'),
+            10_000
+        );
+        assert_eq!(buf.char_before(), Some('x'));
+    }
+
+    #[test]
     fn current_column_tracking() {
         // editfns-tests--current-column-move-to-column
         let mut buf = Buffer::from_text("test", "abcd\nefgh");
@@ -1974,6 +2005,14 @@ mod tests {
         buf.goto_char(2); // 'b'
         buf.beginning_of_line();
         assert_eq!(buf.point(), 1);
+
+        buf.narrow_to_region(6, 12); // Start in the middle of "def".
+        buf.goto_char(7);
+        assert_eq!(buf.beginning_of_line(), 6);
+
+        let mut trailing_newline = Buffer::from_text("test", "abc\n");
+        trailing_newline.goto_char(trailing_newline.point_max());
+        assert_eq!(trailing_newline.beginning_of_line(), 5);
     }
 
     #[test]

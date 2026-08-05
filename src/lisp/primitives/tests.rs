@@ -9543,6 +9543,50 @@ fn native_combined_after_change_merges_ranges_before_running_hooks() {
 }
 
 #[test]
+fn combine_change_calls_coalesces_hooks_and_tracks_the_updated_end() {
+    let program = r#"(progn
+                       (defun emaxx-test-combine-before (begin end)
+                         (push (list 'before begin end (buffer-string))
+                               emaxx-test-combine-events))
+                       (defun emaxx-test-combine-after (begin end old-length)
+                         (push (list 'after begin end old-length (buffer-string))
+                               emaxx-test-combine-events))
+                       (with-temp-buffer
+                         (setq emaxx-test-combine-events nil)
+                         (add-hook 'before-change-functions
+                                   #'emaxx-test-combine-before nil t)
+                         (add-hook 'after-change-functions
+                                   #'emaxx-test-combine-after nil t)
+                         (let ((result
+                                (combine-change-calls (point-min) (point-max)
+                                  (insert "a")
+                                  (combine-change-calls (point) (point)
+                                    (insert "b"))
+                                  'body-result)))
+                           (list result
+                                 (nreverse emaxx-test-combine-events)
+                                 (buffer-string)))))"#;
+    let expected = r#"(body-result ((before 1 1 "") (after 1 3 0 "ab")) "ab")"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("combine-change-calls contract should parse")
+        .expect("combine-change-calls contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("combine-change-calls contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("combine-change-calls result should parse")
+            .expect("combine-change-calls result should exist")
+    );
+}
+
+#[test]
 fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() {
     let contracts = [
         (

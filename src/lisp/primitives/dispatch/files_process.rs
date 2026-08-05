@@ -2030,6 +2030,11 @@ pub(super) fn call(
                 .map(system_time_list_value)
                 .transpose()?
                 .unwrap_or(Value::Integer(0));
+            // GNU's status-change field is Unix ctime, not birth/creation
+            // time.  They diverge as soon as metadata or mtime changes.
+            #[cfg(unix)]
+            let changed = unix_time_list_value(metadata.ctime(), metadata.ctime_nsec());
+            #[cfg(not(unix))]
             let changed = metadata
                 .created()
                 .ok()
