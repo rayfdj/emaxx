@@ -18,6 +18,19 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-05 MAN/MD4/MH-E CHECKPOINT: the fresh contiguous ordered frontier
+  is 4,217/7,080, leaving 2,863 selectors.  All 30 canonical outcomes match
+  GNU: Man 3/3, MD4 1/1, MH Limit 1/1, MH Thread 4/4, MH Utils 19/19, and MH
+  XFace 2/2.  No implementation changes were required.  Canonical artifacts:
+  Man `target/compat/run-1785913734880936000-24648`; MD4
+  `target/compat/run-1785913832974671000-24858`; MH Limit
+  `target/compat/run-1785913861909270000-24998`; MH Thread
+  `target/compat/run-1785913882898950000-25133`; MH Utils
+  `target/compat/run-1785913906673422000-25264`; MH XFace
+  `target/compat/run-1785913939867764000-25430`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 4,218,
+  `completion--insert-strings-faces`, in `test/lisp/minibuffer-tests.el` (31
+  selected outcomes), followed by `test/lisp/misc-tests.el` (7 outcomes).
 - 2026-08-05 MAIL CHECKPOINT: the fresh contiguous ordered frontier is
   4,187/7,080, leaving 2,893 selectors.  All 67 canonical Mail outcomes after
   LS-Lisp match GNU across Flow Fill, Footnote, IETF Drums, Mail
