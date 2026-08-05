@@ -510,6 +510,22 @@ pub(crate) fn eager_expand_eval(
     form: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    let compile_time_only = form.to_vec().is_ok_and(
+        |items| matches!(items.first(), Some(Value::Symbol(head)) if head == "eval-when-compile"),
+    );
+    if compile_time_only {
+        return interp.with_current_load_history_suppressed(|interp| {
+            eager_expand_eval_inner(interp, form, env)
+        });
+    }
+    eager_expand_eval_inner(interp, form, env)
+}
+
+fn eager_expand_eval_inner(
+    interp: &mut Interpreter,
+    form: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let expanded =
         crate::lisp::primitives::call(interp, "macroexpand", std::slice::from_ref(form), env)
             .unwrap_or_else(|_| form.clone());

@@ -1369,22 +1369,6 @@ impl Interpreter {
         }
     }
 
-    pub fn replace_next_function_binding(&mut self, name: &str, function: Value) {
-        let mut skip_top = true;
-        for (fname, value) in self.functions.iter_mut().rev() {
-            if fname != name {
-                continue;
-            }
-            if skip_top {
-                skip_top = false;
-                continue;
-            }
-            *value = function;
-            return;
-        }
-        self.push_function_binding(name, function);
-    }
-
     pub fn remove_all_function_bindings(&mut self, name: &str) {
         self.functions.retain(|(fname, _)| fname != name);
         self.functions_index.remove(name);

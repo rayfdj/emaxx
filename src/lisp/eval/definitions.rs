@@ -3423,8 +3423,12 @@ impl Interpreter {
         }
         let body: Vec<Value> = normalized_forms[body_start..].to_vec();
         if crate::lisp::primitives::prefer_builtin_override(&name) {
-            self.push_function_binding(&name, Value::BuiltinFunc(name.clone()));
+            let old_definition = self.logical_function_binding(&name, &Env::new());
             self.record_definition_in_load_history("defun", &name);
+            if let Some(old_definition) = old_definition {
+                self.record_function_redefinition(&name, old_definition);
+            }
+            self.set_function_binding(&name, Some(Value::BuiltinFunc(name.clone())));
             return Ok(Value::Symbol(name));
         }
         // GNU eagerly macroexpands top-level forms when they are loaded or
@@ -3452,18 +3456,21 @@ impl Interpreter {
             self.mark_lexical_closure_env(&closure_env);
         }
         let lambda = Value::Lambda(params, body.into(), closure_env);
+        let old_definition = self.logical_function_binding(&name, &Env::new());
+        self.record_definition_in_load_history("defun", &name);
+        if let Some(old_definition) = old_definition {
+            self.record_function_redefinition(&name, old_definition);
+        }
         // GNU defalias routes advised names through the symbol's
         // `defalias-fset-function' (nadvice's advice--defalias-fset), which
         // re-applies pending or existing advice around the new definition.
         if self.defalias_fset_function_handles(&name, &lambda, env) {
-            self.record_definition_in_load_history("defun", &name);
             self.advice_note_new_definition(&name);
             return Ok(Value::Symbol(name));
         }
         // A defun over a macro name erases the macro (GNU function cell).
         self.shadow_macro_binding(&name);
-        self.push_function_binding(&name, lambda);
-        self.record_definition_in_load_history("defun", &name);
+        self.set_function_binding(&name, Some(lambda));
         self.advice_note_new_definition(&name);
         Ok(Value::Symbol(name))
     }
@@ -5008,7 +5015,6 @@ impl Interpreter {
                         }
                     }
                     drop(advice_env);
-                    self.replace_next_function_binding(&method_name, top_wrapper);
                 } else if let Some((boundary_env, boundary_name)) = qualifier_boundary {
                     let mut boundary_env = boundary_env.borrow_mut();
                     for frame in boundary_env.iter_mut() {
@@ -5387,6 +5393,9 @@ impl Interpreter {
         qualifiers: &[Value],
         spec: &Value,
     ) {
+        if self.current_load_history_is_suppressed() {
+            return;
+        }
         let Some(mut current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
             return;
         };

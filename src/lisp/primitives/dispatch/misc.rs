@@ -816,29 +816,29 @@ pub(super) fn call(
             let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
             let interactive = args.get(3).cloned().unwrap_or(Value::Nil);
             let kind = args.get(4).cloned().unwrap_or(Value::Nil);
-            if crate::lisp::primitives::prefer_builtin_override(&function) {
-                interp.push_function_binding(&function, Value::BuiltinFunc(function.clone()));
-                return Ok(Value::Symbol(function));
-            }
             // GNU `autoload' does nothing when FUNCTION already has a real
             // (non-autoload) definition; subrs count as definitions, so the
             // cl-loaddefs autoloads must not shadow emaxx's native cl-*
             // primitives either.
-            if let Ok(existing) = interp.lookup_function(&function, env)
-                && crate::lisp::primitives::autoload_parts(&existing).is_none()
+            let old_definition = interp.logical_function_binding(&function, &Env::new());
+            if old_definition
+                .as_ref()
+                .is_some_and(|existing| autoload_parts(existing).is_none())
             {
-                return Ok(Value::Symbol(function));
+                return Ok(Value::Nil);
             }
-            interp.push_function_binding(
-                &function,
-                Value::list([
-                    Value::Symbol("autoload".into()),
-                    Value::String(file),
-                    docstring,
-                    interactive,
-                    kind,
-                ]),
-            );
+            let autoload = Value::list([
+                Value::Symbol("autoload".into()),
+                Value::String(file),
+                docstring,
+                interactive,
+                kind,
+            ]);
+            interp.record_definition_in_load_history("defun", &function);
+            if let Some(old_definition) = old_definition {
+                interp.record_function_redefinition(&function, old_definition);
+            }
+            interp.set_function_binding(&function, Some(autoload));
             Ok(Value::Symbol(function))
         }
         "autoload-do-load" => {
@@ -866,7 +866,7 @@ pub(super) fn call(
             if loads_macro {
                 let symbol = funname.as_symbol()?;
                 if let Some(function) = interp.macro_function_value(symbol) {
-                    interp.push_function_binding(symbol, function.clone());
+                    interp.set_function_binding(symbol, Some(function.clone()));
                     return Ok(function);
                 }
             }

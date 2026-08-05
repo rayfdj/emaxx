@@ -18,6 +18,28 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-05 LOAD HISTORY CHECKPOINT: the fresh contiguous ordered frontier is
+  4,113/7,080, leaving 2,967 selectors.  All 9 canonical outcomes in
+  `test/lisp/loadhist-tests.el` match GNU.  `require' records file dependencies
+  even for an already-loaded feature; `eval-when-compile' fallback evaluation
+  does not attach compile-time-only requirements or definitions to runtime
+  load history; and GNU-style `function-history' plus clean global function
+  cell replacement restores autoloads through nested and non-nested unloads.
+  The canonical artifact is
+  `target/compat/run-1785895543775985000-12297`.  New focused source-load and
+  autoload-restoration regressions pass, as do formatting, diff check,
+  all-target/all-feature check, strict Clippy, and regenerated/rustfmt-normalized
+  autoload-manifest validation.  The cross-cutting full Rust run passed 1,710
+  tests and exposed ten failures: six localhost socket tests cannot bind in the
+  managed sandbox; `cl_defmethod_updates_generic_under_around_advice' and
+  `batch_native_lisp_callables_preserve_help_arglists' were checkpoint-caused,
+  fixed, and rerun exact-green; the CCL/minibuffer boundary assertion and the
+  Edebug recursive-command-loop assertion were each reproduced identically
+  after a tracked-only stash on untouched `27cd931`, so they are inherited and
+  outside this theme.  Native remains complete at 1,420/1,420.  NEXT is
+  selector 4,114, `lpr-test-lpr-eval-switch', in
+  `test/lisp/lpr-tests.el` (2 selected outcomes total), followed by the 5
+  selected `test/lisp/ls-lisp-tests.el` outcomes.
 - 2026-08-04 KMACRO CHECKPOINT: the fresh contiguous ordered frontier is
   4,104/7,080, leaving 2,976 selectors.  All 58 canonical Kmacro outcomes
   match GNU.  Keyboard-macro playback now preserves command-loop key counters,

@@ -29,6 +29,22 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-05 Load History checkpoint advances the fresh contiguous
+  compatibility prefix to 4,113/7,080, leaving 2,967 selectors.  All 9
+  canonical Load History outcomes match GNU.  Source loads now record
+  `(require . FEATURE)' dependencies even when the feature is already loaded,
+  while compile-time-only forms do not acquire runtime ownership.  Function
+  definitions, aliases, macros, and autoloads retain GNU-style
+  `function-history', replace the logical global function cell cleanly, and
+  restore an earlier autoload across both nested and non-nested unloads.  The
+  canonical artifact is `target/compat/run-1785895543775985000-12297`.
+  Formatting, diff check, all-target/all-feature check, strict Clippy, focused
+  regressions, and a regenerated-and-formatted autoload-manifest comparison
+  pass.  A cross-cutting full Rust gate exposed six sandbox-blocked localhost
+  socket tests, two regressions fixed and exact-green in this checkpoint, and
+  two unrelated failures reproduced identically on the untouched `27cd931`
+  checkpoint.  Native remains complete at 1,420/1,420.  NEXT is selector
+  4,114 in `test/lisp/lpr-tests.el` (2 selected outcomes).
 - The 2026-08-04 Kmacro checkpoint advances the fresh contiguous compatibility
   prefix to 4,104/7,080, leaving 2,976 selectors.  All 58 canonical Kmacro
   outcomes match GNU.  Keyboard-macro playback now preserves command-loop key
