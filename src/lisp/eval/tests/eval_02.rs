@@ -5482,6 +5482,100 @@ fn load_file_strict_prebinds_current_load_list() {
 }
 
 #[test]
+fn source_load_records_require_for_an_already_loaded_feature() {
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-require-load-history-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(eval-when-compile (require 'cl-preloaded))\n\
+             (require 'emacs)\n\
+             (provide 'sample-requirer)\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                &format!(
+                    "(let ((entry (assoc {path:?} load-history)))
+                       (and (member '(require . emacs) entry)
+                            (not (member '(require . cl-preloaded) entry))))"
+                )
+            ),
+            Value::T
+        );
+
+        std::fs::remove_file(path).unwrap();
+    });
+}
+
+#[test]
+fn source_definitions_restore_autoloads_without_stale_function_cells() {
+    run_with_large_stack(|| {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let autoload_path =
+            std::env::temp_dir().join(format!("emaxx-function-history-autoload-{nonce}.el"));
+        let definition_path =
+            std::env::temp_dir().join(format!("emaxx-function-history-definition-{nonce}.el"));
+        std::fs::write(
+            &autoload_path,
+            "(autoload 'emaxx-history-probe \"emaxx-history-probe\")\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &definition_path,
+            "(defun emaxx-history-probe () :defined)\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &autoload_path).unwrap();
+        crate::lisp::load_file_strict(&mut interp, &definition_path).unwrap();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                &format!(
+                    "(let ((history (get 'emaxx-history-probe 'function-history)))
+                       (list (equal (car history) {definition_path:?})
+                             (autoloadp (cadr history))
+                             (not (null (member '(defun . emaxx-history-probe)
+                                                (assoc {autoload_path:?} load-history))))))"
+                )
+            ),
+            Value::list([Value::T, Value::T, Value::T])
+        );
+
+        // This is the two unload paths in loadhist-unload-element: restore
+        // the hidden autoload, then void it when its owning file unloads.
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((history (get 'emaxx-history-probe 'function-history)))
+                   (defalias 'emaxx-history-probe (cadr history))
+                   (put 'emaxx-history-probe 'function-history (cddr history))
+                   (defalias 'emaxx-history-probe nil)
+                   (fboundp 'emaxx-history-probe))"
+            ),
+            Value::Nil
+        );
+
+        std::fs::remove_file(autoload_path).unwrap();
+        std::fs::remove_file(definition_path).unwrap();
+    });
+}
+
+#[test]
 fn symbol_file_finds_defun_recorded_by_source_load() {
     run_with_large_stack(|| {
         let path = std::env::temp_dir().join(format!(

@@ -132,7 +132,7 @@ impl Interpreter {
         }
         let name = items[1].as_symbol()?.to_string();
         let replaces_autoload = self
-            .logical_function_binding(&name, env)
+            .logical_function_binding(&name, &Env::new())
             .is_some_and(|binding| crate::lisp::primitives::autoload_parts(&binding).is_some());
         let params_list = items[2].to_vec()?;
         let mut params = Vec::new();
@@ -186,6 +186,7 @@ impl Interpreter {
             name: name.clone(),
             expander: expander.clone(),
         });
+        self.record_definition_in_load_history("defun", &name);
         // Pending advice on a macro: GNU defalias hands the fresh
         // (macro . EXPANDER) cell to `defalias-fset-function', and nadvice
         // fsets the advised cell back (the cell wins over the macro table).
@@ -194,13 +195,18 @@ impl Interpreter {
             .is_some_and(|value| value.is_truthy())
         {
             let cell = Value::cons(Value::Symbol("macro".into()), expander);
+            if let Some(old_definition) = self.logical_function_binding(&name, &Env::new()) {
+                self.record_function_redefinition(&name, old_definition);
+            }
             self.defalias_fset_function_handles(&name, &cell, env);
         } else if replaces_autoload {
             // Loading an autoloaded macro replaces its ordinary function
-            // cell in GNU Emacs.  Preserve bootstrap macros in the compact
-            // expansion table, but do not leave the just-loaded symbol's
-            // stale `(autoload ...)' cell visible to help and introspection.
+            // cell.  Other source macros stay in the compact macro table so
+            // dumped byte-code facades keep their introspection metadata.
             let cell = Value::cons(Value::Symbol("macro".into()), expander);
+            if let Some(old_definition) = self.logical_function_binding(&name, &Env::new()) {
+                self.record_function_redefinition(&name, old_definition);
+            }
             self.set_function_binding(&name, Some(cell));
         }
         Ok(Value::Symbol(name))
@@ -278,14 +284,17 @@ impl Interpreter {
         let function = args[1].clone();
         let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
         self.validate_function_binding(&name, &function)?;
+        let old_definition = self.logical_function_binding(&name, &Env::new());
+        self.record_definition_in_load_history("defun", &name);
+        if let Some(old_definition) = old_definition {
+            self.record_function_redefinition(&name, old_definition);
+        }
         if crate::lisp::primitives::prefer_builtin_override(&name) {
             // Calls still resolve through the preferred native primitive,
             // but retain GNU's logical function cell for symbol-function,
             // alias chasing, compiler macros, and generalized variables.
             self.set_function_binding(&name, Some(function));
-            self.record_definition_in_load_history("defun", &name);
         } else if self.defalias_fset_function_handles(&name, &function, env) {
-            self.record_definition_in_load_history("defun", &name);
             self.advice_note_new_definition(&name);
         } else {
             // Like fset: only a (macro . EXPANDER) cell or a symbol alias
@@ -311,7 +320,6 @@ impl Interpreter {
                     },
                 );
             }
-            self.record_definition_in_load_history("defun", &name);
             self.advice_note_new_definition(&name);
         }
         if !docstring.is_nil() {

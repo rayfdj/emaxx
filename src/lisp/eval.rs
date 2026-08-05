@@ -1740,6 +1740,9 @@ pub struct Interpreter {
     after_load_forms: Vec<(String, Vec<Value>, Env)>,
     /// File currently being loaded, if any.
     current_load_file: Option<String>,
+    /// Source files whose compile-time-only forms must not acquire runtime
+    /// load-history entries while Emaxx interprets their source fallback.
+    load_history_suppressed_files: Vec<String>,
     // File the currently-running ERT test was defined in; used by
     // `ert-resource-directory' without making `load-file-name' non-nil
     // during test bodies (it is nil there in GNU).
@@ -2474,6 +2477,7 @@ impl Interpreter {
             ],
             after_load_forms: Vec::new(),
             current_load_file: None,
+            load_history_suppressed_files: Vec::new(),
             ert_test_source_file: None,
             current_ert_test_name: None,
             ert_tests: Vec::new(),

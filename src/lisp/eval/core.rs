@@ -743,8 +743,11 @@ impl Interpreter {
                         "cl-deftype" if !self.has_macro_binding("cl-deftype") => {
                             return self.sf_cl_deftype(&items, env);
                         }
-                        "eval-and-compile" | "eval-when-compile" => {
-                            return self.sf_progn(&items[1..], env);
+                        "eval-and-compile" => return self.sf_progn(&items[1..], env),
+                        "eval-when-compile" => {
+                            return self.with_current_load_history_suppressed(|interp| {
+                                interp.sf_progn(&items[1..], env)
+                            });
                         }
                         "while-no-input" => return self.sf_progn(&items[1..], env),
                         "ert-info" if !self.has_macro_binding("ert-info") => {

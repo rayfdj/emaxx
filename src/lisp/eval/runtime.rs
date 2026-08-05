@@ -41,6 +41,36 @@ impl Interpreter {
         self.current_load_file.as_deref()
     }
 
+    fn current_load_history_file(&self) -> Option<String> {
+        self.lookup_var("current-load-list", &Env::new())
+            .and_then(|value| value.to_vec().ok())
+            .and_then(|items| items.last().cloned())
+            .and_then(|value| primitives::string_text(&value).ok())
+    }
+
+    pub(crate) fn current_load_history_is_suppressed(&self) -> bool {
+        self.current_load_history_file().is_some_and(|file| {
+            self.load_history_suppressed_files
+                .iter()
+                .any(|suppressed| suppressed == &file)
+        })
+    }
+
+    pub(crate) fn with_current_load_history_suppressed<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let file = self.current_load_history_file();
+        if let Some(file) = &file {
+            self.load_history_suppressed_files.push(file.clone());
+        }
+        let result = operation(self);
+        if file.is_some() {
+            self.load_history_suppressed_files.pop();
+        }
+        result
+    }
+
     pub(super) fn stored_value(value: Value) -> Value {
         match value {
             Value::String(_) => {
@@ -198,6 +228,10 @@ impl Interpreter {
         target: Option<&str>,
         env: &Env,
     ) -> Result<Value, LispError> {
+        // GNU records a file's dependency even when FEATURE was loaded
+        // already.  `file-dependents' and `unload-feature' derive their
+        // dependency graph from these entries.
+        self.record_require_in_load_history(feature);
         if self.has_feature(feature) || self.loading_features.iter().any(|name| name == feature) {
             return Ok(Value::Symbol(feature.to_string()));
         }
@@ -2319,6 +2353,9 @@ impl Interpreter {
     }
 
     fn record_provide_in_load_history(&mut self, feature: &str) {
+        if self.current_load_history_is_suppressed() {
+            return;
+        }
         let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
             return;
         };
@@ -2338,7 +2375,38 @@ impl Interpreter {
         self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
     }
 
+    fn record_require_in_load_history(&mut self, feature: &str) {
+        if self.current_load_history_is_suppressed() {
+            return;
+        }
+        let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
+            return;
+        };
+        let Ok(entries) = current_load_list.to_vec() else {
+            return;
+        };
+        // `require' only records dependencies while reading a file.  GNU
+        // recognizes that state by the final string in current-load-list.
+        if !matches!(
+            entries.last(),
+            Some(Value::String(_) | Value::StringObject(_))
+        ) {
+            return;
+        }
+        let entry = Value::cons(
+            Value::Symbol("require".into()),
+            Value::Symbol(feature.to_string()),
+        );
+        if entries.iter().any(|item| item == &entry) {
+            return;
+        }
+        self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
+    }
+
     pub(crate) fn record_definition_in_load_history(&mut self, kind: &str, name: &str) {
+        if self.current_load_history_is_suppressed() {
+            return;
+        }
         let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
             return;
         };
@@ -2363,6 +2431,50 @@ impl Interpreter {
         // source-file string therefore remains last until build_load_history
         // reverses the completed entry.
         self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
+    }
+
+    /// Remember the definition hidden by a `defalias'-style operation.
+    ///
+    /// GNU stores alternating (FILE DEFINITION) pairs.  When the same file
+    /// defines a symbol repeatedly, unloading it must restore the definition
+    /// from before that file first touched the symbol, not an intermediate
+    /// definition from the same load.
+    pub(crate) fn record_function_redefinition(&mut self, name: &str, old_definition: Value) {
+        if old_definition.is_nil() || self.current_load_history_is_suppressed() {
+            return;
+        }
+        let file = self
+            .lookup_var("current-load-list", &Env::new())
+            .and_then(|value| value.to_vec().ok())
+            .and_then(|items| items.last().cloned())
+            .filter(|value| matches!(value, Value::String(_) | Value::StringObject(_)))
+            .unwrap_or(Value::Nil);
+        let past = self
+            .get_symbol_property(name, "function-history")
+            .unwrap_or(Value::Nil);
+        let Ok(mut entries) = past.to_vec() else {
+            self.put_symbol_property(
+                name,
+                "function-history",
+                Value::cons(file, Value::cons(old_definition, past)),
+            );
+            return;
+        };
+
+        if let Some(index) = (0..entries.len())
+            .step_by(2)
+            .find(|&index| entries[index] == file)
+        {
+            if index == 0 {
+                return;
+            }
+            // (... OTHER-FILE DEF3 THIS-FILE DEF2 ...) becomes
+            // (... OTHER-FILE DEF2 ...), matching add_to_function_history.
+            entries.drain(index - 1..=index);
+        }
+        entries.insert(0, old_definition);
+        entries.insert(0, file);
+        self.put_symbol_property(name, "function-history", Value::list(entries));
     }
 
     /// Commit the definitions accumulated in `current-load-list`.
