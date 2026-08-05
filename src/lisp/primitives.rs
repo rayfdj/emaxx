@@ -520,6 +520,7 @@ pub(crate) fn arith_error() -> LispError {
     LispError::SignalValue(Value::list([Value::Symbol("arith-error".into())]))
 }
 
+pub(crate) use dispatch::FnvBuildHasher;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::name_facts;

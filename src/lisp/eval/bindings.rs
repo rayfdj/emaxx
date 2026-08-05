@@ -904,9 +904,19 @@ impl Interpreter {
     }
 
     pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
-        let mut current = name.to_string();
-        let mut seen = HashSet::new();
+        // Fast path: nearly every function cell holds the callable directly,
+        // so don't pay for indirection-cycle bookkeeping until a symbol
+        // chain actually appears.
+        let Some(binding) = self.raw_function_binding(name, env) else {
+            return Err(LispError::VoidFunction(name.to_string()));
+        };
+        let Value::Symbol(next) = binding else {
+            return Ok(binding);
+        };
 
+        let mut current = next;
+        let mut seen = HashSet::new();
+        seen.insert(name.to_string());
         loop {
             if !seen.insert(current.clone()) {
                 return Err(LispError::SignalValue(Value::list([
