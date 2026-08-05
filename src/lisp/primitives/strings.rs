@@ -375,7 +375,10 @@ pub(crate) fn string_like_value_with_multibyte(
     props: Vec<TextPropertySpan>,
     multibyte: bool,
 ) -> Value {
-    if props.is_empty() && !multibyte {
+    let inferred_multibyte = text
+        .chars()
+        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
+    if props.is_empty() && !multibyte && !inferred_multibyte {
         Value::String(text)
     } else {
         make_shared_string_value_with_multibyte(text, props, multibyte)

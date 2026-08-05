@@ -1594,10 +1594,20 @@ fn decode_char_supports_eight_bit_charset() {
     assert_eq!(
         eval_str(
             r#"(list (charsetp 'eight-bit)
+                        (decode-char 'eight-bit #x41)
+                        (decode-char 'eight-bit #x80)
+                        (encode-char #x3fff80 'eight-bit)
                         (char-charset (decode-char 'eight-bit #x81))
                         (stringp (char-to-string (decode-char 'eight-bit #x81))))"#
         ),
-        Value::list([Value::T, Value::Symbol("eight-bit".into()), Value::T,])
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::Integer(0x3fff80),
+            Value::Integer(0x80),
+            Value::Symbol("eight-bit".into()),
+            Value::T,
+        ])
     );
 }
 

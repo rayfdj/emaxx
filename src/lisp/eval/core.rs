@@ -519,8 +519,12 @@ impl Interpreter {
                             return self.sf_cl_loop(&items, env);
                         }
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
-                        "ignore-error" => return self.sf_ignore_error(&items, env),
-                        "ignore-errors" => return self.sf_ignore_errors(&items, env),
+                        "ignore-error" if !self.has_macro_binding("ignore-error") => {
+                            return self.sf_ignore_error(&items, env);
+                        }
+                        "ignore-errors" if !self.has_macro_binding("ignore-errors") => {
+                            return self.sf_ignore_errors(&items, env);
+                        }
                         "condition-case" => {
                             return self.sf_condition_case(&items, env);
                         }

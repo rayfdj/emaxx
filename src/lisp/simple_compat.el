@@ -370,6 +370,16 @@ The batch frame always shows a single window."
   (declare (indent 1) (debug t))
   (list 'if condition nil (cons 'progn body)))
 
+(defmacro ignore-errors (&rest body)
+  "Evaluate BODY, returning nil if an error is signaled."
+  (declare (debug t) (indent 0))
+  `(condition-case nil (progn ,@body) (error nil)))
+
+(defmacro ignore-error (condition &rest body)
+  "Evaluate BODY, returning nil if CONDITION is signaled."
+  (declare (debug t) (indent 1))
+  `(condition-case nil (progn ,@body) (,condition nil)))
+
 ;; GNU's dumped image already owns this compile.el macro when bytecomp.el
 ;; loads.  Emaxx likewise preloads the `compile' feature, so keep the dumped
 ;; definition here instead of leaving an autoload that can never materialize.

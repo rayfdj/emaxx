@@ -18,6 +18,24 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-05 MAIL CHECKPOINT: the fresh contiguous ordered frontier is
+  4,187/7,080, leaving 2,893 selectors.  All 67 canonical Mail outcomes after
+  LS-Lisp match GNU across Flow Fill, Footnote, IETF Drums, Mail
+  Extract/Parse/Utils, Quoted Printable, RFC 2045/2047/6068/822, Rmail, Rmail
+  MIME, Undigest, and Uudecode.  `get-byte' implements GNU's complete optional
+  position/string API; buffer-derived strings preserve their byte mode;
+  `set-buffer-multibyte' preserves the underlying bytes and remaps positions,
+  markers, overlays, and properties; `ignore-errors' and `ignore-error' retain
+  their dumped macro identity; and eight-bit charset conversion uses GNU's
+  ASCII boundary and public raw-byte character codes.  Load-bearing artifacts:
+  Quoted Printable `target/compat/run-1785913345037102000-23749`; RFC 6068
+  `target/compat/run-1785913436933290000-23965`; Rmail MIME
+  `target/compat/run-1785913454366481000-24092`; Undigest
+  `target/compat/run-1785913474593149000-24228`; Uudecode
+  `target/compat/run-1785913496460098000-24364`.  Native remains complete at
+  1,420/1,420.  NEXT is selector 4,188,
+  `man-bgproc-filter-buttonize-includes', in `test/lisp/man-tests.el` (3
+  selected outcomes), followed by `test/lisp/md4-tests.el` (1 outcome).
 - 2026-08-05 LPR/LS-LISP CHECKPOINT: the fresh contiguous ordered frontier is
   4,120/7,080, leaving 2,960 selectors.  LPR is 2/2 and LS-Lisp is 5/5.
   `combine-change-calls' now follows GNU's outer hook/undo and moving-end

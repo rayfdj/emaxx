@@ -104,7 +104,10 @@ pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32
         "ascii" if code <= 0x7f => return Some(code),
         "unicode" if code <= 0x10_ffff => return Some(code),
         "emacs" if code <= 0x3f_ffff => return Some(code),
-        "eight-bit" if code <= 0xff => return Some(RAW_BYTE_REGEX_BASE + code),
+        "eight-bit" if (0x80..=0xff).contains(&code) => {
+            return Some(RAW_BYTE_REGEX_BASE + code);
+        }
+        "eight-bit" => return None,
         _ => {}
     }
     if let Some(map) = charset_map(interp, &canonical)
@@ -128,9 +131,12 @@ pub(crate) fn encode_charset_char(
         "ascii" if character <= 0x7f => return Some(character),
         "unicode" if character <= 0x10_ffff => return Some(character),
         "emacs" if character <= 0x3f_ffff => return Some(character),
-        "eight-bit" if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff).contains(&character) => {
+        "eight-bit"
+            if (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xff).contains(&character) =>
+        {
             return Some(character - RAW_BYTE_REGEX_BASE);
         }
+        "eight-bit" => return None,
         _ => {}
     }
     if let Some(map) = charset_map(interp, &canonical)
