@@ -18,6 +18,28 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 NXML/ADJACENT CHECKPOINT: the fresh contiguous ordered frontier
+  is 4,441/7,080, leaving 2,639 selectors.  All 37 newly ordered outcomes match
+  GNU: SOCKS 10/10, Tramp Archive 10/10, Webjump 7/7, Newcomment 1/1, NXML
+  Mode 8/8, and XSD regexp 1/1.  Generated dumped autoloads now preserve
+  declarative top-level `put` forms, including NXML's XSD datatype registration.
+  Resumed `parse-partial-sexp` honors caller changes to public OLDSTATE depth,
+  while native Font Lock applies the trailing defaults variable alist and calls
+  loaded Lisp `syntax-ppss` and syntactic-face functions through normal
+  function cells.  Canonical artifacts are SOCKS
+  `target/compat/run-1785984589775982000-49644`, Tramp Archive
+  `target/compat/run-1785984702025057000-49858`, Webjump
+  `target/compat/run-1785984879016759000-50192`, Newcomment
+  `target/compat/run-1785984895751551000-50322`, NXML Mode
+  `target/compat/run-1785986930968386000-51789`, and XSD regexp
+  `target/compat/run-1785987047245119000-51958`.  Focused regressions,
+  formatting, diff check, generated-autoload validation, all-target/all-feature
+  check, and strict Clippy pass.  The 59-minute full Rust audit passed 1,735
+  tests and found only six sandbox-denied localhost socket tests, the inherited
+  CCL and recursive-Edebug boundaries, and the unchanged order-sensitive
+  process-output timing test, which passed 1/1 immediately in isolation.
+  Native remains 1,420/1,420.  NEXT is selector 4,442, `obarray-clear`, in
+  `test/lisp/obarray-tests.el` (7 selected outcomes).
 - 2026-08-06 SHR/IMAGE CHECKPOINT: the fresh contiguous ordered frontier is
   4,404/7,080, leaving 2,676 selectors.  All 4 canonical SHR outcomes match
   GNU in `target/compat/run-1785984244560165000-49302`.  The complete

@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 NXML/Adjacent checkpoint advances the fresh contiguous
+  compatibility prefix to 4,441/7,080, leaving 2,639 selectors.  All 37 newly
+  ordered outcomes match GNU: SOCKS 10/10, Tramp Archive 10/10, Webjump 7/7,
+  Newcomment 1/1, NXML Mode 8/8, and XSD regexp 1/1.  Dumped autoload
+  generation now preserves declarative top-level symbol properties such as
+  NXML's XSD datatype compiler registration.  Resumed `parse-partial-sexp`
+  calls honor caller mutations to the public OLDSTATE depth, and native Font
+  Lock installs the trailing `font-lock-defaults` variable alist and invokes
+  loaded Lisp `syntax-ppss` and syntactic-face functions through their normal
+  function cells.  Canonical artifacts are SOCKS
+  `target/compat/run-1785984589775982000-49644`, Tramp Archive
+  `target/compat/run-1785984702025057000-49858`, Webjump
+  `target/compat/run-1785984879016759000-50192`, Newcomment
+  `target/compat/run-1785984895751551000-50322`, NXML Mode
+  `target/compat/run-1785986930968386000-51789`, and XSD regexp
+  `target/compat/run-1785987047245119000-51958`.  Focused regressions,
+  formatting, diff check, generated-autoload validation, all-target/all-feature
+  check, and strict Clippy pass.  A 59-minute full Rust audit passed 1,735
+  tests and reported only the six sandbox-denied localhost socket tests, the
+  inherited CCL and recursive-Edebug boundaries, and the unchanged
+  order-sensitive process-output timing test, which passed immediately in
+  isolation.  Native remains complete at 1,420/1,420.  NEXT is selector 4,442,
+  `obarray-clear`, in `test/lisp/obarray-tests.el` (7 selected outcomes).
 - The 2026-08-06 SHR/Image checkpoint advances the fresh contiguous
   compatibility prefix to 4,404/7,080, leaving 2,676 selectors.  All 4 SHR
   outcomes match GNU.  The complete feature-independent `image.c` variable

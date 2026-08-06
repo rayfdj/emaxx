@@ -1847,6 +1847,64 @@ fn syntax_ppss_reports_negative_depth_for_extra_closing_parens() {
 }
 
 #[test]
+fn parse_partial_sexp_respects_mutated_public_oldstate_depth() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (set-syntax-table (make-syntax-table))
+               (modify-syntax-entry ?> \")<\")
+               (insert \">x\")
+               (let ((state (parse-partial-sexp 1 3 -1)))
+                 (setcar state 0)
+                 (let ((resumed (parse-partial-sexp (point) 3 -1 nil state)))
+                   (list (car state) (car resumed) (point)))))"
+        ),
+        Value::list([Value::Integer(0), Value::Integer(0), Value::Integer(3)])
+    );
+}
+
+#[test]
+fn font_lock_defaults_honor_syntax_ppss_table_and_syntactic_face_function() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(progn
+                   (require 'syntax)
+                   (with-temp-buffer
+                     (let ((table (make-syntax-table)))
+                       (modify-syntax-entry ?\" "\"" table)
+                       (modify-syntax-entry ?' "\"" table)
+                       (modify-syntax-entry ?\( "()" table)
+                       (modify-syntax-entry ?\) ")(" table)
+                       (setq-local syntax-ppss-table table))
+                     (insert "(\"a\" 'b') \"text\" 'text'")
+                     (setq-local
+                      font-lock-defaults
+                      '(nil nil nil nil
+                        (font-lock-syntactic-face-function
+                         . (lambda (state)
+                             (and (nth 3 state) (nth 9 state)
+                                  'font-lock-string-face)))))
+                     (font-lock-ensure)
+                     (list
+                      (get-text-property 3 'face)
+                      (get-text-property 7 'face)
+                      (get-text-property 12 'face)
+                      (get-text-property 19 'face)
+                      (functionp font-lock-syntactic-face-function))))"#
+            ),
+            Value::list([
+                Value::symbol("font-lock-string-face"),
+                Value::symbol("font-lock-string-face"),
+                Value::Nil,
+                Value::Nil,
+                Value::T,
+            ])
+        );
+    });
+}
+
+#[test]
 fn preloaded_syntax_descriptor_helpers_match_subr_el() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
