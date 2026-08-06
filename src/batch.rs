@@ -521,6 +521,19 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .map_err(|error| format!("preload frame: {error}"))?;
     }
 
+    // GNU loadup dumps easymenu.el after frame.el and before isearch.el.
+    // Packages such as EUDC call its menu constructors without requiring the
+    // feature, so preserve the complete Lisp-owned menu policy at startup.
+    if !interpreter.has_feature("easymenu")
+        && interpreter
+            .resolve_load_target("emacs-lisp/easymenu")
+            .is_some()
+    {
+        interpreter
+            .load_target("emacs-lisp/easymenu")
+            .map_err(|error| format!("preload easymenu: {error}"))?;
+    }
+
     // isearch.el is dumped by GNU and owns both the incremental-search
     // command layer and its full keymap.  Loading only downstream users (for
     // example Eshell's history module) cannot recreate that startup state.
@@ -1112,6 +1125,10 @@ mod tests {
                               '(fun if))
                        (fboundp 'next-completion)
                        (fboundp 'choose-completion)
+                       (fboundp 'easy-menu-create-menu)
+                       (equal (mapcar #'plistp
+                                      '(nil (:a 1) (:a 1 :b 2) (:a) a))
+                              '(t t t nil nil))
                        (fboundp 'event-start)
                        (fboundp 'posn-point)
                        (catch 'state
@@ -1141,6 +1158,8 @@ mod tests {
                     .eval(&form, &mut Vec::new())
                     .expect("evaluate simple startup probe"),
                 Value::list([
+                    Value::T,
+                    Value::T,
                     Value::T,
                     Value::T,
                     Value::T,

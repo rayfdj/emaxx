@@ -18,6 +18,28 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 MOUSE/EARLY NETWORK CHECKPOINT: the fresh contiguous ordered
+  frontier is 4,304/7,080, leaving 2,776 selectors.  All 49 canonical outcomes
+  match GNU: Mouse 6/6, Mouse Wheel 2/2, Browse URL 13/13, D-Bus 16/16, Dig
+  1/1, and EUDC 11/11.  GNU's dumped `easymenu.el` owns startup menu policy;
+  preloaded `plistp` and abbrev state match their GNU Lisp owners.  Generated
+  dumped variables retain their GNU `defvar`/`defcustom` special declaration
+  while defaults remain lazy, and the regexp bridge accepts a leading `]`
+  range endpoint.  Canonical artifacts are Mouse
+  `target/compat/run-1785963725172839000-37729`, Mouse Wheel
+  `target/compat/run-1785963912387454000-39808`, Browse URL
+  `target/compat/run-1785963931439135000-39928`, D-Bus
+  `target/compat/run-1785963951455961000-40077`, Dig
+  `target/compat/run-1785963970275340000-40197`, and EUDC
+  `target/compat/run-1785978864293987000-43576`.  Formatting, diff check,
+  focused regressions, the 36-test special-contract cluster,
+  all-target/all-feature check, strict Clippy, and regenerated/rustfmt-normalized
+  autoload validation pass.  The immediately preceding 72-minute full Rust
+  audit remains current and was not repeated.  Native remains 1,420/1,420.
+  NEXT is selector 4,305, `eww-test/display/html`, in
+  `test/lisp/net/eww-tests.el` (9 selected outcomes); initial artifact
+  `target/compat/run-1785978135095513000-43045` has three unrelated
+  display/readability failures.
 - 2026-08-05 MINIBUFFER/MISC CHECKPOINT: the fresh contiguous ordered frontier
   is 4,255/7,080, leaving 2,825 selectors.  All 38 canonical outcomes match
   GNU: Minibuffer 31/31 and Misc 7/7.  GNU `simple.el` supplies the standard

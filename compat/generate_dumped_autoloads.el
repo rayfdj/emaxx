@@ -215,6 +215,9 @@ Quoted data and function bodies are not executable initializer calls."
           (insert "        .binary_search_by_key(&name, |(candidate, _)| *candidate)\n")
           (insert "        .ok()?;\n")
           (insert "    Some(GENERATED_DUMPED_VARIABLES[index].1)\n")
+          (insert "}\n\n")
+          (insert "pub(super) fn generated_dumped_variable_names() -> impl Iterator<Item = &'static str> {\n")
+          (insert "    GENERATED_DUMPED_VARIABLES.iter().map(|(name, _)| *name)\n")
           (insert "}\n"))))))
 
 (provide 'generate-dumped-autoloads)

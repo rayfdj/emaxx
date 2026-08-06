@@ -2593,6 +2593,11 @@ impl Interpreter {
         };
         interp.globals_index = interp.globals.iter().cloned().collect();
         interp.special_variables_index = interp.special_variables.iter().cloned().collect();
+        // GNU's dumped autoload variables originate in `defvar' / `defcustom'
+        // forms: keep their defaults lazy, but install the special declaration.
+        for name in generated_autoloads::generated_dumped_variable_names() {
+            interp.mark_special_variable(name);
+        }
         interp.mark_special_variable("fringe-bitmaps");
         for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
             interp.put_symbol_property(name, "fringe", Value::Integer((index + 1) as i64));
