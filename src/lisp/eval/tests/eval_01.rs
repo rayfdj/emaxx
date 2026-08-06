@@ -1233,6 +1233,34 @@ fn add_hook_orders_functions_by_gnu_depth() {
 }
 
 #[test]
+fn add_hook_respects_a_dynamic_binding_of_a_buffer_local_hook() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar sample-dynamic-local-hook nil)
+               (setq sample-dynamic-local-hook nil)
+               (with-temp-buffer
+                 (add-hook 'sample-dynamic-local-hook #'sample-local nil t)
+                 (let ((during
+                        (let ((sample-dynamic-local-hook nil))
+                          (add-hook 'sample-dynamic-local-hook #'sample-temporary)
+                          (list sample-dynamic-local-hook
+                                (default-value 'sample-dynamic-local-hook)))))
+                   (list during sample-dynamic-local-hook
+                         (default-value 'sample-dynamic-local-hook)))))"
+        ),
+        Value::list([
+            Value::list([
+                Value::list([Value::Symbol("sample-temporary".into())]),
+                Value::Nil,
+            ]),
+            Value::list([Value::Symbol("sample-local".into()), Value::T]),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn local_hook_depth_splices_the_default_at_depth_zero() {
     assert_eq!(
         eval_str(
@@ -3565,6 +3593,19 @@ fn native_per_buffer_manifest_is_special_and_automatically_local() {
             interp.get_symbol_property(name, "permanent-local"),
             Some(Value::T),
             "GNU native permanent-local `{name}` must survive mode changes"
+        );
+    }
+}
+
+#[test]
+fn native_change_hook_controls_are_bound_and_dynamically_special() {
+    let interp = Interpreter::new();
+    let env = Env::new();
+    for name in GNU_CHANGE_HOOK_SPECIAL_VARIABLES {
+        assert_eq!(interp.lookup_var(name, &env), Some(Value::Nil));
+        assert!(
+            interp.is_special_variable(name),
+            "GNU native change-hook variable `{name}` must be dynamically special"
         );
     }
 }
