@@ -53,7 +53,10 @@ handoff and retry instruction are in
   install the value cell together with ordinary, per-buffer, or always-local
   special metadata instead of adjacent calls; the remaining separate
   `mark_special_variable` sites are declaration-only entries whose values are
-  lazy or established elsewhere.  Native per-buffer name, always-local status,
+  lazy or established elsewhere.  The image.c startup family now declares
+  each name, value, and special contract together, as does `fringe-bitmaps`;
+  the redundant timer special-name list is gone because its lazy defaults
+  already imply that contract.  Native per-buffer name, always-local status,
   and effective permanence are one typed manifest; `local-variable-p` consumes
   that runtime metadata instead of its own list.  The generated GNU primitive, arity, and
   dumped-autoload manifests remain protected by their whole-manifest tests.
