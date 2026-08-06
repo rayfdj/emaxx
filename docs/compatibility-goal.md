@@ -80,6 +80,12 @@ handoff and retry instruction are in
   GNU entries to the generated manifest; the handwritten fallback contains
   only four non-C Lisp conveniences, while `dlet` fallback arity refers to the
   typed native-form variant instead of repeating its Lisp name.
+  The 54 built-in CL/EIEIO classes now live in one typed schema containing
+  direct parents and optional predicates; membership, initialization, parent
+  lookup, and cached transitive precedence derive from it.  The complete
+  schema matches GNU 30.2 exactly, correcting the old `null`,
+  `symbol-with-pos`, and `primitive-function` ancestry plus missing/extra
+  predicate metadata.
   File-name-handler advertisement and execution consume one typed operation
   specification for explicit arguments, `default-directory`, visited-buffer
   paths, and process commands instead of repeating the special-operation set.

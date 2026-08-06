@@ -2763,15 +2763,15 @@ impl Interpreter {
                 Value::Symbol("point-entered".into()),
             ]),
         );
-        for class_name in primitives::builtin_class_names() {
+        for class in primitives::builtin_classes() {
             interp.put_symbol_property(
-                class_name,
+                class.name,
                 "cl--class",
-                interned_symbol_value((*class_name).into()),
+                interned_symbol_value(class.name.into()),
             );
-            if let Some(predicate) = primitives::builtin_class_predicate(class_name) {
+            if let Some(predicate) = class.predicate {
                 interp.put_symbol_property(
-                    class_name,
+                    class.name,
                     "cl-deftype-satisfies",
                     Value::Symbol(predicate.into()),
                 );

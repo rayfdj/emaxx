@@ -1160,264 +1160,206 @@ pub(crate) fn derived_mode_parent_chain(interp: &Interpreter, mode: &str) -> Vec
 }
 
 pub(crate) fn is_builtin_class_name(name: &str) -> bool {
-    builtin_class_names().contains(&name)
+    builtin_class(name).is_some()
 }
 
-pub(crate) fn builtin_class_names() -> &'static [&'static str] {
-    &[
-        "t",
-        "atom",
-        "sequence",
-        "array",
-        "number-or-marker",
-        "integer-or-marker",
-        "null",
-        "boolean",
-        "symbol",
-        "symbol-with-pos",
-        "fixnum",
-        "bignum",
-        "integer",
-        "float",
-        "number",
-        "string",
-        "list",
-        "vector",
-        "bool-vector",
-        "char-table",
-        "cons",
-        "buffer",
-        "marker",
-        "overlay",
-        "finalizer",
-        "hash-table",
-        "condvar",
-        "font-entity",
-        "font-object",
-        "font-spec",
-        "frame",
-        "module-function",
-        "mutex",
-        "native-comp-function",
-        "obarray",
-        "process",
-        "record",
-        "terminal",
-        "thread",
-        "tree-sitter-compiled-query",
-        "tree-sitter-node",
-        "tree-sitter-parser",
-        "user-ptr",
-        "window",
-        "window-configuration",
-        "native-comp-unit",
-        "compiled-function",
-        "closure",
-        "primitive-function",
-        "special-form",
-        "interpreted-function",
+#[derive(Clone, Copy)]
+pub(crate) struct BuiltinClass {
+    pub(crate) name: &'static str,
+    parents: &'static [&'static str],
+    pub(crate) predicate: Option<&'static str>,
+}
+
+impl BuiltinClass {
+    const fn new(
+        name: &'static str,
+        parents: &'static [&'static str],
+        predicate: Option<&'static str>,
+    ) -> Self {
+        Self {
+            name,
+            parents,
+            predicate,
+        }
+    }
+}
+
+const BUILTIN_CLASSES: &[BuiltinClass] = &[
+    BuiltinClass::new("t", &[], None),
+    BuiltinClass::new("array", &["sequence", "atom"], Some("arrayp")),
+    BuiltinClass::new("atom", &["t"], Some("atom")),
+    BuiltinClass::new("bignum", &["integer"], Some("bignump")),
+    BuiltinClass::new("bool-vector", &["array"], Some("bool-vector-p")),
+    BuiltinClass::new("boolean", &["symbol"], Some("booleanp")),
+    BuiltinClass::new("buffer", &["atom"], Some("bufferp")),
+    BuiltinClass::new(
         "byte-code-function",
-        "subr",
-        "function",
-    ]
+        &["compiled-function", "closure"],
+        Some("byte-code-function-p"),
+    ),
+    BuiltinClass::new("char-table", &["array"], Some("char-table-p")),
+    BuiltinClass::new("closure", &["function"], Some("closurep")),
+    BuiltinClass::new(
+        "compiled-function",
+        &["function"],
+        Some("compiled-function-p"),
+    ),
+    BuiltinClass::new("condvar", &["atom"], None),
+    BuiltinClass::new("cons", &["list"], Some("consp")),
+    BuiltinClass::new("finalizer", &["atom"], None),
+    BuiltinClass::new("fixnum", &["integer"], Some("fixnump")),
+    BuiltinClass::new("float", &["number"], Some("floatp")),
+    BuiltinClass::new("font-entity", &["atom"], None),
+    BuiltinClass::new("font-object", &["atom"], None),
+    BuiltinClass::new("font-spec", &["atom"], None),
+    BuiltinClass::new("frame", &["atom"], Some("framep")),
+    BuiltinClass::new("function", &["atom"], Some("functionp")),
+    BuiltinClass::new("hash-table", &["atom"], Some("hash-table-p")),
+    BuiltinClass::new(
+        "integer",
+        &["number", "integer-or-marker"],
+        Some("integerp"),
+    ),
+    BuiltinClass::new(
+        "integer-or-marker",
+        &["number-or-marker"],
+        Some("integer-or-marker-p"),
+    ),
+    BuiltinClass::new(
+        "interpreted-function",
+        &["closure"],
+        Some("interpreted-function-p"),
+    ),
+    BuiltinClass::new("list", &["sequence"], Some("listp")),
+    BuiltinClass::new("marker", &["integer-or-marker"], Some("markerp")),
+    BuiltinClass::new("module-function", &["function"], Some("module-function-p")),
+    BuiltinClass::new("mutex", &["atom"], Some("mutexp")),
+    BuiltinClass::new(
+        "native-comp-function",
+        &["subr", "compiled-function"],
+        Some("native-comp-function-p"),
+    ),
+    BuiltinClass::new("native-comp-unit", &["atom"], None),
+    BuiltinClass::new("null", &["boolean", "list"], Some("null")),
+    BuiltinClass::new("number", &["number-or-marker"], Some("numberp")),
+    BuiltinClass::new("number-or-marker", &["atom"], Some("number-or-marker-p")),
+    BuiltinClass::new("obarray", &["atom"], Some("obarrayp")),
+    BuiltinClass::new("overlay", &["atom"], Some("overlayp")),
+    BuiltinClass::new(
+        "primitive-function",
+        &["subr", "compiled-function"],
+        Some("primitive-function-p"),
+    ),
+    BuiltinClass::new("process", &["atom"], Some("processp")),
+    BuiltinClass::new("record", &["atom"], Some("recordp")),
+    BuiltinClass::new("sequence", &["t"], Some("sequencep")),
+    BuiltinClass::new("special-form", &["subr"], Some("special-form-p")),
+    BuiltinClass::new("string", &["array"], Some("stringp")),
+    BuiltinClass::new("subr", &["atom"], Some("subrp")),
+    BuiltinClass::new("symbol", &["atom"], Some("symbolp")),
+    BuiltinClass::new("symbol-with-pos", &["symbol"], Some("symbol-with-pos-p")),
+    BuiltinClass::new("terminal", &["atom"], None),
+    BuiltinClass::new("thread", &["atom"], Some("threadp")),
+    BuiltinClass::new("tree-sitter-compiled-query", &["atom"], None),
+    BuiltinClass::new("tree-sitter-node", &["atom"], None),
+    BuiltinClass::new("tree-sitter-parser", &["atom"], None),
+    BuiltinClass::new("user-ptr", &["atom"], Some("user-ptrp")),
+    BuiltinClass::new("vector", &["array"], Some("vectorp")),
+    BuiltinClass::new("window", &["atom"], Some("windowp")),
+    BuiltinClass::new(
+        "window-configuration",
+        &["atom"],
+        Some("window-configuration-p"),
+    ),
+];
+
+fn builtin_class(name: &str) -> Option<&'static BuiltinClass> {
+    BUILTIN_CLASSES.iter().find(|class| class.name == name)
+}
+
+pub(crate) fn builtin_classes() -> &'static [BuiltinClass] {
+    BUILTIN_CLASSES
 }
 
 pub(crate) fn builtin_class_parents(name: &str) -> &'static [&'static str] {
-    match name {
-        "atom" | "sequence" => &["t"],
-        "array" => &["sequence", "atom"],
-        "number-or-marker" => &["atom"],
-        "integer-or-marker" => &["number-or-marker"],
-        "null" => &["symbol", "list"],
-        "boolean" => &["symbol"],
-        "symbol"
-        | "buffer"
-        | "overlay"
-        | "finalizer"
-        | "hash-table"
-        | "condvar"
-        | "font-entity"
-        | "font-object"
-        | "font-spec"
-        | "frame"
-        | "mutex"
-        | "obarray"
-        | "process"
-        | "record"
-        | "terminal"
-        | "thread"
-        | "tree-sitter-compiled-query"
-        | "tree-sitter-node"
-        | "tree-sitter-parser"
-        | "user-ptr"
-        | "window"
-        | "window-configuration"
-        | "native-comp-unit"
-        | "subr"
-        | "function" => &["atom"],
-        "list" => &["sequence"],
-        "symbol-with-pos" => &["cons"],
-        "fixnum" | "bignum" => &["integer"],
-        "integer" => &["number", "integer-or-marker"],
-        "float" => &["number"],
-        "number" => &["number-or-marker"],
-        "marker" => &["integer-or-marker"],
-        "vector" | "bool-vector" | "char-table" | "string" => &["array"],
-        "cons" => &["list"],
-        "compiled-function" => &["function"],
-        "closure" => &["function"],
-        "byte-code-function" => &["compiled-function", "closure"],
-        "interpreted-function" => &["closure"],
-        "primitive-function" | "special-form" => &["subr"],
-        "module-function" => &["function"],
-        "native-comp-function" => &["subr", "compiled-function"],
-        _ => &[],
+    builtin_class(name).map_or(&[], |class| class.parents)
+}
+
+fn merge_class_precedence(mut lists: Vec<Vec<&'static str>>) -> Vec<&'static str> {
+    lists.retain(|list| !list.is_empty());
+    let mut merged = Vec::new();
+    while lists.len() > 1 {
+        let candidate = lists.iter().find_map(|list| {
+            let head = *list.first()?;
+            lists
+                .iter()
+                .all(|other| !other.iter().skip(1).any(|item| item == &head))
+                .then_some(head)
+        });
+        let candidate = candidate.unwrap_or(lists[0][0]);
+        merged.push(candidate);
+        for list in &mut lists {
+            if list.first() == Some(&candidate) {
+                list.remove(0);
+            }
+        }
+        lists.retain(|list| !list.is_empty());
     }
+    if let Some(last) = lists.pop() {
+        merged.extend(last);
+    }
+    merged
+}
+
+fn compute_builtin_class_precedence(
+    name: &'static str,
+    active: &mut std::collections::HashSet<&'static str>,
+) -> Vec<&'static str> {
+    let Some(class) = builtin_class(name) else {
+        return Vec::new();
+    };
+    if !active.insert(name) {
+        return vec![name];
+    }
+    let mut result = vec![name];
+    if class.parents.is_empty() {
+        if name != "t" {
+            result.extend(compute_builtin_class_precedence("t", active));
+        }
+    } else {
+        result.extend(merge_class_precedence(
+            class
+                .parents
+                .iter()
+                .map(|parent| compute_builtin_class_precedence(parent, active))
+                .collect(),
+        ));
+    }
+    active.remove(name);
+    result
 }
 
 pub(crate) fn builtin_class_allparents(name: &str) -> Option<&'static [&'static str]> {
-    Some(match name {
-        "t" => &["t"],
-        "atom" => &["atom", "t"],
-        "sequence" => &["sequence", "t"],
-        "array" => &["array", "sequence", "atom", "t"],
-        "number-or-marker" => &["number-or-marker", "atom", "t"],
-        "integer-or-marker" => &["integer-or-marker", "number-or-marker", "atom", "t"],
-        "null" => &["null", "boolean", "symbol", "atom", "list", "sequence", "t"],
-        "boolean" => &["boolean", "symbol", "atom", "t"],
-        "symbol" => &["symbol", "atom", "t"],
-        "symbol-with-pos" => &["symbol-with-pos", "cons", "list", "sequence", "t"],
-        "fixnum" => &[
-            "fixnum",
-            "integer",
-            "number",
-            "integer-or-marker",
-            "number-or-marker",
-            "atom",
-            "t",
-        ],
-        "bignum" => &[
-            "bignum",
-            "integer",
-            "number",
-            "integer-or-marker",
-            "number-or-marker",
-            "atom",
-            "t",
-        ],
-        "integer" => &[
-            "integer",
-            "number",
-            "integer-or-marker",
-            "number-or-marker",
-            "atom",
-            "t",
-        ],
-        "float" => &["float", "number", "number-or-marker", "atom", "t"],
-        "number" => &["number", "number-or-marker", "atom", "t"],
-        "string" => &["string", "array", "sequence", "atom", "t"],
-        "list" => &["list", "sequence", "t"],
-        "vector" => &["vector", "array", "sequence", "atom", "t"],
-        "bool-vector" => &["bool-vector", "array", "sequence", "atom", "t"],
-        "char-table" => &["char-table", "array", "sequence", "atom", "t"],
-        "cons" => &["cons", "list", "sequence", "t"],
-        "buffer" => &["buffer", "atom", "t"],
-        "marker" => &[
-            "marker",
-            "integer-or-marker",
-            "number-or-marker",
-            "atom",
-            "t",
-        ],
-        "overlay" => &["overlay", "atom", "t"],
-        "finalizer" => &["finalizer", "atom", "t"],
-        "hash-table" => &["hash-table", "atom", "t"],
-        "condvar" => &["condvar", "atom", "t"],
-        "font-entity" => &["font-entity", "atom", "t"],
-        "font-object" => &["font-object", "atom", "t"],
-        "font-spec" => &["font-spec", "atom", "t"],
-        "frame" => &["frame", "atom", "t"],
-        "module-function" => &["module-function", "function", "atom", "t"],
-        "mutex" => &["mutex", "atom", "t"],
-        "native-comp-function" => &[
-            "native-comp-function",
-            "subr",
-            "compiled-function",
-            "function",
-            "atom",
-            "t",
-        ],
-        "obarray" => &["obarray", "atom", "t"],
-        "process" => &["process", "atom", "t"],
-        "record" => &["record", "atom", "t"],
-        "terminal" => &["terminal", "atom", "t"],
-        "thread" => &["thread", "atom", "t"],
-        "tree-sitter-compiled-query" => &["tree-sitter-compiled-query", "atom", "t"],
-        "tree-sitter-node" => &["tree-sitter-node", "atom", "t"],
-        "tree-sitter-parser" => &["tree-sitter-parser", "atom", "t"],
-        "user-ptr" => &["user-ptr", "atom", "t"],
-        "window" => &["window", "atom", "t"],
-        "window-configuration" => &["window-configuration", "atom", "t"],
-        "native-comp-unit" => &["native-comp-unit", "atom", "t"],
-        "compiled-function" => &["compiled-function", "function", "atom", "t"],
-        "closure" => &["closure", "function", "atom", "t"],
-        "byte-code-function" => &[
-            "byte-code-function",
-            "compiled-function",
-            "closure",
-            "function",
-            "atom",
-            "t",
-        ],
-        "interpreted-function" => &["interpreted-function", "closure", "function", "atom", "t"],
-        "subr" => &["subr", "atom", "t"],
-        "primitive-function" => &["primitive-function", "subr", "atom", "t"],
-        "special-form" => &["special-form", "subr", "atom", "t"],
-        "function" => &["function", "atom", "t"],
-        _ => return None,
-    })
-}
-
-pub(crate) fn builtin_class_predicate(name: &str) -> Option<&'static str> {
-    match name {
-        "atom" => Some("atom"),
-        "null" => Some("null"),
-        "boolean" => Some("booleanp"),
-        "symbol" => Some("symbolp"),
-        "fixnum" => Some("fixnump"),
-        "bignum" => Some("bignump"),
-        "integer" => Some("integerp"),
-        "float" => Some("floatp"),
-        "number" => Some("numberp"),
-        "string" => Some("stringp"),
-        "list" => Some("listp"),
-        "vector" => Some("vectorp"),
-        "bool-vector" => Some("bool-vector-p"),
-        "char-table" => Some("char-table-p"),
-        "cons" => Some("consp"),
-        "buffer" => Some("bufferp"),
-        "marker" => Some("markerp"),
-        "overlay" => Some("overlayp"),
-        "finalizer" => Some("finalizerp"),
-        "hash-table" => Some("hash-table-p"),
-        "condvar" => Some("condition-variable-p"),
-        "frame" => Some("framep"),
-        "mutex" => Some("mutexp"),
-        "native-comp-function" => Some("native-comp-function-p"),
-        "obarray" => Some("obarrayp"),
-        "process" => Some("processp"),
-        "record" => Some("recordp"),
-        "thread" => Some("threadp"),
-        "window" => Some("windowp"),
-        "window-configuration" => Some("window-configuration-p"),
-        "function" => Some("functionp"),
-        "compiled-function" => Some("compiled-function-p"),
-        "byte-code-function" => Some("byte-code-function-p"),
-        "interpreted-function" => Some("interpreted-function-p"),
-        "subr" | "primitive-function" => Some("subrp"),
-        "special-form" => Some("special-form-p"),
-        _ => None,
-    }
+    static PRECEDENCE: std::sync::OnceLock<
+        std::collections::HashMap<&'static str, Vec<&'static str>>,
+    > = std::sync::OnceLock::new();
+    PRECEDENCE
+        .get_or_init(|| {
+            BUILTIN_CLASSES
+                .iter()
+                .map(|class| {
+                    (
+                        class.name,
+                        compute_builtin_class_precedence(
+                            class.name,
+                            &mut std::collections::HashSet::new(),
+                        ),
+                    )
+                })
+                .collect()
+        })
+        .get(name)
+        .map(Vec::as_slice)
 }
 
 /// CL types that GNU defines directly through `cl-deftype-satisfies' rather
