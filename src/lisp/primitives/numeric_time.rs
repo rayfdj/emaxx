@@ -2129,7 +2129,8 @@ pub(crate) fn call_time_builtin(
         "decoded-time-zone" => decoded_time_field(args, 8, name),
         "encode-time" => {
             need_arg_range(name, args, 1, 9)?;
-            let fields = if args.len() == 1 {
+            let list_form = args.len() == 1;
+            let fields = if list_form {
                 args[0].to_vec()?
             } else {
                 args.to_vec()
@@ -2151,7 +2152,12 @@ pub(crate) fn call_time_builtin(
             let month = integer_field(interp, &fields[4])?;
             let year = integer_field(interp, &fields[5])?;
             let time = normalize_decoded_civil_time(year, month, day, hour, minute, second)?;
-            let zone = if value_is_unspecified(fields.get(8)) {
+            let zone_value = if list_form {
+                fields.get(8)
+            } else {
+                fields.get(6..).and_then(|extra| extra.last())
+            };
+            let zone = if value_is_unspecified(zone_value) {
                 local_zone_spec_for_civil(
                     interp,
                     time.year(),
@@ -2161,7 +2167,7 @@ pub(crate) fn call_time_builtin(
                     time.minute(),
                     time.second(),
                 )
-            } else if let Some(zone_text) = fields.get(8).filter(|value| value.is_string()) {
+            } else if let Some(zone_text) = zone_value.filter(|value| value.is_string()) {
                 let text = string_text(zone_text)?;
                 if let Some(posix) = parse_posix_tz(&text) {
                     posix.zone_for_civil(
@@ -2176,7 +2182,7 @@ pub(crate) fn call_time_builtin(
                     zone_spec_from_value(interp, zone_text, None)?
                 }
             } else {
-                zone_spec_from_value(interp, fields.get(8).unwrap_or(&Value::Nil), None)?
+                zone_spec_from_value(interp, zone_value.unwrap_or(&Value::Nil), None)?
             };
             let offset = zone_offset(&zone)?;
             let local = offset
