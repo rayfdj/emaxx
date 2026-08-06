@@ -985,6 +985,7 @@ define_dispatch!(
                 let count = args[2].as_integer()?;
                 Ok(Value::String(if count == 1 { singular } else { plural }))
             }
+            #[dispatch(builtin_override)]
             "format-spec" => {
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));

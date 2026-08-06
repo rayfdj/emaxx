@@ -430,6 +430,7 @@ define_dispatch!(
                     .set_visited_file_modtime(file_modtime(&new_location)?);
                 Ok(Value::Nil)
             }
+            #[dispatch(builtin_override)]
             "read-only-mode" => {
                 need_arg_range(name, args, 0, 1)?;
                 let enabled = match args.first() {
@@ -2329,6 +2330,7 @@ define_dispatch!(
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 unlock_file_path(interp, env, &path)
             }
+            #[dispatch(resets_undo)]
             "write-region" => {
                 if args.len() < 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -3467,6 +3469,7 @@ define_dispatch!(
                     Value::Nil
                 })
             }
+            #[dispatch(builtin_override)]
             "url-retrieve" => {
                 need_arg_range(name, args, 2, 5)?;
                 let url = string_text(&args[0])?;
@@ -3480,6 +3483,7 @@ define_dispatch!(
                     interp, env, &url, callback, cbargs,
                 )
             }
+            #[dispatch(builtin_override)]
             "url-retrieve-synchronously" => {
                 need_arg_range(name, args, 1, 4)?;
                 let url = string_text(&args[0])?;
@@ -3502,6 +3506,7 @@ define_dispatch!(
                     Err(_) => Ok(Value::Nil),
                 }
             }
+            #[dispatch(builtin_override)]
             "url-insert" => {
                 // GNU url-handlers.el extracts the body via mm-dissect-buffer;
                 // the native url-retrieve buffers hold the raw response, so

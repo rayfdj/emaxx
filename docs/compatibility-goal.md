@@ -70,6 +70,9 @@ handoff and retry instruction are in
   File-name-handler advertisement and execution consume one typed operation
   specification for explicit arguments, `default-directory`, visited-buffer
   paths, and process commands instead of repeating the special-operation set.
+  Native-override and undo-sequence-reset policy are likewise attributes on
+  the affected implementation arms; the former 106-name override list and
+  28-name undo-reset list no longer exist as parallel registries.
   Prefix keys now run a
   real shared command cycle, so package hooks preserve scoped state across
   C-u/digit/minus input; the live minibuffer buffer, rather than a parallel

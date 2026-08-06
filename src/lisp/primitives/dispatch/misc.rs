@@ -189,6 +189,144 @@ fn destroy_fringe_bitmap(
     Ok(Value::Nil)
 }
 
+#[derive(Clone, Copy)]
+enum MacroexpandKind {
+    Repeated,
+    Once,
+    All,
+}
+
+fn macroexpand_dispatch(
+    interp: &mut Interpreter,
+    name: &str,
+    kind: MacroexpandKind,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+    }
+    let environment = args.get(1).filter(|value| value.is_truthy());
+    match kind {
+        MacroexpandKind::All => {
+            // GNU macroexpand-all dynamically binds
+            // `macroexpand-all-environment' around the expansion so env
+            // expanders like cl--labels-convert can read it back.  Only
+            // bind it for environments carrying a `function' expander
+            // (cl-flet/cl-labels): binding it unconditionally makes
+            // expander sets like bindat's re-read the variable from their
+            // helpers and re-expand already-processed type specs forever.
+            let environment_reads_function_quotes = environment
+                .and_then(|value| value.to_vec().ok())
+                .is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        matches!(
+                            entry.car(),
+                            // cl-flet/cl-labels use a `function'
+                            // expander; rx-let/rx-let-eval carry
+                            // `:rx-locals' that the rx macro reads back.
+                            Ok(Value::Symbol(head)) if head == "function" || head == ":rx-locals"
+                        )
+                    })
+                })
+                || environment.is_some_and(|environment| {
+                    // Obsolete `labels' first supplies its local function
+                    // expanders, then `lexical-let' installs the generic
+                    // `function' converter in a nested macroexpand-all.
+                    // Make that outer environment dynamically visible
+                    // when it owns an actual #'<name> reference, without
+                    // reintroducing Bindat's recursive type expansion.
+                    form_has_environment_function_quote(&args[0], environment)
+                });
+            let previous = if environment_reads_function_quotes {
+                let previous = interp.global_binding_value("macroexpand-all-environment");
+                interp.set_global_binding(
+                    "macroexpand-all-environment",
+                    environment.cloned().unwrap_or(Value::Nil),
+                );
+                Some(previous)
+            } else {
+                None
+            };
+            let result = interp.macroexpand_all_scoped_with_environment(&args[0], environment, env);
+            if let Some(previous) = previous {
+                match previous {
+                    Some(value) => interp.set_global_binding("macroexpand-all-environment", value),
+                    None => interp.remove_global_binding("macroexpand-all-environment"),
+                }
+            }
+            result
+        }
+        MacroexpandKind::Once => {
+            interp.macroexpand_1_form_with_environment(&args[0], environment, env)
+        }
+        MacroexpandKind::Repeated => {
+            let mut form = args[0].clone();
+            loop {
+                let expanded =
+                    interp.macroexpand_1_form_with_environment(&form, environment, env)?;
+                if expanded == form {
+                    break;
+                }
+                form = expanded;
+            }
+            Ok(form)
+        }
+    }
+}
+
+fn run_hooks_dispatch(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+    mode_hooks: bool,
+) -> Result<Value, LispError> {
+    if mode_hooks
+        && interp
+            .lookup_var("delay-mode-hooks", env)
+            .is_some_and(|value| value.is_truthy())
+    {
+        let mut delayed = interp
+            .lookup_var("delayed-mode-hooks", env)
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default();
+        delayed.extend(args.iter().cloned());
+        interp.set_variable("delayed-mode-hooks", Value::list(delayed), env);
+        return Ok(Value::Nil);
+    }
+    for hook in args {
+        if let Ok(hook_name) = hook.as_symbol() {
+            run_named_hooks(interp, hook_name, env, Some(interp.current_buffer_id()))?;
+        }
+    }
+    if mode_hooks {
+        let delayed = interp
+            .lookup_var("delayed-mode-hooks", env)
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default();
+        if !delayed.is_empty() {
+            interp.set_variable("delayed-mode-hooks", Value::Nil, env);
+            for hook in delayed {
+                if let Ok(hook_name) = hook.as_symbol() {
+                    run_named_hooks(interp, hook_name, env, Some(interp.current_buffer_id()))?;
+                }
+            }
+        }
+        let mut after_hooks = interp
+            .lookup_var("delayed-after-hook-functions", env)
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default();
+        if !after_hooks.is_empty() {
+            interp.set_variable("delayed-after-hook-functions", Value::Nil, env);
+            after_hooks.reverse();
+            for hook in after_hooks {
+                call_function_value(interp, &hook, &[], env)?;
+            }
+        }
+    }
+    Ok(Value::Nil)
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -409,6 +547,7 @@ define_dispatch!(
                 };
                 Err(LispError::Signal(msg))
             }
+            #[dispatch(builtin_override)]
             "user-error" => {
                 let msg = if args.is_empty() {
                     "user-error".to_string()
@@ -1584,77 +1723,14 @@ define_dispatch!(
                 });
                 Ok(if found { Value::T } else { Value::Nil })
             }
-            "macroexpand" | "macroexpand-1" | "macroexpand-all" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let environment = args.get(1).filter(|value| value.is_truthy());
-                if name == "macroexpand-all" {
-                    // GNU macroexpand-all dynamically binds
-                    // `macroexpand-all-environment' around the expansion so env
-                    // expanders like cl--labels-convert can read it back.  Only
-                    // bind it for environments carrying a `function' expander
-                    // (cl-flet/cl-labels): binding it unconditionally makes
-                    // expander sets like bindat's re-read the variable from their
-                    // helpers and re-expand already-processed type specs forever.
-                    let environment_reads_function_quotes = environment
-                    .and_then(|value| value.to_vec().ok())
-                    .is_some_and(|entries| {
-                        entries.iter().any(|entry| {
-                            matches!(
-                                entry.car(),
-                                // cl-flet/cl-labels use a `function'
-                                // expander; rx-let/rx-let-eval carry
-                                // `:rx-locals' that the rx macro reads back.
-                                Ok(Value::Symbol(head)) if head == "function" || head == ":rx-locals"
-                            )
-                        })
-                    })
-                    || environment.is_some_and(|environment| {
-                        // Obsolete `labels' first supplies its local function
-                        // expanders, then `lexical-let' installs the generic
-                        // `function' converter in a nested macroexpand-all.
-                        // Make that outer environment dynamically visible
-                        // when it owns an actual #'<name> reference, without
-                        // reintroducing Bindat's recursive type expansion.
-                        form_has_environment_function_quote(&args[0], environment)
-                    });
-                    let previous = if environment_reads_function_quotes {
-                        let previous = interp.global_binding_value("macroexpand-all-environment");
-                        interp.set_global_binding(
-                            "macroexpand-all-environment",
-                            environment.cloned().unwrap_or(Value::Nil),
-                        );
-                        Some(previous)
-                    } else {
-                        None
-                    };
-                    let result =
-                        interp.macroexpand_all_scoped_with_environment(&args[0], environment, env);
-                    if let Some(previous) = previous {
-                        match previous {
-                            Some(value) => {
-                                interp.set_global_binding("macroexpand-all-environment", value)
-                            }
-                            None => interp.remove_global_binding("macroexpand-all-environment"),
-                        }
-                    }
-                    result
-                } else if name == "macroexpand-1" {
-                    interp.macroexpand_1_form_with_environment(&args[0], environment, env)
-                } else {
-                    // `macroexpand' repeats until the head is no longer a macro.
-                    let mut form = args[0].clone();
-                    loop {
-                        let expanded =
-                            interp.macroexpand_1_form_with_environment(&form, environment, env)?;
-                        if expanded == form {
-                            break;
-                        }
-                        form = expanded;
-                    }
-                    Ok(form)
-                }
+            "macroexpand" => {
+                macroexpand_dispatch(interp, name, MacroexpandKind::Repeated, args, env)
+            }
+            #[dispatch(builtin_override)]
+            "macroexpand-1" => macroexpand_dispatch(interp, name, MacroexpandKind::Once, args, env),
+            #[dispatch(builtin_override)]
+            "macroexpand-all" => {
+                macroexpand_dispatch(interp, name, MacroexpandKind::All, args, env)
             }
             "run-at-time" | "run-with-timer" | "run-with-idle-timer" => {
                 if args.len() < 3 {
@@ -1725,6 +1801,7 @@ define_dispatch!(
                 interp.unschedule_timer_by_function_and_args(&items[5], &timer_args);
                 call_function_value(interp, &items[5], &timer_args, env)
             }
+            #[dispatch(builtin_override)]
             "timerp" => {
                 need_args(name, args, 1)?;
                 // GNU timer.el: timers are plain 10-slot vectors.
@@ -1916,57 +1993,9 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
-            "run-hooks" | "run-mode-hooks" => {
-                if name == "run-mode-hooks"
-                    && interp
-                        .lookup_var("delay-mode-hooks", env)
-                        .is_some_and(|value| value.is_truthy())
-                {
-                    let mut delayed = interp
-                        .lookup_var("delayed-mode-hooks", env)
-                        .and_then(|value| value.to_vec().ok())
-                        .unwrap_or_default();
-                    delayed.extend(args.iter().cloned());
-                    interp.set_variable("delayed-mode-hooks", Value::list(delayed), env);
-                    return Ok(Value::Nil);
-                }
-                for hook in args {
-                    if let Ok(hook_name) = hook.as_symbol() {
-                        run_named_hooks(interp, hook_name, env, Some(interp.current_buffer_id()))?;
-                    }
-                }
-                if name == "run-mode-hooks" {
-                    let delayed = interp
-                        .lookup_var("delayed-mode-hooks", env)
-                        .and_then(|value| value.to_vec().ok())
-                        .unwrap_or_default();
-                    if !delayed.is_empty() {
-                        interp.set_variable("delayed-mode-hooks", Value::Nil, env);
-                        for hook in delayed {
-                            if let Ok(hook_name) = hook.as_symbol() {
-                                run_named_hooks(
-                                    interp,
-                                    hook_name,
-                                    env,
-                                    Some(interp.current_buffer_id()),
-                                )?;
-                            }
-                        }
-                    }
-                    let mut after_hooks = interp
-                        .lookup_var("delayed-after-hook-functions", env)
-                        .and_then(|value| value.to_vec().ok())
-                        .unwrap_or_default();
-                    if !after_hooks.is_empty() {
-                        interp.set_variable("delayed-after-hook-functions", Value::Nil, env);
-                        after_hooks.reverse();
-                        for hook in after_hooks {
-                            call_function_value(interp, &hook, &[], env)?;
-                        }
-                    }
-                }
-                Ok(Value::Nil)
-            }
+            "run-hooks" => run_hooks_dispatch(interp, args, env, false),
+            #[dispatch(builtin_override)]
+            "run-mode-hooks" => run_hooks_dispatch(interp, args, env, true),
             "run-hook-with-args" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));

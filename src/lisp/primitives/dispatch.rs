@@ -80,6 +80,42 @@ enum DispatchModule {
     None,
 }
 
+macro_rules! dispatch_module_property {
+    ($module:expr, $name:expr, $property:ident) => {
+        match $module {
+            DispatchModule::Sqlite => sqlite::$property($name),
+            DispatchModule::Time => numeric_time::$property($name),
+            DispatchModule::Lcms => color_lcms::$property($name),
+            DispatchModule::Ccl => ccl::$property($name),
+            DispatchModule::Numeric => numeric::$property($name),
+            DispatchModule::Fonts => fonts::$property($name),
+            DispatchModule::Frames => frames::$property($name),
+            DispatchModule::Terminals => terminals::$property($name),
+            DispatchModule::Treesit => treesit::$property($name),
+            DispatchModule::Gnutls => gnutls::$property($name),
+            DispatchModule::GuiActions => gui_actions::$property($name),
+            DispatchModule::Comp => comp::$property($name),
+            DispatchModule::Predicates => predicates::$property($name),
+            DispatchModule::Lists => lists::$property($name),
+            DispatchModule::Modes => modes::$property($name),
+            DispatchModule::Composition => composition::$property($name),
+            DispatchModule::Strings => strings::$property($name),
+            DispatchModule::BufferEdit => buffer_edit::$property($name),
+            DispatchModule::BufferMeta => buffer_meta::$property($name),
+            DispatchModule::FilesProcess => files_process::$property($name),
+            DispatchModule::Display => display::$property($name),
+            DispatchModule::EmacsModule => emacs_module::$property($name),
+            DispatchModule::Faces => faces::$property($name),
+            DispatchModule::Misc => misc::$property($name),
+            DispatchModule::MiscKeymaps => misc_keymaps::$property($name),
+            DispatchModule::Overlays => overlays::$property($name),
+            DispatchModule::Collections => collections::$property($name),
+            DispatchModule::SearchCoding => search_coding::$property($name),
+            DispatchModule::ComposedAccessor | DispatchModule::None => false,
+        }
+    };
+}
+
 fn compute_name_facts(name: &str) -> NameFacts {
     // Probe order mirrors `call' so the cached route dispatches to the
     // same module the sequential scan would have reached.
@@ -151,8 +187,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         // dispatch.
         builtin: module != DispatchModule::None,
         special_form: crate::lisp::primitives::is_special_form_name(name),
-        prefer_override: crate::lisp::primitives::prefer_builtin_override(name),
-        resets_undo: resets_undo_sequence(name),
+        prefer_override: dispatch_module_property!(module, name, prefer_builtin),
+        resets_undo: dispatch_module_property!(module, name, resets_undo),
         file_name_handler: file_name_handler_operation(name),
         autoloadable: crate::lisp::eval::builtin_autoload_function(name).is_some(),
         module,
@@ -206,43 +242,13 @@ pub fn is_builtin(name: &str) -> bool {
     name_facts(name).builtin
 }
 
+pub(crate) fn prefer_builtin_override(name: &str) -> bool {
+    name_facts(name).prefer_override
+}
+
 #[cfg(test)]
 pub(crate) fn has_dispatch_handler(name: &str) -> bool {
     name_facts(name).module != DispatchModule::None
-}
-
-fn resets_undo_sequence(name: &str) -> bool {
-    matches!(
-        name,
-        "undo-boundary"
-            | "insert"
-            | "insert-char"
-            | "insert-before-markers"
-            | "insert-before-markers-and-inherit"
-            | "delete-region"
-            | "delete-and-extract-region"
-            | "kill-region"
-            | "delete-line"
-            | "kill-whole-line"
-            | "delete-horizontal-space"
-            | "delete-char"
-            | "replace-buffer-contents"
-            | "delete-forward-char"
-            | "kill-word"
-            | "erase-buffer"
-            | "put-text-property"
-            | "add-text-properties"
-            | "set-text-properties"
-            | "remove-list-of-text-properties"
-            | "remove-text-properties"
-            | "add-face-text-property"
-            | "font-lock-append-text-property"
-            | "font-lock-prepend-text-property"
-            | "font-lock--remove-face-from-text-property"
-            | "set-buffer-multibyte"
-            | "write-region"
-            | "save-buffer"
-    )
 }
 
 /// Dispatch a builtin function call.

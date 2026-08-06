@@ -1352,6 +1352,7 @@ define_dispatch!(
                 translate_region_with_table(interp, from, to, &table)
             }
 
+            #[dispatch(resets_undo)]
             "undo-boundary" => {
                 interp.buffer.push_undo_boundary();
                 Ok(Value::Nil)

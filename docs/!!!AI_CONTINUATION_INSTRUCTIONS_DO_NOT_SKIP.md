@@ -56,7 +56,10 @@ counts as the progress denominator.
   second list.  File-name-handler advertisement and execution now consume one
   typed operation specification for explicit arguments, `default-directory`,
   visited-buffer paths, and process commands instead of repeating the special
-  operation set.  C-u/digit/minus input runs one shared prefix-command
+  operation set.  Native-override and undo-sequence-reset policy are attributes
+  on the affected implementation arms; the former 106-name override list and
+  28-name undo-reset list no longer exist as parallel registries.  C-u/digit/minus
+  input runs one shared prefix-command
   lifecycle so package hooks preserve scoped state; simulated readers now
   return the live minibuffer buffer's contents instead of a divergent side
   string.  Each buffer's native undo log now owns one stable, incrementally
@@ -2349,10 +2352,10 @@ counts as the progress denominator.
     cl-flet shadowing can only make a name LESS of a macro, so cached
     not-macro verdicts stay correct under any frames).
     (3) name_facts memo (dispatch.rs NameFacts): is_builtin /
-    is_special_form_name / prefer_builtin_override / undo-reset /
-    dispatch-module routing — pure name predicates that were giant
-    linear matches! chains per form eval; dispatch::call routes by
-    the cached module id.
+    is_special_form_name / native-override / undo-reset /
+    dispatch-module routing — pure name metadata cached per form eval;
+    native-override and undo-reset now derive from attributes on the
+    implementation arms, and dispatch::call routes by the cached module id.
     (4) macro_position_binding (bindings.rs): macro lookup scans ONLY
     frames whose FIRST entry is FUNCTION_FRAME_MARKER (GNU: value
     bindings never shadow function cells) — cl-flet/cl-labels
