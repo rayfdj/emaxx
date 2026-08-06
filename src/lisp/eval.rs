@@ -99,6 +99,19 @@ const GNU_TREESIT_SPECIAL_VARIABLES: &[&str] =
 // binding even though its helper functions were defined elsewhere.
 const GNU_KEYBOARD_TIMER_SPECIAL_VARIABLES: &[&str] = &["timer-list", "timer-idle-list"];
 
+// image.c's native image variables exist before image.el or shr.el load and
+// retain dynamic binding semantics under lexical binding.  Keep the complete
+// feature-independent group together; `imagemagick-render-type' is omitted
+// because GNU only defines it when built with ImageMagick support.
+const GNU_IMAGE_SPECIAL_VARIABLES: &[&str] = &[
+    "image-types",
+    "max-image-size",
+    "cross-disabled-images",
+    "x-bitmap-file-path",
+    "image-cache-eviction-delay",
+    "image-scaling-factor",
+];
+
 // buffer.c's complete GNU 30.2 DEFVAR_PER_BUFFER contract.  These variables
 // are both special under lexical binding and automatically local to the
 // current buffer when assigned.  Keeping the manifest together prevents a
@@ -2023,6 +2036,28 @@ impl Interpreter {
                 ("default-frame-alist".into(), Value::Nil),
                 ("fringe-bitmaps".into(), fringe_bitmaps),
                 (
+                    "image-types".into(),
+                    Value::list([
+                        Value::symbol("pbm"),
+                        Value::symbol("png"),
+                        Value::symbol("jpeg"),
+                        Value::symbol("gif"),
+                        Value::symbol("svg"),
+                        Value::symbol("xbm"),
+                        Value::symbol("xpm"),
+                        Value::symbol("webp"),
+                        Value::symbol("tiff"),
+                    ]),
+                ),
+                ("max-image-size".into(), Value::Float(10.0)),
+                ("cross-disabled-images".into(), Value::Nil),
+                (
+                    "x-bitmap-file-path".into(),
+                    Value::list([Value::String(".".into())]),
+                ),
+                ("image-cache-eviction-delay".into(), Value::Integer(300)),
+                ("image-scaling-factor".into(), Value::symbol("auto")),
+                (
                     "command-line-args".into(),
                     primitives::command_line_args_value(),
                 ),
@@ -2614,6 +2649,9 @@ impl Interpreter {
             interp.mark_special_variable(name);
         }
         for name in GNU_KEYBOARD_TIMER_SPECIAL_VARIABLES {
+            interp.mark_special_variable(name);
+        }
+        for name in GNU_IMAGE_SPECIAL_VARIABLES {
             interp.mark_special_variable(name);
         }
         for name in GNU_NATIVE_PER_BUFFER_VARIABLES {

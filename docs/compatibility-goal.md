@@ -29,6 +29,20 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 SHR/Image checkpoint advances the fresh contiguous
+  compatibility prefix to 4,404/7,080, leaving 2,676 selectors.  All 4 SHR
+  outcomes match GNU.  The complete feature-independent `image.c` variable
+  cluster now exists natively before Lisp image libraries load, with GNU's
+  defaults and special-variable semantics; this includes
+  `image-scaling-factor` as `auto`, so SHR reaches the same expected image-load
+  timeout and generic `error` as GNU instead of failing early with a
+  `void-variable`.  The canonical artifact is
+  `target/compat/run-1785984244560165000-49302`.  The focused GNU-oracle-backed
+  image-variable regression, formatting, diff check, all-target/all-feature
+  check, and strict Clippy pass; the preceding full Rust audit remains current.
+  Native remains complete at 1,420/1,420.  NEXT is selector 4,405,
+  `socks-override-functions`, in `test/lisp/net/socks-tests.el` (10 selected
+  outcomes).
 - The 2026-08-06 Network/Time/Interface checkpoint advances the fresh
   contiguous compatibility prefix to 4,402/7,080, leaving 2,678 selectors.
   All 67 newly ordered outcomes match GNU: Network Stream 27/27, Newsticker
