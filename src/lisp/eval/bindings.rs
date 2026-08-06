@@ -814,7 +814,9 @@ impl Interpreter {
         if let Some(v) = self.functions_index.get(name) {
             return Some(v.clone());
         }
-        if let Some(value) = builtin_autoload_function(name) {
+        if facts.autoloadable
+            && let Some(value) = builtin_autoload_function(name)
+        {
             return Some(value);
         }
         if matches!(name, "incf" | "decf") {
@@ -871,7 +873,9 @@ impl Interpreter {
         if let Some(value) = self.functions_index.get(name) {
             return Some((value.clone(), false));
         }
-        if let Some(value) = builtin_autoload_function(name) {
+        if facts.autoloadable
+            && let Some(value) = builtin_autoload_function(name)
+        {
             return Some((value, false));
         }
         if matches!(name, "incf" | "decf") || facts.builtin || facts.special_form {
