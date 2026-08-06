@@ -1957,6 +1957,140 @@ fn preloaded_syntax_descriptor_helpers_match_subr_el() {
 }
 
 #[test]
+fn standard_syntax_table_exposes_its_default_punctuation_descriptor() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compatibility prelude");
+    assert_eq!(
+        eval_str_with(&mut interp, "(aref (standard-syntax-table) ?.)"),
+        Value::list([Value::Integer(1)])
+    );
+}
+
+#[test]
+fn syntax_ppss_honors_a_syntax_table_valued_text_property() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compatibility prelude");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(with-temp-buffer
+               (insert \"(x)\")
+               (let ((table (make-syntax-table))
+                     (parse-sexp-lookup-properties t))
+                 (modify-syntax-entry ?\\( \".\" table)
+                 (put-text-property 1 2 'syntax-table table)
+                 (butlast (syntax-ppss 3))))"
+        ),
+        Value::list([
+            Value::Integer(0),
+            Value::Nil,
+            Value::Integer(2),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Integer(0),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn syntax_propertize_extends_a_short_request_to_its_safe_chunk_boundary() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compatibility prelude");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(with-temp-buffer
+               (insert \"abc\")
+               (let ((syntax-propertize--done (point-min))
+                     (syntax-propertize-function
+                      (lambda (start end) (setq-local seen (list start end))))
+                     (syntax-propertize-extend-region-functions nil))
+                 (syntax-propertize 2)
+                 (list seen syntax-propertize--done)))"
+        ),
+        Value::list([
+            Value::list([Value::Integer(1), Value::Integer(4)]),
+            Value::Integer(4),
+        ])
+    );
+}
+
+#[test]
+fn scan_sexps_preserves_match_data_changed_by_lazy_syntax_propertization() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compatibility prelude");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(with-temp-buffer
+               (insert \"(x)\")
+               (let ((syntax-propertize--done -1)
+                     (syntax-propertize-function
+                      (lambda (start end)
+                        (goto-char start)
+                        (re-search-forward \"x\" end t)))
+                     (syntax-propertize-extend-region-functions nil))
+                 (string-match \"\\\\(a\\\\)\" \"a\")
+                 (let ((before (match-data 'integers)))
+                   (list (scan-sexps 1 1)
+                         before
+                         (match-data 'integers)))))"
+        ),
+        Value::list([
+            Value::Integer(4),
+            Value::list([
+                Value::Integer(0),
+                Value::Integer(1),
+                Value::Integer(0),
+                Value::Integer(1),
+            ]),
+            Value::list([
+                Value::Integer(0),
+                Value::Integer(1),
+                Value::Integer(0),
+                Value::Integer(1),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn c_toggle_electric_state_updates_c_electric_flag() {
     assert_eq!(
         eval_str(
@@ -1992,8 +2126,63 @@ fn self_insert_command_uses_last_command_event_and_runs_hook() {
 #[test]
 fn self_insert_command_accepts_an_explicit_character() {
     assert_eq!(
-        eval_str("(with-temp-buffer (self-insert-command 2 ?/) (buffer-string))"),
-        Value::String("//".into())
+        eval_str(
+            "(with-temp-buffer
+               (let (seen)
+                 (add-hook 'post-self-insert-hook
+                           (lambda () (setq seen last-command-event)) nil t)
+                 (self-insert-command 2 ?/)
+                 (list (buffer-string) seen last-command-event)))"
+        ),
+        Value::list([
+            Value::String("//".into()),
+            Value::Integer('/' as i64),
+            Value::Integer('/' as i64),
+        ])
+    );
+}
+
+#[test]
+fn self_insert_command_expands_an_active_word_abbrev_before_punctuation() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (require 'abbrev)
+                 (define-abbrev-table 'sample-self-insert-abbrev-table
+                   '(("foo" "expanded")))
+                 (let ((noninteractive t))
+                   (with-temp-buffer
+                     (setq-local local-abbrev-table
+                                 sample-self-insert-abbrev-table)
+                     (abbrev-mode 1)
+                     (insert "foo")
+                     (self-insert-command 1 ?\s)
+                     (buffer-string))))"#,
+        ),
+        Value::String("expanded ".into())
+    );
+}
+
+#[test]
+fn beginning_of_line_crosses_an_unterminated_final_line_to_eob() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "first\nlast")
+                 (goto-char (point-min))
+                 (forward-line 1)
+                 (let ((forward-result (forward-line 1)))
+                   (goto-char (point-min))
+                   (forward-line 1)
+                   (beginning-of-line 2)
+                   (list forward-result (point) (point-max) (eobp))))"#,
+        ),
+        Value::list([
+            Value::Integer(0),
+            Value::Integer(11),
+            Value::Integer(11),
+            Value::T,
+        ])
     );
 }
 
@@ -2380,6 +2569,126 @@ fn syntax_ppss_ignores_escaped_string_quote_start() {
             Value::Integer('\'' as i64),
             Value::Integer(3),
         ])
+    );
+}
+
+#[test]
+fn syntax_ppss_uses_syntax_properties_when_deciding_whether_a_quote_is_escaped() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"\\\\\\\"x\\\"\")
+               (put-text-property 1 2 'syntax-table (string-to-syntax \".\"))
+               (let ((parse-sexp-lookup-properties t))
+                 (list (nth 3 (syntax-ppss 3))
+                       (nth 3 (syntax-ppss 4))
+                       (nth 3 (syntax-ppss 5)))))"
+        ),
+        Value::list([
+            Value::Integer('"' as i64),
+            Value::Integer('"' as i64),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn syntax_ppss_reports_the_active_nondefault_comment_style() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (let ((table (make-syntax-table)))
+                 (set-syntax-table table)
+                 (modify-syntax-entry ?! \"< c\" table)
+                 (modify-syntax-entry ?? \"> c\" table)
+                 (insert \"!inside?\")
+                 (list (nth 4 (syntax-ppss 5))
+                       (nth 7 (syntax-ppss 5))
+                       (nth 4 (syntax-ppss (point-max)))
+                       (nth 7 (syntax-ppss (point-max))))))"
+        ),
+        Value::list([Value::T, Value::Integer(2), Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
+fn anchored_syntax_class_regexp_honors_buffer_syntax_properties() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"{\\n(\")
+               (put-text-property 1 2 'syntax-table (string-to-syntax \"|\"))
+               (let ((parse-sexp-lookup-properties t))
+                 (goto-char (point-min))
+                 (list (re-search-forward \"^\\\\s(\" nil t)
+                       (match-beginning 0))))"
+        ),
+        Value::list([Value::Integer(4), Value::Integer(3)])
+    );
+}
+
+#[test]
+fn parse_partial_sexp_continuation_preserves_a_generic_string_fence() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"{x}\")
+               (put-text-property 1 2 'syntax-table (string-to-syntax \"|\"))
+               (put-text-property 3 4 'syntax-table (string-to-syntax \"|\"))
+               (let* ((parse-sexp-lookup-properties t)
+                      (state (parse-partial-sexp 1 4 nil nil nil 'syntax-table)))
+                 (list (point)
+                       (nth 3 state)
+                       (let ((finished
+                              (parse-partial-sexp (point) 4 nil nil state
+                                                  'syntax-table)))
+                         (list (point) (nth 3 finished))))))"
+        ),
+        Value::list([
+            Value::Integer(2),
+            Value::T,
+            Value::list([Value::Integer(4), Value::Nil]),
+        ])
+    );
+}
+
+#[test]
+fn syntax_ppss_treats_generic_comment_fences_as_comments() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"{don't}\")
+               (put-text-property 1 2 'syntax-table (string-to-syntax \"!\"))
+               (put-text-property 7 8 'syntax-table (string-to-syntax \"!\"))
+               (let ((parse-sexp-lookup-properties t))
+                 (list (nth 3 (syntax-ppss 5))
+                       (nth 4 (syntax-ppss 5))
+                       (nth 7 (syntax-ppss 5))
+                       (nth 8 (syntax-ppss 5))
+                       (nth 4 (syntax-ppss (point-max))))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::Symbol("syntax-table".into()),
+            Value::Integer(1),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn beginning_of_defun_ignores_a_column_zero_opener_inside_a_string() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"\\\"text\\n(foo\\\"\\n\")
+               (goto-char (point-max))
+               (let ((defun-prompt-regexp \"^DEF\")
+                     (open-paren-in-column-0-is-defun-start t))
+                 (list (beginning-of-defun) (point))))"
+        ),
+        Value::list([Value::Nil, Value::Integer(1)])
     );
 }
 

@@ -99,6 +99,7 @@ pub(crate) use print::*;
 pub(crate) use processes::*;
 pub(crate) use sequences::*;
 pub(crate) use strings::*;
+pub(crate) use syntax::standard_syntax_table_default_value;
 pub(crate) use system::*;
 pub(crate) use text::*;
 pub(crate) use values::*;

@@ -18,6 +18,33 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 CPERL CHECKPOINT: the fresh contiguous ordered frontier is
+  4,580/7,080, leaving 2,500 selectors.  The complete canonical `default`
+  selection for `test/lisp/progmodes/cperl-mode-tests.el` matches GNU 64/64 in
+  `target/compat/run-1786019507444417000-10428`; its one extra expensive test
+  is outside the 7,080 manifest.  GNU-compatible shared behavior now covers
+  safe `syntax-propertize` chunks and high-water marks, property-aware syntax
+  parsing and syntax-class regexps, quote escaping, comment styles, generic
+  comment/string fences, match-data preservation, mode-owned Font Lock region
+  functions, standard syntax defaults, and defun navigation.  GNU `abbrev.el`
+  owns expansion policy; native self-insertion invokes it at syntax
+  boundaries; derived modes preserve predeclared obarray-backed tables; and
+  final-line and narrowed backward-comment motion use GNU's absolute position
+  semantics.  Focused regressions, formatting, diff check,
+  regenerated/rustfmt-normalized autoload validation, all-target/all-feature
+  check, and strict Clippy pass.  The 67-minute full Rust audit ran 1,770
+  tests: 1,759 passed, with six sandbox-denied localhost tests plus the
+  inherited CCL, recursive-Edebug, and order-sensitive process-output
+  boundaries.  The audit's two deterministic new failures were repaired and
+  replay exact-green (electric newline under real batch startup and Semantic
+  format under narrowing); the process-output timing test passed immediately
+  in isolation.  Native remains 1,420/1,420.  NEXT is selector 4,581,
+  `csharp-mode-test-indentation`, then selector 4,582,
+  `csharp-ts-mode-test-indentation`, in
+  `test/lisp/progmodes/csharp-mode-tests.el` (2 selected outcomes).  Emaxx
+  already uses the official Tree-sitter Rust runtime for parser lifecycle,
+  nodes, queries, and traversal; extend that implementation if the TS outcome
+  exposes a gap rather than adding a replacement parser.
 - 2026-08-06 CHANGE-HOOK/CPERL PARTIAL CHECKPOINT: the fresh contiguous
   ordered frontier is 4,520/7,080, leaving 2,560 selectors.  The first four
   ordered Cperl outcomes match GNU; NEXT is selector 4,521,

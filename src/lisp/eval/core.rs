@@ -374,7 +374,7 @@ impl Interpreter {
                         | "define-globalized-minor-mode"
                         | "define-derived-mode"
                         | "emaxx--define-derived-mode" => {
-                            return self.sf_define_mode(&items);
+                            return self.sf_define_mode(&items, env);
                         }
                         "defclass" => return self.sf_defclass(&items),
                         "defun" | "defsubst" => return self.sf_defun(&items, env),

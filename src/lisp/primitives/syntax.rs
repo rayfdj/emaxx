@@ -56,6 +56,7 @@ enum CommentKind {
     Single {
         line: bool,
     },
+    Fence,
     Block {
         end_first: char,
         end_second: char,
@@ -66,12 +67,14 @@ enum CommentKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CommentStart {
     kind: CommentKind,
+    style: u8,
     len: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CommentState {
     kind: CommentKind,
+    style: u8,
     start_pos: usize,
     depth: usize,
 }
@@ -393,6 +396,10 @@ fn default_syntax_entry(ch: char) -> SyntaxEntry {
     }
 }
 
+pub(crate) fn standard_syntax_table_default_value(code: u32) -> Option<Value> {
+    char::from_u32(code).map(|ch| syntax_entry_value(default_syntax_entry(ch)))
+}
+
 // Characters explicitly assigned CLASS in the buffer's current syntax
 // table (following the parent chain).  The standard table maps no
 // character to the comment classes, so `\s<'/`\s>' regexp atoms resolve
@@ -536,8 +543,13 @@ fn syntax_entry_at_buffer_position(
     pos: usize,
 ) -> SyntaxEntry {
     let property = buffer_char_property_at(interp, &interp.buffer, pos, "syntax-table");
-    syntax_entry_from_value(&property)
-        .unwrap_or_else(|| syntax_entry_for_char(interp, table_id, ch))
+    match property {
+        Value::CharTable(property_table_id) => {
+            Some(syntax_entry_for_char(interp, property_table_id, ch))
+        }
+        property => syntax_entry_from_value(&property),
+    }
+    .unwrap_or_else(|| syntax_entry_for_char(interp, table_id, ch))
 }
 
 fn matching_close_char(ch: char, entry: SyntaxEntry) -> Option<char> {
@@ -570,11 +582,19 @@ fn comment_start_at(
 ) -> Option<CommentStart> {
     let ch = *chars.get(idx)?;
     let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
+    if entry.class == SyntaxClass::GenericCommentDelimiter {
+        return Some(CommentStart {
+            kind: CommentKind::Fence,
+            style: 2,
+            len: 1,
+        });
+    }
     if entry.class == SyntaxClass::CommentStart {
         return Some(CommentStart {
             kind: CommentKind::Single {
                 line: entry.style_b && newline_ends_comments(interp, table_id),
             },
+            style: scan_comment_style(&entry, None),
             len: 1,
         });
     }
@@ -587,6 +607,7 @@ fn comment_start_at(
     {
         return Some(CommentStart {
             kind: CommentKind::Single { line: true },
+            style: scan_comment_style(&next_entry, Some(&entry)),
             len: 2,
         });
     }
@@ -604,6 +625,7 @@ fn comment_start_at(
             end_second,
             nested: entry.nested || next_entry.nested,
         },
+        style: scan_comment_style(&next_entry, Some(&entry)),
         len: 2,
     })
 }
@@ -647,6 +669,17 @@ fn skip_comment_with_status(
             }
             (chars.len(), false)
         }
+        CommentKind::Fence => {
+            while cursor < chars.len() {
+                let entry =
+                    syntax_entry_at_buffer_position(interp, table_id, chars[cursor], cursor + 1);
+                if entry.class == SyntaxClass::GenericCommentDelimiter {
+                    return (cursor + 1, true);
+                }
+                cursor += 1;
+            }
+            (chars.len(), false)
+        }
         CommentKind::Block {
             end_first,
             end_second,
@@ -656,6 +689,7 @@ fn skip_comment_with_status(
             while cursor < chars.len() {
                 if nested
                     && let Some(nested_start) = comment_start_at(interp, table_id, chars, cursor)
+                    && nested_start.style == start.style
                     && matches!(
                         nested_start.kind,
                         CommentKind::Block {
@@ -673,6 +707,22 @@ fn skip_comment_with_status(
                     && chars[cursor] == end_first
                     && chars[cursor + 1] == end_second
                 {
+                    let first = syntax_entry_at_buffer_position(
+                        interp,
+                        table_id,
+                        chars[cursor],
+                        cursor + 1,
+                    );
+                    let second = syntax_entry_at_buffer_position(
+                        interp,
+                        table_id,
+                        chars[cursor + 1],
+                        cursor + 2,
+                    );
+                    if scan_comment_style(&first, Some(&second)) != start.style {
+                        cursor += 1;
+                        continue;
+                    }
                     if comment_end_can_be_escaped && preceded_by_odd_backslashes(chars, cursor) {
                         cursor += 1;
                         continue;
@@ -715,9 +765,10 @@ fn skip_whitespace_backward(
     table_id: u64,
     chars: &[char],
     pos: usize,
+    minimum: usize,
 ) -> usize {
     let mut idx = pos.saturating_sub(1);
-    while idx > 0 {
+    while idx >= minimum {
         let entry = syntax_entry_for_char(interp, table_id, chars[idx - 1]);
         if entry.class != SyntaxClass::Whitespace
             && !(entry.class == SyntaxClass::CommentEnd && chars[idx - 1] == '\n')
@@ -748,12 +799,23 @@ fn encode_parse_state(state: &ParseState) -> Value {
             kind: CommentKind::Single { line },
             start_pos,
             depth,
+            ..
         }) => Value::list([
             if line {
                 Value::Symbol("line".into())
             } else {
                 Value::Symbol("single".into())
             },
+            Value::Integer(start_pos as i64),
+            Value::Integer(depth as i64),
+        ]),
+        Some(CommentState {
+            kind: CommentKind::Fence,
+            start_pos,
+            depth,
+            ..
+        }) => Value::list([
+            Value::Symbol("fence".into()),
             Value::Integer(start_pos as i64),
             Value::Integer(depth as i64),
         ]),
@@ -766,6 +828,7 @@ fn encode_parse_state(state: &ParseState) -> Value {
                 },
             start_pos,
             depth,
+            ..
         }) => Value::list([
             Value::Symbol("block".into()),
             Value::Integer(start_pos as i64),
@@ -782,6 +845,7 @@ fn encode_parse_state(state: &ParseState) -> Value {
             Value::list([
                 Value::Integer(string.quote as i64),
                 Value::Integer(string.start_pos as i64),
+                if string.fence { Value::T } else { Value::Nil },
             ])
         })
         .unwrap_or(Value::Nil);
@@ -818,7 +882,15 @@ fn encode_parse_state(state: &ParseState) -> Value {
         state.comment.map(comment_state_value).unwrap_or(Value::Nil),
         Value::Nil,
         Value::Integer(state.min_depth),
-        Value::Nil,
+        state.comment.map_or(Value::Nil, |comment| {
+            if comment.kind == CommentKind::Fence {
+                Value::Symbol("syntax-table".into())
+            } else if comment.style != 0 {
+                Value::Integer(comment.style as i64)
+            } else {
+                Value::Nil
+            }
+        }),
         state
             .comment
             .map(|comment| Value::Integer(comment.start_pos as i64))
@@ -863,6 +935,11 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             .unwrap_or(0),
         ..Default::default()
     };
+    let comment_style = items
+        .get(7)
+        .and_then(|value| value.as_integer().ok())
+        .map(|style| style.clamp(0, u8::MAX as i64) as u8)
+        .unwrap_or(0);
     if let Some(stack_value) = hidden_items.first()
         && let Ok(entries) = stack_value.to_vec()
     {
@@ -913,11 +990,19 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
         state.comment = match kind.as_str() {
             "single" => Some(CommentState {
                 kind: CommentKind::Single { line: false },
+                style: comment_style,
                 start_pos,
                 depth,
             }),
             "line" => Some(CommentState {
                 kind: CommentKind::Single { line: true },
+                style: comment_style,
+                start_pos,
+                depth,
+            }),
+            "fence" => Some(CommentState {
+                kind: CommentKind::Fence,
+                style: 2,
                 start_pos,
                 depth,
             }),
@@ -937,6 +1022,7 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
                             end_second,
                             nested: entries.get(5).is_some_and(Value::is_truthy),
                         },
+                        style: comment_style,
                         start_pos,
                         depth,
                     }),
@@ -975,7 +1061,7 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             state.string = Some(StringState {
                 quote,
                 start_pos,
-                fence: false,
+                fence: entries.get(2).is_some_and(Value::is_truthy),
             });
         }
     }
@@ -1015,14 +1101,10 @@ fn scan_entry(interp: &Interpreter, table_id: u64, chars: &[char], pos: i64) -> 
     }
 }
 
-// GNU SYNTAX_FLAGS_COMMENT_STYLE over a one- or two-char sequence; 2 is
-// ST_COMMENT_STYLE (generic comment fences).
+// GNU SYNTAX_FLAGS_COMMENT_STYLE over a one- or two-char sequence.
 fn scan_comment_style(first: &SyntaxEntry, second: Option<&SyntaxEntry>) -> u8 {
-    if first.style_b || second.is_some_and(|entry| entry.style_b) {
-        1
-    } else {
-        0
-    }
+    u8::from(first.style_b || second.is_some_and(|entry| entry.style_b))
+        | (u8::from(first.style_c || second.is_some_and(|entry| entry.style_c)) << 1)
 }
 
 // GNU syntax.c char_quoted: whether the char at POS is preceded by an odd
@@ -1172,6 +1254,14 @@ pub(super) fn ensure_syntax_propertized(interp: &mut Interpreter, env: &mut Env)
     }
 }
 
+fn ensure_syntax_propertized_preserving_match_data(interp: &mut Interpreter, env: &mut Env) {
+    let match_data = interp.last_match_data.clone();
+    let match_buffer = interp.last_match_data_buffer_id;
+    ensure_syntax_propertized(interp, env);
+    interp.last_match_data = match_data;
+    interp.last_match_data_buffer_id = match_buffer;
+}
+
 // Verbatim port of GNU syntax.c scan_lists: returns the position past the
 // COUNTth object, nil when the scan ran off the buffer end at depth 0, and
 // signals scan-error with GNU's obstacle positions otherwise.
@@ -1183,7 +1273,10 @@ pub(super) fn scan_lists_gnu(
     depth0: i64,
     sexpflag: bool,
 ) -> Result<Option<usize>, LispError> {
-    ensure_syntax_propertized(interp, env);
+    // GNU scan-sexps may invoke a mode's lazy propertizer, but the scan
+    // primitive itself does not expose regexp match-data changes made by
+    // that propertizer to its caller.
+    ensure_syntax_propertized_preserving_match_data(interp, env);
     let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
     let begv = interp.buffer.point_min() as i64;
@@ -1636,7 +1729,15 @@ pub(super) fn parse_forward(
             let ch = chars[idx];
             let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
             if string.fence {
-                if entry.class == SyntaxClass::GenericStringDelimiter && !is_escaped(&chars, idx) {
+                if entry.class == SyntaxClass::GenericStringDelimiter
+                    && !scan_char_quoted(
+                        interp,
+                        table_id,
+                        &chars,
+                        idx as i64 + 1,
+                        interp.buffer.point_min() as i64,
+                    )
+                {
                     state.string = None;
                     idx += 1;
                     if commentstop == CommentStop::SyntaxTable {
@@ -1650,7 +1751,13 @@ pub(super) fn parse_forward(
             }
             if entry.class == SyntaxClass::StringQuote
                 && ch == string.quote
-                && !is_escaped(&chars, idx)
+                && !scan_char_quoted(
+                    interp,
+                    table_id,
+                    &chars,
+                    idx as i64 + 1,
+                    interp.buffer.point_min() as i64,
+                )
             {
                 state.string = None;
                 idx += 1;
@@ -1669,7 +1776,9 @@ pub(super) fn parse_forward(
                 CommentKind::Single { line } => {
                     let entry =
                         syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
-                    if entry.class == SyntaxClass::CommentEnd {
+                    if entry.class == SyntaxClass::CommentEnd
+                        && scan_comment_style(&entry, None) == comment.style
+                    {
                         if line
                             && chars[idx] == '\n'
                             && comment_end_can_be_escaped
@@ -1689,6 +1798,21 @@ pub(super) fn parse_forward(
                     idx += 1;
                     continue;
                 }
+                CommentKind::Fence => {
+                    let entry =
+                        syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+                    if entry.class == SyntaxClass::GenericCommentDelimiter {
+                        idx += 1;
+                        state.comment = None;
+                        if commentstop != CommentStop::No {
+                            interp.buffer.goto_char(idx + 1);
+                            return Ok(encode_parse_state(&state));
+                        }
+                        continue;
+                    }
+                    idx += 1;
+                    continue;
+                }
                 CommentKind::Block {
                     end_first,
                     end_second,
@@ -1696,6 +1820,7 @@ pub(super) fn parse_forward(
                 } => {
                     if nested
                         && let Some(start) = comment_start_at(interp, table_id, &chars, idx)
+                        && start.style == comment.style
                         && matches!(
                             start.kind,
                             CommentKind::Block {
@@ -1715,6 +1840,18 @@ pub(super) fn parse_forward(
                         && chars[idx] == end_first
                         && chars[idx + 1] == end_second
                     {
+                        let first =
+                            syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+                        let second = syntax_entry_at_buffer_position(
+                            interp,
+                            table_id,
+                            chars[idx + 1],
+                            idx + 2,
+                        );
+                        if scan_comment_style(&first, Some(&second)) != comment.style {
+                            idx += 1;
+                            continue;
+                        }
                         if comment_end_can_be_escaped && preceded_by_odd_backslashes(&chars, idx) {
                             idx += 1;
                             continue;
@@ -1743,6 +1880,7 @@ pub(super) fn parse_forward(
         if let Some(start) = comment_start_at(interp, table_id, &chars, idx) {
             state.comment = Some(CommentState {
                 kind: start.kind,
+                style: start.style,
                 start_pos: idx + 1,
                 depth: 1,
             });
@@ -1790,7 +1928,13 @@ pub(super) fn parse_forward(
         }
         match entry.class {
             SyntaxClass::StringQuote => {
-                if !is_escaped(&chars, idx) {
+                if !scan_char_quoted(
+                    interp,
+                    table_id,
+                    &chars,
+                    idx as i64 + 1,
+                    interp.buffer.point_min() as i64,
+                ) {
                     // GNU records the string as the level's last sexp at
                     // its opening quote.
                     state.set_last_sexp(idx + 1);
@@ -1896,11 +2040,13 @@ fn find_comment_ending_at(
     table_id: u64,
     chars: &[char],
     point: usize,
+    minimum: usize,
     comment_end_can_be_escaped: bool,
 ) -> Option<usize> {
-    if point <= 1 {
+    if point <= minimum {
         return None;
     }
+    let minimum_index = minimum.saturating_sub(1);
     let mut best_start = None;
     let mut idx = point.saturating_sub(2).min(chars.len().saturating_sub(1));
     loop {
@@ -1917,7 +2063,7 @@ fn find_comment_ending_at(
                 best_start = Some(idx + 1);
             }
         }
-        if idx == 0 {
+        if idx == minimum_index {
             break;
         }
         idx -= 1;
@@ -1930,7 +2076,7 @@ fn find_comment_ending_at(
         let end_first = chars[point - 3];
         let end_second = chars[point - 2];
         let mut line_start = point.saturating_sub(2).min(chars.len().saturating_sub(1));
-        while line_start > 0 && chars[line_start - 1] != '\n' {
+        while line_start > minimum_index && chars[line_start - 1] != '\n' {
             line_start -= 1;
         }
         let mut fallback = None;
@@ -1960,8 +2106,7 @@ fn find_comment_ending_at(
     None
 }
 
-fn syntax_class_char_matches(interp: &Interpreter, class: char, ch: char) -> bool {
-    let entry = syntax_entry_for_char(interp, interp.current_syntax_table_id(), ch);
+fn syntax_entry_class_matches(entry: SyntaxEntry, class: char) -> bool {
     match class {
         // GNU accepts both ` ' and `-' as the whitespace class designator.
         ' ' | '-' => entry.class == SyntaxClass::Whitespace,
@@ -1977,8 +2122,39 @@ fn syntax_class_char_matches(interp: &Interpreter, class: char, ch: char) -> boo
         '>' => entry.class == SyntaxClass::CommentEnd,
         '$' => entry.class == SyntaxClass::PairedDelimiter,
         '/' => entry.class == SyntaxClass::CharQuote,
+        '@' => entry.class == SyntaxClass::Inherit,
+        '!' => entry.class == SyntaxClass::GenericCommentDelimiter,
+        '|' => entry.class == SyntaxClass::GenericStringDelimiter,
         _ => false,
     }
+}
+
+fn syntax_class_char_matches(interp: &Interpreter, class: char, ch: char) -> bool {
+    syntax_entry_class_matches(
+        syntax_entry_for_char(interp, interp.current_syntax_table_id(), ch),
+        class,
+    )
+}
+
+pub(super) fn syntax_class_at_buffer_position_matches(
+    interp: &Interpreter,
+    env: &Env,
+    position: usize,
+    class: char,
+) -> bool {
+    let Some(ch) = interp.buffer.char_at(position) else {
+        return false;
+    };
+    let table_id = interp.current_syntax_table_id();
+    let entry = if interp
+        .lookup_var("parse-sexp-lookup-properties", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        syntax_entry_at_buffer_position(interp, table_id, ch, position)
+    } else {
+        syntax_entry_for_char(interp, table_id, ch)
+    };
+    syntax_entry_class_matches(entry, class)
 }
 
 fn syntax_class_matches(interp: &Interpreter, spec: &str, ch: char) -> bool {
@@ -2217,7 +2393,9 @@ pub(super) fn forward_comment_impl(
         return Ok(Value::T);
     }
 
-    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    let minimum = interp.buffer.point_min();
+    let mut chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
+    chars.truncate(interp.buffer.point_max().saturating_sub(1));
     let table_id = interp.current_syntax_table_id();
     let comment_end_can_be_escaped = interp
         .lookup_var("comment-end-can-be-escaped", env)
@@ -2255,18 +2433,24 @@ pub(super) fn forward_comment_impl(
 
     let mut point = original_point;
     for _ in 0..count.unsigned_abs() {
-        if let Some(start_pos) =
-            find_comment_ending_at(interp, table_id, &chars, point, comment_end_can_be_escaped)
-        {
+        if let Some(start_pos) = find_comment_ending_at(
+            interp,
+            table_id,
+            &chars,
+            point,
+            minimum,
+            comment_end_can_be_escaped,
+        ) {
             point = start_pos;
             continue;
         }
-        let candidate = skip_whitespace_backward(interp, table_id, &chars, point);
+        let candidate = skip_whitespace_backward(interp, table_id, &chars, point, minimum);
         if let Some(start_pos) = find_comment_ending_at(
             interp,
             table_id,
             &chars,
             candidate,
+            minimum,
             comment_end_can_be_escaped,
         ) {
             point = start_pos;

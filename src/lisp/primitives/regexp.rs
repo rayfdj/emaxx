@@ -2212,6 +2212,35 @@ pub(super) fn buffer_regex_search(
             backward_args[3] = Value::Integer(-count);
             return buffer_regex_search(interp, &backward_args, env, false, posix);
         }
+        if let Some((negated, syntax_class)) = anchored_single_syntax_class(&pattern.text) {
+            for _ in 0..count {
+                let Some(match_start) = next_anchored_syntax_class_match(
+                    interp,
+                    env,
+                    interp.buffer.point(),
+                    limit,
+                    negated,
+                    syntax_class,
+                ) else {
+                    return if noerror {
+                        if move_on_failure {
+                            interp.buffer.goto_char(limit);
+                        }
+                        Ok(Value::Nil)
+                    } else {
+                        Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("search-failed".into()),
+                            Value::String(pattern.text.clone()),
+                        ])))
+                    };
+                };
+                let match_end = match_start + 1;
+                interp.last_match_data = Some(vec![Some((match_start, match_end))]);
+                interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+                interp.buffer.goto_char(match_end);
+            }
+            return Ok(Value::Integer(interp.buffer.point() as i64));
+        }
         if limit < start {
             return if noerror {
                 if move_on_failure {
@@ -2519,6 +2548,54 @@ pub(super) fn buffer_regex_search(
         }
         Ok(Value::Integer(interp.buffer.point() as i64))
     }
+}
+
+fn anchored_single_syntax_class(pattern: &str) -> Option<(bool, char)> {
+    let mut chars = pattern.chars();
+    if chars.next()? != '^' || chars.next()? != '\\' {
+        return None;
+    }
+    let negated = match chars.next()? {
+        's' => false,
+        'S' => true,
+        _ => return None,
+    };
+    let class = chars.next()?;
+    chars.next().is_none().then_some((negated, class))
+}
+
+fn next_anchored_syntax_class_match(
+    interp: &Interpreter,
+    env: &Env,
+    start: usize,
+    limit: usize,
+    negated: bool,
+    syntax_class: char,
+) -> Option<usize> {
+    let point_min = interp.buffer.point_min();
+    let mut candidate = start;
+    if candidate > point_min && interp.buffer.char_at(candidate - 1) != Some('\n') {
+        while candidate < limit && interp.buffer.char_at(candidate) != Some('\n') {
+            candidate += 1;
+        }
+        candidate += usize::from(candidate < limit);
+    }
+    while candidate < limit {
+        let matches = super::syntax::syntax_class_at_buffer_position_matches(
+            interp,
+            env,
+            candidate,
+            syntax_class,
+        );
+        if matches != negated {
+            return Some(candidate);
+        }
+        while candidate < limit && interp.buffer.char_at(candidate) != Some('\n') {
+            candidate += 1;
+        }
+        candidate += usize::from(candidate < limit);
+    }
+    None
 }
 
 fn search_noerror_moves(noerror: Option<&Value>) -> bool {

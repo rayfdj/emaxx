@@ -471,8 +471,13 @@ impl Buffer {
                     }
                 }
                 if !found {
+                    // GNU counts the unterminated final line as a line that
+                    // can be crossed: moving from anywhere on it to ZV
+                    // satisfies one requested forward-line step.  Only a
+                    // call already at ZV has the full remaining shortage.
+                    let crossed_final_line = self.pt < self.zv;
                     self.pt = self.zv;
-                    return remaining as isize;
+                    return remaining.saturating_sub(usize::from(crossed_final_line)) as isize;
                 }
                 remaining -= 1;
             }
@@ -1928,8 +1933,12 @@ mod tests {
         assert_eq!(buf.forward_line(1), 0);
         assert_eq!(buf.point(), 7); // start of "cc"
 
-        // trying to go one more line - no newline after "cc"
-        assert_eq!(buf.forward_line(1), 1); // shortage of 1
+        // The unterminated final line can be crossed successfully to ZV.
+        assert_eq!(buf.forward_line(1), 0);
+        assert_eq!(buf.point(), buf.point_max());
+
+        // Only another step from ZV has a shortage.
+        assert_eq!(buf.forward_line(1), 1);
     }
 
     #[test]

@@ -373,6 +373,15 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         lisp::load_file_strict(interpreter, &path)
             .map_err(|error| format!("load {}: {error}", path.display()))?;
     }
+    // GNU dumps abbrev.el before language modes are loaded.  It owns active
+    // table traversal, expansion hooks, case handling, and usage state; the
+    // native layer supplies the table/obarray substrate and self-insert's
+    // syntax trigger, but should not grow a second abbreviation engine.
+    if !interpreter.has_feature("abbrev") && interpreter.resolve_load_target("abbrev").is_some() {
+        interpreter
+            .load_target("abbrev")
+            .map_err(|error| format!("preload abbrev: {error}"))?;
+    }
     // GNU dumps font-lock.el and jit-lock.el in this order.  Emaxx keeps
     // font-core's mode engine native, but loads these owning Lisp libraries so
     // clients see the complete standard face and JIT registration surfaces
@@ -1188,6 +1197,61 @@ mod tests {
                     .eval(&form, &mut Vec::new())
                     .expect("evaluate Compile startup probe"),
                 Value::list([Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_font_lock_honors_a_modes_custom_region_function() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(progn
+                   (require 'cperl-mode)
+                   (with-temp-buffer
+                     (insert \"printf qq\n{quoted}\nsub sample { return \\\"x\\\"; }\nmy $string = <<HERE;\nbody\nHERE\n\")
+                     (cperl-mode)
+                     (goto-char (point-min))
+                     (search-forward \"{\")
+                     (let ((lazy-string-state (nth 3 (syntax-ppss)))
+                           (original-point (point)))
+                       (font-lock-ensure)
+                       (unless (= (point) original-point)
+                         (error \"font-lock-ensure moved point\"))
+                       (goto-char (point-min))
+                       (list
+                        lazy-string-state
+                        (progn (search-forward \"sub\")
+                               (get-text-property (match-beginning 0) 'face))
+                        (progn (search-forward \"sample\")
+                               (get-text-property (match-beginning 0) 'face))
+                        (progn (search-forward \"x\")
+                               (get-text-property (match-beginning 0) 'face))
+                        (progn (search-forward \"body\")
+                               (get-text-property (match-beginning 0) 'face))))))",
+            )
+            .read_all()
+            .expect("read custom Font Lock probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate custom Font Lock probe"),
+                Value::list([
+                    Value::T,
+                    Value::Symbol("font-lock-keyword-face".into()),
+                    Value::Symbol("font-lock-function-name-face".into()),
+                    Value::Symbol("font-lock-string-face".into()),
+                    Value::Symbol("font-lock-string-face".into()),
+                ])
             );
         });
     }

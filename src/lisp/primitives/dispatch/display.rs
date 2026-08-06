@@ -2559,7 +2559,56 @@ pub(super) fn call(
                 .map(|value| position_from_value(interp, value))
                 .transpose()?
                 .unwrap_or_else(|| interp.buffer.point_max());
-            font_lock_ensure_region(interp, start, end, env)?;
+            let region_function = interp
+                .lookup_var("font-lock-fontify-region-function", env)
+                .filter(|function| {
+                    !function.is_nil()
+                        && !matches!(
+                            function,
+                            Value::Symbol(symbol)
+                                if symbol == "font-lock-default-fontify-region"
+                        )
+                });
+            if let Some(region_function) = region_function {
+                // Modes such as CPerl own a specialized region extender and
+                // syntaxification pass.  Let the established GNU Font Lock
+                // owner initialize its keyword state and invoke that public
+                // hook instead of approximating the mode in the native
+                // default engine.
+                let saved_buffer = interp.current_buffer_id();
+                let saved_point = interp.buffer.point();
+                let result = interp.call_function_value(
+                    Value::Symbol("font-lock-set-defaults".into()),
+                    Some("font-lock-set-defaults"),
+                    &[],
+                    env,
+                );
+                let result = result.and_then(|_| {
+                    let function_name = region_function.as_symbol().ok().map(str::to_owned);
+                    interp.call_function_value(
+                        region_function,
+                        function_name.as_deref(),
+                        &[
+                            Value::Integer(start as i64),
+                            Value::Integer(end as i64),
+                            Value::Nil,
+                        ],
+                        env,
+                    )
+                });
+                if interp.current_buffer_id() != saved_buffer {
+                    let _ = interp.switch_to_buffer_id(saved_buffer);
+                }
+                interp.buffer.goto_char(saved_point);
+                result?;
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    "font-lock-fontified",
+                    Value::T,
+                );
+            } else {
+                font_lock_ensure_region(interp, start, end, env)?;
+            }
             if name == "font-lock-fontify-region"
                 && super::call(
                     interp,
