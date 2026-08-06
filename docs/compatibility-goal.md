@@ -29,6 +29,20 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-07 Isearch cumulative repair keeps the ordered frontier at
+  4,582/7,080 and reduces the known cumulative mismatch set to two themes.
+  All 5 canonical outcomes in `test/lisp/isearch-tests.el` match GNU in
+  `target/compat/run-1786053021778975000-76262`.  Lazy highlighting was
+  reselecting the already-selected window through `save-selected-window`;
+  Emaxx then restored its stale saved window-point slot and rewound point,
+  causing the next Isearch repeat to rediscover the first match.  Window
+  selection now treats the selected window's current buffer point as its live
+  point and reserves the saved slot for unselected windows.  Focused live-point
+  and independent-window-point regressions, formatting, diff check,
+  all-target/all-feature check, and strict Clippy pass.  Native remains
+  1,420/1,420.  Remaining cumulative work is Electric's confirmed long timeout
+  and TRAMP shell-prompt startup before the final 1..4,582 replay and selector
+  4,583.
 - The 2026-08-07 buffer line-motion cumulative repair keeps the ordered
   frontier at 4,582/7,080 and reduces the known cumulative mismatch set to
   three themes.  All 3 canonical Eshell Mode outcomes match GNU in

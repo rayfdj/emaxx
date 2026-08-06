@@ -18,6 +18,20 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-07 ISEARCH CUMULATIVE REPAIR: the frontier stays paused at
+  4,582/7,080 and only two known cumulative themes remain.  All 5 canonical
+  Isearch outcomes match GNU in
+  `target/compat/run-1786053021778975000-76262`.  `save-selected-window`
+  legitimately reselects its saved window during lazy highlighting, but
+  Emaxx's `select-window` incorrectly replaced the live buffer point of an
+  already-selected window with its stale saved slot.  The selected window now
+  uses its current buffer's point; saved window-point slots remain
+  authoritative when a window is unselected.  Focused live-point and
+  independent-window-point regressions, formatting, diff check,
+  all-target/all-feature check, and strict Clippy pass.  Native remains
+  1,420/1,420.  NEXT cumulative targets are Electric's confirmed long timeout
+  and TRAMP shell-prompt startup; recertify the entire 1..4,582 prefix before
+  selector 4,583.
 - 2026-08-07 BUFFER LINE-MOTION CUMULATIVE REPAIR: the frontier stays paused
   at 4,582/7,080 and only three known cumulative themes remain.  Eshell Mode
   matches all 3 canonical outcomes in
