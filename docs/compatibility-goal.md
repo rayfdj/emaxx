@@ -49,9 +49,13 @@ handoff and retry instruction are in
 
   The repair also removes several drift-prone parallel registries.  Every
   synthesized startup value now inherits special-variable semantics from its
-  value registry; native per-buffer name, always-local status, and effective
-  permanence are one typed manifest; `local-variable-p` consumes that runtime
-  metadata instead of its own list.  The generated GNU primitive, arity, and
+  value registry.  Explicit startup definitions now use atomic helpers that
+  install the value cell together with ordinary, per-buffer, or always-local
+  special metadata instead of adjacent calls; the remaining separate
+  `mark_special_variable` sites are declaration-only entries whose values are
+  lazy or established elsewhere.  Native per-buffer name, always-local status,
+  and effective permanence are one typed manifest; `local-variable-p` consumes
+  that runtime metadata instead of its own list.  The generated GNU primitive, arity, and
   dumped-autoload manifests remain protected by their whole-manifest tests.
   Byte compilation now uses real scoped special bindings, native bootstrap
   ERT expands bodies at definition time, and the synthetic

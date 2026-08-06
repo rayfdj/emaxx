@@ -2692,12 +2692,10 @@ impl Interpreter {
             interp.mark_special_variable(name);
         }
         for name in GNU_EMACS_LOCALE_SPECIAL_VARIABLES {
-            interp.set_global_binding(name, Value::Nil);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, Value::Nil);
         }
         for name in GNU_TREESIT_SPECIAL_VARIABLES {
-            interp.set_global_binding(name, Value::Nil);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, Value::Nil);
         }
         for name in GNU_KEYBOARD_TIMER_SPECIAL_VARIABLES {
             interp.mark_special_variable(name);
@@ -2706,8 +2704,7 @@ impl Interpreter {
             interp.mark_special_variable(name);
         }
         for name in GNU_CHANGE_HOOK_SPECIAL_VARIABLES {
-            interp.set_global_binding(name, Value::Nil);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, Value::Nil);
         }
         for variable in GNU_NATIVE_PER_BUFFER_VARIABLES {
             if variable.always_local {
@@ -3038,8 +3035,7 @@ impl Interpreter {
             "key-translation-map",
         ] {
             let keymap = primitives::make_runtime_keymap(&mut interp, Some(name));
-            interp.set_global_binding(name, keymap);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, keymap);
         }
         let minibuffer_local_map =
             primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
@@ -3057,8 +3053,7 @@ impl Interpreter {
         // dumped simple.el creates: a stable map, mode variable, hook family,
         // and minor-mode registry entry.
         let visual_line_mode_map = make_visual_line_mode_map(&mut interp);
-        interp.set_global_binding("visual-line-mode-map", visual_line_mode_map.clone());
-        interp.mark_special_variable("visual-line-mode-map");
+        interp.define_special_variable("visual-line-mode-map", visual_line_mode_map.clone());
         interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
         interp.set_global_binding(
             "minor-mode-map-alist",
@@ -3072,16 +3067,14 @@ impl Interpreter {
             Value::list([Value::Symbol("visual-line-mode".into())]),
         );
         primitives::ensure_standard_abbrev_tables(&mut interp);
-        interp.set_global_binding("visual-line-mode", Value::Nil);
-        interp.mark_special_variable("visual-line-mode");
+        interp.define_special_variable("visual-line-mode", Value::Nil);
         interp.mark_auto_buffer_local("visual-line-mode");
         for hook in [
             "visual-line-mode-hook",
             "visual-line-mode-on-hook",
             "visual-line-mode-off-hook",
         ] {
-            interp.set_global_binding(hook, Value::Nil);
-            interp.mark_special_variable(hook);
+            interp.define_special_variable(hook, Value::Nil);
         }
         interp.set_global_binding("font-lock-mode", Value::Nil);
         interp.mark_auto_buffer_local("font-lock-mode");
@@ -3094,16 +3087,14 @@ impl Interpreter {
         interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
         interp.mark_auto_buffer_local("mode-name");
         let mode_line_format = default_mode_line_format();
-        interp.set_global_binding("mode-line-format", mode_line_format.clone());
-        interp.mark_per_buffer_special("mode-line-format");
+        interp.define_per_buffer_special("mode-line-format", mode_line_format.clone());
         interp.put_symbol_property(
             "mode-line-format",
             "standard-value",
             Value::list([quoted_literal(&mode_line_format)]),
         );
         for name in ["header-line-format", "tab-line-format"] {
-            interp.set_global_binding(name, Value::Nil);
-            interp.mark_per_buffer_special(name);
+            interp.define_per_buffer_special(name, Value::Nil);
         }
         interp.set_global_binding(
             "mode-line-buffer-identification",
@@ -3114,7 +3105,7 @@ impl Interpreter {
         interp.set_global_binding("glyphless-char-display", glyphless_char_display);
         let char_script_table =
             interp.make_char_table(Some("char-script-table".into()), Value::Nil);
-        interp.set_global_binding("char-script-table", char_script_table);
+        interp.define_special_variable("char-script-table", char_script_table);
         let auto_fill_chars = interp.make_char_table(Some("auto-fill-chars".into()), Value::Nil);
         if let Value::CharTable(table_id) = auto_fill_chars {
             interp
@@ -3123,17 +3114,17 @@ impl Interpreter {
             interp
                 .char_table_set(table_id, '\n' as u32, Value::T)
                 .expect("initialize auto-fill-chars newline entry");
-            interp.set_global_binding("auto-fill-chars", Value::CharTable(table_id));
+            interp.define_special_variable("auto-fill-chars", Value::CharTable(table_id));
         }
         let char_width_table = interp.make_char_table(None, Value::Integer(1));
         if let Value::CharTable(table_id) = char_width_table {
             interp
                 .char_table_set_range(table_id, 0x80, 0x9f, Value::Integer(4))
                 .expect("initialize C1 character widths");
-            interp.set_global_binding("char-width-table", Value::CharTable(table_id));
+            interp.define_special_variable("char-width-table", Value::CharTable(table_id));
         }
         let ambiguous_width_chars = interp.make_char_table(None, Value::Nil);
-        interp.set_global_binding("ambiguous-width-chars", ambiguous_width_chars);
+        interp.define_special_variable("ambiguous-width-chars", ambiguous_width_chars);
         let printable_chars = interp.make_char_table(None, Value::Nil);
         if let Value::CharTable(table_id) = printable_chars {
             interp
@@ -3142,52 +3133,28 @@ impl Interpreter {
             interp
                 .char_table_set_range(table_id, 160, 0x3f_ffff, Value::T)
                 .expect("initialize multibyte printable characters");
-            interp.set_global_binding("printable-chars", Value::CharTable(table_id));
+            interp.define_special_variable("printable-chars", Value::CharTable(table_id));
         }
-        interp.set_global_binding("script-representative-chars", Value::Nil);
-        interp.set_global_binding("unicode-category-table", Value::Nil);
-        interp.set_global_binding("auto-composition-function", Value::Nil);
+        interp.define_special_variable("script-representative-chars", Value::Nil);
+        interp.define_special_variable("unicode-category-table", Value::Nil);
+        interp.define_special_variable("auto-composition-function", Value::Nil);
         let composition_function_table = interp.make_char_table(None, Value::Nil);
-        interp.set_global_binding("composition-function-table", composition_function_table);
-        interp.set_global_binding("auto-composition-emoji-eligible-codepoints", Value::Nil);
-        for name in [
-            "auto-fill-chars",
-            "char-width-table",
-            "ambiguous-width-chars",
-            "printable-chars",
-            "char-script-table",
-            "script-representative-chars",
-            "unicode-category-table",
-            "auto-composition-function",
-            "composition-function-table",
-            "auto-composition-emoji-eligible-codepoints",
-        ] {
-            interp.mark_special_variable(name);
-        }
-        interp.set_global_binding("buffer-read-only", Value::Nil);
-        interp.set_global_binding("dump-mode", Value::Nil);
-        interp.mark_special_variable("dump-mode");
-        interp.set_global_binding("charset-map-path", Value::Nil);
-        interp.set_global_binding("inhibit-load-charset-map", Value::Nil);
-        interp.set_global_binding("current-iso639-language", Value::Nil);
-        for name in [
-            "charset-map-path",
-            "inhibit-load-charset-map",
-            "charset-list",
-            "current-iso639-language",
-        ] {
-            interp.mark_special_variable(name);
-        }
+        interp.define_special_variable("composition-function-table", composition_function_table);
+        interp.define_special_variable("auto-composition-emoji-eligible-codepoints", Value::Nil);
         // GNU defines this C variable as both special and automatically
         // buffer-local.  A dynamic binding therefore belongs to the buffer
         // where it was made and must not make a newly selected buffer read-only.
-        interp.mark_always_buffer_local_special("buffer-read-only");
+        interp.define_always_buffer_local_special("buffer-read-only", Value::Nil);
+        interp.define_special_variable("dump-mode", Value::Nil);
+        interp.define_special_variable("charset-map-path", Value::Nil);
+        interp.define_special_variable("inhibit-load-charset-map", Value::Nil);
+        interp.define_special_variable("current-iso639-language", Value::Nil);
+        interp.mark_special_variable("charset-list");
         for (name, value) in [
             ("delete-auto-save-files", Value::T),
             ("kill-buffer-delete-auto-save-files", Value::Nil),
         ] {
-            interp.set_global_binding(name, value);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, value);
         }
         interp.set_global_binding("read-only-mode", Value::Nil);
         interp.mark_auto_buffer_local("read-only-mode");
@@ -3412,20 +3379,16 @@ impl Interpreter {
         interp.mark_special_variable("delete-terminal-functions");
         // dispnew.c publishes this DEFVAR_INT before isearch.el is dumped.
         // Batch terminals have no output baud rate, represented by zero.
-        interp.set_global_binding("baud-rate", Value::Integer(0));
-        interp.mark_special_variable("baud-rate");
+        interp.define_special_variable("baud-rate", Value::Integer(0));
         // keyboard.c installs `list' as the pass-through input method before
         // dumped Lisp loads.  Isearch saves and buffer-locally suppresses it.
-        interp.set_global_binding("input-method-function", Value::Symbol("list".into()));
-        interp.mark_special_variable("input-method-function");
+        interp.define_special_variable("input-method-function", Value::Symbol("list".into()));
         // GNU keeps this dynamically scoped variable globally bound to nil;
         // loading a lexical file binds it to t only for that load.
-        interp.set_global_binding("lexical-binding", Value::Nil);
-        interp.mark_always_buffer_local_special("lexical-binding");
+        interp.define_always_buffer_local_special("lexical-binding", Value::Nil);
         // GNU preloads files.el, where this defcustom is globally bound.
         // abbrev.el consumes it without requiring files.el itself.
-        interp.set_global_binding("save-abbrevs", Value::T);
-        interp.mark_special_variable("save-abbrevs");
+        interp.define_special_variable("save-abbrevs", Value::T);
         // callproc.c defines both as DEFVAR_LISP variables before dumped
         // Lisp is loaded.  Keep their host-computed defaults in bindings.rs,
         // but record the special declaration here so lexical callers can
@@ -3462,13 +3425,11 @@ impl Interpreter {
             ("shell-command-dont-erase-buffer", Value::Nil),
             ("shell-command-saved-pos", Value::Nil),
         ] {
-            interp.set_global_binding(name, value);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, value);
         }
         // subr.el's prompt policy is let-bound by callers and consumed by
         // separately defined save commands.
-        interp.set_global_binding("use-dialog-box", Value::Nil);
-        interp.mark_special_variable("use-dialog-box");
+        interp.define_special_variable("use-dialog-box", Value::Nil);
         // fileio.c exposes this as a dynamically scoped DEFVAR_LISP.  Temp
         // helpers are defined separately and must observe callers' let-bindings.
         interp.mark_special_variable("temporary-file-directory");
@@ -3476,8 +3437,7 @@ impl Interpreter {
         // and line motion bind it around calls into separately defined
         // functions, so a lexical binding here would silently leave field
         // constraints enabled (most visibly at non-sticky shell prompts).
-        interp.set_global_binding("inhibit-field-text-motion", Value::Nil);
-        interp.mark_special_variable("inhibit-field-text-motion");
+        interp.define_special_variable("inhibit-field-text-motion", Value::Nil);
         // GNU print.c installs these primitive DEFVARs before Lisp startup.
         // Keep the declaration and default together: printer helpers such as
         // cl-print dynamically bind the limits in one function and expect the
@@ -3492,23 +3452,20 @@ impl Interpreter {
             ("print-level", Value::Nil),
             ("print-quoted", Value::T),
         ] {
-            interp.set_global_binding(name, value);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, value);
         }
-        interp.set_global_binding("char-property-alias-alist", Value::Nil);
-        interp.mark_special_variable("char-property-alias-alist");
+        interp.define_special_variable("char-property-alias-alist", Value::Nil);
         // syntax.c exposes both scanner switches as primitive DEFVAR_BOOLs.
         // They must be special so a caller's lexical `let' remains visible
         // through separately defined Lisp helpers such as `syntax-after'.
         for name in ["parse-sexp-ignore-comments", "parse-sexp-lookup-properties"] {
-            interp.set_global_binding(name, Value::Nil);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, Value::Nil);
         }
         // GNU textprop.c supplies syntax-table/display, and the dumped Lisp
         // image adds composition/fill-space.  `insert-and-inherit' consults
         // this process-wide special when deciding which adjacent properties
         // may propagate onto newly inserted text.
-        interp.set_global_binding(
+        interp.define_special_variable(
             "text-property-default-nonsticky",
             Value::list([
                 Value::cons(Value::Symbol("fill-space".into()), Value::T),
@@ -3517,7 +3474,6 @@ impl Interpreter {
                 Value::cons(Value::Symbol("display".into()), Value::T),
             ]),
         );
-        interp.mark_special_variable("text-property-default-nonsticky");
         // files.el is dumped in GNU, so these `defvar-local' contracts must
         // exist before user/test code can set them and thereby trigger the
         // lazy files.el load.  Otherwise the first assignment leaks globally
@@ -3527,12 +3483,10 @@ impl Interpreter {
             "local-write-file-hooks",
             "write-contents-functions",
         ] {
-            interp.set_global_binding(name, Value::Nil);
-            interp.mark_per_buffer_special(name);
+            interp.define_per_buffer_special(name, Value::Nil);
             interp.put_symbol_property(name, "permanent-local", Value::T);
         }
-        interp.set_global_binding("buffer-save-without-query", Value::Nil);
-        interp.mark_per_buffer_special("buffer-save-without-query");
+        interp.define_per_buffer_special("buffer-save-without-query", Value::Nil);
         for (name, value) in [
             ("save-some-buffers-default-predicate", Value::Nil),
             ("save-some-buffers-functions", Value::Nil),
@@ -3540,23 +3494,19 @@ impl Interpreter {
             ("confirm-kill-emacs", Value::Nil),
             ("confirm-kill-processes", Value::T),
         ] {
-            interp.set_global_binding(name, value);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, value);
         }
-        interp.set_global_binding("require-final-newline", Value::Nil);
-        interp.mark_special_variable("require-final-newline");
+        interp.define_special_variable("require-final-newline", Value::Nil);
         // files.el defines this as nil and then calls
         // `make-variable-buffer-local'.  Merely carrying the property is not
         // enough: otherwise setting it in one buffer changes every buffer's
         // save policy.
-        interp.set_global_binding("buffer-offer-save", Value::Nil);
-        interp.mark_per_buffer_special("buffer-offer-save");
+        interp.define_per_buffer_special("buffer-offer-save", Value::Nil);
         interp.put_symbol_property("buffer-offer-save", "permanent-local", Value::T);
         interp.put_symbol_property("backup-inhibited", "permanent-local", Value::T);
         // mule.el is dumped before files.el.  Save/revert code reads this
         // automatically buffer-local coding choice directly.
-        interp.set_global_binding("buffer-file-coding-system-explicit", Value::Nil);
-        interp.mark_per_buffer_special("buffer-file-coding-system-explicit");
+        interp.define_per_buffer_special("buffer-file-coding-system-explicit", Value::Nil);
         interp.put_symbol_property(
             "buffer-file-coding-system-explicit",
             "permanent-local",
@@ -3564,8 +3514,7 @@ impl Interpreter {
         );
         // GNU loadup preloads vc-hooks.el and uniquify.el before files.el.
         // files.el reads these bindings directly, without boundp guards.
-        interp.set_global_binding("vc-mode", Value::Nil);
-        interp.mark_per_buffer_special("vc-mode");
+        interp.define_per_buffer_special("vc-mode", Value::Nil);
         interp.put_symbol_property("vc-mode", "permanent-local", Value::T);
         for (name, value) in [
             (
@@ -3575,8 +3524,7 @@ impl Interpreter {
             ("uniquify-separator", Value::Nil),
             ("uniquify-trailing-separator-p", Value::Nil),
         ] {
-            interp.set_global_binding(name, value);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, value);
         }
         // callproc.c publishes this complete host-program manifest before
         // any Lisp is loaded.  Gnus and the preloaded tag/VC libraries read
@@ -3596,34 +3544,29 @@ impl Interpreter {
         }
         // Native minibuffer variables likewise exist before Lisp is loaded
         // and are consumed by preloaded prompt helpers.
-        interp.set_global_binding(
+        interp.define_special_variable(
             "minibuffer-prompt-properties",
             Value::list([Value::Symbol("read-only".into()), Value::T]),
         );
-        interp.mark_special_variable("minibuffer-prompt-properties");
-        interp.set_global_binding("minibuffer-auto-raise", Value::Nil);
-        interp.mark_special_variable("minibuffer-auto-raise");
+        interp.define_special_variable("minibuffer-auto-raise", Value::Nil);
         // keyboard.c defines this before minibuffer.el.  Completion callers
         // dynamically shorten it, so both the native default and special
         // binding contract must exist before their lexical code is loaded.
-        interp.set_global_binding("minibuffer-message-timeout", Value::Integer(2));
-        interp.mark_special_variable("minibuffer-message-timeout");
+        interp.define_special_variable("minibuffer-message-timeout", Value::Integer(2));
         // minibuffer.el preloads these dispatch hooks.  Callers dynamically
         // override them around a separately defined reader (ERT does this to
         // make prompts deterministic), so lexical fallback bindings are not
         // sufficient.
         for name in ["read-buffer-function", "read-file-name-function"] {
-            interp.set_global_binding(name, Value::Nil);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, Value::Nil);
         }
-        interp.set_global_binding(
+        interp.define_special_variable(
             "exec-directory",
             Value::String(
                 primitives::current_invocation_directory()
                     .unwrap_or_else(primitives::default_directory),
             ),
         );
-        interp.mark_special_variable("exec-directory");
         interp.set_global_binding("mark-ring", Value::Nil);
         interp.mark_auto_buffer_local("mark-ring");
         interp.put_symbol_property("mark-ring", "permanent-local", Value::T);
@@ -3671,15 +3614,13 @@ impl Interpreter {
             "this-command-keys-shift-translated",
             "this-original-command",
         ] {
-            interp.set_global_binding(name, Value::Nil);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, Value::Nil);
         }
         // keyboard.c's integer command-loop counters are ordinary special
         // variables at the Lisp boundary.  Keyboard-macro playback updates
         // the active dynamic binding once for every complete key sequence.
         for name in ["num-input-keys", "num-nonmacro-input-events"] {
-            interp.set_global_binding(name, Value::Integer(0));
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, Value::Integer(0));
         }
         // eval.c defines the debugger controls before loading dumped Lisp.
         // Their special declarations are part of the evaluator boundary:
@@ -3696,19 +3637,18 @@ impl Interpreter {
             ("debug-on-next-call", Value::Nil),
             ("backtrace-on-error-noninteractive", Value::T),
         ] {
-            interp.set_global_binding(name, value);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, value);
         }
         // minibuf.c plus the dumped minibuffer.el provide the completion
         // variables consumed by the native completion engine.  They are not
         // mere fallback constants: each DEFVAR/defcustom also declares the
         // name special, so callers can let-bind policy around a completion
         // function defined elsewhere (Completion Preview does exactly this).
-        interp.set_global_binding("completion-ignore-case", Value::Nil);
-        interp.set_global_binding("completion-regexp-list", Value::Nil);
-        interp.set_global_binding("completion-auto-help", Value::T);
-        interp.set_global_binding("completion-extra-properties", Value::Nil);
-        interp.set_global_binding("enable-recursive-minibuffers", Value::Nil);
+        interp.define_special_variable("completion-ignore-case", Value::Nil);
+        interp.define_special_variable("completion-regexp-list", Value::Nil);
+        interp.define_special_variable("completion-auto-help", Value::T);
+        interp.define_special_variable("completion-extra-properties", Value::Nil);
+        interp.define_special_variable("enable-recursive-minibuffers", Value::Nil);
         // minibuf.c also publishes the per-read completion session before
         // minibuffer.el is dumped.  Completion-in-region users (including
         // Eshell) legitimately call the dumped helpers outside an active
@@ -3721,25 +3661,10 @@ impl Interpreter {
             "minibuffer-history-position",
             "minibuffer-allow-text-properties",
         ] {
-            interp.set_global_binding(name, Value::Nil);
+            interp.define_special_variable(name, Value::Nil);
         }
-        interp.set_global_binding("minibuffer-history-variable", Value::Integer(0));
-        for name in [
-            "completion-ignore-case",
-            "completion-regexp-list",
-            "completion-auto-help",
-            "completion-extra-properties",
-            "completion-styles",
-            "completion-styles-alist",
-            "enable-recursive-minibuffers",
-            "minibuffer-completion-table",
-            "minibuffer-completion-predicate",
-            "minibuffer-completion-confirm",
-            "minibuffer-help-form",
-            "minibuffer-history-variable",
-            "minibuffer-history-position",
-            "minibuffer-allow-text-properties",
-        ] {
+        interp.define_special_variable("minibuffer-history-variable", Value::Integer(0));
+        for name in ["completion-styles", "completion-styles-alist"] {
             interp.mark_special_variable(name);
         }
         // callproc.c/lread.c publish the installation-directory values as C
@@ -3759,11 +3684,10 @@ impl Interpreter {
         // descr-text.el intentionally consumes this option without requiring
         // ElDoc itself, so preserve both the dumped default and defcustom's
         // special declaration at the runtime boundary.
-        interp.set_global_binding(
+        interp.define_special_variable(
             "eldoc-echo-area-use-multiline-p",
             Value::Symbol("truncate-sym-name-if-fit".into()),
         );
-        interp.mark_special_variable("eldoc-echo-area-use-multiline-p");
         interp.set_global_binding("tab-bar-new-tab-choice", Value::T);
         interp.set_global_binding("max-lisp-eval-depth", Value::Integer(1600));
         interp.put_symbol_property(
@@ -3774,18 +3698,15 @@ impl Interpreter {
         interp.set_global_binding("search-upper-case", Value::Symbol("not-yanks".into()));
         // search.c primitive DEFVARs.  Search helpers bind these around
         // calls into separately defined code, so both are dynamic specials.
-        interp.set_global_binding("search-spaces-regexp", Value::Nil);
-        interp.mark_special_variable("search-spaces-regexp");
-        interp.set_global_binding("inhibit-changing-match-data", Value::Nil);
-        interp.mark_special_variable("inhibit-changing-match-data");
+        interp.define_special_variable("search-spaces-regexp", Value::Nil);
+        interp.define_special_variable("inhibit-changing-match-data", Value::Nil);
         interp.set_global_binding("search-whitespace-regexp", Value::String("[ \t]+".into()));
         // GNU preloads window.el, whose `defcustom' both initializes this
         // user action table and declares it special.  Buffer-display policy
         // is commonly let-bound in a lexical caller and consumed by a
         // separately defined display function (ERC does exactly this), so a
         // merely lexical Emaxx binding silently loses the user action.
-        interp.set_global_binding("display-buffer-alist", Value::Nil);
-        interp.mark_special_variable("display-buffer-alist");
+        interp.define_special_variable("display-buffer-alist", Value::Nil);
         // window.c establishes this complete variable family before dumped
         // window.el.  These are native dynamic variables, not optional Lisp
         // defaults: separately defined display and scrolling functions
@@ -3810,12 +3731,10 @@ impl Interpreter {
             "window-resize-pixelwise",
             "fast-but-imprecise-scrolling",
         ] {
-            interp.set_global_binding(name, Value::Nil);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, Value::Nil);
         }
         for name in ["mode-line-in-non-selected-windows", "auto-window-vscroll"] {
-            interp.set_global_binding(name, Value::T);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, Value::T);
         }
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
@@ -3829,8 +3748,7 @@ impl Interpreter {
                 Value::list([Value::cons(Value::Symbol("clone-of".into()), Value::T)]),
             ),
         ] {
-            interp.set_global_binding(name, value);
-            interp.mark_special_variable(name);
+            interp.define_special_variable(name, value);
         }
         if let Some(temp_dir) = interp.lookup_var("temporary-file-directory", &Vec::new()) {
             interp.put_symbol_property(

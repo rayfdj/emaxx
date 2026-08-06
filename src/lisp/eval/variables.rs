@@ -145,6 +145,26 @@ impl Interpreter {
             .any(|existing| existing == name)
     }
 
+    /// Define a global value cell and its dynamic-binding contract together.
+    /// Native DEFVAR-style startup state must never require two coordinated
+    /// calls at the definition site.
+    pub fn define_special_variable(&mut self, name: &str, value: Value) {
+        self.set_global_binding(name, value);
+        self.mark_special_variable(name);
+    }
+
+    /// Define a native per-buffer value and its locality metadata atomically.
+    pub fn define_per_buffer_special(&mut self, name: &str, value: Value) {
+        self.set_global_binding(name, value);
+        self.mark_per_buffer_special(name);
+    }
+
+    /// Define a native always-buffer-local value and its locality metadata.
+    pub fn define_always_buffer_local_special(&mut self, name: &str, value: Value) {
+        self.set_global_binding(name, value);
+        self.mark_always_buffer_local_special(name);
+    }
+
     /// Mark a native DEFVAR_PER_BUFFER variable that inherits its default
     /// until assigned locally (a positive buffer_local_flags index in GNU).
     pub fn mark_per_buffer_special(&mut self, name: &str) {
