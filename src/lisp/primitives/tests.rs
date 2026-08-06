@@ -6107,6 +6107,31 @@ fn native_gnutls_digest_catalog_and_hashing_use_rustcrypto() {
 }
 
 #[test]
+fn native_gnutls_advertises_loaded_host_capabilities() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((capabilities (gnutls-available-p)))
+           (if (and (equal (secure-hash-algorithms)
+                           '(md5 sha1 sha224 sha256 sha384 sha512))
+                    (memq 'gnutls3 capabilities)
+                    (memq 'digests capabilities)
+                    (memq 'macs capabilities)
+                    (memq 'ciphers capabilities))
+               t nil))",
+    )
+    .read()
+    .expect("GnuTLS availability contract should parse")
+    .expect("GnuTLS availability contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("GnuTLS availability contract should evaluate"),
+        Value::T
+    );
+}
+
+#[test]
 fn native_gnutls_catalogs_and_error_diagnostics_use_the_host_library() {
     let program = r#"
         (progn

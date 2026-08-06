@@ -419,6 +419,7 @@ pub(super) fn handles(name: &str) -> bool {
         "gnutls-asynchronous-parameters"
             | "gnutls-boot"
             | "gnutls-bye"
+            | "gnutls-available-p"
             | "gnutls-ciphers"
             | "gnutls-deinit"
             | "gnutls-digests"
@@ -1449,6 +1450,27 @@ pub(super) fn call(
     args: &[Value],
 ) -> Result<Value, LispError> {
     match name {
+        "gnutls-available-p" => {
+            need_args(name, args, 0)?;
+            let Ok(library) = load_gnutls() else {
+                return Ok(Value::Nil);
+            };
+            let mut capabilities = vec![
+                Value::symbol("macs"),
+                Value::symbol("ciphers"),
+                Value::symbol("digests"),
+                Value::symbol("gnutls3"),
+                Value::symbol("gnutls"),
+            ];
+            if library.api.aead_init.is_some()
+                && library.api.aead_encrypt.is_some()
+                && library.api.aead_decrypt.is_some()
+                && library.api.aead_deinit.is_some()
+            {
+                capabilities.insert(1, Value::symbol("AEAD-ciphers"));
+            }
+            Ok(Value::list(capabilities))
+        }
         "gnutls-asynchronous-parameters" => {
             need_args(name, args, 2)?;
             let process_id = interp.resolve_process_id(&args[0])?;

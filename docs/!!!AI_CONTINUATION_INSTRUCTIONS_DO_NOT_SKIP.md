@@ -18,6 +18,28 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 EWW/CRYPTO/MAILCAP CHECKPOINT: the fresh contiguous ordered
+  frontier is 4,335/7,080, leaving 2,745 selectors.  All 31 canonical selected
+  outcomes match GNU: EWW 9/9, GnuTLS 6/6, HMAC-MD5 1/1, and Mailcap 15/15.
+  GNU's preloaded `with-delayed-message` macro exposes the existing native
+  primitive to EWW.  `gnutls-available-p` now reports the real host-library
+  capabilities rather than the stale unavailable stub, and the advertised
+  secure-hash catalog is GNU 30.2's exact six names.  Crypto stays on the
+  established RustCrypto and host GnuTLS backends; nothing was reimplemented.
+  Canonical artifacts are EWW
+  `target/compat/run-1785979844926477000-44231`, GnuTLS
+  `target/compat/run-1785980949187657000-45066`, HMAC-MD5
+  `target/compat/run-1785981071334076000-45261`, and Mailcap
+  `target/compat/run-1785981096202709000-45379`.  The GnuTLS artifact also
+  passes its non-denominator expensive AEAD outcome.  Formatting, diff check,
+  focused regressions, all-target/all-feature check, and strict Clippy pass;
+  the immediately preceding full Rust audit remains current.  Native remains
+  1,420/1,420.  NEXT is selector 4,336,
+  `check-network-process-coding-system-bind`, in
+  `test/lisp/net/network-stream-tests.el` (27 selected); initial artifact
+  `target/compat/run-1785981115203982000-45499` has 17 matching outcomes and
+  10 GNU `file-error` versus Emaxx generic `error` condition-type mismatches
+  on sandbox-denied server creation.
 - 2026-08-06 MOUSE/EARLY NETWORK CHECKPOINT: the fresh contiguous ordered
   frontier is 4,304/7,080, leaving 2,776 selectors.  All 49 canonical outcomes
   match GNU: Mouse 6/6, Mouse Wheel 2/2, Browse URL 13/13, D-Bus 16/16, Dig
