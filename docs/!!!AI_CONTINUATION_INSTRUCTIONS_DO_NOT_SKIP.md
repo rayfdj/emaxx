@@ -39,7 +39,10 @@ counts as the progress denominator.
   values automatically imply special binding semantics.  Explicit startup
   definitions atomically install the value cell with ordinary, per-buffer, or
   always-local special metadata; remaining standalone special marks are
-  declaration-only values supplied lazily or elsewhere.  Native per-buffer
+  declaration-only values supplied lazily or elsewhere.  image.c startup
+  names, values, and special contracts are co-located, `fringe-bitmaps` uses
+  the same atomic path, and timer queues rely on their lazy default registry
+  instead of a redundant name list.  Native per-buffer
   names, always-local status, and effective permanence are one typed
   manifest; and `local-variable-p` consumes that registered metadata.  GNU
   primitive, arity, and dumped-autoload metadata remain generated and

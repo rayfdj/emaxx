@@ -94,24 +94,36 @@ const GNU_EMACS_LOCALE_SPECIAL_VARIABLES: &[&str] =
 const GNU_TREESIT_SPECIAL_VARIABLES: &[&str] =
     &["treesit-extra-load-path", "treesit-load-name-override-list"];
 
-// keyboard.c owns both Lisp timer queues.  Like every native DEFVAR_LISP,
-// they are special: test harnesses deliberately bind private queue copies,
-// and timer.el must mutate and the event loop must drain that same dynamic
-// binding even though its helper functions were defined elsewhere.
-const GNU_KEYBOARD_TIMER_SPECIAL_VARIABLES: &[&str] = &["timer-list", "timer-idle-list"];
-
 // image.c's native image variables exist before image.el or shr.el load and
 // retain dynamic binding semantics under lexical binding.  Keep the complete
 // feature-independent group together; `imagemagick-render-type' is omitted
 // because GNU only defines it when built with ImageMagick support.
-const GNU_IMAGE_SPECIAL_VARIABLES: &[&str] = &[
-    "image-types",
-    "max-image-size",
-    "cross-disabled-images",
-    "x-bitmap-file-path",
-    "image-cache-eviction-delay",
-    "image-scaling-factor",
-];
+fn gnu_image_special_variables() -> [(&'static str, Value); 6] {
+    [
+        (
+            "image-types",
+            Value::list([
+                Value::symbol("pbm"),
+                Value::symbol("png"),
+                Value::symbol("jpeg"),
+                Value::symbol("gif"),
+                Value::symbol("svg"),
+                Value::symbol("xbm"),
+                Value::symbol("xpm"),
+                Value::symbol("webp"),
+                Value::symbol("tiff"),
+            ]),
+        ),
+        ("max-image-size", Value::Float(10.0)),
+        ("cross-disabled-images", Value::Nil),
+        (
+            "x-bitmap-file-path",
+            Value::list([Value::String(".".into())]),
+        ),
+        ("image-cache-eviction-delay", Value::Integer(300)),
+        ("image-scaling-factor", Value::symbol("auto")),
+    ]
+}
 
 // buffer.c and insdel.c publish the change-hook controls as native DEFVARs.
 // They are process-wide value cells (modes may make the hook variables local),
@@ -2083,29 +2095,6 @@ impl Interpreter {
                 // GNU frame.c defines this native variable before frame.el
                 // and any dumped/preloaded Lisp run.
                 ("default-frame-alist".into(), Value::Nil),
-                ("fringe-bitmaps".into(), fringe_bitmaps),
-                (
-                    "image-types".into(),
-                    Value::list([
-                        Value::symbol("pbm"),
-                        Value::symbol("png"),
-                        Value::symbol("jpeg"),
-                        Value::symbol("gif"),
-                        Value::symbol("svg"),
-                        Value::symbol("xbm"),
-                        Value::symbol("xpm"),
-                        Value::symbol("webp"),
-                        Value::symbol("tiff"),
-                    ]),
-                ),
-                ("max-image-size".into(), Value::Float(10.0)),
-                ("cross-disabled-images".into(), Value::Nil),
-                (
-                    "x-bitmap-file-path".into(),
-                    Value::list([Value::String(".".into())]),
-                ),
-                ("image-cache-eviction-delay".into(), Value::Integer(300)),
-                ("image-scaling-factor".into(), Value::symbol("auto")),
                 (
                     "command-line-args".into(),
                     primitives::command_line_args_value(),
@@ -2684,7 +2673,7 @@ impl Interpreter {
         for name in generated_autoloads::generated_dumped_variable_names() {
             interp.mark_special_variable(name);
         }
-        interp.mark_special_variable("fringe-bitmaps");
+        interp.define_special_variable("fringe-bitmaps", fringe_bitmaps);
         for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
             interp.put_symbol_property(name, "fringe", Value::Integer((index + 1) as i64));
         }
@@ -2697,11 +2686,8 @@ impl Interpreter {
         for name in GNU_TREESIT_SPECIAL_VARIABLES {
             interp.define_special_variable(name, Value::Nil);
         }
-        for name in GNU_KEYBOARD_TIMER_SPECIAL_VARIABLES {
-            interp.mark_special_variable(name);
-        }
-        for name in GNU_IMAGE_SPECIAL_VARIABLES {
-            interp.mark_special_variable(name);
+        for (name, value) in gnu_image_special_variables() {
+            interp.define_special_variable(name, value);
         }
         for name in GNU_CHANGE_HOOK_SPECIAL_VARIABLES {
             interp.define_special_variable(name, Value::Nil);
