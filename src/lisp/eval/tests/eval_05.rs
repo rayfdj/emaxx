@@ -4349,6 +4349,22 @@ fn simple_compat_macroexp_file_name_keeps_the_ert_defining_file() {
 }
 
 #[test]
+fn mailabbrev_builds_aliases_from_the_configured_mailrc() {
+    let mailrc = upstream_emacs_repo().join("test/lisp/net/eudc-resources/mailrc");
+    assert_eq!(
+        eval_str_with_upstream_batch(&format!(
+            r#"(let ((mail-personal-alias-file "{}"))
+                  (equal (eudc-mailabbrev-query-internal
+                          '((email . "lars")))
+                         '(((email . "larsi@mail-abbrev.com")
+                            (name . "Lars Ingebrigtsen")))))"#,
+            mailrc.display()
+        )),
+        Value::T
+    );
+}
+
+#[test]
 fn simple_compat_exposes_with_temp_buffer_as_a_preloaded_macro() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(

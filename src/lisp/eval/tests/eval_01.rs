@@ -1769,6 +1769,19 @@ fn string_match_handles_leading_hyphen_bracket_ranges() {
 }
 
 #[test]
+fn string_match_handles_leading_closing_bracket_ranges() {
+    assert_eq!(
+        eval_str(
+            r#"(list (string-match "[]-a]" "^")
+                     (string-match "[]-a]" "b")
+                     (string-match "[^]-~]" "^")
+                     (string-match "[^]-~]" "!"))"#
+        ),
+        Value::list([Value::Integer(0), Value::Nil, Value::Nil, Value::Integer(0),])
+    );
+}
+
+#[test]
 fn newline_inserts_requested_line_breaks() {
     assert_string_value(
         eval_str(r#"(with-temp-buffer (insert "a") (newline 2) (insert "b") (buffer-string))"#),
@@ -4582,12 +4595,14 @@ fn generated_dumped_variable_defaults_include_image_file_extensions() {
         eval_str(
             "(list (car image-file-name-extensions)
                    (member \"webp\" image-file-name-extensions)
-                   image-file-name-regexps)"
+                   image-file-name-regexps
+                   (special-variable-p 'mail-personal-alias-file))"
         ),
         Value::list([
             Value::String("png".into()),
             Value::list([Value::String("webp".into())]),
             Value::Nil,
+            Value::T,
         ])
     );
 }

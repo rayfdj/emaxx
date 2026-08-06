@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 Mouse/Early Network checkpoint advances the fresh contiguous
+  compatibility prefix to 4,304/7,080, leaving 2,776 selectors.  All 49
+  canonical outcomes match GNU: Mouse 6/6, Mouse Wheel 2/2, Browse URL 13/13,
+  D-Bus 16/16, Dig 1/1, and EUDC 11/11.  GNU's dumped `easymenu.el` now owns
+  its complete menu policy at startup; preloaded `plistp` and abbrev change
+  state match their GNU Lisp owners.  Dumped autoload variable defaults retain
+  the `defvar`/`defcustom` special declaration while remaining lazy, so
+  caller bindings such as `mail-personal-alias-file` reach autoloaded code.
+  The regexp bridge also accepts a leading `]` as a range endpoint.  Canonical
+  artifacts are Mouse `target/compat/run-1785963725172839000-37729`, Mouse
+  Wheel `target/compat/run-1785963912387454000-39808`, Browse URL
+  `target/compat/run-1785963931439135000-39928`, D-Bus
+  `target/compat/run-1785963951455961000-40077`, Dig
+  `target/compat/run-1785963970275340000-40197`, and EUDC
+  `target/compat/run-1785978864293987000-43576`.  Formatting, diff check,
+  focused regressions, the 36-test special-contract cluster,
+  all-target/all-feature check, strict Clippy, and regenerated/rustfmt-normalized
+  autoload validation pass.  The immediately preceding 72-minute full Rust
+  audit remains current; it was not repeated for this bounded checkpoint.
+  Native remains complete at 1,420/1,420.  NEXT is selector 4,305,
+  `eww-test/display/html`, in `test/lisp/net/eww-tests.el` (9 selected
+  outcomes); its initial artifact is
+  `target/compat/run-1785978135095513000-43045`.
 - The 2026-08-05 Minibuffer/Misc checkpoint advances the fresh contiguous
   compatibility prefix to 4,255/7,080, leaving 2,825 selectors.  All 38
   canonical outcomes match GNU: Minibuffer 31/31 and Misc 7/7.  GNU

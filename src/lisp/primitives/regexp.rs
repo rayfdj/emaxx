@@ -729,7 +729,7 @@ fn translate_bracket_expression(chars: &mut std::iter::Peekable<std::str::Chars<
         let mut preview = chars.clone();
         if preview.next() == Some('-')
             && preview.peek().copied() != Some(']')
-            && !(atom_is_first && matches!(atom, RegexClassAtom::Char('-' | ']')))
+            && !(atom_is_first && matches!(atom, RegexClassAtom::Char('-')))
             && let Some(end_atom) = consume_regex_class_atom(&mut preview)
             && let (RegexClassAtom::Char(start), RegexClassAtom::Char(end)) = (&atom, &end_atom)
         {

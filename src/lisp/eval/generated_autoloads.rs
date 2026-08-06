@@ -3937,3 +3937,7 @@ pub(super) fn generated_dumped_variable(name: &str) -> Option<&'static str> {
         .ok()?;
     Some(GENERATED_DUMPED_VARIABLES[index].1)
 }
+
+pub(super) fn generated_dumped_variable_names() -> impl Iterator<Item = &'static str> {
+    GENERATED_DUMPED_VARIABLES.iter().map(|(name, _)| *name)
+}

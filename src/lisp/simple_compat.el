@@ -42,6 +42,12 @@
   (declare (side-effect-free t))
   (vconcat string))
 
+(defun plistp (object)
+  "Non-nil if and only if OBJECT is a valid plist."
+  (declare (pure t) (side-effect-free error-free))
+  (let ((len (proper-list-p object)))
+    (and len (zerop (% len 2)))))
+
 ;; GNU preloads this subr.el helper.  Keep it on the Lisp side of the
 ;; keymap boundary: all three operations below are already native primitives.
 (defun define-prefix-command (command &optional mapvar name)
@@ -7052,6 +7058,9 @@ of SECS seconds since the epoch.  SECS may be a fraction."
 
 ;; GNU preloads abbrev.el; its mode variable is host-backed, while the
 ;; toggling command and hook lifecycle remain ordinary dumped Lisp.
+(defvar abbrevs-changed nil
+  "Non-nil if any word abbrevs were defined or altered.")
+
 (define-minor-mode abbrev-mode
   "Toggle Abbrev mode in the current buffer."
   :variable abbrev-mode)
