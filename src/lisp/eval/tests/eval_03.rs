@@ -3049,6 +3049,20 @@ fn equal_compares_records_element_wise() {
 }
 
 #[test]
+fn equal_compares_records_containing_cyclic_location_graphs() {
+    assert_eq!(
+        eval_str(
+            "(let ((left (record 'sample-rec nil))
+                   (right (record 'sample-rec nil)))
+               (aset left 1 (list left))
+               (aset right 1 (list right))
+               (equal left right))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn read_materializes_hash_table_literals() {
     assert_eq!(
         eval_str(

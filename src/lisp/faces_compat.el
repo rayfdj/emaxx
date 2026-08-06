@@ -251,8 +251,6 @@
 (defface tooltip '((t)) "Compatibility tooltip face.")
 (put 'tooltip 'face 1)
 (defface diff-changed '((t)) "Compatibility diff face.")
-(defface font-lock-comment-face '((t)) "Compatibility font-lock face.")
-(defface font-lock-constant-face '((t)) "Compatibility font-lock face.")
 
 (provide 'emaxx-faces-compat)
 

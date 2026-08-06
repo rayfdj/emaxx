@@ -257,10 +257,25 @@ pub(crate) fn values_equal_recursive(
     if is_bool_vector_value(interp, left) && is_bool_vector_value(interp, right) {
         return bool_vector_values(interp, left).ok() == bool_vector_values(interp, right).ok();
     }
-    if let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right))
-        && matches!(left, Value::Cons(_, _))
-        && matches!(right, Value::Cons(_, _))
-    {
+    let left_is_vector = is_vector_value(left);
+    let right_is_vector = is_vector_value(right);
+    if left_is_vector || right_is_vector {
+        if !left_is_vector || !right_is_vector {
+            return false;
+        }
+        let (Some((left_car, _)), Some((right_car, _))) = (left.cons_cells(), right.cons_cells())
+        else {
+            return false;
+        };
+        if !seen.insert((
+            Rc::as_ptr(&left_car) as usize,
+            Rc::as_ptr(&right_car) as usize,
+        )) {
+            return true;
+        }
+        let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right)) else {
+            return false;
+        };
         return left_items.len() == right_items.len()
             && left_items
                 .iter()

@@ -394,11 +394,10 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             // Same shadowing concern for the region entry point faceup's
             // test helpers call directly.
             | "font-lock-fontify-region"
-            // Native major modes are the supported activation path even
-            // after their GNU libraries (cc-mode.el, js.el) get loaded for
-            // keyword variables and would shadow them with elisp setups.
-            | "c-mode"
-            | "c++-mode"
+            // These native major modes remain the supported activation path
+            // after their GNU libraries load for keyword variables.  GNU CC
+            // Mode, by contrast, is now the owner of c-mode and c++-mode once
+            // cc-mode.el loads; its helpers require the complete CC setup.
             | "java-mode"
             | "js-mode"
             | "javascript-mode"

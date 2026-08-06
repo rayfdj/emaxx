@@ -2564,6 +2564,23 @@ fn next_single_char_property_change_observes_overlay_properties() {
 }
 
 #[test]
+fn single_char_property_changes_preserve_string_overlay_identity() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "abcdefgh")
+                  (let ((overlay (make-overlay 1 9)))
+                    (overlay-put overlay 'url (format "https://%s" "example.test"))
+                    (list (previous-single-char-property-change 2 'url)
+                          (next-single-char-property-change 1 'url))))
+                "#
+        ),
+        Value::list([Value::Integer(1), Value::Integer(9)])
+    );
+}
+
+#[test]
 fn forward_comment_finds_local_nested_comment_despite_earlier_unterminated_one() {
     assert_eq!(
         eval_str(

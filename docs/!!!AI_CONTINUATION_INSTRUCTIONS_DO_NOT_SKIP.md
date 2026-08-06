@@ -18,6 +18,31 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 PROCED/PROGMODES CHECKPOINT: the fresh contiguous ordered
+  frontier is 4,516/7,080, leaving 2,564 selectors.  All 28 newly ordered
+  outcomes match GNU: Proced 6/6, Asm Mode 4/4, Autoconf 3/3, Bat 5/5, Bug
+  Reference 4/4, CC Mode 3/3, and Compile 3/3.  This is a bounded manifest
+  checkpoint, not one implementation theme.  The independent repairs are:
+  macOS process inventory follows GNU when the host denies KERN_PROC_ALL;
+  GNU `font-lock.el` and `jit-lock.el` own their dumped startup surfaces;
+  property-change scans preserve the identity of string-valued overlays; GNU
+  CC Mode takes ownership after it loads and native backtrace frames honor
+  depth/base; and Compile receives its owner's regexp tables, GNU
+  backslash-space reader semantics, and cycle-safe record equality.  Exact GNU
+  wrappers supply the small missing `face-attr-construct`, `copy-to-buffer`,
+  `backtrace-frame`, and `command-line-normalize-file-name` boundaries.
+  Canonical artifacts are Proced
+  `target/compat/run-1785997045295072000-94982`, Asm Mode
+  `target/compat/run-1785997063066832000-95100`, Autoconf
+  `target/compat/run-1785997076772420000-95218`, Bat
+  `target/compat/run-1785998111724121000-95931`, Bug Reference
+  `target/compat/run-1785998719617237000-96703`, CC Mode
+  `target/compat/run-1785999520536499000-97388`, and Compile
+  `target/compat/run-1786001471550915000-98813`.  Focused regressions,
+  formatting, diff check, all-target/all-feature check, and strict Clippy
+  pass; the preceding full Rust audit remains current.  Native remains
+  1,420/1,420.  NEXT is selector 4,517, `cperl-test-attribute-list-rx`, in
+  `test/lisp/progmodes/cperl-mode-tests.el` (64 selected outcomes).
 - 2026-08-06 PLAY CHECKPOINT: the fresh contiguous ordered frontier is
   4,488/7,080, leaving 2,592 selectors.  All 13 newly ordered outcomes match
   GNU: Animate 1/1, Cookie 2/2, Dissociate 1/1, Fortune 1/1, Life 1/1, Morse

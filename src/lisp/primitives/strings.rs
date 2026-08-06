@@ -681,9 +681,24 @@ pub(crate) fn buffer_char_property_at(
     pos: usize,
     prop: &str,
 ) -> Value {
-    highest_priority_overlay_property(interp, buffer, pos, prop, false)
-        .or_else(|| buffer_property_at_with_category(interp, buffer, pos, prop))
-        .unwrap_or(Value::Nil)
+    buffer_char_property_at_with_overlay_id(interp, buffer, pos, prop).0
+}
+
+pub(crate) fn buffer_char_property_at_with_overlay_id(
+    interp: &Interpreter,
+    buffer: &crate::buffer::Buffer,
+    pos: usize,
+    prop: &str,
+) -> (Value, Option<u64>) {
+    if let Some((value, overlay_id)) =
+        highest_priority_overlay_property_with_id(interp, buffer, pos, prop, false)
+    {
+        return (value, Some(overlay_id));
+    }
+    (
+        buffer_property_at_with_category(interp, buffer, pos, prop).unwrap_or(Value::Nil),
+        None,
+    )
 }
 
 pub(crate) fn overlay_property_with_category(

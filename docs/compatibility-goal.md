@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 Proced/Progmodes checkpoint advances the fresh contiguous
+  compatibility prefix to 4,516/7,080, leaving 2,564 selectors.  All 28 newly
+  ordered outcomes match GNU: Proced 6/6, Asm Mode 4/4, Autoconf 3/3, Bat
+  5/5, Bug Reference 4/4, CC Mode 3/3, and Compile 3/3.  This is a bounded
+  manifest checkpoint, not one invented implementation theme.  Independent
+  roots cover GNU's denied macOS process-inventory policy; dumped Font Lock
+  and JIT Lock ownership; string-valued overlay identity during property
+  scans; GNU CC Mode ownership and depth-aware backtraces; and Compile's owner
+  initialization, backslash-space reader contract, and cycle-safe equality for
+  record graphs.  Small missing Lisp surfaces use exact GNU implementations,
+  not local substitutes.  Canonical artifacts are Proced
+  `target/compat/run-1785997045295072000-94982`, Asm Mode
+  `target/compat/run-1785997063066832000-95100`, Autoconf
+  `target/compat/run-1785997076772420000-95218`, Bat
+  `target/compat/run-1785998111724121000-95931`, Bug Reference
+  `target/compat/run-1785998719617237000-96703`, CC Mode
+  `target/compat/run-1785999520536499000-97388`, and Compile
+  `target/compat/run-1786001471550915000-98813`.  Focused regressions,
+  formatting, diff check, all-target/all-feature check, and strict Clippy
+  pass; the preceding full Rust audit remains current.  Native remains
+  complete at 1,420/1,420.  NEXT is selector 4,517,
+  `cperl-test-attribute-list-rx`, in
+  `test/lisp/progmodes/cperl-mode-tests.el` (64 selected outcomes).
 - The 2026-08-06 Play checkpoint advances the fresh contiguous compatibility
   prefix to 4,488/7,080, leaving 2,592 selectors.  All 13 newly ordered
   outcomes match GNU: Animate 1/1, Cookie 2/2, Dissociate 1/1, Fortune 1/1,

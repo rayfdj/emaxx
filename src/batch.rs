@@ -373,6 +373,18 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         lisp::load_file_strict(interpreter, &path)
             .map_err(|error| format!("load {}: {error}", path.display()))?;
     }
+    // GNU dumps font-lock.el and jit-lock.el in this order.  Emaxx keeps
+    // font-core's mode engine native, but loads these owning Lisp libraries so
+    // clients see the complete standard face and JIT registration surfaces
+    // instead of growing compatibility lists of whichever names tests expose.
+    for feature in ["font-lock", "jit-lock"] {
+        if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
+            continue;
+        }
+        interpreter
+            .load_target(feature)
+            .map_err(|error| format!("preload {feature}: {error}"))?;
+    }
     // GNU dumps tabulated-list.el into the initial image (loadup reaches it
     // through buff-menu.el).  An autoload for the mode function alone is not
     // an equivalent startup state: dumped clients such as kmacro.el inherit
@@ -1103,6 +1115,79 @@ mod tests {
                     Value::Symbol("b".into()),
                     Value::Symbol("b".into()),
                 ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_standard_font_lock_face_surface() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'font-lock)
+                       (featurep 'jit-lock)
+                       (facep 'font-lock-builtin-face)
+                       (face-attr-construct 'font-lock-builtin-face)
+                       (fboundp 'copy-to-buffer)
+                       (fboundp 'jit-lock-register))",
+            )
+            .read_all()
+            .expect("read Font Lock startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate Font Lock startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::list([
+                        Value::Symbol(":weight".into()),
+                        Value::Symbol("bold".into())
+                    ]),
+                    Value::T,
+                    Value::T,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_lets_the_compile_owner_initialize_its_patterns() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(progn
+                   (require 'compile)
+                   (list (fboundp 'compilation-parse-errors)
+                         (> (length compilation-error-regexp-alist-alist) 50)
+                         (fboundp 'command-line-normalize-file-name)))",
+            )
+            .read_all()
+            .expect("read Compile startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate Compile startup probe"),
+                Value::list([Value::T, Value::T, Value::T])
             );
         });
     }
