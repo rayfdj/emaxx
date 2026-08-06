@@ -1988,189 +1988,190 @@ pub(crate) fn call_time_builtin(
     interp: &mut Interpreter,
     name: &str,
     args: &[Value],
-    _env: &mut Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    let now = current_time_value()?;
-    match name {
-        "set-time-zone-rule" => {
-            need_args(name, args, 1)?;
-            let rule = if args[0].is_nil() {
-                Value::Symbol("wall".into())
-            } else {
-                args[0].clone()
-            };
-            if !local_time_zone_rule_is_wall(&rule) {
-                let _ = explicit_zone_spec_from_value(&rule, Some(&now))?;
-            }
-            interp.local_time_zone_rule = rule;
-            Ok(Value::Nil)
-        }
-        "current-time" => {
-            need_arg_range(name, args, 0, 0)?;
-            Ok(exact_time_to_value(&now))
-        }
-        "current-time-string" => {
-            need_arg_range(name, args, 0, 2)?;
-            let time = exact_time_from_value(interp, args.first().unwrap_or(&Value::Nil), &now)?;
-            let zone =
-                zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
-            let (datetime, _) = time_local_datetime(&time, &zone)?;
-            Ok(Value::String(
-                datetime.format("%a %b %e %H:%M:%S %Y").to_string(),
-            ))
-        }
-        "time-since" => {
-            need_args(name, args, 1)?;
-            if matches!(args[0], Value::Float(_)) {
-                let elapsed_ms = ((exact_time_to_f64(&now) - numeric_to_f64(interp, &args[0])?)
-                    .max(0.0)
-                    * 1000.0)
-                    .floor() as i64;
-                return Ok(Value::cons(
-                    Value::Integer(elapsed_ms),
-                    Value::Integer(1000),
-                ));
-            }
-            let then = exact_time_from_value(interp, &args[0], &now)?;
-            let ticks = now.ticks.clone() * &then.hz - then.ticks.clone() * &now.hz;
-            let hz = now.hz.clone() * then.hz.clone();
-            Ok(exact_time_to_value(&exact_time_value(ticks, hz)?))
-        }
-        "time-add" | "time-subtract" => {
-            need_args(name, args, 2)?;
-            let left = exact_time_from_value(interp, &args[0], &now)?;
-            let right = exact_time_from_value(interp, &args[1], &now)?;
-            let subtract = name == "time-subtract";
-            // GNU time_arith: with equal clocks the ticks combine directly
-            // and HZ is preserved (no fraction reduction); with different
-            // clocks the result is LO/HI with LO = db2*na OP da2*nb and
-            // HI = da2*db2*g (g = gcd of the clocks), reduced only by
-            // gcd(LO, da2*db2) — timer-tests compares the cons with `equal'.
-            let result = if left.hz == right.hz {
-                let ticks = if subtract {
-                    left.ticks.clone() - &right.ticks
+    call_time_builtin_at(interp, name, args, env, current_time_value()?)
+}
+
+define_dispatch!(
+    pub(crate) fn call_time_builtin_at(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+        _env: &mut Env,
+        now: ExactTimeValue,
+    ) -> Result<Value, LispError> {
+        match name {
+            "set-time-zone-rule" => {
+                need_args(name, args, 1)?;
+                let rule = if args[0].is_nil() {
+                    Value::Symbol("wall".into())
                 } else {
-                    left.ticks.clone() + &right.ticks
+                    args[0].clone()
                 };
-                ExactTimeValue {
-                    ticks,
-                    hz: left.hz.clone(),
+                if !local_time_zone_rule_is_wall(&rule) {
+                    let _ = explicit_zone_spec_from_value(&rule, Some(&now))?;
                 }
-            } else {
-                let g = bigint_gcd(left.hz.clone(), right.hz.clone());
-                let da2 = left.hz.clone() / &g;
-                let db2 = right.hz.clone() / &g;
-                let lo = if subtract {
-                    db2.clone() * &left.ticks - da2.clone() * &right.ticks
+                interp.local_time_zone_rule = rule;
+                Ok(Value::Nil)
+            }
+            "current-time" => {
+                need_arg_range(name, args, 0, 0)?;
+                Ok(exact_time_to_value(&now))
+            }
+            "current-time-string" => {
+                need_arg_range(name, args, 0, 2)?;
+                let time =
+                    exact_time_from_value(interp, args.first().unwrap_or(&Value::Nil), &now)?;
+                let zone =
+                    zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
+                let (datetime, _) = time_local_datetime(&time, &zone)?;
+                Ok(Value::String(
+                    datetime.format("%a %b %e %H:%M:%S %Y").to_string(),
+                ))
+            }
+            "time-since" => {
+                need_args(name, args, 1)?;
+                if matches!(args[0], Value::Float(_)) {
+                    let elapsed_ms = ((exact_time_to_f64(&now) - numeric_to_f64(interp, &args[0])?)
+                        .max(0.0)
+                        * 1000.0)
+                        .floor() as i64;
+                    return Ok(Value::cons(
+                        Value::Integer(elapsed_ms),
+                        Value::Integer(1000),
+                    ));
+                }
+                let then = exact_time_from_value(interp, &args[0], &now)?;
+                let ticks = now.ticks.clone() * &then.hz - then.ticks.clone() * &now.hz;
+                let hz = now.hz.clone() * then.hz.clone();
+                Ok(exact_time_to_value(&exact_time_value(ticks, hz)?))
+            }
+            "time-add" | "time-subtract" => {
+                need_args(name, args, 2)?;
+                let left = exact_time_from_value(interp, &args[0], &now)?;
+                let right = exact_time_from_value(interp, &args[1], &now)?;
+                let subtract = name == "time-subtract";
+                // GNU time_arith: with equal clocks the ticks combine directly
+                // and HZ is preserved (no fraction reduction); with different
+                // clocks the result is LO/HI with LO = db2*na OP da2*nb and
+                // HI = da2*db2*g (g = gcd of the clocks), reduced only by
+                // gcd(LO, da2*db2) — timer-tests compares the cons with `equal'.
+                let result = if left.hz == right.hz {
+                    let ticks = if subtract {
+                        left.ticks.clone() - &right.ticks
+                    } else {
+                        left.ticks.clone() + &right.ticks
+                    };
+                    ExactTimeValue {
+                        ticks,
+                        hz: left.hz.clone(),
+                    }
                 } else {
-                    db2.clone() * &left.ticks + da2.clone() * &right.ticks
+                    let g = bigint_gcd(left.hz.clone(), right.hz.clone());
+                    let da2 = left.hz.clone() / &g;
+                    let db2 = right.hz.clone() / &g;
+                    let lo = if subtract {
+                        db2.clone() * &left.ticks - da2.clone() * &right.ticks
+                    } else {
+                        db2.clone() * &left.ticks + da2.clone() * &right.ticks
+                    };
+                    let hi = da2.clone() * &db2 * &g;
+                    let g2 = bigint_gcd(lo.clone(), da2 * db2);
+                    ExactTimeValue {
+                        ticks: lo / &g2,
+                        hz: hi / g2,
+                    }
                 };
-                let hi = da2.clone() * &db2 * &g;
-                let g2 = bigint_gcd(lo.clone(), da2 * db2);
-                ExactTimeValue {
-                    ticks: lo / &g2,
-                    hz: hi / g2,
+                if result.hz <= BigInt::zero() {
+                    return Err(LispError::Signal("Invalid time resolution".into()));
                 }
-            };
-            if result.hz <= BigInt::zero() {
-                return Err(LispError::Signal("Invalid time resolution".into()));
+                Ok(exact_time_to_value(&result))
             }
-            Ok(exact_time_to_value(&result))
-        }
-        "time-equal-p" => {
-            need_args(name, args, 2)?;
-            let left = exact_time_from_value(interp, &args[0], &now)?;
-            let right = exact_time_from_value(interp, &args[1], &now)?;
-            Ok(if exact_time_equal(&left, &right) {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "time-less-p" => {
-            need_args(name, args, 2)?;
-            let left = exact_time_from_value(interp, &args[0], &now)?;
-            let right = exact_time_from_value(interp, &args[1], &now)?;
-            Ok(if exact_time_less(&left, &right) {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "float-time" | "time-to-seconds" => {
-            need_arg_range(name, args, 0, 1)?;
-            let value = args.first().unwrap_or(&Value::Nil);
-            Ok(Value::Float(exact_time_to_f64(&exact_time_from_value(
-                interp, value, &now,
-            )?)))
-        }
-        "time-convert" => {
-            need_arg_range(name, args, 1, 2)?;
-            let time = exact_time_from_value(interp, &args[0], &now)?;
-            let form = args.get(1).unwrap_or(&Value::Nil);
-            time_convert_value(&time, form)
-        }
-        "decode-time" => {
-            need_arg_range(name, args, 0, 3)?;
-            let time = exact_time_from_value(interp, args.first().unwrap_or(&Value::Nil), &now)?;
-            let zone =
-                zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
-            let form = args.get(2).unwrap_or(&Value::Nil);
-            decode_time_value(&time, &zone, form)
-        }
-        "decoded-time-second" => decoded_time_field(args, 0, name),
-        "decoded-time-minute" => decoded_time_field(args, 1, name),
-        "decoded-time-hour" => decoded_time_field(args, 2, name),
-        "decoded-time-day" => decoded_time_field(args, 3, name),
-        "decoded-time-month" => decoded_time_field(args, 4, name),
-        "decoded-time-year" => decoded_time_field(args, 5, name),
-        "decoded-time-weekday" => decoded_time_field(args, 6, name),
-        "decoded-time-dst" => decoded_time_field(args, 7, name),
-        "decoded-time-zone" => decoded_time_field(args, 8, name),
-        "encode-time" => {
-            need_arg_range(name, args, 1, 9)?;
-            let list_form = args.len() == 1;
-            let fields = if list_form {
-                args[0].to_vec()?
-            } else {
-                args.to_vec()
-            };
-            if fields.len() < 6 || fields.len() > 9 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), fields.len()));
+            "time-equal-p" => {
+                need_args(name, args, 2)?;
+                let left = exact_time_from_value(interp, &args[0], &now)?;
+                let right = exact_time_from_value(interp, &args[1], &now)?;
+                Ok(if exact_time_equal(&left, &right) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
-            let seconds = decoded_seconds_value(interp, &fields[0])?;
-            let (whole_seconds, fractional_ticks) = time_floor_parts(&seconds);
-            let second = whole_seconds
-                .to_i64()
-                .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
-            if !(0..=59).contains(&second) {
-                return Err(LispError::Signal("Invalid decoded time".into()));
+            "time-less-p" => {
+                need_args(name, args, 2)?;
+                let left = exact_time_from_value(interp, &args[0], &now)?;
+                let right = exact_time_from_value(interp, &args[1], &now)?;
+                Ok(if exact_time_less(&left, &right) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
-            let minute = integer_field(interp, &fields[1])?;
-            let hour = integer_field(interp, &fields[2])?;
-            let day = integer_field(interp, &fields[3])?;
-            let month = integer_field(interp, &fields[4])?;
-            let year = integer_field(interp, &fields[5])?;
-            let time = normalize_decoded_civil_time(year, month, day, hour, minute, second)?;
-            let zone_value = if list_form {
-                fields.get(8)
-            } else {
-                fields.get(6..).and_then(|extra| extra.last())
-            };
-            let zone = if value_is_unspecified(zone_value) {
-                local_zone_spec_for_civil(
-                    interp,
-                    time.year(),
-                    time.month(),
-                    time.day(),
-                    time.hour(),
-                    time.minute(),
-                    time.second(),
-                )
-            } else if let Some(zone_text) = zone_value.filter(|value| value.is_string()) {
-                let text = string_text(zone_text)?;
-                if let Some(posix) = parse_posix_tz(&text) {
-                    posix.zone_for_civil(
+            "float-time" | "time-to-seconds" => {
+                need_arg_range(name, args, 0, 1)?;
+                let value = args.first().unwrap_or(&Value::Nil);
+                Ok(Value::Float(exact_time_to_f64(&exact_time_from_value(
+                    interp, value, &now,
+                )?)))
+            }
+            "time-convert" => {
+                need_arg_range(name, args, 1, 2)?;
+                let time = exact_time_from_value(interp, &args[0], &now)?;
+                let form = args.get(1).unwrap_or(&Value::Nil);
+                time_convert_value(&time, form)
+            }
+            "decode-time" => {
+                need_arg_range(name, args, 0, 3)?;
+                let time =
+                    exact_time_from_value(interp, args.first().unwrap_or(&Value::Nil), &now)?;
+                let zone =
+                    zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
+                let form = args.get(2).unwrap_or(&Value::Nil);
+                decode_time_value(&time, &zone, form)
+            }
+            "decoded-time-second" => decoded_time_field(args, 0, name),
+            "decoded-time-minute" => decoded_time_field(args, 1, name),
+            "decoded-time-hour" => decoded_time_field(args, 2, name),
+            "decoded-time-day" => decoded_time_field(args, 3, name),
+            "decoded-time-month" => decoded_time_field(args, 4, name),
+            "decoded-time-year" => decoded_time_field(args, 5, name),
+            "decoded-time-weekday" => decoded_time_field(args, 6, name),
+            "decoded-time-dst" => decoded_time_field(args, 7, name),
+            "decoded-time-zone" => decoded_time_field(args, 8, name),
+            "encode-time" => {
+                need_arg_range(name, args, 1, 9)?;
+                let list_form = args.len() == 1;
+                let fields = if list_form {
+                    args[0].to_vec()?
+                } else {
+                    args.to_vec()
+                };
+                if fields.len() < 6 || fields.len() > 9 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), fields.len()));
+                }
+                let seconds = decoded_seconds_value(interp, &fields[0])?;
+                let (whole_seconds, fractional_ticks) = time_floor_parts(&seconds);
+                let second = whole_seconds
+                    .to_i64()
+                    .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
+                if !(0..=59).contains(&second) {
+                    return Err(LispError::Signal("Invalid decoded time".into()));
+                }
+                let minute = integer_field(interp, &fields[1])?;
+                let hour = integer_field(interp, &fields[2])?;
+                let day = integer_field(interp, &fields[3])?;
+                let month = integer_field(interp, &fields[4])?;
+                let year = integer_field(interp, &fields[5])?;
+                let time = normalize_decoded_civil_time(year, month, day, hour, minute, second)?;
+                let zone_value = if list_form {
+                    fields.get(8)
+                } else {
+                    fields.get(6..).and_then(|extra| extra.last())
+                };
+                let zone = if value_is_unspecified(zone_value) {
+                    local_zone_spec_for_civil(
+                        interp,
                         time.year(),
                         time.month(),
                         time.day(),
@@ -2178,52 +2179,63 @@ pub(crate) fn call_time_builtin(
                         time.minute(),
                         time.second(),
                     )
+                } else if let Some(zone_text) = zone_value.filter(|value| value.is_string()) {
+                    let text = string_text(zone_text)?;
+                    if let Some(posix) = parse_posix_tz(&text) {
+                        posix.zone_for_civil(
+                            time.year(),
+                            time.month(),
+                            time.day(),
+                            time.hour(),
+                            time.minute(),
+                            time.second(),
+                        )
+                    } else {
+                        zone_spec_from_value(interp, zone_text, None)?
+                    }
                 } else {
-                    zone_spec_from_value(interp, zone_text, None)?
-                }
-            } else {
-                zone_spec_from_value(interp, zone_value.unwrap_or(&Value::Nil), None)?
-            };
-            let offset = zone_offset(&zone)?;
-            let local = offset
-                .from_local_datetime(&time)
-                .single()
-                .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
-            Ok(exact_time_to_value(&exact_time_value(
-                BigInt::from(local.timestamp()) * seconds.hz.clone() + fractional_ticks,
-                seconds.hz,
-            )?))
+                    zone_spec_from_value(interp, zone_value.unwrap_or(&Value::Nil), None)?
+                };
+                let offset = zone_offset(&zone)?;
+                let local = offset
+                    .from_local_datetime(&time)
+                    .single()
+                    .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
+                Ok(exact_time_to_value(&exact_time_value(
+                    BigInt::from(local.timestamp()) * seconds.hz.clone() + fractional_ticks,
+                    seconds.hz,
+                )?))
+            }
+            "format-time-string" => {
+                need_arg_range(name, args, 1, 3)?;
+                let format = string_text(&args[0])?;
+                let time = exact_time_from_value(interp, args.get(1).unwrap_or(&Value::Nil), &now)?;
+                let zone =
+                    zone_spec_from_value(interp, args.get(2).unwrap_or(&Value::Nil), Some(&time))?;
+                Ok(Value::String(format_time_string_value(
+                    interp, &format, &time, &zone,
+                )?))
+            }
+            "current-time-zone" => {
+                need_arg_range(name, args, 0, 2)?;
+                let time = if let Some(value) = args.first().filter(|value| !value.is_nil()) {
+                    Some(exact_time_from_value(interp, value, &now)?)
+                } else {
+                    None
+                };
+                let zone = if let Some(zone_value) = args.get(1).filter(|value| !value.is_nil()) {
+                    zone_spec_from_value(interp, zone_value, time.as_ref())?
+                } else {
+                    local_zone_spec(interp, time.as_ref())
+                };
+                Ok(Value::list([
+                    Value::Integer(zone.offset_seconds as i64),
+                    Value::String(zone.abbreviation),
+                ]))
+            }
         }
-        "format-time-string" => {
-            need_arg_range(name, args, 1, 3)?;
-            let format = string_text(&args[0])?;
-            let time = exact_time_from_value(interp, args.get(1).unwrap_or(&Value::Nil), &now)?;
-            let zone =
-                zone_spec_from_value(interp, args.get(2).unwrap_or(&Value::Nil), Some(&time))?;
-            Ok(Value::String(format_time_string_value(
-                interp, &format, &time, &zone,
-            )?))
-        }
-        "current-time-zone" => {
-            need_arg_range(name, args, 0, 2)?;
-            let time = if let Some(value) = args.first().filter(|value| !value.is_nil()) {
-                Some(exact_time_from_value(interp, value, &now)?)
-            } else {
-                None
-            };
-            let zone = if let Some(zone_value) = args.get(1).filter(|value| !value.is_nil()) {
-                zone_spec_from_value(interp, zone_value, time.as_ref())?
-            } else {
-                local_zone_spec(interp, time.as_ref())
-            };
-            Ok(Value::list([
-                Value::Integer(zone.offset_seconds as i64),
-                Value::String(zone.abbreviation),
-            ]))
-        }
-        _ => Err(LispError::Void(name.into())),
     }
-}
+);
 
 pub(crate) fn numeric_lt(
     interp: &Interpreter,

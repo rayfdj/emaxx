@@ -4,59 +4,6 @@ use crate::lisp::primitives::{self, print, regexp};
 use std::rc::Rc;
 use tree_sitter::{QueryPredicateArg, StreamingIterator};
 
-const TREESIT_BUILTINS: &[&str] = &[
-    "treesit-available-p",
-    "treesit-compiled-query-p",
-    "treesit-language-abi-version",
-    "treesit-language-available-p",
-    "treesit-library-abi-version",
-    "treesit-induce-sparse-tree",
-    "treesit-node-check",
-    "treesit-node-child",
-    "treesit-node-child-by-field-name",
-    "treesit-node-child-count",
-    "treesit-node-descendant-for-range",
-    "treesit-node-end",
-    "treesit-node-eq",
-    "treesit-node-field-name-for-child",
-    "treesit-node-first-child-for-pos",
-    "treesit-node-match-p",
-    "treesit-node-next-sibling",
-    "treesit-node-p",
-    "treesit-node-parent",
-    "treesit-node-parser",
-    "treesit-node-prev-sibling",
-    "treesit-node-start",
-    "treesit-node-string",
-    "treesit-node-type",
-    "treesit-parser-add-notifier",
-    "treesit-parser-buffer",
-    "treesit-parser-create",
-    "treesit-parser-delete",
-    "treesit-parser-included-ranges",
-    "treesit-parser-language",
-    "treesit-parser-list",
-    "treesit-parser-notifiers",
-    "treesit-parser-p",
-    "treesit-parser-remove-notifier",
-    "treesit-parser-root-node",
-    "treesit-parser-set-included-ranges",
-    "treesit-parser-tag",
-    "treesit-pattern-expand",
-    "treesit-query-capture",
-    "treesit-query-compile",
-    "treesit-query-expand",
-    "treesit-query-language",
-    "treesit-query-p",
-    "treesit-search-forward",
-    "treesit-search-subtree",
-    "treesit-subtree-stat",
-];
-
-pub(super) fn handles(name: &str) -> bool {
-    TREESIT_BUILTINS.contains(&name)
-}
-
 fn load_error_data(error: LispError) -> Result<Value, LispError> {
     if let LispError::SignalValue(signal) = &error
         && signal.car()? == Value::symbol("treesit-load-language-error")
@@ -967,572 +914,579 @@ fn sparse_nodes(
     Ok(vec![Value::cons(value, Value::list(descendants))])
 }
 
-pub(super) fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    env: &Env,
-) -> Result<Value, LispError> {
-    match name {
-        "treesit-available-p" => {
-            need_args(name, args, 0)?;
-            Ok(Value::T)
-        }
-        "treesit-library-abi-version" => {
-            need_arg_range(name, args, 0, 1)?;
-            let version = if args.first().is_some_and(Value::is_truthy) {
-                tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION
-            } else {
-                tree_sitter::LANGUAGE_VERSION
-            };
-            Ok(Value::Integer(version as i64))
-        }
-        "treesit-language-available-p" => {
-            need_arg_range(name, args, 1, 2)?;
-            let language = args[0].as_symbol()?;
-            language_availability(interp, language, args.get(1).is_some_and(Value::is_truthy))
-        }
-        "treesit-language-abi-version" => {
-            need_arg_range(name, args, 0, 1)?;
-            let language = args.first().unwrap_or(&Value::Nil).as_symbol()?.to_string();
-            match interp.require_treesit_language(&language) {
-                Ok(language) => Ok(Value::Integer(language.abi_version() as i64)),
-                Err(error) => {
-                    load_error_data(error)?;
-                    Ok(Value::Nil)
-                }
+define_dispatch!(
+    pub(super) fn call(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+        env: &Env,
+    ) -> Result<Value, LispError> {
+        match name {
+            "treesit-available-p" => {
+                need_args(name, args, 0)?;
+                Ok(Value::T)
             }
-        }
-        "treesit-parser-p" => {
-            need_args(name, args, 1)?;
-            Ok(if interp.treesit_parser_state(&args[0]).is_some() {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "treesit-parser-create" => {
-            need_arg_range(name, args, 1, 4)?;
-            args[0].as_symbol()?;
-            let (buffer_id, list_buffer_id) = current_or_named_buffer(interp, args.get(1))?;
-            let tag = args.get(3).cloned().unwrap_or(Value::Nil);
-            tag.as_symbol()?;
-            if tag == Value::T {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::symbol("wrong-type-argument"),
-                    Value::list([Value::symbol("not"), Value::T]),
-                    Value::T,
-                ])));
-            }
-            if !args.get(2).is_some_and(Value::is_truthy)
-                && let Some(parser) = interp.reusable_treesit_parser(&args[0], list_buffer_id, &tag)
-            {
-                return Ok(parser);
-            }
-            interp.create_treesit_parser(args[0].clone(), buffer_id, list_buffer_id, tag)
-        }
-        "treesit-parser-delete" => {
-            need_args(name, args, 1)?;
-            interp.delete_treesit_parser(&args[0])?;
-            Ok(Value::Nil)
-        }
-        "treesit-parser-list" => {
-            need_arg_range(name, args, 0, 3)?;
-            let (_, list_buffer_id) = current_or_named_buffer(interp, args.first())?;
-            let language = args.get(1).filter(|language| !language.is_nil());
-            if let Some(language) = language {
-                language.as_symbol()?;
-            }
-            let tag = args.get(2).cloned().unwrap_or(Value::Nil);
-            tag.as_symbol()?;
-            Ok(Value::list(interp.treesit_parser_list(
-                list_buffer_id,
-                language,
-                &tag,
-            )))
-        }
-        "treesit-parser-buffer"
-        | "treesit-parser-language"
-        | "treesit-parser-tag"
-        | "treesit-parser-included-ranges"
-        | "treesit-parser-notifiers" => {
-            need_args(name, args, 1)?;
-            let (buffer, language, tag, ranges, notifiers) =
-                interp.treesit_parser_details(&args[0])?;
-            match name {
-                "treesit-parser-buffer" => Ok(buffer),
-                "treesit-parser-language" => Ok(language),
-                "treesit-parser-tag" => Ok(tag),
-                "treesit-parser-included-ranges" => Ok(ranges),
-                "treesit-parser-notifiers" => Ok(Value::list(notifiers)),
-                _ => unreachable!(),
-            }
-        }
-        "treesit-parser-root-node" => {
-            need_args(name, args, 1)?;
-            interp.treesit_root_node(&args[0])
-        }
-        "treesit-parser-set-included-ranges" => {
-            need_args(name, args, 2)?;
-            if !args[1].is_list() {
-                return Err(LispError::TypeError("consp".into(), args[1].type_name()));
-            }
-            interp.set_treesit_included_ranges(&args[0], args[1].clone())?;
-            Ok(Value::Nil)
-        }
-        "treesit-parser-add-notifier" | "treesit-parser-remove-notifier" => {
-            need_args(name, args, 2)?;
-            args[1].as_symbol()?;
-            if name == "treesit-parser-add-notifier" {
-                interp.add_treesit_notifier(&args[0], args[1].clone())?;
-            } else {
-                interp.remove_treesit_notifier(&args[0], &args[1])?;
-            }
-            Ok(Value::Nil)
-        }
-        "treesit-node-p" => {
-            need_args(name, args, 1)?;
-            Ok(if interp.treesit_node_state(&args[0]).is_some() {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "treesit-node-parser" => {
-            need_args(name, args, 1)?;
-            interp
-                .treesit_node_state(&args[0])
-                .map(|node| Value::Record(node.parser_id))
-                .ok_or_else(|| LispError::TypeError("treesit-node-p".into(), args[0].type_name()))
-        }
-        "treesit-node-type" => {
-            need_args(name, args, 1)?;
-            node_or_nil(interp, &args[0], |node, _| {
-                Value::String(node.kind().into())
-            })
-        }
-        "treesit-node-start" | "treesit-node-end" => {
-            need_args(name, args, 1)?;
-            if args[0].is_nil() {
-                return Ok(Value::Nil);
-            }
-            Ok(Value::Integer(
-                interp.treesit_node_position(&args[0], name == "treesit-node-start")? as i64,
-            ))
-        }
-        "treesit-node-string" => {
-            need_args(name, args, 1)?;
-            node_or_nil(interp, &args[0], |node, _| Value::String(node.to_sexp()))
-        }
-        "treesit-node-child-count" => {
-            need_arg_range(name, args, 1, 2)?;
-            let named = args.get(1).is_some_and(Value::is_truthy);
-            node_or_nil(interp, &args[0], |node, _| {
-                Value::Integer(if named {
-                    node.named_child_count()
+            "treesit-library-abi-version" => {
+                need_arg_range(name, args, 0, 1)?;
+                let version = if args.first().is_some_and(Value::is_truthy) {
+                    tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION
                 } else {
-                    node.child_count()
-                } as i64)
-            })
-        }
-        "treesit-node-child" => {
-            need_arg_range(name, args, 2, 3)?;
-            if args[0].is_nil() {
-                return Ok(Value::Nil);
-            }
-            let requested = args[1].as_integer()?;
-            let named = args.get(2).is_some_and(Value::is_truthy);
-            let child_id = interp.with_treesit_node(&args[0], |node, _| {
-                let count = if named {
-                    node.named_child_count()
-                } else {
-                    node.child_count()
-                } as i64;
-                let index = if requested < 0 {
-                    count + requested
-                } else {
-                    requested
+                    tree_sitter::LANGUAGE_VERSION
                 };
-                u32::try_from(index)
-                    .ok()
-                    .and_then(|index| {
-                        if named {
-                            node.named_child(index)
-                        } else {
-                            node.child(index)
-                        }
-                    })
-                    .map(|node| node.id())
-            })?;
-            interp.related_treesit_node(&args[0], child_id)
-        }
-        "treesit-node-first-child-for-pos" => {
-            need_arg_range(name, args, 2, 3)?;
-            if args[0].is_nil() {
-                return Ok(Value::Nil);
+                Ok(Value::Integer(version as i64))
             }
-            let position = args[1].as_integer()?;
-            let byte = interp.treesit_node_relative_byte(&args[0], position)?;
-            let named = args.get(2).is_some_and(Value::is_truthy);
-            let child_id = interp.with_treesit_node(&args[0], |node, _| {
-                (0..node.child_count())
-                    .filter_map(|index| {
-                        u32::try_from(index)
-                            .ok()
-                            .and_then(|index| node.child(index))
-                    })
-                    .find(|child| child.end_byte() > byte && (!named || child.is_named()))
-                    .map(|child| child.id())
-            })?;
-            interp.related_treesit_node(&args[0], child_id)
-        }
-        "treesit-node-descendant-for-range" => {
-            need_arg_range(name, args, 3, 4)?;
-            if args[0].is_nil() {
-                return Ok(Value::Nil);
+            "treesit-language-available-p" => {
+                need_arg_range(name, args, 1, 2)?;
+                let language = args[0].as_symbol()?;
+                language_availability(interp, language, args.get(1).is_some_and(Value::is_truthy))
             }
-            let start = interp.treesit_node_relative_byte(&args[0], args[1].as_integer()?)?;
-            let end = interp.treesit_node_relative_byte(&args[0], args[2].as_integer()?)?;
-            let named = args.get(3).is_some_and(Value::is_truthy);
-            let descendant = interp.with_treesit_node(&args[0], |node, _| {
-                if named {
-                    node.named_descendant_for_byte_range(start, end)
-                } else {
-                    node.descendant_for_byte_range(start, end)
-                }
-                .map(|node| node.id())
-            })?;
-            interp.related_treesit_node(&args[0], descendant)
-        }
-        "treesit-node-parent" => {
-            need_args(name, args, 1)?;
-            related_node(interp, &args[0], |node| node.parent())
-        }
-        "treesit-node-child-by-field-name" => {
-            need_args(name, args, 2)?;
-            if args[0].is_nil() {
-                return Ok(Value::Nil);
-            }
-            let field = primitives::string_like(&args[1])
-                .map(|string| string.text)
-                .ok_or_else(|| LispError::TypeError("stringp".into(), args[1].type_name()))?;
-            related_node(interp, &args[0], |node| node.child_by_field_name(field))
-        }
-        "treesit-node-field-name-for-child" => {
-            need_args(name, args, 2)?;
-            if args[0].is_nil() {
-                return Ok(Value::Nil);
-            }
-            let requested = args[1].as_integer()?;
-            node_or_nil(interp, &args[0], |node, _| {
-                let index = if requested < 0 {
-                    node.child_count() as i64 + requested
-                } else {
-                    requested
-                };
-                u32::try_from(index)
-                    .ok()
-                    .and_then(|index| node.field_name_for_child(index))
-                    .map(|field| Value::String(field.into()))
-                    .unwrap_or(Value::Nil)
-            })
-        }
-        "treesit-node-next-sibling" | "treesit-node-prev-sibling" => {
-            need_arg_range(name, args, 1, 2)?;
-            let named = args.get(1).is_some_and(Value::is_truthy);
-            related_node(interp, &args[0], |node| match (name, named) {
-                ("treesit-node-next-sibling", false) => node.next_sibling(),
-                ("treesit-node-next-sibling", true) => node.next_named_sibling(),
-                ("treesit-node-prev-sibling", false) => node.prev_sibling(),
-                ("treesit-node-prev-sibling", true) => node.prev_named_sibling(),
-                _ => unreachable!(),
-            })
-        }
-        "treesit-node-eq" => {
-            need_args(name, args, 2)?;
-            if args[0].is_nil() || args[1].is_nil() {
-                return Ok(Value::Nil);
-            }
-            let left = interp.treesit_node_state(&args[0]).ok_or_else(|| {
-                LispError::TypeError("treesit-node-p".into(), args[0].type_name())
-            })?;
-            let right = interp.treesit_node_state(&args[1]).ok_or_else(|| {
-                LispError::TypeError("treesit-node-p".into(), args[1].type_name())
-            })?;
-            Ok(
-                if left.parser_id == right.parser_id
-                    && left.generation == right.generation
-                    && left.node_id == right.node_id
-                {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
-        }
-        "treesit-node-check" => {
-            need_args(name, args, 2)?;
-            if args[0].is_nil() {
-                return Ok(Value::Nil);
-            }
-            let property = args[1].as_symbol()?;
-            if property == "outdated" {
-                return Ok(if interp.treesit_node_outdated(&args[0])? {
-                    Value::T
-                } else {
-                    Value::Nil
-                });
-            }
-            if property == "live" {
-                interp.with_treesit_node(&args[0], |_, _| ())?;
-                return Ok(if interp.treesit_node_live(&args[0])? {
-                    Value::T
-                } else {
-                    Value::Nil
-                });
-            }
-            interp
-                .with_treesit_node(&args[0], |node, _| match property {
-                    "named" => node.is_named(),
-                    "missing" => node.is_missing(),
-                    "extra" => node.is_extra(),
-                    "has-error" => node.has_error(),
-                    _ => false,
-                })
-                .and_then(|result| {
-                    if matches!(property, "named" | "missing" | "extra" | "has-error") {
-                        Ok(if result { Value::T } else { Value::Nil })
-                    } else {
-                        Err(LispError::Signal(format!(
-                            "invalid Tree-sitter node property: {property}"
-                        )))
+            "treesit-language-abi-version" => {
+                need_arg_range(name, args, 0, 1)?;
+                let language = args.first().unwrap_or(&Value::Nil).as_symbol()?.to_string();
+                match interp.require_treesit_language(&language) {
+                    Ok(language) => Ok(Value::Integer(language.abi_version() as i64)),
+                    Err(error) => {
+                        load_error_data(error)?;
+                        Ok(Value::Nil)
                     }
-                })
-        }
-        "treesit-pattern-expand" => {
-            need_args(name, args, 1)?;
-            Ok(Value::String(pattern_expand(interp, &args[0], env)?))
-        }
-        "treesit-query-expand" => {
-            need_args(name, args, 1)?;
-            Ok(Value::String(query_expand(interp, &args[0], env)?))
-        }
-        "treesit-compiled-query-p" => {
-            need_args(name, args, 1)?;
-            Ok(if interp.treesit_query_state(&args[0]).is_some() {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "treesit-query-p" => {
-            need_args(name, args, 1)?;
-            Ok(
-                if interp.treesit_query_state(&args[0]).is_some()
-                    || args[0].is_string()
-                    || matches!(args[0], Value::Cons(_, _)) && !is_vector_value(&args[0])
-                {
+                }
+            }
+            "treesit-parser-p" => {
+                need_args(name, args, 1)?;
+                Ok(if interp.treesit_parser_state(&args[0]).is_some() {
                     Value::T
                 } else {
                     Value::Nil
-                },
-            )
-        }
-        "treesit-query-language" => {
-            need_args(name, args, 1)?;
-            interp
-                .treesit_query_state(&args[0])
-                .map(|query| query.language.clone())
-                .ok_or_else(|| {
-                    LispError::TypeError("treesit-compiled-query-p".into(), args[0].type_name())
                 })
-        }
-        "treesit-query-compile" => {
-            need_arg_range(name, args, 2, 3)?;
-            if !args[0].is_symbol() {
-                return Err(LispError::TypeError("symbolp".into(), args[0].type_name()));
             }
-            if interp.treesit_query_state(&args[1]).is_some() {
-                return Ok(args[1].clone());
+            "treesit-parser-create" => {
+                need_arg_range(name, args, 1, 4)?;
+                args[0].as_symbol()?;
+                let (buffer_id, list_buffer_id) = current_or_named_buffer(interp, args.get(1))?;
+                let tag = args.get(3).cloned().unwrap_or(Value::Nil);
+                tag.as_symbol()?;
+                if tag == Value::T {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("wrong-type-argument"),
+                        Value::list([Value::symbol("not"), Value::T]),
+                        Value::T,
+                    ])));
+                }
+                if !args.get(2).is_some_and(Value::is_truthy)
+                    && let Some(parser) =
+                        interp.reusable_treesit_parser(&args[0], list_buffer_id, &tag)
+                {
+                    return Ok(parser);
+                }
+                interp.create_treesit_parser(args[0].clone(), buffer_id, list_buffer_id, tag)
             }
-            if !(args[1].is_string()
-                || matches!(args[1], Value::Cons(_, _)) && !is_vector_value(&args[1]))
-            {
-                return Err(LispError::TypeError(
-                    "treesit-query-p".into(),
-                    args[1].type_name(),
-                ));
+            "treesit-parser-delete" => {
+                need_args(name, args, 1)?;
+                interp.delete_treesit_parser(&args[0])?;
+                Ok(Value::Nil)
             }
-            let query = interp.create_treesit_query(args[0].clone(), args[1].clone());
-            if args.get(2).is_some_and(Value::is_truthy) {
-                ensure_compiled_query(interp, &query, env)?;
+            "treesit-parser-list" => {
+                need_arg_range(name, args, 0, 3)?;
+                let (_, list_buffer_id) = current_or_named_buffer(interp, args.first())?;
+                let language = args.get(1).filter(|language| !language.is_nil());
+                if let Some(language) = language {
+                    language.as_symbol()?;
+                }
+                let tag = args.get(2).cloned().unwrap_or(Value::Nil);
+                tag.as_symbol()?;
+                Ok(Value::list(interp.treesit_parser_list(
+                    list_buffer_id,
+                    language,
+                    &tag,
+                )))
             }
-            Ok(query)
-        }
-        "treesit-query-capture" => {
-            need_arg_range(name, args, 2, 5)?;
-            if !(interp.treesit_query_state(&args[1]).is_some()
-                || args[1].is_string()
-                || matches!(args[1], Value::Cons(_, _)) && !is_vector_value(&args[1]))
-            {
-                return Err(LispError::TypeError(
-                    "treesit-query-p".into(),
-                    args[1].type_name(),
-                ));
+            "treesit-parser-buffer"
+            | "treesit-parser-language"
+            | "treesit-parser-tag"
+            | "treesit-parser-included-ranges"
+            | "treesit-parser-notifiers" => {
+                need_args(name, args, 1)?;
+                let (buffer, language, tag, ranges, notifiers) =
+                    interp.treesit_parser_details(&args[0])?;
+                match name {
+                    "treesit-parser-buffer" => Ok(buffer),
+                    "treesit-parser-language" => Ok(language),
+                    "treesit-parser-tag" => Ok(tag),
+                    "treesit-parser-included-ranges" => Ok(ranges),
+                    "treesit-parser-notifiers" => Ok(Value::list(notifiers)),
+                    _ => unreachable!(),
+                }
             }
-            let node = resolve_query_node(interp, &args[0])?;
-            let start = args
-                .get(2)
-                .filter(|value| !value.is_nil())
-                .map(|value| interp.treesit_node_relative_byte(&node, value.as_integer()?))
-                .transpose()?;
-            let end = args
-                .get(3)
-                .filter(|value| !value.is_nil())
-                .map(|value| interp.treesit_node_relative_byte(&node, value.as_integer()?))
-                .transpose()?;
-            query_capture(
-                interp,
-                &node,
-                &args[1],
-                start.zip(end).map(|(start, end)| start..end),
-                args.get(4).is_some_and(Value::is_truthy),
-                env,
-            )
-        }
-        "treesit-search-subtree" => {
-            need_arg_range(name, args, 2, 5)?;
-            args.get(2).unwrap_or(&Value::Nil).as_symbol()?;
-            args.get(3).unwrap_or(&Value::Nil).as_symbol()?;
-            let depth = args
-                .get(4)
-                .filter(|value| !value.is_nil())
-                .map(Value::as_integer)
-                .transpose()?
-                .unwrap_or(1000);
-            let Some((tree, language)) = validate_for_traversal(interp, &args[0], &args[1], env)?
-            else {
-                return Ok(Value::Nil);
-            };
-            let traversal = Traversal {
-                source: &args[0],
-                tree: &tree,
-                predicate: &args[1],
-                language: &language,
-                env,
-            };
-            let found = search_subtree(
-                interp,
-                &traversal,
-                tree.source,
-                !args.get(2).is_some_and(Value::is_truthy),
-                !args.get(3).is_some_and(Value::is_truthy),
-                depth,
-            )?;
-            related_flat_node(interp, &args[0], &tree, found)
-        }
-        "treesit-search-forward" => {
-            need_arg_range(name, args, 2, 4)?;
-            args.get(2).unwrap_or(&Value::Nil).as_symbol()?;
-            args.get(3).unwrap_or(&Value::Nil).as_symbol()?;
-            let Some((tree, language)) = validate_for_traversal(interp, &args[0], &args[1], env)?
-            else {
-                return Ok(Value::Nil);
-            };
-            let traversal = Traversal {
-                source: &args[0],
-                tree: &tree,
-                predicate: &args[1],
-                language: &language,
-                env,
-            };
-            let found = search_forward(
-                interp,
-                &traversal,
-                !args.get(2).is_some_and(Value::is_truthy),
-                !args.get(3).is_some_and(Value::is_truthy),
-            )?;
-            related_flat_node(interp, &args[0], &tree, found)
-        }
-        "treesit-induce-sparse-tree" => {
-            need_arg_range(name, args, 2, 4)?;
-            let process = args.get(2).filter(|function| !function.is_nil());
-            if process.is_some_and(|function| !functionp(interp, function, env)) {
-                return Err(LispError::TypeError(
-                    "functionp".into(),
-                    args[2].type_name(),
-                ));
+            "treesit-parser-root-node" => {
+                need_args(name, args, 1)?;
+                interp.treesit_root_node(&args[0])
             }
-            let depth = args
-                .get(3)
-                .filter(|value| !value.is_nil())
-                .map(Value::as_integer)
-                .transpose()?
-                .unwrap_or(1000);
-            let Some((tree, language)) = validate_for_traversal(interp, &args[0], &args[1], env)?
-            else {
-                return Ok(Value::Nil);
-            };
-            let traversal = Traversal {
-                source: &args[0],
-                tree: &tree,
-                predicate: &args[1],
-                language: &language,
-                env,
-            };
-            let sparse = sparse_nodes(interp, &traversal, tree.source, process, depth)?;
-            Ok(if sparse.is_empty() {
-                Value::Nil
-            } else {
-                Value::cons(Value::Nil, Value::list(sparse))
-            })
-        }
-        "treesit-node-match-p" => {
-            need_arg_range(name, args, 2, 3)?;
-            if args[0].is_nil() {
-                return Ok(Value::Nil);
+            "treesit-parser-set-included-ranges" => {
+                need_args(name, args, 2)?;
+                if !args[1].is_list() {
+                    return Err(LispError::TypeError("consp".into(), args[1].type_name()));
+                }
+                interp.set_treesit_included_ranges(&args[0], args[1].clone())?;
+                Ok(Value::Nil)
             }
-            let (tree, language) = match validate_for_traversal(interp, &args[0], &args[1], env)? {
-                Some(validated) => validated,
-                None if args.get(2).is_some_and(Value::is_truthy) => {
+            "treesit-parser-add-notifier" | "treesit-parser-remove-notifier" => {
+                need_args(name, args, 2)?;
+                args[1].as_symbol()?;
+                if name == "treesit-parser-add-notifier" {
+                    interp.add_treesit_notifier(&args[0], args[1].clone())?;
+                } else {
+                    interp.remove_treesit_notifier(&args[0], &args[1])?;
+                }
+                Ok(Value::Nil)
+            }
+            "treesit-node-p" => {
+                need_args(name, args, 1)?;
+                Ok(if interp.treesit_node_state(&args[0]).is_some() {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "treesit-node-parser" => {
+                need_args(name, args, 1)?;
+                interp
+                    .treesit_node_state(&args[0])
+                    .map(|node| Value::Record(node.parser_id))
+                    .ok_or_else(|| {
+                        LispError::TypeError("treesit-node-p".into(), args[0].type_name())
+                    })
+            }
+            "treesit-node-type" => {
+                need_args(name, args, 1)?;
+                node_or_nil(interp, &args[0], |node, _| {
+                    Value::String(node.kind().into())
+                })
+            }
+            "treesit-node-start" | "treesit-node-end" => {
+                need_args(name, args, 1)?;
+                if args[0].is_nil() {
                     return Ok(Value::Nil);
                 }
-                None => {
-                    return Err(predicate_signal(
-                        "treesit-predicate-not-found",
-                        "Cannot find the definition of the predicate in `treesit-thing-settings'",
-                        &args[1],
-                    ));
+                Ok(Value::Integer(
+                    interp.treesit_node_position(&args[0], name == "treesit-node-start")? as i64,
+                ))
+            }
+            "treesit-node-string" => {
+                need_args(name, args, 1)?;
+                node_or_nil(interp, &args[0], |node, _| Value::String(node.to_sexp()))
+            }
+            "treesit-node-child-count" => {
+                need_arg_range(name, args, 1, 2)?;
+                let named = args.get(1).is_some_and(Value::is_truthy);
+                node_or_nil(interp, &args[0], |node, _| {
+                    Value::Integer(if named {
+                        node.named_child_count()
+                    } else {
+                        node.child_count()
+                    } as i64)
+                })
+            }
+            "treesit-node-child" => {
+                need_arg_range(name, args, 2, 3)?;
+                if args[0].is_nil() {
+                    return Ok(Value::Nil);
                 }
-            };
-            Ok(
-                if node_matches(
-                    interp,
-                    &args[0],
-                    &tree,
-                    tree.source,
-                    &args[1],
-                    &language,
-                    env,
-                )? {
+                let requested = args[1].as_integer()?;
+                let named = args.get(2).is_some_and(Value::is_truthy);
+                let child_id = interp.with_treesit_node(&args[0], |node, _| {
+                    let count = if named {
+                        node.named_child_count()
+                    } else {
+                        node.child_count()
+                    } as i64;
+                    let index = if requested < 0 {
+                        count + requested
+                    } else {
+                        requested
+                    };
+                    u32::try_from(index)
+                        .ok()
+                        .and_then(|index| {
+                            if named {
+                                node.named_child(index)
+                            } else {
+                                node.child(index)
+                            }
+                        })
+                        .map(|node| node.id())
+                })?;
+                interp.related_treesit_node(&args[0], child_id)
+            }
+            "treesit-node-first-child-for-pos" => {
+                need_arg_range(name, args, 2, 3)?;
+                if args[0].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let position = args[1].as_integer()?;
+                let byte = interp.treesit_node_relative_byte(&args[0], position)?;
+                let named = args.get(2).is_some_and(Value::is_truthy);
+                let child_id = interp.with_treesit_node(&args[0], |node, _| {
+                    (0..node.child_count())
+                        .filter_map(|index| {
+                            u32::try_from(index)
+                                .ok()
+                                .and_then(|index| node.child(index))
+                        })
+                        .find(|child| child.end_byte() > byte && (!named || child.is_named()))
+                        .map(|child| child.id())
+                })?;
+                interp.related_treesit_node(&args[0], child_id)
+            }
+            "treesit-node-descendant-for-range" => {
+                need_arg_range(name, args, 3, 4)?;
+                if args[0].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let start = interp.treesit_node_relative_byte(&args[0], args[1].as_integer()?)?;
+                let end = interp.treesit_node_relative_byte(&args[0], args[2].as_integer()?)?;
+                let named = args.get(3).is_some_and(Value::is_truthy);
+                let descendant = interp.with_treesit_node(&args[0], |node, _| {
+                    if named {
+                        node.named_descendant_for_byte_range(start, end)
+                    } else {
+                        node.descendant_for_byte_range(start, end)
+                    }
+                    .map(|node| node.id())
+                })?;
+                interp.related_treesit_node(&args[0], descendant)
+            }
+            "treesit-node-parent" => {
+                need_args(name, args, 1)?;
+                related_node(interp, &args[0], |node| node.parent())
+            }
+            "treesit-node-child-by-field-name" => {
+                need_args(name, args, 2)?;
+                if args[0].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let field = primitives::string_like(&args[1])
+                    .map(|string| string.text)
+                    .ok_or_else(|| LispError::TypeError("stringp".into(), args[1].type_name()))?;
+                related_node(interp, &args[0], |node| node.child_by_field_name(field))
+            }
+            "treesit-node-field-name-for-child" => {
+                need_args(name, args, 2)?;
+                if args[0].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let requested = args[1].as_integer()?;
+                node_or_nil(interp, &args[0], |node, _| {
+                    let index = if requested < 0 {
+                        node.child_count() as i64 + requested
+                    } else {
+                        requested
+                    };
+                    u32::try_from(index)
+                        .ok()
+                        .and_then(|index| node.field_name_for_child(index))
+                        .map(|field| Value::String(field.into()))
+                        .unwrap_or(Value::Nil)
+                })
+            }
+            "treesit-node-next-sibling" | "treesit-node-prev-sibling" => {
+                need_arg_range(name, args, 1, 2)?;
+                let named = args.get(1).is_some_and(Value::is_truthy);
+                related_node(interp, &args[0], |node| match (name, named) {
+                    ("treesit-node-next-sibling", false) => node.next_sibling(),
+                    ("treesit-node-next-sibling", true) => node.next_named_sibling(),
+                    ("treesit-node-prev-sibling", false) => node.prev_sibling(),
+                    ("treesit-node-prev-sibling", true) => node.prev_named_sibling(),
+                    _ => unreachable!(),
+                })
+            }
+            "treesit-node-eq" => {
+                need_args(name, args, 2)?;
+                if args[0].is_nil() || args[1].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let left = interp.treesit_node_state(&args[0]).ok_or_else(|| {
+                    LispError::TypeError("treesit-node-p".into(), args[0].type_name())
+                })?;
+                let right = interp.treesit_node_state(&args[1]).ok_or_else(|| {
+                    LispError::TypeError("treesit-node-p".into(), args[1].type_name())
+                })?;
+                Ok(
+                    if left.parser_id == right.parser_id
+                        && left.generation == right.generation
+                        && left.node_id == right.node_id
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "treesit-node-check" => {
+                need_args(name, args, 2)?;
+                if args[0].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let property = args[1].as_symbol()?;
+                if property == "outdated" {
+                    return Ok(if interp.treesit_node_outdated(&args[0])? {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    });
+                }
+                if property == "live" {
+                    interp.with_treesit_node(&args[0], |_, _| ())?;
+                    return Ok(if interp.treesit_node_live(&args[0])? {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    });
+                }
+                interp
+                    .with_treesit_node(&args[0], |node, _| match property {
+                        "named" => node.is_named(),
+                        "missing" => node.is_missing(),
+                        "extra" => node.is_extra(),
+                        "has-error" => node.has_error(),
+                        _ => false,
+                    })
+                    .and_then(|result| {
+                        if matches!(property, "named" | "missing" | "extra" | "has-error") {
+                            Ok(if result { Value::T } else { Value::Nil })
+                        } else {
+                            Err(LispError::Signal(format!(
+                                "invalid Tree-sitter node property: {property}"
+                            )))
+                        }
+                    })
+            }
+            "treesit-pattern-expand" => {
+                need_args(name, args, 1)?;
+                Ok(Value::String(pattern_expand(interp, &args[0], env)?))
+            }
+            "treesit-query-expand" => {
+                need_args(name, args, 1)?;
+                Ok(Value::String(query_expand(interp, &args[0], env)?))
+            }
+            "treesit-compiled-query-p" => {
+                need_args(name, args, 1)?;
+                Ok(if interp.treesit_query_state(&args[0]).is_some() {
                     Value::T
                 } else {
                     Value::Nil
-                },
-            )
+                })
+            }
+            "treesit-query-p" => {
+                need_args(name, args, 1)?;
+                Ok(
+                    if interp.treesit_query_state(&args[0]).is_some()
+                        || args[0].is_string()
+                        || matches!(args[0], Value::Cons(_, _)) && !is_vector_value(&args[0])
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "treesit-query-language" => {
+                need_args(name, args, 1)?;
+                interp
+                    .treesit_query_state(&args[0])
+                    .map(|query| query.language.clone())
+                    .ok_or_else(|| {
+                        LispError::TypeError("treesit-compiled-query-p".into(), args[0].type_name())
+                    })
+            }
+            "treesit-query-compile" => {
+                need_arg_range(name, args, 2, 3)?;
+                if !args[0].is_symbol() {
+                    return Err(LispError::TypeError("symbolp".into(), args[0].type_name()));
+                }
+                if interp.treesit_query_state(&args[1]).is_some() {
+                    return Ok(args[1].clone());
+                }
+                if !(args[1].is_string()
+                    || matches!(args[1], Value::Cons(_, _)) && !is_vector_value(&args[1]))
+                {
+                    return Err(LispError::TypeError(
+                        "treesit-query-p".into(),
+                        args[1].type_name(),
+                    ));
+                }
+                let query = interp.create_treesit_query(args[0].clone(), args[1].clone());
+                if args.get(2).is_some_and(Value::is_truthy) {
+                    ensure_compiled_query(interp, &query, env)?;
+                }
+                Ok(query)
+            }
+            "treesit-query-capture" => {
+                need_arg_range(name, args, 2, 5)?;
+                if !(interp.treesit_query_state(&args[1]).is_some()
+                    || args[1].is_string()
+                    || matches!(args[1], Value::Cons(_, _)) && !is_vector_value(&args[1]))
+                {
+                    return Err(LispError::TypeError(
+                        "treesit-query-p".into(),
+                        args[1].type_name(),
+                    ));
+                }
+                let node = resolve_query_node(interp, &args[0])?;
+                let start = args
+                    .get(2)
+                    .filter(|value| !value.is_nil())
+                    .map(|value| interp.treesit_node_relative_byte(&node, value.as_integer()?))
+                    .transpose()?;
+                let end = args
+                    .get(3)
+                    .filter(|value| !value.is_nil())
+                    .map(|value| interp.treesit_node_relative_byte(&node, value.as_integer()?))
+                    .transpose()?;
+                query_capture(
+                    interp,
+                    &node,
+                    &args[1],
+                    start.zip(end).map(|(start, end)| start..end),
+                    args.get(4).is_some_and(Value::is_truthy),
+                    env,
+                )
+            }
+            "treesit-search-subtree" => {
+                need_arg_range(name, args, 2, 5)?;
+                args.get(2).unwrap_or(&Value::Nil).as_symbol()?;
+                args.get(3).unwrap_or(&Value::Nil).as_symbol()?;
+                let depth = args
+                    .get(4)
+                    .filter(|value| !value.is_nil())
+                    .map(Value::as_integer)
+                    .transpose()?
+                    .unwrap_or(1000);
+                let Some((tree, language)) =
+                    validate_for_traversal(interp, &args[0], &args[1], env)?
+                else {
+                    return Ok(Value::Nil);
+                };
+                let traversal = Traversal {
+                    source: &args[0],
+                    tree: &tree,
+                    predicate: &args[1],
+                    language: &language,
+                    env,
+                };
+                let found = search_subtree(
+                    interp,
+                    &traversal,
+                    tree.source,
+                    !args.get(2).is_some_and(Value::is_truthy),
+                    !args.get(3).is_some_and(Value::is_truthy),
+                    depth,
+                )?;
+                related_flat_node(interp, &args[0], &tree, found)
+            }
+            "treesit-search-forward" => {
+                need_arg_range(name, args, 2, 4)?;
+                args.get(2).unwrap_or(&Value::Nil).as_symbol()?;
+                args.get(3).unwrap_or(&Value::Nil).as_symbol()?;
+                let Some((tree, language)) =
+                    validate_for_traversal(interp, &args[0], &args[1], env)?
+                else {
+                    return Ok(Value::Nil);
+                };
+                let traversal = Traversal {
+                    source: &args[0],
+                    tree: &tree,
+                    predicate: &args[1],
+                    language: &language,
+                    env,
+                };
+                let found = search_forward(
+                    interp,
+                    &traversal,
+                    !args.get(2).is_some_and(Value::is_truthy),
+                    !args.get(3).is_some_and(Value::is_truthy),
+                )?;
+                related_flat_node(interp, &args[0], &tree, found)
+            }
+            "treesit-induce-sparse-tree" => {
+                need_arg_range(name, args, 2, 4)?;
+                let process = args.get(2).filter(|function| !function.is_nil());
+                if process.is_some_and(|function| !functionp(interp, function, env)) {
+                    return Err(LispError::TypeError(
+                        "functionp".into(),
+                        args[2].type_name(),
+                    ));
+                }
+                let depth = args
+                    .get(3)
+                    .filter(|value| !value.is_nil())
+                    .map(Value::as_integer)
+                    .transpose()?
+                    .unwrap_or(1000);
+                let Some((tree, language)) =
+                    validate_for_traversal(interp, &args[0], &args[1], env)?
+                else {
+                    return Ok(Value::Nil);
+                };
+                let traversal = Traversal {
+                    source: &args[0],
+                    tree: &tree,
+                    predicate: &args[1],
+                    language: &language,
+                    env,
+                };
+                let sparse = sparse_nodes(interp, &traversal, tree.source, process, depth)?;
+                Ok(if sparse.is_empty() {
+                    Value::Nil
+                } else {
+                    Value::cons(Value::Nil, Value::list(sparse))
+                })
+            }
+            "treesit-node-match-p" => {
+                need_arg_range(name, args, 2, 3)?;
+                if args[0].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let (tree, language) = match validate_for_traversal(
+                    interp, &args[0], &args[1], env,
+                )? {
+                    Some(validated) => validated,
+                    None if args.get(2).is_some_and(Value::is_truthy) => {
+                        return Ok(Value::Nil);
+                    }
+                    None => {
+                        return Err(predicate_signal(
+                            "treesit-predicate-not-found",
+                            "Cannot find the definition of the predicate in `treesit-thing-settings'",
+                            &args[1],
+                        ));
+                    }
+                };
+                Ok(
+                    if node_matches(
+                        interp,
+                        &args[0],
+                        &tree,
+                        tree.source,
+                        &args[1],
+                        &language,
+                        env,
+                    )? {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "treesit-subtree-stat" => {
+                need_args(name, args, 1)?;
+                let tree = flat_tree(interp, &args[0])?;
+                let (depth, width, count) = subtree_stat(&tree, tree.source);
+                Ok(Value::list([
+                    Value::Integer(depth as i64),
+                    Value::Integer(width as i64),
+                    Value::Integer(count as i64),
+                ]))
+            }
         }
-        "treesit-subtree-stat" => {
-            need_args(name, args, 1)?;
-            let tree = flat_tree(interp, &args[0])?;
-            let (depth, width, count) = subtree_stat(&tree, tree.source);
-            Ok(Value::list([
-                Value::Integer(depth as i64),
-                Value::Integer(width as i64),
-                Value::Integer(count as i64),
-            ]))
-        }
-        _ => Err(LispError::Signal(format!(
-            "unimplemented Tree-sitter primitive: {name}"
-        ))),
     }
-}
+);

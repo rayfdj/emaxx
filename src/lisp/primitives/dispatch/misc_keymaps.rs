@@ -203,307 +203,6 @@ fn describe_vector_value(
     result
 }
 
-pub(super) fn handles(name: &str) -> bool {
-    matches!(
-        name,
-        "define-key"
-            | "define-key-after"
-            | "bindings--define-key"
-            | "keymap-set"
-            | "keymap-unset"
-            | "lookup-key"
-            | "keymap-lookup"
-            | "accessible-keymaps"
-            | "current-minor-mode-maps"
-            | "minor-mode-key-binding"
-            | "keymap--read-only-filter"
-            | "keymap-read-only-bind"
-            | "keymap--get-keyelt"
-            | "map-keymap-internal"
-            | "describe-vector"
-            | "describe-buffer-bindings"
-            | "help--describe-vector"
-            | "key-binding"
-            | "keymap-prompt"
-            | "command-remapping"
-            | "keymap-parent"
-            | "set-keymap-parent"
-            | "map-keymap"
-            | "suppress-keymap"
-            | "use-local-map"
-            | "use-global-map"
-            | "current-local-map"
-            | "current-global-map"
-            | "global-set-key"
-            | "local-set-key"
-            | "global-unset-key"
-            | "local-unset-key"
-            | "substitute-key-definition"
-            | "easy-menu-binding"
-            | "easy-menu-add-item"
-            | "tool-bar-local-item"
-            | "tool-bar-local-item-from-menu"
-            | "custom-add-choice"
-            | "custom-add-option"
-            | "define-widget"
-            | "widget-create"
-            | "widget-get"
-            | "widget-put"
-            | "widget-apply"
-            | "define-button-type"
-            | "push-button"
-            | "display-mouse-p"
-            | "make-button"
-            | "button-at"
-            | "button-type"
-            | "defined-colors"
-            | "color-defined-p"
-            | "symbol-function"
-            | "symbol-file"
-            | "symbol-name"
-            | "user-login-name"
-            | "user-real-login-name"
-            | "system-name"
-            | "user-full-name"
-            | "char-from-name"
-            | "always"
-            | "evenp"
-            | "seq-subseq"
-            | "text-quoting-style"
-            | "file-truename"
-            | "user-uid"
-            | "user-real-uid"
-            | "group-gid"
-            | "group-real-gid"
-            | "group-name"
-            | "save-buffer"
-            | "emaxx-default-revert-buffer-function"
-            | "revert-buffer--default"
-            | "buffer-stale--default-function"
-            | "revert-buffer"
-            | "lock-buffer"
-            | "unlock-buffer"
-            | "ask-user-about-supersession-threat"
-            | "advice-add"
-            | "advice-member-p"
-            | "advice-remove"
-            | "emaxx-apply-around-advice"
-            | "emaxx-apply-after-advice"
-            | "remove-function"
-            | "userlock--handle-unlock-error"
-            | "recent-auto-save-p"
-            | "set-buffer-auto-saved"
-            | "clear-buffer-auto-save-failure"
-            | "next-read-file-uses-dialog-p"
-            | "auto-save-mode"
-            | "do-auto-save"
-            | "unix-sync"
-            | "set-binary-mode"
-            | "obarray-make"
-            | "obarrayp"
-            | "obarray-clear"
-            | "internal--obarray-buckets"
-            | "define-hash-table-test"
-            | "make-hash-table"
-            | "hash-table-p"
-            | "hash-table-contains-p"
-            | "copy-hash-table"
-            | "gethash"
-            | "puthash"
-            | "maphash"
-            | "remhash"
-            | "clrhash"
-            | "completion-table-case-fold"
-            | "hash-table-count"
-            | "hash-table-rehash-size"
-            | "hash-table-rehash-threshold"
-            | "hash-table-size"
-            | "hash-table-test"
-            | "hash-table-weakness"
-            | "hash-table-keys"
-            | "try-completion"
-            | "all-completions"
-            | "test-completion"
-            | "internal-complete-buffer"
-            | "completion-metadata"
-            | "completion-metadata-get"
-            | "completion-all-completions"
-            | "completion-at-point"
-            | "minibuffer--sort-by-length-alpha"
-            | "minibuffer-sort-alphabetically"
-            | "map-pairs"
-            | "internal--hash-table-index-size"
-            | "internal--hash-table-histogram"
-            | "internal--hash-table-buckets"
-            | "profiler-memory-running-p"
-            | "profiler-memory-start"
-            | "profiler-memory-stop"
-            | "profiler-memory-log"
-            | "profiler-cpu-running-p"
-            | "profiler-cpu-start"
-            | "profiler-cpu-stop"
-            | "profiler-cpu-log"
-            | "byte-compile-check-lambda-list"
-            | "byte-compile"
-            | "byte-compile-from-buffer"
-            | "byte-compile-file"
-            | "byte-compile--wide-docstring-p"
-            | "byte-decompile-bytecode"
-            | "funcall-with-delayed-message"
-            | "advice--cd*r"
-            | "handler-bind-1"
-            | "debugger-trap"
-            | "mapbacktrace"
-            | "backtrace-frame--internal"
-            | "backtrace-debug"
-            | "backtrace-eval"
-            | "backtrace--locals"
-            | "backtrace-expand-ellipses"
-            | "current-thread"
-            | "all-threads"
-            | "make-thread"
-            | "thread-live-p"
-            | "thread-join"
-            | "thread-name"
-            | "thread-signal"
-            | "thread-last-error"
-            | "thread-yield"
-            | "make-mutex"
-            | "mutex-name"
-            | "mutex-lock"
-            | "mutex-unlock"
-            | "make-condition-variable"
-            | "condition-mutex"
-            | "condition-name"
-            | "condition-wait"
-            | "condition-notify"
-            | "thread--blocker"
-            | "thread-buffer-disposition"
-            | "thread-set-buffer-disposition"
-            | "backtrace--frames-from-thread"
-            | "list-threads"
-            | "thread-list-send-error-signal"
-            | "thread-list-pop-to-backtrace"
-            | "regexp-quote"
-            | "regexp-opt"
-            | "regexp-opt-depth"
-            | "rx-to-string"
-            | "null-device"
-            | "process-file"
-            | "read-answer"
-            | "temporary-file-directory"
-            | "convert-standard-filename"
-            | "abbreviate-file-name"
-            | "files--name-absolute-system-p"
-            | "files--use-insert-directory-program-p"
-            | "insert-directory-wildcard-in-dir-p"
-            | "insert-directory-clean"
-            | "dired-mark-pop-up"
-            | "connection-local-value"
-            | "propertized-buffer-identification"
-            | "called-interactively-p"
-            | "kill-all-local-variables"
-            | "hack-local-variables"
-            | "hack-local-variables-filter"
-            | "hack-local-variables-apply"
-            | "hack-dir-local-variables-non-file-buffer"
-            | "force-mode-line-update"
-            | "oclosure-type"
-            | "garbage-collect"
-            | "garbage-collect-maybe"
-            | "memory-use-counts"
-            | "emaxx--oclosure-type-p"
-            | "emaxx--oclosure-slot"
-            | "emaxx--oclosure-set-slot"
-            | "emaxx--oclosure-copy"
-            | "num-processors"
-            | "current-cpu-time"
-            | "emacs-pid"
-            | "type-of"
-            | "cl-type-of"
-            | "cl-find-class"
-            | "cl--find-class"
-            | "cl--struct-get-class"
-            | "cl--struct-class-slots"
-            | "cl--struct-class-type"
-            | "cl--class-index-table"
-            | "cl-struct-define"
-            | "cl-old-struct-compat-mode"
-            | "cl--class-name"
-            | "cl--class-parents"
-            | "cl--class-allparents"
-            | "cl--class-children"
-            | "eieio-class-children"
-            | "class-abstract-p"
-            | "eieio-oref-default"
-            | "eieio-oset-default"
-            | "eieio--object-class"
-            | "eieio--class-name"
-            | "eieio-object-p"
-            | "eieio--class-slots"
-            | "eieio--class-class-slots"
-            | "eieio--class-initarg-tuples"
-            | "cl--slot-descriptor-name"
-            | "cl--slot-descriptor-initform"
-            | "cl--slot-descriptor-type"
-            | "cl--slot-descriptor-props"
-            | "cl--make-slot-desc"
-            | "cl--make-slot-descriptor"
-            | "cl--copy-slot-descriptor-1"
-            | "cl--copy-slot-descriptor"
-            | "cl-slot-descriptor-p"
-            | "slot-boundp"
-            | "slot-makeunbound"
-            | "slot-exists-p"
-            | "map-elt"
-            | "map-contains-key"
-            | "ert-set-test"
-            | "emaxx--cl-generic-apply-next"
-            | "same-class-p"
-            | "eieio--class-parents"
-            | "eieio--class-children"
-            | "eieio--class-default-object-cache"
-            | "eieio--class-options"
-            | "make-instance"
-            | "emaxx-class-make"
-            | "clone"
-            | "semanticdb-find-tags-by-class"
-            | "semanticdb-find-tags-by-name"
-            | "semanticdb-find-tags-for-completion"
-            | "semantic-fetch-tags"
-            | "semantic-current-tag"
-            | "semantic-current-tag-of-class"
-            | "semantic-find-tag-by-overlay-prev"
-            | "semantic-find-tag-by-overlay-next"
-            | "semantic-ctxt-current-symbol"
-            | "semantic-ctxt-current-symbol-and-bounds"
-            | "bounds-of-thing-at-point"
-            | "semantic-analyze-possible-completions"
-            | "semantic-analyze-tag-references"
-            | "semantic-analyze-refs-impl"
-            | "semantic-analyze-refs-proto"
-            | "semantic-symref-find-references-by-name"
-            | "semantic-symref-result-get-files"
-            | "semantic-symref-result-get-tags"
-            | "semantic-symref-hits-in-region"
-            | "semantic-symref-test-count-hits-in-tag"
-            | "semantic-equivalent-tag-p"
-            | "semantic-go-to-tag"
-            | "semantic-clear-toplevel-cache"
-            | "semanticdb-typecache-find"
-            | "semanticdb-typecache-add-dependant"
-            | "srecode-template-get-table"
-            | "eieio-oref"
-            | "slot-value"
-            | "eieio-oset"
-            | "built-in-class-p"
-            | "cl-typep"
-            | "cl-functionp"
-            | "cl-proclaim"
-            | "url-scheme-get-property"
-    )
-}
-
 fn dabbrev_completion_at_point(
     interp: &Interpreter,
     env: &Env,
@@ -597,27 +296,62 @@ fn dabbrev_word_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '-' || ch == '_'
 }
 
-pub(super) fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    env: &mut crate::lisp::types::Env,
-) -> Result<Value, LispError> {
-    match name {
-        "define-key" => {
-            need_arg_range(name, args, 3, 4)?;
-            if let Ok(events) = vector_items(&args[1])
-                && let [event] = events.as_slice()
-                && let Some((Value::Integer(start), Value::Integer(end))) = event.cons_values()
-            {
-                keymap_define_character_range(interp, &args[0], start, end, args[2].clone())?;
-                return Ok(args[2].clone());
+define_dispatch!(
+    pub(super) fn call(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+        env: &mut crate::lisp::types::Env,
+    ) -> Result<Value, LispError> {
+        match name {
+            "define-key" => {
+                need_arg_range(name, args, 3, 4)?;
+                if let Ok(events) = vector_items(&args[1])
+                    && let [event] = events.as_slice()
+                    && let Some((Value::Integer(start), Value::Integer(end))) = event.cons_values()
+                {
+                    keymap_define_character_range(interp, &args[0], start, end, args[2].clone())?;
+                    return Ok(args[2].clone());
+                }
+                let key = key_sequence_binding_text(&args[1])?;
+                let key_parts = key_sequence_keymap_parts(&args[1])?;
+                if args[2].is_nil() && args.get(3).is_some_and(Value::is_truthy) {
+                    keymap_remove_binding(interp, &args[0], &key)?;
+                } else {
+                    keymap_define_binding_with_placement(
+                        interp,
+                        &args[0],
+                        &key,
+                        Some(key_parts),
+                        args[2].clone(),
+                        false,
+                    )?;
+                }
+                Ok(args[2].clone())
             }
-            let key = key_sequence_binding_text(&args[1])?;
-            let key_parts = key_sequence_keymap_parts(&args[1])?;
-            if args[2].is_nil() && args.get(3).is_some_and(Value::is_truthy) {
-                keymap_remove_binding(interp, &args[0], &key)?;
-            } else {
+            "define-key-after" => {
+                need_arg_range(name, args, 3, 4)?;
+                let key = key_sequence_binding_text(&args[1])?;
+                let key_parts = key_sequence_keymap_parts(&args[1])?;
+                let after = args
+                    .get(3)
+                    .filter(|value| !value.is_nil())
+                    .map(key_sequence_keymap_parts)
+                    .transpose()?;
+                keymap_define_binding_after(
+                    interp,
+                    &args[0],
+                    &key,
+                    Some(key_parts),
+                    args[2].clone(),
+                    after.as_deref(),
+                )?;
+                Ok(Value::Nil)
+            }
+            "bindings--define-key" => {
+                need_args(name, args, 3)?;
+                let key = key_sequence_binding_text(&args[1])?;
+                let key_parts = key_sequence_keymap_parts(&args[1])?;
                 keymap_define_binding_with_placement(
                     interp,
                     &args[0],
@@ -626,1859 +360,1921 @@ pub(super) fn call(
                     args[2].clone(),
                     false,
                 )?;
+                Ok(Value::Nil)
             }
-            Ok(args[2].clone())
-        }
-        "define-key-after" => {
-            need_arg_range(name, args, 3, 4)?;
-            let key = key_sequence_binding_text(&args[1])?;
-            let key_parts = key_sequence_keymap_parts(&args[1])?;
-            let after = args
-                .get(3)
-                .filter(|value| !value.is_nil())
-                .map(key_sequence_keymap_parts)
-                .transpose()?;
-            keymap_define_binding_after(
-                interp,
-                &args[0],
-                &key,
-                Some(key_parts),
-                args[2].clone(),
-                after.as_deref(),
-            )?;
-            Ok(Value::Nil)
-        }
-        "bindings--define-key" => {
-            need_args(name, args, 3)?;
-            let key = key_sequence_binding_text(&args[1])?;
-            let key_parts = key_sequence_keymap_parts(&args[1])?;
-            keymap_define_binding_with_placement(
-                interp,
-                &args[0],
-                &key,
-                Some(key_parts),
-                args[2].clone(),
-                false,
-            )?;
-            Ok(Value::Nil)
-        }
-        "keymap-set" => {
-            need_args(name, args, 3)?;
-            let key = textual_key_sequence_binding_text(&args[1])?;
-            let key_parts = textual_key_sequence_keymap_parts(&args[1])?;
-            keymap_define_binding_with_placement(
-                interp,
-                &args[0],
-                &key,
-                Some(key_parts),
-                args[2].clone(),
-                true,
-            )?;
-            Ok(args[2].clone())
-        }
-        "keymap-unset" => {
-            need_arg_range(name, args, 2, 3)?;
-            let key = textual_key_sequence_binding_text(&args[1])?;
-            if args.get(2).is_some_and(Value::is_truthy) {
-                keymap_remove_binding(interp, &args[0], &key)?;
-            } else {
+            "keymap-set" => {
+                need_args(name, args, 3)?;
+                let key = textual_key_sequence_binding_text(&args[1])?;
                 let key_parts = textual_key_sequence_keymap_parts(&args[1])?;
                 keymap_define_binding_with_placement(
                     interp,
                     &args[0],
                     &key,
                     Some(key_parts),
-                    Value::Nil,
+                    args[2].clone(),
                     true,
                 )?;
+                Ok(args[2].clone())
             }
-            Ok(Value::Nil)
-        }
-        "lookup-key" => {
-            need_arg_range(name, args, 2, 3)?;
-            let key_parts = key_sequence_keymap_parts(&args[1])?;
-            let result = keymap_lookup_sequence_value_with_default(
-                interp,
-                &args[0],
-                &key_parts,
-                args.get(2).is_some_and(Value::is_truthy),
-                env,
-            )?;
-            if let Value::Integer(prefix_len) = result {
-                let prefix_len = usize::try_from(prefix_len).unwrap_or(0);
-                Ok(Value::Integer(
-                    key_sequence_prefix_event_count(&args[1], prefix_len)? as i64,
-                ))
-            } else {
-                Ok(result)
-            }
-        }
-        "keymap-lookup" => {
-            if args.len() < 2 || args.len() > 5 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            let key_parts = textual_key_sequence_keymap_parts(&args[1])?;
-            keymap_lookup_sequence_value_with_default(
-                interp,
-                &args[0],
-                &key_parts,
-                args.get(2).is_some_and(Value::is_truthy),
-                env,
-            )
-        }
-        "accessible-keymaps" => accessible_keymaps(interp, args, env),
-        "current-minor-mode-maps" => {
-            need_args(name, args, 0)?;
-            Ok(Value::list(
-                active_minor_mode_bindings(interp, env)?
-                    .into_iter()
-                    .map(|(_, map)| map),
-            ))
-        }
-        "minor-mode-key-binding" => {
-            need_arg_range(name, args, 1, 2)?;
-            let key_parts = key_sequence_keymap_parts(&args[0])?;
-            let accept_default = args.get(1).is_some_and(Value::is_truthy);
-            let mut prefix_bindings = Vec::new();
-            for (mode, map) in active_minor_mode_bindings(interp, env)? {
-                let binding = keymap_lookup_sequence_value_with_default(
-                    interp,
-                    &map,
-                    &key_parts,
-                    accept_default,
-                    env,
-                )?;
-                if binding.is_nil() || matches!(binding, Value::Integer(_)) {
-                    continue;
+            "keymap-unset" => {
+                need_arg_range(name, args, 2, 3)?;
+                let key = textual_key_sequence_binding_text(&args[1])?;
+                if args.get(2).is_some_and(Value::is_truthy) {
+                    keymap_remove_binding(interp, &args[0], &key)?;
+                } else {
+                    let key_parts = textual_key_sequence_keymap_parts(&args[1])?;
+                    keymap_define_binding_with_placement(
+                        interp,
+                        &args[0],
+                        &key,
+                        Some(key_parts),
+                        Value::Nil,
+                        true,
+                    )?;
                 }
-                let entry = Value::cons(Value::Symbol(mode), binding.clone());
-                if keymap_reference_map(interp, &binding, env).is_some() {
-                    prefix_bindings.push(entry);
-                } else if prefix_bindings.is_empty() {
-                    return Ok(Value::list([entry]));
-                }
-            }
-            Ok(Value::list(prefix_bindings))
-        }
-        "keymap--read-only-filter" => {
-            need_args(name, args, 1)?;
-            if interp
-                .lookup_var("buffer-read-only", env)
-                .is_some_and(|value| value.is_truthy())
-            {
-                Ok(args[0].clone())
-            } else {
                 Ok(Value::Nil)
             }
-        }
-        "keymap-read-only-bind" => {
-            need_args(name, args, 1)?;
-            Ok(Value::list([
-                Value::Symbol("menu-item".into()),
-                Value::String(String::new()),
-                args[0].clone(),
-                Value::Symbol(":filter".into()),
-                Value::list([
-                    Value::Symbol("function".into()),
-                    Value::Symbol("keymap--read-only-filter".into()),
-                ]),
-            ]))
-        }
-        "keymap--get-keyelt" => {
-            need_args(name, args, 2)?;
-            keymap_get_keyelt(interp, &args[0], args[1].is_truthy(), env)
-        }
-        "describe-buffer-bindings" => describe_buffer_bindings(interp, args, env),
-        "help--describe-vector" => help_describe_vector(interp, args, env),
-        "key-binding" => {
-            need_arg_range(name, args, 1, 4)?;
-            let key = key_sequence_binding_text(&args[0])?;
-            key_binding(
-                interp,
-                &key,
-                args.get(1).is_some_and(Value::is_truthy),
-                args.get(2).is_some_and(Value::is_truthy),
-                env,
-            )
-        }
-        "keymap-prompt" => {
-            need_args(name, args, 1)?;
-            if let Some(id) = keymap_record_id(interp, &args[0]) {
-                return Ok(interp
-                    .find_record(id)
-                    .and_then(|record| record.slots.first().cloned())
-                    .unwrap_or(Value::Nil));
-            }
-            if let Ok(items) = args[0].to_vec()
-                && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap")
-            {
-                return Ok(items
-                    .iter()
-                    .skip(1)
-                    .find(|item| string_like(item).is_some())
-                    .cloned()
-                    .unwrap_or(Value::Nil));
-            }
-            Err(LispError::TypeError("keymapp".into(), args[0].type_name()))
-        }
-        "command-remapping" => {
-            need_arg_range(name, args, 1, 3)?;
-            command_remapping(interp, &args[0], args.get(2), env)
-        }
-        "keymap-parent" => {
-            need_args(name, args, 1)?;
-            match &args[0] {
-                Value::Record(id)
-                    if interp
-                        .find_record(*id)
-                        .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
-                {
-                    Ok(interp
-                        .find_record(*id)
-                        .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
-                        .unwrap_or(Value::Nil))
-                }
-                _ => Ok(Value::Nil),
-            }
-        }
-        "set-keymap-parent" => {
-            need_args(name, args, 2)?;
-            if let Value::Record(id) = &args[0]
-                && let Some(record) = interp.find_record_mut(*id)
-                && record.type_name == KEYMAP_RECORD_TYPE
-            {
-                if record.slots.len() <= KEYMAP_PARENT_SLOT {
-                    record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
-                }
-                record.slots[KEYMAP_PARENT_SLOT] = args[1].clone();
-            }
-            Ok(Value::Nil)
-        }
-        "map-keymap" => {
-            need_arg_range(name, args, 2, 3)?;
-            if args.get(2).is_some_and(Value::is_truthy) {
-                return interp.call_function_value(
-                    Value::Symbol("map-keymap-sorted".into()),
-                    Some("map-keymap-sorted"),
-                    &args[..2],
-                    env,
-                );
-            }
-            // GNU map-keymap also reports bindings inherited from parent
-            // keymaps (the parent is spliced into the keymap's tail).
-            let mut visited = std::collections::HashSet::new();
-            map_keymap_value(interp, &args[0], &args[1], env, &mut visited)?;
-            Ok(Value::Nil)
-        }
-        "map-keymap-internal" => {
-            need_args(name, args, 2)?;
-            if !is_keymap_value(interp, &args[1]) {
-                return Err(LispError::TypeError("keymapp".into(), args[1].type_name()));
-            }
-            map_keymap_direct_value(interp, &args[0], &args[1], env)?;
-            Ok(keymap_parent_values(interp, &args[1])
-                .into_iter()
-                .next()
-                .unwrap_or(Value::Nil))
-        }
-        "describe-vector" => describe_vector_value(interp, args, env),
-        "suppress-keymap" => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            Ok(args[0].clone())
-        }
-        "use-local-map" => {
-            need_args(name, args, 1)?;
-            if !args[0].is_nil() && !is_keymap_value(interp, &args[0]) {
-                return Err(LispError::TypeError("keymapp".into(), args[0].type_name()));
-            }
-            interp.set_buffer_local_value(
-                interp.current_buffer_id(),
-                "current-local-map",
-                args[0].clone(),
-            );
-            Ok(Value::Nil)
-        }
-        "use-global-map" => {
-            need_args(name, args, 1)?;
-            if !is_keymap_value(interp, &args[0]) {
-                return Err(LispError::TypeError("keymapp".into(), args[0].type_name()));
-            }
-            interp.set_current_global_map_value(args[0].clone());
-            Ok(Value::Nil)
-        }
-        "current-local-map" => {
-            need_args(name, args, 0)?;
-            Ok(interp
-                .lookup_var("current-local-map", env)
-                .unwrap_or(Value::Nil))
-        }
-        "current-global-map" => {
-            need_args(name, args, 0)?;
-            Ok(interp.current_global_map_value())
-        }
-        "global-set-key" => {
-            need_args(name, args, 2)?;
-            let key = key_sequence_binding_text(&args[0])?;
-            let key_parts = key_sequence_keymap_parts(&args[0])?;
-            let global_map = interp.current_global_map_value();
-            keymap_define_binding_with_placement(
-                interp,
-                &global_map,
-                &key,
-                Some(key_parts),
-                args[1].clone(),
-                true,
-            )?;
-            Ok(args[1].clone())
-        }
-        "local-set-key" => {
-            need_args(name, args, 2)?;
-            Ok(args[1].clone())
-        }
-        "global-unset-key" => {
-            need_args(name, args, 1)?;
-            let key = key_sequence_binding_text(&args[0])?;
-            let global_map = interp.current_global_map_value();
-            keymap_remove_binding(interp, &global_map, &key)?;
-            Ok(Value::Nil)
-        }
-        "local-unset-key" => {
-            need_args(name, args, 1)?;
-            Ok(Value::Nil)
-        }
-        "substitute-key-definition" => {
-            if args.len() < 3 || args.len() > 5 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            Ok(args[2].clone())
-        }
-        "easy-menu-binding" => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            let item_name = args.get(1).cloned().unwrap_or(Value::Nil);
-            Ok(Value::list([
-                Value::Symbol("menu-item".into()),
-                item_name,
-                args[0].clone(),
-            ]))
-        }
-        "easy-menu-add-item" => {
-            if args.len() < 3 || args.len() > 4 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            Ok(args[2].clone())
-        }
-        "tool-bar-local-item" => {
-            if args.len() < 4 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            Ok(args[3].clone())
-        }
-        "tool-bar-local-item-from-menu" => {
-            if args.len() < 3 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            Ok(args[2].clone())
-        }
-        "custom-add-choice" => {
-            need_args(name, args, 2)?;
-            let variable = args[0].as_symbol()?;
-            let choice = args[1].clone();
-            let choices = interp
-                .get_symbol_property(variable, "custom-type")
-                .unwrap_or(Value::Nil);
-            let mut entries = choices.to_vec()?;
-            if !matches!(entries.first(), Some(Value::Symbol(kind)) if kind == "choice") {
-                return Err(LispError::Signal(format!("Not a choice type: {choices}")));
-            }
-            let new_tag = custom_choice_tag(&choice);
-            let already_present = new_tag.as_ref().is_some_and(|tag| {
-                entries[1..]
-                    .iter()
-                    .filter_map(custom_choice_tag)
-                    .any(|existing| values_equal(interp, &existing, tag))
-            });
-            if !already_present {
-                entries.push(choice);
-                interp.put_symbol_property(variable, "custom-type", Value::list(entries));
-            }
-            Ok(Value::Nil)
-        }
-        "custom-add-option" => {
-            need_args(name, args, 2)?;
-            let variable = args[0].as_symbol()?;
-            let option = args[1].clone();
-            let existing = interp
-                .get_symbol_property(variable, "custom-options")
-                .unwrap_or(Value::Nil);
-            let mut options = existing.to_vec()?;
-            if !options
-                .iter()
-                .any(|existing| values_equal(interp, existing, &option))
-            {
-                options.push(option);
-            }
-            let updated = Value::list(options);
-            interp.put_symbol_property(variable, "custom-options", updated.clone());
-            Ok(updated)
-        }
-        "define-widget" => {
-            if args.len() < 3 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            let name = args[0].as_symbol()?;
-            let class = args[1].clone();
-            let doc = args[2].clone();
-            let widget_type = if args.len() > 3 {
-                Value::cons(class, Value::list(args[3..].to_vec()))
-            } else {
-                Value::list([class])
-            };
-            interp.put_symbol_property(name, "widget-type", widget_type);
-            interp.put_symbol_property(name, "widget-documentation", doc);
-            Ok(Value::Symbol(name.to_string()))
-        }
-        "widget-create" => {
-            need_args(name, args, 1)?;
-            if let Some(label) = args.iter().skip(1).find_map(string_like) {
-                interp.buffer.insert(&label.text);
-            }
-            Ok(Value::cons(
-                args[0].clone(),
-                Value::list(args[1..].to_vec()),
-            ))
-        }
-        "widget-get" => {
-            need_args(name, args, 2)?;
-            widget_get(interp, &args[0], &args[1])
-        }
-        "widget-put" => {
-            need_args(name, args, 3)?;
-            widget_put(interp, &args[0], &args[1], args[2].clone())
-        }
-        "widget-apply" => {
-            need_arg_range(name, args, 2, usize::MAX)?;
-            let function = widget_get(interp, &args[0], &args[1])?;
-            if function.is_nil() {
-                return Ok(Value::Nil);
-            }
-            let mut call_args = Vec::with_capacity(args.len());
-            call_args.push(args[0].clone());
-            call_args.extend_from_slice(&args[2..]);
-            interp.call_function_value(function, args[1].as_symbol().ok(), &call_args, env)
-        }
-        "define-button-type" => {
-            need_args(name, args, 1)?;
-            Ok(args[0].clone())
-        }
-        "display-mouse-p" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Nil)
-        }
-        "make-button" => {
-            if args.len() < 2 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            if args[0].is_nil() || args[1].is_nil() {
-                return Ok(Value::Nil);
-            }
-            let start = position_from_value(interp, &args[0])?;
-            let end = position_from_value(interp, &args[1])?;
-            let mut cursor = 2usize;
-            while cursor + 1 < args.len() {
-                if let Ok(property) = args[cursor].as_symbol() {
-                    let property = if property == "type" {
-                        "button-type"
-                    } else {
-                        property
-                    };
-                    interp
-                        .buffer
-                        .put_text_property(start, end, property, args[cursor + 1].clone());
-                }
-                cursor += 2;
-            }
-            Ok(Value::Integer(start as i64))
-        }
-        "push-button" => {
-            need_arg_range(name, args, 0, 2)?;
-            let pos = args
-                .first()
-                .filter(|value| !value.is_nil())
-                .map(|value| position_from_value(interp, value))
-                .transpose()?
-                .unwrap_or_else(|| interp.buffer.point());
-            interp.buffer.goto_char(pos);
-            if point_is_on_plain_backtrace_ellipsis(interp, pos) {
-                reprint_current_backtrace_frame_for_expansion(interp, env, true)?;
-                return Ok(Value::T);
-            }
-            let button = interp.call_function_value(
-                Value::Symbol("button-at".into()),
-                Some("button-at"),
-                &[Value::Integer(pos as i64)],
-                env,
-            )?;
-            if button.is_nil() {
-                return Ok(Value::Nil);
-            }
-            let use_mouse_action = args.get(1).cloned().unwrap_or(Value::Nil);
-            interp.call_function_value(
-                Value::Symbol("button-activate".into()),
-                Some("button-activate"),
-                &[button, use_mouse_action],
-                env,
-            )?;
-            Ok(Value::T)
-        }
-        "button-at" => {
-            need_args(name, args, 1)?;
-            let pos = position_from_value(interp, &args[0])?;
-            Ok(interp
-                .buffer
-                .text_property_at(pos, "button-type")
-                .map(|_| Value::Integer(pos as i64))
-                .unwrap_or(Value::Nil))
-        }
-        "button-type" => {
-            need_args(name, args, 1)?;
-            let pos = position_from_value(interp, &args[0])?;
-            Ok(interp
-                .buffer
-                .text_property_at(pos, "button-type")
-                .unwrap_or(Value::Nil))
-        }
-        "defined-colors" => {
-            need_args(name, args, 0)?;
-            Ok(Value::list([
-                Value::String("black".into()),
-                Value::String("white".into()),
-                Value::String("red".into()),
-                Value::String("green".into()),
-                Value::String("blue".into()),
-            ]))
-        }
-        "color-defined-p" => {
-            need_args(name, args, 1)?;
-            let color = string_text(&args[0])?;
-            Ok(
-                if ["black", "white", "red", "green", "blue"]
-                    .iter()
-                    .any(|candidate| candidate.eq_ignore_ascii_case(&color))
-                {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
-        }
-        "symbol-function" => {
-            need_args(name, args, 1)?;
-            let symbol = args[0].as_symbol()?;
-            if interp.logical_function_binding(symbol, env).is_none()
-                && let Some(macro_function) = interp.macro_binding_as_function(symbol)
-            {
-                // GNU's function cell for a macro holds (macro . EXPANDER).
-                // Materialize the synthesized cell as the function binding so
-                // in-place mutation of the SAME cons (nadvice's setcdr-based
-                // macro advice) is visible to later reads and expansion.
-                interp.set_function_binding(symbol, Some(macro_function.clone()));
-                return Ok(macro_function);
-            }
-            if let Some(wrapper) = materialize_preloaded_lisp_function(interp, symbol, env) {
-                // The implementation stays native, but GNU's dumped
-                // function cell is compiled Lisp.  Materialize that stable
-                // observable wrapper on first inspection so help, advice,
-                // and byte-code-function-p see the dumped contract without
-                // moving the implementation across the Lisp/host boundary.
-                return Ok(wrapper);
-            }
-            Ok(match interp.logical_function_binding(symbol, env) {
-                Some(value) => value,
-                None if is_special_form_name(symbol) => Value::BuiltinFunc(symbol.to_string()),
-                None if symbol == "benchmark-run" => Value::list([
-                    Value::Symbol("autoload".into()),
-                    Value::String("benchmark.el".into()),
-                    Value::String("Autoloaded benchmark-run.".into()),
-                    Value::Nil,
-                    Value::Nil,
-                ]),
-                None if symbol == "tetris" => Value::list([
-                    Value::Symbol("autoload".into()),
-                    Value::String("tetris.el".into()),
-                    Value::String("Autoloaded tetris.".into()),
-                    Value::T,
-                    Value::Nil,
-                ]),
-                // GNU returns nil for an unbound function cell (nadvice's
-                // pending-advice path reads it).
-                None => Value::Nil,
-            })
-        }
-        "symbol-file" => {
-            need_arg_range(name, args, 1, 3)?;
-            // The `ert--test' type resolves from the native test registry.
-            if args.get(1).and_then(|t| t.as_symbol().ok()) == Some("ert--test")
-                && let Ok(symbol) = args[0].as_symbol()
-            {
-                return Ok(interp
-                    .ert_tests
-                    .iter()
-                    .find(|test| test.name == symbol)
-                    .and_then(|test| test.source_file.clone())
-                    .map(Value::String)
-                    .unwrap_or(Value::Nil));
-            }
-            if let Ok(symbol) = args[0].as_symbol()
-                && let Some(file) = symbol_file_from_load_history(
+            "lookup-key" => {
+                need_arg_range(name, args, 2, 3)?;
+                let key_parts = key_sequence_keymap_parts(&args[1])?;
+                let result = keymap_lookup_sequence_value_with_default(
                     interp,
-                    symbol,
-                    args.get(1).and_then(|kind| kind.as_symbol().ok()),
+                    &args[0],
+                    &key_parts,
+                    args.get(2).is_some_and(Value::is_truthy),
+                    env,
+                )?;
+                if let Value::Integer(prefix_len) = result {
+                    let prefix_len = usize::try_from(prefix_len).unwrap_or(0);
+                    Ok(Value::Integer(
+                        key_sequence_prefix_event_count(&args[1], prefix_len)? as i64,
+                    ))
+                } else {
+                    Ok(result)
+                }
+            }
+            "keymap-lookup" => {
+                if args.len() < 2 || args.len() > 5 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                let key_parts = textual_key_sequence_keymap_parts(&args[1])?;
+                keymap_lookup_sequence_value_with_default(
+                    interp,
+                    &args[0],
+                    &key_parts,
+                    args.get(2).is_some_and(Value::is_truthy),
                     env,
                 )
-            {
-                // simple_compat.el is Emaxx's aggregate realization of
-                // GNU's dumped files, not their logical source.  Preserve
-                // later user redefinitions, but map definitions from this
-                // one bootstrap aggregate back to the owning GNU file.
-                if file.ends_with("/src/lisp/simple_compat.el")
+            }
+            "accessible-keymaps" => accessible_keymaps(interp, args, env),
+            "current-minor-mode-maps" => {
+                need_args(name, args, 0)?;
+                Ok(Value::list(
+                    active_minor_mode_bindings(interp, env)?
+                        .into_iter()
+                        .map(|(_, map)| map),
+                ))
+            }
+            "minor-mode-key-binding" => {
+                need_arg_range(name, args, 1, 2)?;
+                let key_parts = key_sequence_keymap_parts(&args[0])?;
+                let accept_default = args.get(1).is_some_and(Value::is_truthy);
+                let mut prefix_bindings = Vec::new();
+                for (mode, map) in active_minor_mode_bindings(interp, env)? {
+                    let binding = keymap_lookup_sequence_value_with_default(
+                        interp,
+                        &map,
+                        &key_parts,
+                        accept_default,
+                        env,
+                    )?;
+                    if binding.is_nil() || matches!(binding, Value::Integer(_)) {
+                        continue;
+                    }
+                    let entry = Value::cons(Value::Symbol(mode), binding.clone());
+                    if keymap_reference_map(interp, &binding, env).is_some() {
+                        prefix_bindings.push(entry);
+                    } else if prefix_bindings.is_empty() {
+                        return Ok(Value::list([entry]));
+                    }
+                }
+                Ok(Value::list(prefix_bindings))
+            }
+            "keymap--read-only-filter" => {
+                need_args(name, args, 1)?;
+                if interp
+                    .lookup_var("buffer-read-only", env)
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    Ok(args[0].clone())
+                } else {
+                    Ok(Value::Nil)
+                }
+            }
+            "keymap-read-only-bind" => {
+                need_args(name, args, 1)?;
+                Ok(Value::list([
+                    Value::Symbol("menu-item".into()),
+                    Value::String(String::new()),
+                    args[0].clone(),
+                    Value::Symbol(":filter".into()),
+                    Value::list([
+                        Value::Symbol("function".into()),
+                        Value::Symbol("keymap--read-only-filter".into()),
+                    ]),
+                ]))
+            }
+            "keymap--get-keyelt" => {
+                need_args(name, args, 2)?;
+                keymap_get_keyelt(interp, &args[0], args[1].is_truthy(), env)
+            }
+            "describe-buffer-bindings" => describe_buffer_bindings(interp, args, env),
+            "help--describe-vector" => help_describe_vector(interp, args, env),
+            "key-binding" => {
+                need_arg_range(name, args, 1, 4)?;
+                let key = key_sequence_binding_text(&args[0])?;
+                key_binding(
+                    interp,
+                    &key,
+                    args.get(1).is_some_and(Value::is_truthy),
+                    args.get(2).is_some_and(Value::is_truthy),
+                    env,
+                )
+            }
+            "keymap-prompt" => {
+                need_args(name, args, 1)?;
+                if let Some(id) = keymap_record_id(interp, &args[0]) {
+                    return Ok(interp
+                        .find_record(id)
+                        .and_then(|record| record.slots.first().cloned())
+                        .unwrap_or(Value::Nil));
+                }
+                if let Ok(items) = args[0].to_vec()
+                    && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap")
+                {
+                    return Ok(items
+                        .iter()
+                        .skip(1)
+                        .find(|item| string_like(item).is_some())
+                        .cloned()
+                        .unwrap_or(Value::Nil));
+                }
+                Err(LispError::TypeError("keymapp".into(), args[0].type_name()))
+            }
+            "command-remapping" => {
+                need_arg_range(name, args, 1, 3)?;
+                command_remapping(interp, &args[0], args.get(2), env)
+            }
+            "keymap-parent" => {
+                need_args(name, args, 1)?;
+                match &args[0] {
+                    Value::Record(id)
+                        if interp
+                            .find_record(*id)
+                            .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+                    {
+                        Ok(interp
+                            .find_record(*id)
+                            .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
+                            .unwrap_or(Value::Nil))
+                    }
+                    _ => Ok(Value::Nil),
+                }
+            }
+            "set-keymap-parent" => {
+                need_args(name, args, 2)?;
+                if let Value::Record(id) = &args[0]
+                    && let Some(record) = interp.find_record_mut(*id)
+                    && record.type_name == KEYMAP_RECORD_TYPE
+                {
+                    if record.slots.len() <= KEYMAP_PARENT_SLOT {
+                        record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
+                    }
+                    record.slots[KEYMAP_PARENT_SLOT] = args[1].clone();
+                }
+                Ok(Value::Nil)
+            }
+            "map-keymap" => {
+                need_arg_range(name, args, 2, 3)?;
+                if args.get(2).is_some_and(Value::is_truthy) {
+                    return interp.call_function_value(
+                        Value::Symbol("map-keymap-sorted".into()),
+                        Some("map-keymap-sorted"),
+                        &args[..2],
+                        env,
+                    );
+                }
+                // GNU map-keymap also reports bindings inherited from parent
+                // keymaps (the parent is spliced into the keymap's tail).
+                let mut visited = std::collections::HashSet::new();
+                map_keymap_value(interp, &args[0], &args[1], env, &mut visited)?;
+                Ok(Value::Nil)
+            }
+            "map-keymap-internal" => {
+                need_args(name, args, 2)?;
+                if !is_keymap_value(interp, &args[1]) {
+                    return Err(LispError::TypeError("keymapp".into(), args[1].type_name()));
+                }
+                map_keymap_direct_value(interp, &args[0], &args[1], env)?;
+                Ok(keymap_parent_values(interp, &args[1])
+                    .into_iter()
+                    .next()
+                    .unwrap_or(Value::Nil))
+            }
+            "describe-vector" => describe_vector_value(interp, args, env),
+            "suppress-keymap" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                Ok(args[0].clone())
+            }
+            "use-local-map" => {
+                need_args(name, args, 1)?;
+                if !args[0].is_nil() && !is_keymap_value(interp, &args[0]) {
+                    return Err(LispError::TypeError("keymapp".into(), args[0].type_name()));
+                }
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    "current-local-map",
+                    args[0].clone(),
+                );
+                Ok(Value::Nil)
+            }
+            "use-global-map" => {
+                need_args(name, args, 1)?;
+                if !is_keymap_value(interp, &args[0]) {
+                    return Err(LispError::TypeError("keymapp".into(), args[0].type_name()));
+                }
+                interp.set_current_global_map_value(args[0].clone());
+                Ok(Value::Nil)
+            }
+            "current-local-map" => {
+                need_args(name, args, 0)?;
+                Ok(interp
+                    .lookup_var("current-local-map", env)
+                    .unwrap_or(Value::Nil))
+            }
+            "current-global-map" => {
+                need_args(name, args, 0)?;
+                Ok(interp.current_global_map_value())
+            }
+            "global-set-key" => {
+                need_args(name, args, 2)?;
+                let key = key_sequence_binding_text(&args[0])?;
+                let key_parts = key_sequence_keymap_parts(&args[0])?;
+                let global_map = interp.current_global_map_value();
+                keymap_define_binding_with_placement(
+                    interp,
+                    &global_map,
+                    &key,
+                    Some(key_parts),
+                    args[1].clone(),
+                    true,
+                )?;
+                Ok(args[1].clone())
+            }
+            "local-set-key" => {
+                need_args(name, args, 2)?;
+                Ok(args[1].clone())
+            }
+            "global-unset-key" => {
+                need_args(name, args, 1)?;
+                let key = key_sequence_binding_text(&args[0])?;
+                let global_map = interp.current_global_map_value();
+                keymap_remove_binding(interp, &global_map, &key)?;
+                Ok(Value::Nil)
+            }
+            "local-unset-key" => {
+                need_args(name, args, 1)?;
+                Ok(Value::Nil)
+            }
+            "substitute-key-definition" => {
+                if args.len() < 3 || args.len() > 5 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                Ok(args[2].clone())
+            }
+            "easy-menu-binding" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                let item_name = args.get(1).cloned().unwrap_or(Value::Nil);
+                Ok(Value::list([
+                    Value::Symbol("menu-item".into()),
+                    item_name,
+                    args[0].clone(),
+                ]))
+            }
+            "easy-menu-add-item" => {
+                if args.len() < 3 || args.len() > 4 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                Ok(args[2].clone())
+            }
+            "tool-bar-local-item" => {
+                if args.len() < 4 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                Ok(args[3].clone())
+            }
+            "tool-bar-local-item-from-menu" => {
+                if args.len() < 3 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                Ok(args[2].clone())
+            }
+            "custom-add-choice" => {
+                need_args(name, args, 2)?;
+                let variable = args[0].as_symbol()?;
+                let choice = args[1].clone();
+                let choices = interp
+                    .get_symbol_property(variable, "custom-type")
+                    .unwrap_or(Value::Nil);
+                let mut entries = choices.to_vec()?;
+                if !matches!(entries.first(), Some(Value::Symbol(kind)) if kind == "choice") {
+                    return Err(LispError::Signal(format!("Not a choice type: {choices}")));
+                }
+                let new_tag = custom_choice_tag(&choice);
+                let already_present = new_tag.as_ref().is_some_and(|tag| {
+                    entries[1..]
+                        .iter()
+                        .filter_map(custom_choice_tag)
+                        .any(|existing| values_equal(interp, &existing, tag))
+                });
+                if !already_present {
+                    entries.push(choice);
+                    interp.put_symbol_property(variable, "custom-type", Value::list(entries));
+                }
+                Ok(Value::Nil)
+            }
+            "custom-add-option" => {
+                need_args(name, args, 2)?;
+                let variable = args[0].as_symbol()?;
+                let option = args[1].clone();
+                let existing = interp
+                    .get_symbol_property(variable, "custom-options")
+                    .unwrap_or(Value::Nil);
+                let mut options = existing.to_vec()?;
+                if !options
+                    .iter()
+                    .any(|existing| values_equal(interp, existing, &option))
+                {
+                    options.push(option);
+                }
+                let updated = Value::list(options);
+                interp.put_symbol_property(variable, "custom-options", updated.clone());
+                Ok(updated)
+            }
+            "define-widget" => {
+                if args.len() < 3 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                let name = args[0].as_symbol()?;
+                let class = args[1].clone();
+                let doc = args[2].clone();
+                let widget_type = if args.len() > 3 {
+                    Value::cons(class, Value::list(args[3..].to_vec()))
+                } else {
+                    Value::list([class])
+                };
+                interp.put_symbol_property(name, "widget-type", widget_type);
+                interp.put_symbol_property(name, "widget-documentation", doc);
+                Ok(Value::Symbol(name.to_string()))
+            }
+            "widget-create" => {
+                need_args(name, args, 1)?;
+                if let Some(label) = args.iter().skip(1).find_map(string_like) {
+                    interp.buffer.insert(&label.text);
+                }
+                Ok(Value::cons(
+                    args[0].clone(),
+                    Value::list(args[1..].to_vec()),
+                ))
+            }
+            "widget-get" => {
+                need_args(name, args, 2)?;
+                widget_get(interp, &args[0], &args[1])
+            }
+            "widget-put" => {
+                need_args(name, args, 3)?;
+                widget_put(interp, &args[0], &args[1], args[2].clone())
+            }
+            "widget-apply" => {
+                need_arg_range(name, args, 2, usize::MAX)?;
+                let function = widget_get(interp, &args[0], &args[1])?;
+                if function.is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let mut call_args = Vec::with_capacity(args.len());
+                call_args.push(args[0].clone());
+                call_args.extend_from_slice(&args[2..]);
+                interp.call_function_value(function, args[1].as_symbol().ok(), &call_args, env)
+            }
+            "define-button-type" => {
+                need_args(name, args, 1)?;
+                Ok(args[0].clone())
+            }
+            "display-mouse-p" => {
+                need_arg_range(name, args, 0, 1)?;
+                Ok(Value::Nil)
+            }
+            "make-button" => {
+                if args.len() < 2 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                if args[0].is_nil() || args[1].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let mut cursor = 2usize;
+                while cursor + 1 < args.len() {
+                    if let Ok(property) = args[cursor].as_symbol() {
+                        let property = if property == "type" {
+                            "button-type"
+                        } else {
+                            property
+                        };
+                        interp.buffer.put_text_property(
+                            start,
+                            end,
+                            property,
+                            args[cursor + 1].clone(),
+                        );
+                    }
+                    cursor += 2;
+                }
+                Ok(Value::Integer(start as i64))
+            }
+            "push-button" => {
+                need_arg_range(name, args, 0, 2)?;
+                let pos = args
+                    .first()
+                    .filter(|value| !value.is_nil())
+                    .map(|value| position_from_value(interp, value))
+                    .transpose()?
+                    .unwrap_or_else(|| interp.buffer.point());
+                interp.buffer.goto_char(pos);
+                if point_is_on_plain_backtrace_ellipsis(interp, pos) {
+                    reprint_current_backtrace_frame_for_expansion(interp, env, true)?;
+                    return Ok(Value::T);
+                }
+                let button = interp.call_function_value(
+                    Value::Symbol("button-at".into()),
+                    Some("button-at"),
+                    &[Value::Integer(pos as i64)],
+                    env,
+                )?;
+                if button.is_nil() {
+                    return Ok(Value::Nil);
+                }
+                let use_mouse_action = args.get(1).cloned().unwrap_or(Value::Nil);
+                interp.call_function_value(
+                    Value::Symbol("button-activate".into()),
+                    Some("button-activate"),
+                    &[button, use_mouse_action],
+                    env,
+                )?;
+                Ok(Value::T)
+            }
+            "button-at" => {
+                need_args(name, args, 1)?;
+                let pos = position_from_value(interp, &args[0])?;
+                Ok(interp
+                    .buffer
+                    .text_property_at(pos, "button-type")
+                    .map(|_| Value::Integer(pos as i64))
+                    .unwrap_or(Value::Nil))
+            }
+            "button-type" => {
+                need_args(name, args, 1)?;
+                let pos = position_from_value(interp, &args[0])?;
+                Ok(interp
+                    .buffer
+                    .text_property_at(pos, "button-type")
+                    .unwrap_or(Value::Nil))
+            }
+            "defined-colors" => {
+                need_args(name, args, 0)?;
+                Ok(Value::list([
+                    Value::String("black".into()),
+                    Value::String("white".into()),
+                    Value::String("red".into()),
+                    Value::String("green".into()),
+                    Value::String("blue".into()),
+                ]))
+            }
+            "color-defined-p" => {
+                need_args(name, args, 1)?;
+                let color = string_text(&args[0])?;
+                Ok(
+                    if ["black", "white", "red", "green", "blue"]
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(&color))
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "symbol-function" => {
+                need_args(name, args, 1)?;
+                let symbol = args[0].as_symbol()?;
+                if interp.logical_function_binding(symbol, env).is_none()
+                    && let Some(macro_function) = interp.macro_binding_as_function(symbol)
+                {
+                    // GNU's function cell for a macro holds (macro . EXPANDER).
+                    // Materialize the synthesized cell as the function binding so
+                    // in-place mutation of the SAME cons (nadvice's setcdr-based
+                    // macro advice) is visible to later reads and expansion.
+                    interp.set_function_binding(symbol, Some(macro_function.clone()));
+                    return Ok(macro_function);
+                }
+                if let Some(wrapper) = materialize_preloaded_lisp_function(interp, symbol, env) {
+                    // The implementation stays native, but GNU's dumped
+                    // function cell is compiled Lisp.  Materialize that stable
+                    // observable wrapper on first inspection so help, advice,
+                    // and byte-code-function-p see the dumped contract without
+                    // moving the implementation across the Lisp/host boundary.
+                    return Ok(wrapper);
+                }
+                Ok(match interp.logical_function_binding(symbol, env) {
+                    Some(value) => value,
+                    None if is_special_form_name(symbol) => Value::BuiltinFunc(symbol.to_string()),
+                    None if symbol == "benchmark-run" => Value::list([
+                        Value::Symbol("autoload".into()),
+                        Value::String("benchmark.el".into()),
+                        Value::String("Autoloaded benchmark-run.".into()),
+                        Value::Nil,
+                        Value::Nil,
+                    ]),
+                    None if symbol == "tetris" => Value::list([
+                        Value::Symbol("autoload".into()),
+                        Value::String("tetris.el".into()),
+                        Value::String("Autoloaded tetris.".into()),
+                        Value::T,
+                        Value::Nil,
+                    ]),
+                    // GNU returns nil for an unbound function cell (nadvice's
+                    // pending-advice path reads it).
+                    None => Value::Nil,
+                })
+            }
+            "symbol-file" => {
+                need_arg_range(name, args, 1, 3)?;
+                // The `ert--test' type resolves from the native test registry.
+                if args.get(1).and_then(|t| t.as_symbol().ok()) == Some("ert--test")
+                    && let Ok(symbol) = args[0].as_symbol()
+                {
+                    return Ok(interp
+                        .ert_tests
+                        .iter()
+                        .find(|test| test.name == symbol)
+                        .and_then(|test| test.source_file.clone())
+                        .map(Value::String)
+                        .unwrap_or(Value::Nil));
+                }
+                if let Ok(symbol) = args[0].as_symbol()
+                    && let Some(file) = symbol_file_from_load_history(
+                        interp,
+                        symbol,
+                        args.get(1).and_then(|kind| kind.as_symbol().ok()),
+                        env,
+                    )
+                {
+                    // simple_compat.el is Emaxx's aggregate realization of
+                    // GNU's dumped files, not their logical source.  Preserve
+                    // later user redefinitions, but map definitions from this
+                    // one bootstrap aggregate back to the owning GNU file.
+                    if file.ends_with("/src/lisp/simple_compat.el")
+                        && let Some(path) = symbol_file_from_preloaded_sources(interp, symbol)
+                    {
+                        return Ok(Value::String(path));
+                    }
+                    return Ok(Value::String(file));
+                }
+                // GNU consults the dumped load-history; stand in for it with
+                // the preloaded sources for defun/defvar/typeless queries.
+                if matches!(
+                    args.get(1).and_then(|t| t.as_symbol().ok()),
+                    None | Some("defun") | Some("defvar")
+                ) && let Ok(symbol) = args[0].as_symbol()
                     && let Some(path) = symbol_file_from_preloaded_sources(interp, symbol)
                 {
                     return Ok(Value::String(path));
                 }
-                return Ok(Value::String(file));
+                Ok(Value::Nil)
             }
-            // GNU consults the dumped load-history; stand in for it with
-            // the preloaded sources for defun/defvar/typeless queries.
-            if matches!(
-                args.get(1).and_then(|t| t.as_symbol().ok()),
-                None | Some("defun") | Some("defvar")
-            ) && let Ok(symbol) = args[0].as_symbol()
-                && let Some(path) = symbol_file_from_preloaded_sources(interp, symbol)
-            {
-                return Ok(Value::String(path));
+            "symbol-name" => {
+                need_args(name, args, 1)?;
+                let s = args[0].as_symbol()?;
+                Ok(Value::String(
+                    crate::lisp::types::visible_symbol_name(s).to_string(),
+                ))
             }
-            Ok(Value::Nil)
-        }
-        "symbol-name" => {
-            need_args(name, args, 1)?;
-            let s = args[0].as_symbol()?;
-            Ok(Value::String(
-                crate::lisp::types::visible_symbol_name(s).to_string(),
-            ))
-        }
-        "user-login-name" | "user-real-login-name" => {
-            if args.len() > 1 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            Ok(Value::String(
-                current_user_login_name().unwrap_or_else(|| "user".into()),
-            ))
-        }
-        "system-name" => {
-            if !args.is_empty() {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            Ok(Value::String(system_name_value()))
-        }
-        "user-full-name" => {
-            if args.len() > 1 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            let requested = args.first().and_then(|value| {
-                if value.is_nil() {
-                    None
-                } else {
-                    string_text(value).ok()
+            "user-login-name" | "user-real-login-name" => {
+                if args.len() > 1 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-            });
-            Ok(user_full_name(requested.as_deref())
-                .map(Value::String)
-                .unwrap_or(Value::Nil))
-        }
-        "char-from-name" => {
-            need_args(name, args, 1)?;
-            let name = string_text(&args[0])?;
-            let ch = match name.as_str() {
-                "SMILE" => 0x263A,
-                _ => return Ok(Value::Nil),
-            };
-            Ok(Value::Integer(ch))
-        }
-        "always" => Ok(Value::T),
-        "evenp" => {
-            need_args(name, args, 1)?;
-            Ok(
-                if (&integer_like_bigint(interp, &args[0])? & BigInt::from(1u8)).is_zero() {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
-        }
-        "seq-subseq" => {
-            if args.len() < 2 || args.len() > 3 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                Ok(Value::String(
+                    current_user_login_name().unwrap_or_else(|| "user".into()),
+                ))
             }
-            seq_subseq(
-                &args[0],
-                args[1].as_integer()?,
-                args.get(2).map(Value::as_integer).transpose()?,
-            )
-        }
-        "text-quoting-style" => {
-            need_args(name, args, 0)?;
-            Ok(Value::Symbol(
-                effective_text_quoting_style(interp, env).into(),
-            ))
-        }
-        "file-truename" => {
-            need_args(name, args, 1)?;
-            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-            Ok(Value::String(canonical_file_name(&path)))
-        }
-        "user-uid" => Ok(Value::Integer(current_user_id()? as i64)),
-        "user-real-uid" => Ok(Value::Integer(current_real_user_id()? as i64)),
-        "group-gid" => Ok(Value::Integer(current_group_id()? as i64)),
-        "group-real-gid" => Ok(Value::Integer(current_real_group_id()? as i64)),
-        "group-name" => {
-            need_args(name, args, 1)?;
-            let gid = match &args[0] {
-                Value::Integer(value) => *value,
-                Value::Float(value) => *value as i64,
-                _ => return Err(LispError::Signal("Invalid GID specification".into())),
-            };
-            Ok(group_name_from_gid(gid)?
-                .map(Value::String)
-                .unwrap_or(Value::Nil))
-        }
-        "save-buffer" => {
-            let Some(path) = interp.buffer.file.clone() else {
-                return Ok(Value::Nil);
-            };
-            if !interp.buffer.is_modified() {
-                return Ok(Value::Nil);
+            "system-name" => {
+                if !args.is_empty() {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                Ok(Value::String(system_name_value()))
             }
-            let buffer_text = interp.buffer.full_buffer_string();
-            if std::fs::read_to_string(&path).is_ok_and(|contents| contents == buffer_text) {
+            "user-full-name" => {
+                if args.len() > 1 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                let requested = args.first().and_then(|value| {
+                    if value.is_nil() {
+                        None
+                    } else {
+                        string_text(value).ok()
+                    }
+                });
+                Ok(user_full_name(requested.as_deref())
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil))
+            }
+            "char-from-name" => {
+                need_args(name, args, 1)?;
+                let name = string_text(&args[0])?;
+                let ch = match name.as_str() {
+                    "SMILE" => 0x263A,
+                    _ => return Ok(Value::Nil),
+                };
+                Ok(Value::Integer(ch))
+            }
+            "always" => Ok(Value::T),
+            "evenp" => {
+                need_args(name, args, 1)?;
+                Ok(
+                    if (&integer_like_bigint(interp, &args[0])? & BigInt::from(1u8)).is_zero() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "seq-subseq" => {
+                if args.len() < 2 || args.len() > 3 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                seq_subseq(
+                    &args[0],
+                    args[1].as_integer()?,
+                    args.get(2).map(Value::as_integer).transpose()?,
+                )
+            }
+            "text-quoting-style" => {
+                need_args(name, args, 0)?;
+                Ok(Value::Symbol(
+                    effective_text_quoting_style(interp, env).into(),
+                ))
+            }
+            "file-truename" => {
+                need_args(name, args, 1)?;
+                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                Ok(Value::String(canonical_file_name(&path)))
+            }
+            "user-uid" => Ok(Value::Integer(current_user_id()? as i64)),
+            "user-real-uid" => Ok(Value::Integer(current_real_user_id()? as i64)),
+            "group-gid" => Ok(Value::Integer(current_group_id()? as i64)),
+            "group-real-gid" => Ok(Value::Integer(current_real_group_id()? as i64)),
+            "group-name" => {
+                need_args(name, args, 1)?;
+                let gid = match &args[0] {
+                    Value::Integer(value) => *value,
+                    Value::Float(value) => *value as i64,
+                    _ => return Err(LispError::Signal("Invalid GID specification".into())),
+                };
+                Ok(group_name_from_gid(gid)?
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil))
+            }
+            "save-buffer" => {
+                let Some(path) = interp.buffer.file.clone() else {
+                    return Ok(Value::Nil);
+                };
+                if !interp.buffer.is_modified() {
+                    return Ok(Value::Nil);
+                }
+                let buffer_text = interp.buffer.full_buffer_string();
+                if std::fs::read_to_string(&path).is_ok_and(|contents| contents == buffer_text) {
+                    interp.buffer.set_unmodified();
+                    interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
+                    unlock_current_buffer(interp, env)?;
+                    return Ok(Value::Nil);
+                }
+                ensure_no_supersession_threat(interp, env)?;
+                if run_write_buffer_hooks_until_success(interp, env)? {
+                    return Ok(Value::Nil);
+                }
+                std::fs::write(&path, &buffer_text)
+                    .map_err(|e| LispError::Signal(e.to_string()))?;
                 interp.buffer.set_unmodified();
                 interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
                 unlock_current_buffer(interp, env)?;
-                return Ok(Value::Nil);
+                Ok(Value::Nil)
             }
-            ensure_no_supersession_threat(interp, env)?;
-            if run_write_buffer_hooks_until_success(interp, env)? {
-                return Ok(Value::Nil);
+            "emaxx-default-revert-buffer-function" | "revert-buffer--default" => {
+                revert_current_buffer(interp, env)?;
+                Ok(Value::Nil)
             }
-            std::fs::write(&path, &buffer_text).map_err(|e| LispError::Signal(e.to_string()))?;
-            interp.buffer.set_unmodified();
-            interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
-            unlock_current_buffer(interp, env)?;
-            Ok(Value::Nil)
-        }
-        "emaxx-default-revert-buffer-function" | "revert-buffer--default" => {
-            revert_current_buffer(interp, env)?;
-            Ok(Value::Nil)
-        }
-        "buffer-stale--default-function" => {
-            need_arg_range(name, args, 0, 1)?;
-            let Some(path) = interp.buffer.file.clone() else {
-                return Ok(Value::Nil);
-            };
-            if interp.buffer.is_modified() || !Path::new(&path).is_file() {
-                return Ok(Value::Nil);
-            }
-            let current = file_modtime(&path)?;
-            let visited = interp.buffer.visited_file_modtime();
-            // Tramp reports remote modification times with one-second
-            // resolution; a same-second rewrite looks unchanged.
-            let unchanged = if interp
-                .buffer_local_value(interp.current_buffer_id(), "emaxx--visited-remote-prefix")
-                .is_some_and(|value| value.is_truthy())
-            {
-                modtimes_equal_whole_seconds(&visited, &current)
-            } else {
-                visited == current
-            };
-            Ok(if unchanged { Value::Nil } else { Value::T })
-        }
-        "revert-buffer" => {
-            if let Some(revert_function) = interp.lookup_var("revert-buffer-function", env)
-                && revert_function.is_truthy()
-            {
-                let mut revert_args = Vec::with_capacity(args.len() + 1);
-                revert_args.push(Value::Symbol("emaxx-default-revert-buffer-function".into()));
-                revert_args.extend(args.iter().cloned());
-                return interp.call_function_value(revert_function, None, &revert_args, env);
-            }
-            revert_current_buffer(interp, env)?;
-            Ok(Value::Nil)
-        }
-        "lock-buffer" => {
-            maybe_lock_current_buffer(interp, env)?;
-            Ok(Value::Nil)
-        }
-        "unlock-buffer" => unlock_current_buffer(interp, env),
-        "ask-user-about-supersession-threat" => {
-            need_args(name, args, 1)?;
-            Ok(Value::T)
-        }
-        // File-less fallback; GNU nadvice.el owns advice once loaded (direct
-        // dispatch, e.g. define-advice's lowering, must delegate to it).
-        "advice-add" => {
-            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
-                return Ok(delegated);
-            }
-            if args.len() < 3 || args.len() > 4 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            let function_name = symbol_designator_name(&args[0])
-                .ok_or_else(|| LispError::TypeError("symbol".into(), args[0].type_name()))?;
-            let where_kind = args[1].as_symbol()?.to_string();
-            // Keep the advice value unresolved (a symbol stays a symbol,
-            // like GNU) so later redefinitions of a symbol advice apply.
-            let advice = args[2].clone();
-            let advice_name = args
-                .get(3)
-                .and_then(|props| props.to_vec().ok())
-                .and_then(|props| {
-                    props.iter().find_map(|prop| {
-                        let (key, value) = prop.cons_values()?;
-                        matches!(&key, Value::Symbol(key) if key == "name").then_some(value)
-                    })
-                });
-            let base = interp.lookup_function(&function_name, env).ok();
-            let state = interp
-                .advice_registry
-                .entry(function_name.clone())
-                .or_default();
-            if state.base.is_none() {
-                state.base = base;
-            }
-            state.entries.insert(
-                0,
-                crate::lisp::eval::AdviceEntry {
-                    where_kind,
-                    function: advice,
-                    name: advice_name,
-                },
-            );
-            interp.advice_reapply(&function_name);
-            Ok(Value::Nil)
-        }
-        // File-less fallback; GNU nadvice.el owns advice once loaded.
-        "advice-member-p" => {
-            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
-                return Ok(delegated);
-            }
-            need_args(name, args, 2)?;
-            let Some(function_name) = symbol_designator_name(&args[1]) else {
-                return Ok(Value::Nil);
-            };
-            let entries = interp
-                .advice_registry
-                .get(&function_name)
-                .map(|state| state.entries.clone())
-                .unwrap_or_default();
-            let target = args[0].clone();
-            for entry in &entries {
-                if interp.advice_functions_match(&entry.function, &target)
-                    || entry.name.as_ref() == Some(&target)
-                {
-                    return Ok(Value::T);
+            "buffer-stale--default-function" => {
+                need_arg_range(name, args, 0, 1)?;
+                let Some(path) = interp.buffer.file.clone() else {
+                    return Ok(Value::Nil);
+                };
+                if interp.buffer.is_modified() || !Path::new(&path).is_file() {
+                    return Ok(Value::Nil);
                 }
-            }
-            Ok(Value::Nil)
-        }
-        // File-less fallback; GNU nadvice.el owns advice once loaded.
-        "advice-remove" => {
-            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
-                return Ok(delegated);
-            }
-            need_args(name, args, 2)?;
-            let function_name = symbol_designator_name(&args[0])
-                .ok_or_else(|| LispError::TypeError("symbol".into(), args[0].type_name()))?;
-            let target = args[1].clone();
-            let entries = interp
-                .advice_registry
-                .get(&function_name)
-                .map(|state| state.entries.clone())
-                .unwrap_or_default();
-            let mut kept = Vec::with_capacity(entries.len());
-            let mut removed = false;
-            for entry in entries {
-                if !removed
-                    && (interp.advice_functions_match(&entry.function, &target)
-                        || entry.name.as_ref() == Some(&target))
+                let current = file_modtime(&path)?;
+                let visited = interp.buffer.visited_file_modtime();
+                // Tramp reports remote modification times with one-second
+                // resolution; a same-second rewrite looks unchanged.
+                let unchanged = if interp
+                    .buffer_local_value(interp.current_buffer_id(), "emaxx--visited-remote-prefix")
+                    .is_some_and(|value| value.is_truthy())
                 {
-                    removed = true;
-                    continue;
-                }
-                kept.push(entry);
+                    modtimes_equal_whole_seconds(&visited, &current)
+                } else {
+                    visited == current
+                };
+                Ok(if unchanged { Value::Nil } else { Value::T })
             }
-            if removed && let Some(state) = interp.advice_registry.get_mut(&function_name) {
-                state.entries = kept;
+            "revert-buffer" => {
+                if let Some(revert_function) = interp.lookup_var("revert-buffer-function", env)
+                    && revert_function.is_truthy()
+                {
+                    let mut revert_args = Vec::with_capacity(args.len() + 1);
+                    revert_args.push(Value::Symbol("emaxx-default-revert-buffer-function".into()));
+                    revert_args.extend(args.iter().cloned());
+                    return interp.call_function_value(revert_function, None, &revert_args, env);
+                }
+                revert_current_buffer(interp, env)?;
+                Ok(Value::Nil)
+            }
+            "lock-buffer" => {
+                maybe_lock_current_buffer(interp, env)?;
+                Ok(Value::Nil)
+            }
+            "unlock-buffer" => unlock_current_buffer(interp, env),
+            "ask-user-about-supersession-threat" => {
+                need_args(name, args, 1)?;
+                Ok(Value::T)
+            }
+            // File-less fallback; GNU nadvice.el owns advice once loaded (direct
+            // dispatch, e.g. define-advice's lowering, must delegate to it).
+            "advice-add" => {
+                if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                    return Ok(delegated);
+                }
+                if args.len() < 3 || args.len() > 4 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                let function_name = symbol_designator_name(&args[0])
+                    .ok_or_else(|| LispError::TypeError("symbol".into(), args[0].type_name()))?;
+                let where_kind = args[1].as_symbol()?.to_string();
+                // Keep the advice value unresolved (a symbol stays a symbol,
+                // like GNU) so later redefinitions of a symbol advice apply.
+                let advice = args[2].clone();
+                let advice_name =
+                    args.get(3)
+                        .and_then(|props| props.to_vec().ok())
+                        .and_then(|props| {
+                            props.iter().find_map(|prop| {
+                                let (key, value) = prop.cons_values()?;
+                                matches!(&key, Value::Symbol(key) if key == "name").then_some(value)
+                            })
+                        });
+                let base = interp.lookup_function(&function_name, env).ok();
+                let state = interp
+                    .advice_registry
+                    .entry(function_name.clone())
+                    .or_default();
+                if state.base.is_none() {
+                    state.base = base;
+                }
+                state.entries.insert(
+                    0,
+                    crate::lisp::eval::AdviceEntry {
+                        where_kind,
+                        function: advice,
+                        name: advice_name,
+                    },
+                );
                 interp.advice_reapply(&function_name);
+                Ok(Value::Nil)
             }
-            Ok(Value::Nil)
-        }
-        "emaxx-apply-around-advice" => {
-            need_args(name, args, 3)?;
-            let original = args[0].clone();
-            let advice = args[1].clone();
-            let mut advice_args = Vec::with_capacity(1 + args[2].to_vec()?.len());
-            advice_args.push(original);
-            advice_args.extend(args[2].to_vec()?);
-            interp.call_function_value(advice, None, &advice_args, env)
-        }
-        "emaxx-apply-after-advice" => {
-            need_args(name, args, 3)?;
-            let original = args[0].clone();
-            let advice = args[1].clone();
-            let original_args = args[2].to_vec()?;
-            let result = interp.call_function_value(original, None, &original_args, env)?;
-            interp.call_function_value(advice, None, &original_args, env)?;
-            Ok(result)
-        }
-        // File-less fallback; GNU nadvice.el's macro takes over once loaded.
-        "remove-function" if !interp.has_lisp_macro("remove-function") => {
-            need_args(name, args, 2)?;
-            Ok(Value::Nil)
-        }
-        "userlock--handle-unlock-error" => Ok(Value::Nil),
-        "recent-auto-save-p" => {
-            need_args(name, args, 0)?;
-            Ok(if interp.buffer.is_autosaved() {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "set-buffer-auto-saved" => {
-            need_args(name, args, 0)?;
-            interp.buffer.set_autosaved();
-            Ok(Value::Nil)
-        }
-        "clear-buffer-auto-save-failure" => {
-            need_args(name, args, 0)?;
-            Ok(Value::Nil)
-        }
-        "next-read-file-uses-dialog-p" => {
-            need_args(name, args, 0)?;
-            let use_dialog = interp
-                .lookup_var("use-dialog-box", env)
-                .is_some_and(|value| value.is_truthy());
-            let use_file_dialog = interp
-                .lookup_var("use-file-dialog", env)
-                .is_some_and(|value| value.is_truthy());
-            Ok(if use_dialog && use_file_dialog {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "auto-save-mode" => {
-            let enabled = args.first().is_none_or(Value::is_truthy);
-            if enabled {
-                let path = auto_save_path_for_buffer(&interp.buffer);
+            // File-less fallback; GNU nadvice.el owns advice once loaded.
+            "advice-member-p" => {
+                if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                    return Ok(delegated);
+                }
+                need_args(name, args, 2)?;
+                let Some(function_name) = symbol_designator_name(&args[1]) else {
+                    return Ok(Value::Nil);
+                };
+                let entries = interp
+                    .advice_registry
+                    .get(&function_name)
+                    .map(|state| state.entries.clone())
+                    .unwrap_or_default();
+                let target = args[0].clone();
+                for entry in &entries {
+                    if interp.advice_functions_match(&entry.function, &target)
+                        || entry.name.as_ref() == Some(&target)
+                    {
+                        return Ok(Value::T);
+                    }
+                }
+                Ok(Value::Nil)
+            }
+            // File-less fallback; GNU nadvice.el owns advice once loaded.
+            "advice-remove" => {
+                if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                    return Ok(delegated);
+                }
+                need_args(name, args, 2)?;
+                let function_name = symbol_designator_name(&args[0])
+                    .ok_or_else(|| LispError::TypeError("symbol".into(), args[0].type_name()))?;
+                let target = args[1].clone();
+                let entries = interp
+                    .advice_registry
+                    .get(&function_name)
+                    .map(|state| state.entries.clone())
+                    .unwrap_or_default();
+                let mut kept = Vec::with_capacity(entries.len());
+                let mut removed = false;
+                for entry in entries {
+                    if !removed
+                        && (interp.advice_functions_match(&entry.function, &target)
+                            || entry.name.as_ref() == Some(&target))
+                    {
+                        removed = true;
+                        continue;
+                    }
+                    kept.push(entry);
+                }
+                if removed && let Some(state) = interp.advice_registry.get_mut(&function_name) {
+                    state.entries = kept;
+                    interp.advice_reapply(&function_name);
+                }
+                Ok(Value::Nil)
+            }
+            "emaxx-apply-around-advice" => {
+                need_args(name, args, 3)?;
+                let original = args[0].clone();
+                let advice = args[1].clone();
+                let mut advice_args = Vec::with_capacity(1 + args[2].to_vec()?.len());
+                advice_args.push(original);
+                advice_args.extend(args[2].to_vec()?);
+                interp.call_function_value(advice, None, &advice_args, env)
+            }
+            "emaxx-apply-after-advice" => {
+                need_args(name, args, 3)?;
+                let original = args[0].clone();
+                let advice = args[1].clone();
+                let original_args = args[2].to_vec()?;
+                let result = interp.call_function_value(original, None, &original_args, env)?;
+                interp.call_function_value(advice, None, &original_args, env)?;
+                Ok(result)
+            }
+            // File-less fallback; GNU nadvice.el's macro takes over once loaded.
+            "remove-function" if !interp.has_lisp_macro("remove-function") => {
+                need_args(name, args, 2)?;
+                Ok(Value::Nil)
+            }
+            "userlock--handle-unlock-error" => Ok(Value::Nil),
+            "recent-auto-save-p" => {
+                need_args(name, args, 0)?;
+                Ok(if interp.buffer.is_autosaved() {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "set-buffer-auto-saved" => {
+                need_args(name, args, 0)?;
+                interp.buffer.set_autosaved();
+                Ok(Value::Nil)
+            }
+            "clear-buffer-auto-save-failure" => {
+                need_args(name, args, 0)?;
+                Ok(Value::Nil)
+            }
+            "next-read-file-uses-dialog-p" => {
+                need_args(name, args, 0)?;
+                let use_dialog = interp
+                    .lookup_var("use-dialog-box", env)
+                    .is_some_and(|value| value.is_truthy());
+                let use_file_dialog = interp
+                    .lookup_var("use-file-dialog", env)
+                    .is_some_and(|value| value.is_truthy());
+                Ok(if use_dialog && use_file_dialog {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "auto-save-mode" => {
+                let enabled = args.first().is_none_or(Value::is_truthy);
+                if enabled {
+                    let path = auto_save_path_for_buffer(&interp.buffer);
+                    interp.set_buffer_local_value(
+                        interp.current_buffer_id(),
+                        "buffer-auto-save-file-name",
+                        Value::String(path),
+                    );
+                    Ok(Value::T)
+                } else {
+                    interp.set_buffer_local_value(
+                        interp.current_buffer_id(),
+                        "buffer-auto-save-file-name",
+                        Value::Nil,
+                    );
+                    Ok(Value::Nil)
+                }
+            }
+            "do-auto-save" => {
+                let path = interp
+                    .buffer_local_value(interp.current_buffer_id(), "buffer-auto-save-file-name")
+                    .and_then(|value| string_text(&value).ok())
+                    .unwrap_or_else(|| auto_save_path_for_buffer(&interp.buffer));
+                std::fs::write(&path, interp.buffer.buffer_string())
+                    .map_err(|e| LispError::Signal(e.to_string()))?;
                 interp.set_buffer_local_value(
                     interp.current_buffer_id(),
                     "buffer-auto-save-file-name",
                     Value::String(path),
                 );
-                Ok(Value::T)
-            } else {
-                interp.set_buffer_local_value(
-                    interp.current_buffer_id(),
-                    "buffer-auto-save-file-name",
-                    Value::Nil,
-                );
+                interp.buffer.set_autosaved();
                 Ok(Value::Nil)
             }
-        }
-        "do-auto-save" => {
-            let path = interp
-                .buffer_local_value(interp.current_buffer_id(), "buffer-auto-save-file-name")
-                .and_then(|value| string_text(&value).ok())
-                .unwrap_or_else(|| auto_save_path_for_buffer(&interp.buffer));
-            std::fs::write(&path, interp.buffer.buffer_string())
-                .map_err(|e| LispError::Signal(e.to_string()))?;
-            interp.set_buffer_local_value(
-                interp.current_buffer_id(),
-                "buffer-auto-save-file-name",
-                Value::String(path),
-            );
-            interp.buffer.set_autosaved();
-            Ok(Value::Nil)
-        }
-        "unix-sync" => {
-            need_args(name, args, 0)?;
-            Ok(Value::Nil)
-        }
-        "set-binary-mode" => {
-            need_args(name, args, 2)?;
-            match &args[0] {
-                Value::Symbol(stream)
-                    if matches!(stream.as_str(), "stdin" | "stdout" | "stderr") =>
+            "unix-sync" => {
+                need_args(name, args, 0)?;
+                Ok(Value::Nil)
+            }
+            "set-binary-mode" => {
+                need_args(name, args, 2)?;
+                match &args[0] {
+                    Value::Symbol(stream)
+                        if matches!(stream.as_str(), "stdin" | "stdout" | "stderr") =>
+                    {
+                        Ok(Value::Nil)
+                    }
+                    _ => Err(LispError::Signal("Invalid stream".into())),
+                }
+            }
+            "obarray-make" => {
+                if args.len() > 1 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                if let Some(size) = args.first()
+                    && size.as_integer()? < 0
                 {
-                    Ok(Value::Nil)
+                    return Err(LispError::TypeError("natnump".into(), size.type_name()));
                 }
-                _ => Err(LispError::Signal("Invalid stream".into())),
+                Ok(make_obarray(interp))
             }
-        }
-        "obarray-make" => {
-            if args.len() > 1 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            if let Some(size) = args.first()
-                && size.as_integer()? < 0
-            {
-                return Err(LispError::TypeError("natnump".into(), size.type_name()));
-            }
-            Ok(make_obarray(interp))
-        }
-        "obarrayp" => {
-            need_args(name, args, 1)?;
-            Ok(if is_obarray_like_value(interp, &args[0]) {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "obarray-clear" => {
-            need_args(name, args, 1)?;
-            clear_obarray(interp, &args[0])
-        }
-        "internal--obarray-buckets" => {
-            need_args(name, args, 1)?;
-            Ok(Value::list(
-                obarray_symbols(interp, &args[0])?
-                    .into_iter()
-                    .map(|symbol| Value::list([symbol])),
-            ))
-        }
-        "define-hash-table-test" => {
-            need_args(name, args, 3)?;
-            let symbol = args[0].as_symbol()?;
-            let spec = Value::list([args[1].clone(), args[2].clone()]);
-            interp.put_symbol_property(symbol, "hash-table-test", spec.clone());
-            Ok(spec)
-        }
-        "make-hash-table" => {
-            let mut test = "eql".to_string();
-            let mut size = Value::Integer(65);
-            let mut rehash_size = Value::Float(1.5);
-            let mut rehash_threshold = Value::Float(0.8125);
-            let mut weakness = Value::Nil;
-            let mut index = 0usize;
-            while index + 1 < args.len() {
-                let key = args[index].as_symbol()?;
-                match key {
-                    ":test" => {
-                        test = match &args[index + 1] {
-                            Value::Symbol(name) => name.clone(),
-                            Value::BuiltinFunc(name) => name.clone(),
-                            other => {
-                                return Err(LispError::TypeError(
-                                    "symbol".into(),
-                                    other.type_name(),
-                                ));
-                            }
-                        };
-                    }
-                    ":size" => size = args[index + 1].clone(),
-                    ":rehash-size" => rehash_size = args[index + 1].clone(),
-                    ":rehash-threshold" => rehash_threshold = args[index + 1].clone(),
-                    ":weakness" => {
-                        weakness = match &args[index + 1] {
-                            Value::T => Value::Symbol("key-and-value".into()),
-                            other => other.clone(),
-                        };
-                    }
-                    ":purecopy" => {}
-                    _ => {
-                        return Err(LispError::Signal(format!(
-                            "Invalid hash table parameter: {key}"
-                        )));
-                    }
-                }
-                index += 2;
-            }
-            if !matches!(test.as_str(), "eq" | "eql" | "equal")
-                && hash_table_user_test_functions(interp, &test).is_none()
-            {
-                return Err(LispError::Signal("Invalid hash table test".into()));
-            }
-            let table = json::make_hash_table(interp, &test, Vec::new());
-            let Value::Record(id) = table.clone() else {
-                unreachable!("hash tables are represented as records")
-            };
-            let record = interp
-                .find_record_mut(id)
-                .expect("make_hash_table should create a record");
-            if record.slots.len() < 6 {
-                record.slots.resize(6, Value::Nil);
-            }
-            record.slots[2] = size;
-            record.slots[3] = rehash_size;
-            record.slots[4] = rehash_threshold;
-            record.slots[5] = weakness;
-            Ok(table)
-        }
-        "hash-table-p" => {
-            need_args(name, args, 1)?;
-            Ok(if json::is_hash_table(interp, &args[0]) {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "hash-table-contains-p" => {
-            need_args(name, args, 2)?;
-            if let Value::Record(id) = &args[1]
-                && let Some(value) = interp.equal_hash_lookup(*id, &args[0], env)
-            {
-                return Ok(if value.is_some() {
+            "obarrayp" => {
+                need_args(name, args, 1)?;
+                Ok(if is_obarray_like_value(interp, &args[0]) {
                     Value::T
                 } else {
                     Value::Nil
-                });
+                })
             }
-            let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[1].type_name(),
-                ));
-            };
-            for (existing_key, _) in entries {
-                if hash_table_key_matches(interp, &args[1], &test, &existing_key, &args[0], env)? {
-                    return Ok(Value::T);
-                }
+            "obarray-clear" => {
+                need_args(name, args, 1)?;
+                clear_obarray(interp, &args[0])
             }
-            Ok(Value::Nil)
-        }
-        "copy-hash-table" => {
-            need_args(name, args, 1)?;
-            let Value::Record(id) = args[0] else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[0].type_name(),
-                ));
-            };
-            let Some(record) = interp.find_record(id) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[0].type_name(),
-                ));
-            };
-            if record.type_name != "hash-table" {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[0].type_name(),
-                ));
+            "internal--obarray-buckets" => {
+                need_args(name, args, 1)?;
+                Ok(Value::list(
+                    obarray_symbols(interp, &args[0])?
+                        .into_iter()
+                        .map(|symbol| Value::list([symbol])),
+                ))
             }
-            interp.copy_record(id)
-        }
-        "gethash" => {
-            if args.len() < 2 || args.len() > 3 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            "define-hash-table-test" => {
+                need_args(name, args, 3)?;
+                let symbol = args[0].as_symbol()?;
+                let spec = Value::list([args[1].clone(), args[2].clone()]);
+                interp.put_symbol_property(symbol, "hash-table-test", spec.clone());
+                Ok(spec)
             }
-            let default = args.get(2).cloned().unwrap_or(Value::Nil);
-            if let Value::Record(id) = &args[1]
-                && let Some(value) = interp.equal_hash_lookup(*id, &args[0], env)
-            {
-                return Ok(value.unwrap_or(default));
-            }
-            let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[1].type_name(),
-                ));
-            };
-            for (existing_key, value) in entries {
-                if hash_table_key_matches(interp, &args[1], &test, &existing_key, &args[0], env)? {
-                    return Ok(value);
-                }
-            }
-            Ok(default)
-        }
-        "puthash" => {
-            need_args(name, args, 3)?;
-            if let Value::Record(id) = &args[2]
-                && interp.equal_hash_put(*id, args[0].clone(), args[1].clone(), env)
-            {
-                return Ok(args[1].clone());
-            }
-            let Some((test, mut entries)) = json::hash_table_entries(interp, &args[2]) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[2].type_name(),
-                ));
-            };
-            touch_hash_table_key(interp, &args[2], &test, &args[0], env)?;
-            let mut replaced = false;
-            for (existing_key, existing_value) in &mut entries {
-                if hash_table_key_matches(interp, &args[2], &test, existing_key, &args[0], env)? {
-                    *existing_value = args[1].clone();
-                    replaced = true;
-                    break;
-                }
-            }
-            if !replaced {
-                entries.push((args[0].clone(), args[1].clone()));
-            }
-            set_hash_table_entries(interp, &args[2], entries)?;
-            Ok(args[1].clone())
-        }
-        "maphash" => {
-            need_args(name, args, 2)?;
-            let Some((_, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[1].type_name(),
-                ));
-            };
-            for (key, value) in entries {
-                call_function_value(interp, &args[0], &[key, value], env)?;
-            }
-            Ok(Value::Nil)
-        }
-        "remhash" => {
-            need_args(name, args, 2)?;
-            if let Value::Record(id) = &args[1]
-                && interp.equal_hash_remove(*id, &args[0], env).is_some()
-            {
-                return Ok(Value::Nil);
-            }
-            let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[1].type_name(),
-                ));
-            };
-            let mut retained = Vec::new();
-            for (existing_key, value) in entries {
-                if !hash_table_key_matches(interp, &args[1], &test, &existing_key, &args[0], env)? {
-                    retained.push((existing_key, value));
-                }
-            }
-            set_hash_table_entries(interp, &args[1], retained)?;
-            Ok(Value::Nil)
-        }
-        "clrhash" => {
-            need_args(name, args, 1)?;
-            if json::hash_table_entries(interp, &args[0]).is_none() {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[0].type_name(),
-                ));
-            }
-            set_hash_table_entries(interp, &args[0], Vec::new())?;
-            Ok(args[0].clone())
-        }
-        "completion-table-case-fold" => {
-            // Native fallback mirroring GNU minibuffer.el's defun (the
-            // preloaded Lisp definition shadows this in full sessions).
-            need_arg_range(name, args, 1, 2)?;
-            let table = args[0].clone();
-            let dont_fold = args.get(1).is_some_and(|value| value.is_truthy());
-            let body = Value::list([
-                Value::Symbol("let".into()),
-                Value::list([Value::list([
-                    Value::Symbol("completion-ignore-case".into()),
-                    if dont_fold { Value::Nil } else { Value::T },
-                ])]),
-                Value::list([
-                    Value::Symbol("complete-with-action".into()),
-                    Value::Symbol("action".into()),
-                    Value::list([Value::Symbol("quote".into()), table]),
-                    Value::Symbol("string".into()),
-                    Value::Symbol("pred".into()),
-                ]),
-            ]);
-            Ok(Value::Lambda(
-                vec!["string".into(), "pred".into(), "action".into()],
-                vec![body].into(),
-                crate::lisp::types::shared_env(Vec::new()),
-            ))
-        }
-        "hash-table-count" => {
-            need_args(name, args, 1)?;
-            let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[0].type_name(),
-                ));
-            };
-            Ok(Value::Integer(entries.len() as i64))
-        }
-        "hash-table-rehash-size" => {
-            need_args(name, args, 1)?;
-            Ok(hash_table_metadata_slot(
-                interp,
-                &args[0],
-                3,
-                Value::Float(1.5),
-            )?)
-        }
-        "hash-table-rehash-threshold" => {
-            need_args(name, args, 1)?;
-            Ok(hash_table_metadata_slot(
-                interp,
-                &args[0],
-                4,
-                Value::Float(0.8125),
-            )?)
-        }
-        "hash-table-size" => {
-            need_args(name, args, 1)?;
-            let default_size = json::hash_table_entries(interp, &args[0])
-                .map(|(_, entries)| Value::Integer(entries.len().max(65) as i64))
-                .unwrap_or(Value::Integer(65));
-            Ok(hash_table_metadata_slot(interp, &args[0], 2, default_size)?)
-        }
-        "hash-table-test" => {
-            need_args(name, args, 1)?;
-            Ok(hash_table_metadata_slot(
-                interp,
-                &args[0],
-                0,
-                Value::Symbol("eql".into()),
-            )?)
-        }
-        "hash-table-weakness" => {
-            need_args(name, args, 1)?;
-            Ok(hash_table_metadata_slot(interp, &args[0], 5, Value::Nil)?)
-        }
-        "hash-table-keys" => {
-            need_args(name, args, 1)?;
-            let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[0].type_name(),
-                ));
-            };
-            Ok(Value::list(entries.into_iter().map(|(key, _)| key)))
-        }
-        "try-completion" => try_completion(interp, args, env),
-        "all-completions" => all_completions(interp, args, env),
-        "test-completion" => test_completion(interp, args, env),
-        "internal-complete-buffer" => internal_complete_buffer(interp, args, env),
-        "completion-metadata" => {
-            need_args(name, args, 3)?;
-            Ok(Value::list([Value::Symbol("metadata".into())]))
-        }
-        "completion-metadata-get" => {
-            need_args(name, args, 2)?;
-            let prop = args[1].as_symbol()?;
-            let items = args[0].to_vec().unwrap_or_default();
-            for item in &items {
-                let Some((key, value)) = item.cons_values() else {
-                    continue;
-                };
-                if key.as_symbol().ok() == Some(prop) {
-                    return Ok(value);
-                }
-            }
-            let keyword = format!(":{prop}");
-            let mut index = 0usize;
-            while index + 1 < items.len() {
-                if items[index].as_symbol().ok() == Some(keyword.as_str()) {
-                    return Ok(items[index + 1].clone());
-                }
-                index += 1;
-            }
-            let extra = interp
-                .lookup_var("completion-extra-properties", env)
-                .unwrap_or(Value::Nil);
-            let extra_items = extra.to_vec().unwrap_or_default();
-            let mut index = 0usize;
-            while index + 1 < extra_items.len() {
-                if extra_items[index].as_symbol().ok() == Some(keyword.as_str()) {
-                    return Ok(extra_items[index + 1].clone());
-                }
-                index += 1;
-            }
-            Ok(Value::Nil)
-        }
-        "completion-all-completions" => {
-            need_arg_range(name, args, 4, 5)?;
-            let string = string_text(&args[0])?;
-            let point = args[3].as_integer()?.max(0) as usize;
-            let before_point = string.chars().take(point).collect::<String>();
-            let completions = all_completions(
-                interp,
-                &[
-                    Value::String(before_point),
-                    args[1].clone(),
-                    args[2].clone(),
-                ],
-                env,
-            )?;
-            if completions.is_nil() {
-                return Ok(Value::Nil);
-            }
-            last_nconc_cell(&completions)?.set_cdr(Value::Integer(0))?;
-            Ok(completions)
-        }
-        "completion-at-point" => {
-            need_args(name, args, 0)?;
-            // GNU runs `completion-at-point-functions' and completes the
-            // region a matching capf returns; the dabbrev-style expansion
-            // below only serves buffers with no capf spec.
-            let capf_spec = super::call(
-                interp,
-                "run-hook-with-args-until-success",
-                &[Value::Symbol("completion-at-point-functions".into())],
-                env,
-            )?;
-            if let Ok(spec) = capf_spec.to_vec()
-                && spec.len() >= 3
-            {
-                let resolve = |interp: &Interpreter, value: &Value| -> Option<usize> {
-                    match value {
-                        Value::Integer(pos) if *pos >= 0 => Some(*pos as usize),
-                        Value::Marker(id) => interp.marker_position(*id),
-                        _ => None,
-                    }
-                };
-                if let (Some(beg), Some(end)) =
-                    (resolve(interp, &spec[0]), resolve(interp, &spec[1]))
-                {
-                    let table = spec[2].clone();
-                    let mut predicate = Value::Nil;
-                    let mut exit_function = Value::Nil;
-                    let mut cursor = 3;
-                    while cursor + 1 < spec.len() {
-                        match &spec[cursor] {
-                            Value::Symbol(key) if key == ":predicate" => {
-                                predicate = spec[cursor + 1].clone();
-                            }
-                            Value::Symbol(key) if key == ":exit-function" => {
-                                exit_function = spec[cursor + 1].clone();
-                            }
-                            _ => {}
-                        }
-                        cursor += 2;
-                    }
-                    let string = interp
-                        .buffer
-                        .buffer_substring(beg, end)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    let string_value = Value::String(string.clone());
-                    let call_exit = |interp: &mut Interpreter,
-                                     env: &mut Env,
-                                     text: &str,
-                                     status: &str|
-                     -> Result<(), LispError> {
-                        if !exit_function.is_nil() {
-                            call_function_value(
-                                interp,
-                                &exit_function,
-                                &[
-                                    Value::String(text.to_string()),
-                                    Value::Symbol(status.into()),
-                                ],
-                                env,
-                            )?;
-                        }
-                        Ok(())
-                    };
-                    let comp =
-                        try_completion_with_styles(interp, &string_value, &table, &predicate, env)?;
-                    match comp {
-                        Value::T => {
-                            call_exit(interp, env, &string, "finished")?;
-                            return Ok(Value::T);
-                        }
-                        ref comp if string_text(comp).is_ok() => {
-                            let comp_text = string_text(comp)?;
-                            if comp_text != string {
-                                delete_region_with_hooks(interp, beg, end, env)?;
-                                interp.buffer.goto_char(beg);
-                                insert_text_with_hooks(interp, &comp_text, &[], false, false, env)?;
-                            }
-                            let comp_value = Value::String(comp_text.clone());
-                            let exact = super::call(
-                                interp,
-                                "test-completion",
-                                &[comp_value.clone(), table.clone(), predicate.clone()],
-                                env,
-                            )?
-                            .is_truthy();
-                            if exact {
-                                let sole = matches!(
-                                    super::call(
-                                        interp,
-                                        "try-completion",
-                                        &[comp_value, table, predicate],
-                                        env,
-                                    )?,
-                                    Value::T
-                                );
-                                call_exit(
-                                    interp,
-                                    env,
-                                    &comp_text,
-                                    if sole { "finished" } else { "exact" },
-                                )?;
-                            } else if comp_text == string {
-                                // No progress: with `completion-auto-help'
-                                // disabled GNU only messages; otherwise it
-                                // lists the candidates in *Completions*.
-                                if interp
-                                    .lookup_var("completion-auto-help", env)
-                                    .is_some_and(|value| value.is_nil())
-                                {
-                                    let _ = call_function_value(
-                                        interp,
-                                        &Value::Symbol("minibuffer-message".into()),
-                                        &[Value::String("Next char not unique".into())],
-                                        env,
-                                    );
-                                    return Ok(Value::T);
+            "make-hash-table" => {
+                let mut test = "eql".to_string();
+                let mut size = Value::Integer(65);
+                let mut rehash_size = Value::Float(1.5);
+                let mut rehash_threshold = Value::Float(0.8125);
+                let mut weakness = Value::Nil;
+                let mut index = 0usize;
+                while index + 1 < args.len() {
+                    let key = args[index].as_symbol()?;
+                    match key {
+                        ":test" => {
+                            test = match &args[index + 1] {
+                                Value::Symbol(name) => name.clone(),
+                                Value::BuiltinFunc(name) => name.clone(),
+                                other => {
+                                    return Err(LispError::TypeError(
+                                        "symbol".into(),
+                                        other.type_name(),
+                                    ));
                                 }
-                                let mut candidates = super::call(
+                            };
+                        }
+                        ":size" => size = args[index + 1].clone(),
+                        ":rehash-size" => rehash_size = args[index + 1].clone(),
+                        ":rehash-threshold" => rehash_threshold = args[index + 1].clone(),
+                        ":weakness" => {
+                            weakness = match &args[index + 1] {
+                                Value::T => Value::Symbol("key-and-value".into()),
+                                other => other.clone(),
+                            };
+                        }
+                        ":purecopy" => {}
+                        _ => {
+                            return Err(LispError::Signal(format!(
+                                "Invalid hash table parameter: {key}"
+                            )));
+                        }
+                    }
+                    index += 2;
+                }
+                if !matches!(test.as_str(), "eq" | "eql" | "equal")
+                    && hash_table_user_test_functions(interp, &test).is_none()
+                {
+                    return Err(LispError::Signal("Invalid hash table test".into()));
+                }
+                let table = json::make_hash_table(interp, &test, Vec::new());
+                let Value::Record(id) = table.clone() else {
+                    unreachable!("hash tables are represented as records")
+                };
+                let record = interp
+                    .find_record_mut(id)
+                    .expect("make_hash_table should create a record");
+                if record.slots.len() < 6 {
+                    record.slots.resize(6, Value::Nil);
+                }
+                record.slots[2] = size;
+                record.slots[3] = rehash_size;
+                record.slots[4] = rehash_threshold;
+                record.slots[5] = weakness;
+                Ok(table)
+            }
+            "hash-table-p" => {
+                need_args(name, args, 1)?;
+                Ok(if json::is_hash_table(interp, &args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "hash-table-contains-p" => {
+                need_args(name, args, 2)?;
+                if let Value::Record(id) = &args[1]
+                    && let Some(value) = interp.equal_hash_lookup(*id, &args[0], env)
+                {
+                    return Ok(if value.is_some() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    });
+                }
+                let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[1].type_name(),
+                    ));
+                };
+                for (existing_key, _) in entries {
+                    if hash_table_key_matches(
+                        interp,
+                        &args[1],
+                        &test,
+                        &existing_key,
+                        &args[0],
+                        env,
+                    )? {
+                        return Ok(Value::T);
+                    }
+                }
+                Ok(Value::Nil)
+            }
+            "copy-hash-table" => {
+                need_args(name, args, 1)?;
+                let Value::Record(id) = args[0] else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                let Some(record) = interp.find_record(id) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                if record.type_name != "hash-table" {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[0].type_name(),
+                    ));
+                }
+                interp.copy_record(id)
+            }
+            "gethash" => {
+                if args.len() < 2 || args.len() > 3 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                let default = args.get(2).cloned().unwrap_or(Value::Nil);
+                if let Value::Record(id) = &args[1]
+                    && let Some(value) = interp.equal_hash_lookup(*id, &args[0], env)
+                {
+                    return Ok(value.unwrap_or(default));
+                }
+                let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[1].type_name(),
+                    ));
+                };
+                for (existing_key, value) in entries {
+                    if hash_table_key_matches(
+                        interp,
+                        &args[1],
+                        &test,
+                        &existing_key,
+                        &args[0],
+                        env,
+                    )? {
+                        return Ok(value);
+                    }
+                }
+                Ok(default)
+            }
+            "puthash" => {
+                need_args(name, args, 3)?;
+                if let Value::Record(id) = &args[2]
+                    && interp.equal_hash_put(*id, args[0].clone(), args[1].clone(), env)
+                {
+                    return Ok(args[1].clone());
+                }
+                let Some((test, mut entries)) = json::hash_table_entries(interp, &args[2]) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[2].type_name(),
+                    ));
+                };
+                touch_hash_table_key(interp, &args[2], &test, &args[0], env)?;
+                let mut replaced = false;
+                for (existing_key, existing_value) in &mut entries {
+                    if hash_table_key_matches(interp, &args[2], &test, existing_key, &args[0], env)?
+                    {
+                        *existing_value = args[1].clone();
+                        replaced = true;
+                        break;
+                    }
+                }
+                if !replaced {
+                    entries.push((args[0].clone(), args[1].clone()));
+                }
+                set_hash_table_entries(interp, &args[2], entries)?;
+                Ok(args[1].clone())
+            }
+            "maphash" => {
+                need_args(name, args, 2)?;
+                let Some((_, entries)) = json::hash_table_entries(interp, &args[1]) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[1].type_name(),
+                    ));
+                };
+                for (key, value) in entries {
+                    call_function_value(interp, &args[0], &[key, value], env)?;
+                }
+                Ok(Value::Nil)
+            }
+            "remhash" => {
+                need_args(name, args, 2)?;
+                if let Value::Record(id) = &args[1]
+                    && interp.equal_hash_remove(*id, &args[0], env).is_some()
+                {
+                    return Ok(Value::Nil);
+                }
+                let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[1].type_name(),
+                    ));
+                };
+                let mut retained = Vec::new();
+                for (existing_key, value) in entries {
+                    if !hash_table_key_matches(
+                        interp,
+                        &args[1],
+                        &test,
+                        &existing_key,
+                        &args[0],
+                        env,
+                    )? {
+                        retained.push((existing_key, value));
+                    }
+                }
+                set_hash_table_entries(interp, &args[1], retained)?;
+                Ok(Value::Nil)
+            }
+            "clrhash" => {
+                need_args(name, args, 1)?;
+                if json::hash_table_entries(interp, &args[0]).is_none() {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[0].type_name(),
+                    ));
+                }
+                set_hash_table_entries(interp, &args[0], Vec::new())?;
+                Ok(args[0].clone())
+            }
+            "completion-table-case-fold" => {
+                // Native fallback mirroring GNU minibuffer.el's defun (the
+                // preloaded Lisp definition shadows this in full sessions).
+                need_arg_range(name, args, 1, 2)?;
+                let table = args[0].clone();
+                let dont_fold = args.get(1).is_some_and(|value| value.is_truthy());
+                let body = Value::list([
+                    Value::Symbol("let".into()),
+                    Value::list([Value::list([
+                        Value::Symbol("completion-ignore-case".into()),
+                        if dont_fold { Value::Nil } else { Value::T },
+                    ])]),
+                    Value::list([
+                        Value::Symbol("complete-with-action".into()),
+                        Value::Symbol("action".into()),
+                        Value::list([Value::Symbol("quote".into()), table]),
+                        Value::Symbol("string".into()),
+                        Value::Symbol("pred".into()),
+                    ]),
+                ]);
+                Ok(Value::Lambda(
+                    vec!["string".into(), "pred".into(), "action".into()],
+                    vec![body].into(),
+                    crate::lisp::types::shared_env(Vec::new()),
+                ))
+            }
+            "hash-table-count" => {
+                need_args(name, args, 1)?;
+                let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                Ok(Value::Integer(entries.len() as i64))
+            }
+            "hash-table-rehash-size" => {
+                need_args(name, args, 1)?;
+                Ok(hash_table_metadata_slot(
+                    interp,
+                    &args[0],
+                    3,
+                    Value::Float(1.5),
+                )?)
+            }
+            "hash-table-rehash-threshold" => {
+                need_args(name, args, 1)?;
+                Ok(hash_table_metadata_slot(
+                    interp,
+                    &args[0],
+                    4,
+                    Value::Float(0.8125),
+                )?)
+            }
+            "hash-table-size" => {
+                need_args(name, args, 1)?;
+                let default_size = json::hash_table_entries(interp, &args[0])
+                    .map(|(_, entries)| Value::Integer(entries.len().max(65) as i64))
+                    .unwrap_or(Value::Integer(65));
+                Ok(hash_table_metadata_slot(interp, &args[0], 2, default_size)?)
+            }
+            "hash-table-test" => {
+                need_args(name, args, 1)?;
+                Ok(hash_table_metadata_slot(
+                    interp,
+                    &args[0],
+                    0,
+                    Value::Symbol("eql".into()),
+                )?)
+            }
+            "hash-table-weakness" => {
+                need_args(name, args, 1)?;
+                Ok(hash_table_metadata_slot(interp, &args[0], 5, Value::Nil)?)
+            }
+            "hash-table-keys" => {
+                need_args(name, args, 1)?;
+                let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                Ok(Value::list(entries.into_iter().map(|(key, _)| key)))
+            }
+            "try-completion" => try_completion(interp, args, env),
+            "all-completions" => all_completions(interp, args, env),
+            "test-completion" => test_completion(interp, args, env),
+            "internal-complete-buffer" => internal_complete_buffer(interp, args, env),
+            "completion-metadata" => {
+                need_args(name, args, 3)?;
+                Ok(Value::list([Value::Symbol("metadata".into())]))
+            }
+            "completion-metadata-get" => {
+                need_args(name, args, 2)?;
+                let prop = args[1].as_symbol()?;
+                let items = args[0].to_vec().unwrap_or_default();
+                for item in &items {
+                    let Some((key, value)) = item.cons_values() else {
+                        continue;
+                    };
+                    if key.as_symbol().ok() == Some(prop) {
+                        return Ok(value);
+                    }
+                }
+                let keyword = format!(":{prop}");
+                let mut index = 0usize;
+                while index + 1 < items.len() {
+                    if items[index].as_symbol().ok() == Some(keyword.as_str()) {
+                        return Ok(items[index + 1].clone());
+                    }
+                    index += 1;
+                }
+                let extra = interp
+                    .lookup_var("completion-extra-properties", env)
+                    .unwrap_or(Value::Nil);
+                let extra_items = extra.to_vec().unwrap_or_default();
+                let mut index = 0usize;
+                while index + 1 < extra_items.len() {
+                    if extra_items[index].as_symbol().ok() == Some(keyword.as_str()) {
+                        return Ok(extra_items[index + 1].clone());
+                    }
+                    index += 1;
+                }
+                Ok(Value::Nil)
+            }
+            "completion-all-completions" => {
+                need_arg_range(name, args, 4, 5)?;
+                let string = string_text(&args[0])?;
+                let point = args[3].as_integer()?.max(0) as usize;
+                let before_point = string.chars().take(point).collect::<String>();
+                let completions = all_completions(
+                    interp,
+                    &[
+                        Value::String(before_point),
+                        args[1].clone(),
+                        args[2].clone(),
+                    ],
+                    env,
+                )?;
+                if completions.is_nil() {
+                    return Ok(Value::Nil);
+                }
+                last_nconc_cell(&completions)?.set_cdr(Value::Integer(0))?;
+                Ok(completions)
+            }
+            "completion-at-point" => {
+                need_args(name, args, 0)?;
+                // GNU runs `completion-at-point-functions' and completes the
+                // region a matching capf returns; the dabbrev-style expansion
+                // below only serves buffers with no capf spec.
+                let capf_spec = super::call(
+                    interp,
+                    "run-hook-with-args-until-success",
+                    &[Value::Symbol("completion-at-point-functions".into())],
+                    env,
+                )?;
+                if let Ok(spec) = capf_spec.to_vec()
+                    && spec.len() >= 3
+                {
+                    let resolve = |interp: &Interpreter, value: &Value| -> Option<usize> {
+                        match value {
+                            Value::Integer(pos) if *pos >= 0 => Some(*pos as usize),
+                            Value::Marker(id) => interp.marker_position(*id),
+                            _ => None,
+                        }
+                    };
+                    if let (Some(beg), Some(end)) =
+                        (resolve(interp, &spec[0]), resolve(interp, &spec[1]))
+                    {
+                        let table = spec[2].clone();
+                        let mut predicate = Value::Nil;
+                        let mut exit_function = Value::Nil;
+                        let mut cursor = 3;
+                        while cursor + 1 < spec.len() {
+                            match &spec[cursor] {
+                                Value::Symbol(key) if key == ":predicate" => {
+                                    predicate = spec[cursor + 1].clone();
+                                }
+                                Value::Symbol(key) if key == ":exit-function" => {
+                                    exit_function = spec[cursor + 1].clone();
+                                }
+                                _ => {}
+                            }
+                            cursor += 2;
+                        }
+                        let string = interp
+                            .buffer
+                            .buffer_substring(beg, end)
+                            .map_err(|error| LispError::Signal(error.to_string()))?;
+                        let string_value = Value::String(string.clone());
+                        let call_exit = |interp: &mut Interpreter,
+                                         env: &mut Env,
+                                         text: &str,
+                                         status: &str|
+                         -> Result<(), LispError> {
+                            if !exit_function.is_nil() {
+                                call_function_value(
                                     interp,
-                                    "all-completions",
-                                    &[string_value, table, predicate],
+                                    &exit_function,
+                                    &[
+                                        Value::String(text.to_string()),
+                                        Value::Symbol(status.into()),
+                                    ],
+                                    env,
+                                )?;
+                            }
+                            Ok(())
+                        };
+                        let comp = try_completion_with_styles(
+                            interp,
+                            &string_value,
+                            &table,
+                            &predicate,
+                            env,
+                        )?;
+                        match comp {
+                            Value::T => {
+                                call_exit(interp, env, &string, "finished")?;
+                                return Ok(Value::T);
+                            }
+                            ref comp if string_text(comp).is_ok() => {
+                                let comp_text = string_text(comp)?;
+                                if comp_text != string {
+                                    delete_region_with_hooks(interp, beg, end, env)?;
+                                    interp.buffer.goto_char(beg);
+                                    insert_text_with_hooks(
+                                        interp,
+                                        &comp_text,
+                                        &[],
+                                        false,
+                                        false,
+                                        env,
+                                    )?;
+                                }
+                                let comp_value = Value::String(comp_text.clone());
+                                let exact = super::call(
+                                    interp,
+                                    "test-completion",
+                                    &[comp_value.clone(), table.clone(), predicate.clone()],
                                     env,
                                 )?
-                                .to_vec()
-                                .unwrap_or_default()
-                                .iter()
-                                .filter_map(|item| string_text(item).ok())
-                                .collect::<Vec<_>>();
-                                candidates.sort();
-                                let content = format!(
-                                    "Possible completions are:\n{}\n",
-                                    candidates.join("\n")
-                                );
-                                let buffer = super::call(
-                                    interp,
-                                    "get-buffer-create",
-                                    &[Value::String("*Completions*".into())],
-                                    env,
-                                )?;
-                                let completions_id = interp.resolve_buffer_id(&buffer)?;
-                                let saved_id = interp.current_buffer_id();
-                                interp.switch_to_buffer_id(completions_id)?;
-                                let (min, max) =
-                                    (interp.buffer.point_min(), interp.buffer.point_max());
-                                if max > min {
-                                    interp
-                                        .delete_region_current_buffer(min, max)
-                                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                                .is_truthy();
+                                if exact {
+                                    let sole = matches!(
+                                        super::call(
+                                            interp,
+                                            "try-completion",
+                                            &[comp_value, table, predicate],
+                                            env,
+                                        )?,
+                                        Value::T
+                                    );
+                                    call_exit(
+                                        interp,
+                                        env,
+                                        &comp_text,
+                                        if sole { "finished" } else { "exact" },
+                                    )?;
+                                } else if comp_text == string {
+                                    // No progress: with `completion-auto-help'
+                                    // disabled GNU only messages; otherwise it
+                                    // lists the candidates in *Completions*.
+                                    if interp
+                                        .lookup_var("completion-auto-help", env)
+                                        .is_some_and(|value| value.is_nil())
+                                    {
+                                        let _ = call_function_value(
+                                            interp,
+                                            &Value::Symbol("minibuffer-message".into()),
+                                            &[Value::String("Next char not unique".into())],
+                                            env,
+                                        );
+                                        return Ok(Value::T);
+                                    }
+                                    let mut candidates = super::call(
+                                        interp,
+                                        "all-completions",
+                                        &[string_value, table, predicate],
+                                        env,
+                                    )?
+                                    .to_vec()
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .filter_map(|item| string_text(item).ok())
+                                    .collect::<Vec<_>>();
+                                    candidates.sort();
+                                    let content = format!(
+                                        "Possible completions are:\n{}\n",
+                                        candidates.join("\n")
+                                    );
+                                    let buffer = super::call(
+                                        interp,
+                                        "get-buffer-create",
+                                        &[Value::String("*Completions*".into())],
+                                        env,
+                                    )?;
+                                    let completions_id = interp.resolve_buffer_id(&buffer)?;
+                                    let saved_id = interp.current_buffer_id();
+                                    interp.switch_to_buffer_id(completions_id)?;
+                                    let (min, max) =
+                                        (interp.buffer.point_min(), interp.buffer.point_max());
+                                    if max > min {
+                                        interp.delete_region_current_buffer(min, max).map_err(
+                                            |error| LispError::Signal(error.to_string()),
+                                        )?;
+                                    }
+                                    interp.insert_current_buffer(&content);
+                                    interp.switch_to_buffer_id(saved_id)?;
+                                    let _ = super::call(
+                                        interp,
+                                        "display-buffer",
+                                        std::slice::from_ref(&buffer),
+                                        env,
+                                    )?;
                                 }
-                                interp.insert_current_buffer(&content);
-                                interp.switch_to_buffer_id(saved_id)?;
-                                let _ = super::call(
-                                    interp,
-                                    "display-buffer",
-                                    std::slice::from_ref(&buffer),
-                                    env,
-                                )?;
+                                return Ok(Value::T);
                             }
-                            return Ok(Value::T);
-                        }
-                        _ => {
-                            let _ = call_function_value(
-                                interp,
-                                &Value::Symbol("minibuffer-message".into()),
-                                &[Value::String("No match".into())],
-                                env,
-                            );
-                            return Ok(Value::Nil);
+                            _ => {
+                                let _ = call_function_value(
+                                    interp,
+                                    &Value::Symbol("minibuffer-message".into()),
+                                    &[Value::String("No match".into())],
+                                    env,
+                                );
+                                return Ok(Value::Nil);
+                            }
                         }
                     }
                 }
-            }
-            if let Some(completion) = dabbrev_completion_at_point(interp, env)? {
-                let (start, end, expansion) = completion;
-                delete_region_with_hooks(interp, start, end, env)?;
-                interp.buffer.goto_char(start);
-                insert_text_with_hooks(interp, &expansion, &[], false, false, env)?;
-                return Ok(Value::T);
-            }
-            if interp
-                .lookup_var("completion-auto-help", env)
-                .is_none_or(|value| value.is_nil())
-            {
-                let _ = call_function_value(
-                    interp,
-                    &Value::Symbol("minibuffer-message".into()),
-                    &[Value::String("Next char not unique".into())],
-                    env,
-                );
-            }
-            Ok(Value::Nil)
-        }
-        "minibuffer--sort-by-length-alpha" => {
-            need_args(name, args, 1)?;
-            let mut items = args[0].to_vec()?;
-            items.sort_by(|left, right| {
-                let left_text = string_text(left).unwrap_or_default();
-                let right_text = string_text(right).unwrap_or_default();
-                left_text
-                    .chars()
-                    .count()
-                    .cmp(&right_text.chars().count())
-                    .then_with(|| left_text.cmp(&right_text))
-            });
-            Ok(Value::list(items))
-        }
-        "minibuffer-sort-alphabetically" => {
-            need_args(name, args, 1)?;
-            let mut items = args[0].to_vec()?;
-            items.sort_by(|left, right| {
-                string_text(left)
-                    .unwrap_or_default()
-                    .cmp(&string_text(right).unwrap_or_default())
-            });
-            Ok(Value::list(items))
-        }
-        "map-pairs" => {
-            need_args(name, args, 1)?;
-            let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[0].type_name(),
-                ));
-            };
-            Ok(Value::list(
-                entries
-                    .into_iter()
-                    .map(|(key, value)| Value::cons(key, value)),
-            ))
-        }
-        "internal--hash-table-index-size" => {
-            need_args(name, args, 1)?;
-            let default_size = json::hash_table_entries(interp, &args[0])
-                .map(|(_, entries)| Value::Integer(entries.len().max(65) as i64))
-                .unwrap_or(Value::Integer(65));
-            Ok(hash_table_metadata_slot(interp, &args[0], 2, default_size)?)
-        }
-        "internal--hash-table-histogram" => {
-            need_args(name, args, 1)?;
-            if json::hash_table_entries(interp, &args[0]).is_none() {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[0].type_name(),
-                ));
-            }
-            Ok(Value::Nil)
-        }
-        "internal--hash-table-buckets" => {
-            need_args(name, args, 1)?;
-            let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                return Err(LispError::TypeError(
-                    "hash-table".into(),
-                    args[0].type_name(),
-                ));
-            };
-            Ok(Value::list(entries.into_iter().map(|(key, value)| {
-                Value::list([Value::cons(key, value)])
-            })))
-        }
-        "profiler-memory-running-p" => Ok(if interp.profiler_memory_running {
-            Value::T
-        } else {
-            Value::Nil
-        }),
-        "profiler-memory-start" => {
-            if interp.profiler_memory_running {
-                return Err(LispError::Signal("Memory profiler already running".into()));
-            }
-            interp.profiler_memory_running = true;
-            interp.profiler_memory_log_pending = true;
-            Ok(Value::Nil)
-        }
-        "profiler-memory-stop" => {
-            let was_running = interp.profiler_memory_running;
-            interp.profiler_memory_running = false;
-            Ok(if was_running { Value::T } else { Value::Nil })
-        }
-        "profiler-memory-log" => {
-            if interp.profiler_memory_running || interp.profiler_memory_log_pending {
-                if !interp.profiler_memory_running {
-                    interp.profiler_memory_log_pending = false;
+                if let Some(completion) = dabbrev_completion_at_point(interp, env)? {
+                    let (start, end, expansion) = completion;
+                    delete_region_with_hooks(interp, start, end, env)?;
+                    interp.buffer.goto_char(start);
+                    insert_text_with_hooks(interp, &expansion, &[], false, false, env)?;
+                    return Ok(Value::T);
                 }
-                Ok(Value::String("#<hash-table>".into()))
-            } else {
+                if interp
+                    .lookup_var("completion-auto-help", env)
+                    .is_none_or(|value| value.is_nil())
+                {
+                    let _ = call_function_value(
+                        interp,
+                        &Value::Symbol("minibuffer-message".into()),
+                        &[Value::String("Next char not unique".into())],
+                        env,
+                    );
+                }
                 Ok(Value::Nil)
             }
-        }
-        "profiler-cpu-running-p" => Ok(if interp.profiler_cpu_running {
-            Value::T
-        } else {
-            Value::Nil
-        }),
-        "profiler-cpu-start" => {
-            if interp.profiler_cpu_running {
-                return Err(LispError::Signal("CPU profiler already running".into()));
+            "minibuffer--sort-by-length-alpha" => {
+                need_args(name, args, 1)?;
+                let mut items = args[0].to_vec()?;
+                items.sort_by(|left, right| {
+                    let left_text = string_text(left).unwrap_or_default();
+                    let right_text = string_text(right).unwrap_or_default();
+                    left_text
+                        .chars()
+                        .count()
+                        .cmp(&right_text.chars().count())
+                        .then_with(|| left_text.cmp(&right_text))
+                });
+                Ok(Value::list(items))
             }
-            interp.profiler_cpu_running = true;
-            interp.profiler_cpu_log_pending = true;
-            if let Some(interval) = args.first() {
-                interp.set_variable(
-                    "profiler-sampling-interval",
-                    interval.clone(),
-                    &mut Vec::new(),
-                );
+            "minibuffer-sort-alphabetically" => {
+                need_args(name, args, 1)?;
+                let mut items = args[0].to_vec()?;
+                items.sort_by(|left, right| {
+                    string_text(left)
+                        .unwrap_or_default()
+                        .cmp(&string_text(right).unwrap_or_default())
+                });
+                Ok(Value::list(items))
             }
-            Ok(Value::Nil)
-        }
-        "profiler-cpu-stop" => {
-            let was_running = interp.profiler_cpu_running;
-            interp.profiler_cpu_running = false;
-            Ok(if was_running { Value::T } else { Value::Nil })
-        }
-        "profiler-cpu-log" => {
-            if interp.profiler_cpu_running || interp.profiler_cpu_log_pending {
-                if !interp.profiler_cpu_running {
-                    interp.profiler_cpu_log_pending = false;
+            "map-pairs" => {
+                need_args(name, args, 1)?;
+                let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                Ok(Value::list(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| Value::cons(key, value)),
+                ))
+            }
+            "internal--hash-table-index-size" => {
+                need_args(name, args, 1)?;
+                let default_size = json::hash_table_entries(interp, &args[0])
+                    .map(|(_, entries)| Value::Integer(entries.len().max(65) as i64))
+                    .unwrap_or(Value::Integer(65));
+                Ok(hash_table_metadata_slot(interp, &args[0], 2, default_size)?)
+            }
+            "internal--hash-table-histogram" => {
+                need_args(name, args, 1)?;
+                if json::hash_table_entries(interp, &args[0]).is_none() {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[0].type_name(),
+                    ));
                 }
-                Ok(Value::String("#<hash-table>".into()))
-            } else {
                 Ok(Value::Nil)
             }
-        }
-        "byte-compile-check-lambda-list" => {
-            need_args(name, args, 1)?;
-            validate_lambda_params(&args[0])?;
-            Ok(Value::Nil)
-        }
-        "byte-compile" => {
-            need_args(name, args, 1)?;
-            let (compile_target, suppressions) = byte_compile_target_and_suppressions(&args[0]);
-            let compile_target = byte_compile_function_quoted_lambda_target(compile_target);
-            // GNU oclosure.el's cconv integration errors when compiled code
-            // setqs an oclosure slot not declared :mutable.
-            check_oclosure_slot_mutation(interp, &compile_target)?;
-            byte_compile_emit_warnings(interp, &compile_target, &suppressions, env)?;
-            if let Ok(symbol) = compile_target.as_symbol() {
-                let callable = resolve_callable(interp, &compile_target, env)?;
-                let slots = byte_code_function_slots(interp, Some(symbol), callable, None, false);
-                return Ok(interp.create_record("byte-code-function", slots));
+            "internal--hash-table-buckets" => {
+                need_args(name, args, 1)?;
+                let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                    return Err(LispError::TypeError(
+                        "hash-table".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                Ok(Value::list(entries.into_iter().map(|(key, value)| {
+                    Value::list([Value::cons(key, value)])
+                })))
             }
-            if is_lambda_value(&compile_target) {
-                validate_lambda_form(&compile_target)?;
-                let lap = byte_code_decompile_lap(interp, &compile_target);
-                let capture_lexical = byte_compile_capture_lexical(interp, env);
-                let callable =
-                    byte_compile_lambda_callable(interp, env, &compile_target, capture_lexical)?;
-                let slots = byte_code_function_slots(interp, None, callable, lap, !capture_lexical);
-                return Ok(interp.create_record("byte-code-function", slots));
-            }
-            if matches!(compile_target, Value::Lambda(_, _, _)) {
-                let slots =
-                    byte_code_function_slots(interp, None, compile_target.clone(), None, false);
-                return Ok(interp.create_record("byte-code-function", slots));
-            }
-            Ok(compile_target)
-        }
-        "byte-compile-from-buffer" => byte_compile_from_buffer(interp, args, env),
-        "byte-compile-file" => byte_compile_file(interp, args, env),
-        "byte-compile--wide-docstring-p" => {
-            need_args(name, args, 2)?;
-            let docstring = string_text(&args[0])?;
-            let max_width = args[1].as_integer()? as usize;
-            Ok(if byte_compile_wide_docstring_p(&docstring, max_width) {
+            "profiler-memory-running-p" => Ok(if interp.profiler_memory_running {
                 Value::T
             } else {
                 Value::Nil
-            })
-        }
-        "byte-decompile-bytecode" => {
-            need_args(name, args, 2)?;
-            if args[0].is_list() {
-                Ok(args[0].clone())
-            } else {
+            }),
+            "profiler-memory-start" => {
+                if interp.profiler_memory_running {
+                    return Err(LispError::Signal("Memory profiler already running".into()));
+                }
+                interp.profiler_memory_running = true;
+                interp.profiler_memory_log_pending = true;
                 Ok(Value::Nil)
             }
-        }
-        "funcall-with-delayed-message" => {
-            need_args(name, args, 3)?;
-            let timeout = numeric_to_f64(interp, &args[0])?;
-            let delayed = string_text(&args[1])?;
-            let callback = resolve_callable(interp, &args[2], env)?;
-            let buffer_id = interp
-                .find_buffer("*Messages*")
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| interp.create_buffer("*Messages*").0);
-            let before = interp
-                .get_buffer_by_id(buffer_id)
-                .map(|buffer| buffer.buffer_string())
-                .unwrap_or_default();
-            let start = Instant::now();
-            let result = interp.call_function_value(callback, None, &[], env)?;
-            let elapsed = start.elapsed().as_secs_f64();
-            if elapsed >= timeout
-                && let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id)
-            {
-                let current = buffer.buffer_string();
-                let suffix = current
-                    .strip_prefix(&before)
-                    .map(str::to_string)
-                    .unwrap_or(current);
-                let rewritten = if suffix.is_empty() {
-                    format!("{delayed}\n")
-                } else {
-                    format!("{delayed}\n{suffix}")
-                };
-                let end = buffer.point_max();
-                let _ = buffer.delete_region(1, end);
-                buffer.goto_char(1);
-                buffer.insert(&(before + &rewritten));
+            "profiler-memory-stop" => {
+                let was_running = interp.profiler_memory_running;
+                interp.profiler_memory_running = false;
+                Ok(if was_running { Value::T } else { Value::Nil })
             }
-            Ok(result)
-        }
-        "advice--cd*r" => {
-            need_args(name, args, 1)?;
-            Ok(args[0].clone())
-        }
-        "handler-bind-1" => {
-            if args.len() != 3 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            let thunk = resolve_callable(interp, &args[0], env)?;
-            let condition = args[1].as_symbol()?.to_string();
-            let handler = resolve_callable(interp, &args[2], env)?;
-            match interp.call_function_value(thunk, None, &[], env) {
-                Ok(value) => Ok(value),
-                Err(error) => {
-                    let error_type = error.condition_type();
-                    if condition != "error" && condition != error_type {
-                        return Err(error);
+            "profiler-memory-log" => {
+                if interp.profiler_memory_running || interp.profiler_memory_log_pending {
+                    if !interp.profiler_memory_running {
+                        interp.profiler_memory_log_pending = false;
                     }
-                    let error_value = error_condition_value(&error);
-                    let _ = interp.call_function_value(
-                        handler,
-                        None,
-                        std::slice::from_ref(&error_value),
-                        env,
-                    )?;
-                    Err(LispError::SignalValue(error_value))
+                    Ok(Value::String("#<hash-table>".into()))
+                } else {
+                    Ok(Value::Nil)
                 }
             }
-        }
-        "debugger-trap" => Ok(Value::Nil),
-        "mapbacktrace" => {
-            need_arg_range(name, args, 1, 2)?;
-            let callback = resolve_callable(interp, &args[0], env)?;
-            let base = args.get(1).filter(|value| !value.is_nil());
-            let frames = interp.backtrace_frames_snapshot();
-            let start = base
-                .and_then(|base| {
-                    frames
-                        .iter()
-                        .position(|(_, function, _, _)| function == base)
+            "profiler-cpu-running-p" => Ok(if interp.profiler_cpu_running {
+                Value::T
+            } else {
+                Value::Nil
+            }),
+            "profiler-cpu-start" => {
+                if interp.profiler_cpu_running {
+                    return Err(LispError::Signal("CPU profiler already running".into()));
+                }
+                interp.profiler_cpu_running = true;
+                interp.profiler_cpu_log_pending = true;
+                if let Some(interval) = args.first() {
+                    interp.set_variable(
+                        "profiler-sampling-interval",
+                        interval.clone(),
+                        &mut Vec::new(),
+                    );
+                }
+                Ok(Value::Nil)
+            }
+            "profiler-cpu-stop" => {
+                let was_running = interp.profiler_cpu_running;
+                interp.profiler_cpu_running = false;
+                Ok(if was_running { Value::T } else { Value::Nil })
+            }
+            "profiler-cpu-log" => {
+                if interp.profiler_cpu_running || interp.profiler_cpu_log_pending {
+                    if !interp.profiler_cpu_running {
+                        interp.profiler_cpu_log_pending = false;
+                    }
+                    Ok(Value::String("#<hash-table>".into()))
+                } else {
+                    Ok(Value::Nil)
+                }
+            }
+            "byte-compile-check-lambda-list" => {
+                need_args(name, args, 1)?;
+                validate_lambda_params(&args[0])?;
+                Ok(Value::Nil)
+            }
+            "byte-compile" => {
+                need_args(name, args, 1)?;
+                let (compile_target, suppressions) = byte_compile_target_and_suppressions(&args[0]);
+                let compile_target = byte_compile_function_quoted_lambda_target(compile_target);
+                // GNU oclosure.el's cconv integration errors when compiled code
+                // setqs an oclosure slot not declared :mutable.
+                check_oclosure_slot_mutation(interp, &compile_target)?;
+                byte_compile_emit_warnings(interp, &compile_target, &suppressions, env)?;
+                if let Ok(symbol) = compile_target.as_symbol() {
+                    let callable = resolve_callable(interp, &compile_target, env)?;
+                    let slots =
+                        byte_code_function_slots(interp, Some(symbol), callable, None, false);
+                    return Ok(interp.create_record("byte-code-function", slots));
+                }
+                if is_lambda_value(&compile_target) {
+                    validate_lambda_form(&compile_target)?;
+                    let lap = byte_code_decompile_lap(interp, &compile_target);
+                    let capture_lexical = byte_compile_capture_lexical(interp, env);
+                    let callable = byte_compile_lambda_callable(
+                        interp,
+                        env,
+                        &compile_target,
+                        capture_lexical,
+                    )?;
+                    let slots =
+                        byte_code_function_slots(interp, None, callable, lap, !capture_lexical);
+                    return Ok(interp.create_record("byte-code-function", slots));
+                }
+                if matches!(compile_target, Value::Lambda(_, _, _)) {
+                    let slots =
+                        byte_code_function_slots(interp, None, compile_target.clone(), None, false);
+                    return Ok(interp.create_record("byte-code-function", slots));
+                }
+                Ok(compile_target)
+            }
+            "byte-compile-from-buffer" => byte_compile_from_buffer(interp, args, env),
+            "byte-compile-file" => byte_compile_file(interp, args, env),
+            "byte-compile--wide-docstring-p" => {
+                need_args(name, args, 2)?;
+                let docstring = string_text(&args[0])?;
+                let max_width = args[1].as_integer()? as usize;
+                Ok(if byte_compile_wide_docstring_p(&docstring, max_width) {
+                    Value::T
+                } else {
+                    Value::Nil
                 })
-                .unwrap_or(0);
-            for (evald, function, frame_args, debug_on_exit) in frames.into_iter().skip(start) {
+            }
+            "byte-decompile-bytecode" => {
+                need_args(name, args, 2)?;
+                if args[0].is_list() {
+                    Ok(args[0].clone())
+                } else {
+                    Ok(Value::Nil)
+                }
+            }
+            "funcall-with-delayed-message" => {
+                need_args(name, args, 3)?;
+                let timeout = numeric_to_f64(interp, &args[0])?;
+                let delayed = string_text(&args[1])?;
+                let callback = resolve_callable(interp, &args[2], env)?;
+                let buffer_id = interp
+                    .find_buffer("*Messages*")
+                    .map(|(id, _)| id)
+                    .unwrap_or_else(|| interp.create_buffer("*Messages*").0);
+                let before = interp
+                    .get_buffer_by_id(buffer_id)
+                    .map(|buffer| buffer.buffer_string())
+                    .unwrap_or_default();
+                let start = Instant::now();
+                let result = interp.call_function_value(callback, None, &[], env)?;
+                let elapsed = start.elapsed().as_secs_f64();
+                if elapsed >= timeout
+                    && let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id)
+                {
+                    let current = buffer.buffer_string();
+                    let suffix = current
+                        .strip_prefix(&before)
+                        .map(str::to_string)
+                        .unwrap_or(current);
+                    let rewritten = if suffix.is_empty() {
+                        format!("{delayed}\n")
+                    } else {
+                        format!("{delayed}\n{suffix}")
+                    };
+                    let end = buffer.point_max();
+                    let _ = buffer.delete_region(1, end);
+                    buffer.goto_char(1);
+                    buffer.insert(&(before + &rewritten));
+                }
+                Ok(result)
+            }
+            "advice--cd*r" => {
+                need_args(name, args, 1)?;
+                Ok(args[0].clone())
+            }
+            "handler-bind-1" => {
+                if args.len() != 3 {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                }
+                let thunk = resolve_callable(interp, &args[0], env)?;
+                let condition = args[1].as_symbol()?.to_string();
+                let handler = resolve_callable(interp, &args[2], env)?;
+                match interp.call_function_value(thunk, None, &[], env) {
+                    Ok(value) => Ok(value),
+                    Err(error) => {
+                        let error_type = error.condition_type();
+                        if condition != "error" && condition != error_type {
+                            return Err(error);
+                        }
+                        let error_value = error_condition_value(&error);
+                        let _ = interp.call_function_value(
+                            handler,
+                            None,
+                            std::slice::from_ref(&error_value),
+                            env,
+                        )?;
+                        Err(LispError::SignalValue(error_value))
+                    }
+                }
+            }
+            "debugger-trap" => Ok(Value::Nil),
+            "mapbacktrace" => {
+                need_arg_range(name, args, 1, 2)?;
+                let callback = resolve_callable(interp, &args[0], env)?;
+                let base = args.get(1).filter(|value| !value.is_nil());
+                let frames = interp.backtrace_frames_snapshot();
+                let start = base
+                    .and_then(|base| {
+                        frames
+                            .iter()
+                            .position(|(_, function, _, _)| function == base)
+                    })
+                    .unwrap_or(0);
+                for (evald, function, frame_args, debug_on_exit) in frames.into_iter().skip(start) {
+                    let flags = if debug_on_exit {
+                        Value::list([Value::Symbol(":debug-on-exit".into()), Value::T])
+                    } else {
+                        Value::Nil
+                    };
+                    let evald = if evald { Value::T } else { Value::Nil };
+                    interp.call_function_value(
+                        callback.clone(),
+                        None,
+                        &[evald, function, Value::list(frame_args), flags],
+                        env,
+                    )?;
+                }
+                Ok(Value::Nil)
+            }
+            "backtrace-frame--internal" => {
+                need_args(name, args, 3)?;
+                let callback = resolve_callable(interp, &args[0], env)?;
+                let mut frame_offset = args[1].as_integer()?;
+                if frame_offset < 0 {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("wrong-type-argument".into()),
+                        Value::Symbol("natnump".into()),
+                        args[1].clone(),
+                    ])));
+                }
+                let mut base = args[2].clone();
+                if let Value::Cons(offset, function) = &base {
+                    frame_offset += offset.borrow().as_integer()?;
+                    let function = function.borrow().clone();
+                    base = function;
+                }
+                if frame_offset < 0 {
+                    return Ok(Value::Nil);
+                }
+                let frames = interp.backtrace_frames_snapshot();
+                let start = if base.is_nil() {
+                    0
+                } else {
+                    let Some(index) = frames
+                        .iter()
+                        .position(|(_, function, _, _)| function == &base)
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    index
+                };
+                let Some((evald, function, frame_args, debug_on_exit)) =
+                    frames.into_iter().nth(start + frame_offset as usize)
+                else {
+                    return Ok(Value::Nil);
+                };
                 let flags = if debug_on_exit {
                     Value::list([Value::Symbol(":debug-on-exit".into()), Value::T])
                 } else {
@@ -2486,1028 +2282,1019 @@ pub(super) fn call(
                 };
                 let evald = if evald { Value::T } else { Value::Nil };
                 interp.call_function_value(
-                    callback.clone(),
+                    callback,
                     None,
                     &[evald, function, Value::list(frame_args), flags],
                     env,
-                )?;
+                )
             }
-            Ok(Value::Nil)
-        }
-        "backtrace-frame--internal" => {
-            need_args(name, args, 3)?;
-            let callback = resolve_callable(interp, &args[0], env)?;
-            let mut frame_offset = args[1].as_integer()?;
-            if frame_offset < 0 {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("wrong-type-argument".into()),
-                    Value::Symbol("natnump".into()),
-                    args[1].clone(),
-                ])));
+            "backtrace-debug" => {
+                need_arg_range(name, args, 2, 3)?;
+                interp.set_current_backtrace_debug(args[1].is_truthy());
+                Ok(Value::Nil)
             }
-            let mut base = args[2].clone();
-            if let Value::Cons(offset, function) = &base {
-                frame_offset += offset.borrow().as_integer()?;
-                let function = function.borrow().clone();
-                base = function;
+            "backtrace-eval" => {
+                need_arg_range(name, args, 2, 3)?;
+                let index = usize::try_from(args[1].as_integer()?).unwrap_or(0);
+                let base = args.get(2).filter(|value| !value.is_nil());
+                let context = interp.backtrace_frame_context_env(index, base);
+                let shared_context = shared_env(context);
+                // Treat the suspended frames as captured lexical cells while the
+                // expression runs.  `setq' then records changes by frame
+                // identity, and the resumed activation observes them.
+                interp.register_captured_lexical_frames(&shared_context);
+                interp.eval(&args[0], &mut shared_context.borrow_mut())
             }
-            if frame_offset < 0 {
-                return Ok(Value::Nil);
+            "backtrace--locals" => {
+                need_args(name, args, 2)?;
+                let raw_index = args[0].as_integer()?;
+                if raw_index < 0 {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("wrong-type-argument".into()),
+                        Value::Symbol("natnump".into()),
+                        args[0].clone(),
+                    ])));
+                }
+                let index = raw_index as usize;
+                let base = args.get(1).filter(|value| !value.is_nil());
+                let locals = interp
+                    .backtrace_frame_locals_snapshot_with_base(index, base)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(name, value)| Value::cons(Value::Symbol(name), value))
+                    .collect::<Vec<_>>();
+                Ok(Value::list(locals))
             }
-            let frames = interp.backtrace_frames_snapshot();
-            let start = if base.is_nil() {
-                0
-            } else {
-                let Some(index) = frames
-                    .iter()
-                    .position(|(_, function, _, _)| function == &base)
-                else {
-                    return Ok(Value::Nil);
+            "backtrace-expand-ellipses" => {
+                need_arg_range(name, args, 0, 1)?;
+                let no_limit = args.first().is_some_and(Value::is_truthy);
+                reprint_current_backtrace_frame_for_expansion(interp, env, no_limit)
+            }
+            "current-thread" => Ok(interp.current_thread_value()),
+            "all-threads" => {
+                need_args(name, args, 0)?;
+                Ok(Value::list(interp.live_threads()))
+            }
+            "make-thread" => {
+                need_arg_range(name, args, 1, 3)?;
+                let thread_name = args.get(1).and_then(|value| {
+                    if value.is_nil() {
+                        None
+                    } else {
+                        string_like(value).map(|string| string.text)
+                    }
+                });
+                let disposition = match args.get(2) {
+                    None | Some(Value::Nil) => BufferDisposition::Default,
+                    Some(Value::T) => BufferDisposition::Preserve,
+                    Some(Value::Symbol(symbol)) if symbol == "silently" => {
+                        BufferDisposition::Silently
+                    }
+                    Some(other) => {
+                        return Err(LispError::TypeError(
+                            "thread-buffer-disposition".into(),
+                            other.type_name(),
+                        ));
+                    }
                 };
-                index
-            };
-            let Some((evald, function, frame_args, debug_on_exit)) =
-                frames.into_iter().nth(start + frame_offset as usize)
-            else {
-                return Ok(Value::Nil);
-            };
-            let flags = if debug_on_exit {
-                Value::list([Value::Symbol(":debug-on-exit".into()), Value::T])
-            } else {
-                Value::Nil
-            };
-            let evald = if evald { Value::T } else { Value::Nil };
-            interp.call_function_value(
-                callback,
-                None,
-                &[evald, function, Value::list(frame_args), flags],
-                env,
-            )
-        }
-        "backtrace-debug" => {
-            need_arg_range(name, args, 2, 3)?;
-            interp.set_current_backtrace_debug(args[1].is_truthy());
-            Ok(Value::Nil)
-        }
-        "backtrace-eval" => {
-            need_arg_range(name, args, 2, 3)?;
-            let index = usize::try_from(args[1].as_integer()?).unwrap_or(0);
-            let base = args.get(2).filter(|value| !value.is_nil());
-            let context = interp.backtrace_frame_context_env(index, base);
-            let shared_context = shared_env(context);
-            // Treat the suspended frames as captured lexical cells while the
-            // expression runs.  `setq' then records changes by frame
-            // identity, and the resumed activation observes them.
-            interp.register_captured_lexical_frames(&shared_context);
-            interp.eval(&args[0], &mut shared_context.borrow_mut())
-        }
-        "backtrace--locals" => {
-            need_args(name, args, 2)?;
-            let raw_index = args[0].as_integer()?;
-            if raw_index < 0 {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("wrong-type-argument".into()),
-                    Value::Symbol("natnump".into()),
-                    args[0].clone(),
-                ])));
+                interp.make_thread(args[0].clone(), thread_name, disposition)
             }
-            let index = raw_index as usize;
-            let base = args.get(1).filter(|value| !value.is_nil());
-            let locals = interp
-                .backtrace_frame_locals_snapshot_with_base(index, base)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(name, value)| Value::cons(Value::Symbol(name), value))
-                .collect::<Vec<_>>();
-            Ok(Value::list(locals))
-        }
-        "backtrace-expand-ellipses" => {
-            need_arg_range(name, args, 0, 1)?;
-            let no_limit = args.first().is_some_and(Value::is_truthy);
-            reprint_current_backtrace_frame_for_expansion(interp, env, no_limit)
-        }
-        "current-thread" => Ok(interp.current_thread_value()),
-        "all-threads" => {
-            need_args(name, args, 0)?;
-            Ok(Value::list(interp.live_threads()))
-        }
-        "make-thread" => {
-            need_arg_range(name, args, 1, 3)?;
-            let thread_name = args.get(1).and_then(|value| {
-                if value.is_nil() {
-                    None
-                } else {
-                    string_like(value).map(|string| string.text)
-                }
-            });
-            let disposition = match args.get(2) {
-                None | Some(Value::Nil) => BufferDisposition::Default,
-                Some(Value::T) => BufferDisposition::Preserve,
-                Some(Value::Symbol(symbol)) if symbol == "silently" => BufferDisposition::Silently,
-                Some(other) => {
-                    return Err(LispError::TypeError(
-                        "thread-buffer-disposition".into(),
-                        other.type_name(),
-                    ));
-                }
-            };
-            interp.make_thread(args[0].clone(), thread_name, disposition)
-        }
-        "thread-live-p" => {
-            need_args(name, args, 1)?;
-            Ok(if interp.thread_live(interp.resolve_thread_id(&args[0])?) {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "thread-join" => {
-            need_args(name, args, 1)?;
-            interp.thread_join(interp.resolve_thread_id(&args[0])?, env)
-        }
-        "thread-name" => {
-            need_args(name, args, 1)?;
-            Ok(interp
-                .thread_name(interp.resolve_thread_id(&args[0])?)
-                .map(Value::String)
-                .unwrap_or(Value::Nil))
-        }
-        "thread-signal" => {
-            need_args(name, args, 3)?;
-            interp.signal_thread(
-                interp.resolve_thread_id(&args[0])?,
-                args[1].clone(),
-                args[2].clone(),
-                env,
-            )
-        }
-        "thread-last-error" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(interp.thread_last_error(args.first().is_some_and(Value::is_truthy)))
-        }
-        "thread-yield" => {
-            need_args(name, args, 0)?;
-            interp.drive_threads(env, false)?;
-            Ok(Value::Nil)
-        }
-        "make-mutex" => {
-            need_arg_range(name, args, 0, 1)?;
-            let mutex_name = args.first().and_then(|value| {
-                if value.is_nil() {
-                    None
-                } else {
-                    string_like(value).map(|string| string.text)
-                }
-            });
-            Ok(interp.make_mutex(mutex_name))
-        }
-        "mutex-name" => {
-            need_args(name, args, 1)?;
-            Ok(interp
-                .mutex_name(interp.resolve_mutex_id(&args[0])?)
-                .map(Value::String)
-                .unwrap_or(Value::Nil))
-        }
-        "mutex-lock" => {
-            need_args(name, args, 1)?;
-            interp.lock_mutex_for_current_thread(interp.resolve_mutex_id(&args[0])?, env)
-        }
-        "mutex-unlock" => {
-            need_args(name, args, 1)?;
-            interp.unlock_mutex_for_current_thread(interp.resolve_mutex_id(&args[0])?)
-        }
-        "make-condition-variable" => {
-            need_arg_range(name, args, 1, 2)?;
-            let mutex_id = interp.resolve_mutex_id(&args[0])?;
-            let condvar_name = args.get(1).and_then(|value| {
-                if value.is_nil() {
-                    None
-                } else {
-                    string_like(value).map(|string| string.text)
-                }
-            });
-            Ok(interp.make_condition_variable(mutex_id, condvar_name))
-        }
-        "condition-mutex" => {
-            need_args(name, args, 1)?;
-            let condvar_id = interp.resolve_condition_variable_id(&args[0])?;
-            let mutex_id = interp
-                .condition_variable_mutex_id(condvar_id)
-                .ok_or_else(|| {
-                    LispError::TypeError("condition-variable-p".into(), args[0].type_name())
-                })?;
-            Ok(Value::Record(mutex_id))
-        }
-        "condition-name" => {
-            need_args(name, args, 1)?;
-            Ok(interp
-                .condition_variable_name(interp.resolve_condition_variable_id(&args[0])?)
-                .map(Value::String)
-                .unwrap_or(Value::Nil))
-        }
-        "condition-wait" => {
-            need_args(name, args, 1)?;
-            let condvar_id = interp.resolve_condition_variable_id(&args[0])?;
-            interp.wait_condition_variable(condvar_id, env)
-        }
-        "condition-notify" => {
-            need_arg_range(name, args, 1, 2)?;
-            interp.notify_condition_variable(
-                interp.resolve_condition_variable_id(&args[0])?,
-                args.get(1).is_some_and(Value::is_truthy),
-            )?;
-            Ok(Value::Nil)
-        }
-        "thread--blocker" => {
-            need_args(name, args, 1)?;
-            Ok(interp.thread_blocker_value(interp.resolve_thread_id(&args[0])?))
-        }
-        "thread-buffer-disposition" => {
-            need_args(name, args, 1)?;
-            interp.thread_buffer_disposition(interp.resolve_thread_id(&args[0])?)
-        }
-        "thread-set-buffer-disposition" => {
-            need_args(name, args, 2)?;
-            interp.set_thread_buffer_disposition(interp.resolve_thread_id(&args[0])?, &args[1])
-        }
-        "backtrace--frames-from-thread" => {
-            need_args(name, args, 1)?;
-            let frames = interp
-                .thread_backtrace_frames_snapshot(interp.resolve_thread_id(&args[0])?)
-                .into_iter()
-                .map(|(evald, function, frame_args, _debug_on_exit)| {
-                    let evald = if evald { Value::T } else { Value::Nil };
-                    let mut items = vec![evald, function];
-                    items.extend(frame_args);
-                    Value::list(items)
-                })
-                .collect::<Vec<_>>();
-            Ok(Value::list(frames))
-        }
-        "list-threads" => {
-            need_args(name, args, 0)?;
-            let buffer_id = interp
-                .find_buffer("*Threads*")
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| interp.create_buffer("*Threads*").0);
-            let mut text = String::from("Thread Name\tStatus\tBlocked On\n");
-            for thread in interp.live_threads() {
-                let thread_id = interp.resolve_thread_id(&thread)?;
-                text.push_str(&thread_list_row(interp, thread_id, env)?);
-            }
-            replace_buffer_contents(interp, buffer_id, &text)?;
-            interp.switch_to_buffer_id(buffer_id)?;
-            Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
-        }
-        "thread-list-send-error-signal" => {
-            need_args(name, args, 0)?;
-            let thread_id = thread_list_thread_at_point(interp)?;
-            interp.signal_thread(thread_id, Value::Symbol("error".into()), Value::Nil, env)
-        }
-        "thread-list-pop-to-backtrace" => {
-            need_args(name, args, 0)?;
-            let thread_id = thread_list_thread_at_point(interp)?;
-            let thread_name = interp
-                .thread_name(thread_id)
-                .unwrap_or_else(|| format!("#<thread id:{thread_id}>"));
-            let buffer_id = interp
-                .find_buffer("*Thread Backtrace*")
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| interp.create_buffer("*Thread Backtrace*").0);
-            let mut text = format!("Backtrace for thread `{thread_name}':\n");
-            for (_, function, frame_args, _) in interp.thread_backtrace_frames_snapshot(thread_id) {
-                text.push_str(&render_prin1_ephemeral(interp, &function, env)?);
-                for arg in frame_args {
-                    text.push(' ');
-                    text.push_str(&render_prin1_ephemeral(interp, &arg, env)?);
-                }
-                text.push('\n');
-            }
-            replace_buffer_contents(interp, buffer_id, &text)?;
-            interp.switch_to_buffer_id(buffer_id)?;
-            Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
-        }
-        "regexp-quote" => {
-            need_args(name, args, 1)?;
-            Ok(Value::String(regexp::regexp_quote_elisp(&string_text(
-                &args[0],
-            )?)))
-        }
-        "regexp-opt" => {
-            need_arg_range(name, args, 1, 2)?;
-            // GNU regexp-opt.el builds a trie-optimized regexp (common
-            // prefix/suffix folding); load it and delegate.  The native
-            // plain-alternation output is the no-file fallback.
-            if !interp.has_lisp_function("regexp-opt")
-                && let Some(path) = interp.resolve_load_target("regexp-opt")
-            {
-                let _ = crate::lisp::load_file_strict(interp, &path);
-            }
-            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
-                return Ok(delegated);
-            }
-            let strings = args[0].to_vec()?;
-            let mut patterns = strings
-                .iter()
-                .map(|value| string_text(value).map(|text| regexp::regexp_quote_elisp(&text)))
-                .collect::<Result<Vec<_>, _>>()?;
-            if patterns.is_empty() {
-                return Ok(Value::String(String::new()));
-            }
-            patterns.sort();
-            patterns.dedup();
-            // GNU's PAREN argument controls the group type: nil is shy,
-            // t (or any other value) capturing, `words'/`symbols' add the
-            // boundary assertions around a capturing group, and a string
-            // is used literally as the opening delimiter.
-            let paren = args.get(1).cloned().unwrap_or(Value::Nil);
-            let (open, close): (String, String) = match &paren {
-                Value::Nil => ("\\(?:".into(), "\\)".into()),
-                Value::Symbol(kind) if kind == "words" => ("\\<\\(".into(), "\\)\\>".into()),
-                Value::Symbol(kind) if kind == "symbols" => ("\\_<\\(".into(), "\\)\\_>".into()),
-                Value::String(_) | Value::StringObject(_) => (string_text(&paren)?, "\\)".into()),
-                _ => ("\\(".into(), "\\)".into()),
-            };
-            Ok(Value::String(format!(
-                "{open}{}{close}",
-                patterns.join("\\|")
-            )))
-        }
-        "regexp-opt-depth" => {
-            need_args(name, args, 1)?;
-            Ok(Value::Integer(
-                regexp_opt_depth(&string_text(&args[0])?) as i64
-            ))
-        }
-        "rx-to-string" => {
-            need_arg_range(name, args, 1, 2)?;
-            // GNU rx.el owns rx-to-string once loaded (its translator
-            // covers every atom); the native compiler is the fallback.
-            interp.ensure_gnu_rx_loaded();
-            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
-                return Ok(delegated);
-            }
-            let no_group = args.get(1).is_some_and(Value::is_truthy);
-            Ok(Value::String(crate::lisp::eval::compile_rx_to_string(
-                interp, &args[0], env, no_group,
-            )?))
-        }
-        "null-device" => {
-            need_args(name, args, 0)?;
-            Ok(Value::String("/dev/null".into()))
-        }
-        "process-file" => {
-            need_arg_range(name, args, 1, usize::MAX)?;
-            process_file_compat(interp, args, env)
-        }
-        "read-answer" => {
-            need_args(name, args, 2)?;
-            let answers = args[1].to_vec()?;
-            Ok(answers
-                .first()
-                .and_then(|entry| entry.to_vec().ok())
-                .and_then(|entry| entry.first().cloned())
-                .unwrap_or(Value::String(String::new())))
-        }
-        "temporary-file-directory" => {
-            need_args(name, args, 0)?;
-            Ok(interp
-                .lookup_var("temporary-file-directory", env)
-                .unwrap_or_else(|| Value::String(std::env::temp_dir().display().to_string())))
-        }
-        "convert-standard-filename" => {
-            need_args(name, args, 1)?;
-            Ok(args[0].clone())
-        }
-        "abbreviate-file-name" => {
-            need_args(name, args, 1)?;
-            Ok(args[0].clone())
-        }
-        "files--name-absolute-system-p" => {
-            need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
-            Ok(if file_name_absolute_p(&path) && !path.starts_with('~') {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "files--use-insert-directory-program-p" => {
-            need_args(name, args, 0)?;
-            Ok(
-                if interp
-                    .lookup_var("ls-lisp-use-insert-directory-program", env)
-                    .is_some_and(|value| value.is_truthy())
-                    && interp
-                        .lookup_var("insert-directory-program", env)
-                        .is_some_and(|value| value.is_truthy())
-                {
+            "thread-live-p" => {
+                need_args(name, args, 1)?;
+                Ok(if interp.thread_live(interp.resolve_thread_id(&args[0])?) {
                     Value::T
                 } else {
                     Value::Nil
-                },
-            )
-        }
-        "insert-directory-wildcard-in-dir-p" => {
-            need_args(name, args, 1)?;
-            let directory = string_text(&args[0])?;
-            let Some(parent) = file_name_directory(&directory) else {
-                return Ok(Value::Nil);
-            };
-            if !parent.contains('*') || Path::new(&directory).exists() {
-                return Ok(Value::Nil);
+                })
             }
-            let base_directory = file_name_as_directory(&dired_base_directory(&directory));
-            let wildcard = Path::new(&directory)
-                .strip_prefix(Path::new(&base_directory))
-                .ok()
-                .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_else(|| directory.clone());
-            Ok(Value::cons(
-                Value::String(base_directory),
-                Value::String(wildcard),
-            ))
-        }
-        "insert-directory-clean" => {
-            need_arg_range(name, args, 1, 2)?;
-            Ok(Value::Nil)
-        }
-        "dired-mark-pop-up" => {
-            need_arg_range(name, args, 4, usize::MAX)?;
-            call_function_value(interp, &args[3], &args[4..], env)
-        }
-        "connection-local-value" => {
-            need_arg_range(name, args, 1, 2)?;
-            Ok(args[0].clone())
-        }
-        "propertized-buffer-identification" => {
-            need_args(name, args, 1)?;
-            Ok(Value::list([args[0].clone()]))
-        }
-        "called-interactively-p" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(if interp.called_interactively_by_backtrace() {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "kill-all-local-variables" => {
-            need_args(name, args, 0)?;
-            let buffer_id = interp.current_buffer_id();
-            run_named_hooks(interp, "change-major-mode-hook", env, Some(buffer_id))?;
-            let locals = interp.buffer_local_variables(buffer_id);
-            let mut permanent = Vec::new();
-            for (name, value) in &locals {
-                if interp
-                    .get_symbol_property(name, "permanent-local")
-                    .is_some_and(|value| value.is_truthy())
-                    || interp.has_active_buffer_local_special_binding(buffer_id, name)
-                {
-                    permanent.push((name.clone(), value.clone()));
-                    continue;
-                }
-                interp.notify_variable_watchers(
-                    name,
-                    Value::Nil,
-                    "makunbound",
-                    Some(buffer_id),
+            "thread-join" => {
+                need_args(name, args, 1)?;
+                interp.thread_join(interp.resolve_thread_id(&args[0])?, env)
+            }
+            "thread-name" => {
+                need_args(name, args, 1)?;
+                Ok(interp
+                    .thread_name(interp.resolve_thread_id(&args[0])?)
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil))
+            }
+            "thread-signal" => {
+                need_args(name, args, 3)?;
+                interp.signal_thread(
+                    interp.resolve_thread_id(&args[0])?,
+                    args[1].clone(),
+                    args[2].clone(),
                     env,
+                )
+            }
+            "thread-last-error" => {
+                need_arg_range(name, args, 0, 1)?;
+                Ok(interp.thread_last_error(args.first().is_some_and(Value::is_truthy)))
+            }
+            "thread-yield" => {
+                need_args(name, args, 0)?;
+                interp.drive_threads(env, false)?;
+                Ok(Value::Nil)
+            }
+            "make-mutex" => {
+                need_arg_range(name, args, 0, 1)?;
+                let mutex_name = args.first().and_then(|value| {
+                    if value.is_nil() {
+                        None
+                    } else {
+                        string_like(value).map(|string| string.text)
+                    }
+                });
+                Ok(interp.make_mutex(mutex_name))
+            }
+            "mutex-name" => {
+                need_args(name, args, 1)?;
+                Ok(interp
+                    .mutex_name(interp.resolve_mutex_id(&args[0])?)
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil))
+            }
+            "mutex-lock" => {
+                need_args(name, args, 1)?;
+                interp.lock_mutex_for_current_thread(interp.resolve_mutex_id(&args[0])?, env)
+            }
+            "mutex-unlock" => {
+                need_args(name, args, 1)?;
+                interp.unlock_mutex_for_current_thread(interp.resolve_mutex_id(&args[0])?)
+            }
+            "make-condition-variable" => {
+                need_arg_range(name, args, 1, 2)?;
+                let mutex_id = interp.resolve_mutex_id(&args[0])?;
+                let condvar_name = args.get(1).and_then(|value| {
+                    if value.is_nil() {
+                        None
+                    } else {
+                        string_like(value).map(|string| string.text)
+                    }
+                });
+                Ok(interp.make_condition_variable(mutex_id, condvar_name))
+            }
+            "condition-mutex" => {
+                need_args(name, args, 1)?;
+                let condvar_id = interp.resolve_condition_variable_id(&args[0])?;
+                let mutex_id = interp
+                    .condition_variable_mutex_id(condvar_id)
+                    .ok_or_else(|| {
+                        LispError::TypeError("condition-variable-p".into(), args[0].type_name())
+                    })?;
+                Ok(Value::Record(mutex_id))
+            }
+            "condition-name" => {
+                need_args(name, args, 1)?;
+                Ok(interp
+                    .condition_variable_name(interp.resolve_condition_variable_id(&args[0])?)
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil))
+            }
+            "condition-wait" => {
+                need_args(name, args, 1)?;
+                let condvar_id = interp.resolve_condition_variable_id(&args[0])?;
+                interp.wait_condition_variable(condvar_id, env)
+            }
+            "condition-notify" => {
+                need_arg_range(name, args, 1, 2)?;
+                interp.notify_condition_variable(
+                    interp.resolve_condition_variable_id(&args[0])?,
+                    args.get(1).is_some_and(Value::is_truthy),
                 )?;
+                Ok(Value::Nil)
             }
-            interp.clear_buffer_local_state_for_mode_change(buffer_id);
-            for (name, value) in permanent {
-                interp.set_buffer_local_value(buffer_id, &name, value);
+            "thread--blocker" => {
+                need_args(name, args, 1)?;
+                Ok(interp.thread_blocker_value(interp.resolve_thread_id(&args[0])?))
             }
-            Ok(Value::Nil)
-        }
-        "hack-local-variables" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Nil)
-        }
-        "hack-local-variables-filter" => {
-            need_args(name, args, 2)?;
-            interp.set_buffer_local_value(
-                interp.current_buffer_id(),
-                "file-local-variables-alist",
-                args[0].clone(),
-            );
-            Ok(args[0].clone())
-        }
-        "hack-local-variables-apply" => {
-            need_args(name, args, 0)?;
-            let pending = interp
-                .buffer_local_value(interp.current_buffer_id(), "file-local-variables-alist")
-                .or_else(|| interp.lookup_var("file-local-variables-alist", env))
-                .unwrap_or(Value::Nil);
-            for entry in pending.to_vec()? {
-                let Some((variable, value)) = entry.cons_values() else {
-                    continue;
+            "thread-buffer-disposition" => {
+                need_args(name, args, 1)?;
+                interp.thread_buffer_disposition(interp.resolve_thread_id(&args[0])?)
+            }
+            "thread-set-buffer-disposition" => {
+                need_args(name, args, 2)?;
+                interp.set_thread_buffer_disposition(interp.resolve_thread_id(&args[0])?, &args[1])
+            }
+            "backtrace--frames-from-thread" => {
+                need_args(name, args, 1)?;
+                let frames = interp
+                    .thread_backtrace_frames_snapshot(interp.resolve_thread_id(&args[0])?)
+                    .into_iter()
+                    .map(|(evald, function, frame_args, _debug_on_exit)| {
+                        let evald = if evald { Value::T } else { Value::Nil };
+                        let mut items = vec![evald, function];
+                        items.extend(frame_args);
+                        Value::list(items)
+                    })
+                    .collect::<Vec<_>>();
+                Ok(Value::list(frames))
+            }
+            "list-threads" => {
+                need_args(name, args, 0)?;
+                let buffer_id = interp
+                    .find_buffer("*Threads*")
+                    .map(|(id, _)| id)
+                    .unwrap_or_else(|| interp.create_buffer("*Threads*").0);
+                let mut text = String::from("Thread Name\tStatus\tBlocked On\n");
+                for thread in interp.live_threads() {
+                    let thread_id = interp.resolve_thread_id(&thread)?;
+                    text.push_str(&thread_list_row(interp, thread_id, env)?);
+                }
+                replace_buffer_contents(interp, buffer_id, &text)?;
+                interp.switch_to_buffer_id(buffer_id)?;
+                Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
+            }
+            "thread-list-send-error-signal" => {
+                need_args(name, args, 0)?;
+                let thread_id = thread_list_thread_at_point(interp)?;
+                interp.signal_thread(thread_id, Value::Symbol("error".into()), Value::Nil, env)
+            }
+            "thread-list-pop-to-backtrace" => {
+                need_args(name, args, 0)?;
+                let thread_id = thread_list_thread_at_point(interp)?;
+                let thread_name = interp
+                    .thread_name(thread_id)
+                    .unwrap_or_else(|| format!("#<thread id:{thread_id}>"));
+                let buffer_id = interp
+                    .find_buffer("*Thread Backtrace*")
+                    .map(|(id, _)| id)
+                    .unwrap_or_else(|| interp.create_buffer("*Thread Backtrace*").0);
+                let mut text = format!("Backtrace for thread `{thread_name}':\n");
+                for (_, function, frame_args, _) in
+                    interp.thread_backtrace_frames_snapshot(thread_id)
+                {
+                    text.push_str(&render_prin1_ephemeral(interp, &function, env)?);
+                    for arg in frame_args {
+                        text.push(' ');
+                        text.push_str(&render_prin1_ephemeral(interp, &arg, env)?);
+                    }
+                    text.push('\n');
+                }
+                replace_buffer_contents(interp, buffer_id, &text)?;
+                interp.switch_to_buffer_id(buffer_id)?;
+                Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
+            }
+            "regexp-quote" => {
+                need_args(name, args, 1)?;
+                Ok(Value::String(regexp::regexp_quote_elisp(&string_text(
+                    &args[0],
+                )?)))
+            }
+            "regexp-opt" => {
+                need_arg_range(name, args, 1, 2)?;
+                // GNU regexp-opt.el builds a trie-optimized regexp (common
+                // prefix/suffix folding); load it and delegate.  The native
+                // plain-alternation output is the no-file fallback.
+                if !interp.has_lisp_function("regexp-opt")
+                    && let Some(path) = interp.resolve_load_target("regexp-opt")
+                {
+                    let _ = crate::lisp::load_file_strict(interp, &path);
+                }
+                if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                    return Ok(delegated);
+                }
+                let strings = args[0].to_vec()?;
+                let mut patterns = strings
+                    .iter()
+                    .map(|value| string_text(value).map(|text| regexp::regexp_quote_elisp(&text)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if patterns.is_empty() {
+                    return Ok(Value::String(String::new()));
+                }
+                patterns.sort();
+                patterns.dedup();
+                // GNU's PAREN argument controls the group type: nil is shy,
+                // t (or any other value) capturing, `words'/`symbols' add the
+                // boundary assertions around a capturing group, and a string
+                // is used literally as the opening delimiter.
+                let paren = args.get(1).cloned().unwrap_or(Value::Nil);
+                let (open, close): (String, String) = match &paren {
+                    Value::Nil => ("\\(?:".into(), "\\)".into()),
+                    Value::Symbol(kind) if kind == "words" => ("\\<\\(".into(), "\\)\\>".into()),
+                    Value::Symbol(kind) if kind == "symbols" => {
+                        ("\\_<\\(".into(), "\\)\\_>".into())
+                    }
+                    Value::String(_) | Value::StringObject(_) => {
+                        (string_text(&paren)?, "\\)".into())
+                    }
+                    _ => ("\\(".into(), "\\)".into()),
                 };
-                let symbol = variable.as_symbol()?.to_string();
-                let prepared = interp.prepare_variable_assignment(&symbol, value)?;
-                interp.set_buffer_local_value(interp.current_buffer_id(), &symbol, prepared);
+                Ok(Value::String(format!(
+                    "{open}{}{close}",
+                    patterns.join("\\|")
+                )))
             }
-            Ok(Value::Nil)
-        }
-        "hack-dir-local-variables-non-file-buffer" => {
-            need_args(name, args, 0)?;
-            Ok(Value::Nil)
-        }
-        "force-mode-line-update" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Nil)
-        }
-        "oclosure-type" => {
-            need_args(name, args, 1)?;
-            Ok(oclosure_type_of(&args[0])
-                .map(Value::Symbol)
-                .unwrap_or(Value::Nil))
-        }
-        "emaxx--oclosure-type-p" => {
-            need_args(name, args, 2)?;
-            let target = args[1].as_symbol()?;
-            Ok(if oclosure_value_matches_type(interp, &args[0], target) {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "emaxx--oclosure-slot" => {
-            need_args(name, args, 2)?;
-            let slot = args[1].as_symbol()?;
-            let Value::Lambda(_, _, closure_env) = &args[0] else {
-                return Err(wrong_type_argument("oclosure", args[0].clone()));
-            };
-            let env_contents = closure_env.borrow();
-            for frame in env_contents.iter().rev() {
-                if frame
-                    .iter()
-                    .any(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
-                {
-                    return Ok(frame
-                        .iter()
-                        .find(|(key, _)| key == slot)
-                        .map(|(_, value)| value.clone())
-                        .unwrap_or(Value::Nil));
-                }
+            "regexp-opt-depth" => {
+                need_args(name, args, 1)?;
+                Ok(Value::Integer(
+                    regexp_opt_depth(&string_text(&args[0])?) as i64
+                ))
             }
-            Err(wrong_type_argument("oclosure", args[0].clone()))
-        }
-        "emaxx--oclosure-set-slot" => {
-            need_args(name, args, 3)?;
-            let slot = args[1].as_symbol()?.to_string();
-            let Some(type_name) = oclosure_type_of(&args[0]) else {
-                return Err(wrong_type_argument("oclosure", args[0].clone()));
-            };
-            // Only slots declared (SLOT :mutable t) may be written; GNU
-            // signals setting-constant for the rest (oclosure--set).
-            let mut current: Option<String> = Some(type_name);
-            let mut mutable = false;
-            while let Some(type_name) = current {
-                if interp
-                    .get_symbol_property(&type_name, "emaxx-oclosure-mutable-slots")
-                    .and_then(|value| value.to_vec().ok())
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|value| matches!(value, Value::Symbol(name) if name == &slot))
-                {
-                    mutable = true;
-                    break;
+            "rx-to-string" => {
+                need_arg_range(name, args, 1, 2)?;
+                // GNU rx.el owns rx-to-string once loaded (its translator
+                // covers every atom); the native compiler is the fallback.
+                interp.ensure_gnu_rx_loaded();
+                if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                    return Ok(delegated);
                 }
-                current = interp
-                    .get_symbol_property(&type_name, "emaxx-oclosure-parent")
-                    .and_then(|value| value.as_symbol().ok().map(String::from));
+                let no_group = args.get(1).is_some_and(Value::is_truthy);
+                Ok(Value::String(crate::lisp::eval::compile_rx_to_string(
+                    interp, &args[0], env, no_group,
+                )?))
             }
-            if !mutable {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("setting-constant".into()),
-                    Value::Symbol(slot),
-                ])));
+            "null-device" => {
+                need_args(name, args, 0)?;
+                Ok(Value::String("/dev/null".into()))
             }
-            let Value::Lambda(_, _, closure_env) = &args[0] else {
-                return Err(wrong_type_argument("oclosure", args[0].clone()));
-            };
-            let mut env_contents = closure_env.borrow_mut();
-            for frame in env_contents.iter_mut().rev() {
-                if !frame
-                    .iter()
-                    .any(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
-                {
-                    continue;
-                }
-                if let Some(entry) = frame.iter_mut().find(|(key, _)| key == &slot) {
-                    entry.1 = args[2].clone();
-                    return Ok(args[2].clone());
-                }
+            "process-file" => {
+                need_arg_range(name, args, 1, usize::MAX)?;
+                process_file_compat(interp, args, env)
             }
-            Err(wrong_type_argument("oclosure", args[0].clone()))
-        }
-        "emaxx--oclosure-copy" => {
-            need_args(name, args, 2)?;
-            let Value::Lambda(params, body, closure_env) = &args[0] else {
-                return Err(wrong_type_argument("oclosure", args[0].clone()));
-            };
-            let replacements = args[1].to_vec()?;
-            let mut contents = closure_env.borrow().clone();
-            for frame in contents.iter_mut().rev() {
-                if !frame
-                    .iter()
-                    .any(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
-                {
-                    continue;
+            "read-answer" => {
+                need_args(name, args, 2)?;
+                let answers = args[1].to_vec()?;
+                Ok(answers
+                    .first()
+                    .and_then(|entry| entry.to_vec().ok())
+                    .and_then(|entry| entry.first().cloned())
+                    .unwrap_or(Value::String(String::new())))
+            }
+            "temporary-file-directory" => {
+                need_args(name, args, 0)?;
+                Ok(interp
+                    .lookup_var("temporary-file-directory", env)
+                    .unwrap_or_else(|| Value::String(std::env::temp_dir().display().to_string())))
+            }
+            "convert-standard-filename" => {
+                need_args(name, args, 1)?;
+                Ok(args[0].clone())
+            }
+            "abbreviate-file-name" => {
+                need_args(name, args, 1)?;
+                Ok(args[0].clone())
+            }
+            "files--name-absolute-system-p" => {
+                need_args(name, args, 1)?;
+                let path = string_text(&args[0])?;
+                Ok(if file_name_absolute_p(&path) && !path.starts_with('~') {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "files--use-insert-directory-program-p" => {
+                need_args(name, args, 0)?;
+                Ok(
+                    if interp
+                        .lookup_var("ls-lisp-use-insert-directory-program", env)
+                        .is_some_and(|value| value.is_truthy())
+                        && interp
+                            .lookup_var("insert-directory-program", env)
+                            .is_some_and(|value| value.is_truthy())
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "insert-directory-wildcard-in-dir-p" => {
+                need_args(name, args, 1)?;
+                let directory = string_text(&args[0])?;
+                let Some(parent) = file_name_directory(&directory) else {
+                    return Ok(Value::Nil);
+                };
+                if !parent.contains('*') || Path::new(&directory).exists() {
+                    return Ok(Value::Nil);
                 }
-                for replacement in &replacements {
-                    let Some((key, value)) = replacement.cons_values() else {
+                let base_directory = file_name_as_directory(&dired_base_directory(&directory));
+                let wildcard = Path::new(&directory)
+                    .strip_prefix(Path::new(&base_directory))
+                    .ok()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| directory.clone());
+                Ok(Value::cons(
+                    Value::String(base_directory),
+                    Value::String(wildcard),
+                ))
+            }
+            "insert-directory-clean" => {
+                need_arg_range(name, args, 1, 2)?;
+                Ok(Value::Nil)
+            }
+            "dired-mark-pop-up" => {
+                need_arg_range(name, args, 4, usize::MAX)?;
+                call_function_value(interp, &args[3], &args[4..], env)
+            }
+            "connection-local-value" => {
+                need_arg_range(name, args, 1, 2)?;
+                Ok(args[0].clone())
+            }
+            "propertized-buffer-identification" => {
+                need_args(name, args, 1)?;
+                Ok(Value::list([args[0].clone()]))
+            }
+            "called-interactively-p" => {
+                need_arg_range(name, args, 0, 1)?;
+                Ok(if interp.called_interactively_by_backtrace() {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "kill-all-local-variables" => {
+                need_args(name, args, 0)?;
+                let buffer_id = interp.current_buffer_id();
+                run_named_hooks(interp, "change-major-mode-hook", env, Some(buffer_id))?;
+                let locals = interp.buffer_local_variables(buffer_id);
+                let mut permanent = Vec::new();
+                for (name, value) in &locals {
+                    if interp
+                        .get_symbol_property(name, "permanent-local")
+                        .is_some_and(|value| value.is_truthy())
+                        || interp.has_active_buffer_local_special_binding(buffer_id, name)
+                    {
+                        permanent.push((name.clone(), value.clone()));
+                        continue;
+                    }
+                    interp.notify_variable_watchers(
+                        name,
+                        Value::Nil,
+                        "makunbound",
+                        Some(buffer_id),
+                        env,
+                    )?;
+                }
+                interp.clear_buffer_local_state_for_mode_change(buffer_id);
+                for (name, value) in permanent {
+                    interp.set_buffer_local_value(buffer_id, &name, value);
+                }
+                Ok(Value::Nil)
+            }
+            "hack-local-variables" => {
+                need_arg_range(name, args, 0, 1)?;
+                Ok(Value::Nil)
+            }
+            "hack-local-variables-filter" => {
+                need_args(name, args, 2)?;
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    "file-local-variables-alist",
+                    args[0].clone(),
+                );
+                Ok(args[0].clone())
+            }
+            "hack-local-variables-apply" => {
+                need_args(name, args, 0)?;
+                let pending = interp
+                    .buffer_local_value(interp.current_buffer_id(), "file-local-variables-alist")
+                    .or_else(|| interp.lookup_var("file-local-variables-alist", env))
+                    .unwrap_or(Value::Nil);
+                for entry in pending.to_vec()? {
+                    let Some((variable, value)) = entry.cons_values() else {
                         continue;
                     };
-                    let Ok(slot) = key.as_symbol() else { continue };
-                    if let Some(entry) = frame.iter_mut().find(|(name, _)| name == slot) {
-                        entry.1 = value.clone();
+                    let symbol = variable.as_symbol()?.to_string();
+                    let prepared = interp.prepare_variable_assignment(&symbol, value)?;
+                    interp.set_buffer_local_value(interp.current_buffer_id(), &symbol, prepared);
+                }
+                Ok(Value::Nil)
+            }
+            "hack-dir-local-variables-non-file-buffer" => {
+                need_args(name, args, 0)?;
+                Ok(Value::Nil)
+            }
+            "force-mode-line-update" => {
+                need_arg_range(name, args, 0, 1)?;
+                Ok(Value::Nil)
+            }
+            "oclosure-type" => {
+                need_args(name, args, 1)?;
+                Ok(oclosure_type_of(&args[0])
+                    .map(Value::Symbol)
+                    .unwrap_or(Value::Nil))
+            }
+            "emaxx--oclosure-type-p" => {
+                need_args(name, args, 2)?;
+                let target = args[1].as_symbol()?;
+                Ok(if oclosure_value_matches_type(interp, &args[0], target) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "emaxx--oclosure-slot" => {
+                need_args(name, args, 2)?;
+                let slot = args[1].as_symbol()?;
+                let Value::Lambda(_, _, closure_env) = &args[0] else {
+                    return Err(wrong_type_argument("oclosure", args[0].clone()));
+                };
+                let env_contents = closure_env.borrow();
+                for frame in env_contents.iter().rev() {
+                    if frame
+                        .iter()
+                        .any(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+                    {
+                        return Ok(frame
+                            .iter()
+                            .find(|(key, _)| key == slot)
+                            .map(|(_, value)| value.clone())
+                            .unwrap_or(Value::Nil));
                     }
                 }
-                crate::lisp::eval::Interpreter::restamp_frame_identity(frame);
-                break;
+                Err(wrong_type_argument("oclosure", args[0].clone()))
             }
-            Ok(Value::Lambda(
-                params.clone(),
-                body.clone(),
-                crate::lisp::types::shared_env(contents),
-            ))
-        }
-        "garbage-collect" => {
-            need_args(name, args, 0)?;
-            collect_weak_hash_tables(interp)?;
-            // GNU returns ((TYPE SIZE USED FREE) ...); the SIZE column is
-            // the 64-bit object layout constant (memory-report.el computes
-            // object sizes from it).  Counts are approximations.
-            let entry = |name: &str, rest: &[i64]| {
-                Value::list(
-                    std::iter::once(Value::Symbol(name.into()))
-                        .chain(rest.iter().map(|n| Value::Integer(*n))),
-                )
-            };
-            Ok(Value::list([
-                entry("conses", &[16, 0, 0]),
-                entry("symbols", &[48, 0, 0]),
-                entry("strings", &[32, 0, 0]),
-                entry("string-bytes", &[1, 0]),
-                entry("vectors", &[16, 0]),
-                entry("vector-slots", &[8, 0, 0]),
-                entry("floats", &[8, 0, 0]),
-                entry("intervals", &[56, 0, 0]),
-                entry("buffers", &[984, 0]),
-            ]))
-        }
-        "garbage-collect-maybe" => {
-            need_args(name, args, 1)?;
-            if !matches!(args[0], Value::Integer(value) if value >= 0) {
-                return Err(LispError::TypeError(
-                    "wholenump".into(),
-                    args[0].type_name(),
-                ));
-            }
-            // Emaxx uses Rust ownership rather than GNU's byte-allocation GC
-            // threshold, so no pending automatic collection can be due.
-            Ok(Value::Nil)
-        }
-        "memory-use-counts" => {
-            need_args(name, args, 0)?;
-            // GNU's seven counters are incremented at type-specific C arena
-            // allocation sites and survive GC.  Rust ownership has neither
-            // those arenas nor equivalent category accounting; allocator
-            // byte totals or live-object scans would not implement this API.
-            Err(LispError::Signal(
-                "GNU allocation counters are unavailable in the Rust ownership backend".into(),
-            ))
-        }
-        "num-processors" => {
-            need_args(name, args, 0)?;
-            let count = std::thread::available_parallelism()
-                .map(|count| count.get() as i64)
-                .unwrap_or(1);
-            Ok(Value::Integer(count.max(1)))
-        }
-        "current-cpu-time" => {
-            need_args(name, args, 0)?;
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            Ok(Value::list([normalize_bigint_value(BigInt::from(nanos))]))
-        }
-        "emacs-pid" => {
-            need_args(name, args, 0)?;
-            Ok(Value::Integer(emacs_pid_value()))
-        }
-        "type-of" => {
-            need_args(name, args, 1)?;
-            if let Some(type_name) = legacy_struct_vector_type(interp, &args[0], env) {
-                return Ok(Value::Symbol(type_name));
-            }
-            let name = match &args[0] {
-                Value::Nil => "symbol",
-                Value::T => "symbol",
-                Value::Integer(_) => "integer",
-                Value::BigInteger(_) => "integer",
-                Value::Float(_) => "float",
-                Value::String(_) => "string",
-                Value::StringObject(_) => "string",
-                Value::Symbol(_) => "symbol",
-                Value::Cons(_, _) if is_vector_value(&args[0]) => "vector",
-                Value::Cons(_, _) => "cons",
-                Value::BuiltinFunc(_) => "subr",
-                Value::Lambda(_, _, _) => "cons", // Emacs closures are cons cells
-                Value::Buffer(_, _) => "buffer",
-                Value::Marker(_) => "marker",
-                Value::Overlay(_) => "overlay",
-                Value::CharTable(_) => "char-table",
-                Value::Frame(_) => "frame",
-                Value::Terminal(_) => "terminal",
-                Value::Record(id) => {
-                    let record = interp.find_record(*id).ok_or_else(|| {
-                        LispError::TypeError("record".into(), format!("record<{id}>"))
-                    })?;
-                    return Ok(Value::Symbol(record.type_name.clone()));
-                }
-                Value::Finalizer(_) => "finalizer",
-                Value::Unbound => "unbound",
-            };
-            Ok(Value::Symbol(name.into()))
-        }
-        "cl-type-of" => {
-            need_args(name, args, 1)?;
-            Ok(Value::Symbol(cl_type_name(interp, &args[0])?.into()))
-        }
-        // GNU cl-macs.el defines `cl--find-class' as `(get TYPE 'cl--class)',
-        // which projects to the same class storage as `cl-find-class' here.
-        "cl-find-class" | "cl--find-class" => {
-            need_args(name, args, 1)?;
-            let symbol = args[0].as_symbol()?;
-            Ok(if let Some(class_value) = interp.class_value(symbol) {
-                class_value
-            } else if is_builtin_class_name(symbol) {
-                Value::Symbol(symbol.into())
-            } else {
-                Value::Nil
-            })
-        }
-        "cl--struct-get-class" => {
-            need_args(name, args, 1)?;
-            let symbol = args[0].as_symbol()?;
-            Ok(interp.class_value(symbol).unwrap_or(Value::Nil))
-        }
-        "cl--struct-class-slots" => {
-            need_args(name, args, 1)?;
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
-                return Err(wrong_type_argument("cl--struct-class-p", args[0].clone()));
-            };
-            let descriptors = if let Some(raw) = interp
-                .get_symbol_property(&class_name, "emaxx-struct-slot-descs")
-                .and_then(|value| value.to_vec().ok())
-            {
-                raw.into_iter()
-                    .skip(1) // GNU's class slot vector omits `cl-tag-slot'.
-                    .filter_map(|slot| {
-                        let parts = slot.to_vec().ok()?;
-                        let slot_name = parts.first()?.as_symbol().ok()?.to_string();
-                        let mut descriptor = EieioSlotDescriptor {
-                            name: slot_name,
-                            initform: parts.get(1).cloned(),
-                            slot_type: Value::T,
-                            props: Vec::new(),
-                            initargs: Vec::new(),
-                            class_allocated: false,
-                        };
-                        let mut index = 2;
-                        while index + 1 < parts.len() {
-                            let key = parts[index].as_symbol().ok()?.to_string();
-                            let value = parts[index + 1].clone();
-                            if key == ":type" {
-                                descriptor.slot_type = value;
-                            } else {
-                                descriptor.props.push((key, value));
-                            }
-                            index += 2;
-                        }
-                        Some(descriptor)
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                eieio_slot_descriptors(interp, &class_name)?
-            };
-            let records = descriptors
-                .iter()
-                .map(|descriptor| eieio_slot_descriptor_record(interp, env, descriptor))
-                .collect::<Vec<_>>();
-            Ok(Value::list(
-                std::iter::once(Value::Symbol("vector-literal".into())).chain(records),
-            ))
-        }
-        "cl--struct-class-type" => {
-            need_args(name, args, 1)?;
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
-                return Err(wrong_type_argument("cl--struct-class-p", args[0].clone()));
-            };
-            Ok(interp
-                .get_symbol_property(&class_name, "emaxx-struct-sequence-type")
-                .unwrap_or(Value::Nil))
-        }
-        "cl--class-index-table" => {
-            need_args(name, args, 1)?;
-            if let Some(table) = interp.raw_eieio_class_slot(&args[0], 4) {
-                return Ok(table);
-            }
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
-                return Err(wrong_type_argument("class-p", args[0].clone()));
-            };
-            let sequence_type = interp
-                .get_symbol_property(&class_name, "emaxx-struct-sequence-type")
-                .unwrap_or(Value::Nil);
-            let offset = usize::from(sequence_type.is_nil());
-            let slots = interp
-                .get_symbol_property(&class_name, "emaxx-struct-slots")
-                .or_else(|| interp.get_symbol_property(&class_name, "emaxx-class-slots"))
-                .and_then(|value| value.to_vec().ok())
-                .unwrap_or_default();
-            let table = super::call(interp, "make-hash-table", &[], env)?;
-            for (index, slot) in slots.into_iter().enumerate() {
-                let slot_name = match slot {
-                    Value::Symbol(name) => Value::Symbol(name),
-                    Value::Cons(_, _) => slot.car().unwrap_or(Value::Nil),
-                    _ => continue,
+            "emaxx--oclosure-set-slot" => {
+                need_args(name, args, 3)?;
+                let slot = args[1].as_symbol()?.to_string();
+                let Some(type_name) = oclosure_type_of(&args[0]) else {
+                    return Err(wrong_type_argument("oclosure", args[0].clone()));
                 };
-                super::call(
-                    interp,
-                    "puthash",
-                    &[
-                        slot_name,
-                        Value::Integer((index + offset) as i64),
-                        table.clone(),
-                    ],
-                    env,
-                )?;
+                // Only slots declared (SLOT :mutable t) may be written; GNU
+                // signals setting-constant for the rest (oclosure--set).
+                let mut current: Option<String> = Some(type_name);
+                let mut mutable = false;
+                while let Some(type_name) = current {
+                    if interp
+                        .get_symbol_property(&type_name, "emaxx-oclosure-mutable-slots")
+                        .and_then(|value| value.to_vec().ok())
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|value| matches!(value, Value::Symbol(name) if name == &slot))
+                    {
+                        mutable = true;
+                        break;
+                    }
+                    current = interp
+                        .get_symbol_property(&type_name, "emaxx-oclosure-parent")
+                        .and_then(|value| value.as_symbol().ok().map(String::from));
+                }
+                if !mutable {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("setting-constant".into()),
+                        Value::Symbol(slot),
+                    ])));
+                }
+                let Value::Lambda(_, _, closure_env) = &args[0] else {
+                    return Err(wrong_type_argument("oclosure", args[0].clone()));
+                };
+                let mut env_contents = closure_env.borrow_mut();
+                for frame in env_contents.iter_mut().rev() {
+                    if !frame
+                        .iter()
+                        .any(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+                    {
+                        continue;
+                    }
+                    if let Some(entry) = frame.iter_mut().find(|(key, _)| key == &slot) {
+                        entry.1 = args[2].clone();
+                        return Ok(args[2].clone());
+                    }
+                }
+                Err(wrong_type_argument("oclosure", args[0].clone()))
             }
-            Ok(table)
-        }
-        "cl-struct-define" => {
-            need_args(name, args, 9)?;
-            let struct_name = args[0].as_symbol()?.to_string();
-            if is_builtin_class_name(&struct_name) {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("wrong-type-argument".into()),
-                    Value::Symbol("cl--struct-name-p".into()),
-                    Value::Symbol(struct_name),
-                    Value::Symbol("name".into()),
-                ])));
+            "emaxx--oclosure-copy" => {
+                need_args(name, args, 2)?;
+                let Value::Lambda(params, body, closure_env) = &args[0] else {
+                    return Err(wrong_type_argument("oclosure", args[0].clone()));
+                };
+                let replacements = args[1].to_vec()?;
+                let mut contents = closure_env.borrow().clone();
+                for frame in contents.iter_mut().rev() {
+                    if !frame
+                        .iter()
+                        .any(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+                    {
+                        continue;
+                    }
+                    for replacement in &replacements {
+                        let Some((key, value)) = replacement.cons_values() else {
+                            continue;
+                        };
+                        let Ok(slot) = key.as_symbol() else { continue };
+                        if let Some(entry) = frame.iter_mut().find(|(name, _)| name == slot) {
+                            entry.1 = value.clone();
+                        }
+                    }
+                    crate::lisp::eval::Interpreter::restamp_frame_identity(frame);
+                    break;
+                }
+                Ok(Value::Lambda(
+                    params.clone(),
+                    body.clone(),
+                    crate::lisp::types::shared_env(contents),
+                ))
             }
-            let type_arg = args[3].clone();
-            let children_symbol = args[6].as_symbol()?.to_string();
-            let tag = args[7].clone();
-            if type_arg.is_nil() {
-                interp.set_variable("cl-old-struct-compat-mode", Value::T, env);
+            "garbage-collect" => {
+                need_args(name, args, 0)?;
+                collect_weak_hash_tables(interp)?;
+                // GNU returns ((TYPE SIZE USED FREE) ...); the SIZE column is
+                // the 64-bit object layout constant (memory-report.el computes
+                // object sizes from it).  Counts are approximations.
+                let entry = |name: &str, rest: &[i64]| {
+                    Value::list(
+                        std::iter::once(Value::Symbol(name.into()))
+                            .chain(rest.iter().map(|n| Value::Integer(*n))),
+                    )
+                };
+                Ok(Value::list([
+                    entry("conses", &[16, 0, 0]),
+                    entry("symbols", &[48, 0, 0]),
+                    entry("strings", &[32, 0, 0]),
+                    entry("string-bytes", &[1, 0]),
+                    entry("vectors", &[16, 0]),
+                    entry("vector-slots", &[8, 0, 0]),
+                    entry("floats", &[8, 0, 0]),
+                    entry("intervals", &[56, 0, 0]),
+                    entry("buffers", &[984, 0]),
+                ]))
             }
-            let mut children = interp
-                .lookup_var(&children_symbol, env)
-                .and_then(|value| value.to_vec().ok())
-                .unwrap_or_default();
-            if !children.iter().any(|child| child == &tag) {
-                children.insert(0, tag.clone());
+            "garbage-collect-maybe" => {
+                need_args(name, args, 1)?;
+                if !matches!(args[0], Value::Integer(value) if value >= 0) {
+                    return Err(LispError::TypeError(
+                        "wholenump".into(),
+                        args[0].type_name(),
+                    ));
+                }
+                // Emaxx uses Rust ownership rather than GNU's byte-allocation GC
+                // threshold, so no pending automatic collection can be due.
+                Ok(Value::Nil)
             }
-            interp.set_variable(&children_symbol, Value::list(children), env);
-            if !matches!(tag, Value::Symbol(ref tag_name) if tag_name == &struct_name)
-                && let Value::Symbol(tag_name) = &tag
-            {
-                let class_value = interp
-                    .class_value(&struct_name)
-                    .unwrap_or_else(|| Value::Symbol(struct_name.clone()));
-                interp.set_variable(tag_name, class_value, env);
-                interp.set_function_binding(
-                    tag_name,
-                    Some(Value::Symbol(":quick-object-witness-check".into())),
-                );
+            "memory-use-counts" => {
+                need_args(name, args, 0)?;
+                // GNU's seven counters are incremented at type-specific C arena
+                // allocation sites and survive GC.  Rust ownership has neither
+                // those arenas nor equivalent category accounting; allocator
+                // byte totals or live-object scans would not implement this API.
+                Err(LispError::Signal(
+                    "GNU allocation counters are unavailable in the Rust ownership backend".into(),
+                ))
             }
-            Ok(Value::Symbol(struct_name))
-        }
-        "cl-old-struct-compat-mode" => {
-            need_args(name, args, 1)?;
-            let enabled = !args[0].is_nil()
-                && !matches!(&args[0], Value::Integer(n) if *n <= 0)
-                && !matches!(&args[0], Value::BigInteger(n) if n <= &BigInt::from(0));
-            let value = if enabled { Value::T } else { Value::Nil };
-            interp.set_variable("cl-old-struct-compat-mode", value.clone(), env);
-            Ok(value)
-        }
-        "cl--class-name" => {
-            need_args(name, args, 1)?;
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            Ok(crate::lisp::types::interned_symbol_value(class_name))
-        }
-        "cl--class-parents" => {
-            need_args(name, args, 1)?;
-            interp.class_parents_value(&args[0])
-        }
-        "cl--class-allparents" => {
-            need_args(name, args, 1)?;
-            let Some(symbol) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            Ok(
-                if interp.class_value(&symbol).is_some() || is_builtin_class_name(&symbol) {
-                    Value::list(interp.class_allparents(&symbol))
-                } else if symbol == "t" {
-                    Value::list([Value::T])
+            "num-processors" => {
+                need_args(name, args, 0)?;
+                let count = std::thread::available_parallelism()
+                    .map(|count| count.get() as i64)
+                    .unwrap_or(1);
+                Ok(Value::Integer(count.max(1)))
+            }
+            "current-cpu-time" => {
+                need_args(name, args, 0)?;
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                Ok(Value::list([normalize_bigint_value(BigInt::from(nanos))]))
+            }
+            "emacs-pid" => {
+                need_args(name, args, 0)?;
+                Ok(Value::Integer(emacs_pid_value()))
+            }
+            "type-of" => {
+                need_args(name, args, 1)?;
+                if let Some(type_name) = legacy_struct_vector_type(interp, &args[0], env) {
+                    return Ok(Value::Symbol(type_name));
+                }
+                let name = match &args[0] {
+                    Value::Nil => "symbol",
+                    Value::T => "symbol",
+                    Value::Integer(_) => "integer",
+                    Value::BigInteger(_) => "integer",
+                    Value::Float(_) => "float",
+                    Value::String(_) => "string",
+                    Value::StringObject(_) => "string",
+                    Value::Symbol(_) => "symbol",
+                    Value::Cons(_, _) if is_vector_value(&args[0]) => "vector",
+                    Value::Cons(_, _) => "cons",
+                    Value::BuiltinFunc(_) => "subr",
+                    Value::Lambda(_, _, _) => "cons", // Emacs closures are cons cells
+                    Value::Buffer(_, _) => "buffer",
+                    Value::Marker(_) => "marker",
+                    Value::Overlay(_) => "overlay",
+                    Value::CharTable(_) => "char-table",
+                    Value::Frame(_) => "frame",
+                    Value::Terminal(_) => "terminal",
+                    Value::Record(id) => {
+                        let record = interp.find_record(*id).ok_or_else(|| {
+                            LispError::TypeError("record".into(), format!("record<{id}>"))
+                        })?;
+                        return Ok(Value::Symbol(record.type_name.clone()));
+                    }
+                    Value::Finalizer(_) => "finalizer",
+                    Value::Unbound => "unbound",
+                };
+                Ok(Value::Symbol(name.into()))
+            }
+            "cl-type-of" => {
+                need_args(name, args, 1)?;
+                Ok(Value::Symbol(cl_type_name(interp, &args[0])?.into()))
+            }
+            // GNU cl-macs.el defines `cl--find-class' as `(get TYPE 'cl--class)',
+            // which projects to the same class storage as `cl-find-class' here.
+            "cl-find-class" | "cl--find-class" => {
+                need_args(name, args, 1)?;
+                let symbol = args[0].as_symbol()?;
+                Ok(if let Some(class_value) = interp.class_value(symbol) {
+                    class_value
+                } else if is_builtin_class_name(symbol) {
+                    Value::Symbol(symbol.into())
                 } else {
-                    Value::list([crate::lisp::types::interned_symbol_value(symbol), Value::T])
-                },
-            )
-        }
-        "cl--class-children" | "eieio-class-children" => {
-            need_args(name, args, 1)?;
-            if let Some(children) = interp.raw_eieio_class_slot(&args[0], 5) {
-                return Ok(children);
+                    Value::Nil
+                })
             }
-            let Some(symbol) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            Ok(Value::list(interp.class_children(&symbol)))
-        }
-        "class-abstract-p" => {
-            need_args(name, args, 1)?;
-            let Some(symbol) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            let options = interp
-                .class_value(&symbol)
-                .and_then(|class| interp.raw_eieio_class_slot(&class, 10))
-                .or_else(|| interp.get_symbol_property(&symbol, "emaxx-class-options"));
-            let abstractp = options
-                .and_then(|options| options.to_vec().ok())
-                .is_some_and(|options| {
-                    options.windows(2).any(|pair| {
-                        matches!(&pair[0], Value::Symbol(option) if option == ":abstract")
-                            && pair[1].is_truthy()
-                    })
-                });
-            Ok(if abstractp { Value::T } else { Value::Nil })
-        }
-        "same-class-p" => {
-            need_args(name, args, 2)?;
-            let Value::Record(id) = &args[0] else {
-                return Err(LispError::TypeError(
-                    "eieio-object".into(),
-                    args[0].type_name(),
-                ));
-            };
-            let Some(record) = interp.find_record(*id) else {
-                return Err(LispError::TypeError(
-                    "eieio-object".into(),
-                    args[0].type_name(),
-                ));
-            };
-            let Some(class_name) = interp.class_name_from_value(&args[1]) else {
-                return Err(LispError::TypeError("class".into(), args[1].type_name()));
-            };
-            Ok(if record.type_name == class_name {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "eieio-oref-default" => {
-            need_args(name, args, 2)?;
-            // GNU accepts a class symbol, a class object, or an instance.
-            let Some(class_name) =
-                interp
-                    .class_name_from_value(&args[0])
-                    .or_else(|| match &args[0] {
-                        Value::Record(id) => interp
-                            .find_record(*id)
-                            .map(|record| record.type_name.clone()),
-                        _ => None,
-                    })
-            else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            let slot_name = args[1].as_symbol()?;
-            let slots = eieio_slot_specs(interp, &class_name)?;
-            if let Some(slot_index) = eieio_slot_index(&slots, slot_name) {
-                if slots[slot_index].class_allocated {
-                    let value =
-                        eieio_class_allocated_value(interp, &class_name, &slots[slot_index], env)?;
-                    // GNU's class-allocated `oref-default' returns the raw
-                    // storage without checking boundness.
-                    if interp.value_is_eieio_unbound(&value) {
+            "cl--struct-get-class" => {
+                need_args(name, args, 1)?;
+                let symbol = args[0].as_symbol()?;
+                Ok(interp.class_value(symbol).unwrap_or(Value::Nil))
+            }
+            "cl--struct-class-slots" => {
+                need_args(name, args, 1)?;
+                let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                    return Err(wrong_type_argument("cl--struct-class-p", args[0].clone()));
+                };
+                let descriptors = if let Some(raw) = interp
+                    .get_symbol_property(&class_name, "emaxx-struct-slot-descs")
+                    .and_then(|value| value.to_vec().ok())
+                {
+                    raw.into_iter()
+                        .skip(1) // GNU's class slot vector omits `cl-tag-slot'.
+                        .filter_map(|slot| {
+                            let parts = slot.to_vec().ok()?;
+                            let slot_name = parts.first()?.as_symbol().ok()?.to_string();
+                            let mut descriptor = EieioSlotDescriptor {
+                                name: slot_name,
+                                initform: parts.get(1).cloned(),
+                                slot_type: Value::T,
+                                props: Vec::new(),
+                                initargs: Vec::new(),
+                                class_allocated: false,
+                            };
+                            let mut index = 2;
+                            while index + 1 < parts.len() {
+                                let key = parts[index].as_symbol().ok()?.to_string();
+                                let value = parts[index + 1].clone();
+                                if key == ":type" {
+                                    descriptor.slot_type = value;
+                                } else {
+                                    descriptor.props.push((key, value));
+                                }
+                                index += 2;
+                            }
+                            Some(descriptor)
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    eieio_slot_descriptors(interp, &class_name)?
+                };
+                let records = descriptors
+                    .iter()
+                    .map(|descriptor| eieio_slot_descriptor_record(interp, env, descriptor))
+                    .collect::<Vec<_>>();
+                Ok(Value::list(
+                    std::iter::once(Value::Symbol("vector-literal".into())).chain(records),
+                ))
+            }
+            "cl--struct-class-type" => {
+                need_args(name, args, 1)?;
+                let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                    return Err(wrong_type_argument("cl--struct-class-p", args[0].clone()));
+                };
+                Ok(interp
+                    .get_symbol_property(&class_name, "emaxx-struct-sequence-type")
+                    .unwrap_or(Value::Nil))
+            }
+            "cl--class-index-table" => {
+                need_args(name, args, 1)?;
+                if let Some(table) = interp.raw_eieio_class_slot(&args[0], 4) {
+                    return Ok(table);
+                }
+                let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                    return Err(wrong_type_argument("class-p", args[0].clone()));
+                };
+                let sequence_type = interp
+                    .get_symbol_property(&class_name, "emaxx-struct-sequence-type")
+                    .unwrap_or(Value::Nil);
+                let offset = usize::from(sequence_type.is_nil());
+                let slots = interp
+                    .get_symbol_property(&class_name, "emaxx-struct-slots")
+                    .or_else(|| interp.get_symbol_property(&class_name, "emaxx-class-slots"))
+                    .and_then(|value| value.to_vec().ok())
+                    .unwrap_or_default();
+                let table = super::call(interp, "make-hash-table", &[], env)?;
+                for (index, slot) in slots.into_iter().enumerate() {
+                    let slot_name = match slot {
+                        Value::Symbol(name) => Value::Symbol(name),
+                        Value::Cons(_, _) => slot.car().unwrap_or(Value::Nil),
+                        _ => continue,
+                    };
+                    super::call(
+                        interp,
+                        "puthash",
+                        &[
+                            slot_name,
+                            Value::Integer((index + offset) as i64),
+                            table.clone(),
+                        ],
+                        env,
+                    )?;
+                }
+                Ok(table)
+            }
+            "cl-struct-define" => {
+                need_args(name, args, 9)?;
+                let struct_name = args[0].as_symbol()?.to_string();
+                if is_builtin_class_name(&struct_name) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("wrong-type-argument".into()),
+                        Value::Symbol("cl--struct-name-p".into()),
+                        Value::Symbol(struct_name),
+                        Value::Symbol("name".into()),
+                    ])));
+                }
+                let type_arg = args[3].clone();
+                let children_symbol = args[6].as_symbol()?.to_string();
+                let tag = args[7].clone();
+                if type_arg.is_nil() {
+                    interp.set_variable("cl-old-struct-compat-mode", Value::T, env);
+                }
+                let mut children = interp
+                    .lookup_var(&children_symbol, env)
+                    .and_then(|value| value.to_vec().ok())
+                    .unwrap_or_default();
+                if !children.iter().any(|child| child == &tag) {
+                    children.insert(0, tag.clone());
+                }
+                interp.set_variable(&children_symbol, Value::list(children), env);
+                if !matches!(tag, Value::Symbol(ref tag_name) if tag_name == &struct_name)
+                    && let Value::Symbol(tag_name) = &tag
+                {
+                    let class_value = interp
+                        .class_value(&struct_name)
+                        .unwrap_or_else(|| Value::Symbol(struct_name.clone()));
+                    interp.set_variable(tag_name, class_value, env);
+                    interp.set_function_binding(
+                        tag_name,
+                        Some(Value::Symbol(":quick-object-witness-check".into())),
+                    );
+                }
+                Ok(Value::Symbol(struct_name))
+            }
+            "cl-old-struct-compat-mode" => {
+                need_args(name, args, 1)?;
+                let enabled = !args[0].is_nil()
+                    && !matches!(&args[0], Value::Integer(n) if *n <= 0)
+                    && !matches!(&args[0], Value::BigInteger(n) if n <= &BigInt::from(0));
+                let value = if enabled { Value::T } else { Value::Nil };
+                interp.set_variable("cl-old-struct-compat-mode", value.clone(), env);
+                Ok(value)
+            }
+            "cl--class-name" => {
+                need_args(name, args, 1)?;
+                let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                Ok(crate::lisp::types::interned_symbol_value(class_name))
+            }
+            "cl--class-parents" => {
+                need_args(name, args, 1)?;
+                interp.class_parents_value(&args[0])
+            }
+            "cl--class-allparents" => {
+                need_args(name, args, 1)?;
+                let Some(symbol) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                Ok(
+                    if interp.class_value(&symbol).is_some() || is_builtin_class_name(&symbol) {
+                        Value::list(interp.class_allparents(&symbol))
+                    } else if symbol == "t" {
+                        Value::list([Value::T])
+                    } else {
+                        Value::list([crate::lisp::types::interned_symbol_value(symbol), Value::T])
+                    },
+                )
+            }
+            "cl--class-children" | "eieio-class-children" => {
+                need_args(name, args, 1)?;
+                if let Some(children) = interp.raw_eieio_class_slot(&args[0], 5) {
+                    return Ok(children);
+                }
+                let Some(symbol) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                Ok(Value::list(interp.class_children(&symbol)))
+            }
+            "class-abstract-p" => {
+                need_args(name, args, 1)?;
+                let Some(symbol) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                let options = interp
+                    .class_value(&symbol)
+                    .and_then(|class| interp.raw_eieio_class_slot(&class, 10))
+                    .or_else(|| interp.get_symbol_property(&symbol, "emaxx-class-options"));
+                let abstractp = options
+                    .and_then(|options| options.to_vec().ok())
+                    .is_some_and(|options| {
+                        options.windows(2).any(|pair| {
+                            matches!(&pair[0], Value::Symbol(option) if option == ":abstract")
+                                && pair[1].is_truthy()
+                        })
+                    });
+                Ok(if abstractp { Value::T } else { Value::Nil })
+            }
+            "same-class-p" => {
+                need_args(name, args, 2)?;
+                let Value::Record(id) = &args[0] else {
+                    return Err(LispError::TypeError(
+                        "eieio-object".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                let Some(record) = interp.find_record(*id) else {
+                    return Err(LispError::TypeError(
+                        "eieio-object".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                let Some(class_name) = interp.class_name_from_value(&args[1]) else {
+                    return Err(LispError::TypeError("class".into(), args[1].type_name()));
+                };
+                Ok(if record.type_name == class_name {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "eieio-oref-default" => {
+                need_args(name, args, 2)?;
+                // GNU accepts a class symbol, a class object, or an instance.
+                let Some(class_name) =
+                    interp
+                        .class_name_from_value(&args[0])
+                        .or_else(|| match &args[0] {
+                            Value::Record(id) => interp
+                                .find_record(*id)
+                                .map(|record| record.type_name.clone()),
+                            _ => None,
+                        })
+                else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                let slot_name = args[1].as_symbol()?;
+                let slots = eieio_slot_specs(interp, &class_name)?;
+                if let Some(slot_index) = eieio_slot_index(&slots, slot_name) {
+                    if slots[slot_index].class_allocated {
+                        let value = eieio_class_allocated_value(
+                            interp,
+                            &class_name,
+                            &slots[slot_index],
+                            env,
+                        )?;
+                        // GNU's class-allocated `oref-default' returns the raw
+                        // storage without checking boundness.
+                        if interp.value_is_eieio_unbound(&value) {
+                            return Ok(interp
+                                .lookup_var("eieio--unbound", env)
+                                .unwrap_or(Value::Unbound));
+                        }
+                        return Ok(value);
+                    }
+                    if let Some(initform) = &slots[slot_index].initform {
+                        return interp.eval(initform, env);
+                    }
+                    if let Some(value) = interp
+                        .get_symbol_property(&class_name, &eieio_class_default_property(slot_name))
+                    {
+                        if interp.value_is_eieio_unbound(&value) {
+                            return Ok(interp
+                                .lookup_var("eieio--unbound", env)
+                                .unwrap_or(Value::Unbound));
+                        }
+                        return Ok(value);
+                    }
+                    // While GNU builds a class's default-object cache it binds
+                    // eieio-skip-typecheck and expects an absent initform to
+                    // remain the unbound marker.  Returning nil here silently
+                    // turns every unspecified slot into a bound-nil slot.
+                    if interp
+                        .lookup_var("eieio-skip-typecheck", env)
+                        .is_some_and(|setting| setting.is_truthy())
+                    {
                         return Ok(interp
                             .lookup_var("eieio--unbound", env)
                             .unwrap_or(Value::Unbound));
                     }
-                    return Ok(value);
-                }
-                if let Some(initform) = &slots[slot_index].initform {
-                    return interp.eval(initform, env);
+                    return eieio_slot_unbound_dispatch(
+                        interp,
+                        env,
+                        &args[0],
+                        &class_name,
+                        slot_name,
+                        "oref-default",
+                    );
                 }
                 if let Some(value) = interp
                     .get_symbol_property(&class_name, &eieio_class_default_property(slot_name))
@@ -3519,754 +3306,732 @@ pub(super) fn call(
                     }
                     return Ok(value);
                 }
-                // While GNU builds a class's default-object cache it binds
-                // eieio-skip-typecheck and expects an absent initform to
-                // remain the unbound marker.  Returning nil here silently
-                // turns every unspecified slot into a bound-nil slot.
-                if interp
+                Ok(Value::Nil)
+            }
+            "eieio-oset-default" => {
+                need_args(name, args, 3)?;
+                // GNU accepts a class symbol, a class object, or an instance.
+                let Some(class_name) =
+                    interp
+                        .class_name_from_value(&args[0])
+                        .or_else(|| match &args[0] {
+                            Value::Record(id) => interp
+                                .find_record(*id)
+                                .map(|record| record.type_name.clone()),
+                            _ => None,
+                        })
+                else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                let slot_name = args[1].as_symbol()?.to_string();
+                let slots = eieio_slot_specs(interp, &class_name)?;
+                let Some(slot_index) = eieio_slot_index(&slots, &slot_name) else {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("invalid-slot-name".into()),
+                        Value::Symbol(class_name),
+                        Value::Symbol(slot_name),
+                    ])));
+                };
+                let skip_typecheck = interp
                     .lookup_var("eieio-skip-typecheck", env)
-                    .is_some_and(|setting| setting.is_truthy())
+                    .is_some_and(|setting| setting.is_truthy());
+                if !skip_typecheck
+                    && !eieio_value_matches_type(
+                        interp,
+                        &args[2],
+                        &slots[slot_index].slot_type,
+                        env,
+                    )?
                 {
-                    return Ok(interp
-                        .lookup_var("eieio--unbound", env)
-                        .unwrap_or(Value::Unbound));
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("invalid-slot-type".into()),
+                        Value::Symbol(class_name),
+                        Value::Symbol(slots[slot_index].name.clone()),
+                        slots[slot_index].slot_type.clone(),
+                        args[2].clone(),
+                    ])));
                 }
-                return eieio_slot_unbound_dispatch(
-                    interp,
-                    env,
-                    &args[0],
-                    &class_name,
-                    slot_name,
-                    "oref-default",
-                );
-            }
-            if let Some(value) =
-                interp.get_symbol_property(&class_name, &eieio_class_default_property(slot_name))
-            {
-                if interp.value_is_eieio_unbound(&value) {
-                    return Ok(interp
-                        .lookup_var("eieio--unbound", env)
-                        .unwrap_or(Value::Unbound));
+                if slots[slot_index].class_allocated {
+                    if set_eieio_class_allocated_value(
+                        interp,
+                        &class_name,
+                        &slots[slot_index].name,
+                        args[2].clone(),
+                    )? {
+                        return Ok(args[2].clone());
+                    }
+                    interp.put_symbol_property(
+                        &class_name,
+                        &eieio_class_allocation_property(&slots[slot_index].name),
+                        args[2].clone(),
+                    );
+                } else {
+                    set_eieio_instance_default(
+                        interp,
+                        &class_name,
+                        &slots[slot_index].name,
+                        slot_index,
+                        args[2].clone(),
+                    )?;
                 }
-                return Ok(value);
+                Ok(args[2].clone())
             }
-            Ok(Value::Nil)
-        }
-        "eieio-oset-default" => {
-            need_args(name, args, 3)?;
-            // GNU accepts a class symbol, a class object, or an instance.
-            let Some(class_name) =
+            "eieio--object-class" => {
+                need_args(name, args, 1)?;
+                match &args[0] {
+                    value if !interp.value_is_eieio_object(value) => Err(LispError::TypeError(
+                        "eieio-object".into(),
+                        value.type_name(),
+                    )),
+                    Value::Record(id) => {
+                        let class_name = interp
+                            .find_record(*id)
+                            .map(|record| record.type_name.clone())
+                            .ok_or_else(|| {
+                                LispError::TypeError("eieio-object".into(), args[0].type_name())
+                            })?;
+                        // GNU's Lisp helper resolves the object's record tag to
+                        // the live class object.  Returning only the tag symbol
+                        // makes every subsequent eieio--class accessor reject
+                        // an otherwise valid instance.
+                        Ok(interp
+                            .class_value(&class_name)
+                            .unwrap_or(Value::Symbol(class_name)))
+                    }
+                    _ => Err(LispError::TypeError(
+                        "eieio-object".into(),
+                        args[0].type_name(),
+                    )),
+                }
+            }
+            "eieio--class-children" => {
+                need_args(name, args, 1)?;
+                if let Some(children) = interp.raw_eieio_class_slot(&args[0], 5) {
+                    return Ok(children);
+                }
+                let Some(symbol) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                // GNU stores child class NAMES in the class record
+                // (`eieio-defclass-internal' pushes the symbol).
+                Ok(Value::list(interp.class_children(&symbol)))
+            }
+            "eieio--class-name" => {
+                need_args(name, args, 1)?;
                 interp
                     .class_name_from_value(&args[0])
-                    .or_else(|| match &args[0] {
-                        Value::Record(id) => interp
-                            .find_record(*id)
-                            .map(|record| record.type_name.clone()),
-                        _ => None,
-                    })
-            else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            let slot_name = args[1].as_symbol()?.to_string();
-            let slots = eieio_slot_specs(interp, &class_name)?;
-            let Some(slot_index) = eieio_slot_index(&slots, &slot_name) else {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("invalid-slot-name".into()),
-                    Value::Symbol(class_name),
-                    Value::Symbol(slot_name),
-                ])));
-            };
-            let skip_typecheck = interp
-                .lookup_var("eieio-skip-typecheck", env)
-                .is_some_and(|setting| setting.is_truthy());
-            if !skip_typecheck
-                && !eieio_value_matches_type(interp, &args[2], &slots[slot_index].slot_type, env)?
-            {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("invalid-slot-type".into()),
-                    Value::Symbol(class_name),
-                    Value::Symbol(slots[slot_index].name.clone()),
-                    slots[slot_index].slot_type.clone(),
-                    args[2].clone(),
-                ])));
+                    .map(Value::Symbol)
+                    .ok_or_else(|| LispError::TypeError("class".into(), args[0].type_name()))
             }
-            if slots[slot_index].class_allocated {
-                if set_eieio_class_allocated_value(
-                    interp,
-                    &class_name,
-                    &slots[slot_index].name,
-                    args[2].clone(),
-                )? {
-                    return Ok(args[2].clone());
-                }
-                interp.put_symbol_property(
-                    &class_name,
-                    &eieio_class_allocation_property(&slots[slot_index].name),
-                    args[2].clone(),
-                );
-            } else {
-                set_eieio_instance_default(
-                    interp,
-                    &class_name,
-                    &slots[slot_index].name,
-                    slot_index,
-                    args[2].clone(),
-                )?;
-            }
-            Ok(args[2].clone())
-        }
-        "eieio--object-class" => {
-            need_args(name, args, 1)?;
-            match &args[0] {
-                value if !interp.value_is_eieio_object(value) => Err(LispError::TypeError(
-                    "eieio-object".into(),
-                    value.type_name(),
-                )),
-                Value::Record(id) => {
-                    let class_name = interp
-                        .find_record(*id)
-                        .map(|record| record.type_name.clone())
-                        .ok_or_else(|| {
-                            LispError::TypeError("eieio-object".into(), args[0].type_name())
-                        })?;
-                    // GNU's Lisp helper resolves the object's record tag to
-                    // the live class object.  Returning only the tag symbol
-                    // makes every subsequent eieio--class accessor reject
-                    // an otherwise valid instance.
-                    Ok(interp
-                        .class_value(&class_name)
-                        .unwrap_or(Value::Symbol(class_name)))
-                }
-                _ => Err(LispError::TypeError(
-                    "eieio-object".into(),
-                    args[0].type_name(),
-                )),
-            }
-        }
-        "eieio--class-children" => {
-            need_args(name, args, 1)?;
-            if let Some(children) = interp.raw_eieio_class_slot(&args[0], 5) {
-                return Ok(children);
-            }
-            let Some(symbol) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            // GNU stores child class NAMES in the class record
-            // (`eieio-defclass-internal' pushes the symbol).
-            Ok(Value::list(interp.class_children(&symbol)))
-        }
-        "eieio--class-name" => {
-            need_args(name, args, 1)?;
-            interp
-                .class_name_from_value(&args[0])
-                .map(Value::Symbol)
-                .ok_or_else(|| LispError::TypeError("class".into(), args[0].type_name()))
-        }
-        "eieio-object-p" => {
-            need_args(name, args, 1)?;
-            Ok(if interp.value_is_eieio_object(&args[0]) {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "slot-boundp" => {
-            need_args(name, args, 2)?;
-            let slot_name = args[1].as_symbol()?;
-            eieio_slot_boundp(interp, &args[0], slot_name)
-        }
-        "eieio--class-slots" | "eieio--class-class-slots" => {
-            need_args(name, args, 1)?;
-            let raw_index = if name == "eieio--class-slots" { 3 } else { 7 };
-            if let Some(slots) = interp.raw_eieio_class_slot(&args[0], raw_index) {
-                return Ok(slots);
-            }
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            let want_class_allocated = name == "eieio--class-class-slots";
-            let descriptors = eieio_slot_descriptors(interp, &class_name)?;
-            let mut items = vec![Value::Symbol("vector-literal".into())];
-            for descriptor in &descriptors {
-                if descriptor.class_allocated == want_class_allocated {
-                    items.push(eieio_slot_descriptor_record(interp, env, descriptor));
-                }
-            }
-            Ok(Value::list(items))
-        }
-        "eieio--class-initarg-tuples" => {
-            need_args(name, args, 1)?;
-            if let Some(tuples) = interp.raw_eieio_class_slot(&args[0], 6) {
-                return Ok(tuples);
-            }
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            let descriptors = eieio_slot_descriptors(interp, &class_name)?;
-            let mut tuples: Vec<Value> = Vec::new();
-            for descriptor in &descriptors {
-                for initarg in &descriptor.initargs {
-                    tuples.push(Value::cons(
-                        Value::Symbol(initarg.clone()),
-                        Value::Symbol(descriptor.name.clone()),
-                    ));
-                }
-            }
-            Ok(Value::list(tuples))
-        }
-        "cl--slot-descriptor-name"
-        | "cl--slot-descriptor-initform"
-        | "cl--slot-descriptor-type"
-        | "cl--slot-descriptor-props" => {
-            need_args(name, args, 1)?;
-            let slot_index = match name {
-                "cl--slot-descriptor-name" => 0,
-                "cl--slot-descriptor-initform" => 1,
-                "cl--slot-descriptor-type" => 2,
-                _ => 3,
-            };
-            match &args[0] {
-                Value::Record(id)
-                    if interp
-                        .find_record(*id)
-                        .is_some_and(|record| record.type_name == "cl-slot-descriptor") =>
-                {
-                    Ok(interp
-                        .find_record(*id)
-                        .and_then(|record| record.slots.get(slot_index).cloned())
-                        .unwrap_or(Value::Nil))
-                }
-                _ => Err(LispError::TypeError(
-                    "cl-slot-descriptor".into(),
-                    args[0].type_name(),
-                )),
-            }
-        }
-        "cl--make-slot-desc" | "cl--make-slot-descriptor" => {
-            need_arg_range(name, args, 1, 4)?;
-            Ok(interp.create_record(
-                "cl-slot-descriptor",
-                vec![
-                    args[0].clone(),
-                    args.get(1).cloned().unwrap_or(Value::Nil),
-                    args.get(2).cloned().unwrap_or(Value::Nil),
-                    args.get(3).cloned().unwrap_or(Value::Nil),
-                ],
-            ))
-        }
-        "cl--copy-slot-descriptor-1" | "cl--copy-slot-descriptor" => {
-            need_args(name, args, 1)?;
-            let Value::Record(record_id) = &args[0] else {
-                return Err(LispError::TypeError(
-                    "cl-slot-descriptor".into(),
-                    args[0].type_name(),
-                ));
-            };
-            let mut slots = interp
-                .find_record(*record_id)
-                .filter(|record| record.type_name == "cl-slot-descriptor")
-                .map(|record| record.slots.clone())
-                .ok_or_else(|| {
-                    LispError::TypeError("cl-slot-descriptor".into(), args[0].type_name())
-                })?;
-            if name == "cl--copy-slot-descriptor"
-                && let Some(props) = slots.get(3).cloned()
-            {
-                slots[3] = super::call(interp, "copy-alist", &[props], env)?;
-            }
-            Ok(interp.create_record("cl-slot-descriptor", slots))
-        }
-        "cl-slot-descriptor-p" => {
-            need_args(name, args, 1)?;
-            Ok(
-                if matches!(
-                    &args[0],
-                    Value::Record(record_id)
-                        if interp.find_record(*record_id).is_some_and(|record| record.type_name == "cl-slot-descriptor")
-                ) {
+            "eieio-object-p" => {
+                need_args(name, args, 1)?;
+                Ok(if interp.value_is_eieio_object(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
-                },
-            )
-        }
-        "make-instance" => {
-            if args.is_empty() {
-                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+                })
             }
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            make_eieio_instance(interp, &class_name, &args[1..], true, env)
-        }
-        "clone" => {
-            if args.is_empty() {
-                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            "slot-boundp" => {
+                need_args(name, args, 2)?;
+                let slot_name = args[1].as_symbol()?;
+                eieio_slot_boundp(interp, &args[0], slot_name)
             }
-            clone_eieio_instance(interp, &args[0], &args[1..])
-        }
-        "semanticdb-find-tags-by-class" => {
-            need_arg_range(name, args, 1, 3)?;
-            semanticdb_find_tags_by_class(interp, args, env)
-        }
-        "semanticdb-find-tags-by-name" => {
-            need_arg_range(name, args, 1, 3)?;
-            semanticdb_find_tags_by_name(interp, args, env)
-        }
-        "semanticdb-find-tags-for-completion" => {
-            need_arg_range(name, args, 1, 3)?;
-            semanticdb_find_tags_for_completion(interp, args, env)
-        }
-        "semantic-fetch-tags" => {
-            need_arg_range(name, args, 0, 1)?;
-            semantic_fetch_tags_compat(interp, env)
-        }
-        "semantic-current-tag" => {
-            need_arg_range(name, args, 0, 1)?;
-            let result = semantic_current_tag_compat(interp, env);
-            if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some()
-                && let Ok(tag) = &result
-            {
-                eprintln!(
-                    "[sem] current-tag buf={} point={} -> {}",
-                    interp.buffer.name,
-                    interp.buffer.point(),
-                    tag
-                );
-            }
-            result
-        }
-        "semantic-current-tag-of-class" => {
-            need_args(name, args, 1)?;
-            let target_class = args[0].as_symbol()?.to_string();
-            semantic_current_tag_of_class_compat(interp, env, &target_class)
-        }
-        "semantic-find-tag-by-overlay-prev" | "semantic-find-tag-by-overlay-next" => {
-            need_arg_range(name, args, 0, 2)?;
-            let start = match args.first() {
-                Some(value) if value.is_truthy() => value.as_integer()?,
-                _ => interp.buffer.point() as i64,
-            };
-            let tags = semantic_fetch_tags_compat(interp, env)?
-                .to_vec()
-                .unwrap_or_default();
-            let mut flat = Vec::new();
-            semantic_flatten_tags(&tags, &mut flat);
-            let forward = name.ends_with("next");
-            let mut best: Option<(i64, Value)> = None;
-            for tag in flat {
-                let Some((tag_start, tag_end)) = semantic_tag_bounds(&tag) else {
-                    continue;
+            "eieio--class-slots" | "eieio--class-class-slots" => {
+                need_args(name, args, 1)?;
+                let raw_index = if name == "eieio--class-slots" { 3 } else { 7 };
+                if let Some(slots) = interp.raw_eieio_class_slot(&args[0], raw_index) {
+                    return Ok(slots);
+                }
+                let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
                 };
-                if forward {
-                    if tag_start > start && best.as_ref().is_none_or(|(pos, _)| tag_start < *pos) {
-                        best = Some((tag_start, tag));
+                let want_class_allocated = name == "eieio--class-class-slots";
+                let descriptors = eieio_slot_descriptors(interp, &class_name)?;
+                let mut items = vec![Value::Symbol("vector-literal".into())];
+                for descriptor in &descriptors {
+                    if descriptor.class_allocated == want_class_allocated {
+                        items.push(eieio_slot_descriptor_record(interp, env, descriptor));
                     }
-                } else if tag_end <= start && best.as_ref().is_none_or(|(pos, _)| tag_end >= *pos) {
-                    best = Some((tag_end, tag));
+                }
+                Ok(Value::list(items))
+            }
+            "eieio--class-initarg-tuples" => {
+                need_args(name, args, 1)?;
+                if let Some(tuples) = interp.raw_eieio_class_slot(&args[0], 6) {
+                    return Ok(tuples);
+                }
+                let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                let descriptors = eieio_slot_descriptors(interp, &class_name)?;
+                let mut tuples: Vec<Value> = Vec::new();
+                for descriptor in &descriptors {
+                    for initarg in &descriptor.initargs {
+                        tuples.push(Value::cons(
+                            Value::Symbol(initarg.clone()),
+                            Value::Symbol(descriptor.name.clone()),
+                        ));
+                    }
+                }
+                Ok(Value::list(tuples))
+            }
+            "cl--slot-descriptor-name"
+            | "cl--slot-descriptor-initform"
+            | "cl--slot-descriptor-type"
+            | "cl--slot-descriptor-props" => {
+                need_args(name, args, 1)?;
+                let slot_index = match name {
+                    "cl--slot-descriptor-name" => 0,
+                    "cl--slot-descriptor-initform" => 1,
+                    "cl--slot-descriptor-type" => 2,
+                    _ => 3,
+                };
+                match &args[0] {
+                    Value::Record(id)
+                        if interp
+                            .find_record(*id)
+                            .is_some_and(|record| record.type_name == "cl-slot-descriptor") =>
+                    {
+                        Ok(interp
+                            .find_record(*id)
+                            .and_then(|record| record.slots.get(slot_index).cloned())
+                            .unwrap_or(Value::Nil))
+                    }
+                    _ => Err(LispError::TypeError(
+                        "cl-slot-descriptor".into(),
+                        args[0].type_name(),
+                    )),
                 }
             }
-            Ok(best.map(|(_, tag)| tag).unwrap_or(Value::Nil))
-        }
-        "semantic-ctxt-current-symbol" => {
-            need_args(name, args, 0)?;
-            Ok(semantic_ctxt_current_symbol(interp)
-                .map(|symbol| symbol.parts_value)
-                .unwrap_or(Value::Nil))
-        }
-        "semantic-ctxt-current-symbol-and-bounds" => {
-            need_args(name, args, 0)?;
-            Ok(if let Some(symbol) = semantic_ctxt_current_symbol(interp) {
-                Value::list([
-                    symbol.parts_value,
-                    Value::String(symbol.text),
-                    Value::cons(
-                        Value::Integer(symbol.start as i64),
-                        Value::Integer(symbol.end as i64),
-                    ),
-                ])
-            } else {
-                Value::list([Value::Nil, Value::Nil, Value::Nil])
-            })
-        }
-        "bounds-of-thing-at-point" => {
-            need_args(name, args, 1)?;
-            let thing = args[0].as_symbol()?;
-            Ok(bounds_of_thing_at_point(interp, thing).unwrap_or(Value::Nil))
-        }
-        "semantic-analyze-possible-completions" => {
-            need_args(name, args, 1)?;
-            semantic_analyze_possible_completions(interp, env)
-        }
-        "semantic-analyze-tag-references" => {
-            need_args(name, args, 1)?;
-            semantic_analyze_tag_references(interp, &args[0], env)
-        }
-        "semantic-analyze-refs-impl" => {
-            need_arg_range(name, args, 1, 2)?;
-            semantic_analyze_refs_part(&args[0], 1)
-        }
-        "semantic-analyze-refs-proto" => {
-            need_arg_range(name, args, 1, 2)?;
-            semantic_analyze_refs_part(&args[0], 2)
-        }
-        "semantic-symref-find-references-by-name" => {
-            need_arg_range(name, args, 1, 3)?;
-            semantic_symref_find_references_by_name(interp, &args[0])
-        }
-        "semantic-symref-result-get-files" => {
-            need_args(name, args, 1)?;
-            semantic_symref_result_part(&args[0], 2)
-        }
-        "semantic-symref-result-get-tags" => {
-            need_arg_range(name, args, 1, 2)?;
-            semantic_symref_result_part(&args[0], 3)
-        }
-        "semantic-symref-hits-in-region" => {
-            need_args(name, args, 4)?;
-            semantic_symref_hits_in_region(interp, args, env)
-        }
-        "semantic-symref-test-count-hits-in-tag" => {
-            need_args(name, args, 0)?;
-            semantic_symref_test_count_hits_in_tag(interp)
-        }
-        "semantic-equivalent-tag-p" => {
-            need_args(name, args, 2)?;
-            let matches = semantic_tags_equivalent(&args[0], &args[1]);
-            if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some() {
-                eprintln!("[sem] equiv {} vs {} -> {}", args[0], args[1], matches);
+            "cl--make-slot-desc" | "cl--make-slot-descriptor" => {
+                need_arg_range(name, args, 1, 4)?;
+                Ok(interp.create_record(
+                    "cl-slot-descriptor",
+                    vec![
+                        args[0].clone(),
+                        args.get(1).cloned().unwrap_or(Value::Nil),
+                        args.get(2).cloned().unwrap_or(Value::Nil),
+                        args.get(3).cloned().unwrap_or(Value::Nil),
+                    ],
+                ))
             }
-            Ok(if matches { Value::T } else { Value::Nil })
-        }
-        "semantic-go-to-tag" => {
-            need_arg_range(name, args, 1, 2)?;
-            semantic_go_to_tag(interp, &args[0], env)
-        }
-        "semantic-clear-toplevel-cache" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Nil)
-        }
-        "semanticdb-typecache-find" => {
-            need_arg_range(name, args, 1, 3)?;
-            semanticdb_typecache_find(interp, args, env)
-        }
-        "semanticdb-typecache-add-dependant" => {
-            need_args(name, args, 1)?;
-            Ok(Value::Nil)
-        }
-        "srecode-template-get-table" => {
-            need_arg_range(name, args, 2, 4)?;
-            srecode_template_get_table(interp, args, env)
-        }
-        "emaxx-class-make" => {
-            need_args(name, args, 2)?;
-            let class_name = args[0].as_symbol()?;
-            let initargs = args[1].to_vec()?;
-            make_eieio_instance(interp, class_name, &initargs, true, env)
-        }
-        "eieio-oref" | "slot-value" => {
-            need_args(name, args, 2)?;
-            let slot_name = args[1].as_symbol()?.to_string();
-            // GNU's eieio-oref also reads OClosure slots.
-            if oclosure_type_of(&args[0]).is_some() {
-                return super::call(
-                    interp,
-                    "emaxx--oclosure-slot",
-                    &[args[0].clone(), Value::Symbol(slot_name)],
-                    env,
-                );
-            }
-            eieio_oref_dispatch(interp, env, &args[0], &slot_name)
-        }
-        "eieio-oset" => {
-            need_args(name, args, 3)?;
-            let slot_name = args[1].as_symbol()?.to_string();
-            // GNU's eieio-oset writes OClosure slots (setting-constant for
-            // slots not declared :mutable).
-            if oclosure_type_of(&args[0]).is_some() {
-                return super::call(
-                    interp,
-                    "emaxx--oclosure-set-slot",
-                    &[args[0].clone(), Value::Symbol(slot_name), args[2].clone()],
-                    env,
-                );
-            }
-            eieio_oset_dispatch(interp, env, &args[0], &slot_name, args[2].clone())
-        }
-        "slot-makeunbound" => {
-            need_args(name, args, 2)?;
-            let slot_name = args[1].as_symbol()?.to_string();
-            eieio_slot_makeunbound(interp, &args[0], &slot_name)
-        }
-        "slot-exists-p" => {
-            need_args(name, args, 2)?;
-            let slot_name = args[1].as_symbol()?;
-            let Some(class_name) = (match &args[0] {
-                Value::Record(id) => interp
-                    .find_record(*id)
-                    .map(|record| record.type_name.clone()),
-                other => interp.class_name_from_value(other),
-            }) else {
-                return Err(LispError::TypeError(
-                    "eieio-object".into(),
-                    args[0].type_name(),
-                ));
-            };
-            let slots = eieio_slot_specs(interp, &class_name)?;
-            Ok(if slots.iter().any(|slot| slot.name == slot_name) {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "map-elt" | "map-contains-key" => {
-            // GNU map.el dispatches on the map's shape: a list is a plist
-            // when its first element is an atom, otherwise an alist;
-            // hash tables and arrays are supported directly.
-            need_arg_range(name, args, 2, 4)?;
-            let map = &args[0];
-            let key = &args[1];
-            let contains = name == "map-contains-key";
-            let (default, testfn) = if contains {
-                (Value::Nil, args.get(2).cloned())
-            } else {
-                (
-                    args.get(2).cloned().unwrap_or(Value::Nil),
-                    args.get(3).cloned(),
-                )
-            };
-            let found: Option<Value> = if json::is_hash_table(interp, map) {
-                let sentinel = Value::Unbound;
-                let result = super::call(
-                    interp,
-                    "gethash",
-                    &[key.clone(), map.clone(), sentinel.clone()],
-                    env,
-                )?;
-                if matches!(result, Value::Unbound) {
-                    None
-                } else {
-                    Some(result)
-                }
-            } else if is_vector_value(map) || map.is_string() {
-                let length = super::call(interp, "length", std::slice::from_ref(map), env)?
-                    .as_integer()
-                    .unwrap_or(0);
-                match key.as_integer() {
-                    Ok(index) if index >= 0 && index < length => Some(super::call(
-                        interp,
-                        "elt",
-                        &[map.clone(), key.clone()],
-                        env,
-                    )?),
-                    _ => None,
-                }
-            } else if map.is_nil() {
-                None
-            } else if map
-                .cons_values()
-                .is_some_and(|(car, _)| !matches!(car, Value::Cons(..)))
-            {
-                // Plist.
-                let mut member_args = vec![map.clone(), key.clone()];
-                if let Some(testfn) = &testfn {
-                    member_args.push(testfn.clone());
-                }
-                let member = super::call(interp, "plist-member", &member_args, env)?;
-                if member.is_nil() {
-                    None
-                } else {
-                    Some(member.cdr()?.car().unwrap_or(Value::Nil))
-                }
-            } else {
-                // Alist; GNU compares with `equal' by default.
-                let testfn = testfn.unwrap_or(Value::Symbol("equal".into()));
-                let entry = super::call(interp, "assoc", &[key.clone(), map.clone(), testfn], env)?;
-                if entry.is_nil() {
-                    None
-                } else {
-                    Some(entry.cdr()?)
-                }
-            };
-            Ok(if contains {
-                if found.is_some() {
-                    Value::T
-                } else {
-                    Value::Nil
-                }
-            } else {
-                found.unwrap_or(default)
-            })
-        }
-        "ert-set-test" => {
-            need_args(name, args, 2)?;
-            let symbol = args[0].as_symbol()?.to_string();
-            interp.ert_set_test(&symbol, &args[1])
-        }
-        "emaxx--cl-generic-apply-next" => {
-            need_args(name, args, 4)?;
-            let next = &args[0];
-            let generic = args[1].clone();
-            let kind = args[2].as_symbol()?.to_string();
-            let call_args = args[3].to_vec()?;
-            let exhausted = matches!(next, Value::Nil) || interp.callable_is_ignore(next);
-            if !exhausted {
-                return invoke_function_value(interp, next, &call_args, env);
-            }
-            // GNU routes an exhausted chain through `cl-no-next-method' (a
-            // method ran out of next methods) or `cl-no-applicable-method'
-            // (no method matched at all).
-            let (hook, mut hook_args) = if kind == "no-applicable" {
-                ("cl-no-applicable-method", vec![generic.clone()])
-            } else {
-                ("cl-no-next-method", vec![generic.clone(), Value::Nil])
-            };
-            hook_args.extend(call_args.iter().cloned());
-            if let Ok(hook_function) = interp.lookup_function(hook, env)
-                && !interp.callable_is_ignore(&hook_function)
-            {
-                return invoke_function_value(interp, &hook_function, &hook_args, env);
-            }
-            // GNU's default methods signal the dedicated conditions
-            // (cl-no-applicable-method GENERIC . ARGS).
-            Err(LispError::SignalValue(Value::list(
-                std::iter::once(Value::Symbol(hook.into())).chain(hook_args),
-            )))
-        }
-        "eieio--class-parents" => {
-            need_args(name, args, 1)?;
-            interp.class_parents_value(&args[0])
-        }
-        "eieio--class-default-object-cache" => {
-            need_args(name, args, 1)?;
-            if let Some(cache) = interp.raw_eieio_class_slot(&args[0], 9) {
-                return Ok(cache);
-            }
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            Ok(interp
-                .class_default_object_cache(&class_name)
-                .unwrap_or(Value::Nil))
-        }
-        "eieio--class-options" => {
-            need_args(name, args, 1)?;
-            if let Some(options) = interp.raw_eieio_class_slot(&args[0], 10) {
-                return Ok(options);
-            }
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
-                return Err(LispError::TypeError("class".into(), args[0].type_name()));
-            };
-            Ok(interp
-                .get_symbol_property(&class_name, "emaxx-class-options")
-                .unwrap_or(Value::Nil))
-        }
-        "built-in-class-p" => {
-            need_args(name, args, 1)?;
-            Ok(
-                if args[0].as_symbol().ok().is_some_and(is_builtin_class_name) {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
-        }
-        "cl-typep" => {
-            need_args(name, args, 2)?;
-            let matches = cl_typep_matches(interp, env, &args[0], &args[1])?;
-            Ok(if matches { Value::T } else { Value::Nil })
-        }
-        "cl-functionp" => {
-            need_args(name, args, 1)?;
-            Ok(
-                if is_lambda_expression(&args[0])
-                    || matches!(
-                        cl_type_name(interp, &args[0])?,
-                        "primitive-function"
-                            | "special-form"
-                            | "interpreted-function"
-                            | "byte-code-function"
-                    )
+            "cl--copy-slot-descriptor-1" | "cl--copy-slot-descriptor" => {
+                need_args(name, args, 1)?;
+                let Value::Record(record_id) = &args[0] else {
+                    return Err(LispError::TypeError(
+                        "cl-slot-descriptor".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                let mut slots = interp
+                    .find_record(*record_id)
+                    .filter(|record| record.type_name == "cl-slot-descriptor")
+                    .map(|record| record.slots.clone())
+                    .ok_or_else(|| {
+                        LispError::TypeError("cl-slot-descriptor".into(), args[0].type_name())
+                    })?;
+                if name == "cl--copy-slot-descriptor"
+                    && let Some(props) = slots.get(3).cloned()
                 {
+                    slots[3] = super::call(interp, "copy-alist", &[props], env)?;
+                }
+                Ok(interp.create_record("cl-slot-descriptor", slots))
+            }
+            "cl-slot-descriptor-p" => {
+                need_args(name, args, 1)?;
+                Ok(
+                    if matches!(
+                        &args[0],
+                        Value::Record(record_id)
+                            if interp.find_record(*record_id).is_some_and(|record| record.type_name == "cl-slot-descriptor")
+                    ) {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "make-instance" => {
+                if args.is_empty() {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+                }
+                let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                make_eieio_instance(interp, &class_name, &args[1..], true, env)
+            }
+            "clone" => {
+                if args.is_empty() {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+                }
+                clone_eieio_instance(interp, &args[0], &args[1..])
+            }
+            "semanticdb-find-tags-by-class" => {
+                need_arg_range(name, args, 1, 3)?;
+                semanticdb_find_tags_by_class(interp, args, env)
+            }
+            "semanticdb-find-tags-by-name" => {
+                need_arg_range(name, args, 1, 3)?;
+                semanticdb_find_tags_by_name(interp, args, env)
+            }
+            "semanticdb-find-tags-for-completion" => {
+                need_arg_range(name, args, 1, 3)?;
+                semanticdb_find_tags_for_completion(interp, args, env)
+            }
+            "semantic-fetch-tags" => {
+                need_arg_range(name, args, 0, 1)?;
+                semantic_fetch_tags_compat(interp, env)
+            }
+            "semantic-current-tag" => {
+                need_arg_range(name, args, 0, 1)?;
+                let result = semantic_current_tag_compat(interp, env);
+                if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some()
+                    && let Ok(tag) = &result
+                {
+                    eprintln!(
+                        "[sem] current-tag buf={} point={} -> {}",
+                        interp.buffer.name,
+                        interp.buffer.point(),
+                        tag
+                    );
+                }
+                result
+            }
+            "semantic-current-tag-of-class" => {
+                need_args(name, args, 1)?;
+                let target_class = args[0].as_symbol()?.to_string();
+                semantic_current_tag_of_class_compat(interp, env, &target_class)
+            }
+            "semantic-find-tag-by-overlay-prev" | "semantic-find-tag-by-overlay-next" => {
+                need_arg_range(name, args, 0, 2)?;
+                let start = match args.first() {
+                    Some(value) if value.is_truthy() => value.as_integer()?,
+                    _ => interp.buffer.point() as i64,
+                };
+                let tags = semantic_fetch_tags_compat(interp, env)?
+                    .to_vec()
+                    .unwrap_or_default();
+                let mut flat = Vec::new();
+                semantic_flatten_tags(&tags, &mut flat);
+                let forward = name.ends_with("next");
+                let mut best: Option<(i64, Value)> = None;
+                for tag in flat {
+                    let Some((tag_start, tag_end)) = semantic_tag_bounds(&tag) else {
+                        continue;
+                    };
+                    if forward {
+                        if tag_start > start
+                            && best.as_ref().is_none_or(|(pos, _)| tag_start < *pos)
+                        {
+                            best = Some((tag_start, tag));
+                        }
+                    } else if tag_end <= start
+                        && best.as_ref().is_none_or(|(pos, _)| tag_end >= *pos)
+                    {
+                        best = Some((tag_end, tag));
+                    }
+                }
+                Ok(best.map(|(_, tag)| tag).unwrap_or(Value::Nil))
+            }
+            "semantic-ctxt-current-symbol" => {
+                need_args(name, args, 0)?;
+                Ok(semantic_ctxt_current_symbol(interp)
+                    .map(|symbol| symbol.parts_value)
+                    .unwrap_or(Value::Nil))
+            }
+            "semantic-ctxt-current-symbol-and-bounds" => {
+                need_args(name, args, 0)?;
+                Ok(if let Some(symbol) = semantic_ctxt_current_symbol(interp) {
+                    Value::list([
+                        symbol.parts_value,
+                        Value::String(symbol.text),
+                        Value::cons(
+                            Value::Integer(symbol.start as i64),
+                            Value::Integer(symbol.end as i64),
+                        ),
+                    ])
+                } else {
+                    Value::list([Value::Nil, Value::Nil, Value::Nil])
+                })
+            }
+            "bounds-of-thing-at-point" => {
+                need_args(name, args, 1)?;
+                let thing = args[0].as_symbol()?;
+                Ok(bounds_of_thing_at_point(interp, thing).unwrap_or(Value::Nil))
+            }
+            "semantic-analyze-possible-completions" => {
+                need_args(name, args, 1)?;
+                semantic_analyze_possible_completions(interp, env)
+            }
+            "semantic-analyze-tag-references" => {
+                need_args(name, args, 1)?;
+                semantic_analyze_tag_references(interp, &args[0], env)
+            }
+            "semantic-analyze-refs-impl" => {
+                need_arg_range(name, args, 1, 2)?;
+                semantic_analyze_refs_part(&args[0], 1)
+            }
+            "semantic-analyze-refs-proto" => {
+                need_arg_range(name, args, 1, 2)?;
+                semantic_analyze_refs_part(&args[0], 2)
+            }
+            "semantic-symref-find-references-by-name" => {
+                need_arg_range(name, args, 1, 3)?;
+                semantic_symref_find_references_by_name(interp, &args[0])
+            }
+            "semantic-symref-result-get-files" => {
+                need_args(name, args, 1)?;
+                semantic_symref_result_part(&args[0], 2)
+            }
+            "semantic-symref-result-get-tags" => {
+                need_arg_range(name, args, 1, 2)?;
+                semantic_symref_result_part(&args[0], 3)
+            }
+            "semantic-symref-hits-in-region" => {
+                need_args(name, args, 4)?;
+                semantic_symref_hits_in_region(interp, args, env)
+            }
+            "semantic-symref-test-count-hits-in-tag" => {
+                need_args(name, args, 0)?;
+                semantic_symref_test_count_hits_in_tag(interp)
+            }
+            "semantic-equivalent-tag-p" => {
+                need_args(name, args, 2)?;
+                let matches = semantic_tags_equivalent(&args[0], &args[1]);
+                if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some() {
+                    eprintln!("[sem] equiv {} vs {} -> {}", args[0], args[1], matches);
+                }
+                Ok(if matches { Value::T } else { Value::Nil })
+            }
+            "semantic-go-to-tag" => {
+                need_arg_range(name, args, 1, 2)?;
+                semantic_go_to_tag(interp, &args[0], env)
+            }
+            "semantic-clear-toplevel-cache" => {
+                need_arg_range(name, args, 0, 1)?;
+                Ok(Value::Nil)
+            }
+            "semanticdb-typecache-find" => {
+                need_arg_range(name, args, 1, 3)?;
+                semanticdb_typecache_find(interp, args, env)
+            }
+            "semanticdb-typecache-add-dependant" => {
+                need_args(name, args, 1)?;
+                Ok(Value::Nil)
+            }
+            "srecode-template-get-table" => {
+                need_arg_range(name, args, 2, 4)?;
+                srecode_template_get_table(interp, args, env)
+            }
+            "emaxx-class-make" => {
+                need_args(name, args, 2)?;
+                let class_name = args[0].as_symbol()?;
+                let initargs = args[1].to_vec()?;
+                make_eieio_instance(interp, class_name, &initargs, true, env)
+            }
+            "eieio-oref" | "slot-value" => {
+                need_args(name, args, 2)?;
+                let slot_name = args[1].as_symbol()?.to_string();
+                // GNU's eieio-oref also reads OClosure slots.
+                if oclosure_type_of(&args[0]).is_some() {
+                    return super::call(
+                        interp,
+                        "emaxx--oclosure-slot",
+                        &[args[0].clone(), Value::Symbol(slot_name)],
+                        env,
+                    );
+                }
+                eieio_oref_dispatch(interp, env, &args[0], &slot_name)
+            }
+            "eieio-oset" => {
+                need_args(name, args, 3)?;
+                let slot_name = args[1].as_symbol()?.to_string();
+                // GNU's eieio-oset writes OClosure slots (setting-constant for
+                // slots not declared :mutable).
+                if oclosure_type_of(&args[0]).is_some() {
+                    return super::call(
+                        interp,
+                        "emaxx--oclosure-set-slot",
+                        &[args[0].clone(), Value::Symbol(slot_name), args[2].clone()],
+                        env,
+                    );
+                }
+                eieio_oset_dispatch(interp, env, &args[0], &slot_name, args[2].clone())
+            }
+            "slot-makeunbound" => {
+                need_args(name, args, 2)?;
+                let slot_name = args[1].as_symbol()?.to_string();
+                eieio_slot_makeunbound(interp, &args[0], &slot_name)
+            }
+            "slot-exists-p" => {
+                need_args(name, args, 2)?;
+                let slot_name = args[1].as_symbol()?;
+                let Some(class_name) = (match &args[0] {
+                    Value::Record(id) => interp
+                        .find_record(*id)
+                        .map(|record| record.type_name.clone()),
+                    other => interp.class_name_from_value(other),
+                }) else {
+                    return Err(LispError::TypeError(
+                        "eieio-object".into(),
+                        args[0].type_name(),
+                    ));
+                };
+                let slots = eieio_slot_specs(interp, &class_name)?;
+                Ok(if slots.iter().any(|slot| slot.name == slot_name) {
                     Value::T
                 } else {
                     Value::Nil
-                },
-            )
-        }
-        "cl-proclaim" => {
-            need_args(name, args, 1)?;
-            let existing = interp
-                .lookup_var("cl--proclaims-deferred", env)
-                .unwrap_or(Value::Nil);
-            interp.set_global_binding(
-                "cl--proclaims-deferred",
-                Value::cons(args[0].clone(), existing),
-            );
-            Ok(Value::Nil)
-        }
-        "url-scheme-get-property" => {
-            // GNU url-methods.el maintains the real scheme registry once
-            // loaded; the native table below is the no-file fallback.
-            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
-                return Ok(delegated);
+                })
             }
-            need_args(name, args, 2)?;
-            let scheme = match &args[0] {
-                Value::Symbol(symbol) => symbol.clone(),
-                _ => string_text(&args[0])?,
+            "map-elt" | "map-contains-key" => {
+                // GNU map.el dispatches on the map's shape: a list is a plist
+                // when its first element is an atom, otherwise an alist;
+                // hash tables and arrays are supported directly.
+                need_arg_range(name, args, 2, 4)?;
+                let map = &args[0];
+                let key = &args[1];
+                let contains = name == "map-contains-key";
+                let (default, testfn) = if contains {
+                    (Value::Nil, args.get(2).cloned())
+                } else {
+                    (
+                        args.get(2).cloned().unwrap_or(Value::Nil),
+                        args.get(3).cloned(),
+                    )
+                };
+                let found: Option<Value> = if json::is_hash_table(interp, map) {
+                    let sentinel = Value::Unbound;
+                    let result = super::call(
+                        interp,
+                        "gethash",
+                        &[key.clone(), map.clone(), sentinel.clone()],
+                        env,
+                    )?;
+                    if matches!(result, Value::Unbound) {
+                        None
+                    } else {
+                        Some(result)
+                    }
+                } else if is_vector_value(map) || map.is_string() {
+                    let length = super::call(interp, "length", std::slice::from_ref(map), env)?
+                        .as_integer()
+                        .unwrap_or(0);
+                    match key.as_integer() {
+                        Ok(index) if index >= 0 && index < length => Some(super::call(
+                            interp,
+                            "elt",
+                            &[map.clone(), key.clone()],
+                            env,
+                        )?),
+                        _ => None,
+                    }
+                } else if map.is_nil() {
+                    None
+                } else if map
+                    .cons_values()
+                    .is_some_and(|(car, _)| !matches!(car, Value::Cons(..)))
+                {
+                    // Plist.
+                    let mut member_args = vec![map.clone(), key.clone()];
+                    if let Some(testfn) = &testfn {
+                        member_args.push(testfn.clone());
+                    }
+                    let member = super::call(interp, "plist-member", &member_args, env)?;
+                    if member.is_nil() {
+                        None
+                    } else {
+                        Some(member.cdr()?.car().unwrap_or(Value::Nil))
+                    }
+                } else {
+                    // Alist; GNU compares with `equal' by default.
+                    let testfn = testfn.unwrap_or(Value::Symbol("equal".into()));
+                    let entry =
+                        super::call(interp, "assoc", &[key.clone(), map.clone(), testfn], env)?;
+                    if entry.is_nil() {
+                        None
+                    } else {
+                        Some(entry.cdr()?)
+                    }
+                };
+                Ok(if contains {
+                    if found.is_some() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    }
+                } else {
+                    found.unwrap_or(default)
+                })
             }
-            .to_ascii_lowercase();
-            let property = args[1].as_symbol()?;
-            let value = match property {
-                "default-port" => match scheme.as_str() {
-                    "ftp" => Value::Integer(21),
-                    "http" => Value::Integer(80),
-                    "https" => Value::Integer(443),
-                    "imap" => Value::Integer(143),
-                    "ldap" => Value::Integer(389),
-                    "nntp" => Value::Integer(119),
-                    "pop" | "pop3" => Value::Integer(110),
-                    "smtp" => Value::Integer(25),
-                    "telnet" => Value::Integer(23),
-                    _ => Value::Integer(0),
-                },
-                "name" => {
-                    if scheme.is_empty() {
-                        Value::String("unknown".into())
-                    } else {
-                        Value::String(scheme)
-                    }
+            "ert-set-test" => {
+                need_args(name, args, 2)?;
+                let symbol = args[0].as_symbol()?.to_string();
+                interp.ert_set_test(&symbol, &args[1])
+            }
+            "emaxx--cl-generic-apply-next" => {
+                need_args(name, args, 4)?;
+                let next = &args[0];
+                let generic = args[1].clone();
+                let kind = args[2].as_symbol()?.to_string();
+                let call_args = args[3].to_vec()?;
+                let exhausted = matches!(next, Value::Nil) || interp.callable_is_ignore(next);
+                if !exhausted {
+                    return invoke_function_value(interp, next, &call_args, env);
                 }
-                "loader" => {
-                    if scheme.is_empty() {
-                        Value::Symbol("url-scheme-default-loader".into())
-                    } else {
-                        Value::Symbol(format!("url-{scheme}"))
-                    }
+                // GNU routes an exhausted chain through `cl-no-next-method' (a
+                // method ran out of next methods) or `cl-no-applicable-method'
+                // (no method matched at all).
+                let (hook, mut hook_args) = if kind == "no-applicable" {
+                    ("cl-no-applicable-method", vec![generic.clone()])
+                } else {
+                    ("cl-no-next-method", vec![generic.clone(), Value::Nil])
+                };
+                hook_args.extend(call_args.iter().cloned());
+                if let Ok(hook_function) = interp.lookup_function(hook, env)
+                    && !interp.callable_is_ignore(&hook_function)
+                {
+                    return invoke_function_value(interp, &hook_function, &hook_args, env);
                 }
-                "parse-url" => Value::Symbol("url-generic-parse-url".into()),
-                "asynchronous-p" => Value::Nil,
-                "file-directory-p" => Value::Symbol("ignore".into()),
-                // GNU's registry reads these from url-SCHEME.el; the
-                // http(s) methods come from the simple_compat url-http
-                // surface, everything else gets the registry defaults.
-                "expand-file-name" => match scheme.as_str() {
-                    "http" | "https" => Value::Symbol("url-http-expand-file-name".into()),
-                    _ => Value::Symbol("url-identity-expander".into()),
-                },
-                "file-exists-p" => match scheme.as_str() {
-                    "http" | "https" => Value::Symbol("url-http-file-exists-p".into()),
-                    _ => Value::Symbol("ignore".into()),
-                },
-                _ => Value::Nil,
-            };
-            Ok(value)
+                // GNU's default methods signal the dedicated conditions
+                // (cl-no-applicable-method GENERIC . ARGS).
+                Err(LispError::SignalValue(Value::list(
+                    std::iter::once(Value::Symbol(hook.into())).chain(hook_args),
+                )))
+            }
+            "eieio--class-parents" => {
+                need_args(name, args, 1)?;
+                interp.class_parents_value(&args[0])
+            }
+            "eieio--class-default-object-cache" => {
+                need_args(name, args, 1)?;
+                if let Some(cache) = interp.raw_eieio_class_slot(&args[0], 9) {
+                    return Ok(cache);
+                }
+                let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                Ok(interp
+                    .class_default_object_cache(&class_name)
+                    .unwrap_or(Value::Nil))
+            }
+            "eieio--class-options" => {
+                need_args(name, args, 1)?;
+                if let Some(options) = interp.raw_eieio_class_slot(&args[0], 10) {
+                    return Ok(options);
+                }
+                let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                    return Err(LispError::TypeError("class".into(), args[0].type_name()));
+                };
+                Ok(interp
+                    .get_symbol_property(&class_name, "emaxx-class-options")
+                    .unwrap_or(Value::Nil))
+            }
+            "built-in-class-p" => {
+                need_args(name, args, 1)?;
+                Ok(
+                    if args[0].as_symbol().ok().is_some_and(is_builtin_class_name) {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "cl-typep" => {
+                need_args(name, args, 2)?;
+                let matches = cl_typep_matches(interp, env, &args[0], &args[1])?;
+                Ok(if matches { Value::T } else { Value::Nil })
+            }
+            "cl-functionp" => {
+                need_args(name, args, 1)?;
+                Ok(
+                    if is_lambda_expression(&args[0])
+                        || matches!(
+                            cl_type_name(interp, &args[0])?,
+                            "primitive-function"
+                                | "special-form"
+                                | "interpreted-function"
+                                | "byte-code-function"
+                        )
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
+            }
+            "cl-proclaim" => {
+                need_args(name, args, 1)?;
+                let existing = interp
+                    .lookup_var("cl--proclaims-deferred", env)
+                    .unwrap_or(Value::Nil);
+                interp.set_global_binding(
+                    "cl--proclaims-deferred",
+                    Value::cons(args[0].clone(), existing),
+                );
+                Ok(Value::Nil)
+            }
+            "url-scheme-get-property" => {
+                // GNU url-methods.el maintains the real scheme registry once
+                // loaded; the native table below is the no-file fallback.
+                if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                    return Ok(delegated);
+                }
+                need_args(name, args, 2)?;
+                let scheme = match &args[0] {
+                    Value::Symbol(symbol) => symbol.clone(),
+                    _ => string_text(&args[0])?,
+                }
+                .to_ascii_lowercase();
+                let property = args[1].as_symbol()?;
+                let value = match property {
+                    "default-port" => match scheme.as_str() {
+                        "ftp" => Value::Integer(21),
+                        "http" => Value::Integer(80),
+                        "https" => Value::Integer(443),
+                        "imap" => Value::Integer(143),
+                        "ldap" => Value::Integer(389),
+                        "nntp" => Value::Integer(119),
+                        "pop" | "pop3" => Value::Integer(110),
+                        "smtp" => Value::Integer(25),
+                        "telnet" => Value::Integer(23),
+                        _ => Value::Integer(0),
+                    },
+                    "name" => {
+                        if scheme.is_empty() {
+                            Value::String("unknown".into())
+                        } else {
+                            Value::String(scheme)
+                        }
+                    }
+                    "loader" => {
+                        if scheme.is_empty() {
+                            Value::Symbol("url-scheme-default-loader".into())
+                        } else {
+                            Value::Symbol(format!("url-{scheme}"))
+                        }
+                    }
+                    "parse-url" => Value::Symbol("url-generic-parse-url".into()),
+                    "asynchronous-p" => Value::Nil,
+                    "file-directory-p" => Value::Symbol("ignore".into()),
+                    // GNU's registry reads these from url-SCHEME.el; the
+                    // http(s) methods come from the simple_compat url-http
+                    // surface, everything else gets the registry defaults.
+                    "expand-file-name" => match scheme.as_str() {
+                        "http" | "https" => Value::Symbol("url-http-expand-file-name".into()),
+                        _ => Value::Symbol("url-identity-expander".into()),
+                    },
+                    "file-exists-p" => match scheme.as_str() {
+                        "http" | "https" => Value::Symbol("url-http-file-exists-p".into()),
+                        _ => Value::Symbol("ignore".into()),
+                    },
+                    _ => Value::Nil,
+                };
+                Ok(value)
+            }
         }
-
-        _ => unreachable!("dispatch chunk called for unsupported primitive"),
     }
-}
+);
 
 fn symbol_file_from_load_history(
     interp: &Interpreter,

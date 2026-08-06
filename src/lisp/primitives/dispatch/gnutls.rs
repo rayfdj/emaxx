@@ -413,31 +413,6 @@ const DIGESTS: &[DigestSpec] = &[
     },
 ];
 
-pub(super) fn handles(name: &str) -> bool {
-    matches!(
-        name,
-        "gnutls-asynchronous-parameters"
-            | "gnutls-boot"
-            | "gnutls-bye"
-            | "gnutls-available-p"
-            | "gnutls-ciphers"
-            | "gnutls-deinit"
-            | "gnutls-digests"
-            | "gnutls-error-fatalp"
-            | "gnutls-error-string"
-            | "gnutls-errorp"
-            | "gnutls-format-certificate"
-            | "gnutls-get-initstage"
-            | "gnutls-hash-digest"
-            | "gnutls-hash-mac"
-            | "gnutls-macs"
-            | "gnutls-peer-status"
-            | "gnutls-peer-status-warning-describe"
-            | "gnutls-symmetric-decrypt"
-            | "gnutls-symmetric-encrypt"
-    )
-}
-
 fn descriptor(spec: &DigestSpec) -> Value {
     Value::list([
         Value::symbol(spec.name),
@@ -1444,205 +1419,206 @@ fn gnutls_boot(
     ))
 }
 
-pub(super) fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-) -> Result<Value, LispError> {
-    match name {
-        "gnutls-available-p" => {
-            need_args(name, args, 0)?;
-            let Ok(library) = load_gnutls() else {
-                return Ok(Value::Nil);
-            };
-            let mut capabilities = vec![
-                Value::symbol("macs"),
-                Value::symbol("ciphers"),
-                Value::symbol("digests"),
-                Value::symbol("gnutls3"),
-                Value::symbol("gnutls"),
-            ];
-            if library.api.aead_init.is_some()
-                && library.api.aead_encrypt.is_some()
-                && library.api.aead_decrypt.is_some()
-                && library.api.aead_deinit.is_some()
-            {
-                capabilities.insert(1, Value::symbol("AEAD-ciphers"));
-            }
-            Ok(Value::list(capabilities))
-        }
-        "gnutls-asynchronous-parameters" => {
-            need_args(name, args, 2)?;
-            let process_id = interp.resolve_process_id(&args[0])?;
-            interp.set_process_gnutls_boot_parameters(process_id, args[1].clone());
-            Ok(Value::Nil)
-        }
-        "gnutls-boot" => {
-            need_args(name, args, 3)?;
-            gnutls_boot(interp, &args[0], &args[1], &args[2])
-        }
-        "gnutls-bye" => {
-            need_args(name, args, 2)?;
-            let process_id = interp.resolve_process_id(&args[0])?;
-            interp
-                .process_gnutls_bye(process_id, args[1].is_truthy())
-                .map(gnutls_result)
-        }
-        "gnutls-ciphers" => {
-            need_args(name, args, 0)?;
-            Ok(cipher_catalog(&load_gnutls()?))
-        }
-        "gnutls-deinit" => {
-            need_args(name, args, 1)?;
-            let process_id = interp.resolve_process_id(&args[0])?;
-            Ok(if interp.deinit_process_gnutls(process_id) == Some(true) {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "gnutls-digests" => {
-            need_args(name, args, 0)?;
-            Ok(Value::list(DIGESTS.iter().map(descriptor)))
-        }
-        "gnutls-error-fatalp" => {
-            need_args(name, args, 1)?;
-            if args[0] == Value::T {
-                return Ok(Value::Nil);
-            }
-            let code = gnutls_error_code(interp, &args[0])
-                .map_err(|message| LispError::Signal(message.into()))?;
-            let library = load_gnutls()?;
-            // SAFETY: `code` is a C int, the complete input domain accepted by
-            // GnuTLS's pure error classifier.
-            Ok(if unsafe { (library.api.error_is_fatal)(code) } == 0 {
-                Value::Nil
-            } else {
-                Value::T
-            })
-        }
-        "gnutls-error-string" => {
-            need_args(name, args, 1)?;
-            if args[0] == Value::T {
-                return Ok(Value::string("Not an error"));
-            }
-            let code = match gnutls_error_code(interp, &args[0]) {
-                Ok(code) => code,
-                Err(message) => return Ok(Value::string(message)),
-            };
-            let library = load_gnutls()?;
-            // SAFETY: `code` is a C int, the complete input domain accepted by
-            // GnuTLS's pure error-description API.
-            let description = c_string(unsafe { (library.api.error_string)(code) })
-                .unwrap_or_else(|| "unknown".into());
-            Ok(Value::string(&description))
-        }
-        "gnutls-errorp" => {
-            need_args(name, args, 1)?;
-            Ok(
-                if matches!(&args[0], Value::T)
-                    || matches!(&args[0], Value::Symbol(symbol) if symbol == "gnutls-e-again")
+define_dispatch!(
+    pub(super) fn call(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+    ) -> Result<Value, LispError> {
+        match name {
+            "gnutls-available-p" => {
+                need_args(name, args, 0)?;
+                let Ok(library) = load_gnutls() else {
+                    return Ok(Value::Nil);
+                };
+                let mut capabilities = vec![
+                    Value::symbol("macs"),
+                    Value::symbol("ciphers"),
+                    Value::symbol("digests"),
+                    Value::symbol("gnutls3"),
+                    Value::symbol("gnutls"),
+                ];
+                if library.api.aead_init.is_some()
+                    && library.api.aead_encrypt.is_some()
+                    && library.api.aead_decrypt.is_some()
+                    && library.api.aead_deinit.is_some()
                 {
+                    capabilities.insert(1, Value::symbol("AEAD-ciphers"));
+                }
+                Ok(Value::list(capabilities))
+            }
+            "gnutls-asynchronous-parameters" => {
+                need_args(name, args, 2)?;
+                let process_id = interp.resolve_process_id(&args[0])?;
+                interp.set_process_gnutls_boot_parameters(process_id, args[1].clone());
+                Ok(Value::Nil)
+            }
+            "gnutls-boot" => {
+                need_args(name, args, 3)?;
+                gnutls_boot(interp, &args[0], &args[1], &args[2])
+            }
+            "gnutls-bye" => {
+                need_args(name, args, 2)?;
+                let process_id = interp.resolve_process_id(&args[0])?;
+                interp
+                    .process_gnutls_bye(process_id, args[1].is_truthy())
+                    .map(gnutls_result)
+            }
+            "gnutls-ciphers" => {
+                need_args(name, args, 0)?;
+                Ok(cipher_catalog(&load_gnutls()?))
+            }
+            "gnutls-deinit" => {
+                need_args(name, args, 1)?;
+                let process_id = interp.resolve_process_id(&args[0])?;
+                Ok(if interp.deinit_process_gnutls(process_id) == Some(true) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "gnutls-digests" => {
+                need_args(name, args, 0)?;
+                Ok(Value::list(DIGESTS.iter().map(descriptor)))
+            }
+            "gnutls-error-fatalp" => {
+                need_args(name, args, 1)?;
+                if args[0] == Value::T {
+                    return Ok(Value::Nil);
+                }
+                let code = gnutls_error_code(interp, &args[0])
+                    .map_err(|message| LispError::Signal(message.into()))?;
+                let library = load_gnutls()?;
+                // SAFETY: `code` is a C int, the complete input domain accepted by
+                // GnuTLS's pure error classifier.
+                Ok(if unsafe { (library.api.error_is_fatal)(code) } == 0 {
                     Value::Nil
                 } else {
                     Value::T
-                },
-            )
-        }
-        "gnutls-get-initstage" => {
-            need_args(name, args, 1)?;
-            let process_id = interp.resolve_process_id(&args[0])?;
-            Ok(Value::Integer(
-                interp.process_gnutls_initstage(process_id).unwrap_or(0),
-            ))
-        }
-        "gnutls-hash-digest" => {
-            need_args(name, args, 2)?;
-            let spec = digest_spec(&args[0]).ok_or_else(|| invalid_digest_method(&args[0]))?;
-            let input = digest_input_bytes(interp, &args[1])?;
-            let digest = secure_hash_digest(spec.algorithm, &input)?;
-            Ok(bytes_to_shared_unibyte_value(&digest))
-        }
-        "gnutls-hash-mac" => {
-            need_args(name, args, 3)?;
-            require_crypto_input(&args[2])?;
-            require_crypto_input(&args[1])?;
-            let library = load_gnutls()?;
-            let method = mac_method_id(&args[0], &library)?;
-            let key = Zeroizing::new(digest_input_bytes(interp, &args[1])?);
-            let mut handle = std::ptr::null_mut();
-            // SAFETY: GnuTLS receives borrowed byte slices for the duration of
-            // the call and initializes `handle` on success.
-            let result = unsafe {
-                (library.api.hmac_init)(&mut handle, method, key.as_ptr().cast(), key.len())
-            };
-            // SAFETY: `method` was validated against the host MAC catalog.
-            let method_name = c_string(unsafe { (library.api.mac_name)(method) })
-                .unwrap_or_else(|| method.to_string());
-            if result < 0 {
-                // SAFETY: Every GnuTLS error code is accepted by strerror.
-                let error = c_string(unsafe { (library.api.error_string)(result) })
+                })
+            }
+            "gnutls-error-string" => {
+                need_args(name, args, 1)?;
+                if args[0] == Value::T {
+                    return Ok(Value::string("Not an error"));
+                }
+                let code = match gnutls_error_code(interp, &args[0]) {
+                    Ok(code) => code,
+                    Err(message) => return Ok(Value::string(message)),
+                };
+                let library = load_gnutls()?;
+                // SAFETY: `code` is a C int, the complete input domain accepted by
+                // GnuTLS's pure error-description API.
+                let description = c_string(unsafe { (library.api.error_string)(code) })
                     .unwrap_or_else(|| "unknown".into());
-                return Err(LispError::Signal(format!(
-                    "GnuTLS MAC {method_name} initialization failed: {error}"
-                )));
+                Ok(Value::string(&description))
             }
+            "gnutls-errorp" => {
+                need_args(name, args, 1)?;
+                Ok(
+                    if matches!(&args[0], Value::T)
+                        || matches!(&args[0], Value::Symbol(symbol) if symbol == "gnutls-e-again")
+                    {
+                        Value::Nil
+                    } else {
+                        Value::T
+                    },
+                )
+            }
+            "gnutls-get-initstage" => {
+                need_args(name, args, 1)?;
+                let process_id = interp.resolve_process_id(&args[0])?;
+                Ok(Value::Integer(
+                    interp.process_gnutls_initstage(process_id).unwrap_or(0),
+                ))
+            }
+            "gnutls-hash-digest" => {
+                need_args(name, args, 2)?;
+                let spec = digest_spec(&args[0]).ok_or_else(|| invalid_digest_method(&args[0]))?;
+                let input = digest_input_bytes(interp, &args[1])?;
+                let digest = secure_hash_digest(spec.algorithm, &input)?;
+                Ok(bytes_to_shared_unibyte_value(&digest))
+            }
+            "gnutls-hash-mac" => {
+                need_args(name, args, 3)?;
+                require_crypto_input(&args[2])?;
+                require_crypto_input(&args[1])?;
+                let library = load_gnutls()?;
+                let method = mac_method_id(&args[0], &library)?;
+                let key = Zeroizing::new(digest_input_bytes(interp, &args[1])?);
+                let mut handle = std::ptr::null_mut();
+                // SAFETY: GnuTLS receives borrowed byte slices for the duration of
+                // the call and initializes `handle` on success.
+                let result = unsafe {
+                    (library.api.hmac_init)(&mut handle, method, key.as_ptr().cast(), key.len())
+                };
+                // SAFETY: `method` was validated against the host MAC catalog.
+                let method_name = c_string(unsafe { (library.api.mac_name)(method) })
+                    .unwrap_or_else(|| method.to_string());
+                if result < 0 {
+                    // SAFETY: Every GnuTLS error code is accepted by strerror.
+                    let error = c_string(unsafe { (library.api.error_string)(result) })
+                        .unwrap_or_else(|| "unknown".into());
+                    return Err(LispError::Signal(format!(
+                        "GnuTLS MAC {method_name} initialization failed: {error}"
+                    )));
+                }
 
-            let input = digest_input_bytes(interp, &args[2])?;
-            // SAFETY: Successful initialization returned a live handle, and
-            // the input slice remains borrowed for this call.
-            let result =
-                unsafe { (library.api.hmac_apply)(handle, input.as_ptr().cast(), input.len()) };
-            clear_crypto_key(&args[1]);
-            if result < 0 {
-                // SAFETY: The initialized handle must be released exactly once.
-                unsafe { (library.api.hmac_deinit)(handle, std::ptr::null_mut()) };
-                // SAFETY: Every GnuTLS error code is accepted by strerror.
-                let error = c_string(unsafe { (library.api.error_string)(result) })
-                    .unwrap_or_else(|| "unknown".into());
-                return Err(LispError::Signal(format!(
-                    "GnuTLS MAC {method_name} application failed: {error}"
-                )));
-            }
+                let input = digest_input_bytes(interp, &args[2])?;
+                // SAFETY: Successful initialization returned a live handle, and
+                // the input slice remains borrowed for this call.
+                let result =
+                    unsafe { (library.api.hmac_apply)(handle, input.as_ptr().cast(), input.len()) };
+                clear_crypto_key(&args[1]);
+                if result < 0 {
+                    // SAFETY: The initialized handle must be released exactly once.
+                    unsafe { (library.api.hmac_deinit)(handle, std::ptr::null_mut()) };
+                    // SAFETY: Every GnuTLS error code is accepted by strerror.
+                    let error = c_string(unsafe { (library.api.error_string)(result) })
+                        .unwrap_or_else(|| "unknown".into());
+                    return Err(LispError::Signal(format!(
+                        "GnuTLS MAC {method_name} application failed: {error}"
+                    )));
+                }
 
-            // SAFETY: The validated method has a nonzero output size.
-            let mut digest = vec![0; unsafe { (library.api.mac_length)(method) } as usize];
-            // SAFETY: The live handle writes exactly the method's advertised
-            // digest length, then is deinitialized without a second output.
-            unsafe {
-                (library.api.hmac_output)(handle, digest.as_mut_ptr().cast());
-                (library.api.hmac_deinit)(handle, std::ptr::null_mut());
+                // SAFETY: The validated method has a nonzero output size.
+                let mut digest = vec![0; unsafe { (library.api.mac_length)(method) } as usize];
+                // SAFETY: The live handle writes exactly the method's advertised
+                // digest length, then is deinitialized without a second output.
+                unsafe {
+                    (library.api.hmac_output)(handle, digest.as_mut_ptr().cast());
+                    (library.api.hmac_deinit)(handle, std::ptr::null_mut());
+                }
+                Ok(bytes_to_shared_unibyte_value(&digest))
             }
-            Ok(bytes_to_shared_unibyte_value(&digest))
+            "gnutls-macs" => {
+                need_args(name, args, 0)?;
+                Ok(mac_catalog(&load_gnutls()?))
+            }
+            "gnutls-peer-status" => {
+                need_args(name, args, 1)?;
+                let process_id = interp.resolve_process_id(&args[0])?;
+                Ok(interp
+                    .process_gnutls_peer_status(process_id)
+                    .unwrap_or(Value::Nil))
+            }
+            "gnutls-peer-status-warning-describe" => {
+                need_args(name, args, 1)?;
+                let Value::Symbol(status) = &args[0] else {
+                    return Err(wrong_type_argument("symbolp", args[0].clone()));
+                };
+                Ok(peer_status_warning_description(status)
+                    .map(Value::string)
+                    .unwrap_or(Value::Nil))
+            }
+            "gnutls-format-certificate" => {
+                need_args(name, args, 1)?;
+                gnutls_format_certificate(&args[0])
+            }
+            "gnutls-symmetric-decrypt" | "gnutls-symmetric-encrypt" => {
+                need_arg_range(name, args, 4, 5)?;
+                gnutls_symmetric(interp, args, name == "gnutls-symmetric-encrypt")
+            }
         }
-        "gnutls-macs" => {
-            need_args(name, args, 0)?;
-            Ok(mac_catalog(&load_gnutls()?))
-        }
-        "gnutls-peer-status" => {
-            need_args(name, args, 1)?;
-            let process_id = interp.resolve_process_id(&args[0])?;
-            Ok(interp
-                .process_gnutls_peer_status(process_id)
-                .unwrap_or(Value::Nil))
-        }
-        "gnutls-peer-status-warning-describe" => {
-            need_args(name, args, 1)?;
-            let Value::Symbol(status) = &args[0] else {
-                return Err(wrong_type_argument("symbolp", args[0].clone()));
-            };
-            Ok(peer_status_warning_description(status)
-                .map(Value::string)
-                .unwrap_or(Value::Nil))
-        }
-        "gnutls-format-certificate" => {
-            need_args(name, args, 1)?;
-            gnutls_format_certificate(&args[0])
-        }
-        "gnutls-symmetric-decrypt" | "gnutls-symmetric-encrypt" => {
-            need_arg_range(name, args, 4, 5)?;
-            gnutls_symmetric(interp, args, name == "gnutls-symmetric-encrypt")
-        }
-        _ => unreachable!("unhandled GnuTLS builtin {name}"),
     }
-}
+);

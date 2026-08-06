@@ -1,21 +1,5 @@
 use super::*;
 
-pub(super) fn handles(name: &str) -> bool {
-    matches!(
-        name,
-        "menu-bar-menu-at-x-y"
-            | "x-begin-drag"
-            | "x-close-connection"
-            | "x-create-frame"
-            | "x-file-dialog"
-            | "x-open-connection"
-            | "x-popup-dialog"
-            | "x-popup-menu"
-            | "x-select-font"
-            | "x-show-tip"
-    )
-}
-
 fn require_live_frame(interp: &Interpreter, frame: Option<&Value>) -> Result<(), LispError> {
     match frame {
         None | Some(Value::Nil) => Ok(()),
@@ -100,110 +84,111 @@ fn validate_popup_menu(interp: &Interpreter, menu: &Value) -> Result<(), LispErr
     Ok(())
 }
 
-pub(super) fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-) -> Result<Value, LispError> {
-    match name {
-        "menu-bar-menu-at-x-y" => {
-            need_arg_range(name, args, 2, 3)?;
-            require_any_frame(args.get(2))?;
-            require_fixnum(&args[0])?;
-            require_fixnum(&args[1])?;
-            // Emaxx has no native-toolkit menu bar.  Its terminal frame does
-            // not retain GNU's redisplay-time menu item geometry, so there is
-            // no menu symbol to resolve at these coordinates.
-            Ok(Value::Nil)
-        }
-        "x-begin-drag" => {
-            need_arg_range(name, args, 1, 6)?;
-            require_live_frame(interp, args.get(2))?;
-            Err(window_system_frame_required())
-        }
-        "x-close-connection" => {
-            need_args(name, args, 1)?;
-            match &args[0] {
-                Value::Nil | Value::String(_) | Value::StringObject(_) => {}
-                Value::Frame(id) if interp.frame_is_live(*id) => {}
-                Value::Terminal(id) if *id == 0 && interp.terminal_live() => {}
-                terminal => {
-                    return Err(wrong_type_argument("frame-live-p", terminal.clone()));
+define_dispatch!(
+    pub(super) fn call(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+    ) -> Result<Value, LispError> {
+        match name {
+            "menu-bar-menu-at-x-y" => {
+                need_arg_range(name, args, 2, 3)?;
+                require_any_frame(args.get(2))?;
+                require_fixnum(&args[0])?;
+                require_fixnum(&args[1])?;
+                // Emaxx has no native-toolkit menu bar.  Its terminal frame does
+                // not retain GNU's redisplay-time menu item geometry, so there is
+                // no menu symbol to resolve at these coordinates.
+                Ok(Value::Nil)
+            }
+            "x-begin-drag" => {
+                need_arg_range(name, args, 1, 6)?;
+                require_live_frame(interp, args.get(2))?;
+                Err(window_system_frame_required())
+            }
+            "x-close-connection" => {
+                need_args(name, args, 1)?;
+                match &args[0] {
+                    Value::Nil | Value::String(_) | Value::StringObject(_) => {}
+                    Value::Frame(id) if interp.frame_is_live(*id) => {}
+                    Value::Terminal(id) if *id == 0 && interp.terminal_live() => {}
+                    terminal => {
+                        return Err(wrong_type_argument("frame-live-p", terminal.clone()));
+                    }
                 }
+                Err(window_system_unavailable())
             }
-            Err(window_system_unavailable())
-        }
-        "x-create-frame" => {
-            need_args(name, args, 1)?;
-            args[0]
-                .to_vec()
-                .map_err(|_| wrong_type_argument("listp", args[0].clone()))?;
-            Err(window_system_unavailable())
-        }
-        "x-show-tip" => {
-            need_arg_range(name, args, 1, 6)?;
-            if !args[0].is_string() {
-                return Err(wrong_type_argument("stringp", args[0].clone()));
+            "x-create-frame" => {
+                need_args(name, args, 1)?;
+                args[0]
+                    .to_vec()
+                    .map_err(|_| wrong_type_argument("listp", args[0].clone()))?;
+                Err(window_system_unavailable())
             }
-            string_text(&args[0])?;
-            require_live_frame(interp, args.get(1))?;
-            Err(window_system_frame_required())
-        }
-        "x-file-dialog" => {
-            need_arg_range(name, args, 2, 5)?;
-            Err(window_system_unavailable())
-        }
-        "x-open-connection" => {
-            need_arg_range(name, args, 1, 3)?;
-            if !args[0].is_string() {
-                return Err(wrong_type_argument("stringp", args[0].clone()));
+            "x-show-tip" => {
+                need_arg_range(name, args, 1, 6)?;
+                if !args[0].is_string() {
+                    return Err(wrong_type_argument("stringp", args[0].clone()));
+                }
+                string_text(&args[0])?;
+                require_live_frame(interp, args.get(1))?;
+                Err(window_system_frame_required())
             }
-            string_text(&args[0])?;
-            // The Nextstep implementation ignores the optional resource and
-            // must-succeed arguments.  Emaxx deliberately does not launch a
-            // platform GUI application from its terminal runtime.
-            Err(window_system_unavailable())
-        }
-        "x-popup-dialog" => {
-            need_arg_range(name, args, 2, 3)?;
-            match &args[0] {
-                Value::T => {}
-                Value::Frame(id) if interp.frame_is_live(*id) => {}
-                Value::Record(id)
-                    if interp
-                        .find_record(*id)
-                        .is_some_and(|record| record.type_name == "window") => {}
-                Value::Cons(_, _) => {}
-                _ => return Err(wrong_type_argument("windowp", Value::Nil)),
+            "x-file-dialog" => {
+                need_arg_range(name, args, 2, 5)?;
+                Err(window_system_unavailable())
             }
-            let contents = args[1]
-                .to_vec()
-                .map_err(|_| wrong_type_argument("listp", args[1].clone()))?;
-            let title = contents.first().cloned().unwrap_or(Value::Nil);
-            if !title.is_string() {
-                return Err(wrong_type_argument("stringp", title));
+            "x-open-connection" => {
+                need_arg_range(name, args, 1, 3)?;
+                if !args[0].is_string() {
+                    return Err(wrong_type_argument("stringp", args[0].clone()));
+                }
+                string_text(&args[0])?;
+                // The Nextstep implementation ignores the optional resource and
+                // must-succeed arguments.  Emaxx deliberately does not launch a
+                // platform GUI application from its terminal runtime.
+                Err(window_system_unavailable())
             }
-            // GNU's initial batch frame has no menu hook, so a well-formed
-            // dialog is parsed but cannot produce a selection.
-            Ok(Value::Nil)
-        }
-        "x-popup-menu" => {
-            need_args(name, args, 2)?;
-            // GNU preserves this obsolete cache-warming form as an immediate
-            // no-op and deliberately does not inspect MENU.
-            if args[0].is_nil() {
-                return Ok(Value::Nil);
+            "x-popup-dialog" => {
+                need_arg_range(name, args, 2, 3)?;
+                match &args[0] {
+                    Value::T => {}
+                    Value::Frame(id) if interp.frame_is_live(*id) => {}
+                    Value::Record(id)
+                        if interp
+                            .find_record(*id)
+                            .is_some_and(|record| record.type_name == "window") => {}
+                    Value::Cons(_, _) => {}
+                    _ => return Err(wrong_type_argument("windowp", Value::Nil)),
+                }
+                let contents = args[1]
+                    .to_vec()
+                    .map_err(|_| wrong_type_argument("listp", args[1].clone()))?;
+                let title = contents.first().cloned().unwrap_or(Value::Nil);
+                if !title.is_string() {
+                    return Err(wrong_type_argument("stringp", title));
+                }
+                // GNU's initial batch frame has no menu hook, so a well-formed
+                // dialog is parsed but cannot produce a selection.
+                Ok(Value::Nil)
             }
-            validate_popup_position(interp, &args[0])?;
-            validate_popup_menu(interp, &args[1])?;
-            // Like GNU's initial batch frame, Emaxx has no native menu hook.
-            Ok(Value::Nil)
+            "x-popup-menu" => {
+                need_args(name, args, 2)?;
+                // GNU preserves this obsolete cache-warming form as an immediate
+                // no-op and deliberately does not inspect MENU.
+                if args[0].is_nil() {
+                    return Ok(Value::Nil);
+                }
+                validate_popup_position(interp, &args[0])?;
+                validate_popup_menu(interp, &args[1])?;
+                // Like GNU's initial batch frame, Emaxx has no native menu hook.
+                Ok(Value::Nil)
+            }
+            "x-select-font" => {
+                need_arg_range(name, args, 0, 2)?;
+                require_live_frame(interp, args.first())?;
+                Err(window_system_frame_required())
+            }
         }
-        "x-select-font" => {
-            need_arg_range(name, args, 0, 2)?;
-            require_live_frame(interp, args.first())?;
-            Err(window_system_frame_required())
-        }
-        _ => unreachable!("unhandled graphical action builtin {name}"),
     }
-}
+);

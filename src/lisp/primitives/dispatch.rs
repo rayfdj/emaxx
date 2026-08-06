@@ -63,6 +63,7 @@ enum DispatchModule {
     Comp,
     Predicates,
     Lists,
+    Modes,
     Composition,
     Strings,
     BufferEdit,
@@ -83,11 +84,11 @@ enum DispatchModule {
 fn compute_name_facts(name: &str) -> NameFacts {
     // Probe order mirrors `call' so the cached route dispatches to the
     // same module the sequential scan would have reached.
-    let module = if sqlite::is_builtin(name) {
+    let module = if sqlite::handles(name) {
         DispatchModule::Sqlite
-    } else if is_time_builtin(name) {
+    } else if numeric_time::handles(name) {
         DispatchModule::Time
-    } else if is_lcms_builtin(name) {
+    } else if color_lcms::handles(name) {
         DispatchModule::Lcms
     } else if ccl::handles(name) {
         DispatchModule::Ccl
@@ -111,6 +112,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::Predicates
     } else if lists::handles(name) {
         DispatchModule::Lists
+    } else if modes::handles(name) {
+        DispatchModule::Modes
     } else if composition::handles(name) {
         DispatchModule::Composition
     } else if strings::handles(name) {
@@ -286,6 +289,7 @@ pub(crate) fn call_with_facts(
         DispatchModule::Comp => comp::call(interp, name, args, env),
         DispatchModule::Predicates => predicates::call(interp, name, args, env),
         DispatchModule::Lists => lists::call(interp, name, args, env),
+        DispatchModule::Modes => modes::call(interp, name),
         DispatchModule::Composition => composition::call(interp, name, args, env),
         DispatchModule::Strings => strings::call(interp, name, args, env),
         DispatchModule::BufferEdit => buffer_edit::call(interp, name, args, env),

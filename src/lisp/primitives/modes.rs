@@ -1,235 +1,256 @@
 use super::regexp;
 use super::*;
 
-pub(super) fn is_major_mode_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "text-mode"
-            | "outline-mode"
-            | "mhtml-mode"
-            | "tcl-mode"
-            | "awk-mode"
-            | "sh-base-mode"
-            | "sh-mode"
-            | "makefile-mode"
-            | "makefile-gmake-mode"
-            | "c-mode"
-            | "c++-mode"
-            | "java-mode"
-            | "js-mode"
-            | "javascript-mode"
-            | "makefile-bsdmake-mode"
-            | "ruby-mode"
-            | "srecode-template-mode"
-            | "tex-mode"
-            | "texinfo-mode"
-            | "wisent-grammar-mode"
-            | "css-base-mode"
-            | "css-mode"
-            | "latex-mode"
-            | "html-mode"
-            | "python-base-mode"
-            | "python-mode"
-            | "conf-toml-mode"
-    )
-}
-
-pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Value, LispError> {
-    match name {
-        "text-mode" => {
-            derived_mode_set_parent(interp, "text-mode", Some("fundamental-mode"));
-            activate_text_mode(interp)
-        }
-        "outline-mode" => {
-            derived_mode_set_parent(interp, "outline-mode", Some("text-mode"));
-            activate_major_mode(interp, "outline-mode", "Outline");
-            Ok(Value::Nil)
-        }
-        "mhtml-mode" => {
-            derived_mode_set_parent(interp, "mhtml-mode", Some("html-mode"));
-            activate_major_mode(interp, "mhtml-mode", "HTML+");
-            Ok(Value::Nil)
-        }
-        "tcl-mode" => {
-            derived_mode_set_parent(interp, "tcl-mode", Some("prog-mode"));
-            activate_hash_comment_mode(interp, "tcl-mode", "Tcl")
-        }
-        "awk-mode" => {
-            derived_mode_set_parent(interp, "awk-mode", Some("prog-mode"));
-            activate_hash_comment_mode(interp, "awk-mode", "AWK")
-        }
-        "sh-base-mode" => {
-            derived_mode_set_parent(interp, "sh-base-mode", Some("prog-mode"));
-            activate_hash_comment_mode(interp, "sh-base-mode", "Shell-script")
-        }
-        "sh-mode" => {
-            derived_mode_set_parent(interp, "sh-base-mode", Some("prog-mode"));
-            derived_mode_set_parent(interp, "sh-mode", Some("sh-base-mode"));
-            let result = activate_hash_comment_mode(interp, "sh-mode", "Shell-script")?;
-            interp.set_buffer_local_value(
-                interp.current_buffer_id(),
-                "sh-shell",
-                Value::Symbol("sh".into()),
-            );
-            Ok(result)
-        }
-        "makefile-mode" => {
-            derived_mode_set_parent(interp, "makefile-mode", Some("prog-mode"));
-            activate_hash_comment_mode(interp, "makefile-mode", "Makefile")
-        }
-        "makefile-gmake-mode" => {
-            derived_mode_set_parent(interp, "makefile-mode", Some("prog-mode"));
-            derived_mode_set_parent(interp, "makefile-gmake-mode", Some("makefile-mode"));
-            activate_hash_comment_mode(interp, "makefile-gmake-mode", "GNUmakefile")
-        }
-        "c-mode" => {
-            derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
-            activate_c_family_mode(interp, "c-mode", "C")
-        }
-        "c++-mode" => {
-            derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
-            derived_mode_set_parent(interp, "c++-mode", Some("c-mode"));
-            activate_c_family_mode(interp, "c++-mode", "C++")
-        }
-        "java-mode" => {
-            derived_mode_set_parent(interp, "java-mode", Some("prog-mode"));
-            activate_c_family_mode(interp, "java-mode", "Java")
-        }
-        "js-mode" => {
-            derived_mode_set_parent(interp, "js-mode", Some("prog-mode"));
-            let result =
-                activate_c_family_mode_with_semantic(interp, "js-mode", "Javascript", false)?;
-            let buffer_id = interp.current_buffer_id();
-            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("// ".into()));
-            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
-            interp.set_buffer_local_value(buffer_id, "c-basic-offset", Value::Integer(4));
-            interp.set_buffer_local_value(
-                buffer_id,
-                "electric-indent-chars",
-                Value::list("{}():;,\n".chars().map(|ch| Value::Integer(ch as i64))),
-            );
-            interp.set_buffer_local_value(
-                buffer_id,
-                "electric-layout-rules",
-                Value::list([
-                    Value::cons(Value::Integer(';' as i64), Value::Symbol("after".into())),
-                    Value::cons(Value::Integer('{' as i64), Value::Symbol("after".into())),
-                    Value::cons(Value::Integer('}' as i64), Value::Symbol("before".into())),
-                ]),
-            );
-            Ok(result)
-        }
-        // GNU js.el makes `javascript-mode' a defalias for `js-mode'.
-        "javascript-mode" => call_major_mode(interp, "js-mode"),
-        "ruby-mode" => {
-            derived_mode_set_parent(interp, "ruby-mode", Some("prog-mode"));
-            activate_ruby_mode(interp)
-        }
-        "makefile-bsdmake-mode" => {
-            activate_hash_comment_mode(interp, "makefile-bsdmake-mode", "BSDmakefile")
-        }
-        "srecode-template-mode" => activate_semicolon_comment_mode(interp, name, "SRecode"),
-        "tex-mode" => {
-            derived_mode_set_parent(interp, "tex-mode", Some("text-mode"));
-            let buffer_id = interp.current_buffer_id();
-            activate_major_mode(interp, "tex-mode", "TeX");
-            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("%".into()));
-            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
-            Ok(Value::Nil)
-        }
-        "texinfo-mode" => {
-            derived_mode_set_parent(interp, "texinfo-mode", Some("text-mode"));
-            let buffer_id = interp.current_buffer_id();
-            activate_major_mode(interp, "texinfo-mode", "Texinfo");
-            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("@c ".into()));
-            interp.set_buffer_local_value(
-                buffer_id,
-                "comment-start-skip",
-                Value::String("@c\\(?:omment\\)?\\s-*".into()),
-            );
-            activate_semantic_buffer_if_enabled(interp, buffer_id)?;
-            Ok(Value::Nil)
-        }
-        "wisent-grammar-mode" => {
-            let buffer_id = interp.current_buffer_id();
-            let result = activate_semicolon_comment_mode(interp, name, "Wisent")?;
-            interp.set_buffer_local_value(buffer_id, "semantic-new-buffer-fcn-was-run", Value::T);
-            if interp
-                .lookup_function("semantic-lex-init", &Vec::new())
-                .is_ok()
-            {
-                call_function_value(
-                    interp,
-                    &Value::Symbol("semantic-lex-init".into()),
-                    &[],
-                    &mut Vec::new(),
-                )?;
+define_dispatch!(
+    pub(super) fn call(interp: &mut Interpreter, name: &str) -> Result<Value, LispError> {
+        match name {
+            "text-mode" => {
+                derived_mode_set_parent(interp, "text-mode", Some("fundamental-mode"));
+                activate_text_mode(interp)
             }
-            Ok(result)
+            "outline-mode" => {
+                derived_mode_set_parent(interp, "outline-mode", Some("text-mode"));
+                activate_major_mode(interp, "outline-mode", "Outline");
+                Ok(Value::Nil)
+            }
+            "mhtml-mode" => {
+                derived_mode_set_parent(interp, "mhtml-mode", Some("html-mode"));
+                activate_major_mode(interp, "mhtml-mode", "HTML+");
+                Ok(Value::Nil)
+            }
+            "tcl-mode" => {
+                derived_mode_set_parent(interp, "tcl-mode", Some("prog-mode"));
+                activate_hash_comment_mode(interp, "tcl-mode", "Tcl")
+            }
+            "awk-mode" => {
+                derived_mode_set_parent(interp, "awk-mode", Some("prog-mode"));
+                activate_hash_comment_mode(interp, "awk-mode", "AWK")
+            }
+            "sh-base-mode" => {
+                derived_mode_set_parent(interp, "sh-base-mode", Some("prog-mode"));
+                activate_hash_comment_mode(interp, "sh-base-mode", "Shell-script")
+            }
+            "sh-mode" => {
+                derived_mode_set_parent(interp, "sh-base-mode", Some("prog-mode"));
+                derived_mode_set_parent(interp, "sh-mode", Some("sh-base-mode"));
+                let result = activate_hash_comment_mode(interp, "sh-mode", "Shell-script")?;
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    "sh-shell",
+                    Value::Symbol("sh".into()),
+                );
+                Ok(result)
+            }
+            "makefile-mode" => {
+                derived_mode_set_parent(interp, "makefile-mode", Some("prog-mode"));
+                activate_hash_comment_mode(interp, "makefile-mode", "Makefile")
+            }
+            "makefile-gmake-mode" => {
+                derived_mode_set_parent(interp, "makefile-mode", Some("prog-mode"));
+                derived_mode_set_parent(interp, "makefile-gmake-mode", Some("makefile-mode"));
+                activate_hash_comment_mode(interp, "makefile-gmake-mode", "GNUmakefile")
+            }
+            "c-mode" => {
+                derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
+                activate_c_family_mode(interp, "c-mode", "C")
+            }
+            "c++-mode" => {
+                derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
+                derived_mode_set_parent(interp, "c++-mode", Some("c-mode"));
+                activate_c_family_mode(interp, "c++-mode", "C++")
+            }
+            "java-mode" => {
+                derived_mode_set_parent(interp, "java-mode", Some("prog-mode"));
+                activate_c_family_mode(interp, "java-mode", "Java")
+            }
+            "js-mode" => {
+                derived_mode_set_parent(interp, "js-mode", Some("prog-mode"));
+                let result =
+                    activate_c_family_mode_with_semantic(interp, "js-mode", "Javascript", false)?;
+                let buffer_id = interp.current_buffer_id();
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-start",
+                    Value::String("// ".into()),
+                );
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-end",
+                    Value::String(String::new()),
+                );
+                interp.set_buffer_local_value(buffer_id, "c-basic-offset", Value::Integer(4));
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "electric-indent-chars",
+                    Value::list("{}():;,\n".chars().map(|ch| Value::Integer(ch as i64))),
+                );
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "electric-layout-rules",
+                    Value::list([
+                        Value::cons(Value::Integer(';' as i64), Value::Symbol("after".into())),
+                        Value::cons(Value::Integer('{' as i64), Value::Symbol("after".into())),
+                        Value::cons(Value::Integer('}' as i64), Value::Symbol("before".into())),
+                    ]),
+                );
+                Ok(result)
+            }
+            // GNU js.el makes `javascript-mode' a defalias for `js-mode'.
+            "javascript-mode" => call(interp, "js-mode"),
+            "ruby-mode" => {
+                derived_mode_set_parent(interp, "ruby-mode", Some("prog-mode"));
+                activate_ruby_mode(interp)
+            }
+            "makefile-bsdmake-mode" => {
+                activate_hash_comment_mode(interp, "makefile-bsdmake-mode", "BSDmakefile")
+            }
+            "srecode-template-mode" => activate_semicolon_comment_mode(interp, name, "SRecode"),
+            "tex-mode" => {
+                derived_mode_set_parent(interp, "tex-mode", Some("text-mode"));
+                let buffer_id = interp.current_buffer_id();
+                activate_major_mode(interp, "tex-mode", "TeX");
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-start",
+                    Value::String("%".into()),
+                );
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-end",
+                    Value::String(String::new()),
+                );
+                Ok(Value::Nil)
+            }
+            "texinfo-mode" => {
+                derived_mode_set_parent(interp, "texinfo-mode", Some("text-mode"));
+                let buffer_id = interp.current_buffer_id();
+                activate_major_mode(interp, "texinfo-mode", "Texinfo");
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-start",
+                    Value::String("@c ".into()),
+                );
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-start-skip",
+                    Value::String("@c\\(?:omment\\)?\\s-*".into()),
+                );
+                activate_semantic_buffer_if_enabled(interp, buffer_id)?;
+                Ok(Value::Nil)
+            }
+            "wisent-grammar-mode" => {
+                let buffer_id = interp.current_buffer_id();
+                let result = activate_semicolon_comment_mode(interp, name, "Wisent")?;
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "semantic-new-buffer-fcn-was-run",
+                    Value::T,
+                );
+                if interp
+                    .lookup_function("semantic-lex-init", &Vec::new())
+                    .is_ok()
+                {
+                    call_function_value(
+                        interp,
+                        &Value::Symbol("semantic-lex-init".into()),
+                        &[],
+                        &mut Vec::new(),
+                    )?;
+                }
+                Ok(result)
+            }
+            "css-base-mode" => {
+                derived_mode_set_parent(interp, "css-base-mode", Some("prog-mode"));
+                activate_c_block_comment_mode(interp, "css-base-mode", "CSS")
+            }
+            "css-mode" => {
+                derived_mode_set_parent(interp, "css-mode", Some("css-base-mode"));
+                activate_c_block_comment_mode(interp, "css-mode", "CSS")
+            }
+            "latex-mode" => {
+                derived_mode_set_parent(interp, "latex-mode", Some("tex-mode"));
+                let buffer_id = interp.current_buffer_id();
+                activate_major_mode(interp, "latex-mode", "LaTeX");
+                interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::Nil);
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-start",
+                    Value::String("%".into()),
+                );
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-end",
+                    Value::String(String::new()),
+                );
+                Ok(Value::Nil)
+            }
+            "html-mode" => {
+                derived_mode_set_parent(interp, "html-mode", Some("text-mode"));
+                let buffer_id = interp.current_buffer_id();
+                activate_major_mode(interp, "html-mode", "HTML");
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-start",
+                    Value::String("<!--".into()),
+                );
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-end",
+                    Value::String("-->".into()),
+                );
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-start-skip",
+                    Value::String("<!--+\\s-*".into()),
+                );
+                activate_semantic_buffer_if_enabled(interp, buffer_id)?;
+                Ok(Value::Nil)
+            }
+            "python-base-mode" => {
+                derived_mode_set_parent(interp, "python-base-mode", Some("prog-mode"));
+                activate_hash_comment_mode_with_semantic(
+                    interp,
+                    "python-base-mode",
+                    "Python",
+                    false,
+                )
+            }
+            "python-mode" => {
+                derived_mode_set_parent(interp, "python-mode", Some("python-base-mode"));
+                let result = activate_hash_comment_mode_with_semantic(
+                    interp,
+                    "python-mode",
+                    "Python",
+                    false,
+                );
+                // GNU python.el marks triple-quote fences via
+                // syntax-propertize; sexp motion needs them.
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    "syntax-propertize-function",
+                    Value::Symbol("emaxx--python-syntax-propertize".into()),
+                );
+                result
+            }
+            "conf-toml-mode" => {
+                derived_mode_set_parent(interp, "conf-toml-mode", Some("conf-mode"));
+                let buffer_id = interp.current_buffer_id();
+                activate_major_mode(interp, "conf-toml-mode", "Conf[TOML]");
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-start",
+                    Value::String("#".into()),
+                );
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "comment-start-skip",
+                    Value::String("#+\\s-*".into()),
+                );
+                Ok(Value::Nil)
+            }
         }
-        "css-base-mode" => {
-            derived_mode_set_parent(interp, "css-base-mode", Some("prog-mode"));
-            activate_c_block_comment_mode(interp, "css-base-mode", "CSS")
-        }
-        "css-mode" => {
-            derived_mode_set_parent(interp, "css-mode", Some("css-base-mode"));
-            activate_c_block_comment_mode(interp, "css-mode", "CSS")
-        }
-        "latex-mode" => {
-            derived_mode_set_parent(interp, "latex-mode", Some("tex-mode"));
-            let buffer_id = interp.current_buffer_id();
-            activate_major_mode(interp, "latex-mode", "LaTeX");
-            interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::Nil);
-            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("%".into()));
-            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
-            Ok(Value::Nil)
-        }
-        "html-mode" => {
-            derived_mode_set_parent(interp, "html-mode", Some("text-mode"));
-            let buffer_id = interp.current_buffer_id();
-            activate_major_mode(interp, "html-mode", "HTML");
-            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("<!--".into()));
-            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String("-->".into()));
-            interp.set_buffer_local_value(
-                buffer_id,
-                "comment-start-skip",
-                Value::String("<!--+\\s-*".into()),
-            );
-            activate_semantic_buffer_if_enabled(interp, buffer_id)?;
-            Ok(Value::Nil)
-        }
-        "python-base-mode" => {
-            derived_mode_set_parent(interp, "python-base-mode", Some("prog-mode"));
-            activate_hash_comment_mode_with_semantic(interp, "python-base-mode", "Python", false)
-        }
-        "python-mode" => {
-            derived_mode_set_parent(interp, "python-mode", Some("python-base-mode"));
-            let result =
-                activate_hash_comment_mode_with_semantic(interp, "python-mode", "Python", false);
-            // GNU python.el marks triple-quote fences via
-            // syntax-propertize; sexp motion needs them.
-            interp.set_buffer_local_value(
-                interp.current_buffer_id(),
-                "syntax-propertize-function",
-                Value::Symbol("emaxx--python-syntax-propertize".into()),
-            );
-            result
-        }
-        "conf-toml-mode" => {
-            derived_mode_set_parent(interp, "conf-toml-mode", Some("conf-mode"));
-            let buffer_id = interp.current_buffer_id();
-            activate_major_mode(interp, "conf-toml-mode", "Conf[TOML]");
-            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("#".into()));
-            interp.set_buffer_local_value(
-                buffer_id,
-                "comment-start-skip",
-                Value::String("#+\\s-*".into()),
-            );
-            Ok(Value::Nil)
-        }
-        _ => Err(LispError::Signal(format!("Void function: {name}"))),
     }
-}
+);
 
 fn activate_hash_comment_mode(
     interp: &mut Interpreter,

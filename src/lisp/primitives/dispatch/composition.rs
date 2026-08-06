@@ -1,17 +1,5 @@
 use super::*;
 
-pub(super) fn handles(name: &str) -> bool {
-    matches!(
-        name,
-        "clear-composition-cache"
-            | "compose-region-internal"
-            | "compose-string-internal"
-            | "composition-get-gstring"
-            | "composition-sort-rules"
-            | "find-composition-internal"
-    )
-}
-
 fn vector_value(items: impl IntoIterator<Item = Value>) -> Value {
     Value::list(std::iter::once(Value::symbol("vector-literal")).chain(items))
 }
@@ -555,37 +543,38 @@ fn sort_rules(rules: &Value) -> Result<Value, LispError> {
     Ok(Value::list(keyed.into_iter().map(|(_, rule)| rule)))
 }
 
-pub(super) fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    _env: &mut Env,
-) -> Result<Value, LispError> {
-    match name {
-        "clear-composition-cache" => {
-            need_args(name, args, 0)?;
-            Ok(Value::Nil)
+define_dispatch!(
+    pub(super) fn call(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+        _env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match name {
+            "clear-composition-cache" => {
+                need_args(name, args, 0)?;
+                Ok(Value::Nil)
+            }
+            "compose-region-internal" => {
+                need_arg_range(name, args, 2, 4)?;
+                compose_region(interp, args)
+            }
+            "compose-string-internal" => {
+                need_arg_range(name, args, 3, 5)?;
+                compose_string(args)
+            }
+            "composition-get-gstring" => {
+                need_args(name, args, 4)?;
+                get_glyph_string(interp, args)
+            }
+            "composition-sort-rules" => {
+                need_args(name, args, 1)?;
+                sort_rules(&args[0])
+            }
+            "find-composition-internal" => {
+                need_args(name, args, 4)?;
+                find_composition(interp, args)
+            }
         }
-        "compose-region-internal" => {
-            need_arg_range(name, args, 2, 4)?;
-            compose_region(interp, args)
-        }
-        "compose-string-internal" => {
-            need_arg_range(name, args, 3, 5)?;
-            compose_string(args)
-        }
-        "composition-get-gstring" => {
-            need_args(name, args, 4)?;
-            get_glyph_string(interp, args)
-        }
-        "composition-sort-rules" => {
-            need_args(name, args, 1)?;
-            sort_rules(&args[0])
-        }
-        "find-composition-internal" => {
-            need_args(name, args, 4)?;
-            find_composition(interp, args)
-        }
-        _ => unreachable!("composition dispatch called for unsupported primitive"),
     }
-}
+);

@@ -134,72 +134,57 @@ fn native_elisp_load(
     ])))
 }
 
-pub(super) fn handles(name: &str) -> bool {
-    matches!(
-        name,
-        "comp--compile-ctxt-to-file0"
-            | "comp--init-ctxt"
-            | "comp--install-trampoline"
-            | "comp--late-register-subr"
-            | "comp--register-lambda"
-            | "comp--register-subr"
-            | "comp--release-ctxt"
-            | "comp-el-to-eln-filename"
-            | "comp-el-to-eln-rel-filename"
-            | "native-elisp-load"
-    )
-}
-
-pub(super) fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    match name {
-        "comp-el-to-eln-rel-filename" => {
-            need_args(name, args, 1)?;
-            comp_el_to_eln_rel_filename(interp, &args[0], env).map(Value::String)
-        }
-        "comp-el-to-eln-filename" => {
-            need_arg_range(name, args, 1, 2)?;
-            comp_el_to_eln_filename(interp, args, env)
-        }
-        "comp--release-ctxt" => {
-            need_args(name, args, 0)?;
-            Ok(Value::T)
-        }
-        "comp--init-ctxt" => {
-            need_args(name, args, 0)?;
-            Err(native_compiler_unavailable())
-        }
-        "comp--compile-ctxt-to-file0" => {
-            need_args(name, args, 1)?;
-            string_argument(&args[0])?;
-            Err(native_compiler_unavailable())
-        }
-        "comp--install-trampoline" => {
-            need_args(name, args, 2)?;
-            let Value::Symbol(symbol) = &args[0] else {
-                return Err(wrong_type_argument("symbolp", args[0].clone()));
-            };
-            if !matches!(args[1], Value::BuiltinFunc(_)) {
-                return Err(wrong_type_argument("subrp", args[1].clone()));
+define_dispatch!(
+    pub(super) fn call(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match name {
+            "comp-el-to-eln-rel-filename" => {
+                need_args(name, args, 1)?;
+                comp_el_to_eln_rel_filename(interp, &args[0], env).map(Value::String)
             }
-            let original = interp.lookup_function(symbol, env)?;
-            if !matches!(original, Value::BuiltinFunc(_)) {
-                return Err(wrong_type_argument("subrp", original));
+            "comp-el-to-eln-filename" => {
+                need_arg_range(name, args, 1, 2)?;
+                comp_el_to_eln_filename(interp, args, env)
             }
-            Err(native_compiler_unavailable())
+            "comp--release-ctxt" => {
+                need_args(name, args, 0)?;
+                Ok(Value::T)
+            }
+            "comp--init-ctxt" => {
+                need_args(name, args, 0)?;
+                Err(native_compiler_unavailable())
+            }
+            "comp--compile-ctxt-to-file0" => {
+                need_args(name, args, 1)?;
+                string_argument(&args[0])?;
+                Err(native_compiler_unavailable())
+            }
+            "comp--install-trampoline" => {
+                need_args(name, args, 2)?;
+                let Value::Symbol(symbol) = &args[0] else {
+                    return Err(wrong_type_argument("symbolp", args[0].clone()));
+                };
+                if !matches!(args[1], Value::BuiltinFunc(_)) {
+                    return Err(wrong_type_argument("subrp", args[1].clone()));
+                }
+                let original = interp.lookup_function(symbol, env)?;
+                if !matches!(original, Value::BuiltinFunc(_)) {
+                    return Err(wrong_type_argument("subrp", original));
+                }
+                Err(native_compiler_unavailable())
+            }
+            "comp--register-lambda" | "comp--register-subr" | "comp--late-register-subr" => {
+                need_args(name, args, 7)?;
+                Err(native_compiler_unavailable())
+            }
+            "native-elisp-load" => {
+                need_arg_range(name, args, 1, 2)?;
+                native_elisp_load(interp, &args[0], env)
+            }
         }
-        "comp--register-lambda" | "comp--register-subr" | "comp--late-register-subr" => {
-            need_args(name, args, 7)?;
-            Err(native_compiler_unavailable())
-        }
-        "native-elisp-load" => {
-            need_arg_range(name, args, 1, 2)?;
-            native_elisp_load(interp, &args[0], env)
-        }
-        _ => unreachable!("unhandled native compiler builtin {name}"),
     }
-}
+);
