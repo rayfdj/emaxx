@@ -783,6 +783,17 @@ fn simulated_minibuffer_keys_preserve_the_callers_prefix_argument() {
 }
 
 #[test]
+fn simulated_minibuffer_prefix_commands_repeat_the_following_input() {
+    assert_eq!(
+        eval_str(
+            r#"(ert-simulate-keys (kbd "C-u C-u c a b RET")
+                 (read-string "Text: "))"#
+        ),
+        Value::String("ccccccccccccccccab".into())
+    );
+}
+
+#[test]
 fn simulated_minibuffer_keys_do_not_run_prompting_buffer_local_hooks() {
     assert_eq!(
         eval_str(
