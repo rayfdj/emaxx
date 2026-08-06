@@ -18,6 +18,27 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 NETWORK/TIME/INTERFACE CHECKPOINT: the fresh contiguous ordered
+  frontier is 4,402/7,080, leaving 2,678 selectors.  All 67 newly ordered
+  outcomes match GNU: Network Stream 27/27, Newsticker 7/7, NSM 2/2, NTLM
+  3/3, Punycode 8/8, RCIRC 2/2, RFC2104 2/2, SASL-CRAM 1/1, SASL-SCRAM 2/2,
+  SASL 6/6, Secrets 5/5, and the first two SHR selectors.  TCP, UDP, and local
+  socket errors retain GNU's `file-error`/`file-missing` data and client
+  arguments.  Obsolescent positional `encode-time` uses the last argument as
+  ZONE; list form uses field 9.  Real GNU-shaped interface/address/mask data
+  comes from the established cross-platform `if-addrs` 0.15.0 crate, not local
+  unsafe platform bindings.  Primary canonical artifacts are Network Stream
+  `target/compat/run-1785981643781556000-45973`, Newsticker
+  `target/compat/run-1785982042194719000-46410`, and NSM
+  `target/compat/run-1785983236951505000-48268`; adjacent artifacts continue
+  through Secrets `target/compat/run-1785982851655695000-47950`.  Formatting,
+  diff check, focused regressions, all-target/all-feature check, and strict
+  Clippy pass; the preceding full Rust audit remains current.  Native remains
+  1,420/1,420.  NEXT is selector 4,403, `shr-test/zoom-image`, in
+  `test/lisp/net/shr-tests.el`; initial artifact
+  `target/compat/run-1785982879781839000-48069` reports Emaxx
+  `void-variable image-scaling-factor` where GNU reaches its expected generic
+  timeout `error`.
 - 2026-08-06 EWW/CRYPTO/MAILCAP CHECKPOINT: the fresh contiguous ordered
   frontier is 4,335/7,080, leaving 2,745 selectors.  All 31 canonical selected
   outcomes match GNU: EWW 9/9, GnuTLS 6/6, HMAC-MD5 1/1, and Mailcap 15/15.

@@ -9352,6 +9352,40 @@ fn native_network_lookup_uses_platform_address_vectors_and_gnu_validation() {
 }
 
 #[test]
+fn native_network_interface_list_reports_the_ipv4_loopback_subnet() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let interfaces = call(
+        &mut interp,
+        "network-interface-list",
+        &[Value::T, Value::symbol("ipv4")],
+        &mut env,
+    )
+    .expect("enumerate IPv4 interfaces")
+    .to_vec()
+    .expect("interface result should be a list");
+    let loopback = Reader::new("[127 0 0 1 0]")
+        .read()
+        .expect("loopback vector should parse")
+        .expect("loopback vector should exist");
+    let entry = interfaces
+        .iter()
+        .filter_map(|entry| entry.to_vec().ok())
+        .find(|entry| entry.get(1) == Some(&loopback))
+        .expect("IPv4 loopback interface should be present");
+    let broadcast = Reader::new("[127 255 255 255 0]")
+        .read()
+        .expect("loopback broadcast vector should parse")
+        .expect("loopback broadcast vector should exist");
+    let mask = Reader::new("[255 0 0 0 0]")
+        .read()
+        .expect("loopback mask vector should parse")
+        .expect("loopback mask vector should exist");
+    assert_eq!(entry[2], broadcast);
+    assert_eq!(entry[3], mask);
+}
+
+#[test]
 fn native_serial_process_validation_matches_gnu_process_c() {
     let program = r#"(list
                        (make-serial-process)
