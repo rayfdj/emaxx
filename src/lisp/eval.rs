@@ -36,7 +36,7 @@ mod threads;
 mod treesit;
 mod variables;
 use bootstrap::*;
-pub(crate) use core::is_special_form_name;
+pub(crate) use core::{is_special_form_name, native_form_fallback_arity};
 pub(crate) use preload::*;
 mod ert;
 

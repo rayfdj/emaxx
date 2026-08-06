@@ -72,7 +72,10 @@ handoff and retry instruction are in
   dispatch is exhaustive over its generated enum; adding a registered form
   without an implementation is a compile error.  This also removed the stale
   `minibuffer-with-setup-hook` native claim.  `fboundp` uses that evaluator
-  registry instead of a divergent copy.
+  registry instead of a divergent copy.  Native arity lookup now leaves all
+  GNU entries to the generated manifest; the handwritten fallback contains
+  only four non-C Lisp conveniences, while `dlet` fallback arity refers to the
+  typed native-form variant instead of repeating its Lisp name.
   File-name-handler advertisement and execution consume one typed operation
   specification for explicit arguments, `default-directory`, visited-buffer
   paths, and process commands instead of repeating the special-operation set.
