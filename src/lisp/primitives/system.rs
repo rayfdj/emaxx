@@ -1367,29 +1367,60 @@ pub(crate) fn find_file_name_handler(
     Ok(result)
 }
 
-/// Give Lisp file-name handlers the same choke point that GNU's individual
-/// file primitives provide.  The operation table deliberately contains only
-/// arguments that are file names; arbitrary string arguments must never
-/// acquire file-name-handler semantics.
-/// True when `dispatch_file_name_handler' can act on OPERATION at all;
-/// for every other name it returns Ok(None) without reading the
-/// arguments, so hot callers may skip the call entirely.
-pub(crate) fn file_name_handler_operation(operation: &str) -> bool {
-    !file_operation_string_indices(operation).is_empty()
-        || matches!(
-            operation,
-            "make-auto-save-file-name"
-                | "make-process"
-                | "memory-info"
-                | "set-visited-file-modtime"
-                | "shell-command"
-                | "temporary-file-directory"
-                | "verify-visited-file-modtime"
-        )
+#[derive(Clone, Copy)]
+enum DefaultDirectorySource {
+    Never,
+    RelativeArgument,
+    Always,
 }
 
-fn file_operation_string_indices(operation: &str) -> &'static [usize] {
-    match operation {
+#[derive(Clone, Copy)]
+enum BufferFileSource {
+    Current,
+    ArgumentOrCurrent,
+}
+
+/// One authoritative description of the file-name arguments and implicit
+/// paths exposed by a primitive to Lisp file-name handlers.
+#[derive(Clone, Copy)]
+pub(crate) struct FileNameHandlerOperation {
+    string_indices: &'static [usize],
+    default_directory: DefaultDirectorySource,
+    buffer_file: Option<BufferFileSource>,
+    process_command: bool,
+}
+
+impl FileNameHandlerOperation {
+    const fn new(
+        string_indices: &'static [usize],
+        default_directory: DefaultDirectorySource,
+    ) -> Self {
+        Self {
+            string_indices,
+            default_directory,
+            buffer_file: None,
+            process_command: false,
+        }
+    }
+
+    const fn with_buffer_file(mut self, buffer_file: BufferFileSource) -> Self {
+        self.buffer_file = Some(buffer_file);
+        self
+    }
+
+    const fn with_process_command(mut self) -> Self {
+        self.process_command = true;
+        self
+    }
+}
+
+/// Give Lisp file-name handlers the same choke point that GNU's individual
+/// file primitives provide.  Each operation occurs exactly once here, so its
+/// advertisement, file arguments, and implicit path sources cannot drift.
+pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHandlerOperation> {
+    use DefaultDirectorySource::{Always, Never, RelativeArgument};
+
+    let specification = match operation {
         "add-name-to-file"
         | "copy-directory"
         | "copy-file"
@@ -1399,16 +1430,23 @@ fn file_operation_string_indices(operation: &str) -> &'static [usize] {
         | "file-name-completion"
         | "file-newer-than-file-p"
         | "make-symbolic-link"
-        | "rename-file" => &[0, 1],
-        "write-region" => &[2, 5],
-        "start-file-process" => &[2],
-        "access-file"
-        | "abbreviate-file-name"
+        | "rename-file" => FileNameHandlerOperation::new(&[0, 1], RelativeArgument),
+        "write-region" => FileNameHandlerOperation::new(&[2, 5], RelativeArgument),
+        "start-file-process" => FileNameHandlerOperation::new(&[2], RelativeArgument),
+        "abbreviate-file-name"
         | "byte-compiler-base-file-name"
+        | "directory-file-name"
+        | "file-name-as-directory"
+        | "file-name-directory"
+        | "file-name-nondirectory"
+        | "file-name-sans-versions"
+        | "file-remote-p"
+        | "substitute-in-file-name"
+        | "unhandled-file-name-directory" => FileNameHandlerOperation::new(&[0], Never),
+        "access-file"
         | "delete-directory"
         | "delete-file"
         | "diff-latest-backup-file"
-        | "directory-file-name"
         | "directory-files"
         | "directory-files-and-attributes"
         | "dired-compress-file"
@@ -1422,15 +1460,10 @@ fn file_operation_string_indices(operation: &str) -> &'static [usize] {
         | "file-locked-p"
         | "file-local-copy"
         | "file-modes"
-        | "file-name-as-directory"
         | "file-name-case-insensitive-p"
-        | "file-name-directory"
-        | "file-name-nondirectory"
-        | "file-name-sans-versions"
         | "file-ownership-preserved-p"
         | "file-readable-p"
         | "file-regular-p"
-        | "file-remote-p"
         | "file-selinux-context"
         | "file-symlink-p"
         | "file-system-info"
@@ -1450,30 +1483,38 @@ fn file_operation_string_indices(operation: &str) -> &'static [usize] {
         | "set-file-modes"
         | "set-file-selinux-context"
         | "set-file-times"
-        | "substitute-in-file-name"
-        | "unhandled-file-name-directory"
         | "unlock-file"
-        | "vc-registered" => &[0],
-        _ => &[],
-    }
+        | "vc-registered" => FileNameHandlerOperation::new(&[0], RelativeArgument),
+        "memory-info" | "shell-command" | "temporary-file-directory" => {
+            FileNameHandlerOperation::new(&[], Always)
+        }
+        "make-auto-save-file-name" | "set-visited-file-modtime" => {
+            FileNameHandlerOperation::new(&[], Always).with_buffer_file(BufferFileSource::Current)
+        }
+        "verify-visited-file-modtime" => FileNameHandlerOperation::new(&[], Always)
+            .with_buffer_file(BufferFileSource::ArgumentOrCurrent),
+        "make-process" => FileNameHandlerOperation::new(&[], Always).with_process_command(),
+        _ => return None,
+    };
+    Some(specification)
 }
 
 pub(crate) fn dispatch_file_name_handler(
     interp: &mut Interpreter,
     env: &mut Env,
     operation: &str,
+    specification: FileNameHandlerOperation,
     args: &[Value],
 ) -> Result<Option<Value>, LispError> {
-    let indices = file_operation_string_indices(operation);
-
-    let mut candidates = indices
+    let mut candidates = specification
+        .string_indices
         .iter()
         .filter_map(|index| args.get(*index))
         .filter_map(string_like)
         .map(|string| string.text)
         .collect::<Vec<_>>();
 
-    if operation == "make-process" {
+    if specification.process_command {
         for pair in args.chunks_exact(2) {
             if pair[0] == Value::Symbol(":command".into())
                 && let Ok(command) = pair[1].to_vec()
@@ -1485,30 +1526,12 @@ pub(crate) fn dispatch_file_name_handler(
         }
     }
 
-    let uses_implicit_default_directory = if indices.is_empty() {
-        matches!(
-            operation,
-            "make-auto-save-file-name"
-                | "make-process"
-                | "memory-info"
-                | "set-visited-file-modtime"
-                | "shell-command"
-                | "temporary-file-directory"
-                | "verify-visited-file-modtime"
-        )
-    } else {
-        !matches!(
-            operation,
-            "abbreviate-file-name"
-                | "directory-file-name"
-                | "file-name-as-directory"
-                | "file-name-directory"
-                | "file-name-nondirectory"
-                | "file-name-sans-versions"
-                | "file-remote-p"
-                | "substitute-in-file-name"
-                | "unhandled-file-name-directory"
-        ) && candidates.iter().any(|file| !file_name_absolute_p(file))
+    let uses_implicit_default_directory = match specification.default_directory {
+        DefaultDirectorySource::Never => false,
+        DefaultDirectorySource::RelativeArgument => {
+            candidates.iter().any(|file| !file_name_absolute_p(file))
+        }
+        DefaultDirectorySource::Always => true,
     };
     if uses_implicit_default_directory
         && let Some(directory) = interp.lookup_var("default-directory", env)
@@ -1517,17 +1540,14 @@ pub(crate) fn dispatch_file_name_handler(
         candidates.push(directory.text);
     }
 
-    if matches!(
-        operation,
-        "make-auto-save-file-name" | "set-visited-file-modtime" | "verify-visited-file-modtime"
-    ) {
-        let buffer_id = if operation == "verify-visited-file-modtime" {
-            args.first()
+    if let Some(buffer_file) = specification.buffer_file {
+        let buffer_id = match buffer_file {
+            BufferFileSource::Current => interp.current_buffer_id(),
+            BufferFileSource::ArgumentOrCurrent => args
+                .first()
                 .filter(|buffer| buffer.is_truthy())
                 .and_then(|buffer| interp.resolve_buffer_id(buffer).ok())
-                .unwrap_or_else(|| interp.current_buffer_id())
-        } else {
-            interp.current_buffer_id()
+                .unwrap_or_else(|| interp.current_buffer_id()),
         };
         if let Some(file) = interp
             .get_buffer_by_id(buffer_id)

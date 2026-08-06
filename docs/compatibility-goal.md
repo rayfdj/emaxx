@@ -67,6 +67,9 @@ handoff and retry instruction are in
   1,800 lines of parallel primitive-name tables; an implementation can no
   longer be made unreachable by forgetting a second `handles` edit.  `fboundp`
   uses the evaluator's one special-form registry instead of a divergent copy.
+  File-name-handler advertisement and execution consume one typed operation
+  specification for explicit arguments, `default-directory`, visited-buffer
+  paths, and process commands instead of repeating the special-operation set.
   Prefix keys now run a
   real shared command cycle, so package hooks preserve scoped state across
   C-u/digit/minus input; the live minibuffer buffer, rather than a parallel

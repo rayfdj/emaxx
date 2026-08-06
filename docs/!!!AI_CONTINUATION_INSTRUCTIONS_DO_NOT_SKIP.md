@@ -53,7 +53,10 @@ counts as the progress denominator.
   another roughly 1,800 lines of parallel primitive-name tables and making an
   implemented-but-unroutable primitive structurally impossible.  `fboundp`
   consumes the evaluator's canonical special-form registry instead of a
-  second list.  C-u/digit/minus input runs one shared prefix-command
+  second list.  File-name-handler advertisement and execution now consume one
+  typed operation specification for explicit arguments, `default-directory`,
+  visited-buffer paths, and process commands instead of repeating the special
+  operation set.  C-u/digit/minus input runs one shared prefix-command
   lifecycle so package hooks preserve scoped state; simulated readers now
   return the live minibuffer buffer's contents instead of a divergent side
   string.  Each buffer's native undo log now owns one stable, incrementally
