@@ -29,6 +29,21 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 Org/Built-in Package checkpoint advances the fresh
+  contiguous compatibility prefix to 4,458/7,080, leaving 2,622 selectors.
+  `org-package-version` matches GNU in
+  `target/compat/run-1785993514101910000-57431`.  This is a genuine extension
+  of the generated dumped-initializer theme: top-level `push` forms from GNU
+  `loaddefs.el` now install the complete 78-entry
+  `package--builtin-versions` catalog, including Org 9.7.11, rather than
+  requiring an Org-specific runtime constant.  The generated-manifest and
+  package-catalog regressions pass; the 23-test batch-startup cluster passes
+  22 tests and reports only the inherited CCL boundary, while formatting,
+  diff check, all-target/all-feature check, and strict Clippy pass.  The
+  immediately preceding full Rust audit remains current.  Native remains
+  complete at 1,420/1,420.  NEXT is selector 4,459,
+  `paren-tests-categorize-paren`, in `test/lisp/paren-tests.el` (7 selected
+  outcomes).
 - The 2026-08-06 Obarray/Obsolete checkpoint advances the fresh contiguous
   compatibility prefix to 4,457/7,080, leaving 2,623 selectors.  All 16 newly
   ordered outcomes match GNU: Obarray 7/7, obsolete CL 1/1, Inversion 1/1,
