@@ -39,8 +39,7 @@ pub(crate) struct NameFacts {
     pub(crate) special_form: bool,
     pub(crate) prefer_override: bool,
     resets_undo: bool,
-    /// Whether `dispatch_file_name_handler' can act on this name at all.
-    file_name_handled: bool,
+    file_name_handler: Option<FileNameHandlerOperation>,
     /// Whether `builtin_autoload_function' has an entry for this name, so
     /// function lookup only walks its match tables when one exists.
     pub(crate) autoloadable: bool,
@@ -154,7 +153,7 @@ fn compute_name_facts(name: &str) -> NameFacts {
         special_form: crate::lisp::primitives::is_special_form_name(name),
         prefer_override: crate::lisp::primitives::prefer_builtin_override(name),
         resets_undo: resets_undo_sequence(name),
-        file_name_handled: file_name_handler_operation(name),
+        file_name_handler: file_name_handler_operation(name),
         autoloadable: crate::lisp::eval::builtin_autoload_function(name).is_some(),
         module,
     }
@@ -264,8 +263,8 @@ pub(crate) fn call_with_facts(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    if facts.file_name_handled
-        && let Some(result) = dispatch_file_name_handler(interp, env, name, args)?
+    if let Some(specification) = facts.file_name_handler
+        && let Some(result) = dispatch_file_name_handler(interp, env, name, specification, args)?
     {
         return Ok(result);
     }
