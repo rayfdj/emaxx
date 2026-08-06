@@ -29,6 +29,23 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 Change-hook/Cperl partial checkpoint advances the fresh
+  contiguous compatibility prefix to 4,520/7,080, leaving 2,560 selectors.
+  The first four ordered Cperl outcomes match GNU; NEXT is selector 4,521,
+  `cperl-test-bug-11996`.  GNU's five native change-hook controls are now
+  bound dynamic specials, and `add-hook`/`remove-hook` honor an active dynamic
+  binding of a buffer-local hook.  This prevents a failed Cperl indentation
+  test from leaking `cperl-delay-update-hook` into the global default and
+  corrupting every later result with spurious `cperl-update-start` errors.
+  The full diagnostic artifact
+  `target/compat/run-1786003228098043000-490` has 34/64 manifest outcomes
+  green; its 34/65 `check-all` count includes one extra expensive outcome that
+  is outside the 7,080 denominator.  Thirty Cperl denominator outcomes remain.
+  The focused order replay is
+  `target/compat/run-1786003115699808000-323`.  Focused regressions,
+  formatting, diff check, all-target/all-feature check, and strict Clippy
+  pass; the preceding full Rust audit remains current.  Native remains
+  complete at 1,420/1,420.
 - The 2026-08-06 Proced/Progmodes checkpoint advances the fresh contiguous
   compatibility prefix to 4,516/7,080, leaving 2,564 selectors.  All 28 newly
   ordered outcomes match GNU: Proced 6/6, Asm Mode 4/4, Autoconf 3/3, Bat

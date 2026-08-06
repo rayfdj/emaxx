@@ -112,6 +112,17 @@ const GNU_IMAGE_SPECIAL_VARIABLES: &[&str] = &[
     "image-scaling-factor",
 ];
 
+// buffer.c and insdel.c publish the change-hook controls as native DEFVARs.
+// They are process-wide value cells (modes may make the hook variables local),
+// and lexical `let' must still bind them dynamically across helper calls.
+const GNU_CHANGE_HOOK_SPECIAL_VARIABLES: &[&str] = &[
+    "before-change-functions",
+    "after-change-functions",
+    "first-change-hook",
+    "combine-after-change-calls",
+    "inhibit-modification-hooks",
+];
+
 // buffer.c's complete GNU 30.2 DEFVAR_PER_BUFFER contract.  These variables
 // are both special under lexical binding and automatically local to the
 // current buffer when assigned.  Keeping the manifest together prevents a
@@ -2653,6 +2664,10 @@ impl Interpreter {
             interp.mark_special_variable(name);
         }
         for name in GNU_IMAGE_SPECIAL_VARIABLES {
+            interp.mark_special_variable(name);
+        }
+        for name in GNU_CHANGE_HOOK_SPECIAL_VARIABLES {
+            interp.set_global_binding(name, Value::Nil);
             interp.mark_special_variable(name);
         }
         for name in GNU_NATIVE_PER_BUFFER_VARIABLES {

@@ -18,6 +18,23 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 CHANGE-HOOK/CPERL PARTIAL CHECKPOINT: the fresh contiguous
+  ordered frontier is 4,520/7,080, leaving 2,560 selectors.  The first four
+  ordered Cperl outcomes match GNU; NEXT is selector 4,521,
+  `cperl-test-bug-11996`.  This is one genuine native theme: GNU's five
+  buffer.c/insdel.c change-hook controls are bound dynamic specials, and
+  `add-hook`/`remove-hook` now modify an active dynamic binding of a
+  buffer-local hook instead of leaking into its global default.  That removes
+  the `cperl-delay-update-hook` order pollution which previously turned later
+  results into spurious `cperl-update-start` void-variable failures.  The full
+  diagnostic artifact `target/compat/run-1786003228098043000-490` has 34/64
+  denominator outcomes green (34/65 under `check-all`, whose extra expensive
+  outcome is not in the 7,080 manifest); 30 Cperl denominator outcomes remain.
+  The two-test order-pollution replay is
+  `target/compat/run-1786003115699808000-323`.  Focused regressions,
+  formatting, diff check, all-target/all-feature check, and strict Clippy
+  pass; the preceding full Rust audit remains current.  Native remains
+  1,420/1,420.
 - 2026-08-06 PROCED/PROGMODES CHECKPOINT: the fresh contiguous ordered
   frontier is 4,516/7,080, leaving 2,564 selectors.  All 28 newly ordered
   outcomes match GNU: Proced 6/6, Asm Mode 4/4, Autoconf 3/3, Bat 5/5, Bug

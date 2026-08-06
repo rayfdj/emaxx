@@ -1954,6 +1954,9 @@ pub(super) fn call(
                 _ => 0,
             };
             let local = args.get(3).is_some_and(|value| value.is_truthy());
+            let buffer_id = interp.current_buffer_id();
+            let dynamically_local =
+                !local && interp.has_active_buffer_local_special_binding(buffer_id, &hook_name);
             // GNU add-hook: a hook whose current value is a single function
             // (not a list) is first wrapped in a one-element list, so the
             // existing handler survives (erc's `422' hook holds the bare
@@ -1962,9 +1965,8 @@ pub(super) fn call(
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), &hook_name)
                     .unwrap_or_else(|| vec![Value::T])
-            } else if interp
-                .buffer_local_hook(interp.current_buffer_id(), &hook_name)
-                .is_some()
+            } else if !dynamically_local
+                && interp.buffer_local_hook(buffer_id, &hook_name).is_some()
             {
                 // The buffer-local mirror (including its `t' splice
                 // sentinel) shadows the global value here; GNU's global
@@ -1993,16 +1995,14 @@ pub(super) fn call(
                 }
             }
             if local {
-                let buffer_id = interp.current_buffer_id();
                 interp.set_buffer_local_hook(buffer_id, &hook_name, hooks.clone());
                 // Keep GNU's `t' sentinel in its depth-sorted position.  It
                 // splices the default hook at depth zero, so positive local
                 // functions run after the default while negative ones run
                 // before it.
                 interp.set_buffer_local_value(buffer_id, &hook_name, Value::list(hooks));
-            } else if interp
-                .buffer_local_hook(interp.current_buffer_id(), &hook_name)
-                .is_some()
+            } else if !dynamically_local
+                && interp.buffer_local_hook(buffer_id, &hook_name).is_some()
             {
                 // A plain set would hit the buffer-local mirror; GNU's
                 // global add-hook writes the default (setq-default).
@@ -2012,6 +2012,8 @@ pub(super) fn call(
                     &[Value::Symbol(hook_name.clone()), Value::list(hooks)],
                     env,
                 )?;
+            } else if dynamically_local {
+                interp.set_variable(&hook_name, Value::list(hooks), env);
             } else {
                 interp.set_variable(&hook_name, Value::list(hooks), &mut Vec::new());
             }
@@ -2155,20 +2157,18 @@ pub(super) fn call(
             let function = args[1].clone();
             // (remove-hook HOOK FUNCTION &optional LOCAL) — no DEPTH slot.
             let local = args.get(2).is_some_and(|value| value.is_truthy());
-            if local
-                && interp
-                    .buffer_local_hook(interp.current_buffer_id(), &hook_name)
-                    .is_none()
-            {
+            let buffer_id = interp.current_buffer_id();
+            let dynamically_local =
+                !local && interp.has_active_buffer_local_special_binding(buffer_id, &hook_name);
+            if local && interp.buffer_local_hook(buffer_id, &hook_name).is_none() {
                 return Ok(Value::Nil);
             }
             let mut hooks = if local {
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), &hook_name)
                     .unwrap_or_default()
-            } else if interp
-                .buffer_local_hook(interp.current_buffer_id(), &hook_name)
-                .is_some()
+            } else if !dynamically_local
+                && interp.buffer_local_hook(buffer_id, &hook_name).is_some()
             {
                 // The buffer-local mirror (including its `t' splice
                 // sentinel) shadows the global value here; GNU's global
@@ -2189,7 +2189,6 @@ pub(super) fn call(
                 remove_hook_function_depth(interp, &hook_name, &removed, local);
             }
             if local {
-                let buffer_id = interp.current_buffer_id();
                 if hooks == [Value::T] {
                     // GNU kills the local binding when only the default-hook
                     // sentinel remains.
@@ -2204,9 +2203,8 @@ pub(super) fn call(
                     interp.set_buffer_local_hook(buffer_id, &hook_name, hooks.clone());
                     interp.set_buffer_local_value(buffer_id, &hook_name, Value::list(hooks));
                 }
-            } else if interp
-                .buffer_local_hook(interp.current_buffer_id(), &hook_name)
-                .is_some()
+            } else if !dynamically_local
+                && interp.buffer_local_hook(buffer_id, &hook_name).is_some()
             {
                 super::call(
                     interp,
@@ -2214,6 +2212,8 @@ pub(super) fn call(
                     &[Value::Symbol(hook_name.clone()), Value::list(hooks)],
                     env,
                 )?;
+            } else if dynamically_local {
+                interp.set_variable(&hook_name, Value::list(hooks), env);
             } else {
                 interp.set_variable(&hook_name, Value::list(hooks), &mut Vec::new());
             }
