@@ -36,7 +36,10 @@ counts as the progress denominator.
   `target/compat/run-1786044170066876000-67710`.
 
   The repair removes drift-prone parallel registries: synthesized startup
-  values automatically imply special binding semantics; native per-buffer
+  values automatically imply special binding semantics.  Explicit startup
+  definitions atomically install the value cell with ordinary, per-buffer, or
+  always-local special metadata; remaining standalone special marks are
+  declaration-only values supplied lazily or elsewhere.  Native per-buffer
   names, always-local status, and effective permanence are one typed
   manifest; and `local-variable-p` consumes that registered metadata.  GNU
   primitive, arity, and dumped-autoload metadata remain generated and
