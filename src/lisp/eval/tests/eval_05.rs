@@ -4426,6 +4426,33 @@ fn simple_compat_exposes_with_temp_message_as_a_preloaded_macro() {
 }
 
 #[test]
+fn simple_compat_exposes_with_delayed_message_as_a_preloaded_macro() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let ((calls 0))
+               (list (macrop 'with-delayed-message)
+                     (special-form-p 'with-delayed-message)
+                     (with-delayed-message
+                         (100 (progn (setq calls (1+ calls)) \"working\"))
+                       (list 'done calls))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::list([Value::Symbol("done".into()), Value::Integer(1)]),
+        ])
+    );
+}
+
+#[test]
 fn simple_compat_exposes_the_dumped_font_lock_hook_entry_point() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(

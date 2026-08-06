@@ -464,6 +464,14 @@ The batch frame always shows a single window."
                   (message "%s" ,current-message)
                 (message nil)))))))
 
+;; GNU subr.el preloads this macro over the native delayed-message primitive.
+(defmacro with-delayed-message (args &rest body)
+  "Like `progn', but display MESSAGE if BODY takes longer than TIMEOUT seconds."
+  (declare (indent 1))
+  `(funcall-with-delayed-message ,(car args) ,(cadr args)
+                                 (lambda ()
+                                   ,@body)))
+
 ;; GNU subr.el preloads this macro.  Async callers use it to let BODY observe
 ;; a quit locally while preserving the pending quit for the outer command.
 (defmacro with-local-quit (&rest body)
