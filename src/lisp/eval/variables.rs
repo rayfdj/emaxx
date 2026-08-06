@@ -952,6 +952,22 @@ impl Interpreter {
         let buffer_id = self.current_buffer_id();
         let binding_id = self.next_special_binding_id;
         self.next_special_binding_id += 1;
+        if name == "buffer-undo-list" {
+            let previous = crate::lisp::primitives::buffer_undo_list_value(&self.buffer);
+            self.notify_variable_watchers(&name, value.clone(), "let", Some(buffer_id), env)?;
+            let previous_undo_state = self.buffer.take_undo_state();
+            self.set_symbol_value_cell(&name, value);
+            let restore = SpecialBindingRestore {
+                binding_id,
+                name,
+                scope: SpecialBindingScope::BufferLocal(buffer_id),
+                binding_buffer_id: None,
+                previous: Some(previous),
+                previous_undo_state: Some(previous_undo_state),
+            };
+            self.active_special_restores.push(restore.clone());
+            return Ok(restore);
+        }
         let restore = if self.buffer_local_value(buffer_id, &name).is_some() {
             let previous = self.buffer_local_value(buffer_id, &name);
             self.notify_variable_watchers(&name, value.clone(), "let", Some(buffer_id), env)?;
@@ -962,6 +978,7 @@ impl Interpreter {
                 scope: SpecialBindingScope::BufferLocal(buffer_id),
                 binding_buffer_id: None,
                 previous,
+                previous_undo_state: None,
             }
         } else {
             let previous = self.global_value(&name);
@@ -984,6 +1001,7 @@ impl Interpreter {
                 scope: SpecialBindingScope::Global,
                 binding_buffer_id,
                 previous,
+                previous_undo_state: None,
             }
         };
         self.active_special_restores.push(restore.clone());
@@ -1034,6 +1052,23 @@ impl Interpreter {
         } else {
             restore
         };
+        if let Some(previous_undo_state) = restore.previous_undo_state {
+            let buffer_id = match restore.scope {
+                SpecialBindingScope::BufferLocal(buffer_id) => buffer_id,
+                SpecialBindingScope::Global => self.current_buffer_id(),
+            };
+            self.notify_variable_watchers(
+                &restore.name,
+                restore.previous.unwrap_or(Value::Nil),
+                "unlet",
+                Some(buffer_id),
+                env,
+            )?;
+            if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                buffer.restore_undo_state(previous_undo_state);
+            }
+            return Ok(());
+        }
         match restore.scope {
             SpecialBindingScope::Global => {
                 self.notify_variable_watchers(

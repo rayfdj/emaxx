@@ -29,6 +29,26 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 Play checkpoint advances the fresh contiguous compatibility
+  prefix to 4,488/7,080, leaving 2,592 selectors.  All 13 newly ordered
+  outcomes match GNU: Animate 1/1, Cookie 2/2, Dissociate 1/1, Fortune 1/1,
+  Life 1/1, Morse 4/4, and Studly 3/3.  This is a bounded directory
+  checkpoint, not one invented implementation theme.  Independently,
+  `set-window-start` now accepts nil as the selected window; dynamic
+  `buffer-undo-list` bindings isolate their native Rust undo state and restore
+  the exact prior history; and substring/property extraction normalizes
+  reversed region endpoints like GNU.  Canonical artifacts are Animate
+  `target/compat/run-1785995356751180000-59258`, Cookie
+  `target/compat/run-1785995471044598000-59430`, Dissociate
+  `target/compat/run-1785995708002296000-59786`, Fortune
+  `target/compat/run-1785995818789747000-59956`, Life
+  `target/compat/run-1785995832740718000-60074`, Morse
+  `target/compat/run-1785995846436542000-60192`, and Studly
+  `target/compat/run-1785995862402719000-60311`.  Focused native regressions,
+  formatting, diff check, all-target/all-feature check, and strict Clippy
+  pass; the immediately preceding full Rust audit remains current.  Native is
+  still complete at 1,420/1,420.  NEXT is selector 4,489,
+  `proced-color-test`, in `test/lisp/proced-tests.el` (6 selected outcomes).
 - The 2026-08-06 Org/Built-in Package checkpoint advances the fresh
   contiguous compatibility prefix to 4,458/7,080, leaving 2,622 selectors.
   `org-package-version` matches GNU in

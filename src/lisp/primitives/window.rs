@@ -172,10 +172,15 @@ pub(crate) fn set_window_start_value(
     window: &Value,
     start: usize,
 ) -> Result<(), LispError> {
-    let Some(id) = window_record_id_from_value(interp, window) else {
+    let window = if window.is_nil() {
+        interp.selected_window_value()
+    } else {
+        window.clone()
+    };
+    let Some(id) = window_record_id_from_value(interp, &window) else {
         return Err(LispError::TypeError("window".into(), window.type_name()));
     };
-    let buffer_id = window_buffer_id(interp, window).unwrap_or(interp.current_buffer_id());
+    let buffer_id = window_buffer_id(interp, &window).unwrap_or(interp.current_buffer_id());
     let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
     let start = start.clamp(point_min, point_max);
     let start = buffer_line_start_at(interp, buffer_id, start);
