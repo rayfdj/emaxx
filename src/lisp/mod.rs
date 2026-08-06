@@ -1,3 +1,60 @@
+/// Define a primitive dispatcher and derive its name probe from the same arms.
+///
+/// Dispatch routing and implementation must share one inventory: otherwise a
+/// newly implemented primitive can remain unreachable merely because a second
+/// `handles` list was not updated.
+macro_rules! dispatch_handles {
+    ($name:ident;) => {
+        false
+    };
+    ($name:ident; , $($rest:tt)*) => {
+        dispatch_handles!($name; $($rest)*)
+    };
+    (
+        $name:ident;
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:block
+        $($rest:tt)*
+    ) => {
+        matches!($name, $pattern) || dispatch_handles!($name; $($rest)*)
+    };
+    (
+        $name:ident;
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:expr,
+        $($rest:tt)*
+    ) => {
+        matches!($name, $pattern) || dispatch_handles!($name; $($rest)*)
+    };
+}
+
+macro_rules! define_dispatch {
+    (
+        $(#[$attribute:meta])*
+        $visibility:vis fn $call:ident(
+            $($argument:ident: $argument_type:ty),* $(,)?
+        ) -> $return_type:ty {
+            match $name:ident {
+                $($arms:tt)*
+            }
+        }
+    ) => {
+        $visibility fn handles(name: &str) -> bool {
+            dispatch_handles!(name; $($arms)*)
+        }
+
+        $(#[$attribute])*
+        $visibility fn $call(
+            $($argument: $argument_type),*
+        ) -> $return_type {
+            match $name {
+                $($arms)*
+                _ => unreachable!("primitive dispatcher called for unsupported name: {}", $name),
+            }
+        }
+    };
+}
+
 pub mod bytecode;
 pub mod eval;
 pub mod json;

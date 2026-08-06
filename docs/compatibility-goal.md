@@ -61,14 +61,20 @@ handoff and retry instruction are in
   longer leak into minibuffer commands, and RET completes the prompting
   command before its post-command hook, repairing Edebug and Kmacro.  Native
   builtin status is derived directly from its dispatch route, deleting a
-  1,730-line parallel name inventory, and `fboundp` uses the evaluator's one
-  special-form registry instead of a divergent copy.  Prefix keys now run a
+  1,730-line parallel name inventory.  The route probes and implementations
+  now also come from one `define_dispatch!` arm inventory across every split
+  dispatcher, CCL, modes, time, LCMS, and SQLite, removing another roughly
+  1,800 lines of parallel primitive-name tables; an implementation can no
+  longer be made unreachable by forgetting a second `handles` edit.  `fboundp`
+  uses the evaluator's one special-form registry instead of a divergent copy.
+  Prefix keys now run a
   real shared command cycle, so package hooks preserve scoped state across
   C-u/digit/minus input; the live minibuffer buffer, rather than a parallel
   side string, is authoritative for simulated edits.  Each buffer now exposes
   one stable, incrementally extended Lisp undo-list view, preserving GNU
   change-group tail identity instead of rebuilding a detached parallel list.
-  Focused invariants and regressions, formatting, diff check,
+  Focused invariants, exact native surface and metadata manifest regressions,
+  formatting, diff check,
   regenerated/rustfmt-normalized autoload validation, all-target/all-feature
   check, and strict Clippy pass.  Native
   remains 1,420/1,420; the frontier remains 4,582/7,080 (2,498 selectors left)

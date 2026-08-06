@@ -154,50 +154,6 @@ thread_local! {
     static VECTOR_SLOT_CACHE: RefCell<VectorSlotCache> = RefCell::new(HashMap::default());
 }
 
-fn is_time_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "current-time-zone"
-            | "current-time"
-            | "current-time-string"
-            | "decode-time"
-            | "decoded-time-day"
-            | "decoded-time-dst"
-            | "decoded-time-hour"
-            | "decoded-time-minute"
-            | "decoded-time-month"
-            | "decoded-time-second"
-            | "decoded-time-weekday"
-            | "decoded-time-year"
-            | "decoded-time-zone"
-            | "encode-time"
-            | "float-time"
-            | "format-time-string"
-            | "set-time-zone-rule"
-            | "time-add"
-            | "time-convert"
-            | "time-equal-p"
-            | "time-less-p"
-            | "time-since"
-            | "time-to-seconds"
-            | "time-subtract"
-    )
-}
-
-fn is_lcms_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "lcms-cie-de2000"
-            | "lcms-xyz->jch"
-            | "lcms-jch->xyz"
-            | "lcms-jch->jab"
-            | "lcms-jab->jch"
-            | "lcms-cam02-ucs"
-            | "lcms2-available-p"
-            | "lcms-temp->white-point"
-    )
-}
-
 fn treesit_linecol_cache_value(line: i64, col: i64, bytepos: i64) -> Value {
     Value::list([
         Value::Symbol(":line".into()),

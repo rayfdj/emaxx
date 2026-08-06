@@ -28,56 +28,34 @@ pub struct SqliteSetState {
     pub closed: bool,
 }
 
-pub fn is_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "sqlite-open"
-            | "sqlite-close"
-            | "sqlite-execute"
-            | "sqlite-select"
-            | "sqlite-execute-batch"
-            | "sqlite-transaction"
-            | "sqlite-commit"
-            | "sqlite-rollback"
-            | "sqlite-load-extension"
-            | "sqlite-next"
-            | "sqlite-columns"
-            | "sqlite-more-p"
-            | "sqlite-finalize"
-            | "sqlite-version"
-            | "sqlitep"
-            | "sqlite-pragma"
-            | "sqlite-available-p"
-    )
-}
-
-pub fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    _env: &mut Env,
-) -> Result<Value, LispError> {
-    match name {
-        "sqlite-open" => sqlite_open(interp, args),
-        "sqlite-close" => sqlite_close(interp, args),
-        "sqlite-execute" => sqlite_execute(interp, args),
-        "sqlite-select" => sqlite_select(interp, args),
-        "sqlite-execute-batch" => sqlite_execute_batch(interp, args),
-        "sqlite-transaction" => sqlite_transaction(interp, args),
-        "sqlite-commit" => sqlite_commit(interp, args),
-        "sqlite-rollback" => sqlite_rollback(interp, args),
-        "sqlite-load-extension" => sqlite_load_extension(interp, args),
-        "sqlite-next" => sqlite_next(interp, args),
-        "sqlite-columns" => sqlite_columns(interp, args),
-        "sqlite-more-p" => sqlite_more_p(interp, args),
-        "sqlite-finalize" => sqlite_finalize(interp, args),
-        "sqlite-version" => sqlite_version(args),
-        "sqlitep" => sqlitep(interp, args),
-        "sqlite-pragma" => sqlite_pragma(interp, args),
-        "sqlite-available-p" => sqlite_available_p(args),
-        _ => Err(LispError::Void(name.to_string())),
+define_dispatch!(
+    pub fn call(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+        _env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match name {
+            "sqlite-open" => sqlite_open(interp, args),
+            "sqlite-close" => sqlite_close(interp, args),
+            "sqlite-execute" => sqlite_execute(interp, args),
+            "sqlite-select" => sqlite_select(interp, args),
+            "sqlite-execute-batch" => sqlite_execute_batch(interp, args),
+            "sqlite-transaction" => sqlite_transaction(interp, args),
+            "sqlite-commit" => sqlite_commit(interp, args),
+            "sqlite-rollback" => sqlite_rollback(interp, args),
+            "sqlite-load-extension" => sqlite_load_extension(interp, args),
+            "sqlite-next" => sqlite_next(interp, args),
+            "sqlite-columns" => sqlite_columns(interp, args),
+            "sqlite-more-p" => sqlite_more_p(interp, args),
+            "sqlite-finalize" => sqlite_finalize(interp, args),
+            "sqlite-version" => sqlite_version(args),
+            "sqlitep" => sqlitep(interp, args),
+            "sqlite-pragma" => sqlite_pragma(interp, args),
+            "sqlite-available-p" => sqlite_available_p(args),
+        }
     }
-}
+);
 
 fn need_args(name: &str, args: &[Value], min: usize, max: usize) -> Result<(), LispError> {
     if args.len() < min || args.len() > max {

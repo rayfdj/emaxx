@@ -37,16 +37,13 @@ fn module_load(file: &Value) -> Result<Value, LispError> {
     ))
 }
 
-pub(super) fn handles(name: &str) -> bool {
-    name == "module-load"
-}
-
-pub(super) fn call(name: &str, args: &[Value]) -> Result<Value, LispError> {
-    match name {
-        "module-load" => {
-            need_args(name, args, 1)?;
-            module_load(&args[0])
+define_dispatch!(
+    pub(super) fn call(name: &str, args: &[Value]) -> Result<Value, LispError> {
+        match name {
+            "module-load" => {
+                need_args(name, args, 1)?;
+                module_load(&args[0])
+            }
         }
-        _ => unreachable!("unhandled dynamic-module builtin {name}"),
     }
-}
+);

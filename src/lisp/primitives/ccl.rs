@@ -6,59 +6,49 @@ const CCL_CODE_MIN: i64 = -(1 << 27);
 const CCL_CODE_MAX: i64 = (1 << 27) - 1;
 const CHARSET_UNICODE: i32 = 2;
 
-pub(super) fn handles(name: &str) -> bool {
-    matches!(
-        name,
-        "ccl-program-p"
-            | "ccl-execute"
-            | "ccl-execute-on-string"
-            | "register-ccl-program"
-            | "register-code-conversion-map"
-    )
-}
-
-pub(super) fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    match name {
-        "ccl-program-p" => {
-            need_args(name, args, 1)?;
-            Ok(if ccl_program_p(interp, &args[0]) {
-                Value::T
-            } else {
-                Value::Nil
-            })
+define_dispatch!(
+    pub(super) fn call(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match name {
+            "ccl-program-p" => {
+                need_args(name, args, 1)?;
+                Ok(if ccl_program_p(interp, &args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "register-ccl-program" => {
+                need_args(name, args, 2)?;
+                register_ccl_program(interp, &args[0], &args[1])
+            }
+            "register-code-conversion-map" => {
+                need_args(name, args, 2)?;
+                register_code_conversion_map(interp, &args[0], &args[1])
+            }
+            "ccl-execute" => {
+                need_args(name, args, 2)?;
+                ccl_execute(interp, &args[0], &args[1], env)
+            }
+            "ccl-execute-on-string" => {
+                need_arg_range(name, args, 3, 5)?;
+                ccl_execute_on_string(
+                    interp,
+                    &args[0],
+                    &args[1],
+                    &args[2],
+                    args.get(3).is_some_and(Value::is_truthy),
+                    args.get(4).is_some_and(Value::is_truthy),
+                    env,
+                )
+            }
         }
-        "register-ccl-program" => {
-            need_args(name, args, 2)?;
-            register_ccl_program(interp, &args[0], &args[1])
-        }
-        "register-code-conversion-map" => {
-            need_args(name, args, 2)?;
-            register_code_conversion_map(interp, &args[0], &args[1])
-        }
-        "ccl-execute" => {
-            need_args(name, args, 2)?;
-            ccl_execute(interp, &args[0], &args[1], env)
-        }
-        "ccl-execute-on-string" => {
-            need_arg_range(name, args, 3, 5)?;
-            ccl_execute_on_string(
-                interp,
-                &args[0],
-                &args[1],
-                &args[2],
-                args.get(3).is_some_and(Value::is_truthy),
-                args.get(4).is_some_and(Value::is_truthy),
-                env,
-            )
-        }
-        _ => unreachable!("CCL dispatcher called for {name}"),
     }
-}
+);
 
 fn make_vector(items: impl IntoIterator<Item = Value>) -> Value {
     Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(items))

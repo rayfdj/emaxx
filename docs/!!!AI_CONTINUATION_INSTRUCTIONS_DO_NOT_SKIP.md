@@ -47,15 +47,20 @@ counts as the progress denominator.
   engine; caller-buffer local hooks are isolated from minibuffer commands;
   and exit-minibuffer RET lets the prompting command finish before its
   post-command hook.  Native builtin status now comes directly from the
-  dispatch route (the 1,730-line duplicate name inventory is deleted), while
-  `fboundp` consumes the evaluator's canonical special-form registry instead
-  of a second list.  C-u/digit/minus input runs one shared prefix-command
+  dispatch route (the 1,730-line duplicate name inventory is deleted).  One
+  `define_dispatch!` arm inventory now generates both route probes and calls
+  across every split dispatcher, CCL, modes, time, LCMS, and SQLite, removing
+  another roughly 1,800 lines of parallel primitive-name tables and making an
+  implemented-but-unroutable primitive structurally impossible.  `fboundp`
+  consumes the evaluator's canonical special-form registry instead of a
+  second list.  C-u/digit/minus input runs one shared prefix-command
   lifecycle so package hooks preserve scoped state; simulated readers now
   return the live minibuffer buffer's contents instead of a divergent side
   string.  Each buffer's native undo log now owns one stable, incrementally
   extended Lisp view, so GNU change-group handles retain real tail identity
-  instead of observing detached equal-looking lists.  Focused invariants and
-  regressions, formatting, diff check,
+  instead of observing detached equal-looking lists.  Focused invariants,
+  exact native surface and metadata manifest regressions, formatting, diff
+  check,
   regenerated/rustfmt-normalized autoload validation, all-target/all-feature
   check, and strict Clippy pass.  Native remains 1,420/1,420.  Do not resume
   selector 4,583 until the remaining cumulative mismatches and final 1..4,582

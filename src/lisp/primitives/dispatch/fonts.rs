@@ -19,40 +19,6 @@ const FONT_AVGWIDTH_INDEX: usize = 11;
 const FONT_EXTRA_INDEX: usize = 12;
 const FONT_SPEC_SIZE: usize = FONT_EXTRA_INDEX + 1;
 
-const FONT_BUILTINS: &[&str] = &[
-    "clear-font-cache",
-    "close-font",
-    "find-font",
-    "font-at",
-    "font-face-attributes",
-    "font-family-list",
-    "font-get",
-    "font-get-glyphs",
-    "font-has-char-p",
-    "font-info",
-    "font-match-p",
-    "font-put",
-    "font-shape-gstring",
-    "font-spec",
-    "font-variation-glyphs",
-    "font-xlfd-name",
-    "fontp",
-    "fontset-font",
-    "fontset-info",
-    "fontset-list",
-    "frame-font-cache",
-    "list-fonts",
-    "new-fontset",
-    "open-font",
-    "query-font",
-    "query-fontset",
-    "set-fontset-font",
-];
-
-pub(super) fn handles(name: &str) -> bool {
-    FONT_BUILTINS.contains(&name)
-}
-
 fn font_property_index(key: &str) -> Option<usize> {
     Some(match key {
         ":type" => FONT_TYPE_INDEX,
@@ -893,274 +859,275 @@ fn add_fontlist(
     Ok(())
 }
 
-pub(super) fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    _env: &mut Env,
-) -> Result<Value, LispError> {
-    match name {
-        "font-spec" => Ok(interp.create_record("font-spec", make_font_spec(args)?)),
-        "fontp" => {
-            need_arg_range(name, args, 1, 2)?;
-            let font_type = match &args[0] {
-                Value::Record(id) => interp.find_record(*id).and_then(|record| {
-                    matches!(
-                        record.type_name.as_str(),
-                        "font-spec" | "font-entity" | "font-object"
-                    )
-                    .then(|| record.type_name.clone())
-                }),
-                _ => None,
-            };
-            let matches = match args.get(1) {
-                None | Some(Value::Nil) => font_type.is_some(),
-                Some(Value::Symbol(expected))
-                    if matches!(
-                        expected.as_str(),
-                        "font-spec" | "font-entity" | "font-object"
-                    ) =>
-                {
-                    font_type.as_deref() == Some(expected)
-                }
-                Some(extra_type) => {
-                    return Err(wrong_type_argument("font-extra-type", extra_type.clone()));
-                }
-            };
-            Ok(if matches { Value::T } else { Value::Nil })
-        }
-        "font-get" => {
-            need_args(name, args, 2)?;
-            let key = args[1]
-                .as_symbol()
-                .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
-            font_property(interp, &args[0], key)
-        }
-        "font-put" => {
-            need_args(name, args, 3)?;
-            let key = args[1]
-                .as_symbol()
-                .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?
-                .to_string();
-            put_font_property(interp, &args[0], &key, args[1].clone(), &args[2])
-        }
-        "font-match-p" => {
-            need_args(name, args, 2)?;
-            Ok(if font_match_p(interp, &args[0], &args[1])? {
-                Value::T
-            } else {
-                Value::Nil
-            })
-        }
-        "font-xlfd-name" => {
-            need_arg_range(name, args, 1, 3)?;
-            font_xlfd_name(
-                interp,
-                &args[0],
-                args.get(1).is_some_and(Value::is_truthy),
-                args.get(2).is_some_and(Value::is_truthy),
-            )
-        }
-        "list-fonts" => {
-            need_arg_range(name, args, 1, 4)?;
-            font_spec_id(interp, &args[0])?;
-            if let Some(limit) = args.get(2).filter(|value| !value.is_nil()) {
-                let Value::Integer(limit) = limit else {
-                    return Err(wrong_type_argument("fixnump", limit.clone()));
+define_dispatch!(
+    pub(super) fn call(
+        interp: &mut Interpreter,
+        name: &str,
+        args: &[Value],
+        _env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match name {
+            "font-spec" => Ok(interp.create_record("font-spec", make_font_spec(args)?)),
+            "fontp" => {
+                need_arg_range(name, args, 1, 2)?;
+                let font_type = match &args[0] {
+                    Value::Record(id) => interp.find_record(*id).and_then(|record| {
+                        matches!(
+                            record.type_name.as_str(),
+                            "font-spec" | "font-entity" | "font-object"
+                        )
+                        .then(|| record.type_name.clone())
+                    }),
+                    _ => None,
                 };
-                if *limit <= 0 {
-                    return Ok(Value::Nil);
-                }
-            }
-            if let Some(prefer) = args.get(3).filter(|value| !value.is_nil()) {
-                font_spec_id(interp, prefer)?;
-            }
-            Ok(Value::Nil)
-        }
-        "find-font" => {
-            need_arg_range(name, args, 1, 2)?;
-            font_spec_id(interp, &args[0])?;
-            Ok(Value::Nil)
-        }
-        "font-at" => {
-            need_arg_range(name, args, 1, 3)?;
-            let window = args.get(1).filter(|value| !value.is_nil());
-            let window = match window {
-                Some(window) => {
-                    window_record_id_from_value(interp, window)
-                        .ok_or_else(|| wrong_type_argument("window-live-p", window.clone()))?;
-                    window.clone()
-                }
-                None => Value::Record(interp.selected_window_id()),
-            };
-            if let Some(string) = args.get(2).filter(|value| !value.is_nil()) {
-                let Value::Integer(position) = args[0] else {
-                    return Err(wrong_type_argument("fixnump", args[0].clone()));
+                let matches = match args.get(1) {
+                    None | Some(Value::Nil) => font_type.is_some(),
+                    Some(Value::Symbol(expected))
+                        if matches!(
+                            expected.as_str(),
+                            "font-spec" | "font-entity" | "font-object"
+                        ) =>
+                    {
+                        font_type.as_deref() == Some(expected)
+                    }
+                    Some(extra_type) => {
+                        return Err(wrong_type_argument("font-extra-type", extra_type.clone()));
+                    }
                 };
-                let string_value = string.clone();
-                let string = string_like(&string_value)
-                    .ok_or_else(|| wrong_type_argument("stringp", string.clone()))?;
-                let length = string.text.chars().count() as i64;
-                if !(0..length).contains(&position) {
-                    return Err(args_out_of_range(string_value.clone(), args[0].clone()));
+                Ok(if matches { Value::T } else { Value::Nil })
+            }
+            "font-get" => {
+                need_args(name, args, 2)?;
+                let key = args[1]
+                    .as_symbol()
+                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
+                font_property(interp, &args[0], key)
+            }
+            "font-put" => {
+                need_args(name, args, 3)?;
+                let key = args[1]
+                    .as_symbol()
+                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?
+                    .to_string();
+                put_font_property(interp, &args[0], &key, args[1].clone(), &args[2])
+            }
+            "font-match-p" => {
+                need_args(name, args, 2)?;
+                Ok(if font_match_p(interp, &args[0], &args[1])? {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
+            "font-xlfd-name" => {
+                need_arg_range(name, args, 1, 3)?;
+                font_xlfd_name(
+                    interp,
+                    &args[0],
+                    args.get(1).is_some_and(Value::is_truthy),
+                    args.get(2).is_some_and(Value::is_truthy),
+                )
+            }
+            "list-fonts" => {
+                need_arg_range(name, args, 1, 4)?;
+                font_spec_id(interp, &args[0])?;
+                if let Some(limit) = args.get(2).filter(|value| !value.is_nil()) {
+                    let Value::Integer(limit) = limit else {
+                        return Err(wrong_type_argument("fixnump", limit.clone()));
+                    };
+                    if *limit <= 0 {
+                        return Ok(Value::Nil);
+                    }
                 }
-            } else {
-                if window_buffer_id(interp, &window) != Some(interp.current_buffer_id()) {
+                if let Some(prefer) = args.get(3).filter(|value| !value.is_nil()) {
+                    font_spec_id(interp, prefer)?;
+                }
+                Ok(Value::Nil)
+            }
+            "find-font" => {
+                need_arg_range(name, args, 1, 2)?;
+                font_spec_id(interp, &args[0])?;
+                Ok(Value::Nil)
+            }
+            "font-at" => {
+                need_arg_range(name, args, 1, 3)?;
+                let window = args.get(1).filter(|value| !value.is_nil());
+                let window = match window {
+                    Some(window) => {
+                        window_record_id_from_value(interp, window)
+                            .ok_or_else(|| wrong_type_argument("window-live-p", window.clone()))?;
+                        window.clone()
+                    }
+                    None => Value::Record(interp.selected_window_id()),
+                };
+                if let Some(string) = args.get(2).filter(|value| !value.is_nil()) {
+                    let Value::Integer(position) = args[0] else {
+                        return Err(wrong_type_argument("fixnump", args[0].clone()));
+                    };
+                    let string_value = string.clone();
+                    let string = string_like(&string_value)
+                        .ok_or_else(|| wrong_type_argument("stringp", string.clone()))?;
+                    let length = string.text.chars().count() as i64;
+                    if !(0..length).contains(&position) {
+                        return Err(args_out_of_range(string_value.clone(), args[0].clone()));
+                    }
+                } else {
+                    if window_buffer_id(interp, &window) != Some(interp.current_buffer_id()) {
+                        return Err(LispError::Signal(
+                            "Specified window is not displaying the current buffer".into(),
+                        ));
+                    }
+                    let position = position_from_value(interp, &args[0])?;
+                    let (begin, end) = interp.buffer.restriction();
+                    if !(begin..end).contains(&position) {
+                        return Err(args_out_of_range(args[0].clone(), args[0].clone()));
+                    }
+                }
+                Ok(Value::Nil)
+            }
+            "font-face-attributes" => {
+                need_arg_range(name, args, 1, 2)?;
+                require_live_frame(interp, args.get(1))?;
+                Err(window_system_frame_required())
+            }
+            "open-font" => {
+                need_arg_range(name, args, 1, 3)?;
+                require_live_frame(interp, args.get(2))?;
+                Err(window_system_frame_required())
+            }
+            "close-font" => {
+                need_arg_range(name, args, 1, 2)?;
+                require_font_type(interp, &args[0], "font-object", "font-object")?;
+                require_live_frame(interp, args.get(1))?;
+                Err(window_system_frame_required())
+            }
+            "query-font" => {
+                need_args(name, args, 1)?;
+                require_font_type(interp, &args[0], "font-object", "font-object")?;
+                Err(window_system_frame_required())
+            }
+            "font-has-char-p" => {
+                need_arg_range(name, args, 2, 3)?;
+                require_font(interp, &args[0])?;
+                require_character(&args[1])?;
+                require_frame(args.get(2))?;
+                Err(window_system_frame_required())
+            }
+            "font-get-glyphs" => {
+                need_arg_range(name, args, 3, 4)?;
+                require_font_type(interp, &args[0], "font-object", "font-object")?;
+                Err(window_system_frame_required())
+            }
+            "font-variation-glyphs" => {
+                need_args(name, args, 2)?;
+                require_font_type(interp, &args[0], "font-object", "font-object")?;
+                require_character(&args[1])?;
+                Err(window_system_frame_required())
+            }
+            "font-shape-gstring" => {
+                need_args(name, args, 2)?;
+                let (font, id) = composition_gstring_parts(interp, &args[0])
+                    .ok_or_else(|| invalid_glyph_string(&args[0]))?;
+                if !id.is_nil() {
+                    return Ok(args[0].clone());
+                }
+                require_font_type(interp, &font, "font-object", "font-object")?;
+                Err(window_system_frame_required())
+            }
+            "font-info" => {
+                need_arg_range(name, args, 1, 2)?;
+                Err(LispError::Signal(
+                    "Window system frame should be used".into(),
+                ))
+            }
+            "font-family-list" | "frame-font-cache" => {
+                need_arg_range(name, args, 0, 1)?;
+                Ok(Value::Nil)
+            }
+            "clear-font-cache" => {
+                need_args(name, args, 0)?;
+                Ok(Value::Nil)
+            }
+            "query-fontset" | "fontset-info" => {
+                need_arg_range(name, args, 1, 2)?;
+                Err(LispError::Signal(
+                    "Window system is not in use or not initialized".into(),
+                ))
+            }
+            "fontset-list" => {
+                need_args(name, args, 0)?;
+                Ok(Value::list(
+                    interp
+                        .fontset_states
+                        .iter()
+                        .rev()
+                        .map(|fontset| Value::string(&fontset.name)),
+                ))
+            }
+            "new-fontset" => {
+                need_args(name, args, 2)?;
+                let fontset_name = string_text(&args[0])?.to_lowercase();
+                if !valid_fontset_name(&fontset_name) {
                     return Err(LispError::Signal(
-                        "Specified window is not displaying the current buffer".into(),
+                        "Fontset name must be in XLFD format".into(),
                     ));
                 }
-                let position = position_from_value(interp, &args[0])?;
-                let (begin, end) = interp.buffer.restriction();
-                if !(begin..end).contains(&position) {
-                    return Err(args_out_of_range(args[0].clone(), args[0].clone()));
-                }
+                let fontset_index = match fontset_index(interp, &fontset_name) {
+                    Some(index) => {
+                        interp.fontset_states[index]
+                            .mappings
+                            .retain(|mapping| mapping.target == FontsetTargetState::Fallback);
+                        index
+                    }
+                    None => {
+                        interp.fontset_states.push(FontsetState {
+                            name: fontset_name.clone(),
+                            mappings: Vec::new(),
+                        });
+                        interp.fontset_states.len() - 1
+                    }
+                };
+                add_fontlist(interp, fontset_index, &args[1])?;
+                Ok(Value::string(&fontset_name))
             }
-            Ok(Value::Nil)
-        }
-        "font-face-attributes" => {
-            need_arg_range(name, args, 1, 2)?;
-            require_live_frame(interp, args.get(1))?;
-            Err(window_system_frame_required())
-        }
-        "open-font" => {
-            need_arg_range(name, args, 1, 3)?;
-            require_live_frame(interp, args.get(2))?;
-            Err(window_system_frame_required())
-        }
-        "close-font" => {
-            need_arg_range(name, args, 1, 2)?;
-            require_font_type(interp, &args[0], "font-object", "font-object")?;
-            require_live_frame(interp, args.get(1))?;
-            Err(window_system_frame_required())
-        }
-        "query-font" => {
-            need_args(name, args, 1)?;
-            require_font_type(interp, &args[0], "font-object", "font-object")?;
-            Err(window_system_frame_required())
-        }
-        "font-has-char-p" => {
-            need_arg_range(name, args, 2, 3)?;
-            require_font(interp, &args[0])?;
-            require_character(&args[1])?;
-            require_frame(args.get(2))?;
-            Err(window_system_frame_required())
-        }
-        "font-get-glyphs" => {
-            need_arg_range(name, args, 3, 4)?;
-            require_font_type(interp, &args[0], "font-object", "font-object")?;
-            Err(window_system_frame_required())
-        }
-        "font-variation-glyphs" => {
-            need_args(name, args, 2)?;
-            require_font_type(interp, &args[0], "font-object", "font-object")?;
-            require_character(&args[1])?;
-            Err(window_system_frame_required())
-        }
-        "font-shape-gstring" => {
-            need_args(name, args, 2)?;
-            let (font, id) = composition_gstring_parts(interp, &args[0])
-                .ok_or_else(|| invalid_glyph_string(&args[0]))?;
-            if !id.is_nil() {
-                return Ok(args[0].clone());
-            }
-            require_font_type(interp, &font, "font-object", "font-object")?;
-            Err(window_system_frame_required())
-        }
-        "font-info" => {
-            need_arg_range(name, args, 1, 2)?;
-            Err(LispError::Signal(
-                "Window system frame should be used".into(),
-            ))
-        }
-        "font-family-list" | "frame-font-cache" => {
-            need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Nil)
-        }
-        "clear-font-cache" => {
-            need_args(name, args, 0)?;
-            Ok(Value::Nil)
-        }
-        "query-fontset" | "fontset-info" => {
-            need_arg_range(name, args, 1, 2)?;
-            Err(LispError::Signal(
-                "Window system is not in use or not initialized".into(),
-            ))
-        }
-        "fontset-list" => {
-            need_args(name, args, 0)?;
-            Ok(Value::list(
-                interp
-                    .fontset_states
-                    .iter()
-                    .rev()
-                    .map(|fontset| Value::string(&fontset.name)),
-            ))
-        }
-        "new-fontset" => {
-            need_args(name, args, 2)?;
-            let fontset_name = string_text(&args[0])?.to_lowercase();
-            if !valid_fontset_name(&fontset_name) {
-                return Err(LispError::Signal(
-                    "Fontset name must be in XLFD format".into(),
-                ));
-            }
-            let fontset_index = match fontset_index(interp, &fontset_name) {
-                Some(index) => {
-                    interp.fontset_states[index]
-                        .mappings
-                        .retain(|mapping| mapping.target == FontsetTargetState::Fallback);
-                    index
+            "set-fontset-font" => {
+                need_arg_range(name, args, 3, 5)?;
+                let fontset_index = resolve_fontset(interp, &args[0])?;
+                let target = parse_fontset_target(&args[1])?;
+                if target_changes_partial_ascii(&target) {
+                    return Err(LispError::Signal(
+                        "Can't set a font for partial ASCII range".into(),
+                    ));
                 }
-                None => {
-                    interp.fontset_states.push(FontsetState {
-                        name: fontset_name.clone(),
-                        mappings: Vec::new(),
-                    });
-                    interp.fontset_states.len() - 1
-                }
-            };
-            add_fontlist(interp, fontset_index, &args[1])?;
-            Ok(Value::string(&fontset_name))
-        }
-        "set-fontset-font" => {
-            need_arg_range(name, args, 3, 5)?;
-            let fontset_index = resolve_fontset(interp, &args[0])?;
-            let target = parse_fontset_target(&args[1])?;
-            if target_changes_partial_ascii(&target) {
-                return Err(LispError::Signal(
-                    "Can't set a font for partial ASCII range".into(),
-                ));
+                let pattern = font_pattern(interp, &args[2])?;
+                let add = match args.get(4).filter(|value| !value.is_nil()) {
+                    Some(Value::Symbol(add)) if matches!(add.as_str(), "prepend" | "append") => {
+                        Some(add.as_str())
+                    }
+                    Some(value) => {
+                        return Err(LispError::Signal(format!("Invalid ADD argument: {value}")));
+                    }
+                    None => None,
+                };
+                set_fontset_mapping(interp, fontset_index, target, pattern, add);
+                Ok(Value::Nil)
             }
-            let pattern = font_pattern(interp, &args[2])?;
-            let add = match args.get(4).filter(|value| !value.is_nil()) {
-                Some(Value::Symbol(add)) if matches!(add.as_str(), "prepend" | "append") => {
-                    Some(add.as_str())
+            "fontset-font" => {
+                need_arg_range(name, args, 2, 3)?;
+                let fontset_index = resolve_fontset(interp, &args[0])?;
+                let Value::Integer(character) = args[1] else {
+                    return Err(wrong_type_argument("characterp", args[1].clone()));
+                };
+                if !(0..=0x3f_ffff).contains(&character) {
+                    return Err(wrong_type_argument("characterp", args[1].clone()));
                 }
-                Some(value) => {
-                    return Err(LispError::Signal(format!("Invalid ADD argument: {value}")));
-                }
-                None => None,
-            };
-            set_fontset_mapping(interp, fontset_index, target, pattern, add);
-            Ok(Value::Nil)
-        }
-        "fontset-font" => {
-            need_arg_range(name, args, 2, 3)?;
-            let fontset_index = resolve_fontset(interp, &args[0])?;
-            let Value::Integer(character) = args[1] else {
-                return Err(wrong_type_argument("characterp", args[1].clone()));
-            };
-            if !(0..=0x3f_ffff).contains(&character) {
-                return Err(wrong_type_argument("characterp", args[1].clone()));
+                Ok(fontset_font(
+                    interp,
+                    fontset_index,
+                    character,
+                    args.get(2).is_some_and(Value::is_truthy),
+                ))
             }
-            Ok(fontset_font(
-                interp,
-                fontset_index,
-                character,
-                args.get(2).is_some_and(Value::is_truthy),
-            ))
         }
-        _ => unreachable!("font dispatcher called for unsupported primitive"),
     }
-}
+);
