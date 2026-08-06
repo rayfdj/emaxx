@@ -5157,6 +5157,24 @@ fn preloaded_window_contract_restores_context_and_defines_resize_mode() {
 }
 
 #[test]
+fn save_selected_window_does_not_rewind_the_selected_windows_live_point() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (with-temp-buffer
+                  (set-window-buffer nil (current-buffer))
+                  (insert "abc")
+                  (goto-char 3)
+                  (save-selected-window
+                    (save-excursion (goto-char 1)))
+                  (point))
+                "#
+        ),
+        Value::Integer(3)
+    );
+}
+
+#[test]
 fn windows_preserve_independent_points_across_selection() {
     assert_eq!(
         eval_str_with_upstream_batch(

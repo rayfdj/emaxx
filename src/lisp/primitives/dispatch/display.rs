@@ -553,15 +553,26 @@ fn select_window_value(
             Value::Integer(previous_point as i64),
         )?;
     }
-    let target_point = window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
-        .as_integer()
-        .unwrap_or(1)
-        .max(1) as usize;
+    // The selected window's live point is the point of its current buffer;
+    // its saved window-point slot is only authoritative while unselected.
+    // In particular, reselecting the already-selected window must not rewind
+    // point to a stale slot (GNU's `save-selected-window' relies on this).
+    let target_buffer_id = window_buffer_id(interp, window);
+    let target_point = if window_id == previous_window_id
+        && target_buffer_id == Some(interp.current_buffer_id())
+    {
+        interp.buffer.point()
+    } else {
+        window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
+            .as_integer()
+            .unwrap_or(1)
+            .max(1) as usize
+    };
     interp.set_selected_window_id(window_id);
     if !norecord {
         interp.record_window_selection(window_id);
     }
-    if let Some(buffer_id) = window_buffer_id(interp, window)
+    if let Some(buffer_id) = target_buffer_id
         && interp.has_buffer_id(buffer_id)
     {
         interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
