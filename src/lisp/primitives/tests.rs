@@ -8173,6 +8173,35 @@ fn font_lock_mode_enables_minimal_jit_lock_state() {
 }
 
 #[test]
+fn backtrace_frame_internal_honors_depth_relative_to_base() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.push_backtrace_frame(Value::Symbol("outer-frame".into()), vec![Value::Integer(7)]);
+    interp.push_backtrace_frame(Value::Symbol("base-frame".into()), Vec::new());
+    interp.push_backtrace_frame(Value::Symbol("inner-frame".into()), Vec::new());
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "backtrace-frame--internal",
+            &[
+                Value::Symbol("list".into()),
+                Value::Integer(1),
+                Value::Symbol("base-frame".into()),
+            ],
+            &mut env,
+        )
+        .expect("select a frame relative to the requested base"),
+        Value::list([
+            Value::T,
+            Value::Symbol("outer-frame".into()),
+            Value::list([Value::Integer(7)]),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn set_buffer_redisplay_is_a_callable_variable_watcher() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -11577,6 +11606,27 @@ fn native_system_process_inventory_and_attributes_share_the_host_snapshot() {
             Value::Nil,
         ])
     );
+}
+
+#[test]
+fn native_system_process_inventory_matches_oracle_availability() {
+    let binary = upstream_emacs_repo().join("src/emacs");
+    let output = std::process::Command::new(&binary)
+        .args([
+            "--batch",
+            "-Q",
+            "--eval",
+            "(prin1 (null (list-system-processes)))",
+        ])
+        .output()
+        .unwrap_or_else(|error| panic!("run process-inventory oracle: {error}"));
+    assert!(output.status.success());
+    let oracle_is_empty = output.stdout == b"t";
+
+    let mut interp = Interpreter::new();
+    let inventory = call(&mut interp, "list-system-processes", &[], &mut Vec::new())
+        .expect("list native system processes");
+    assert_eq!(inventory.is_nil(), oracle_is_empty);
 }
 
 #[cfg(unix)]

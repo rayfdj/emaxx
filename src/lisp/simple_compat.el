@@ -483,6 +483,44 @@ The batch frame always shows a single window."
      (quit (setq quit-flag t)
            (eval '(ignore nil) t))))
 
+;; GNU subr.el (verbatim).
+(defun backtrace-frame (nframes &optional base)
+  "Return the function and arguments NFRAMES up from current execution point.
+If non-nil, BASE should be a function, and NFRAMES counts from its
+nearest activation frame.  BASE can also be of the form (OFFSET . FUNCTION)
+in which case OFFSET will be added to NFRAMES.
+If the frame has not evaluated the arguments yet (or is a special form),
+the value is (nil FUNCTION ARG-FORMS...).
+If the frame has evaluated the arguments and called its function already,
+the value is (t FUNCTION ARG-VALUES...).
+A &rest arg is represented as the tail of the list ARG-VALUES.
+FUNCTION is whatever was supplied as car of evaluated list,
+or a lambda expression for macro calls.
+If NFRAMES is more than the number of frames, the value is nil."
+  (backtrace-frame--internal
+   (lambda (evald func args _) `(,evald ,func ,@args))
+   nframes (or base #'backtrace-frame)))
+
+;; GNU startup.el (verbatim).
+(defun command-line-normalize-file-name (file)
+  "Collapse multiple slashes to one, to handle non-Emacs file names."
+  (save-match-data
+    ;; Use arg 1 so that we don't collapse // at the start of the file name.
+    ;; That is significant on some systems.
+    ;; However, /// at the beginning is supposed to mean just /, not //.
+    (if (string-match
+	 (if (memq system-type '(ms-dos windows-nt))
+	     "^\\([\\/][\\/][\\/]\\)+"
+	   "^///+")
+	 file)
+	(setq file (replace-match "/" t t file)))
+    (if (memq system-type '(ms-dos windows-nt))
+	(while (string-match "\\([\\/][\\/]\\)+" file 1)
+	  (setq file (replace-match "/" t t file)))
+      (while (string-match "//+" file 1)
+	(setq file (replace-match "/" t t file))))
+    file))
+
 ;; GNU simple.el: append the source region at the destination's point while
 ;; preserving text properties and keeping displayed window points in sync.
 (defun append-to-buffer (buffer start end)
@@ -502,6 +540,24 @@ The batch frame always shows a single window."
         (dolist (window windows)
           (when (= (window-point window) point)
             (set-window-point window (point))))))))
+
+;; GNU simple.el (verbatim).
+(defun copy-to-buffer (buffer start end)
+  "Copy to specified BUFFER the text of the region.
+The text is inserted into that buffer, replacing existing text there.
+BUFFER can be a buffer or the name of a buffer; this
+function will create BUFFER if it doesn't already exist.
+
+When calling from a program, give three arguments:
+BUFFER (or buffer name), START and END.
+START and END specify the portion of the current buffer to be copied."
+  (interactive "BCopy to buffer: \nr")
+  (let ((oldbuf (current-buffer)))
+    (with-current-buffer (get-buffer-create buffer)
+      (barf-if-buffer-read-only)
+      (erase-buffer)
+      (save-excursion
+	(insert-buffer-substring oldbuf start end)))))
 
 (defmacro dolist (spec &rest body)
   "Loop over a list according to SPEC, evaluating BODY for each element."
@@ -11731,6 +11787,20 @@ if both appear in constructs like `custom-set-variables'."
 Each element has the form (ATTRIBUTE-NAME . DESCRIPTION) where
 ATTRIBUTE-NAME is a face attribute name (a keyword symbol), and
 DESCRIPTION is a descriptive name for ATTRIBUTE-NAME.")
+
+;; GNU faces.el (verbatim).
+(defun face-attr-construct (face &optional _frame)
+  "Return a `defface'-style attribute list for FACE.
+Value is a property list of pairs ATTRIBUTE VALUE for all specified
+face attributes of FACE where ATTRIBUTE is the attribute name and
+VALUE is the specified value of that attribute."
+  (declare (advertised-calling-convention (face) "30.1"))
+  (let (result)
+    (dolist (entry face-attribute-name-alist result)
+      (let* ((attribute (car entry))
+	     (value (face-attribute face attribute)))
+	(unless (eq value 'unspecified)
+	  (setq result (nconc (list attribute value) result)))))))
 
 
 (defun face-descriptive-attribute-name (attribute)

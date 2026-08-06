@@ -2504,8 +2504,37 @@ pub(super) fn call(
         "backtrace-frame--internal" => {
             need_args(name, args, 3)?;
             let callback = resolve_callable(interp, &args[0], env)?;
+            let mut frame_offset = args[1].as_integer()?;
+            if frame_offset < 0 {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("wrong-type-argument".into()),
+                    Value::Symbol("natnump".into()),
+                    args[1].clone(),
+                ])));
+            }
+            let mut base = args[2].clone();
+            if let Value::Cons(offset, function) = &base {
+                frame_offset += offset.borrow().as_integer()?;
+                let function = function.borrow().clone();
+                base = function;
+            }
+            if frame_offset < 0 {
+                return Ok(Value::Nil);
+            }
+            let frames = interp.backtrace_frames_snapshot();
+            let start = if base.is_nil() {
+                0
+            } else {
+                let Some(index) = frames
+                    .iter()
+                    .position(|(_, function, _, _)| function == &base)
+                else {
+                    return Ok(Value::Nil);
+                };
+                index
+            };
             let Some((evald, function, frame_args, debug_on_exit)) =
-                interp.current_backtrace_frame()
+                frames.into_iter().nth(start + frame_offset as usize)
             else {
                 return Ok(Value::Nil);
             };

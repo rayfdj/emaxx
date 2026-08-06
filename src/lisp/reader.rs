@@ -593,6 +593,11 @@ impl<'a> Reader<'a> {
                         }
                         Some(b'\\') => s.push('\\'),
                         Some(b'"') => s.push('"'),
+                        // GNU treats backslash-space in a string as a
+                        // zero-width escape.  It is commonly used to
+                        // terminate a numeric escape without inserting a
+                        // separator, as in "\\0\\ 29".
+                        Some(b' ') => {}
                         Some(b's') => s.push(' '),
                         Some(b'a') => s.push('\x07'),
                         Some(b'b') => s.push('\x08'),
@@ -1840,6 +1845,10 @@ mod tests {
         assert_eq!(read_one(r#""a\nb""#), Value::String("a\nb".into()));
         assert_eq!(read_one(r#""a\"b""#), Value::String("a\"b".into()));
         assert_eq!(read_one("\"a\\\nb\""), Value::String("ab".into()));
+        assert_eq!(
+            read_one(r#""\0\ 29""#),
+            Value::String("\x00\x32\x39".into())
+        );
         assert_eq!(read_one(r#""\(""#), Value::String("(".into()));
         assert_eq!(read_one(r#""\\(""#), Value::String("\\(".into()));
         assert_eq!(

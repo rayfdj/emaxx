@@ -3373,10 +3373,13 @@ pub(super) fn call(
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
             let max_pos = limit.unwrap_or(buffer.point_max());
-            let initial = buffer_char_property_at(interp, buffer, pos, &prop);
+            let initial = buffer_char_property_at_with_overlay_id(interp, buffer, pos, &prop);
             for cursor in pos.saturating_add(1)..max_pos {
-                let current = buffer_char_property_at(interp, buffer, cursor, &prop);
-                if !crate::buffer::text_property_values_eq(&current, &initial) {
+                let current =
+                    buffer_char_property_at_with_overlay_id(interp, buffer, cursor, &prop);
+                let same_overlay = initial.1.is_some() && initial.1 == current.1;
+                if !same_overlay && !crate::buffer::text_property_values_eq(&current.0, &initial.0)
+                {
                     return Ok(Value::Integer(cursor as i64));
                 }
             }
@@ -3410,11 +3413,19 @@ pub(super) fn call(
             }
             // The property "at" POS for backward scans is that of the char
             // before POS.
-            let initial = buffer_char_property_at(interp, buffer, pos.saturating_sub(1), &prop);
+            let initial = buffer_char_property_at_with_overlay_id(
+                interp,
+                buffer,
+                pos.saturating_sub(1),
+                &prop,
+            );
             let mut cursor = pos;
             while cursor > min_pos + 1 {
-                let current = buffer_char_property_at(interp, buffer, cursor - 2, &prop);
-                if !crate::buffer::text_property_values_eq(&current, &initial) {
+                let current =
+                    buffer_char_property_at_with_overlay_id(interp, buffer, cursor - 2, &prop);
+                let same_overlay = initial.1.is_some() && initial.1 == current.1;
+                if !same_overlay && !crate::buffer::text_property_values_eq(&current.0, &initial.0)
+                {
                     return Ok(Value::Integer((cursor - 1) as i64));
                 }
                 cursor -= 1;

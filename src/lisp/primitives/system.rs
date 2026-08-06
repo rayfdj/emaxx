@@ -327,6 +327,10 @@ fn process_inventory() -> sysinfo::System {
 }
 
 pub(crate) fn list_system_processes_value() -> Value {
+    #[cfg(target_os = "macos")]
+    if !darwin_process_inventory_available() {
+        return Value::Nil;
+    }
     let system = process_inventory();
     let mut pids = system
         .processes()
@@ -335,6 +339,25 @@ pub(crate) fn list_system_processes_value() -> Value {
         .collect::<Vec<_>>();
     pids.sort_unstable();
     Value::list(pids.into_iter().map(Value::Integer))
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_process_inventory_available() -> bool {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ALL];
+    let mut len = 0;
+    // SAFETY: this is GNU Emacs's read-only KERN_PROC_ALL size probe.  The
+    // kernel writes only `len`; both data pointers are null.
+    unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        ) == 0
+            && len > 0
+    }
 }
 
 fn old_style_process_time(ticks: u64, ticks_per_second: u64) -> Value {
