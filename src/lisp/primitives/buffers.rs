@@ -463,9 +463,7 @@ pub(crate) fn vector_root_slot(value: &Value) -> Option<ConsSlot> {
 /// closures, and out-of-range all return None so the caller takes the
 /// full `aref' path (and its exact errors).
 pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
-    if vector_root_slot(value).is_none() {
-        return None;
-    }
+    vector_root_slot(value)?;
     let slots = vector_slot_refs(value).ok()?;
     slots.get(index).map(|slot| slot.borrow().clone())
 }
@@ -473,9 +471,7 @@ pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
 /// O(1) element write for the VM's Baset, same contract as
 /// [`vector_aref_fast`].
 pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -> Option<()> {
-    if vector_root_slot(value).is_none() {
-        return None;
-    }
+    vector_root_slot(value)?;
     let slots = vector_slot_refs(value).ok()?;
     let slot = slots.get(index)?;
     *slot.borrow_mut() = new_value.clone();

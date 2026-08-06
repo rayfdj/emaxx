@@ -683,6 +683,29 @@ fn regex_posix_class_fragment(name: &str) -> Option<&'static str> {
     }
 }
 
+fn consume_posix_class_name(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> Option<String> {
+    if chars.peek() != Some(&':') {
+        return None;
+    }
+    let mut preview = chars.clone();
+    preview.next();
+    let mut name = String::new();
+    while let Some(ch) = preview.next() {
+        if ch == ':' && preview.peek() == Some(&']') {
+            preview.next();
+            *chars = preview;
+            return Some(name);
+        }
+        if ch == ']' {
+            return None;
+        }
+        name.push(ch);
+    }
+    None
+}
+
 fn translate_bracket_expression(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
     let mut translated = String::from("[");
     let mut saw_atom = false;
@@ -770,18 +793,10 @@ fn consume_regex_class_atom(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
 ) -> Option<RegexClassAtom> {
     match chars.next()? {
-        '[' if chars.peek() == Some(&':') => {
-            chars.next();
-            let mut name = String::new();
-            while let Some(ch) = chars.next() {
-                if ch == ':' && chars.peek() == Some(&']') {
-                    chars.next();
-                    return Some(RegexClassAtom::Posix(name));
-                }
-                name.push(ch);
-            }
-            Some(RegexClassAtom::Char('['))
-        }
+        '[' => Some(
+            consume_posix_class_name(chars)
+                .map_or(RegexClassAtom::Char('['), RegexClassAtom::Posix),
+        ),
         '\\' => Some(RegexClassAtom::Char('\\')),
         ch => Some(RegexClassAtom::Char(ch)),
     }
@@ -897,18 +912,11 @@ pub(super) fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
     while let Some(ch) = chars.next() {
         if in_class {
             match ch {
-                '[' if chars.peek() == Some(&':') => {
-                    chars.next();
-                    let mut name = String::new();
-                    while let Some(next) = chars.next() {
-                        if next == ':' && chars.peek() == Some(&']') {
-                            chars.next();
-                            if regex_posix_class_fragment(&name).is_none() {
-                                return Err(invalid_regexp_error("Invalid character class"));
-                            }
-                            break;
-                        }
-                        name.push(next);
+                '[' => {
+                    if let Some(name) = consume_posix_class_name(&mut chars)
+                        && regex_posix_class_fragment(&name).is_none()
+                    {
+                        return Err(invalid_regexp_error("Invalid character class"));
                     }
                 }
                 ']' => in_class = false,
