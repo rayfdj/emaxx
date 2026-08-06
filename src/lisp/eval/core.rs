@@ -923,7 +923,7 @@ impl Interpreter {
                 let backtrace_function = original_name
                     .map(|name| Value::Symbol(name.to_string()))
                     .unwrap_or_else(|| Value::Symbol(name.clone()));
-                self.push_backtrace_frame(backtrace_function, args.to_vec());
+                self.push_backtrace_frame(backtrace_function, args);
                 self.capture_current_backtrace_context(original_name, env, None);
                 let result = match primitives::call(self, name, args, env) {
                     Ok(value) => Ok(value),
