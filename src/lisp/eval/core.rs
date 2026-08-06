@@ -870,6 +870,40 @@ impl Interpreter {
         let mut owned_name: Option<String> = None;
         let func = match func {
             Value::Symbol(name) => {
+                // Direct builtin route: when function lookup would resolve
+                // NAME to Value::BuiltinFunc(NAME) — a native binding with
+                // no user redefinition, no autoload entry, and no
+                // cl-flet/cl-labels frame shadowing it — dispatch by name
+                // without materializing that value.  `selected-window' and
+                // pure special forms keep their dedicated arms below.
+                let facts = crate::lisp::primitives::name_facts(&name);
+                if name != "selected-window"
+                    && (facts.prefer_override
+                        || (facts.builtin
+                            && !facts.special_form
+                            && !facts.autoloadable
+                            && !self.function_index_has(&name)))
+                    && !Self::env_has_function_binding_frames(env)
+                {
+                    let backtrace_function = original_name
+                        .map(|name| Value::Symbol(name.to_string()))
+                        .unwrap_or_else(|| Value::Symbol(name.clone()));
+                    self.push_backtrace_frame(backtrace_function, args);
+                    self.capture_current_backtrace_context(
+                        original_name.or(Some(&name)),
+                        env,
+                        None,
+                    );
+                    let result = match primitives::call_with_facts(self, &name, facts, args, env) {
+                        Ok(value) => Ok(value),
+                        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => {
+                            Err(error)
+                        }
+                        Err(error) => self.dispatch_handler_bindings(error, env),
+                    };
+                    self.pop_backtrace_frame();
+                    return result;
+                }
                 let resolved = self.lookup_function(&name, env)?;
                 if original_name.is_none() {
                     owned_name = Some(name);
@@ -923,7 +957,7 @@ impl Interpreter {
                 let backtrace_function = original_name
                     .map(|name| Value::Symbol(name.to_string()))
                     .unwrap_or_else(|| Value::Symbol(name.clone()));
-                self.push_backtrace_frame(backtrace_function, args.to_vec());
+                self.push_backtrace_frame(backtrace_function, args);
                 self.capture_current_backtrace_context(original_name, env, None);
                 let result = match primitives::call(self, name, args, env) {
                     Ok(value) => Ok(value),

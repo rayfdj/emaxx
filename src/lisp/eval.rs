@@ -1548,7 +1548,7 @@ pub struct Interpreter {
     globals: Vec<(String, Value)>,
     /// Last-wins index over `globals` so global variable reads are O(1);
     /// every mutation of `globals` keeps this in sync.
-    globals_index: HashMap<String, Value>,
+    globals_index: HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
     /// Variable aliases keyed by alias name.
     variable_aliases: Vec<(String, String)>,
     /// Alias → target index mirroring `variable_aliases` (at most one entry
@@ -1708,6 +1708,11 @@ pub struct Interpreter {
     /// (see bytecode::vm).
     pub(crate) bytecode_program_cache:
         Vec<Option<std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>>,
+    /// Recycled operand stacks for the byte-code VM: one Vec per active
+    /// nesting level, reused across calls to avoid per-call allocation.
+    pub(crate) vm_stack_pool: Vec<Vec<Value>>,
+    /// Recycled argument buffers for backtrace frames, same idea.
+    backtrace_args_pool: Vec<Vec<Value>>,
     /// SQLite objects keyed by record ID.
     sqlite_handles: Vec<(u64, SqliteHandleState)>,
     /// Lazily compiled Tree-sitter queries keyed by opaque record identity.
@@ -2472,6 +2477,8 @@ impl Interpreter {
             ],
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
+            vm_stack_pool: Vec::new(),
+            backtrace_args_pool: Vec::new(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),
             treesit_parsers: Vec::new(),
@@ -2636,7 +2643,7 @@ impl Interpreter {
             handler_dispatch_depth: 0,
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
-            globals_index: HashMap::new(),
+            globals_index: HashMap::default(),
         };
         interp.globals_index = interp.globals.iter().cloned().collect();
         interp.special_variables_index = interp.special_variables.iter().cloned().collect();

@@ -8176,9 +8176,9 @@ fn font_lock_mode_enables_minimal_jit_lock_state() {
 fn backtrace_frame_internal_honors_depth_relative_to_base() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    interp.push_backtrace_frame(Value::Symbol("outer-frame".into()), vec![Value::Integer(7)]);
-    interp.push_backtrace_frame(Value::Symbol("base-frame".into()), Vec::new());
-    interp.push_backtrace_frame(Value::Symbol("inner-frame".into()), Vec::new());
+    interp.push_backtrace_frame(Value::Symbol("outer-frame".into()), &[Value::Integer(7)]);
+    interp.push_backtrace_frame(Value::Symbol("base-frame".into()), &[]);
+    interp.push_backtrace_frame(Value::Symbol("inner-frame".into()), &[]);
 
     assert_eq!(
         call(

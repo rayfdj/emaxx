@@ -292,7 +292,27 @@ fn run(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let mut stack: Vec<Value> = Vec::with_capacity(object.stack_depth.max(8));
+    // Reuse a pooled operand stack: one heap allocation per nesting
+    // level instead of one per call.
+    let mut stack = interp.vm_stack_pool.pop().unwrap_or_default();
+    stack.clear();
+    stack.reserve(object.stack_depth.max(8));
+    let result = run_with_stack(interp, object, args, env, &mut stack);
+    stack.clear();
+    if interp.vm_stack_pool.len() < 256 {
+        interp.vm_stack_pool.push(stack);
+    }
+    result
+}
+
+fn run_with_stack(
+    interp: &mut Interpreter,
+    object: &CachedProgram,
+    args: &[Value],
+    env: &mut Env,
+    stack: &mut Vec<Value>,
+) -> Result<Value, LispError> {
+    let stack = &mut *stack;
     let mut unwinds: Vec<UnwindEntry> = Vec::new();
 
     // Argument prologue (exec_byte_code's ARGS_TEMPLATE handling).
@@ -557,6 +577,36 @@ fn run(
                         *stack.last_mut().expect("validated bytecode") = Value::Integer(n);
                         continue;
                     }
+                }
+            }
+            Op::Aref => {
+                let len = stack.len();
+                if let Value::Integer(index) = &stack[len - 1]
+                    && *index >= 0
+                    && let Some(value) =
+                        crate::lisp::primitives::vector_aref_fast(&stack[len - 2], *index as usize)
+                {
+                    stack.truncate(len - 2);
+                    stack.push(value);
+                    continue;
+                }
+            }
+            Op::Aset => {
+                // Stack: [.. vector index value]; aset returns the value.
+                let len = stack.len();
+                if let Value::Integer(index) = &stack[len - 2]
+                    && *index >= 0
+                    && crate::lisp::primitives::vector_aset_fast(
+                        &stack[len - 3],
+                        *index as usize,
+                        &stack[len - 1],
+                    )
+                    .is_some()
+                {
+                    let value = pop!();
+                    stack.truncate(len - 3);
+                    stack.push(value);
+                    continue;
                 }
             }
             Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => match stack.last() {

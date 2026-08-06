@@ -116,7 +116,7 @@ pub(crate) fn call_interactively_impl(
     // leave one.
     interp.push_backtrace_frame(
         Value::Symbol("funcall-interactively".into()),
-        interactive_args.clone(),
+        &interactive_args,
     );
     let result = invoke_function_value(interp, &func, &interactive_args, env);
     interp.pop_backtrace_frame();
