@@ -35,15 +35,16 @@ handoff and retry instruction are in
   cumulative mismatches in
   `target/compat/run-1786025390850455000-12418`; Comint's oracle-only failure
   passed immediately in isolation.  Backquote, Dired/Dired Aux, ERC Stamp,
-  Eshell, LS Lisp, Newcomment, Macroexp, ERC, Edebug, and Kmacro are repaired,
-  leaving eight known files/themes: Electric's 874-test subject timeout, ERT
-  Font Lock, Viper undo, Eshell control-code display, HL-Line stickiness, Mule
-  prefix input, Isearch invisibility, and TRAMP shell-prompt startup.  Macroexp
+  Eshell, LS Lisp, Newcomment, Macroexp, ERC, Edebug, Kmacro, and Mule are
+  repaired, leaving seven known files/themes: Electric's 874-test subject
+  timeout, ERT Font Lock, Viper undo, Eshell control-code display, HL-Line
+  stickiness, Isearch invisibility, and TRAMP shell-prompt startup.  Macroexp
   is fully green in
   `target/compat/run-1786032407892199000-55821`; full ERC is green in
   `target/compat/run-1786033566972886000-56817`; full Kmacro is green in
   `target/compat/run-1786036330691925000-60434`; and full Edebug is green in
-  `target/compat/run-1786036349252896000-60588`.
+  `target/compat/run-1786036349252896000-60588`.  Full Mule is green in
+  `target/compat/run-1786037344431196000-62043`.
 
   The repair also removes several drift-prone parallel registries.  Every
   synthesized startup value now inherits special-variable semantics from its
@@ -60,7 +61,10 @@ handoff and retry instruction are in
   command before its post-command hook, repairing Edebug and Kmacro.  Native
   builtin status is derived directly from its dispatch route, deleting a
   1,730-line parallel name inventory, and `fboundp` uses the evaluator's one
-  special-form registry instead of a divergent copy.  Focused invariants and
+  special-form registry instead of a divergent copy.  Prefix keys now run a
+  real shared command cycle, so package hooks preserve scoped state across
+  C-u/digit/minus input; the live minibuffer buffer, rather than a parallel
+  side string, is authoritative for simulated edits.  Focused invariants and
   regressions, formatting, diff check, regenerated/rustfmt-normalized autoload
   validation, all-target/all-feature check, and strict Clippy pass.  Native
   remains 1,420/1,420; the frontier remains 4,582/7,080 (2,498 selectors left)
