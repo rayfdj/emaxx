@@ -51,7 +51,9 @@ counts as the progress denominator.
   `define_dispatch!` arm inventory now generates both route probes and calls
   across every split dispatcher, CCL, modes, time, LCMS, and SQLite, removing
   another roughly 1,800 lines of parallel primitive-name tables and making an
-  implemented-but-unroutable primitive structurally impossible.  `fboundp`
+  implemented-but-unroutable primitive structurally impossible.  One ordered
+  module declaration now generates the route probe, cached-policy delegation,
+  enum, and call dispatch.  `fboundp`
   consumes the evaluator's canonical special-form registry instead of a
   second list.  File-name-handler advertisement and execution now consume one
   typed operation specification for explicit arguments, `default-directory`,

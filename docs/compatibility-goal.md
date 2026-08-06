@@ -65,7 +65,9 @@ handoff and retry instruction are in
   now also come from one `define_dispatch!` arm inventory across every split
   dispatcher, CCL, modes, time, LCMS, and SQLite, removing another roughly
   1,800 lines of parallel primitive-name tables; an implementation can no
-  longer be made unreachable by forgetting a second `handles` edit.  `fboundp`
+  longer be made unreachable by forgetting a second `handles` edit.  The
+  ordered module catalog is also declared once and generates its route probe,
+  cached-policy delegation, enum, and call dispatch.  `fboundp`
   uses the evaluator's one special-form registry instead of a divergent copy.
   File-name-handler advertisement and execution consume one typed operation
   specification for explicit arguments, `default-directory`, visited-buffer

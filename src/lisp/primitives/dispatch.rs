@@ -46,140 +46,102 @@ pub(crate) struct NameFacts {
     module: DispatchModule,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum DispatchModule {
-    Sqlite,
-    Time,
-    Lcms,
-    Ccl,
-    Numeric,
-    Fonts,
-    Frames,
-    Terminals,
-    Treesit,
-    Gnutls,
-    GuiActions,
-    Comp,
-    Predicates,
-    Lists,
-    Modes,
-    Composition,
-    Strings,
-    BufferEdit,
-    BufferMeta,
-    FilesProcess,
-    Display,
-    EmacsModule,
-    Faces,
-    Misc,
-    MiscKeymaps,
-    Overlays,
-    Collections,
-    SearchCoding,
-    ComposedAccessor,
-    None,
-}
+macro_rules! define_dispatch_modules {
+    (
+        call($interp:ident, $name:ident, $args:ident, $env:ident);
+        $(
+            $variant:ident => $module:ident => $call:expr
+        ),+ $(,)?
+    ) => {
+        #[derive(Clone, Copy, PartialEq)]
+        enum DispatchModule {
+            $($variant,)+
+            ComposedAccessor,
+            None,
+        }
 
-macro_rules! dispatch_module_property {
-    ($module:expr, $name:expr, $property:ident) => {
-        match $module {
-            DispatchModule::Sqlite => sqlite::$property($name),
-            DispatchModule::Time => numeric_time::$property($name),
-            DispatchModule::Lcms => color_lcms::$property($name),
-            DispatchModule::Ccl => ccl::$property($name),
-            DispatchModule::Numeric => numeric::$property($name),
-            DispatchModule::Fonts => fonts::$property($name),
-            DispatchModule::Frames => frames::$property($name),
-            DispatchModule::Terminals => terminals::$property($name),
-            DispatchModule::Treesit => treesit::$property($name),
-            DispatchModule::Gnutls => gnutls::$property($name),
-            DispatchModule::GuiActions => gui_actions::$property($name),
-            DispatchModule::Comp => comp::$property($name),
-            DispatchModule::Predicates => predicates::$property($name),
-            DispatchModule::Lists => lists::$property($name),
-            DispatchModule::Modes => modes::$property($name),
-            DispatchModule::Composition => composition::$property($name),
-            DispatchModule::Strings => strings::$property($name),
-            DispatchModule::BufferEdit => buffer_edit::$property($name),
-            DispatchModule::BufferMeta => buffer_meta::$property($name),
-            DispatchModule::FilesProcess => files_process::$property($name),
-            DispatchModule::Display => display::$property($name),
-            DispatchModule::EmacsModule => emacs_module::$property($name),
-            DispatchModule::Faces => faces::$property($name),
-            DispatchModule::Misc => misc::$property($name),
-            DispatchModule::MiscKeymaps => misc_keymaps::$property($name),
-            DispatchModule::Overlays => overlays::$property($name),
-            DispatchModule::Collections => collections::$property($name),
-            DispatchModule::SearchCoding => search_coding::$property($name),
-            DispatchModule::ComposedAccessor | DispatchModule::None => false,
+        impl DispatchModule {
+            fn for_name(name: &str) -> Self {
+                $(
+                    if $module::handles(name) {
+                        return Self::$variant;
+                    }
+                )+
+                if is_composed_accessor_name(name) {
+                    Self::ComposedAccessor
+                } else {
+                    Self::None
+                }
+            }
+
+            fn prefer_builtin(self, name: &str) -> bool {
+                match self {
+                    $(Self::$variant => $module::prefer_builtin(name),)+
+                    Self::ComposedAccessor | Self::None => false,
+                }
+            }
+
+            fn resets_undo(self, name: &str) -> bool {
+                match self {
+                    $(Self::$variant => $module::resets_undo(name),)+
+                    Self::ComposedAccessor | Self::None => false,
+                }
+            }
+
+            fn call(
+                self,
+                $interp: &mut Interpreter,
+                $name: &str,
+                $args: &[Value],
+                $env: &mut crate::lisp::types::Env,
+            ) -> Result<Value, LispError> {
+                match self {
+                    $(Self::$variant => $call,)+
+                    Self::ComposedAccessor => call_composed_accessor($interp, $name, $args),
+                    Self::None => Err(LispError::Signal(format!(
+                        "Unknown function: {}",
+                        $name
+                    ))),
+                }
+            }
         }
     };
 }
 
+define_dispatch_modules! {
+    call(interp, name, args, env);
+    Sqlite => sqlite => sqlite::call(interp, name, args, env),
+    Time => numeric_time => call_time_builtin(interp, name, args, env),
+    Lcms => color_lcms => call_lcms_builtin(name, args),
+    Ccl => ccl => ccl::call(interp, name, args, env),
+    Numeric => numeric => numeric::call(interp, name, args, env),
+    Fonts => fonts => fonts::call(interp, name, args, env),
+    Frames => frames => frames::call(interp, name, args, env),
+    Terminals => terminals => terminals::call(interp, name, args, env),
+    Treesit => treesit => treesit::call(interp, name, args, env),
+    Gnutls => gnutls => gnutls::call(interp, name, args),
+    GuiActions => gui_actions => gui_actions::call(interp, name, args),
+    Comp => comp => comp::call(interp, name, args, env),
+    Predicates => predicates => predicates::call(interp, name, args, env),
+    Lists => lists => lists::call(interp, name, args, env),
+    Modes => modes => modes::call(interp, name),
+    Composition => composition => composition::call(interp, name, args, env),
+    Strings => strings => strings::call(interp, name, args, env),
+    BufferEdit => buffer_edit => buffer_edit::call(interp, name, args, env),
+    BufferMeta => buffer_meta => buffer_meta::call(interp, name, args, env),
+    FilesProcess => files_process => files_process::call(interp, name, args, env),
+    Display => display => display::call(interp, name, args, env),
+    EmacsModule => emacs_module => emacs_module::call(name, args),
+    Faces => faces => faces::call(interp, name, args, env),
+    Misc => misc => misc::call(interp, name, args, env),
+    MiscKeymaps => misc_keymaps => misc_keymaps::call(interp, name, args, env),
+    Overlays => overlays => overlays::call(interp, name, args, env),
+    Collections => collections => collections::call(interp, name, args, env),
+    SearchCoding => search_coding => search_coding::call(interp, name, args, env),
+}
+
 fn compute_name_facts(name: &str) -> NameFacts {
-    // Probe order mirrors `call' so the cached route dispatches to the
-    // same module the sequential scan would have reached.
-    let module = if sqlite::handles(name) {
-        DispatchModule::Sqlite
-    } else if numeric_time::handles(name) {
-        DispatchModule::Time
-    } else if color_lcms::handles(name) {
-        DispatchModule::Lcms
-    } else if ccl::handles(name) {
-        DispatchModule::Ccl
-    } else if numeric::handles(name) {
-        DispatchModule::Numeric
-    } else if fonts::handles(name) {
-        DispatchModule::Fonts
-    } else if frames::handles(name) {
-        DispatchModule::Frames
-    } else if terminals::handles(name) {
-        DispatchModule::Terminals
-    } else if treesit::handles(name) {
-        DispatchModule::Treesit
-    } else if gnutls::handles(name) {
-        DispatchModule::Gnutls
-    } else if gui_actions::handles(name) {
-        DispatchModule::GuiActions
-    } else if comp::handles(name) {
-        DispatchModule::Comp
-    } else if predicates::handles(name) {
-        DispatchModule::Predicates
-    } else if lists::handles(name) {
-        DispatchModule::Lists
-    } else if modes::handles(name) {
-        DispatchModule::Modes
-    } else if composition::handles(name) {
-        DispatchModule::Composition
-    } else if strings::handles(name) {
-        DispatchModule::Strings
-    } else if buffer_edit::handles(name) {
-        DispatchModule::BufferEdit
-    } else if buffer_meta::handles(name) {
-        DispatchModule::BufferMeta
-    } else if files_process::handles(name) {
-        DispatchModule::FilesProcess
-    } else if display::handles(name) {
-        DispatchModule::Display
-    } else if emacs_module::handles(name) {
-        DispatchModule::EmacsModule
-    } else if faces::handles(name) {
-        DispatchModule::Faces
-    } else if misc::handles(name) {
-        DispatchModule::Misc
-    } else if misc_keymaps::handles(name) {
-        DispatchModule::MiscKeymaps
-    } else if overlays::handles(name) {
-        DispatchModule::Overlays
-    } else if collections::handles(name) {
-        DispatchModule::Collections
-    } else if search_coding::handles(name) {
-        DispatchModule::SearchCoding
-    } else if is_composed_accessor_name(name) {
-        DispatchModule::ComposedAccessor
-    } else {
-        DispatchModule::None
-    };
+    let module = DispatchModule::for_name(name);
     NameFacts {
         // A callable native route is the builtin contract.  Keeping a
         // second list of the same names made every new primitive require
@@ -187,8 +149,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         // dispatch.
         builtin: module != DispatchModule::None,
         special_form: crate::lisp::primitives::is_special_form_name(name),
-        prefer_override: dispatch_module_property!(module, name, prefer_builtin),
-        resets_undo: dispatch_module_property!(module, name, resets_undo),
+        prefer_override: module.prefer_builtin(name),
+        resets_undo: module.resets_undo(name),
         file_name_handler: file_name_handler_operation(name),
         autoloadable: crate::lisp::eval::builtin_autoload_function(name).is_some(),
         module,
@@ -279,36 +241,5 @@ pub(crate) fn call_with_facts(
         interp.reset_undo_sequence();
     }
 
-    match facts.module {
-        DispatchModule::Sqlite => sqlite::call(interp, name, args, env),
-        DispatchModule::Time => call_time_builtin(interp, name, args, env),
-        DispatchModule::Lcms => call_lcms_builtin(name, args),
-        DispatchModule::Ccl => ccl::call(interp, name, args, env),
-        DispatchModule::Numeric => numeric::call(interp, name, args, env),
-        DispatchModule::Fonts => fonts::call(interp, name, args, env),
-        DispatchModule::Frames => frames::call(interp, name, args, env),
-        DispatchModule::Terminals => terminals::call(interp, name, args, env),
-        DispatchModule::Treesit => treesit::call(interp, name, args, env),
-        DispatchModule::Gnutls => gnutls::call(interp, name, args),
-        DispatchModule::GuiActions => gui_actions::call(interp, name, args),
-        DispatchModule::Comp => comp::call(interp, name, args, env),
-        DispatchModule::Predicates => predicates::call(interp, name, args, env),
-        DispatchModule::Lists => lists::call(interp, name, args, env),
-        DispatchModule::Modes => modes::call(interp, name),
-        DispatchModule::Composition => composition::call(interp, name, args, env),
-        DispatchModule::Strings => strings::call(interp, name, args, env),
-        DispatchModule::BufferEdit => buffer_edit::call(interp, name, args, env),
-        DispatchModule::BufferMeta => buffer_meta::call(interp, name, args, env),
-        DispatchModule::FilesProcess => files_process::call(interp, name, args, env),
-        DispatchModule::Display => display::call(interp, name, args, env),
-        DispatchModule::EmacsModule => emacs_module::call(name, args),
-        DispatchModule::Faces => faces::call(interp, name, args, env),
-        DispatchModule::Misc => misc::call(interp, name, args, env),
-        DispatchModule::MiscKeymaps => misc_keymaps::call(interp, name, args, env),
-        DispatchModule::Overlays => overlays::call(interp, name, args, env),
-        DispatchModule::Collections => collections::call(interp, name, args, env),
-        DispatchModule::SearchCoding => search_coding::call(interp, name, args, env),
-        DispatchModule::ComposedAccessor => call_composed_accessor(interp, name, args),
-        DispatchModule::None => Err(LispError::Signal(format!("Unknown function: {}", name))),
-    }
+    facts.module.call(interp, name, args, env)
 }
