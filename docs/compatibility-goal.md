@@ -32,7 +32,7 @@ handoff and retry instruction are in
 - The 2026-08-06 Cperl checkpoint advances the fresh contiguous compatibility
   prefix to 4,580/7,080, leaving 2,500 selectors.  The complete canonical
   `default` selection for `test/lisp/progmodes/cperl-mode-tests.el` is 64/64
-  against GNU in `target/compat/run-1786019507444417000-10428`; the file's
+  against GNU in `target/compat/run-1786020275788120000-11014`; the file's
   one additional expensive test remains outside the 7,080 denominator.
   Shared repairs give GNU `syntax-propertize` its safe region extension and
   high-water semantics; make syntax parsing, syntax-class regexps, comments,
