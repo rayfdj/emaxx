@@ -1975,8 +1975,17 @@ pub fn call(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let facts = name_facts(name);
+    call_with_facts(interp, name, name_facts(name), args, env)
+}
 
+/// `call' for callers that already fetched the name's facts this call.
+pub(crate) fn call_with_facts(
+    interp: &mut Interpreter,
+    name: &str,
+    facts: NameFacts,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
     if facts.file_name_handled
         && let Some(result) = dispatch_file_name_handler(interp, env, name, args)?
     {
