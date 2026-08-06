@@ -38,6 +38,9 @@ pub(crate) struct NameFacts {
     resets_undo: bool,
     /// Whether `dispatch_file_name_handler' can act on this name at all.
     file_name_handled: bool,
+    /// Whether `builtin_autoload_function' has an entry for this name, so
+    /// function lookup only walks its match tables when one exists.
+    pub(crate) autoloadable: bool,
     module: DispatchModule,
 }
 
@@ -142,6 +145,7 @@ fn compute_name_facts(name: &str) -> NameFacts {
         prefer_override: crate::lisp::primitives::prefer_builtin_override(name),
         resets_undo: resets_undo_sequence(name),
         file_name_handled: file_name_handler_operation(name),
+        autoloadable: crate::lisp::eval::builtin_autoload_function(name).is_some(),
         module,
     }
 }
@@ -1971,8 +1975,17 @@ pub fn call(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let facts = name_facts(name);
+    call_with_facts(interp, name, name_facts(name), args, env)
+}
 
+/// `call' for callers that already fetched the name's facts this call.
+pub(crate) fn call_with_facts(
+    interp: &mut Interpreter,
+    name: &str,
+    facts: NameFacts,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
     if facts.file_name_handled
         && let Some(result) = dispatch_file_name_handler(interp, env, name, args)?
     {

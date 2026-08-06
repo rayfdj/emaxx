@@ -1113,8 +1113,10 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn push_backtrace_frame(&mut self, function: Value, args: Vec<Value>) {
-        self.push_backtrace_frame_with_evald(function, args, true);
+    pub fn push_backtrace_frame(&mut self, function: Value, args: &[Value]) {
+        let mut pooled = self.backtrace_args_pool.pop().unwrap_or_default();
+        pooled.extend_from_slice(args);
+        self.push_backtrace_frame_with_evald(function, pooled, true);
     }
 
     pub fn push_backtrace_frame_with_evald(
@@ -1149,16 +1151,29 @@ impl Interpreter {
     /// expensive.  GNU only needs this context while a debugger is active;
     /// `backtrace-eval' itself also captures its immediate caller so direct
     /// users of that primitive get the same activation semantics.
+    /// Cheap probe for the debugger flag consulted on every builtin call.
+    /// `edebug-entered' can only carry a dynamic binding once edebug's
+    /// defvar has marked it special, so until then a set-membership check
+    /// replaces the full variable lookup (whose builtin-variable fallback
+    /// tables are a measurable per-call cost); with edebug loaded, defer
+    /// to the real lookup, buffer-local bindings included.
+    fn edebug_entered_active(&self, env: &Env) -> bool {
+        if self.special_variables_index.contains("edebug-entered") {
+            return self
+                .lookup_var("edebug-entered", env)
+                .is_some_and(|value| value.is_truthy());
+        }
+        self.global_binding_value("edebug-entered")
+            .is_some_and(|value| value.is_truthy())
+    }
+
     pub fn capture_current_backtrace_context(
         &mut self,
         function_name: Option<&str>,
         env: &Env,
         activation_frame: Option<&[(String, Value)]>,
     ) {
-        let debugger_active = self
-            .lookup_var("edebug-entered", env)
-            .is_some_and(|value| value.is_truthy());
-        if function_name != Some("backtrace-eval") && !debugger_active {
+        if function_name != Some("backtrace-eval") && !self.edebug_entered_active(env) {
             return;
         }
         let mut context = env.clone();
@@ -1171,7 +1186,13 @@ impl Interpreter {
     }
 
     pub fn pop_backtrace_frame(&mut self) {
-        self.backtrace_frames.pop();
+        if let Some(frame) = self.backtrace_frames.pop() {
+            let mut args = frame.args;
+            if args.capacity() > 0 && self.backtrace_args_pool.len() < 64 {
+                args.clear();
+                self.backtrace_args_pool.push(args);
+            }
+        }
     }
 
     // GNU `called-interactively-p' walks the backtrace and only skips

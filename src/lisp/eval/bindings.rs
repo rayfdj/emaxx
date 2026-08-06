@@ -783,6 +783,21 @@ impl Interpreter {
             .ok_or(LispError::Void(resolved))
     }
 
+    /// Whether NAME has a user-level function definition (defun/fset).
+    pub(crate) fn function_index_has(&self, name: &str) -> bool {
+        self.functions_index.contains_key(name)
+    }
+
+    /// Whether ENV carries any cl-flet/cl-labels function-binding frame —
+    /// the only frames that can shadow a builtin's function cell.
+    pub(crate) fn env_has_function_binding_frames(env: &Env) -> bool {
+        env.iter().any(|frame| {
+            frame
+                .first()
+                .is_some_and(|(key, _)| key == FUNCTION_FRAME_MARKER)
+        })
+    }
+
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
         let facts = primitives::name_facts(name);
         if facts.prefer_override {
@@ -814,7 +829,9 @@ impl Interpreter {
         if let Some(v) = self.functions_index.get(name) {
             return Some(v.clone());
         }
-        if let Some(value) = builtin_autoload_function(name) {
+        if facts.autoloadable
+            && let Some(value) = builtin_autoload_function(name)
+        {
             return Some(value);
         }
         if matches!(name, "incf" | "decf") {
@@ -871,7 +888,9 @@ impl Interpreter {
         if let Some(value) = self.functions_index.get(name) {
             return Some((value.clone(), false));
         }
-        if let Some(value) = builtin_autoload_function(name) {
+        if facts.autoloadable
+            && let Some(value) = builtin_autoload_function(name)
+        {
             return Some((value, false));
         }
         if matches!(name, "incf" | "decf") || facts.builtin || facts.special_form {

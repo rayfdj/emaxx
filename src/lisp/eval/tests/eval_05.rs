@@ -4389,7 +4389,7 @@ fn multisession_backends_observe_dynamic_user_init_file_across_library_calls() {
 fn backtrace_frames_from_current_thread_returns_live_frames() {
     let mut interp = Interpreter::new();
     let current_thread = interp.current_thread_value();
-    interp.push_backtrace_frame(Value::Symbol("sample-backtrace-frame".into()), Vec::new());
+    interp.push_backtrace_frame(Value::Symbol("sample-backtrace-frame".into()), &[]);
 
     assert_eq!(
         interp.thread_backtrace_frames_snapshot(interp.resolve_thread_id(&current_thread).unwrap()),
