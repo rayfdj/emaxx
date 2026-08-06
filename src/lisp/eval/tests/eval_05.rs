@@ -2644,6 +2644,37 @@ fn anchored_syntax_class_regexp_honors_buffer_syntax_properties() {
 }
 
 #[test]
+fn standalone_syntax_class_regexps_use_table_and_text_property_entries() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (let ((table (make-syntax-table)))
+                 (set-syntax-table table)
+                 (modify-syntax-entry ?x \"|\" table)
+                 (insert \"abc\")
+                 (put-text-property 2 3 'syntax-table (string-to-syntax \"|\"))
+                 (let ((parse-sexp-lookup-properties t))
+                   (goto-char (point-min))
+                   (list (string-match-p \"\\\\s|\" \"a\")
+                         (string-match-p \"\\\\s|\" \"x\")
+                         (re-search-forward \"\\\\s|\" nil t)
+                         (match-beginning 0)
+                         (progn (goto-char (point-max))
+                                (re-search-backward \"\\\\s|\" nil t))
+                         (match-beginning 0)))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Integer(0),
+            Value::Integer(3),
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(2),
+        ])
+    );
+}
+
+#[test]
 fn parse_partial_sexp_continuation_preserves_a_generic_string_fence() {
     assert_eq!(
         eval_str(

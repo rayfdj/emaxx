@@ -129,7 +129,7 @@ impl ParseState {
     }
 }
 
-fn syntax_class_from_char(ch: char) -> Option<SyntaxClass> {
+pub(super) fn syntax_class_from_char(ch: char) -> Option<SyntaxClass> {
     Some(match ch {
         ' ' => SyntaxClass::Whitespace,
         '.' => SyntaxClass::Punctuation,

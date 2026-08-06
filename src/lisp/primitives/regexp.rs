@@ -443,6 +443,10 @@ fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
         && !pattern.contains("\\S>")
         && !pattern.contains("\\s_")
         && !pattern.contains("\\S_")
+        && !pattern.contains("\\s!")
+        && !pattern.contains("\\S!")
+        && !pattern.contains("\\s|")
+        && !pattern.contains("\\S|")
         && !pattern.contains("\\sw")
         && !pattern.contains("\\Sw")
         && !pattern.contains("\\w")
@@ -451,7 +455,7 @@ fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
         return pattern.to_string();
     }
     let class_expansion = |class_char: char, negated: bool| -> String {
-        let chars = if class_char == '_' {
+        let chars = if matches!(class_char, '_' | '!' | '|') {
             super::syntax::syntax_class_ascii_chars(interp, class_char)
         } else {
             super::syntax::syntax_class_explicit_chars(interp, class_char)
@@ -519,7 +523,7 @@ fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
                             TABLE_WORD_CLASS_MARKER
                         });
                     }
-                    Some('<') | Some('>') | Some('_') => {
+                    Some('<') | Some('>') | Some('_') | Some('!') | Some('|') => {
                         chars.next();
                         let class_char = chars.next().expect("peeked class");
                         result.push_str(&class_expansion(class_char, escape == 'S'));
@@ -2220,13 +2224,16 @@ pub(super) fn buffer_regex_search(
             backward_args[3] = Value::Integer(-count);
             return buffer_regex_search(interp, &backward_args, env, false, posix);
         }
-        if let Some((negated, syntax_class)) = anchored_single_syntax_class(&pattern.text) {
+        if let Some((line_anchored, negated, syntax_class)) =
+            single_syntax_class_pattern(&pattern.text)
+        {
             for _ in 0..count {
-                let Some(match_start) = next_anchored_syntax_class_match(
+                let Some(match_start) = next_single_syntax_class_match(
                     interp,
                     env,
                     interp.buffer.point(),
                     limit,
+                    line_anchored,
                     negated,
                     syntax_class,
                 ) else {
@@ -2408,6 +2415,37 @@ pub(super) fn buffer_regex_search(
                 ])))
             };
         }
+        if let Some((line_anchored, negated, syntax_class)) =
+            single_syntax_class_pattern(&pattern.text)
+        {
+            for _ in 0..count {
+                let Some(match_start) = previous_single_syntax_class_match(
+                    interp,
+                    env,
+                    interp.buffer.point(),
+                    limit,
+                    line_anchored,
+                    negated,
+                    syntax_class,
+                ) else {
+                    return if noerror {
+                        if move_on_failure {
+                            interp.buffer.goto_char(limit);
+                        }
+                        Ok(Value::Nil)
+                    } else {
+                        Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("search-failed".into()),
+                            Value::String(pattern.text.clone()),
+                        ])))
+                    };
+                };
+                interp.last_match_data = Some(vec![Some((match_start, match_start + 1))]);
+                interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+                interp.buffer.goto_char(match_start);
+            }
+            return Ok(Value::Integer(interp.buffer.point() as i64));
+        }
         for _ in 0..count {
             let absolute_start = interp.buffer.point_min();
             let prefix = interp
@@ -2558,9 +2596,12 @@ pub(super) fn buffer_regex_search(
     }
 }
 
-fn anchored_single_syntax_class(pattern: &str) -> Option<(bool, char)> {
+fn single_syntax_class_pattern(pattern: &str) -> Option<(bool, bool, char)> {
+    let (line_anchored, pattern) = pattern
+        .strip_prefix('^')
+        .map_or((false, pattern), |rest| (true, rest));
     let mut chars = pattern.chars();
-    if chars.next()? != '^' || chars.next()? != '\\' {
+    if chars.next()? != '\\' {
         return None;
     }
     let negated = match chars.next()? {
@@ -2569,20 +2610,26 @@ fn anchored_single_syntax_class(pattern: &str) -> Option<(bool, char)> {
         _ => return None,
     };
     let class = chars.next()?;
-    chars.next().is_none().then_some((negated, class))
+    (chars.next().is_none() && super::syntax::syntax_class_from_char(class).is_some()).then_some((
+        line_anchored,
+        negated,
+        class,
+    ))
 }
 
-fn next_anchored_syntax_class_match(
+fn next_single_syntax_class_match(
     interp: &Interpreter,
     env: &Env,
     start: usize,
     limit: usize,
+    line_anchored: bool,
     negated: bool,
     syntax_class: char,
 ) -> Option<usize> {
     let point_min = interp.buffer.point_min();
     let mut candidate = start;
-    if candidate > point_min && interp.buffer.char_at(candidate - 1) != Some('\n') {
+    if line_anchored && candidate > point_min && interp.buffer.char_at(candidate - 1) != Some('\n')
+    {
         while candidate < limit && interp.buffer.char_at(candidate) != Some('\n') {
             candidate += 1;
         }
@@ -2598,10 +2645,46 @@ fn next_anchored_syntax_class_match(
         if matches != negated {
             return Some(candidate);
         }
+        if !line_anchored {
+            candidate += 1;
+            continue;
+        }
         while candidate < limit && interp.buffer.char_at(candidate) != Some('\n') {
             candidate += 1;
         }
         candidate += usize::from(candidate < limit);
+    }
+    None
+}
+
+fn previous_single_syntax_class_match(
+    interp: &Interpreter,
+    env: &Env,
+    start: usize,
+    limit: usize,
+    line_anchored: bool,
+    negated: bool,
+    syntax_class: char,
+) -> Option<usize> {
+    let point_min = interp.buffer.point_min();
+    let mut candidate = start;
+    while candidate > limit {
+        candidate -= 1;
+        if line_anchored
+            && candidate > point_min
+            && interp.buffer.char_at(candidate - 1) != Some('\n')
+        {
+            continue;
+        }
+        let matches = super::syntax::syntax_class_at_buffer_position_matches(
+            interp,
+            env,
+            candidate,
+            syntax_class,
+        );
+        if matches != negated {
+            return Some(candidate);
+        }
     }
     None
 }
