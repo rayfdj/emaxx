@@ -58,7 +58,9 @@ handoff and retry instruction are in
   the redundant timer special-name list is gone because its lazy defaults
   already imply that contract.  Native per-buffer name, always-local status,
   and effective permanence are one typed manifest; `local-variable-p` consumes
-  that runtime metadata instead of its own list.  The generated GNU primitive, arity, and
+  that runtime metadata instead of its own list, and the old seven-name
+  `auto_buffer_locals` shadow subset is gone.  Only two Lisp-owned
+  `defvar-local` bootstrap names remain pre-seeded.  The generated GNU primitive, arity, and
   dumped-autoload manifests remain protected by their whole-manifest tests.
   Byte compilation now uses real scoped special bindings, native bootstrap
   ERT expands bodies at definition time, and the synthetic
