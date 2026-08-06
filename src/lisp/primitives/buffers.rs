@@ -600,7 +600,26 @@ pub(crate) fn abbrev_table_record_id(interp: &Interpreter, value: &Value) -> Opt
 }
 
 pub(crate) fn is_abbrev_table_value(interp: &Interpreter, value: &Value) -> bool {
-    abbrev_table_record_id(interp, value).is_some()
+    if abbrev_table_record_id(interp, value).is_some() {
+        return true;
+    }
+
+    // GNU abbrev.el implements tables as ordinary obarrays tagged by the
+    // empty symbol's :abbrev-table-modiff property.  Emaxx's compact native
+    // table record is the file-less fallback; once the GNU owner is loaded,
+    // mode construction must recognize and preserve its real representation.
+    obarray_symbols(interp, value).is_ok_and(|symbols| {
+        symbols.into_iter().any(|symbol| {
+            let Value::Symbol(name) = symbol else {
+                return false;
+            };
+            crate::lisp::types::visible_symbol_name(&name).is_empty()
+                && matches!(
+                    interp.get_symbol_property(&name, ":abbrev-table-modiff"),
+                    Some(Value::Integer(_) | Value::BigInteger(_))
+                )
+        })
+    })
 }
 
 pub(crate) fn make_runtime_abbrev_table(

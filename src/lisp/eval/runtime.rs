@@ -2095,6 +2095,12 @@ impl Interpreter {
         {
             return Some(value);
         }
+        if table.id == self.standard_syntax_table_id
+            && table.default.is_nil()
+            && let Some(value) = primitives::standard_syntax_table_default_value(key)
+        {
+            return Some(value);
+        }
         if table.default.is_nil()
             && let Some(value) = primitives::case_table_default_value(table.subtype.as_deref(), key)
         {

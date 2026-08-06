@@ -2113,7 +2113,11 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
-    pub(super) fn sf_define_mode(&mut self, items: &[Value]) -> Result<Value, LispError> {
+    pub(super) fn sf_define_mode(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
             return Ok(Value::Nil);
         };
@@ -2440,6 +2444,14 @@ impl Interpreter {
                     }
                     index += 2;
                 }
+                // `define-abbrev-table' commonly runs before the owning
+                // `define-derived-mode' (CPerl uses this for its electric
+                // keyword parent table).  Capture that value before marking
+                // the generated variable special so the mode definer keeps
+                // either GNU's obarray-backed table or the native fallback.
+                let existing_abbrev_table = self
+                    .lookup_var(&default_abbrev_table_name, env)
+                    .filter(|value| crate::lisp::primitives::is_abbrev_table_value(self, value));
                 for variable in [
                     hook_name.as_str(),
                     map_name.as_str(),
@@ -2464,18 +2476,14 @@ impl Interpreter {
                     self.set_char_table_parent(table_id, Some(self.standard_syntax_table_id()))?;
                     self.set_global_binding(&default_syntax_table_name, Value::CharTable(table_id));
                 }
-                if declare_abbrev_table
-                    && !self
-                        .lookup_var(&default_abbrev_table_name, &Vec::new())
-                        .is_some_and(|value| {
-                            crate::lisp::primitives::is_abbrev_table_value(self, &value)
-                        })
-                {
-                    let table = crate::lisp::primitives::make_runtime_abbrev_table(
-                        self,
-                        Some(&default_abbrev_table_name),
-                        Value::Nil,
-                    );
+                if declare_abbrev_table {
+                    let table = existing_abbrev_table.unwrap_or_else(|| {
+                        crate::lisp::primitives::make_runtime_abbrev_table(
+                            self,
+                            Some(&default_abbrev_table_name),
+                            Value::Nil,
+                        )
+                    });
                     self.set_global_binding(&default_abbrev_table_name, table);
                     crate::lisp::primitives::register_abbrev_table_symbol(
                         self,

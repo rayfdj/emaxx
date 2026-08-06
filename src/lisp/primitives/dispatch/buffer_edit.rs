@@ -221,9 +221,71 @@ fn column_zero_list_starts(interp: &Interpreter) -> Result<Vec<usize>, LispError
     Ok(starts)
 }
 
-fn beginning_of_defun_raw_fallback(interp: &mut Interpreter, arg: i64) -> Result<Value, LispError> {
+fn beginning_of_defun_raw_fallback(
+    interp: &mut Interpreter,
+    arg: i64,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     if arg == 0 {
         return Ok(Value::Nil);
+    }
+    let prompt = interp
+        .lookup_var("defun-prompt-regexp", env)
+        .filter(Value::is_truthy)
+        .map(|value| string_text(&value))
+        .transpose()?;
+    let column_zero_open = interp
+        .lookup_var("open-paren-in-column-0-is-defun-start", env)
+        .is_none_or(|value| value.is_truthy());
+    if prompt.is_some() || column_zero_open {
+        if arg < 0 && interp.buffer.point() < interp.buffer.point_max() {
+            interp.buffer.forward_char(1)?;
+        }
+        let pattern = match prompt {
+            Some(prompt) => format!(
+                "{}\\(?:{}\\)\\s(",
+                if column_zero_open { "^\\s(\\|" } else { "" },
+                prompt
+            ),
+            None => "^\\s(".to_string(),
+        };
+        loop {
+            let found = super::call(
+                interp,
+                "re-search-backward",
+                &[
+                    Value::String(pattern.clone()),
+                    Value::Nil,
+                    Value::Symbol("move".into()),
+                    Value::Integer(arg),
+                ],
+                env,
+            )?;
+            if found.is_nil() {
+                return Ok(Value::Nil);
+            }
+            let match_data = interp.last_match_data.clone();
+            let match_buffer = interp.last_match_data_buffer_id;
+            let state = super::call(interp, "syntax-ppss", &[], env)?;
+            interp.last_match_data = match_data.clone();
+            interp.last_match_data_buffer_id = match_buffer;
+            if state
+                .to_vec()
+                .ok()
+                .and_then(|items| items.get(8).cloned())
+                .is_some_and(|start| start.is_truthy())
+            {
+                continue;
+            }
+            let match_end = match_data
+                .as_ref()
+                .and_then(|data| data.first())
+                .and_then(|entry| *entry)
+                .map(|(_, end)| end)
+                .unwrap_or_else(|| interp.buffer.point());
+            interp.buffer.goto_char(match_end.saturating_sub(1));
+            return Ok(Value::T);
+        }
     }
     let starts = column_zero_list_starts(interp)?;
 
@@ -587,6 +649,7 @@ pub(super) fn call(
                 .cloned()
                 .or_else(|| interp.lookup_var("last-command-event", env))
                 .unwrap_or(Value::Nil);
+            interp.set_variable("last-command-event", event.clone(), env);
             let ch = match event {
                 Value::Integer(code) => char::from_u32(code as u32),
                 Value::Symbol(symbol) if symbol.chars().count() == 1 => symbol.chars().next(),
@@ -599,8 +662,57 @@ pub(super) fn call(
                 .filter(|value| !value.is_nil())
                 .map(Value::as_integer)
                 .transpose()?
-                .unwrap_or(1)
-                .max(0) as usize;
+                .unwrap_or(1);
+            if count < 0 {
+                return Err(LispError::Signal(format!(
+                    "Negative repetition argument {count}"
+                )));
+            }
+            let count = count as usize;
+
+            // GNU expands an active word abbrev before inserting a
+            // non-word character.  Keep the expansion policy in abbrev.el;
+            // this primitive owns only the same syntax-trigger boundary as
+            // cmds.c's `internal_self_insert'.
+            let expands_abbrev = count > 0
+                && interp
+                    .lookup_var("abbrev-mode", env)
+                    .is_some_and(|value| value.is_truthy())
+                && syntax::syntax_entry_for_code(
+                    interp,
+                    interp.current_syntax_table_id(),
+                    ch as u32,
+                )
+                .class
+                    != syntax::SyntaxClass::Word
+                && interp.buffer.char_before().is_some_and(|previous| {
+                    syntax::syntax_entry_for_code(
+                        interp,
+                        interp.current_syntax_table_id(),
+                        previous as u32,
+                    )
+                    .class
+                        == syntax::SyntaxClass::Word
+                });
+            if expands_abbrev && let Ok(function) = interp.lookup_function("expand-abbrev", env) {
+                let expanded =
+                    interp.call_function_value(function, Some("expand-abbrev"), &[], env)?;
+                if let Value::Symbol(abbrev) = expanded {
+                    let hook =
+                        super::call(interp, "symbol-function", &[Value::Symbol(abbrev)], env)?;
+                    if matches!(hook, Value::Symbol(_))
+                        && super::call(
+                            interp,
+                            "get",
+                            &[hook, Value::Symbol("no-self-insert".into())],
+                            env,
+                        )?
+                        .is_truthy()
+                    {
+                        return Ok(Value::Nil);
+                    }
+                }
+            }
             let text: String = std::iter::repeat_n(ch, count).collect();
             insert_text_with_hooks(interp, &text, &[], true, false, env)?;
             run_named_hooks(
@@ -978,7 +1090,17 @@ pub(super) fn call(
             if n != 1 {
                 interp.buffer.forward_line((n - 1) as isize);
             }
-            interp.buffer.beginning_of_line();
+            // After crossing an unterminated final line, GNU's
+            // line-beginning-position leaves point at ZV.  Calling the
+            // ordinary current-line BOL operation there would incorrectly
+            // rewind to that same final line and can make region walkers
+            // loop forever.
+            let crossed_to_unterminated_eob = n > 1
+                && interp.buffer.point() == interp.buffer.point_max()
+                && interp.buffer.char_before().is_some_and(|ch| ch != '\n');
+            if !crossed_to_unterminated_eob {
+                interp.buffer.beginning_of_line();
+            }
             if buffer_has_field_property(interp) {
                 let new_pos = interp.buffer.point();
                 let constrained = super::call(
@@ -1064,7 +1186,7 @@ pub(super) fn call(
             {
                 return call_function_value(interp, &function, &[Value::Integer(arg)], env);
             }
-            beginning_of_defun_raw_fallback(interp, arg)
+            beginning_of_defun_raw_fallback(interp, arg, env)
         }
         "end-of-defun" => {
             need_arg_range(name, args, 0, 2)?;
@@ -1497,6 +1619,10 @@ pub(super) fn call(
                 Some(value) if !value.is_nil() => position_from_value(interp, value)?,
                 _ => interp.buffer.point(),
             };
+            // GNU `syntax-ppss' first asks the mode's syntax propertizer to
+            // cover POS.  CPerl and other modes rely on that lazy step even
+            // when Font Lock has not run.
+            syntax::ensure_syntax_propertized(interp, env);
             // GNU syntax-ppss is NOT excursion-saving: point ends up at
             // POS (beginning-of-defun-comments depends on it).
             let state = syntax::parse_forward(

@@ -3948,7 +3948,7 @@ fn describe_char_observes_preloaded_eldoc_multiline_policy() {
 #[test]
 fn electric_newline_observes_c_basic_offset_binding() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             r#"(progn
                  (require 'electric)
                  (require 'elec-pair)

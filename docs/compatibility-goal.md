@@ -29,6 +29,32 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 Cperl checkpoint advances the fresh contiguous compatibility
+  prefix to 4,580/7,080, leaving 2,500 selectors.  The complete canonical
+  `default` selection for `test/lisp/progmodes/cperl-mode-tests.el` is 64/64
+  against GNU in `target/compat/run-1786019507444417000-10428`; the file's
+  one additional expensive test remains outside the 7,080 denominator.
+  Shared repairs give GNU `syntax-propertize` its safe region extension and
+  high-water semantics; make syntax parsing, syntax-class regexps, comments,
+  generic fences, quote escaping, and Font Lock honor buffer syntax
+  properties; preserve match data across lazy propertization; and route custom
+  mode fontification through the GNU owner.  GNU `abbrev.el` now owns expansion
+  policy, `self-insert-command` triggers it at the native syntax boundary, and
+  derived modes preserve predeclared GNU abbrev tables.  Defun navigation,
+  unterminated-final-line motion, standard syntax defaults, and narrowed
+  backward comment motion also match GNU.  Focused regressions, formatting,
+  diff check, regenerated/rustfmt-normalized autoload validation,
+  all-target/all-feature check, and strict Clippy pass.  A 67-minute full Rust
+  audit ran 1,770 tests: 1,759 passed; six localhost tests were sandbox-denied,
+  and the inherited CCL, recursive-Edebug, and order-sensitive process-output
+  boundaries remained.  Two deterministic failures exposed by that audit
+  were repaired and replay exact-green: electric newline now uses the real
+  batch preload contract, and Semantic format no longer mixes narrowed text
+  with absolute positions.  The process-output timing test also passed in
+  isolation.  Native remains complete at 1,420/1,420.  NEXT is selector 4,581,
+  `csharp-mode-test-indentation`, followed by selector 4,582,
+  `csharp-ts-mode-test-indentation`, in
+  `test/lisp/progmodes/csharp-mode-tests.el` (2 selected outcomes).
 - The 2026-08-06 Change-hook/Cperl partial checkpoint advances the fresh
   contiguous compatibility prefix to 4,520/7,080, leaving 2,560 selectors.
   The first four ordered Cperl outcomes match GNU; NEXT is selector 4,521,

@@ -5388,23 +5388,70 @@ when one is set."
 (defvar ert--test-buffers (make-hash-table :weakness t)
   "Table of all test buffers.  Keys are the buffer objects, values are t.")
 
-;; syntax.el: apply `syntax-propertize-function' up to POS once per
-;; region; fontification and `syntax-ppss' rely on the resulting
-;; `syntax-table' text properties.
+;; syntax.el: syntax propertizers work in safe chunks, normally widened to
+;; whole lines.  CPerl in particular must see the delimiter just beyond the
+;; requested point when a matching parenthesis is inserted inside a regexp.
+(defvar syntax-propertize-chunk-size 500)
+(defvar syntax-wholeline-max 10000)
+(defvar-local syntax-propertize-function nil)
+(defvar-local syntax-propertize--done -1)
+
+(defun syntax--lbp (&optional arg)
+  (let* ((pos (point))
+         (res (line-beginning-position arg)))
+    (cond
+     ((< (abs (- pos res)) syntax-wholeline-max) res)
+     ((< res pos)
+      (max (point-min)
+           (* syntax-wholeline-max
+              (truncate pos syntax-wholeline-max))))
+     (t
+      (min (point-max)
+           (* syntax-wholeline-max
+              (ceiling pos syntax-wholeline-max)))))))
+
+(defun syntax-propertize-wholelines (beg end)
+  (let ((new-beg (progn (goto-char beg)
+                        (if (bolp) beg (syntax--lbp))))
+        (new-end (progn (goto-char end)
+                        (if (bolp) end (syntax--lbp 2)))))
+    (unless (and (eql beg new-beg) (eql end new-end))
+      (cons new-beg new-end))))
+
+(defvar-local syntax-propertize-extend-region-functions
+  '(syntax-propertize-wholelines))
+
 (defun syntax-propertize (pos)
   "Ensure that syntax-table properties are set until POS in current buffer."
-  (when (and (boundp 'syntax-propertize-function)
-             syntax-propertize-function
-             (< syntax-propertize--done pos))
-    (save-excursion
-      (let ((start (max (min syntax-propertize--done (point-max)) (point-min)))
-            (end (max pos (point-min))))
-        ;; Advance the high-water mark first: the propertize function
-        ;; may itself trigger machinery that calls back into us.
-        (setq syntax-propertize--done (max (point-max) end))
-        (remove-text-properties start end
-                                '(syntax-table nil syntax-multiline nil))
-        (funcall syntax-propertize-function start end)))))
+  (when (< syntax-propertize--done pos)
+    (if (memq syntax-propertize-function '(nil ignore))
+        (setq syntax-propertize--done (max (point-max) pos))
+      (setq-local parse-sexp-lookup-properties t)
+      (save-excursion
+        (let* ((start (max (min syntax-propertize--done (point-max))
+                           (point-min)))
+               (end (max pos
+                         (min (point-max)
+                              (+ start syntax-propertize-chunk-size))))
+               (repeat t))
+          (while repeat
+            (setq repeat nil)
+            (dolist (function syntax-propertize-extend-region-functions)
+              (let* ((syntax-propertize--done most-positive-fixnum)
+                     (new (funcall function start end)))
+                (when (and new
+                           (or (< (car new) start) (> (cdr new) end)))
+                  (setq start (car new)
+                        end (cdr new)
+                        repeat t)))))
+          ;; Move the limit first and advertise an in-progress value while
+          ;; changing properties, exactly so recursive parsing and change
+          ;; hooks cannot invalidate this pass's high-water mark.
+          (setq syntax-propertize--done end)
+          (let ((syntax-propertize--done most-positive-fixnum))
+            (remove-text-properties start end
+                                    '(syntax-table nil syntax-multiline nil))
+            (funcall syntax-propertize-function start end)))))))
 
 ;; font-core.el: the default `font-lock-function'; the native
 ;; `font-lock-mode' has already recorded the mode state when a custom
@@ -7018,6 +7065,13 @@ of SECS seconds since the epoch.  SECS may be a fraction."
 ;; GNU simple.el (preloaded): viper reads this at load time.
 (defvar next-line-add-newlines nil
   "If non-nil, `next-line' inserts newline to avoid `end of buffer' error.")
+
+;; indent.el is preloaded by GNU.  Language modes use this value while their
+;; own indentation options are being defined, before indent.el is requested.
+(defcustom tab-always-indent t
+  "Non-nil means TAB in an indentation command always reindents."
+  :type 'boolean
+  :group 'indent)
 
 ;; GNU simple.el dumps this whole option family.  Electric Pair dynamically
 ;; disables `blink-matching-paren' while inserting a synthetic closer, so the

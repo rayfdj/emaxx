@@ -36,6 +36,29 @@ fn define_derived_mode_creates_the_complete_mode_state_contract() {
 }
 
 #[test]
+fn define_derived_mode_preserves_a_predefined_abbrev_table() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (require 'abbrev)
+               (define-abbrev-table 'sample-parent-abbrev-table
+                 '((\"kw\" \"keyword\")))
+               (define-abbrev-table 'sample-preserved-mode-abbrev-table nil
+                 :parents (list sample-parent-abbrev-table))
+               (define-derived-mode sample-preserved-mode fundamental-mode
+                 \"Preserved\")
+               (list
+                (eq sample-parent-abbrev-table
+                    (car (abbrev-table-get
+                          sample-preserved-mode-abbrev-table :parents)))
+                (abbrev-expansion
+                 \"kw\" sample-preserved-mode-abbrev-table)))"
+        ),
+        Value::list([Value::T, Value::String("keyword".into())])
+    );
+}
+
+#[test]
 fn eager_define_derived_mode_lowering_replaces_its_search_stub_with_the_real_mode() {
     assert_eq!(
         eval_str(
@@ -2226,6 +2249,25 @@ fn forward_comment_moves_over_c_comments_in_both_directions() {
                 "#
         ),
         Value::list([Value::T, Value::Integer(15), Value::T, Value::Integer(2),])
+    );
+}
+
+#[test]
+fn forward_comment_uses_absolute_positions_in_a_narrowed_buffer() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (set-syntax-table (make-syntax-table))
+                  (modify-syntax-entry ?/ ". 124b")
+                  (modify-syntax-entry ?* ". 23")
+                  (insert "prefix text\n  /* inside */")
+                  (narrow-to-region 13 (point-max))
+                  (goto-char (point-max))
+                  (list (forward-comment -1) (point) (point-min)))
+                "#
+        ),
+        Value::list([Value::T, Value::Integer(15), Value::Integer(13)])
     );
 }
 
