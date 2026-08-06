@@ -1908,26 +1908,53 @@ impl Interpreter {
         test: &str,
         entries: Vec<(Value, Value)>,
     ) {
-        if test != "equal" {
-            self.equal_hash_tables.remove(&id);
-            return;
-        }
+        let test = match test {
+            "eq" => RuntimeHashTest::Eq,
+            "eql" => RuntimeHashTest::Eql,
+            "equal" => RuntimeHashTest::Equal,
+            _ => {
+                self.equal_hash_tables.remove(&id);
+                return;
+            }
+        };
         let mut key_index: HashMap<Option<i64>, Vec<usize>> = HashMap::new();
         for (index, (key, _)) in entries.iter().enumerate() {
-            let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, key);
+            let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, test, key);
             key_index.entry(hash).or_default().push(index);
         }
-        self.equal_hash_tables
-            .insert(id, EqualHashTableState { entries, key_index });
+        self.equal_hash_tables.insert(
+            id,
+            EqualHashTableState {
+                test,
+                entries,
+                key_index,
+            },
+        );
     }
 
     pub fn hash_table_runtime_entries(&self, id: u64) -> Option<&Vec<(Value, Value)>> {
         self.equal_hash_tables.get(&id).map(|state| &state.entries)
     }
 
-    pub fn equal_hash_lookup(&self, id: u64, key: &Value) -> Option<Option<Value>> {
+    fn runtime_hash_keys_match(
+        &self,
+        test: RuntimeHashTest,
+        stored: &Value,
+        probe: &Value,
+        env: &Env,
+    ) -> bool {
+        match test {
+            RuntimeHashTest::Eq => {
+                crate::lisp::primitives::values_eq_in_env(self, stored, probe, env)
+            }
+            RuntimeHashTest::Eql => crate::lisp::primitives::values_eql(stored, probe),
+            RuntimeHashTest::Equal => crate::lisp::primitives::values_equal(self, stored, probe),
+        }
+    }
+
+    pub fn equal_hash_lookup(&self, id: u64, key: &Value, env: &Env) -> Option<Option<Value>> {
         let state = self.equal_hash_tables.get(&id)?;
-        let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, key);
+        let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, state.test, key);
         Some(
             state
                 .key_index
@@ -1935,16 +1962,17 @@ impl Interpreter {
                 .into_iter()
                 .flatten()
                 .filter_map(|index| state.entries.get(*index))
-                .find(|(existing, _)| crate::lisp::primitives::values_equal(self, existing, key))
+                .find(|(existing, _)| self.runtime_hash_keys_match(state.test, existing, key, env))
                 .map(|(_, value)| value.clone()),
         )
     }
 
-    pub fn equal_hash_put(&mut self, id: u64, key: Value, value: Value) -> bool {
+    pub fn equal_hash_put(&mut self, id: u64, key: Value, value: Value, env: &Env) -> bool {
         let Some(state) = self.equal_hash_tables.get(&id) else {
             return false;
         };
-        let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, &key);
+        let test = state.test;
+        let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, test, &key);
         let existing_index = state
             .key_index
             .get(&hash)
@@ -1953,7 +1981,7 @@ impl Interpreter {
             .copied()
             .find(|index| {
                 state.entries.get(*index).is_some_and(|(existing, _)| {
-                    crate::lisp::primitives::values_equal(self, existing, &key)
+                    self.runtime_hash_keys_match(test, existing, &key, env)
                 })
             });
 
@@ -1971,9 +1999,10 @@ impl Interpreter {
         true
     }
 
-    pub fn equal_hash_remove(&mut self, id: u64, key: &Value) -> Option<bool> {
+    pub fn equal_hash_remove(&mut self, id: u64, key: &Value, env: &Env) -> Option<bool> {
         let state = self.equal_hash_tables.get(&id)?;
-        let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, key);
+        let test = state.test;
+        let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, test, key);
         let existing_index = state
             .key_index
             .get(&hash)
@@ -1982,7 +2011,7 @@ impl Interpreter {
             .copied()
             .find(|index| {
                 state.entries.get(*index).is_some_and(|(existing, _)| {
-                    crate::lisp::primitives::values_equal(self, existing, key)
+                    self.runtime_hash_keys_match(test, existing, key, env)
                 })
             });
         let Some(existing_index) = existing_index else {
@@ -2003,7 +2032,7 @@ impl Interpreter {
             .iter()
             .enumerate()
         {
-            let hash = crate::lisp::primitives::equal_hash_table_key_hash(self, entry_key);
+            let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, test, entry_key);
             key_index.entry(hash).or_default().push(index);
         }
         self.equal_hash_tables

@@ -514,6 +514,23 @@ fn run(
                     }
                 }
             }
+            Op::Quo | Op::Rem => {
+                let len = stack.len();
+                if let (Value::Integer(x), Value::Integer(y)) = (&stack[len - 2], &stack[len - 1]) {
+                    // checked_div/checked_rem refuse y == 0 and the MIN/-1
+                    // overflow, which fall through to the full arithmetic
+                    // (and its arith-error).
+                    let fast = match op {
+                        Op::Quo => x.checked_div(*y),
+                        _ => x.checked_rem(*y),
+                    };
+                    if let Some(n) = fast {
+                        stack.truncate(len - 2);
+                        stack.push(Value::Integer(n));
+                        continue;
+                    }
+                }
+            }
             Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
                 let len = stack.len();
                 if let (Value::Integer(x), Value::Integer(y)) = (&stack[len - 2], &stack[len - 1]) {

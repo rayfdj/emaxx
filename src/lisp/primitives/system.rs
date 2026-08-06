@@ -1348,13 +1348,25 @@ pub(crate) fn find_file_name_handler(
 /// file primitives provide.  The operation table deliberately contains only
 /// arguments that are file names; arbitrary string arguments must never
 /// acquire file-name-handler semantics.
-pub(crate) fn dispatch_file_name_handler(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    operation: &str,
-    args: &[Value],
-) -> Result<Option<Value>, LispError> {
-    let indices: &[usize] = match operation {
+/// True when `dispatch_file_name_handler' can act on OPERATION at all;
+/// for every other name it returns Ok(None) without reading the
+/// arguments, so hot callers may skip the call entirely.
+pub(crate) fn file_name_handler_operation(operation: &str) -> bool {
+    !file_operation_string_indices(operation).is_empty()
+        || matches!(
+            operation,
+            "make-auto-save-file-name"
+                | "make-process"
+                | "memory-info"
+                | "set-visited-file-modtime"
+                | "shell-command"
+                | "temporary-file-directory"
+                | "verify-visited-file-modtime"
+        )
+}
+
+fn file_operation_string_indices(operation: &str) -> &'static [usize] {
+    match operation {
         "add-name-to-file"
         | "copy-directory"
         | "copy-file"
@@ -1420,7 +1432,16 @@ pub(crate) fn dispatch_file_name_handler(
         | "unlock-file"
         | "vc-registered" => &[0],
         _ => &[],
-    };
+    }
+}
+
+pub(crate) fn dispatch_file_name_handler(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    operation: &str,
+    args: &[Value],
+) -> Result<Option<Value>, LispError> {
+    let indices = file_operation_string_indices(operation);
 
     let mut candidates = indices
         .iter()

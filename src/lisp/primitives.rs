@@ -135,7 +135,8 @@ const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 type FileChangeFingerprint = Option<(u64, u128)>;
 type FileChangeCache = HashMap<String, FileChangeFingerprint>;
-type VectorSlotCache = HashMap<usize, (Weak<RefCell<Value>>, Rc<Vec<ConsSlot>>)>;
+type VectorSlotCache =
+    HashMap<usize, (Weak<RefCell<Value>>, Rc<Vec<ConsSlot>>), dispatch::FnvBuildHasher>;
 static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -149,7 +150,7 @@ const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
 
 thread_local! {
-    static VECTOR_SLOT_CACHE: RefCell<VectorSlotCache> = RefCell::new(HashMap::new());
+    static VECTOR_SLOT_CACHE: RefCell<VectorSlotCache> = RefCell::new(HashMap::default());
 }
 
 fn is_time_builtin(name: &str) -> bool {
