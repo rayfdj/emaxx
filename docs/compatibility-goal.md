@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 EWW/Crypto/Mailcap checkpoint advances the fresh contiguous
+  compatibility prefix to 4,335/7,080, leaving 2,745 selectors.  All 31
+  canonical selected outcomes match GNU: EWW 9/9, GnuTLS 6/6, HMAC-MD5 1/1,
+  and Mailcap 15/15.  GNU's preloaded `with-delayed-message` macro now exposes
+  the existing native delayed-message primitive to EWW.  `gnutls-available-p`
+  reports capabilities from the real host GnuTLS backend instead of a stale
+  unavailable stub, and `secure-hash-algorithms` advertises GNU 30.2's exact
+  six-algorithm public catalog.  Crypto remains delegated to the established
+  RustCrypto implementations and host GnuTLS library; no cipher or digest was
+  reimplemented.  Canonical artifacts are EWW
+  `target/compat/run-1785979844926477000-44231`, GnuTLS
+  `target/compat/run-1785980949187657000-45066`, HMAC-MD5
+  `target/compat/run-1785981071334076000-45261`, and Mailcap
+  `target/compat/run-1785981096202709000-45379`.  The GnuTLS artifact also
+  passes its non-denominator expensive AEAD outcome.  Formatting, diff check,
+  focused regressions, all-target/all-feature check, and strict Clippy pass;
+  the immediately preceding full Rust audit remains current.  Native remains
+  complete at 1,420/1,420.  NEXT is selector 4,336,
+  `check-network-process-coding-system-bind`, in
+  `test/lisp/net/network-stream-tests.el` (27 selected outcomes).  Initial
+  artifact `target/compat/run-1785981115203982000-45499` has 17 matching
+  outcomes and 10 GNU `file-error` versus Emaxx generic `error` condition-type
+  mismatches on sandbox-denied server creation.
 - The 2026-08-06 Mouse/Early Network checkpoint advances the fresh contiguous
   compatibility prefix to 4,304/7,080, leaving 2,776 selectors.  All 49
   canonical outcomes match GNU: Mouse 6/6, Mouse Wheel 2/2, Browse URL 13/13,

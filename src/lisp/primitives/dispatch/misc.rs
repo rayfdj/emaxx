@@ -449,10 +449,6 @@ pub(super) fn call(
                 Value::Symbol("sha256".into()),
                 Value::Symbol("sha384".into()),
                 Value::Symbol("sha512".into()),
-                Value::Symbol("sha3-224".into()),
-                Value::Symbol("sha3-256".into()),
-                Value::Symbol("sha3-384".into()),
-                Value::Symbol("sha3-512".into()),
             ]))
         }
         "buffer-hash" => {

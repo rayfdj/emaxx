@@ -66,7 +66,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "any"
             | "featurep"
             | "zlib-available-p"
-            | "gnutls-available-p"
             | "libxml-available-p"
             | "consp"
             | "listp"
@@ -888,8 +887,6 @@ pub(super) fn call(
             Ok(Value::T)
         }
         "zlib-available-p" => Ok(Value::T),
-        // Built without GnuTLS, like a GNU build configured --without-gnutls.
-        "gnutls-available-p" => Ok(Value::Nil),
         "libxml-available-p" => Ok(Value::T),
         "consp" => {
             need_args(name, args, 1)?;
