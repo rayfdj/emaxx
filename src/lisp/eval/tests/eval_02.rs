@@ -4173,6 +4173,81 @@ fn cl_find_class_prefers_builtin_runtime_for_builtin_classes() {
 }
 
 #[test]
+fn builtin_class_schema_matches_gnu_parentage_and_predicates() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (require 'cl-extra)
+                   (list
+                    (mapcar #'cl--class-name
+                            (cl--class-parents (cl-find-class 'null)))
+                    (cl--class-allparents (cl-find-class 'null))
+                    (mapcar #'cl--class-name
+                            (cl--class-parents
+                             (cl-find-class 'symbol-with-pos)))
+                    (cl--class-allparents (cl-find-class 'symbol-with-pos))
+                    (mapcar #'cl--class-name
+                            (cl--class-parents
+                             (cl-find-class 'primitive-function)))
+                    (cl--class-allparents
+                     (cl-find-class 'primitive-function))
+                    (mapcar (lambda (class)
+                              (get class 'cl-deftype-satisfies))
+                            '(array integer-or-marker module-function
+                              primitive-function sequence symbol-with-pos
+                              user-ptr condvar finalizer))))"
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("boolean".into()),
+                    Value::Symbol("list".into())
+                ]),
+                Value::list([
+                    Value::Symbol("null".into()),
+                    Value::Symbol("boolean".into()),
+                    Value::Symbol("symbol".into()),
+                    Value::Symbol("atom".into()),
+                    Value::Symbol("list".into()),
+                    Value::Symbol("sequence".into()),
+                    Value::T,
+                ]),
+                Value::list([Value::Symbol("symbol".into())]),
+                Value::list([
+                    Value::Symbol("symbol-with-pos".into()),
+                    Value::Symbol("symbol".into()),
+                    Value::Symbol("atom".into()),
+                    Value::T,
+                ]),
+                Value::list([
+                    Value::Symbol("subr".into()),
+                    Value::Symbol("compiled-function".into()),
+                ]),
+                Value::list([
+                    Value::Symbol("primitive-function".into()),
+                    Value::Symbol("subr".into()),
+                    Value::Symbol("compiled-function".into()),
+                    Value::Symbol("function".into()),
+                    Value::Symbol("atom".into()),
+                    Value::T,
+                ]),
+                Value::list([
+                    Value::Symbol("arrayp".into()),
+                    Value::Symbol("integer-or-marker-p".into()),
+                    Value::Symbol("module-function-p".into()),
+                    Value::Symbol("primitive-function-p".into()),
+                    Value::Symbol("sequencep".into()),
+                    Value::Symbol("symbol-with-pos-p".into()),
+                    Value::Symbol("user-ptrp".into()),
+                    Value::Nil,
+                    Value::Nil,
+                ]),
+            ])
+        );
+    });
+}
+
+#[test]
 fn macrop_recognizes_defined_and_autoloaded_macros() {
     run_with_large_stack(|| {
         let mut interp = Interpreter::new();

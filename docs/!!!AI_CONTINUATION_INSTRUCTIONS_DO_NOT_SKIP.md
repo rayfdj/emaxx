@@ -65,6 +65,11 @@ counts as the progress denominator.
   manifest; only four non-C Lisp conveniences remain handwritten, and the
   `dlet` fallback refers to its typed native-form variant rather than a second
   string registry.
+  One typed schema now owns all 54 built-in CL/EIEIO class names, direct
+  parents, and predicates; initialization, membership, parent lookup, and
+  cached transitive precedence derive from it.  Its full observable output was
+  compared exactly with GNU 30.2, correcting `null`, `symbol-with-pos`, and
+  `primitive-function` ancestry plus predicate drift.
   File-name-handler advertisement and execution now consume one
   typed operation specification for explicit arguments, `default-directory`,
   visited-buffer paths, and process commands instead of repeating the special
