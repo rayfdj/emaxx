@@ -851,11 +851,12 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
     let Ok(hidden_items) = hidden.to_vec() else {
         return ParseState::default();
     };
+    let public_depth = items
+        .first()
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(0);
     let mut state = ParseState {
-        base_depth: items
-            .first()
-            .and_then(|value| value.as_integer().ok())
-            .unwrap_or(0),
+        base_depth: public_depth,
         min_depth: items
             .get(6)
             .and_then(|value| value.as_integer().ok())
@@ -978,6 +979,11 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             });
         }
     }
+    // GNU internalizes element 0 of OLDSTATE directly.  Callers such as
+    // sgml--syntax-propertize-ppss deliberately mutate that public depth
+    // before resuming a parse, so Emaxx's private continuation payload must
+    // preserve its stack detail without overriding the visible mutation.
+    state.base_depth = public_depth - state.stack.len() as i64;
     state
 }
 

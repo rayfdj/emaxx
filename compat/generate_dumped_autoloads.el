@@ -137,6 +137,10 @@ Quoted data and function bodies are not executable initializer calls."
                       ;; generated forms preserves the dumped global map
                       ;; without duplicating package-specific keys in Rust.
                       (eq (car form) 'global-set-key)
+                      ;; Declarative symbol properties are part of the dumped
+                      ;; startup image too.  Among other contracts, NXML uses
+                      ;; one to register its autoloaded XSD datatype compiler.
+                      (eq (car form) 'put)
                       (and (eq (car form) 'dolist)
                            (emaxx--form-contains-call-p form 'add-to-list))
                       ;; A generated helper can be followed by a top-level

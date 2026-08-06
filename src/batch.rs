@@ -1800,6 +1800,30 @@ mod tests {
     }
 
     #[test]
+    fn batch_runtime_installs_generated_autoload_symbol_properties() {
+        run_with_large_stack(|| {
+            let options = BatchRunOptions::default();
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("initialize batch interpreter");
+            let form = Reader::new(
+                "(list (get 'http://www.w3.org/2001/XMLSchema-datatypes
+                            'rng-dt-compile)
+                       (autoloadp (symbol-function 'rng-xsd-compile)))",
+            )
+            .read_all()
+            .expect("read dumped symbol-property probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("inspect dumped symbol properties"),
+                Value::list([Value::symbol("rng-xsd-compile"), Value::T])
+            );
+        });
+    }
+
+    #[test]
     fn batch_runtime_can_load_ert_helpers() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");

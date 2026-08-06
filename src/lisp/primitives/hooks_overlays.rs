@@ -928,6 +928,7 @@ pub(crate) fn font_lock_fontify_defaults_region(
         return Ok(());
     }
     let defaults_items = defaults.to_vec().unwrap_or_default();
+    font_lock_apply_default_variable_bindings(interp, &defaults_items);
     // GNU fontification triggers `syntax-propertize' through syntax-ppss;
     // run it up front so `syntax-table' text properties are in place.
     if let Ok(function) = interp.lookup_function("syntax-propertize", env) {
@@ -950,6 +951,49 @@ pub(crate) fn font_lock_fontify_defaults_region(
         font_lock_apply_keyword_entry(interp, &entry, start, end, env)?;
     }
     Ok(())
+}
+
+// GNU font-lock-set-defaults installs the variable alist trailing
+// font-lock-defaults as buffer-local state.  Modes use this for behavioral
+// hooks as well as cosmetic policy; SGML/NXML's syntactic-face function, for
+// example, distinguishes attribute strings from quoted text outside tags.
+fn font_lock_apply_default_variable_bindings(interp: &mut Interpreter, defaults: &[Value]) {
+    let buffer_id = interp.current_buffer_id();
+    for (name, value) in [
+        ("font-lock-keywords-only", defaults.get(1)),
+        ("font-lock-keywords-case-fold-search", defaults.get(2)),
+    ] {
+        if interp.buffer_local_value(buffer_id, name).is_none() {
+            interp.set_buffer_local_value(buffer_id, name, value.cloned().unwrap_or(Value::Nil));
+        }
+    }
+
+    let variable_start = if matches!(defaults.get(4), Some(Value::Cons(..))) {
+        4
+    } else {
+        5
+    };
+    for binding in defaults.iter().skip(variable_start) {
+        let Some((variable, value)) = binding.cons_values() else {
+            continue;
+        };
+        let Ok(name) = variable.as_symbol() else {
+            continue;
+        };
+        if interp.buffer_local_value(buffer_id, name).is_none() {
+            interp.set_buffer_local_value(buffer_id, name, value);
+        }
+    }
+    if interp
+        .buffer_local_value(buffer_id, "font-lock-set-defaults")
+        .is_none()
+    {
+        interp.set_buffer_local_value(buffer_id, "font-lock-set-defaults", Value::T);
+        let major_mode = interp
+            .lookup_var("major-mode", &Env::new())
+            .unwrap_or(Value::Nil);
+        interp.set_buffer_local_value(buffer_id, "font-lock-major-mode", major_mode);
+    }
 }
 
 // Resolve the KEYWORDS position of `font-lock-defaults': a symbol names a
@@ -1007,7 +1051,7 @@ fn font_lock_syntactic_pass(
         }
         // State AFTER the character at POS tells whether POS itself is
         // inside (or starts) a comment or string.
-        let state = primitives_call_quiet(
+        let state = font_lock_call_quiet(
             interp,
             "syntax-ppss",
             &[Value::Integer((pos + 1) as i64)],
@@ -1026,15 +1070,24 @@ fn font_lock_syntactic_pass(
             .and_then(|value| value.as_integer().ok())
             .map(|value| value.max(1) as usize)
             .unwrap_or(pos);
-        let face = if in_string {
-            "font-lock-string-face"
+        let default_face = if in_string {
+            Value::symbol("font-lock-string-face")
         } else {
-            "font-lock-comment-face"
+            Value::symbol("font-lock-comment-face")
+        };
+        let face = match interp.lookup_var("font-lock-syntactic-face-function", env) {
+            Some(function) if function.is_truthy() => interp.call_function_value(
+                function,
+                Some("font-lock-syntactic-face-function"),
+                std::slice::from_ref(&state),
+                env,
+            )?,
+            _ => default_face,
         };
         // Find the end of the construct.
         let construct_end = if in_comment {
             interp.buffer.goto_char(construct_start);
-            let moved = primitives_call_quiet(interp, "forward-comment", &[Value::Integer(1)], env)
+            let moved = font_lock_call_quiet(interp, "forward-comment", &[Value::Integer(1)], env)
                 .unwrap_or(Value::Nil);
             if moved.is_truthy() {
                 interp.buffer.point().min(end.max(pos + 1))
@@ -1045,7 +1098,7 @@ fn font_lock_syntactic_pass(
             // Scan forward until the string state clears.
             let mut cursor = pos + 1;
             while cursor < end {
-                let state = primitives_call_quiet(
+                let state = font_lock_call_quiet(
                     interp,
                     "syntax-ppss",
                     &[Value::Integer((cursor + 1) as i64)],
@@ -1062,27 +1115,32 @@ fn font_lock_syntactic_pass(
             cursor
         };
         let span_end = construct_end.max(pos + 1).min(end);
-        font_lock_put_buffer_property(
-            interp,
-            interp.current_buffer_id(),
-            construct_start.max(start),
-            span_end,
-            "face",
-            Value::Symbol(face.into()),
-        )?;
+        if !face.is_nil() {
+            font_lock_put_buffer_property(
+                interp,
+                interp.current_buffer_id(),
+                construct_start.max(start),
+                span_end,
+                "face",
+                face,
+            )?;
+        }
         pos = span_end;
     }
     interp.buffer.goto_char(saved_point);
     Ok(())
 }
 
-fn primitives_call_quiet(
+fn font_lock_call_quiet(
     interp: &mut Interpreter,
     name: &str,
     args: &[Value],
     env: &mut Env,
 ) -> Option<Value> {
-    super::call(interp, name, args, env).ok()
+    let function = interp.lookup_function(name, env).ok()?;
+    interp
+        .call_function_value(function, Some(name), args, env)
+        .ok()
 }
 
 // One entry of `font-lock-keywords': MATCHER, (MATCHER . SUBEXP),
