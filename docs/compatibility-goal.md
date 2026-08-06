@@ -29,6 +29,22 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-07 buffer line-motion cumulative repair keeps the ordered
+  frontier at 4,582/7,080 and reduces the known cumulative mismatch set to
+  three themes.  All 3 canonical Eshell Mode outcomes match GNU in
+  `target/compat/run-1786052301739727000-75451`; both HL-Line outcomes match,
+  including the headless graphics skip, in
+  `target/compat/run-1786052413532395000-75610`.  Buffer line boundaries now
+  follow GNU's LF-only editing model instead of Ropey's broader Unicode line
+  model, leaving lone carriage returns for terminal filters such as Eshell's
+  overwrite handler.  `line-beginning-position` also preserves the EOB
+  reached by crossing an unterminated final line, matching the already-correct
+  moving command and allowing GNU's own HL-Line code to expand its overlay.
+  Focused buffer and Lisp motion regressions, formatting, diff check,
+  all-target/all-feature check, and strict Clippy pass.  Native remains
+  1,420/1,420.  Remaining cumulative work is Electric's confirmed long
+  timeout, Isearch invisibility, and TRAMP shell-prompt startup before the
+  final 1..4,582 replay and selector 4,583.
 - The 2026-08-07 ERT Font Lock cumulative repair keeps the published ordered
   frontier at 4,582/7,080 while reducing the cumulative mismatch set to five
   files/themes.  All 40 canonical outcomes in
