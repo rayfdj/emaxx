@@ -407,6 +407,83 @@ pub(super) fn handles(name: &str) -> bool {
     )
 }
 
+#[derive(Clone, Copy)]
+enum AddressFamily {
+    Both,
+    Ipv4,
+    Ipv6,
+}
+
+impl AddressFamily {
+    fn parse(value: Option<&Value>) -> Result<Self, LispError> {
+        match value {
+            None | Some(Value::Nil) => Ok(Self::Both),
+            Some(Value::Symbol(family)) if family == "ipv4" => Ok(Self::Ipv4),
+            Some(Value::Symbol(family)) if family == "ipv6" => Ok(Self::Ipv6),
+            _ => Err(LispError::Signal("Unsupported family".into())),
+        }
+    }
+
+    fn includes(self, address: std::net::IpAddr) -> bool {
+        match self {
+            Self::Both => true,
+            Self::Ipv4 => address.is_ipv4(),
+            Self::Ipv6 => address.is_ipv6(),
+        }
+    }
+}
+
+fn interface_broadcast(ip: std::net::IpAddr, mask: std::net::IpAddr) -> std::net::IpAddr {
+    match (ip, mask) {
+        (std::net::IpAddr::V4(ip), std::net::IpAddr::V4(mask)) => {
+            std::net::IpAddr::V4(std::net::Ipv4Addr::from(u32::from(ip) | !u32::from(mask)))
+        }
+        (std::net::IpAddr::V6(ip), std::net::IpAddr::V6(mask)) => {
+            std::net::IpAddr::V6(std::net::Ipv6Addr::from(u128::from(ip) | !u128::from(mask)))
+        }
+        _ => unreachable!("interface address and mask families differ"),
+    }
+}
+
+fn network_interface_list(args: &[Value]) -> Result<Value, LispError> {
+    need_arg_range("network-interface-list", args, 0, 2)?;
+    let full = args.first().is_some_and(Value::is_truthy);
+    let family = AddressFamily::parse(args.get(1))?;
+    let Ok(interfaces) = if_addrs::get_if_addrs() else {
+        return Ok(Value::Nil);
+    };
+    Ok(Value::list(interfaces.into_iter().filter_map(
+        |interface| {
+            let (ip, mask) = match interface.addr {
+                if_addrs::IfAddr::V4(address) => (
+                    std::net::IpAddr::V4(address.ip),
+                    std::net::IpAddr::V4(address.netmask),
+                ),
+                if_addrs::IfAddr::V6(address) => (
+                    std::net::IpAddr::V6(address.ip),
+                    std::net::IpAddr::V6(address.netmask),
+                ),
+            };
+            family.includes(ip).then(|| {
+                let ip_value = sockaddr_vector(std::net::SocketAddr::new(ip, 0));
+                if full {
+                    Value::list([
+                        Value::string(&interface.name),
+                        ip_value,
+                        sockaddr_vector(std::net::SocketAddr::new(
+                            interface_broadcast(ip, mask),
+                            0,
+                        )),
+                        sockaddr_vector(std::net::SocketAddr::new(mask, 0)),
+                    ])
+                } else {
+                    Value::cons(Value::string(&interface.name), ip_value)
+                }
+            })
+        },
+    )))
+}
+
 pub(super) fn call(
     interp: &mut Interpreter,
     name: &str,
@@ -3391,7 +3468,8 @@ pub(super) fn call(
             need_arg_range(name, args, 2, 4)?;
             Ok(Value::T)
         }
-        "network-interface-list" | "network-interface-info" => Ok(Value::Nil),
+        "network-interface-list" => network_interface_list(args),
+        "network-interface-info" => Ok(Value::Nil),
         "network-lookup-address-info" => {
             need_arg_range(name, args, 1, 3)?;
             let host = string_text(&args[0])?;
@@ -3400,17 +3478,7 @@ pub(super) fn call(
                     "Non-ASCII hostname {host} detected, please use `puny-encode-domain'"
                 )));
             }
-            enum AddressFamily {
-                Both,
-                Ipv4,
-                Ipv6,
-            }
-            let family = match args.get(1) {
-                None | Some(Value::Nil) => AddressFamily::Both,
-                Some(Value::Symbol(family)) if family == "ipv4" => AddressFamily::Ipv4,
-                Some(Value::Symbol(family)) if family == "ipv6" => AddressFamily::Ipv6,
-                _ => return Err(LispError::Signal("Unsupported family".into())),
-            };
+            let family = AddressFamily::parse(args.get(1))?;
             let numeric = match args.get(2) {
                 None | Some(Value::Nil) => false,
                 Some(Value::Symbol(hint)) if hint == "numeric" => true,
@@ -3440,11 +3508,7 @@ pub(super) fn call(
             Ok(Value::list(
                 addresses
                     .into_iter()
-                    .filter(|address| match family {
-                        AddressFamily::Both => true,
-                        AddressFamily::Ipv4 => address.is_ipv4(),
-                        AddressFamily::Ipv6 => address.is_ipv6(),
-                    })
+                    .filter(|address| family.includes(address.ip()))
                     .map(sockaddr_vector),
             ))
         }

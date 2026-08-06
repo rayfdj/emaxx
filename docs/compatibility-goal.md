@@ -29,6 +29,29 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 Network/Time/Interface checkpoint advances the fresh
+  contiguous compatibility prefix to 4,402/7,080, leaving 2,678 selectors.
+  All 67 newly ordered outcomes match GNU: Network Stream 27/27, Newsticker
+  7/7, NSM 2/2, NTLM 3/3, Punycode 8/8, RCIRC 2/2, RFC2104 2/2, SASL-CRAM
+  1/1, SASL-SCRAM 2/2, SASL 6/6, Secrets 5/5, and the first two SHR selectors.
+  Socket bind/connect failures now preserve GNU's `file-error`/`file-missing`
+  data and original client arguments across TCP, UDP, and local transports.
+  Obsolescent positional `encode-time` calls use their last argument as ZONE,
+  while decoded-time list calls use field 9.  `network-interface-list` now
+  returns real GNU-shaped address/broadcast/netmask data through the
+  established cross-platform `if-addrs` 0.15.0 crate instead of unsafe local
+  platform bindings.  Primary canonical artifacts are Network Stream
+  `target/compat/run-1785981643781556000-45973`, Newsticker
+  `target/compat/run-1785982042194719000-46410`, and NSM
+  `target/compat/run-1785983236951505000-48268`; adjacent artifacts continue
+  through Secrets `target/compat/run-1785982851655695000-47950`.  Formatting,
+  diff check, focused regressions, all-target/all-feature check, and strict
+  Clippy pass; the preceding full Rust audit remains current.  Native remains
+  complete at 1,420/1,420.  NEXT is selector 4,403, `shr-test/zoom-image`, in
+  `test/lisp/net/shr-tests.el`; initial artifact
+  `target/compat/run-1785982879781839000-48069` reports Emaxx
+  `void-variable image-scaling-factor` where GNU reaches the expected generic
+  timeout `error`.
 - The 2026-08-06 EWW/Crypto/Mailcap checkpoint advances the fresh contiguous
   compatibility prefix to 4,335/7,080, leaving 2,745 selectors.  All 31
   canonical selected outcomes match GNU: EWW 9/9, GnuTLS 6/6, HMAC-MD5 1/1,
