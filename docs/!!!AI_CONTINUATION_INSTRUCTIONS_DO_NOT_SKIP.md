@@ -18,6 +18,22 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-07 ERT FONT LOCK CUMULATIVE REPAIR: the ordered frontier remains
+  paused at 4,582/7,080 while the cumulative mismatch set drops to five
+  files/themes.  The complete canonical ERT Font Lock selection matches all
+  40 GNU outcomes, including four expected failures and one skip, in
+  `target/compat/run-1786051997034555000-74892`.  GNU's regexp engine treats
+  every `\\sX` atom as a runtime syntax-table operation; Emaxx now gives
+  standalone atoms one table-driven buffer-search path for anchored and
+  unanchored searches in both directions, including syntax-table text
+  properties.  String matching resolves generic comment/string delimiter
+  classes from the effective table instead of sending unsupported classes to
+  the word-class fallback.  This repairs CC Mode's `\\s|` rule without a
+  Font Lock or test-specific exception.  Focused syntax-class regressions
+  pass.  Native remains 1,420/1,420.  Remaining cumulative themes are
+  Electric's confirmed long timeout, Eshell carriage returns, HL-Line
+  stickiness, Isearch invisibility, and TRAMP shell-prompt startup; recertify
+  1..4,582 before resuming selector 4,583.
 - 2026-08-06 CUMULATIVE ROBUSTNESS CHECKPOINT: pause new frontier work at
   selector 4,582 until the ordered prefix is recertified.  The first replay
   through C# Mode matched 331/351 files and exposed 20 cumulative mismatches

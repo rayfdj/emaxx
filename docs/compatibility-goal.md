@@ -29,6 +29,21 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-07 ERT Font Lock cumulative repair keeps the published ordered
+  frontier at 4,582/7,080 while reducing the cumulative mismatch set to five
+  files/themes.  All 40 canonical outcomes in
+  `test/lisp/emacs-lisp/ert-font-lock-tests.el` match GNU, including its four
+  expected failures and one skip, in
+  `target/compat/run-1786051997034555000-74892`.  Standalone syntax-class
+  regexp searches now dispatch through the current syntax table in anchored
+  or unanchored, forward or backward form and honor syntax-table text
+  properties.  Static generic comment/string delimiter classes no longer
+  fall through to the word class, which made CC Mode's `\\s|` warning rule
+  overwrite ordinary multiline comments.  Focused static and property-aware
+  syntax-class regressions pass.  Native remains 1,420/1,420.  Cumulative
+  repair continues with Electric's confirmed long timeout, Eshell carriage
+  returns, HL-Line stickiness, Isearch invisibility, and TRAMP shell-prompt
+  startup before the final 1..4,582 replay and selector 4,583.
 - The 2026-08-06 cumulative robustness checkpoint pauses frontier work at
   selector 4,582 while the ordered prefix is recertified.  The first
   canonical replay through C# Mode matched 331/351 files and exposed 20
