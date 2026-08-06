@@ -21,7 +21,7 @@ counts as the progress denominator.
 - 2026-08-06 CPERL CHECKPOINT: the fresh contiguous ordered frontier is
   4,580/7,080, leaving 2,500 selectors.  The complete canonical `default`
   selection for `test/lisp/progmodes/cperl-mode-tests.el` matches GNU 64/64 in
-  `target/compat/run-1786019507444417000-10428`; its one extra expensive test
+  `target/compat/run-1786020275788120000-11014`; its one extra expensive test
   is outside the 7,080 manifest.  GNU-compatible shared behavior now covers
   safe `syntax-propertize` chunks and high-water marks, property-aware syntax
   parsing and syntax-class regexps, quote escaping, comment styles, generic
