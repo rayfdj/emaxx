@@ -18,6 +18,17 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 SHR/IMAGE CHECKPOINT: the fresh contiguous ordered frontier is
+  4,404/7,080, leaving 2,676 selectors.  All 4 canonical SHR outcomes match
+  GNU in `target/compat/run-1785984244560165000-49302`.  The complete
+  feature-independent native `image.c` variable group now has GNU defaults and
+  dynamic binding semantics, including `image-scaling-factor` = `auto`; SHR
+  consequently reaches GNU's expected timeout `error` rather than an early
+  `void-variable`.  The focused oracle-backed regression, formatting, diff
+  check, all-target/all-feature check, and strict Clippy pass; the preceding
+  full Rust audit remains current.  Native remains 1,420/1,420.  NEXT is
+  selector 4,405, `socks-override-functions`, in
+  `test/lisp/net/socks-tests.el` (10 selected outcomes).
 - 2026-08-06 NETWORK/TIME/INTERFACE CHECKPOINT: the fresh contiguous ordered
   frontier is 4,402/7,080, leaving 2,678 selectors.  All 67 newly ordered
   outcomes match GNU: Network Stream 27/27, Newsticker 7/7, NSM 2/2, NTLM

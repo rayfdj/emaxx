@@ -5392,6 +5392,44 @@ fn native_image_cache_family_matches_the_headless_frame_contract() {
 }
 
 #[test]
+fn native_image_variables_match_the_gnu_image_c_contract() {
+    let program = r#"
+        (progn
+          (defun emaxx-test-image-scaling-factor () image-scaling-factor)
+          (list
+           (boundp 'image-types)
+           max-image-size
+           cross-disabled-images
+           x-bitmap-file-path
+           image-cache-eviction-delay
+           image-scaling-factor
+           (mapcar #'special-variable-p
+                   '(image-types max-image-size cross-disabled-images
+                     x-bitmap-file-path image-cache-eviction-delay
+                     image-scaling-factor))
+           (let ((image-scaling-factor 2.0))
+             (emaxx-test-image-scaling-factor))))"#;
+    let expected = "(t 10.0 nil (\".\") 300 auto (t t t t t t) 2.0)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("image variable contract should parse")
+        .expect("image variable contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("native image variables should match image.c"),
+        Reader::new(expected)
+            .read()
+            .expect("expected image variable result should parse")
+            .expect("expected image variable result should exist")
+    );
+}
+
+#[test]
 fn native_fringe_bitmap_registry_family_matches_gnu() {
     let program = r#"
         (let ((name 'emaxx-test-fringe))
