@@ -2826,9 +2826,17 @@ define_dispatch!(
                 } else {
                     0
                 };
-                // If forward_line overshot (couldn't find enough lines),
-                // point is already at point-max/point-min — don't move it back.
-                if shortage == 0 || (count > 0 && interp.buffer.point() < interp.buffer.point_max())
+                // Crossing an unterminated final line lands at ZV, which is
+                // the requested next-line position even though moving to the
+                // beginning of its containing line would jump backward.
+                let at_unterminated_eob = count > 0
+                    && interp.buffer.point() == interp.buffer.point_max()
+                    && interp.buffer.char_before() != Some('\n');
+                // If forward_line otherwise overshot, point is already at
+                // point-max/point-min; preserve that shortage position.
+                if !at_unterminated_eob
+                    && (shortage == 0
+                        || (count > 0 && interp.buffer.point() < interp.buffer.point_max()))
                 {
                     interp.buffer.beginning_of_line();
                 }

@@ -2203,6 +2203,23 @@ fn beginning_of_line_crosses_an_unterminated_final_line_to_eob() {
 }
 
 #[test]
+fn line_beginning_position_crosses_an_unterminated_final_line_to_eob() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "last")
+                 (goto-char (point-min))
+                 (list (line-beginning-position 2)
+                       (save-excursion
+                         (beginning-of-line 2)
+                         (point))
+                       (point-max)))"#,
+        ),
+        Value::list([Value::Integer(5), Value::Integer(5), Value::Integer(5)])
+    );
+}
+
+#[test]
 fn execute_kbd_macro_self_insert_binding_sets_last_command_event() {
     assert_eq!(
         eval_str("(with-temp-buffer (execute-kbd-macro (kbd \"SPC\")) (buffer-string))"),

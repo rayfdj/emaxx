@@ -473,8 +473,14 @@ impl Buffer {
     pub fn line_start_at(&self, pos: usize) -> usize {
         let pt = pos.clamp(self.begv, self.zv);
         let char_index = pt.saturating_sub(1).min(self.text.len_chars());
-        let line = self.text.char_to_line(char_index);
-        (self.text.line_to_char(line) + 1).max(self.begv)
+        let line_start = self
+            .text
+            .slice(..char_index)
+            .chars_at(char_index)
+            .reversed()
+            .position(|ch| ch == '\n')
+            .map_or(1, |distance| char_index - distance + 1);
+        line_start.max(self.begv)
     }
 
     /// Move to the end of the current line. Returns new point.
@@ -2218,6 +2224,13 @@ mod tests {
         let mut trailing_newline = Buffer::from_text("test", "abc\n");
         trailing_newline.goto_char(trailing_newline.point_max());
         assert_eq!(trailing_newline.beginning_of_line(), 5);
+
+        // GNU buffer motion recognizes LF as the line separator.  A lone CR
+        // is ordinary buffer text (terminal filters may interpret it later).
+        let mut carriage_return = Buffer::from_text("test", "hello\rgoodbye\n");
+        carriage_return.goto_char(7);
+        assert_eq!(carriage_return.beginning_of_line(), 1);
+        assert_eq!(carriage_return.end_of_line(), 14);
     }
 
     #[test]

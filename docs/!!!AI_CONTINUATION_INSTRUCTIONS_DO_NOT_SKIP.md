@@ -18,6 +18,23 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-07 BUFFER LINE-MOTION CUMULATIVE REPAIR: the frontier stays paused
+  at 4,582/7,080 and only three known cumulative themes remain.  Eshell Mode
+  matches all 3 canonical outcomes in
+  `target/compat/run-1786052301739727000-75451`; HL-Line matches both GNU
+  outcomes, including the graphics skip, in
+  `target/compat/run-1786052413532395000-75610`.  Emaxx no longer delegates
+  editing line starts to Ropey's CR-aware line index: GNU buffer motion treats
+  only LF as a line separator, so a lone carriage return remains ordinary
+  text for Eshell's owning control-code filter to process.  The nonmoving
+  `line-beginning-position` primitive now also keeps the EOB position reached
+  when it crosses an unterminated final line, just like `beginning-of-line`;
+  this lets GNU HL-Line move an initially empty overlay across inserted text.
+  Focused buffer/motion regressions, formatting, diff check,
+  all-target/all-feature check, and strict Clippy pass.  Native remains
+  1,420/1,420.  NEXT cumulative targets are Electric's confirmed long
+  timeout, Isearch invisibility, and TRAMP shell-prompt startup; recertify the
+  entire 1..4,582 prefix before selector 4,583.
 - 2026-08-07 ERT FONT LOCK CUMULATIVE REPAIR: the ordered frontier remains
   paused at 4,582/7,080 while the cumulative mismatch set drops to five
   files/themes.  The complete canonical ERT Font Lock selection matches all
