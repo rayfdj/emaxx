@@ -3374,6 +3374,25 @@ fn encode_time_normalizes_overflowing_decoded_fields() {
 }
 
 #[test]
+fn encode_time_obsolescent_calls_use_the_last_argument_as_zone() {
+    assert_eq!(
+        eval_str(
+            r#"(mapcar (lambda (time) (format-time-string "%FT%T" time t))
+                       (list (encode-time 52 27 18 10 3 2008 t)
+                             (encode-time 52 27 18 10 3 2008 nil t)
+                             (encode-time 52 27 18 10 3 2008 nil nil t)
+                             (encode-time '(52 27 18 10 3 2008 nil nil t))))"#,
+        ),
+        Value::list([
+            Value::String("2008-03-10T18:27:52".into()),
+            Value::String("2008-03-10T18:27:52".into()),
+            Value::String("2008-03-10T18:27:52".into()),
+            Value::String("2008-03-10T18:27:52".into()),
+        ])
+    );
+}
+
+#[test]
 fn posix_tz_string_zones_drive_encode_and_decode_time() {
     run_with_large_stack(|| {
         assert_eq!(
