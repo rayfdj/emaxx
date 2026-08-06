@@ -18,6 +18,27 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 OBARRAY/OBSOLETE CHECKPOINT: the fresh contiguous ordered
+  frontier is 4,457/7,080, leaving 2,623 selectors.  All 16 newly ordered
+  outcomes match GNU: Obarray 7/7, obsolete CL 1/1, Inversion 1/1, Makesum
+  4/4, RFC2368 2/2, and Thumbs 1/1.  This is a bounded manifest checkpoint,
+  not one implementation theme.  Obsolete `labels` now propagates the owning
+  macro environment through nested function-quote and symbol-macro expansion;
+  independently, `line-number-at-pos` counts from narrowed `point-min` unless
+  ABSOLUTE is non-nil and clips accessible-relative positions like GNU.
+  Canonical artifacts are Obarray
+  `target/compat/run-1785991065630391000-54917`, obsolete CL
+  `target/compat/run-1785991929529574000-55491`, Inversion
+  `target/compat/run-1785992038708108000-55671`, Makesum
+  `target/compat/run-1785992554186182000-56176`, RFC2368
+  `target/compat/run-1785992667825078000-56339`, and Thumbs
+  `target/compat/run-1785992684176632000-56457`.  Exact obsolete-CL,
+  symbol-macro, upstream CL, Bindat, narrowed-line, count-lines, and display-
+  line regressions pass, along with formatting, diff check,
+  all-target/all-feature check, and strict Clippy.  The immediately preceding
+  59-minute full Rust audit remains current.  Native remains 1,420/1,420.
+  NEXT is selector 4,458, `org-package-version`, in
+  `test/lisp/org/org-tests.el` (1 selected outcome).
 - 2026-08-06 NXML/ADJACENT CHECKPOINT: the fresh contiguous ordered frontier
   is 4,441/7,080, leaving 2,639 selectors.  All 37 newly ordered outcomes match
   GNU: SOCKS 10/10, Tramp Archive 10/10, Webjump 7/7, Newcomment 1/1, NXML
