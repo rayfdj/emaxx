@@ -838,6 +838,20 @@ fn completing_read_consumes_keyboard_macro_input_in_the_minibuffer() {
 }
 
 #[test]
+fn buffer_undo_list_preserves_saved_tail_identity_as_changes_are_added() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "a")
+                 (let ((saved buffer-undo-list))
+                   (insert "b")
+                   (eq saved (cdr buffer-undo-list))))"#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn call_interactively_skips_interactive_guard_prefixes() {
     assert_eq!(
         eval_str(
@@ -3703,7 +3717,7 @@ fn upstream_abbrev_edit_save_to_file_ert_case_passes() {
 
             (ert-deftest emaxx-abbrev-edit-save-to-file-test ()
               (defvar emaxx-ert-save-test-table nil)
-              (ert-with-temp-file temp-test-file
+              (ert-with-temp-file temp-test-file :suffix ".el"
                 (let ((ert-test-abbrevs (emaxx-setup-test-abbrev-table)))
                   (with-temp-buffer
                     (goto-char (point-min))
