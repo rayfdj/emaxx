@@ -1336,6 +1336,22 @@ fn nested_backquote_splices_vector_result_without_internal_marker() {
 }
 
 #[test]
+fn macroexpanded_backquote_preserves_vector_templates() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(let ((lst '(ba bb bc))
+                   (vec [ba bb bc]))
+               (eval
+                (macroexpand-all
+                 '(list (equal vec `[,@lst])
+                        (equal `(a ,`[,@lst] c) `(a ,vec c))))
+                `((lst . ,lst) (vec . ,vec))))"
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
 fn find_file_noselect_runs_find_file_hook_when_semantic_init_hook_is_nil() {
     assert_eq!(
         eval_str(
@@ -4709,7 +4725,7 @@ fn simple_compat_exposes_ignore_errors_as_a_preloaded_macro() {
 }
 
 #[test]
-fn simple_compat_macroexp_file_name_keeps_the_ert_defining_file() {
+fn simple_compat_macroexp_file_name_does_not_leak_ert_source_at_runtime() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(
         &mut interp,
@@ -4718,13 +4734,17 @@ fn simple_compat_macroexp_file_name_keeps_the_ert_defining_file() {
     .expect("load simple compat");
     let test_file = "/tmp/emaxx-simple-compat-resource-tests.el";
     interp.set_current_load_file(Some(test_file.into()));
+    interp.set_variable(
+        "current-load-list",
+        Value::list([Value::String(test_file.into())]),
+        &mut Vec::new(),
+    );
     eval_str_with(
         &mut interp,
-        &format!(
-            r#"(ert-deftest simple-compat-keeps-ert-source ()
-                  (should (string= (macroexp-file-name) "{test_file}")))"#
-        ),
+        "(ert-deftest simple-compat-does-not-leak-ert-source ()
+           (should-not (macroexp-file-name)))",
     );
+    interp.set_variable("current-load-list", Value::Nil, &mut Vec::new());
     interp.set_current_load_file(None);
 
     assert_eq!(interp.run_ert_tests(), (1, 0, 1));

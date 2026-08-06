@@ -125,6 +125,15 @@ impl Interpreter {
             cursor += 2;
         }
 
+        // GNU's ert-deftest macro expands the test body while its defining
+        // file is still the active load context.  Do the same in the native
+        // bootstrap fallback instead of carrying a synthetic file-name
+        // variable throughout execution (which corrupts a nested runtime
+        // `macroexpand').
+        let body = items[cursor..]
+            .iter()
+            .map(|form| self.macroexpand_all_form_with_environment(form, None, env))
+            .collect::<Result<Vec<_>, _>>()?;
         let closure_env = shared_env(env.clone());
         if self
             .lookup_var("lexical-binding", env)
@@ -132,7 +141,7 @@ impl Interpreter {
         {
             self.mark_lexical_closure_env(&closure_env);
         }
-        let body = Value::Lambda(Vec::new(), items[cursor..].to_vec().into(), closure_env);
+        let body = Value::Lambda(Vec::new(), body.into(), closure_env);
         // Mirror `ert-set-test': tests are also reachable through the
         // `ert--test' symbol property as an `ert-test' struct, which
         // `ert-get-test' and the struct accessors read.

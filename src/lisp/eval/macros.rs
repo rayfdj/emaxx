@@ -2345,6 +2345,23 @@ fn backquote_template_code_at_depth(template: &Value, depth: usize) -> Value {
             backquote_template_code_at_depth(&body, depth + 1),
         ]);
     }
+    if is_vector_literal(template) && template_tree_unquotes(template) {
+        let elements = template
+            .to_vec()
+            .expect("vector literal is a proper internal list")
+            .into_iter()
+            .skip(1)
+            .collect::<Vec<_>>();
+        // Construct the element sequence with ordinary backquote list
+        // semantics, then let the public sequence primitive restore the
+        // vector container.  Carrying the internal `vector-literal' marker
+        // through `(append ...)' is ambiguous: `(list 'vector-literal)'
+        // itself denotes an empty vector, so append correctly consumes it.
+        return Value::list([
+            Value::Symbol("vconcat".into()),
+            backquote_template_code_at_depth(&Value::list(elements), depth),
+        ]);
+    }
     // A quoted form (or vector literal) is only opaque when nothing
     // inside it unquotes: `',(f) reads as (quote (comma (f))) and must
     // still evaluate the unquote.

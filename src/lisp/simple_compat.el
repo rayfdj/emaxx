@@ -2051,9 +2051,6 @@ Other uses risk returning non-nil value that point to the wrong file."
   ;; so prefer using it over using `load-file-name'.
   (let ((file (car (last current-load-list))))
     (or (if (stringp file) file)
-        ;; The native ERT runner retains the defining source while it lazily
-        ;; expands a test body after that file has finished loading.
-        (and (boundp 'macroexp-file-name) macroexp-file-name)
         (bound-and-true-p byte-compile-current-file))))
 
 (defvar macroexp--warned (make-hash-table :test #'equal :weakness 'key))

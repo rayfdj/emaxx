@@ -265,7 +265,6 @@ pub(super) fn handles(name: &str) -> bool {
             | "user-real-login-name"
             | "system-name"
             | "user-full-name"
-            | "macroexp-file-name"
             | "char-from-name"
             | "always"
             | "evenp"
@@ -1298,12 +1297,6 @@ pub(super) fn call(
             });
             Ok(user_full_name(requested.as_deref())
                 .map(Value::String)
-                .unwrap_or(Value::Nil))
-        }
-        "macroexp-file-name" => {
-            need_args(name, args, 0)?;
-            Ok(interp
-                .lookup_var("macroexp-file-name", env)
                 .unwrap_or(Value::Nil))
         }
         "char-from-name" => {
@@ -10863,23 +10856,32 @@ fn byte_compile_file(
         }
         return Ok(Value::Symbol("no-byte-compile".into()));
     }
-    // GNU byte-compile-file binds `byte-compile-current-file' to the source
-    // and `current-load-list' to (nil) so `macroexp-file-name' resolves to
-    // the file being compiled rather than the file doing the compiling.
-    let previous_load_list = interp
-        .lookup_var("current-load-list", env)
-        .unwrap_or(Value::Nil);
-    let previous_current_file = interp
-        .lookup_var("byte-compile-current-file", env)
-        .unwrap_or(Value::Nil);
-    interp.set_global_binding("current-load-list", Value::list([Value::Nil]));
-    interp.set_global_binding(
+    // GNU byte-compile-file dynamically binds these around the compiler.
+    // Real special bindings matter when the compiling file was itself loaded
+    // under an active `current-load-list' binding: writing the global value
+    // would leave that outer dynamic value visible to `macroexp-file-name'.
+    let load_list_restore =
+        interp.bind_special_variable("current-load-list", Value::list([Value::Nil]), env)?;
+    let current_file_restore = match interp.bind_special_variable(
         "byte-compile-current-file",
         Value::String(source_path.clone()),
-    );
-    let result = byte_compile_file_body(interp, env, &source, &source_path);
-    interp.set_global_binding("current-load-list", previous_load_list);
-    interp.set_global_binding("byte-compile-current-file", previous_current_file);
+        env,
+    ) {
+        Ok(restore) => restore,
+        Err(error) => {
+            let _ = interp.restore_special_binding(load_list_restore, env);
+            return Err(error);
+        }
+    };
+
+    let mut result = byte_compile_file_body(interp, env, &source, &source_path);
+    for restore in [current_file_restore, load_list_restore] {
+        if let Err(error) = interp.restore_special_binding(restore, env)
+            && result.is_ok()
+        {
+            result = Err(error);
+        }
+    }
     result
 }
 

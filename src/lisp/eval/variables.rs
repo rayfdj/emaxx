@@ -289,7 +289,12 @@ impl Interpreter {
     }
 
     pub fn is_special_variable(&self, name: &str) -> bool {
-        if self.special_variables_index.contains(name) {
+        // Every value synthesized by `builtin_var_value' represents a
+        // dumped/native value cell (or a dumped Lisp defvar) and is therefore
+        // dynamically scoped under lexical binding.  Derive that property
+        // from the value registry itself so adding a startup default cannot
+        // silently omit its binding semantics.
+        if self.special_variables_index.contains(name) || self.builtin_var_value(name).is_some() {
             return true;
         }
         if self.variable_aliases_index.is_empty() {
@@ -299,6 +304,7 @@ impl Interpreter {
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
         self.special_variables_index.contains(&resolved)
+            || self.builtin_var_value(&resolved).is_some()
     }
 
     pub fn special_variable_names(&self) -> Vec<String> {

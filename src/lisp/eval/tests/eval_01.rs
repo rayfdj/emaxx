@@ -2217,8 +2217,18 @@ fn ert_resource_file_uses_test_defining_file_during_execution() {
 #[test]
 fn macroexp_file_name_survives_nested_ert_macro_expansion() {
     let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
     let test_file = "/tmp/emaxx-nested-resource-tests.el";
     interp.set_current_load_file(Some(test_file.into()));
+    interp.set_variable(
+        "current-load-list",
+        Value::list([Value::String(test_file.into())]),
+        &mut Vec::new(),
+    );
     eval_str_with(
         &mut interp,
         &format!(
@@ -2230,6 +2240,7 @@ fn macroexp_file_name_survives_nested_ert_macro_expansion() {
                 "#
         ),
     );
+    interp.set_variable("current-load-list", Value::Nil, &mut Vec::new());
     interp.set_current_load_file(None);
     let (passed, failed, total) = interp.run_ert_tests();
     assert_eq!((passed, failed, total), (1, 0, 1));
@@ -3583,7 +3594,8 @@ fn native_per_buffer_manifest_is_special_and_automatically_local() {
     let interp = Interpreter::new();
     let env = Env::new();
     let mut unbound = Vec::new();
-    for name in GNU_NATIVE_PER_BUFFER_VARIABLES {
+    for variable in GNU_NATIVE_PER_BUFFER_VARIABLES {
+        let name = variable.name;
         assert!(
             interp.is_per_buffer_special(name),
             "GNU DEFVAR_PER_BUFFER `{name}` must retain native forwarding semantics"
@@ -3594,24 +3606,65 @@ fn native_per_buffer_manifest_is_special_and_automatically_local() {
         );
         assert_eq!(
             interp.is_always_buffer_local_special(name),
-            GNU_ALWAYS_LOCAL_PER_BUFFER_VARIABLES.contains(name),
+            variable.always_local,
             "GNU DEFVAR_PER_BUFFER `{name}` has the wrong default-inheriting/always-local subtype"
         );
+        assert_eq!(
+            interp
+                .get_symbol_property(name, "permanent-local")
+                .is_some_and(|value| value.is_truthy()),
+            variable.permanent,
+            "GNU DEFVAR_PER_BUFFER `{name}` has the wrong permanence metadata"
+        );
         if interp.lookup_var(name, &env).is_none() {
-            unbound.push(*name);
+            unbound.push(name);
         }
     }
     assert!(
         unbound.is_empty(),
         "GNU DEFVAR_PER_BUFFER slots cannot be void: {unbound:?}"
     );
-    for name in GNU_NATIVE_PERMANENT_LOCAL_VARIABLES {
-        assert_eq!(
-            interp.get_symbol_property(name, "permanent-local"),
-            Some(Value::T),
-            "GNU native permanent-local `{name}` must survive mode changes"
+    let mut unique = std::collections::HashSet::new();
+    assert!(
+        GNU_NATIVE_PER_BUFFER_VARIABLES
+            .iter()
+            .all(|variable| unique.insert(variable.name)),
+        "native per-buffer manifest contains a duplicate entry"
+    );
+}
+
+#[test]
+fn builtin_startup_defaults_are_intrinsically_special() {
+    let interp = Interpreter::new();
+    for name in [
+        "resize-mini-windows",
+        "max-mini-window-height",
+        "inhibit-point-motion-hooks",
+        "inhibit-x-resources",
+    ] {
+        assert!(
+            interp.builtin_var_value(name).is_some(),
+            "missing `{name}` default"
+        );
+        assert!(
+            interp.is_special_variable(name),
+            "builtin startup variable `{name}` did not inherit special binding semantics"
         );
     }
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defun emaxx-test-native-startup-bindings ()
+                 (list resize-mini-windows max-mini-window-height
+                       inhibit-point-motion-hooks inhibit-x-resources))
+               (let ((resize-mini-windows nil)
+                     (max-mini-window-height 7)
+                     (inhibit-point-motion-hooks nil)
+                     (inhibit-x-resources nil))
+                 (emaxx-test-native-startup-bindings)))"
+        ),
+        Value::list([Value::Nil, Value::Integer(7), Value::Nil, Value::Nil])
+    );
 }
 
 #[test]
