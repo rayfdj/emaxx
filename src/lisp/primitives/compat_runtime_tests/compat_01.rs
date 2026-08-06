@@ -288,6 +288,53 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
 }
 
 #[test]
+fn line_number_at_pos_counts_from_the_accessible_region_unless_absolute() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.buffer = crate::buffer::Buffer::from_text("*lines*", "a\nb\nc\nd\ne\nf");
+    interp.buffer.narrow_to_region(3, 10);
+
+    assert_eq!(
+        Value::list([
+            call(
+                &mut interp,
+                "line-number-at-pos",
+                &[Value::Integer(10)],
+                &mut env,
+            )
+            .expect("relative narrowed line"),
+            call(
+                &mut interp,
+                "line-number-at-pos",
+                &[Value::Integer(10), Value::T],
+                &mut env,
+            )
+            .expect("absolute narrowed line"),
+            call(
+                &mut interp,
+                "line-number-at-pos",
+                &[Value::Integer(1)],
+                &mut env,
+            )
+            .expect("position before accessible region"),
+            call(
+                &mut interp,
+                "line-number-at-pos",
+                &[Value::Integer(11)],
+                &mut env,
+            )
+            .expect("position after accessible region"),
+        ]),
+        Value::list([
+            Value::Integer(4),
+            Value::Integer(5),
+            Value::Integer(1),
+            Value::Integer(4),
+        ])
+    );
+}
+
+#[test]
 fn concat_matches_upstream_sequence_and_multibyte_cases() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

@@ -1905,6 +1905,21 @@ fn font_lock_defaults_honor_syntax_ppss_table_and_syntactic_face_function() {
 }
 
 #[test]
+fn obsolete_labels_rewrites_function_quoted_local_bindings() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(progn
+                   (require 'cl)
+                   (with-suppressed-warnings ((obsolete labels))
+                     (funcall (labels ((foo () t)) #'foo))))"#
+            ),
+            Value::T
+        );
+    });
+}
+
+#[test]
 fn preloaded_syntax_descriptor_helpers_match_subr_el() {
     let mut interp = Interpreter::new();
     interp.set_load_path(

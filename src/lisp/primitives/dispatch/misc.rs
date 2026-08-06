@@ -1,5 +1,35 @@
 use super::*;
 
+fn macro_environment_contains_name(environment: &Value, wanted: &str) -> bool {
+    let Ok(entries) = environment.to_vec() else {
+        return false;
+    };
+    entries.iter().any(|entry| {
+        entry
+            .cons_values()
+            .and_then(|(name, _)| name.as_symbol().ok().map(|name| name == wanted))
+            .unwrap_or(false)
+    })
+}
+
+fn form_has_environment_function_quote(form: &Value, environment: &Value) -> bool {
+    let Ok(items) = form.to_vec() else {
+        return false;
+    };
+    if matches!(items.first(), Some(Value::Symbol(head)) if head == "quote") {
+        return false;
+    }
+    if let [Value::Symbol(head), Value::Symbol(name)] = items.as_slice()
+        && head == "function"
+        && macro_environment_contains_name(environment, name)
+    {
+        return true;
+    }
+    items
+        .iter()
+        .any(|item| form_has_environment_function_quote(item, environment))
+}
+
 fn fringe_bitmap_id(interp: &Interpreter, name: &str) -> Option<i64> {
     interp
         .fringe_bitmap_states
@@ -1672,7 +1702,7 @@ pub(super) fn call(
                 // (cl-flet/cl-labels): binding it unconditionally makes
                 // expander sets like bindat's re-read the variable from their
                 // helpers and re-expand already-processed type specs forever.
-                let has_function_expander = environment
+                let environment_reads_function_quotes = environment
                     .and_then(|value| value.to_vec().ok())
                     .is_some_and(|entries| {
                         entries.iter().any(|entry| {
@@ -1684,8 +1714,17 @@ pub(super) fn call(
                                 Ok(Value::Symbol(head)) if head == "function" || head == ":rx-locals"
                             )
                         })
+                    })
+                    || environment.is_some_and(|environment| {
+                        // Obsolete `labels' first supplies its local function
+                        // expanders, then `lexical-let' installs the generic
+                        // `function' converter in a nested macroexpand-all.
+                        // Make that outer environment dynamically visible
+                        // when it owns an actual #'<name> reference, without
+                        // reintroducing Bindat's recursive type expansion.
+                        form_has_environment_function_quote(&args[0], environment)
                     });
-                let previous = if has_function_expander {
+                let previous = if environment_reads_function_quotes {
                     let previous = interp.global_binding_value("macroexpand-all-environment");
                     interp.set_global_binding(
                         "macroexpand-all-environment",

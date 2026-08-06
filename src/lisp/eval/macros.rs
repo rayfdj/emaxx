@@ -1157,12 +1157,27 @@ impl Interpreter {
                         substitutions.push((name.clone(), expansion.clone()));
                     }
                 }
+                let macro_environment = self
+                    .lookup_var("macroexpand-all-environment", env)
+                    .filter(Value::is_truthy);
                 let mut forms = vec![Value::Symbol("progn".into())];
                 let mut failure = None;
                 for body_form in &args[1..] {
                     let substituted = substitute_symbol_macros(body_form, &substitutions);
-                    match self.macroexpand_all_form_with_environment(&substituted, None, env) {
-                        Ok(expanded) => forms.push(expanded),
+                    match self.macroexpand_all_form_with_environment(
+                        &substituted,
+                        macro_environment.as_ref(),
+                        env,
+                    ) {
+                        // A surrounding macro environment can introduce a
+                        // reference to one of the symbol macros (obsolete
+                        // `labels' turns #'<name> into its generated local
+                        // variable).  Apply the substitutions once more to
+                        // that fully expanded result, just as GNU's combined
+                        // macro/symbol-macro environment does.
+                        Ok(expanded) => {
+                            forms.push(substitute_symbol_macros(&expanded, &substitutions))
+                        }
                         Err(error) => {
                             failure = Some(error);
                             break;

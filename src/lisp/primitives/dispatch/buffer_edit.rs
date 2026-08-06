@@ -2794,6 +2794,7 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "line-number-at-pos" => {
+            need_arg_range(name, args, 0, 2)?;
             let pos = if args.is_empty() || args[0].is_nil() {
                 interp.buffer.point()
             } else {
@@ -2803,8 +2804,8 @@ pub(super) fn call(
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("args-out-of-range".into()),
                                 Value::Integer(*pos),
-                                Value::Integer(interp.buffer.point_min() as i64),
-                                Value::Integer(interp.buffer.point_max() as i64),
+                                Value::Integer(1),
+                                Value::Integer((interp.buffer.size_total() + 1) as i64),
                             ])));
                         }
                         *pos as usize
@@ -2820,15 +2821,32 @@ pub(super) fn call(
                     }
                 }
             };
-            if pos < interp.buffer.point_min() || pos > interp.buffer.point_max() {
+            let absolute_max = interp.buffer.size_total() + 1;
+            if pos < 1 || pos > absolute_max {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("args-out-of-range".into()),
                     Value::Integer(pos as i64),
-                    Value::Integer(interp.buffer.point_min() as i64),
-                    Value::Integer(interp.buffer.point_max() as i64),
+                    Value::Integer(1),
+                    Value::Integer(absolute_max as i64),
                 ])));
             }
-            Ok(Value::Integer(interp.buffer.line_number_at_pos(pos) as i64))
+            let absolute = args.get(1).is_some_and(Value::is_truthy);
+            let start = if absolute {
+                1
+            } else {
+                interp.buffer.point_min()
+            };
+            let pos = if absolute {
+                pos
+            } else {
+                pos.clamp(interp.buffer.point_min(), interp.buffer.point_max())
+            };
+            let line = interp
+                .buffer
+                .line_number_at_pos(pos)
+                .saturating_sub(interp.buffer.line_number_at_pos(start))
+                + 1;
+            Ok(Value::Integer(line as i64))
         }
         "line-number-display-width" => {
             need_arg_range(name, args, 0, 1)?;

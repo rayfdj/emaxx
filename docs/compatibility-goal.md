@@ -29,6 +29,27 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 Obarray/Obsolete checkpoint advances the fresh contiguous
+  compatibility prefix to 4,457/7,080, leaving 2,623 selectors.  All 16 newly
+  ordered outcomes match GNU: Obarray 7/7, obsolete CL 1/1, Inversion 1/1,
+  Makesum 4/4, RFC2368 2/2, and Thumbs 1/1.  These are a bounded manifest
+  checkpoint, not one invented implementation theme: obsolete `labels` now
+  propagates its macro environment through nested function-quote and symbol-
+  macro expansion, while `line-number-at-pos` independently counts from the
+  narrowed `point-min` by default, honors its ABSOLUTE argument, and clips
+  accessible-relative positions like GNU.  Canonical artifacts are Obarray
+  `target/compat/run-1785991065630391000-54917`, obsolete CL
+  `target/compat/run-1785991929529574000-55491`, Inversion
+  `target/compat/run-1785992038708108000-55671`, Makesum
+  `target/compat/run-1785992554186182000-56176`, RFC2368
+  `target/compat/run-1785992667825078000-56339`, and Thumbs
+  `target/compat/run-1785992684176632000-56457`.  The exact obsolete-CL,
+  symbol-macro, upstream CL, Bindat, narrowed-line, count-lines, and display-
+  line regressions pass, as do formatting, diff check, all-target/all-feature
+  check, and strict Clippy.  The immediately preceding 59-minute full Rust
+  audit remains current.  Native remains complete at 1,420/1,420.  NEXT is
+  selector 4,458, `org-package-version`, in `test/lisp/org/org-tests.el` (1
+  selected outcome).
 - The 2026-08-06 NXML/Adjacent checkpoint advances the fresh contiguous
   compatibility prefix to 4,441/7,080, leaving 2,639 selectors.  All 37 newly
   ordered outcomes match GNU: SOCKS 10/10, Tramp Archive 10/10, Webjump 7/7,
