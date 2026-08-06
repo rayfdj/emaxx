@@ -23,13 +23,15 @@ counts as the progress denominator.
   through C# Mode matched 331/351 files and exposed 20 cumulative mismatches
   in `target/compat/run-1786025390850455000-12418`; Comint's oracle-only
   failure passed immediately in isolation.  Backquote, Dired/Dired Aux, ERC
-  Stamp, Eshell, LS Lisp, Newcomment, Macroexp, and ERC are repaired.  Ten
-  known files/themes remain: Electric's 874-test subject timeout, Edebug, ERT
-  Font Lock, Viper undo, Eshell control-code display, HL-Line stickiness, Mule
-  prefix input, Isearch invisibility, Kmacro extended-command editing, and
-  TRAMP shell-prompt startup.  Macroexp is fully green in
+  Stamp, Eshell, LS Lisp, Newcomment, Macroexp, ERC, Edebug, and Kmacro are
+  repaired.  Eight known files/themes remain: Electric's 874-test subject
+  timeout, ERT Font Lock, Viper undo, Eshell control-code display, HL-Line
+  stickiness, Mule prefix input, Isearch invisibility, and TRAMP shell-prompt
+  startup.  Macroexp is fully green in
   `target/compat/run-1786032407892199000-55821`; full ERC is green in
-  `target/compat/run-1786033566972886000-56817`.
+  `target/compat/run-1786033566972886000-56817`; full Kmacro is green in
+  `target/compat/run-1786036330691925000-60434`; and full Edebug is green in
+  `target/compat/run-1786036349252896000-60588`.
 
   The repair removes drift-prone parallel registries: synthesized startup
   values automatically imply special binding semantics; native per-buffer
@@ -38,9 +40,14 @@ counts as the progress denominator.
   primitive, arity, and dumped-autoload metadata remain generated and
   whole-manifest tested.  Byte compilation uses real scoped special bindings;
   bootstrap ERT expands bodies at definition time; the synthetic
-  `macroexp-file-name` value/primitive fallback is removed; and simulated
-  minibuffer reads restore their caller buffer across hooks/errors.  Focused
-  invariants and regressions, formatting, diff check,
+  `macroexp-file-name` value/primitive fallback is removed.  Plain and
+  completing reads share one minibuffer lifecycle and keyboard-macro input
+  engine; caller-buffer local hooks are isolated from minibuffer commands;
+  and exit-minibuffer RET lets the prompting command finish before its
+  post-command hook.  Native builtin status now comes directly from the
+  dispatch route (the 1,730-line duplicate name inventory is deleted), while
+  `fboundp` consumes the evaluator's canonical special-form registry instead
+  of a second list.  Focused invariants and regressions, formatting, diff check,
   regenerated/rustfmt-normalized autoload validation, all-target/all-feature
   check, and strict Clippy pass.  Native remains 1,420/1,420.  Do not resume
   selector 4,583 until the remaining cumulative mismatches and final 1..4,582

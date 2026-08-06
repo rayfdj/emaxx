@@ -378,34 +378,47 @@ fn load_autoloaded_prefix_map(
 fn read_minibuffer_text_from_kbd_macro(
     interp: &mut Interpreter,
     env: &mut Env,
+    prompt: &str,
     initial: &str,
+    local_map: &Value,
 ) -> Result<Option<String>, LispError> {
-    let saved_buffer_id = interp.current_buffer_id();
-    let result = read_minibuffer_text_from_kbd_macro_inner(interp, env, initial);
+    if interp.kbd_macro_executions.is_empty() {
+        return Ok(None);
+    }
+    let saved_buffer_id = prepare_kbd_macro_minibuffer_entry(interp, env)?;
+    let result = (|| {
+        let minibuffer = activate_minibuffer(interp, prompt, initial, local_map.clone(), env)?;
+        run_active_minibuffer(interp, env, minibuffer, |interp, env| {
+            read_minibuffer_text_from_kbd_macro_inner(interp, env, initial)
+        })
+    })();
     if interp.has_buffer_id(saved_buffer_id) {
         let _ = interp.set_current_buffer_id(saved_buffer_id);
     }
     result
 }
 
-fn read_minibuffer_text_from_kbd_macro_inner(
+pub(crate) fn prepare_kbd_macro_minibuffer_entry(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<u64, LispError> {
+    let prompting_buffer_id = interp.current_buffer_id();
+    // Entering the recursive minibuffer command loop completes the outer
+    // command's pending cycle before the first minibuffer key is read.
+    // Kmacro's step editor uses this boundary to carry the outer macro index
+    // into the minibuffer.
+    let result = safe_run_named_hooks(interp, "post-command-hook", env, Some(prompting_buffer_id));
+    if interp.has_buffer_id(prompting_buffer_id) {
+        interp.set_current_buffer_id(prompting_buffer_id)?;
+    }
+    result.map(|()| prompting_buffer_id)
+}
+
+pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
     interp: &mut Interpreter,
     env: &mut Env,
     initial: &str,
 ) -> Result<Option<String>, LispError> {
-    if interp.kbd_macro_executions.is_empty() {
-        return Ok(None);
-    }
-    // Entering the recursive minibuffer command loop completes the outer
-    // command's pending cycle before the first minibuffer key is read.  GNU
-    // runs post-command-hook at this boundary; Kmacro's step editor uses it
-    // to carry the outer macro index into the minibuffer.
-    safe_run_named_hooks(
-        interp,
-        "post-command-hook",
-        env,
-        Some(interp.current_buffer_id()),
-    )?;
     let mut text: Vec<char> = initial.chars().collect();
     let mut cursor = text.len();
     while let Some(event) = current_kbd_macro_event(interp, 0) {
@@ -478,6 +491,16 @@ fn read_minibuffer_text_from_kbd_macro_inner(
                 call_interactively_impl(interp, std::slice::from_ref(&command), env)?;
             }
         }
+        // `exit-minibuffer' leaves the recursive command loop before its
+        // post-command phase.  The prompting command resumes, consumes the
+        // submitted text, and only then runs its own post-command hook.  In
+        // particular, a keyboard-macro thunk attached to RET must observe
+        // the prompting command's completed assignment, not the state from
+        // just before `read-from-minibuffer' returns.
+        if exit {
+            sync_kbd_macro_execution(interp, env)?;
+            break;
+        }
         safe_run_named_hooks(
             interp,
             "post-command-hook",
@@ -490,9 +513,6 @@ fn read_minibuffer_text_from_kbd_macro_inner(
             .unwrap_or_else(|| command.clone());
         finish_kbd_macro_command(interp, original_command, final_this_command, env);
         sync_kbd_macro_execution(interp, env)?;
-        if exit {
-            break;
-        }
     }
     Ok(Some(text.into_iter().collect()))
 }
@@ -529,14 +549,24 @@ fn read_minibuffer_text_from_batch_stdin(prompt: &str) -> Result<String, LispErr
 fn read_minibuffer_text_from_unread_events(
     interp: &mut Interpreter,
     env: &mut Env,
+    prompt: &str,
     initial: &str,
+    local_map: &Value,
 ) -> Result<Option<String>, LispError> {
+    if crate::lisp::primitives::unread_command_events(interp, env)?.is_empty() {
+        return Ok(None);
+    }
     // A recursive minibuffer command loop has its own prefix state.  Preserve
     // the caller's prefix (which may control what the prompting command asks)
     // while simulated keys start unprefixed and may build a fresh C-u prefix.
     let saved_buffer_id = interp.current_buffer_id();
     let restore = interp.bind_special_dynamic("current-prefix-arg", Value::Nil, env)?;
-    let result = read_minibuffer_text_from_unread_events_inner(interp, env, initial);
+    let result = (|| {
+        let minibuffer = activate_minibuffer(interp, prompt, initial, local_map.clone(), env)?;
+        run_active_minibuffer(interp, env, minibuffer, |interp, env| {
+            read_minibuffer_text_from_unread_events_inner(interp, env, initial)
+        })
+    })();
     if interp.has_buffer_id(saved_buffer_id) {
         let _ = interp.set_current_buffer_id(saved_buffer_id);
     }
@@ -3201,16 +3231,26 @@ pub(super) fn call(
                 .and_then(string_like)
                 .map(|string| string.text)
                 .unwrap_or_default();
-            let mut contents = read_minibuffer_text_from_unread_events(interp, env, &initial)?;
+            let prompt = string_text(&args[0])?;
+            let local_map = args
+                .get(2)
+                .filter(|map| !map.is_nil())
+                .cloned()
+                .or_else(|| interp.lookup_var("minibuffer-local-map", env))
+                .unwrap_or(Value::Nil);
+            let mut contents = read_minibuffer_text_from_unread_events(
+                interp, env, &prompt, &initial, &local_map,
+            )?;
             if contents.is_none() {
-                contents = read_minibuffer_text_from_kbd_macro(interp, env, &initial)?;
+                contents = read_minibuffer_text_from_kbd_macro(
+                    interp, env, &prompt, &initial, &local_map,
+                )?;
             }
             if contents.is_none()
                 && interp
                     .lookup_var("noninteractive", env)
                     .is_some_and(|value| value.is_truthy())
             {
-                let prompt = string_text(&args[0])?;
                 contents = Some(read_minibuffer_text_from_batch_stdin(&prompt)?);
             }
             if let Some(contents) = contents {
