@@ -29,6 +29,20 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 C# Mode checkpoint advances the fresh contiguous
+  compatibility prefix to 4,582/7,080, leaving 2,498 selectors.  Both
+  canonical outcomes in `test/lisp/progmodes/csharp-mode-tests.el` match GNU
+  in `target/compat/run-1786024929977169000-11963`: classic C# indentation
+  passes, and C# Tree-sitter matches GNU's skip because the `c-sharp` grammar
+  is unavailable in both runtimes.  Regexp bracket parsing now treats `[:` as
+  literal members unless a complete `[:name:]` POSIX class follows, covering
+  CC Mode's punctuation class without weakening real POSIX-class validation.
+  The exact regression, neighboring bracket/range regressions, formatting,
+  diff check, all-target/all-feature check, and strict Clippy pass; two
+  post-merge vector fast paths were also normalized to idiomatic `Option` `?`
+  propagation.  Native remains complete at 1,420/1,420.  NEXT is selector
+  4,583, `elisp--highlight-function-argument-indexed`, in
+  `test/lisp/progmodes/elisp-mode-tests.el` (63 selected outcomes).
 - The 2026-08-06 Cperl checkpoint advances the fresh contiguous compatibility
   prefix to 4,580/7,080, leaving 2,500 selectors.  The complete canonical
   `default` selection for `test/lisp/progmodes/cperl-mode-tests.el` is 64/64

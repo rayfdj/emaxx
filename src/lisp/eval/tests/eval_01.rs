@@ -1810,6 +1810,23 @@ fn string_match_handles_leading_closing_bracket_ranges() {
 }
 
 #[test]
+fn string_match_treats_incomplete_posix_class_openers_as_literal_members() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((regexp "[ \t\n[:?;{=*/%&|,<>!@+-]"))
+                 (mapcar (lambda (string) (string-match-p regexp string))
+                         '("[" ":" "x" "-")))"#
+        ),
+        Value::list([
+            Value::Integer(0),
+            Value::Integer(0),
+            Value::Nil,
+            Value::Integer(0),
+        ])
+    );
+}
+
+#[test]
 fn newline_inserts_requested_line_breaks() {
     assert_string_value(
         eval_str(r#"(with-temp-buffer (insert "a") (newline 2) (insert "b") (buffer-string))"#),

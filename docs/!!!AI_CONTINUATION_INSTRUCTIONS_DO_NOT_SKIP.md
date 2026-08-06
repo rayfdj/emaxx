@@ -18,6 +18,20 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 C# MODE CHECKPOINT: the fresh contiguous ordered frontier is
+  4,582/7,080, leaving 2,498 selectors.  Both canonical outcomes in
+  `test/lisp/progmodes/csharp-mode-tests.el` match GNU in
+  `target/compat/run-1786024929977169000-11963`: classic indentation passes,
+  while `csharp-ts-mode-test-indentation` has GNU/Emaxx matching skips because
+  neither runtime has the `c-sharp` grammar.  The established official
+  Tree-sitter Rust runtime therefore needed no extension.  The actual repair
+  is in regexp bracket parsing: an incomplete `[:` sequence remains literal
+  unless it forms a complete `[:name:]` POSIX class.  Exact and neighboring
+  bracket regressions, formatting, diff check, all-target/all-feature check,
+  and strict Clippy pass; the merged vector fast paths also use idiomatic
+  `Option` `?` propagation.  Native remains 1,420/1,420.  NEXT is selector
+  4,583, `elisp--highlight-function-argument-indexed`, in
+  `test/lisp/progmodes/elisp-mode-tests.el` (63 selected outcomes).
 - 2026-08-06 CPERL CHECKPOINT: the fresh contiguous ordered frontier is
   4,580/7,080, leaving 2,500 selectors.  The complete canonical `default`
   selection for `test/lisp/progmodes/cperl-mode-tests.el` matches GNU 64/64 in
