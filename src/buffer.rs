@@ -118,6 +118,13 @@ pub enum UndoEntry {
 }
 
 #[derive(Clone, Debug)]
+pub struct UndoState {
+    entries: Vec<UndoEntry>,
+    metadata: Vec<Value>,
+    disabled: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct UndoMarker {
     pub id: u64,
     pub original_pos: usize,
@@ -578,6 +585,7 @@ impl Buffer {
 
     /// Get a substring. Positions are 1-based, range is [from, to).
     pub fn buffer_substring(&self, from: usize, to: usize) -> Result<String, BufferError> {
+        let (from, to) = if from <= to { (from, to) } else { (to, from) };
         let from = from.max(self.begv);
         let to = to.min(self.zv);
         if from > to {
@@ -587,6 +595,7 @@ impl Buffer {
     }
 
     pub fn substring_property_spans(&self, from: usize, to: usize) -> Vec<TextPropertySpan> {
+        let (from, to) = if from <= to { (from, to) } else { (to, from) };
         let from = from.max(self.begv);
         let to = to.min(self.zv);
         if from >= to {
@@ -1026,6 +1035,10 @@ impl Buffer {
         &self.undo_list
     }
 
+    pub fn undo_is_disabled(&self) -> bool {
+        self.undo_disabled
+    }
+
     pub fn undo_groups(&self) -> Vec<Vec<UndoEntry>> {
         self.collect_undo_groups()
     }
@@ -1075,6 +1088,20 @@ impl Buffer {
     pub fn clear_undo_history(&mut self) {
         self.undo_list.clear();
         self.undo_meta.clear();
+    }
+
+    pub fn take_undo_state(&mut self) -> UndoState {
+        UndoState {
+            entries: std::mem::take(&mut self.undo_list),
+            metadata: std::mem::take(&mut self.undo_meta),
+            disabled: std::mem::replace(&mut self.undo_disabled, false),
+        }
+    }
+
+    pub fn restore_undo_state(&mut self, state: UndoState) {
+        self.undo_list = state.entries;
+        self.undo_meta = state.metadata;
+        self.undo_disabled = state.disabled;
     }
 
     pub fn modified_tick(&self) -> ModCount {
@@ -1741,10 +1768,14 @@ mod tests {
     #[test]
     fn buffer_string_and_substring() {
         // editfns-tests--buffer-string-compare-substrings
-        let buf = Buffer::from_text("test", "abc");
+        let mut buf = Buffer::from_text("test", "abc");
         assert_eq!(buf.buffer_string(), "abc");
         assert_eq!(buf.buffer_substring(1, 3).unwrap(), "ab");
         assert_eq!(buf.buffer_substring(2, 4).unwrap(), "bc");
+        assert_eq!(buf.buffer_substring(4, 2).unwrap(), "bc");
+
+        buf.add_text_properties(2, 3, &[("sample".into(), Value::T)]);
+        assert_eq!(buf.substring_property_spans(4, 2).len(), 1);
     }
 
     #[test]

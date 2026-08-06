@@ -95,6 +95,11 @@ impl Interpreter {
         resolved: &str,
         env: &Env,
     ) -> Option<Value> {
+        if resolved == "buffer-undo-list" {
+            return Some(crate::lisp::primitives::buffer_undo_list_value(
+                &self.buffer,
+            ));
+        }
         let mut special: Option<bool> = None;
         for (index, frame) in env.iter().enumerate().rev() {
             // Below the caller boundary, references to SPECIAL variables
@@ -1157,10 +1162,15 @@ impl Interpreter {
         if resolved == "buffer-undo-list" {
             if value.is_nil() {
                 self.undo_sequence = None;
+                self.buffer.enable_undo();
                 self.buffer.clear_undo_history();
+            } else if matches!(value, Value::T) {
+                self.undo_sequence = None;
+                self.buffer.disable_undo();
             } else if let Some((head, tail)) = value.cons_values()
                 && tail == crate::lisp::primitives::buffer_undo_list_value(&self.buffer)
             {
+                self.buffer.enable_undo();
                 let entry = buffer_undo_head_to_entry(&head);
                 self.buffer.push_undo_entry(entry);
             } else {
@@ -1170,6 +1180,7 @@ impl Interpreter {
                 // state from the assigned list so the Lisp view round-trips.
                 self.undo_sequence = None;
                 if let Ok(items) = value.to_vec() {
+                    self.buffer.enable_undo();
                     self.buffer.clear_undo_history();
                     // The Lisp view is newest-first; the native list is
                     // oldest-first.

@@ -896,6 +896,7 @@ pub(crate) struct SpecialBindingRestore {
     scope: SpecialBindingScope,
     binding_buffer_id: Option<u64>,
     previous: Option<Value>,
+    previous_undo_state: Option<crate::buffer::UndoState>,
 }
 
 #[derive(Clone, Debug)]

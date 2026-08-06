@@ -3670,6 +3670,43 @@ fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
 }
 
 #[test]
+fn dynamic_buffer_undo_list_binding_restores_native_history() {
+    let program = r#"
+          (with-temp-buffer
+            (buffer-enable-undo)
+            (insert "before")
+            (undo-boundary)
+            (let ((original buffer-undo-list)
+                  temporary-result)
+              (let ((buffer-undo-list nil))
+                (insert " temporary")
+                (let ((pending buffer-undo-list)
+                      (undo-in-progress t))
+                  (setq pending (primitive-undo 1 pending))
+                  (setq temporary-result (list (buffer-string) pending))))
+              (list temporary-result (equal buffer-undo-list original))))
+        "#;
+    let form = Reader::new(program)
+        .read()
+        .expect("read dynamic undo binding contract")
+        .expect("dynamic undo binding form");
+    let expected = Reader::new("((\"before\" nil) t)")
+        .read()
+        .expect("read dynamic undo binding expectation")
+        .expect("dynamic undo binding expectation");
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load the Emaxx preload compatibility layer");
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate dynamic undo binding contract");
+    assert_eq!(result, expected);
+}
+
+#[test]
 fn substitute_in_file_name_expands_shell_style_env_vars() {
     let old = std::env::var("EMAXX_SUBST_TEST").ok();
     unsafe {

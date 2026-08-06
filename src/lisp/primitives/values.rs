@@ -1,6 +1,9 @@
 use super::*;
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
+    if buffer.undo_is_disabled() {
+        return Value::T;
+    }
     let mut entries = buffer
         .undo_entries()
         .iter()
