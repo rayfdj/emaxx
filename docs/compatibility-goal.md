@@ -67,8 +67,12 @@ handoff and retry instruction are in
   1,800 lines of parallel primitive-name tables; an implementation can no
   longer be made unreachable by forgetting a second `handles` edit.  The
   ordered module catalog is also declared once and generates its route probe,
-  cached-policy delegation, enum, and call dispatch.  `fboundp`
-  uses the evaluator's one special-form registry instead of a divergent copy.
+  cached-policy delegation, enum, and call dispatch.  Native form names and
+  special-form classification now share one typed registry, and evaluator
+  dispatch is exhaustive over its generated enum; adding a registered form
+  without an implementation is a compile error.  This also removed the stale
+  `minibuffer-with-setup-hook` native claim.  `fboundp` uses that evaluator
+  registry instead of a divergent copy.
   File-name-handler advertisement and execution consume one typed operation
   specification for explicit arguments, `default-directory`, visited-buffer
   paths, and process commands instead of repeating the special-operation set.

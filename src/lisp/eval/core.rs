@@ -85,6 +85,201 @@ fn profile_leave(name: Option<&str>, elapsed: std::time::Duration, path: &str) {
     }
 }
 
+macro_rules! native_form_is_special {
+    (Special) => {
+        true
+    };
+    (Internal) => {
+        false
+    };
+}
+
+/// Define every form intercepted before ordinary macro/function dispatch.
+///
+/// Keeping the Lisp names and their special-form classification here makes
+/// registration atomic.  `eval_inner` dispatches on the generated enum, so a
+/// newly registered form also produces a non-exhaustive-match error until its
+/// evaluator arm is implemented.
+macro_rules! define_native_forms {
+    ($($kind:ident $variant:ident => $($name:literal)|+;)+) => {
+        #[derive(Clone, Copy)]
+        enum NativeForm {
+            $($variant,)+
+        }
+
+        impl NativeForm {
+            fn for_name(name: &str) -> Option<Self> {
+                match name {
+                    $($($name)|+ => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+
+            fn is_special(self) -> bool {
+                match self {
+                    $(Self::$variant => native_form_is_special!($kind),)+
+                }
+            }
+        }
+    };
+}
+
+define_native_forms! {
+    Special Quote => "quote";
+    Special If => "if" | "static-if";
+    Special IfLet => "if-let";
+    Special IfLetStar => "if-let*";
+    Special When => "when";
+    Special StaticWhen => "static-when";
+    Special WhenLet => "when-let";
+    Special WhenLetStar => "when-let*";
+    Special Unless => "unless";
+    Special StaticUnless => "static-unless";
+    Special BoundAndTrue => "bound-and-true-p";
+    Special Cond => "cond";
+    Special Pcase => "pcase";
+    Special PcaseDefmacro => "pcase-defmacro";
+    Special PcaseExhaustive => "pcase-exhaustive";
+    Special AndLetStar => "and-let*";
+    Special And => "and";
+    Special Or => "or";
+    Special Not => "not";
+    Special Progn => "progn";
+    Special DelayModeHooks => "delay-mode-hooks";
+    Internal AtomicChangeGroup => "atomic-change-group";
+    Internal ClReturn => "cl-return";
+    Internal ClReturnFrom => "cl-return-from";
+    Special Prog1 => "prog1";
+    Internal Prog2 => "prog2";
+    Special Let => "let";
+    Special Dlet => "dlet";
+    Internal Letrec => "letrec";
+    Internal ForcedLexicalLetStar => "--emaxx-lexical-let*";
+    Special LetStar => "let*";
+    Special ClProgv => "cl-progv";
+    Special PcaseLet => "pcase-let";
+    Special PcaseLetStar => "pcase-let*";
+    Special LetAlist => "let-alist";
+    Special Setq => "setq";
+    Special SetqDefault => "setq-default";
+    Special SetqLocal => "setq-local";
+    Special Setopt => "setopt";
+    Special Setf => "setf";
+    Special Incf => "incf" | "cl-incf";
+    Special Decf => "decf" | "cl-decf";
+    Internal ClCallf => "cl-callf";
+    Special Defvar => "defvar" | "defconst" | "defcustom";
+    Special DefvarLocal => "defvar-local";
+    Special Defgroup => "defgroup";
+    Special Defface => "defface";
+    Special DefvarKeymap => "defvar-keymap";
+    Special DefineShortDocumentationGroup => "define-short-documentation-group";
+    Internal Insert => "insert";
+    Internal InsertAndInherit => "insert-and-inherit";
+    Internal InsertChar => "insert-char";
+    Internal InsertBeforeMarkers => "insert-before-markers";
+    Internal InsertBeforeMarkersAndInherit => "insert-before-markers-and-inherit";
+    Special DefineMode => "define-minor-mode" | "define-globalized-minor-mode" | "define-derived-mode";
+    Internal EmaxxDefineDerivedMode => "emaxx--define-derived-mode";
+    Special Defclass => "defclass";
+    Special Defun => "defun" | "defsubst";
+    Internal DefineAdvice => "define-advice";
+    Special ClDefun => "cl-defun";
+    Special ClDefmacro => "cl-defmacro";
+    Special ClGenericDefineGeneralizer => "cl-generic-define-generalizer";
+    Special ClDefgeneric => "cl-defgeneric";
+    Special ClDefmethod => "cl-defmethod";
+    Special ClGenericDefineContextRewriter => "cl-generic-define-context-rewriter";
+    Special OclosureDefine => "oclosure-define";
+    Special OclosureLambda => "oclosure-lambda";
+    Special DefineInline => "define-inline";
+    Special Defmacro => "defmacro";
+    Special WithMemoization => "with-memoization";
+    Special EasyMenuDefine => "easy-menu-define";
+    Special ClDefstruct => "cl-defstruct";
+    Internal EmaxxClDefstruct => "emaxx--cl-defstruct";
+    Special Backquote => "backquote";
+    Internal BackquoteReaderAlias => "`";
+    Internal Comma => "comma" | ",";
+    Special Lambda => "lambda";
+    Special Interactive => "interactive";
+    Special Function => "function" | "function-quote";
+    Special While => "while";
+    Special Dolist => "dolist";
+    Internal DolistWithProgressReporter => "dolist-with-progress-reporter";
+    Special PcaseDolist => "pcase-dolist";
+    Special Dotimes => "dotimes";
+    Special ClLoop => "cl-loop";
+    Special UnwindProtect => "unwind-protect";
+    Special IgnoreError => "ignore-error";
+    Special IgnoreErrors => "ignore-errors";
+    Special ConditionCase => "condition-case";
+    Special ConditionCaseUnlessDebug => "condition-case-unless-debug";
+    Special HandlerBind => "handler-bind";
+    Special ClAssert => "cl-assert";
+    Special WithTempBuffer => "with-temp-buffer";
+    Special ErtWithTestBuffer => "ert-with-test-buffer";
+    Special ErtWithTempDirectory => "ert-with-temp-directory";
+    Special ErtWithMessageCapture => "ert-with-message-capture";
+    Special WithEnvironmentVariables => "with-environment-variables";
+    Special WithOutputToString => "with-output-to-string";
+    Special WithMutex => "with-mutex";
+    Special WithTempFile => "with-temp-file";
+    Special ErtWithTempFile => "ert-with-temp-file";
+    Special WithCurrentBuffer => "with-current-buffer";
+    Internal WithCurrentBufferWindow => "with-current-buffer-window";
+    Special WithRestriction => "with-restriction";
+    Special WithoutRestriction => "without-restriction";
+    Special AddFunction => "add-function";
+    Special WithSelectedWindow => "with-selected-window";
+    Internal WithSyntaxTable => "with-syntax-table";
+    Special SaveMatchData => "save-match-data";
+    Special SaveExcursion => "save-excursion";
+    Special SaveWindowExcursion => "save-window-excursion";
+    Special SaveCurrentBuffer => "save-current-buffer";
+    Special SaveRestriction => "save-restriction";
+    Special WithSuppressedWarnings => "with-suppressed-warnings";
+    Special WithDemotedErrors => "with-demoted-errors";
+    Special WithCodingPriority => "with-coding-priority";
+    Special WithSilentModifications => "with-silent-modifications";
+    Special CombineChangeCalls => "combine-change-calls";
+    Special ClDestructuringBind => "cl-destructuring-bind";
+    Special ClLetf => "cl-letf";
+    Special ClFlet => "cl-flet";
+    Special ClLabels => "cl-labels";
+    Special ClMacrolet => "cl-macrolet";
+    Internal ClSymbolMacrolet => "cl-symbol-macrolet";
+    Special Push => "push";
+    Special ClPushnew => "cl-pushnew";
+    Special Pop => "pop";
+    Special Catch => "catch";
+    Special AddToList => "add-to-list";
+    Special ErtDeftest => "ert-deftest";
+    Special Should => "should";
+    Special ShouldNot => "should-not";
+    Special ShouldError => "should-error";
+    Special SkipUnless => "skip-unless" | "ert--skip-unless";
+    Special SkipWhen => "skip-when" | "ert--skip-when";
+    Special Rx => "rx";
+    Special RxDefine => "rx-define";
+    Internal RxLet => "rx-let";
+    Internal RxLetEval => "rx-let-eval";
+    Special WithEvalAfterLoad => "with-eval-after-load";
+    Special WithNoWarnings => "with-no-warnings";
+    Special Declare => "declare" | "declare-function" | "cl-declaim" | "declaim";
+    Special DefEdebugSpec => "def-edebug-spec";
+    Special DefEdebugElemSpec => "def-edebug-elem-spec";
+    Special ClDeftype => "cl-deftype";
+    Special EvalAndCompile => "eval-and-compile";
+    Special EvalWhenCompile => "eval-when-compile";
+    Special WhileNoInput => "while-no-input";
+    Special ErtInfo => "ert-info";
+}
+
+pub(crate) fn is_special_form_name(name: &str) -> bool {
+    NativeForm::for_name(name).is_some_and(NativeForm::is_special)
+}
+
 impl Interpreter {
     // This evaluator recurses once per subform rather than once per
     // funcall/eval level like GNU Emacs, so the same Lisp program nests
@@ -195,573 +390,686 @@ impl Interpreter {
                         // the native arms below are the no-file fallback.
                         self.ensure_gnu_pcase_loaded();
                     }
-                    match name.as_str() {
-                        "quote" => return self.sf_quote(&items),
-                        "if" | "static-if" => return self.sf_if(&items, env),
-                        "if-let" if !self.has_macro_binding("if-let") => {
-                            return self.sf_if_let(&items, env);
-                        }
-                        "if-let*" if !self.has_macro_binding("if-let*") => {
-                            return self.sf_if_let_star(&items, env);
-                        }
-                        "when" if !self.has_macro_binding("when") => {
-                            return self.sf_when(&items, env);
-                        }
-                        "static-when" => return self.sf_when(&items, env),
-                        "when-let" if !self.has_macro_binding("when-let") => {
-                            return self.sf_when_let(&items, env);
-                        }
-                        "when-let*" if !self.has_macro_binding("when-let*") => {
-                            return self.sf_when_let_star(&items, env);
-                        }
-                        "unless" if !self.has_macro_binding("unless") => {
-                            return self.sf_unless(&items, env);
-                        }
-                        "static-unless" => return self.sf_unless(&items, env),
-                        "bound-and-true-p" => return self.sf_bound_and_true_p(&items, env),
-                        "cond" => {
-                            // Keep the in-progress form visible in
-                            // backtraces like GNU's eval frames.
-                            self.push_backtrace_frame_with_evald(
-                                items[0].clone(),
-                                items[1..].to_vec(),
-                                false,
-                            );
-                            let result = self.sf_cond(&items, env);
-                            self.pop_backtrace_frame();
-                            return result;
-                        }
-                        "pcase" if !self.has_macro_binding("pcase") => {
-                            return self.sf_pcase(&items, env);
-                        }
-                        "pcase-defmacro" if !self.has_macro_binding("pcase-defmacro") => {
-                            return self.sf_pcase_defmacro(&items, env);
-                        }
-                        "pcase-exhaustive" if !self.has_macro_binding("pcase-exhaustive") => {
-                            return self.sf_pcase_exhaustive(&items, env);
-                        }
-                        "and-let*" if !self.has_macro_binding("and-let*") => {
-                            return self.sf_and_let_star(&items, env);
-                        }
-                        "and" => return self.sf_and(&items, env),
-                        "or" => return self.sf_or(&items, env),
-                        "not" => return self.sf_not(&items, env),
-                        "progn" => return self.sf_progn(&items[1..], env),
-                        "delay-mode-hooks" => {
-                            // A real dynamic binding: the mode functions run
-                            // as callees and must see it like GNU's specbind.
-                            let restore =
-                                self.bind_special_variable("delay-mode-hooks", Value::T, env)?;
-                            let result = self.sf_progn(&items[1..], env);
-                            self.restore_special_binding(restore, env)?;
-                            return result;
-                        }
-                        "atomic-change-group" => {
-                            return self.sf_atomic_change_group(&items[1..], env);
-                        }
-                        "cl-return" => return self.sf_cl_return(&items, env),
-                        "cl-return-from" => return self.sf_cl_return_from(&items, env),
-                        "prog1" => return self.sf_prog1(&items, env),
-                        "prog2" => return self.sf_prog2(&items, env),
-                        "let" => {
-                            // Keep the in-progress form visible in
-                            // backtraces like GNU's eval frames.
-                            self.push_backtrace_frame_with_evald(
-                                items[0].clone(),
-                                items[1..].to_vec(),
-                                false,
-                            );
-                            let result = self.sf_let(&items, env);
-                            self.pop_backtrace_frame();
-                            return result;
-                        }
-                        "dlet" => {
-                            // GNU dlet `defvar's each binder before a `let',
-                            // so every binding is DYNAMIC (diary sexps read
-                            // `date'/`entry' from inside `eval').
-                            self.push_backtrace_frame_with_evald(
-                                items[0].clone(),
-                                items[1..].to_vec(),
-                                false,
-                            );
-                            let result = self.sf_dlet(&items, env);
-                            self.pop_backtrace_frame();
-                            return result;
-                        }
-                        "letrec" => return self.sf_letrec(&items, env),
-                        "--emaxx-lexical-let*" => {
-                            return self.sf_letstar_forced_lexical(&items, env);
-                        }
-                        "let*" => {
-                            // Keep the in-progress form visible in
-                            // backtraces like GNU's eval frames.
-                            self.push_backtrace_frame_with_evald(
-                                items[0].clone(),
-                                items[1..].to_vec(),
-                                false,
-                            );
-                            let result = self.sf_letstar(&items, env);
-                            self.pop_backtrace_frame();
-                            return result;
-                        }
-                        "cl-progv" => return self.sf_cl_progv(&items, env),
-                        "pcase-let" if !self.has_macro_binding("pcase-let") => {
-                            return self.sf_pcase_let(&items, env, false);
-                        }
-                        "pcase-let*" if !self.has_macro_binding("pcase-let*") => {
-                            return self.sf_pcase_let(&items, env, true);
-                        }
-                        // GNU's let-alist.el macro handles nested
-                        // `.sublist.foo' fields and `..outer' escapes;
-                        // prefer it once loaded and keep the native form
-                        // as the no-file fallback.
-                        "let-alist"
-                            if !{
-                                self.ensure_autoloaded_macro_loaded("let-alist");
-                                self.has_macro_binding("let-alist")
-                            } =>
-                        {
-                            return self.sf_let_alist(&items, env);
-                        }
-                        "setq" => {
-                            self.push_backtrace_frame_with_evald(
-                                Value::Symbol("setq".into()),
-                                items[1..].to_vec(),
-                                false,
-                            );
-                            let result = self.sf_setq(&items, env);
-                            self.pop_backtrace_frame();
-                            return result;
-                        }
-                        "setq-default" => return self.sf_setq_default(&items, env),
-                        "setq-local" => return self.sf_setq_local(&items, env),
-                        "setopt" => return self.sf_setopt(&items, env),
-                        // gv.el owns generalized-variable expansion once its
-                        // public `setf' macro is loaded.  The native arm is a
-                        // bootstrap/file-less fallback only.
-                        "setf" if !self.has_macro_binding("setf") => {
-                            return self.sf_setf(&items, env);
-                        }
-                        "incf" | "cl-incf" => return self.sf_incf(&items, env, 1),
-                        "decf" | "cl-decf" => return self.sf_incf(&items, env, -1),
-                        "cl-callf" => return self.sf_cl_callf(&items, env),
-                        "defvar" | "defconst" | "defcustom" => {
-                            return self.sf_defvar(&items, env);
-                        }
-                        "defvar-local" => return self.sf_defvar_local(&items, env),
-                        "defgroup" => return self.sf_defgroup(&items),
-                        "defface" => return self.sf_defface(&items),
-                        "defvar-keymap" if !self.has_macro_binding("defvar-keymap") => {
-                            return self.sf_defvar_keymap(&items, env);
-                        }
-                        "define-short-documentation-group"
-                            if !self.has_macro_binding("define-short-documentation-group") =>
-                        {
-                            return self.sf_defgroup(&items);
-                        }
-                        "insert" => return self.sf_insert_function(&items, env, false, false),
-                        "insert-and-inherit" => {
-                            return self.sf_insert_function(&items, env, true, false);
-                        }
-                        "insert-char" => return self.sf_insert_char_function(&items, env),
-                        "insert-before-markers" => {
-                            return self.sf_insert_function(&items, env, false, true);
-                        }
-                        "insert-before-markers-and-inherit" => {
-                            return self.sf_insert_function(&items, env, true, true);
-                        }
-                        "define-minor-mode"
-                        | "define-globalized-minor-mode"
-                        | "define-derived-mode"
-                        | "emaxx--define-derived-mode" => {
-                            return self.sf_define_mode(&items, env);
-                        }
-                        "defclass" => return self.sf_defclass(&items),
-                        "defun" | "defsubst" => return self.sf_defun(&items, env),
-                        "define-advice" => return self.sf_define_advice(&items, env),
-                        "cl-defun" => return self.sf_cl_defun(&items, env),
-                        "cl-defmacro" => return self.sf_cl_defmacro(&items, env),
-                        "cl-generic-define-generalizer" => {
-                            return self.sf_cl_generic_define_generalizer(&items);
-                        }
-                        "cl-defgeneric" => return self.sf_cl_defgeneric(&items, env),
-                        "cl-defmethod" => return self.sf_cl_defmethod(&items, env),
-                        "cl-generic-define-context-rewriter" => {
-                            // (cl-generic-define-context-rewriter NAME ARGS &rest
-                            // BODY): store the expander macro-style so
-                            // cl-defmethod &context entries can expand
-                            // (erc-obsolete-var VAR SPEC) into ((EXPR) SPEC).
-                            if let (Some(Value::Symbol(name)), Some(args)) =
-                                (items.get(1), items.get(2))
-                                && let Ok(param_values) = args.to_vec()
-                                && param_values
-                                    .iter()
-                                    .map(|p| p.as_symbol().map(str::to_string))
-                                    .collect::<Result<Vec<_>, _>>()
-                                    .is_ok()
-                            {
-                                let rewriter_name = format!("cl-generic--context-rewriter--{name}");
-                                let lambda_form = Value::list(
-                                    std::iter::once(Value::Symbol("lambda".into()))
-                                        .chain(std::iter::once(args.clone()))
-                                        .chain(items[3..].iter().cloned()),
+                    if let Some(native_form) = NativeForm::for_name(name) {
+                        match native_form {
+                            NativeForm::Quote => return self.sf_quote(&items),
+                            NativeForm::If => return self.sf_if(&items, env),
+                            NativeForm::IfLet => {
+                                if !self.has_macro_binding("if-let") {
+                                    return self.sf_if_let(&items, env);
+                                }
+                            }
+                            NativeForm::IfLetStar => {
+                                if !self.has_macro_binding("if-let*") {
+                                    return self.sf_if_let_star(&items, env);
+                                }
+                            }
+                            NativeForm::When => {
+                                if !self.has_macro_binding("when") {
+                                    return self.sf_when(&items, env);
+                                }
+                            }
+                            NativeForm::StaticWhen => return self.sf_when(&items, env),
+                            NativeForm::WhenLet => {
+                                if !self.has_macro_binding("when-let") {
+                                    return self.sf_when_let(&items, env);
+                                }
+                            }
+                            NativeForm::WhenLetStar => {
+                                if !self.has_macro_binding("when-let*") {
+                                    return self.sf_when_let_star(&items, env);
+                                }
+                            }
+                            NativeForm::Unless => {
+                                if !self.has_macro_binding("unless") {
+                                    return self.sf_unless(&items, env);
+                                }
+                            }
+                            NativeForm::StaticUnless => return self.sf_unless(&items, env),
+                            NativeForm::BoundAndTrue => {
+                                return self.sf_bound_and_true_p(&items, env);
+                            }
+                            NativeForm::Cond => {
+                                // Keep the in-progress form visible in
+                                // backtraces like GNU's eval frames.
+                                self.push_backtrace_frame_with_evald(
+                                    items[0].clone(),
+                                    items[1..].to_vec(),
+                                    false,
                                 );
-                                let expander = self.eval(&lambda_form, env)?;
-                                self.note_macro_added(&rewriter_name);
-                                self.macros.push(MacroBinding {
-                                    name: rewriter_name,
-                                    expander,
+                                let result = self.sf_cond(&items, env);
+                                self.pop_backtrace_frame();
+                                return result;
+                            }
+                            NativeForm::Pcase => {
+                                if !self.has_macro_binding("pcase") {
+                                    return self.sf_pcase(&items, env);
+                                }
+                            }
+                            NativeForm::PcaseDefmacro => {
+                                if !self.has_macro_binding("pcase-defmacro") {
+                                    return self.sf_pcase_defmacro(&items, env);
+                                }
+                            }
+                            NativeForm::PcaseExhaustive => {
+                                if !self.has_macro_binding("pcase-exhaustive") {
+                                    return self.sf_pcase_exhaustive(&items, env);
+                                }
+                            }
+                            NativeForm::AndLetStar => {
+                                if !self.has_macro_binding("and-let*") {
+                                    return self.sf_and_let_star(&items, env);
+                                }
+                            }
+                            NativeForm::And => return self.sf_and(&items, env),
+                            NativeForm::Or => return self.sf_or(&items, env),
+                            NativeForm::Not => return self.sf_not(&items, env),
+                            NativeForm::Progn => return self.sf_progn(&items[1..], env),
+                            NativeForm::DelayModeHooks => {
+                                // A real dynamic binding: the mode functions run
+                                // as callees and must see it like GNU's specbind.
+                                let restore =
+                                    self.bind_special_variable("delay-mode-hooks", Value::T, env)?;
+                                let result = self.sf_progn(&items[1..], env);
+                                self.restore_special_binding(restore, env)?;
+                                return result;
+                            }
+                            NativeForm::AtomicChangeGroup => {
+                                return self.sf_atomic_change_group(&items[1..], env);
+                            }
+                            NativeForm::ClReturn => return self.sf_cl_return(&items, env),
+                            NativeForm::ClReturnFrom => return self.sf_cl_return_from(&items, env),
+                            NativeForm::Prog1 => return self.sf_prog1(&items, env),
+                            NativeForm::Prog2 => return self.sf_prog2(&items, env),
+                            NativeForm::Let => {
+                                // Keep the in-progress form visible in
+                                // backtraces like GNU's eval frames.
+                                self.push_backtrace_frame_with_evald(
+                                    items[0].clone(),
+                                    items[1..].to_vec(),
+                                    false,
+                                );
+                                let result = self.sf_let(&items, env);
+                                self.pop_backtrace_frame();
+                                return result;
+                            }
+                            NativeForm::Dlet => {
+                                // GNU dlet `defvar's each binder before a `let',
+                                // so every binding is DYNAMIC (diary sexps read
+                                // `date'/`entry' from inside `eval').
+                                self.push_backtrace_frame_with_evald(
+                                    items[0].clone(),
+                                    items[1..].to_vec(),
+                                    false,
+                                );
+                                let result = self.sf_dlet(&items, env);
+                                self.pop_backtrace_frame();
+                                return result;
+                            }
+                            NativeForm::Letrec => return self.sf_letrec(&items, env),
+                            NativeForm::ForcedLexicalLetStar => {
+                                return self.sf_letstar_forced_lexical(&items, env);
+                            }
+                            NativeForm::LetStar => {
+                                // Keep the in-progress form visible in
+                                // backtraces like GNU's eval frames.
+                                self.push_backtrace_frame_with_evald(
+                                    items[0].clone(),
+                                    items[1..].to_vec(),
+                                    false,
+                                );
+                                let result = self.sf_letstar(&items, env);
+                                self.pop_backtrace_frame();
+                                return result;
+                            }
+                            NativeForm::ClProgv => return self.sf_cl_progv(&items, env),
+                            NativeForm::PcaseLet => {
+                                if !self.has_macro_binding("pcase-let") {
+                                    return self.sf_pcase_let(&items, env, false);
+                                }
+                            }
+                            NativeForm::PcaseLetStar => {
+                                if !self.has_macro_binding("pcase-let*") {
+                                    return self.sf_pcase_let(&items, env, true);
+                                }
+                            }
+                            // GNU's let-alist.el macro handles nested
+                            // `.sublist.foo' fields and `..outer' escapes;
+                            // prefer it once loaded and keep the native form
+                            // as the no-file fallback.
+                            NativeForm::LetAlist => {
+                                if !{
+                                    self.ensure_autoloaded_macro_loaded("let-alist");
+                                    self.has_macro_binding("let-alist")
+                                } {
+                                    return self.sf_let_alist(&items, env);
+                                }
+                            }
+                            NativeForm::Setq => {
+                                self.push_backtrace_frame_with_evald(
+                                    Value::Symbol("setq".into()),
+                                    items[1..].to_vec(),
+                                    false,
+                                );
+                                let result = self.sf_setq(&items, env);
+                                self.pop_backtrace_frame();
+                                return result;
+                            }
+                            NativeForm::SetqDefault => return self.sf_setq_default(&items, env),
+                            NativeForm::SetqLocal => return self.sf_setq_local(&items, env),
+                            NativeForm::Setopt => return self.sf_setopt(&items, env),
+                            // gv.el owns generalized-variable expansion once its
+                            // public `setf' macro is loaded.  The native arm is a
+                            // bootstrap/file-less fallback only.
+                            NativeForm::Setf => {
+                                if !self.has_macro_binding("setf") {
+                                    return self.sf_setf(&items, env);
+                                }
+                            }
+                            NativeForm::Incf => return self.sf_incf(&items, env, 1),
+                            NativeForm::Decf => return self.sf_incf(&items, env, -1),
+                            NativeForm::ClCallf => return self.sf_cl_callf(&items, env),
+                            NativeForm::Defvar => {
+                                return self.sf_defvar(&items, env);
+                            }
+                            NativeForm::DefvarLocal => return self.sf_defvar_local(&items, env),
+                            NativeForm::Defgroup => return self.sf_defgroup(&items),
+                            NativeForm::Defface => return self.sf_defface(&items),
+                            NativeForm::DefvarKeymap => {
+                                if !self.has_macro_binding("defvar-keymap") {
+                                    return self.sf_defvar_keymap(&items, env);
+                                }
+                            }
+                            NativeForm::DefineShortDocumentationGroup => {
+                                if !self.has_macro_binding("define-short-documentation-group") {
+                                    return self.sf_defgroup(&items);
+                                }
+                            }
+                            NativeForm::Insert => {
+                                return self.sf_insert_function(&items, env, false, false);
+                            }
+                            NativeForm::InsertAndInherit => {
+                                return self.sf_insert_function(&items, env, true, false);
+                            }
+                            NativeForm::InsertChar => {
+                                return self.sf_insert_char_function(&items, env);
+                            }
+                            NativeForm::InsertBeforeMarkers => {
+                                return self.sf_insert_function(&items, env, false, true);
+                            }
+                            NativeForm::InsertBeforeMarkersAndInherit => {
+                                return self.sf_insert_function(&items, env, true, true);
+                            }
+                            NativeForm::DefineMode | NativeForm::EmaxxDefineDerivedMode => {
+                                return self.sf_define_mode(&items, env);
+                            }
+                            NativeForm::Defclass => return self.sf_defclass(&items),
+                            NativeForm::Defun => return self.sf_defun(&items, env),
+                            NativeForm::DefineAdvice => return self.sf_define_advice(&items, env),
+                            NativeForm::ClDefun => return self.sf_cl_defun(&items, env),
+                            NativeForm::ClDefmacro => return self.sf_cl_defmacro(&items, env),
+                            NativeForm::ClGenericDefineGeneralizer => {
+                                return self.sf_cl_generic_define_generalizer(&items);
+                            }
+                            NativeForm::ClDefgeneric => return self.sf_cl_defgeneric(&items, env),
+                            NativeForm::ClDefmethod => return self.sf_cl_defmethod(&items, env),
+                            NativeForm::ClGenericDefineContextRewriter => {
+                                // (cl-generic-define-context-rewriter NAME ARGS &rest
+                                // BODY): store the expander macro-style so
+                                // cl-defmethod &context entries can expand
+                                // (erc-obsolete-var VAR SPEC) into ((EXPR) SPEC).
+                                if let (Some(Value::Symbol(name)), Some(args)) =
+                                    (items.get(1), items.get(2))
+                                    && let Ok(param_values) = args.to_vec()
+                                    && param_values
+                                        .iter()
+                                        .map(|p| p.as_symbol().map(str::to_string))
+                                        .collect::<Result<Vec<_>, _>>()
+                                        .is_ok()
+                                {
+                                    let rewriter_name =
+                                        format!("cl-generic--context-rewriter--{name}");
+                                    let lambda_form = Value::list(
+                                        std::iter::once(Value::Symbol("lambda".into()))
+                                            .chain(std::iter::once(args.clone()))
+                                            .chain(items[3..].iter().cloned()),
+                                    );
+                                    let expander = self.eval(&lambda_form, env)?;
+                                    self.note_macro_added(&rewriter_name);
+                                    self.macros.push(MacroBinding {
+                                        name: rewriter_name,
+                                        expander,
+                                    });
+                                }
+                                return Ok(Value::Nil);
+                            }
+                            NativeForm::OclosureDefine => {
+                                return self.sf_oclosure_define(&items, env);
+                            }
+                            NativeForm::OclosureLambda => {
+                                return self.sf_oclosure_lambda(&items, env);
+                            }
+                            NativeForm::DefineInline => return self.sf_define_inline(&items, env),
+                            NativeForm::Defmacro => return self.sf_defmacro(&items, env),
+                            NativeForm::WithMemoization => {
+                                return self.sf_with_memoization(&items, env);
+                            }
+                            NativeForm::EasyMenuDefine => {
+                                return self.sf_easy_menu_define(&items, env);
+                            }
+                            NativeForm::ClDefstruct | NativeForm::EmaxxClDefstruct => {
+                                return self.sf_cl_defstruct(&items);
+                            }
+                            NativeForm::Backquote | NativeForm::BackquoteReaderAlias => {
+                                return self.eval_backquote(&items[1], env);
+                            }
+                            NativeForm::Comma => {
+                                if let Some(value) = items.get(1) {
+                                    return self.eval(value, env);
+                                }
+                                return Ok(Value::Nil);
+                            }
+                            NativeForm::Lambda => {
+                                return self.sf_lambda_from_source(expr, &items, env);
+                            }
+                            NativeForm::Interactive => return Ok(Value::Nil),
+                            NativeForm::Function => {
+                                // #'foo or (function foo)
+                                if items.len() >= 2 {
+                                    if let Value::Symbol(name) = &items[1] {
+                                        return Ok(Value::Symbol(name.clone()));
+                                    }
+                                    if let Ok(name) = function_name_from_binding_form(&items[1]) {
+                                        return Ok(Value::Symbol(name));
+                                    }
+                                    if matches!(
+                                        items[1].car(),
+                                        Ok(Value::Symbol(ref head)) if head == "lambda"
+                                    ) {
+                                        return self.eval(&items[1], env);
+                                    }
+                                    // Unlike quote, `function' gives lambdas
+                                    // lexical closure semantics.  Other list
+                                    // objects are still returned literally:
+                                    // GNU evaluates #'(1 2) to (1 2).
+                                    return Ok(items[1].clone());
+                                }
+                                return Ok(Value::Nil);
+                            }
+                            NativeForm::While => {
+                                // Keep the in-progress form visible in
+                                // backtraces like GNU's eval frames.
+                                self.push_backtrace_frame_with_evald(
+                                    items[0].clone(),
+                                    items[1..].to_vec(),
+                                    false,
+                                );
+                                let result = self.sf_while(&items, env);
+                                self.pop_backtrace_frame();
+                                return result;
+                            }
+                            NativeForm::Dolist => {
+                                if !self.has_macro_binding("dolist") {
+                                    // Keep the in-progress form visible in
+                                    // backtraces like GNU's eval frames.
+                                    self.push_backtrace_frame_with_evald(
+                                        items[0].clone(),
+                                        items[1..].to_vec(),
+                                        false,
+                                    );
+                                    let result = self.sf_dolist(&items, env);
+                                    self.pop_backtrace_frame();
+                                    return result;
+                                }
+                            }
+                            NativeForm::DolistWithProgressReporter => {
+                                if !self.has_macro_binding("dolist-with-progress-reporter") {
+                                    return self.sf_dolist_with_progress_reporter(&items, env);
+                                }
+                            }
+                            NativeForm::PcaseDolist => {
+                                if !self.has_macro_binding("pcase-dolist") {
+                                    return self.sf_pcase_dolist(&items, env);
+                                }
+                            }
+                            NativeForm::Dotimes => {
+                                if !self.has_macro_binding("dotimes") {
+                                    return self.sf_dotimes(&items, env);
+                                }
+                            }
+                            // The preloaded GNU `cl-loop' macro takes precedence;
+                            // the native special form remains as a bootstrap
+                            // fallback before simple_compat.el is loaded.
+                            NativeForm::ClLoop => {
+                                if !self.has_lisp_macro("cl-loop") {
+                                    return self.sf_cl_loop(&items, env);
+                                }
+                            }
+                            NativeForm::UnwindProtect => {
+                                return self.sf_unwind_protect(&items, env);
+                            }
+                            NativeForm::IgnoreError => {
+                                if !self.has_macro_binding("ignore-error") {
+                                    return self.sf_ignore_error(&items, env);
+                                }
+                            }
+                            NativeForm::IgnoreErrors => {
+                                if !self.has_macro_binding("ignore-errors") {
+                                    return self.sf_ignore_errors(&items, env);
+                                }
+                            }
+                            NativeForm::ConditionCase => {
+                                return self.sf_condition_case(&items, env);
+                            }
+                            NativeForm::ConditionCaseUnlessDebug => {
+                                if !self.has_macro_binding("condition-case-unless-debug") {
+                                    return self.sf_condition_case(&items, env);
+                                }
+                            }
+                            NativeForm::HandlerBind => return self.sf_handler_bind(&items, env),
+                            NativeForm::ClAssert => return self.sf_cl_assert(&items, env),
+                            // GNU preloads `with-temp-buffer' as a subr.el macro.
+                            // Keep the native implementation only as a bootstrap
+                            // fallback before simple_compat.el is loaded.
+                            NativeForm::WithTempBuffer => {
+                                if !self.has_macro_binding("with-temp-buffer") {
+                                    return self.sf_with_temp_buffer(&items, env);
+                                }
+                            }
+                            NativeForm::ErtWithTestBuffer => {
+                                return self.sf_ert_with_test_buffer(&items, env);
+                            }
+                            NativeForm::ErtWithTempDirectory => {
+                                return self.sf_ert_with_temp_directory(&items, env);
+                            }
+                            NativeForm::ErtWithMessageCapture => {
+                                return self.sf_ert_with_message_capture(&items, env);
+                            }
+                            NativeForm::WithEnvironmentVariables => {
+                                return self.sf_with_environment_variables(&items, env);
+                            }
+                            NativeForm::WithOutputToString => {
+                                return self.sf_with_output_to_string(&items, env);
+                            }
+                            NativeForm::WithMutex => return self.sf_with_mutex(&items, env),
+                            NativeForm::WithTempFile => return self.sf_with_temp_file(&items, env),
+                            NativeForm::ErtWithTempFile => {
+                                return self.sf_ert_with_temp_file(&items, env);
+                            }
+                            NativeForm::WithCurrentBuffer => {
+                                return self.sf_with_current_buffer(&items, env);
+                            }
+                            // GNU window.el owns this macro's setup/body/display
+                            // lifecycle.  The native arm is only a file-less
+                            // bootstrap fallback; once the macro is loaded it
+                            // must not be pre-empted or its ACTION is never run.
+                            NativeForm::WithCurrentBufferWindow => {
+                                if !self.has_macro_binding("with-current-buffer-window") {
+                                    return self.sf_with_current_buffer_window(&items, env);
+                                }
+                            }
+                            NativeForm::WithRestriction => {
+                                return self.sf_with_restriction(&items, env);
+                            }
+                            NativeForm::WithoutRestriction => {
+                                return self.sf_without_restriction(&items, env);
+                            }
+                            // GNU nadvice.el's macro handles this (autoloading
+                            // it if needed); the native arm is the file-less
+                            // fallback.
+                            NativeForm::AddFunction => {
+                                if let Ok(Some(expanded)) =
+                                    self.try_macroexpand("add-function", &items[1..], env)
+                                {
+                                    return self.eval(&expanded, env);
+                                }
+                                return self.sf_add_function(&items, env);
+                            }
+                            NativeForm::WithSelectedWindow => {
+                                return self.sf_with_selected_window(&items, env);
+                            }
+                            NativeForm::WithSyntaxTable => {
+                                return self.sf_with_syntax_table(&items, env);
+                            }
+                            NativeForm::SaveMatchData => {
+                                return self.sf_save_match_data(&items, env);
+                            }
+                            NativeForm::SaveExcursion => {
+                                return self.sf_save_excursion(&items, env);
+                            }
+                            NativeForm::SaveWindowExcursion => {
+                                return self.sf_save_window_excursion(&items, env);
+                            }
+                            NativeForm::SaveCurrentBuffer => {
+                                return self.sf_save_current_buffer(&items, env);
+                            }
+                            NativeForm::SaveRestriction => {
+                                return self.sf_save_restriction(&items, env);
+                            }
+                            NativeForm::WithSuppressedWarnings => {
+                                return self.sf_with_suppressed_warnings(&items, env);
+                            }
+                            // Prefer GNU's loaded macro.  Its
+                            // `condition-case-unless-debug' expansion cooperates
+                            // with ERT's debugger bindings; the native arm is
+                            // only a bootstrap fallback before subr is present.
+                            NativeForm::WithDemotedErrors => {
+                                if !self.has_macro_binding("with-demoted-errors") {
+                                    return self.sf_with_demoted_errors(&items, env);
+                                }
+                            }
+                            NativeForm::WithCodingPriority => {
+                                return self.sf_with_coding_priority(&items, env);
+                            }
+                            NativeForm::WithSilentModifications => {
+                                return self.sf_with_silent_modifications(&items, env);
+                            }
+                            NativeForm::CombineChangeCalls => {
+                                return self.sf_combine_change_calls(&items, env);
+                            }
+                            NativeForm::ClDestructuringBind => {
+                                return self.sf_cl_destructuring_bind(&items, env);
+                            }
+                            NativeForm::ClLetf => return self.sf_cl_letf(&items, env),
+                            NativeForm::ClFlet => {
+                                if !self.has_lisp_macro("cl-flet") {
+                                    return self.sf_cl_flet(&items, env);
+                                }
+                            }
+                            NativeForm::ClLabels => {
+                                if !self.has_lisp_macro("cl-labels") {
+                                    return self.sf_cl_labels(&items, env);
+                                }
+                            }
+                            NativeForm::ClMacrolet => return self.sf_cl_macrolet(&items, env),
+                            NativeForm::ClSymbolMacrolet => {
+                                return self.sf_cl_symbol_macrolet(&items, env);
+                            }
+                            NativeForm::Push => {
+                                // (push NEWELT PLACE)
+                                if items.len() < 3 {
+                                    return Err(LispError::WrongNumberOfArgs(
+                                        "push".into(),
+                                        items.len() - 1,
+                                    ));
+                                }
+                                let val = self.eval(&items[1], env)?;
+                                let place = self.resolve_setf_place(&items[2], env)?;
+                                let cur =
+                                    self.eval_resolved_setf_place_current_value(&place, env)?;
+                                let new_val = Value::cons(val, cur);
+                                self.set_resolved_setf_place_value(&place, new_val.clone(), env)?;
+                                return Ok(new_val);
+                            }
+                            NativeForm::ClPushnew => return self.sf_cl_pushnew(&items, env),
+                            NativeForm::Pop => {
+                                // (pop PLACE)
+                                if items.len() < 2 {
+                                    return Err(LispError::WrongNumberOfArgs(
+                                        "pop".into(),
+                                        items.len() - 1,
+                                    ));
+                                }
+                                let place = self.resolve_setf_place(&items[1], env)?;
+                                let cur =
+                                    self.eval_resolved_setf_place_current_value(&place, env)?;
+                                let result = cur.car()?;
+                                let rest = cur.cdr()?;
+                                self.set_resolved_setf_place_value(&place, rest, env)?;
+                                return Ok(result);
+                            }
+                            NativeForm::Catch => return self.sf_catch(&items, env),
+                            NativeForm::AddToList => return self.sf_add_to_list(&items, env),
+                            // Keep the native definition path only for bootstrap
+                            // interpreters.  GNU ert.el macroexpands test bodies
+                            // when they are defined; deferring that work until a
+                            // test runs makes macro availability and caches depend
+                            // on the order in which tests execute.
+                            NativeForm::ErtDeftest => {
+                                if !self.has_macro_binding("ert-deftest") {
+                                    return self.sf_ert_deftest(&items, env);
+                                }
+                            }
+                            // These are native bootstrap fallbacks.  Once ert.el
+                            // has installed its real macros, their expansion owns
+                            // the observable condition payload and should-form
+                            // observer protocol used by nested `ert-run-test'.
+                            NativeForm::Should => {
+                                if !self.has_macro_binding("should") {
+                                    return self.sf_should(&items, env);
+                                }
+                            }
+                            NativeForm::ShouldNot => {
+                                if !self.has_macro_binding("should-not") {
+                                    return self.sf_should_not(&items, env);
+                                }
+                            }
+                            NativeForm::ShouldError => {
+                                if !self.has_macro_binding("should-error") {
+                                    return self.sf_should_error(&items, env);
+                                }
+                            }
+                            NativeForm::SkipUnless => {
+                                if !self.has_macro_binding(name) {
+                                    return self.sf_skip_unless(&items, env);
+                                }
+                            }
+                            NativeForm::SkipWhen => {
+                                if !self.has_macro_binding(name) {
+                                    return self.sf_skip_when(&items, env);
+                                }
+                            }
+                            NativeForm::Rx => {
+                                if !{
+                                    self.ensure_gnu_rx_loaded();
+                                    self.has_macro_binding("rx")
+                                } {
+                                    return self.sf_rx(&items, env);
+                                }
+                            }
+                            NativeForm::RxDefine => {
+                                if !{
+                                    self.ensure_gnu_rx_loaded();
+                                    self.has_macro_binding("rx")
+                                } {
+                                    return self.sf_rx_define(&items);
+                                }
+                            }
+                            NativeForm::RxLet => {
+                                if !{
+                                    self.ensure_gnu_rx_loaded();
+                                    self.has_macro_binding("rx")
+                                } {
+                                    return self.sf_rx_let(&items, env);
+                                }
+                            }
+                            // rx-let-eval is defined only by GNU rx.el; loading it
+                            // makes the macro available so the normal macro dispatch
+                            // (below) expands it.  There is no native fallback.
+                            NativeForm::RxLetEval => {
+                                if !{
+                                    self.ensure_gnu_rx_loaded();
+                                    self.has_macro_binding("rx-let-eval")
+                                } {
+                                    return Err(LispError::SignalValue(Value::list([
+                                        Value::Symbol("void-function".into()),
+                                        Value::Symbol("rx-let-eval".into()),
+                                    ])));
+                                }
+                            }
+                            NativeForm::WithEvalAfterLoad => {
+                                return self.sf_with_eval_after_load(&items, env);
+                            }
+                            NativeForm::WithNoWarnings => return self.sf_progn(&items[1..], env),
+                            NativeForm::Declare => {
+                                return Ok(Value::Nil);
+                            }
+                            NativeForm::DefEdebugSpec => {
+                                // (def-edebug-spec SYMBOL SPEC), both unevaluated.
+                                if let (Some(symbol), Some(spec)) = (items.get(1), items.get(2))
+                                    && let Ok(symbol_name) = symbol.as_symbol()
+                                {
+                                    let symbol_name = symbol_name.to_string();
+                                    self.put_symbol_property(
+                                        &symbol_name,
+                                        "edebug-form-spec",
+                                        spec.clone(),
+                                    );
+                                }
+                                return Ok(Value::Nil);
+                            }
+                            NativeForm::DefEdebugElemSpec => {
+                                return self.sf_def_edebug_elem_spec(&items, env);
+                            }
+                            // cl-macs.el owns the public type-expander metadata
+                            // once its `cl-deftype' macro is loaded.  Keep the
+                            // native implementation for bootstrap/file-less use.
+                            NativeForm::ClDeftype => {
+                                if !self.has_macro_binding("cl-deftype") {
+                                    return self.sf_cl_deftype(&items, env);
+                                }
+                            }
+                            NativeForm::EvalAndCompile => return self.sf_progn(&items[1..], env),
+                            NativeForm::EvalWhenCompile => {
+                                return self.with_current_load_history_suppressed(|interp| {
+                                    interp.sf_progn(&items[1..], env)
                                 });
                             }
-                            return Ok(Value::Nil);
-                        }
-                        "oclosure-define" => return self.sf_oclosure_define(&items, env),
-                        "oclosure-lambda" => return self.sf_oclosure_lambda(&items, env),
-                        "define-inline" => return self.sf_define_inline(&items, env),
-                        "defmacro" => return self.sf_defmacro(&items, env),
-                        "with-memoization" => return self.sf_with_memoization(&items, env),
-                        "easy-menu-define" => return self.sf_easy_menu_define(&items, env),
-                        "cl-defstruct" | "emaxx--cl-defstruct" => {
-                            return self.sf_cl_defstruct(&items);
-                        }
-                        "backquote" | "`" => return self.eval_backquote(&items[1], env),
-                        "comma" | "," => {
-                            if let Some(value) = items.get(1) {
-                                return self.eval(value, env);
-                            }
-                            return Ok(Value::Nil);
-                        }
-                        "lambda" => return self.sf_lambda_from_source(expr, &items, env),
-                        "interactive" => return Ok(Value::Nil),
-                        "function" | "function-quote" => {
-                            // #'foo or (function foo)
-                            if items.len() >= 2 {
-                                if let Value::Symbol(name) = &items[1] {
-                                    return Ok(Value::Symbol(name.clone()));
+                            NativeForm::WhileNoInput => return self.sf_progn(&items[1..], env),
+                            NativeForm::ErtInfo => {
+                                if !self.has_macro_binding("ert-info") {
+                                    // (ert-info (MESSAGE-FORM &key ((:prefix P) "Info: "))
+                                    //   BODY...): push (PREFIX . MESSAGE) onto the
+                                    // `ert--infos' the failure reporter displays.
+                                    let spec = items
+                                        .get(1)
+                                        .and_then(|value| value.to_vec().ok())
+                                        .unwrap_or_default();
+                                    let message_form = spec.first().cloned().unwrap_or(Value::Nil);
+                                    let mut prefix_form = Value::String("Info: ".into());
+                                    let mut index = 1usize;
+                                    while index + 1 < spec.len() {
+                                        if matches!(&spec[index], Value::Symbol(key) if key == ":prefix")
+                                        {
+                                            prefix_form = spec[index + 1].clone();
+                                        }
+                                        index += 2;
+                                    }
+                                    let message = self.eval(&message_form, env)?;
+                                    let prefix = self.eval(&prefix_form, env)?;
+                                    let existing =
+                                        self.lookup_var("ert--infos", env).unwrap_or(Value::Nil);
+                                    let infos = Value::cons(Value::cons(prefix, message), existing);
+                                    // `ert--infos' is a defvar; GNU's expansion is a
+                                    // dynamic let so the failure handler sees it.
+                                    let restore =
+                                        self.bind_special_variable("ert--infos", infos, env)?;
+                                    let result = self.sf_progn(&items[2..], env);
+                                    self.restore_special_binding(restore, env)?;
+                                    return result;
                                 }
-                                if let Ok(name) = function_name_from_binding_form(&items[1]) {
-                                    return Ok(Value::Symbol(name));
-                                }
-                                if matches!(
-                                    items[1].car(),
-                                    Ok(Value::Symbol(ref head)) if head == "lambda"
-                                ) {
-                                    return self.eval(&items[1], env);
-                                }
-                                // Unlike quote, `function' gives lambdas
-                                // lexical closure semantics.  Other list
-                                // objects are still returned literally:
-                                // GNU evaluates #'(1 2) to (1 2).
-                                return Ok(items[1].clone());
                             }
-                            return Ok(Value::Nil);
                         }
-                        "while" => {
-                            // Keep the in-progress form visible in
-                            // backtraces like GNU's eval frames.
-                            self.push_backtrace_frame_with_evald(
-                                items[0].clone(),
-                                items[1..].to_vec(),
-                                false,
-                            );
-                            let result = self.sf_while(&items, env);
-                            self.pop_backtrace_frame();
-                            return result;
-                        }
-                        "dolist" if !self.has_macro_binding("dolist") => {
-                            // Keep the in-progress form visible in
-                            // backtraces like GNU's eval frames.
-                            self.push_backtrace_frame_with_evald(
-                                items[0].clone(),
-                                items[1..].to_vec(),
-                                false,
-                            );
-                            let result = self.sf_dolist(&items, env);
-                            self.pop_backtrace_frame();
-                            return result;
-                        }
-                        "dolist-with-progress-reporter"
-                            if !self.has_macro_binding("dolist-with-progress-reporter") =>
-                        {
-                            return self.sf_dolist_with_progress_reporter(&items, env);
-                        }
-                        "pcase-dolist" if !self.has_macro_binding("pcase-dolist") => {
-                            return self.sf_pcase_dolist(&items, env);
-                        }
-                        "dotimes" if !self.has_macro_binding("dotimes") => {
-                            return self.sf_dotimes(&items, env);
-                        }
-                        // The preloaded GNU `cl-loop' macro takes precedence;
-                        // the native special form remains as a bootstrap
-                        // fallback before simple_compat.el is loaded.
-                        "cl-loop" if !self.has_lisp_macro("cl-loop") => {
-                            return self.sf_cl_loop(&items, env);
-                        }
-                        "unwind-protect" => return self.sf_unwind_protect(&items, env),
-                        "ignore-error" if !self.has_macro_binding("ignore-error") => {
-                            return self.sf_ignore_error(&items, env);
-                        }
-                        "ignore-errors" if !self.has_macro_binding("ignore-errors") => {
-                            return self.sf_ignore_errors(&items, env);
-                        }
-                        "condition-case" => {
-                            return self.sf_condition_case(&items, env);
-                        }
-                        "condition-case-unless-debug"
-                            if !self.has_macro_binding("condition-case-unless-debug") =>
-                        {
-                            return self.sf_condition_case(&items, env);
-                        }
-                        "handler-bind" => return self.sf_handler_bind(&items, env),
-                        "cl-assert" => return self.sf_cl_assert(&items, env),
-                        // GNU preloads `with-temp-buffer' as a subr.el macro.
-                        // Keep the native implementation only as a bootstrap
-                        // fallback before simple_compat.el is loaded.
-                        "with-temp-buffer" if !self.has_macro_binding("with-temp-buffer") => {
-                            return self.sf_with_temp_buffer(&items, env);
-                        }
-                        "ert-with-test-buffer" => {
-                            return self.sf_ert_with_test_buffer(&items, env);
-                        }
-                        "ert-with-temp-directory" => {
-                            return self.sf_ert_with_temp_directory(&items, env);
-                        }
-                        "ert-with-message-capture" => {
-                            return self.sf_ert_with_message_capture(&items, env);
-                        }
-                        "with-environment-variables" => {
-                            return self.sf_with_environment_variables(&items, env);
-                        }
-                        "with-output-to-string" => {
-                            return self.sf_with_output_to_string(&items, env);
-                        }
-                        "with-mutex" => return self.sf_with_mutex(&items, env),
-                        "with-temp-file" => return self.sf_with_temp_file(&items, env),
-                        "ert-with-temp-file" => return self.sf_ert_with_temp_file(&items, env),
-                        "with-current-buffer" => return self.sf_with_current_buffer(&items, env),
-                        // GNU window.el owns this macro's setup/body/display
-                        // lifecycle.  The native arm is only a file-less
-                        // bootstrap fallback; once the macro is loaded it
-                        // must not be pre-empted or its ACTION is never run.
-                        "with-current-buffer-window"
-                            if !self.has_macro_binding("with-current-buffer-window") =>
-                        {
-                            return self.sf_with_current_buffer_window(&items, env);
-                        }
-                        "with-restriction" => return self.sf_with_restriction(&items, env),
-                        "without-restriction" => return self.sf_without_restriction(&items, env),
-                        // GNU nadvice.el's macro handles this (autoloading
-                        // it if needed); the native arm is the file-less
-                        // fallback.
-                        "add-function" => {
-                            if let Ok(Some(expanded)) =
-                                self.try_macroexpand("add-function", &items[1..], env)
-                            {
-                                return self.eval(&expanded, env);
-                            }
-                            return self.sf_add_function(&items, env);
-                        }
-                        "with-selected-window" => return self.sf_with_selected_window(&items, env),
-                        "with-syntax-table" => return self.sf_with_syntax_table(&items, env),
-                        "save-match-data" => return self.sf_save_match_data(&items, env),
-                        "save-excursion" => return self.sf_save_excursion(&items, env),
-                        "save-window-excursion" => {
-                            return self.sf_save_window_excursion(&items, env);
-                        }
-                        "save-current-buffer" => return self.sf_save_current_buffer(&items, env),
-                        "save-restriction" => return self.sf_save_restriction(&items, env),
-                        "with-suppressed-warnings" => {
-                            return self.sf_with_suppressed_warnings(&items, env);
-                        }
-                        // Prefer GNU's loaded macro.  Its
-                        // `condition-case-unless-debug' expansion cooperates
-                        // with ERT's debugger bindings; the native arm is
-                        // only a bootstrap fallback before subr is present.
-                        "with-demoted-errors" if !self.has_macro_binding("with-demoted-errors") => {
-                            return self.sf_with_demoted_errors(&items, env);
-                        }
-                        "with-coding-priority" => {
-                            return self.sf_with_coding_priority(&items, env);
-                        }
-                        "with-silent-modifications" => {
-                            return self.sf_with_silent_modifications(&items, env);
-                        }
-                        "combine-change-calls" => return self.sf_combine_change_calls(&items, env),
-                        "cl-destructuring-bind" => {
-                            return self.sf_cl_destructuring_bind(&items, env);
-                        }
-                        "cl-letf" => return self.sf_cl_letf(&items, env),
-                        "cl-flet" if !self.has_lisp_macro("cl-flet") => {
-                            return self.sf_cl_flet(&items, env);
-                        }
-                        "cl-labels" if !self.has_lisp_macro("cl-labels") => {
-                            return self.sf_cl_labels(&items, env);
-                        }
-                        "cl-macrolet" => return self.sf_cl_macrolet(&items, env),
-                        "cl-symbol-macrolet" => return self.sf_cl_symbol_macrolet(&items, env),
-                        "push" => {
-                            // (push NEWELT PLACE)
-                            if items.len() < 3 {
-                                return Err(LispError::WrongNumberOfArgs(
-                                    "push".into(),
-                                    items.len() - 1,
-                                ));
-                            }
-                            let val = self.eval(&items[1], env)?;
-                            let place = self.resolve_setf_place(&items[2], env)?;
-                            let cur = self.eval_resolved_setf_place_current_value(&place, env)?;
-                            let new_val = Value::cons(val, cur);
-                            self.set_resolved_setf_place_value(&place, new_val.clone(), env)?;
-                            return Ok(new_val);
-                        }
-                        "cl-pushnew" => return self.sf_cl_pushnew(&items, env),
-                        "pop" => {
-                            // (pop PLACE)
-                            if items.len() < 2 {
-                                return Err(LispError::WrongNumberOfArgs(
-                                    "pop".into(),
-                                    items.len() - 1,
-                                ));
-                            }
-                            let place = self.resolve_setf_place(&items[1], env)?;
-                            let cur = self.eval_resolved_setf_place_current_value(&place, env)?;
-                            let result = cur.car()?;
-                            let rest = cur.cdr()?;
-                            self.set_resolved_setf_place_value(&place, rest, env)?;
-                            return Ok(result);
-                        }
-                        "catch" => return self.sf_catch(&items, env),
-                        "add-to-list" => return self.sf_add_to_list(&items, env),
-                        // Keep the native definition path only for bootstrap
-                        // interpreters.  GNU ert.el macroexpands test bodies
-                        // when they are defined; deferring that work until a
-                        // test runs makes macro availability and caches depend
-                        // on the order in which tests execute.
-                        "ert-deftest" if !self.has_macro_binding("ert-deftest") => {
-                            return self.sf_ert_deftest(&items, env);
-                        }
-                        // These are native bootstrap fallbacks.  Once ert.el
-                        // has installed its real macros, their expansion owns
-                        // the observable condition payload and should-form
-                        // observer protocol used by nested `ert-run-test'.
-                        "should" if !self.has_macro_binding("should") => {
-                            return self.sf_should(&items, env);
-                        }
-                        "should-not" if !self.has_macro_binding("should-not") => {
-                            return self.sf_should_not(&items, env);
-                        }
-                        "should-error" if !self.has_macro_binding("should-error") => {
-                            return self.sf_should_error(&items, env);
-                        }
-                        "skip-unless" | "ert--skip-unless" if !self.has_macro_binding(name) => {
-                            return self.sf_skip_unless(&items, env);
-                        }
-                        "skip-when" | "ert--skip-when" if !self.has_macro_binding(name) => {
-                            return self.sf_skip_when(&items, env);
-                        }
-                        "rx" if !{
-                            self.ensure_gnu_rx_loaded();
-                            self.has_macro_binding("rx")
-                        } =>
-                        {
-                            return self.sf_rx(&items, env);
-                        }
-                        "rx-define"
-                            if !{
-                                self.ensure_gnu_rx_loaded();
-                                self.has_macro_binding("rx")
-                            } =>
-                        {
-                            return self.sf_rx_define(&items);
-                        }
-                        "rx-let"
-                            if !{
-                                self.ensure_gnu_rx_loaded();
-                                self.has_macro_binding("rx")
-                            } =>
-                        {
-                            return self.sf_rx_let(&items, env);
-                        }
-                        // rx-let-eval is defined only by GNU rx.el; loading it
-                        // makes the macro available so the normal macro dispatch
-                        // (below) expands it.  There is no native fallback.
-                        "rx-let-eval"
-                            if !{
-                                self.ensure_gnu_rx_loaded();
-                                self.has_macro_binding("rx-let-eval")
-                            } =>
-                        {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::Symbol("void-function".into()),
-                                Value::Symbol("rx-let-eval".into()),
-                            ])));
-                        }
-                        "with-eval-after-load" => {
-                            return self.sf_with_eval_after_load(&items, env);
-                        }
-                        "with-no-warnings" => return self.sf_progn(&items[1..], env),
-                        "declare" | "declare-function" | "cl-declaim" | "declaim" => {
-                            return Ok(Value::Nil);
-                        }
-                        "def-edebug-spec" => {
-                            // (def-edebug-spec SYMBOL SPEC), both unevaluated.
-                            if let (Some(symbol), Some(spec)) = (items.get(1), items.get(2))
-                                && let Ok(symbol_name) = symbol.as_symbol()
-                            {
-                                let symbol_name = symbol_name.to_string();
-                                self.put_symbol_property(
-                                    &symbol_name,
-                                    "edebug-form-spec",
-                                    spec.clone(),
-                                );
-                            }
-                            return Ok(Value::Nil);
-                        }
-                        "def-edebug-elem-spec" => {
-                            return self.sf_def_edebug_elem_spec(&items, env);
-                        }
-                        // cl-macs.el owns the public type-expander metadata
-                        // once its `cl-deftype' macro is loaded.  Keep the
-                        // native implementation for bootstrap/file-less use.
-                        "cl-deftype" if !self.has_macro_binding("cl-deftype") => {
-                            return self.sf_cl_deftype(&items, env);
-                        }
-                        "eval-and-compile" => return self.sf_progn(&items[1..], env),
-                        "eval-when-compile" => {
-                            return self.with_current_load_history_suppressed(|interp| {
-                                interp.sf_progn(&items[1..], env)
-                            });
-                        }
-                        "while-no-input" => return self.sf_progn(&items[1..], env),
-                        "ert-info" if !self.has_macro_binding("ert-info") => {
-                            // (ert-info (MESSAGE-FORM &key ((:prefix P) "Info: "))
-                            //   BODY...): push (PREFIX . MESSAGE) onto the
-                            // `ert--infos' the failure reporter displays.
-                            let spec = items
-                                .get(1)
-                                .and_then(|value| value.to_vec().ok())
-                                .unwrap_or_default();
-                            let message_form = spec.first().cloned().unwrap_or(Value::Nil);
-                            let mut prefix_form = Value::String("Info: ".into());
-                            let mut index = 1usize;
-                            while index + 1 < spec.len() {
-                                if matches!(&spec[index], Value::Symbol(key) if key == ":prefix") {
-                                    prefix_form = spec[index + 1].clone();
-                                }
-                                index += 2;
-                            }
-                            let message = self.eval(&message_form, env)?;
-                            let prefix = self.eval(&prefix_form, env)?;
-                            let existing = self.lookup_var("ert--infos", env).unwrap_or(Value::Nil);
-                            let infos = Value::cons(Value::cons(prefix, message), existing);
-                            // `ert--infos' is a defvar; GNU's expansion is a
-                            // dynamic let so the failure handler sees it.
-                            let restore = self.bind_special_variable("ert--infos", infos, env)?;
-                            let result = self.sf_progn(&items[2..], env);
-                            self.restore_special_binding(restore, env)?;
-                            return result;
-                        }
-                        _ => {}
                     }
                 }
 

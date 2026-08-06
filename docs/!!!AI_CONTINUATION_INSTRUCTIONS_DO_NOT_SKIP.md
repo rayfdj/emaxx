@@ -53,9 +53,12 @@ counts as the progress denominator.
   another roughly 1,800 lines of parallel primitive-name tables and making an
   implemented-but-unroutable primitive structurally impossible.  One ordered
   module declaration now generates the route probe, cached-policy delegation,
-  enum, and call dispatch.  `fboundp`
-  consumes the evaluator's canonical special-form registry instead of a
-  second list.  File-name-handler advertisement and execution now consume one
+  enum, and call dispatch.  Native form names and special-form classification
+  now share one typed registry, and evaluator dispatch is exhaustive over its
+  generated enum, so a registered form without an implementation cannot
+  compile.  The stale `minibuffer-with-setup-hook` native claim is gone;
+  `fboundp` consumes the evaluator registry instead of a second list.
+  File-name-handler advertisement and execution now consume one
   typed operation specification for explicit arguments, `default-directory`,
   visited-buffer paths, and process commands instead of repeating the special
   operation set.  Native-override and undo-sequence-reset policy are attributes
