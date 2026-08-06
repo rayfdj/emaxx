@@ -80,7 +80,7 @@ mod text;
 mod values;
 mod window;
 
-pub(crate) use super::eval::is_special_form_name;
+pub(crate) use super::eval::{is_special_form_name, native_form_fallback_arity};
 pub(crate) use accessors_random::*;
 pub(crate) use buffers::*;
 pub(crate) use case::case_table_default_value;

@@ -6369,12 +6369,14 @@ fn subr_introspection_supports_if_special_form() {
             r##"
                 (list
                  (subr-arity (symbol-function 'if))
-                 (subr-name (symbol-function 'if)))
+                 (subr-name (symbol-function 'if))
+                 (subr-arity (symbol-function 'dlet)))
                 "##,
         ),
         Value::list([
             Value::cons(Value::Integer(2), Value::Symbol("unevalled".into())),
             Value::String("if".into()),
+            Value::cons(Value::Integer(1), Value::Symbol("unevalled".into())),
         ])
     );
 }

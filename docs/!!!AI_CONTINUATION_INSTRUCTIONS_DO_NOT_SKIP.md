@@ -58,6 +58,10 @@ counts as the progress denominator.
   generated enum, so a registered form without an implementation cannot
   compile.  The stale `minibuffer-with-setup-hook` native claim is gone;
   `fboundp` consumes the evaluator registry instead of a second list.
+  Native arity lookup leaves GNU entries exclusively to the generated
+  manifest; only four non-C Lisp conveniences remain handwritten, and the
+  `dlet` fallback refers to its typed native-form variant rather than a second
+  string registry.
   File-name-handler advertisement and execution now consume one
   typed operation specification for explicit arguments, `default-directory`,
   visited-buffer paths, and process commands instead of repeating the special

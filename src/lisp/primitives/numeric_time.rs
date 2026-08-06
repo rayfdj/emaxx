@@ -189,66 +189,31 @@ pub(crate) fn string_version_compare(left: &str, right: &str) -> Ordering {
     left_bytes.len().cmp(&right_bytes.len())
 }
 
+fn arity_value((minimum, maximum): (i64, i64)) -> Value {
+    let maximum = match maximum {
+        -1 => Value::Symbol("many".into()),
+        -2 => Value::Symbol("unevalled".into()),
+        maximum => Value::Integer(maximum),
+    };
+    Value::cons(Value::Integer(minimum), maximum)
+}
+
 pub(crate) fn builtin_arity_value(name: &str) -> Option<Value> {
-    if let Some((minimum, maximum)) = generated_builtin_arities::generated_builtin_arity(name) {
-        let maximum = match maximum {
-            -1 => Value::Symbol("many".into()),
-            -2 => Value::Symbol("unevalled".into()),
-            maximum => Value::Integer(maximum),
-        };
-        return Some(Value::cons(Value::Integer(minimum), maximum));
+    if let Some(arity) = generated_builtin_arities::generated_builtin_arity(name) {
+        return Some(arity_value(arity));
     }
     let arity = match name {
-        "car" | "caar" | "identity" | "func-arity" | "subr-arity" => {
-            (Value::Integer(1), Value::Integer(1))
-        }
-        "module-function-p" | "keymap-prompt" => (Value::Integer(1), Value::Integer(1)),
-        "last-nonminibuffer-frame" => (Value::Integer(0), Value::Integer(0)),
-        "frame-root-window" => (Value::Integer(0), Value::Integer(1)),
-        "cons" => (Value::Integer(2), Value::Integer(2)),
-        "remq" => (Value::Integer(2), Value::Integer(2)),
-        "safe-length" => (Value::Integer(1), Value::Integer(1)),
-        "list" => (Value::Integer(0), Value::Symbol("many".into())),
-        "format" => (Value::Integer(1), Value::Symbol("many".into())),
-        "directory-files" => (Value::Integer(1), Value::Integer(5)),
-        "directory-files-and-attributes" => (Value::Integer(1), Value::Integer(6)),
-        "default-file-modes" => (Value::Integer(0), Value::Integer(0)),
-        "file-modes" => (Value::Integer(1), Value::Integer(2)),
-        "set-default-file-modes" => (Value::Integer(1), Value::Integer(1)),
-        "set-file-modes" => (Value::Integer(2), Value::Integer(3)),
-        "set-file-times" => (Value::Integer(1), Value::Integer(3)),
-        "version-to-list" => (Value::Integer(1), Value::Integer(1)),
-        "string-version-lessp" => (Value::Integer(2), Value::Integer(2)),
-        "string-distance" => (Value::Integer(2), Value::Integer(3)),
-        "length<" | "length>" | "length=" => (Value::Integer(2), Value::Integer(2)),
-        "sha1" => (Value::Integer(1), Value::Integer(4)),
-        "secure-hash" => (Value::Integer(2), Value::Integer(5)),
-        "buffer-hash" => (Value::Integer(0), Value::Integer(1)),
+        "caar" => (1, 1),
+        "remq" => (2, 2),
+        "version-to-list" => (1, 1),
+        "sha1" => (1, 4),
         _ => return None,
     };
-    Some(Value::cons(arity.0, arity.1))
+    Some(arity_value(arity))
 }
 
 pub(crate) fn special_form_arity_value(name: &str) -> Option<Value> {
-    match name {
-        "if" => Some(Value::cons(
-            Value::Integer(2),
-            Value::Symbol("unevalled".into()),
-        )),
-        "let" | "dlet" => Some(Value::cons(
-            Value::Integer(1),
-            Value::Symbol("unevalled".into()),
-        )),
-        "progn" => Some(Value::cons(
-            Value::Integer(0),
-            Value::Symbol("unevalled".into()),
-        )),
-        "setq" => Some(Value::cons(
-            Value::Integer(0),
-            Value::Symbol("unevalled".into()),
-        )),
-        _ => None,
-    }
+    native_form_fallback_arity(name).map(arity_value)
 }
 
 pub(crate) fn fallback_subr_arity_value(name: &str) -> Value {

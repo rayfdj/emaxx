@@ -280,6 +280,16 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
     NativeForm::for_name(name).is_some_and(NativeForm::is_special)
 }
 
+/// Arity metadata for native forms that are not covered by the generated GNU
+/// C primitive manifest.  Match on the typed registry variant so the Lisp name
+/// is never repeated in a second table.
+pub(crate) fn native_form_fallback_arity(name: &str) -> Option<(i64, i64)> {
+    match NativeForm::for_name(name)? {
+        NativeForm::Dlet => Some((1, -2)),
+        _ => None,
+    }
+}
+
 impl Interpreter {
     // This evaluator recurses once per subform rather than once per
     // funcall/eval level like GNU Emacs, so the same Lisp program nests
