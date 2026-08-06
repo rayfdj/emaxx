@@ -579,6 +579,36 @@ fn run_with_stack(
                     }
                 }
             }
+            Op::Aref => {
+                let len = stack.len();
+                if let Value::Integer(index) = &stack[len - 1]
+                    && *index >= 0
+                    && let Some(value) =
+                        crate::lisp::primitives::vector_aref_fast(&stack[len - 2], *index as usize)
+                {
+                    stack.truncate(len - 2);
+                    stack.push(value);
+                    continue;
+                }
+            }
+            Op::Aset => {
+                // Stack: [.. vector index value]; aset returns the value.
+                let len = stack.len();
+                if let Value::Integer(index) = &stack[len - 2]
+                    && *index >= 0
+                    && crate::lisp::primitives::vector_aset_fast(
+                        &stack[len - 3],
+                        *index as usize,
+                        &stack[len - 1],
+                    )
+                    .is_some()
+                {
+                    let value = pop!();
+                    stack.truncate(len - 3);
+                    stack.push(value);
+                    continue;
+                }
+            }
             Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => match stack.last() {
                 Some(Value::Cons(car, cdr)) => {
                     let value = if matches!(op, Op::Car | Op::CarSafe) {
