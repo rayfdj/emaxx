@@ -1593,6 +1593,52 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
         .then(|| sxhash_value(interp, value, HashMode::Equal))
 }
 
+/// Bucket key for a runtime-accelerated hash table.  The invariant is that
+/// keys the table's test considers the same always share a bucket; probing
+/// a bucket still compares with the real test, so collisions are harmless.
+///
+/// The `eq'/`eql' hash therefore differs from `sxhash-eq' in three ways:
+/// conses and lambdas hash by cell identity (mutation- and cycle-proof,
+/// and `eq' only holds for the same cells), a symbol-with-pos hashes as
+/// its bare symbol (the two can be `eq' under symbols-with-pos-enabled),
+/// and -0.0 hashes as 0.0 (`eq'/`eql' compare floats by value here).
+pub(crate) fn runtime_hash_bucket_key(
+    interp: &Interpreter,
+    test: crate::lisp::eval::RuntimeHashTest,
+    value: &Value,
+) -> Option<i64> {
+    use crate::lisp::eval::RuntimeHashTest;
+    if test == RuntimeHashTest::Equal {
+        return equal_hash_table_key_hash(interp, value);
+    }
+    let mut state = 0xcbf2_9ce4_8422_2325u64;
+    if let Some((symbol, _)) = symbol_with_pos_parts(interp, value) {
+        hash_value_eq(&mut state, &symbol);
+        return Some(state as i64);
+    }
+    match value {
+        Value::Cons(car, cdr) => {
+            hash_mix(&mut state, 16);
+            hash_mix(&mut state, Rc::as_ptr(car) as usize as u64);
+            hash_mix(&mut state, Rc::as_ptr(cdr) as usize as u64);
+        }
+        Value::Float(number) => {
+            hash_mix(&mut state, 15);
+            let normalized = if *number == 0.0 { 0.0f64 } else { *number };
+            hash_mix(&mut state, normalized.to_bits());
+        }
+        Value::BigInteger(number) => {
+            hash_mix(&mut state, 14);
+            hash_str(&mut state, &number.to_string());
+        }
+        other => match test {
+            RuntimeHashTest::Eql => hash_value_eql(&mut state, other),
+            _ => hash_value_eq(&mut state, other),
+        },
+    }
+    Some(state as i64)
+}
+
 pub(crate) fn hash_mix(state: &mut u64, value: u64) {
     *state ^= value;
     *state = state.wrapping_mul(0x0000_0100_0000_01b3);

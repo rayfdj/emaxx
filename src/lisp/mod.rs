@@ -172,7 +172,15 @@ pub(crate) fn preprocess_lazy_doc_source(
                     cursor += 1;
                 }
                 let content_start = cursor;
-                let content_end = content_start.saturating_add(count).min(bytes.len());
+                // COUNT is measured from the first byte after the digits,
+                // so the byte just consumed is part of it; the counted
+                // region ends with the ^_ terminator.  Reading one byte
+                // past it ate the `#' of an immediately following `#@N'
+                // block (adjacent docstrings, e.g. a documented lambda
+                // inside a documented defun).
+                let content_end = content_start
+                    .saturating_add(count.saturating_sub(1))
+                    .min(bytes.len());
                 let mut doc =
                     String::from_utf8_lossy(&bytes[content_start..content_end]).into_owned();
                 if doc.ends_with('\n') {

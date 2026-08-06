@@ -36,6 +36,8 @@ pub(crate) struct NameFacts {
     pub(crate) special_form: bool,
     pub(crate) prefer_override: bool,
     resets_undo: bool,
+    /// Whether `dispatch_file_name_handler' can act on this name at all.
+    file_name_handled: bool,
     module: DispatchModule,
 }
 
@@ -139,6 +141,7 @@ fn compute_name_facts(name: &str) -> NameFacts {
         special_form: crate::lisp::primitives::is_special_form_name(name),
         prefer_override: crate::lisp::primitives::prefer_builtin_override(name),
         resets_undo: resets_undo_sequence(name),
+        file_name_handled: file_name_handler_operation(name),
         module,
     }
 }
@@ -1970,7 +1973,9 @@ pub fn call(
 ) -> Result<Value, LispError> {
     let facts = name_facts(name);
 
-    if let Some(result) = dispatch_file_name_handler(interp, env, name, args)? {
+    if facts.file_name_handled
+        && let Some(result) = dispatch_file_name_handler(interp, env, name, args)?
+    {
         return Ok(result);
     }
 

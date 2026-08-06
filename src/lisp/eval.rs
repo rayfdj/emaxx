@@ -1003,8 +1003,20 @@ pub(crate) struct CombinedAfterChangeState {
     pub(crate) changes: Vec<(i64, i64, i64)>,
 }
 
+/// Which standard hash-table test a runtime-accelerated table uses; custom
+/// user tests stay on the entry-list slow path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum RuntimeHashTest {
+    Eq,
+    /// GNU's default `make-hash-table' test.
+    #[default]
+    Eql,
+    Equal,
+}
+
 #[derive(Clone, Debug, Default)]
 struct EqualHashTableState {
+    test: RuntimeHashTest,
     entries: Vec<(Value, Value)>,
     key_index: HashMap<Option<i64>, Vec<usize>>,
 }

@@ -1746,7 +1746,7 @@ pub(super) fn call(
         "hash-table-contains-p" => {
             need_args(name, args, 2)?;
             if let Value::Record(id) = &args[1]
-                && let Some(value) = interp.equal_hash_lookup(*id, &args[0])
+                && let Some(value) = interp.equal_hash_lookup(*id, &args[0], env)
             {
                 return Ok(if value.is_some() {
                     Value::T
@@ -1795,7 +1795,7 @@ pub(super) fn call(
             }
             let default = args.get(2).cloned().unwrap_or(Value::Nil);
             if let Value::Record(id) = &args[1]
-                && let Some(value) = interp.equal_hash_lookup(*id, &args[0])
+                && let Some(value) = interp.equal_hash_lookup(*id, &args[0], env)
             {
                 return Ok(value.unwrap_or(default));
             }
@@ -1815,7 +1815,7 @@ pub(super) fn call(
         "puthash" => {
             need_args(name, args, 3)?;
             if let Value::Record(id) = &args[2]
-                && interp.equal_hash_put(*id, args[0].clone(), args[1].clone())
+                && interp.equal_hash_put(*id, args[0].clone(), args[1].clone(), env)
             {
                 return Ok(args[1].clone());
             }
@@ -1856,7 +1856,7 @@ pub(super) fn call(
         "remhash" => {
             need_args(name, args, 2)?;
             if let Value::Record(id) = &args[1]
-                && interp.equal_hash_remove(*id, &args[0]).is_some()
+                && interp.equal_hash_remove(*id, &args[0], env).is_some()
             {
                 return Ok(Value::Nil);
             }
