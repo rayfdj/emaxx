@@ -476,6 +476,10 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
     match name {
         "command-line-1" => Some(preloaded_command_line_1()),
         "completion-table-dynamic" => Some(preloaded_completion_table_dynamic()),
+        // Both owners are dumped by GNU loadup.  Loading the established
+        // upstream Lisp on first use preserves that initial-image surface
+        // without maintaining native copies of the high-level functions.
+        "copy-face" => Some(builtin_file_autoload("faces", Value::Nil)),
         "cl-assoc-if" | "cl-assoc-if-not" | "cl-delete-duplicates" => {
             Some(builtin_file_autoload("cl-seq", Value::Nil))
         }
@@ -533,7 +537,8 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         | "comment-indent-default"
         | "indent-for-comment"
         | "comment-normalize-vars"
-        | "comment-search-forward" => Some(builtin_file_autoload("newcomment", Value::Nil)),
+        | "comment-search-forward"
+        | "uncomment-region" => Some(builtin_file_autoload("newcomment", Value::Nil)),
         "common-lisp-indent-function" => Some(builtin_file_autoload("cl-indent", Value::Nil)),
         // GNU loaddefs.el autoloads this public cus-edit setter.  Keep the
         // implementation in cus-edit.el; require_feature_with_target already

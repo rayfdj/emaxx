@@ -380,6 +380,19 @@ fn read_minibuffer_text_from_kbd_macro(
     env: &mut Env,
     initial: &str,
 ) -> Result<Option<String>, LispError> {
+    let saved_buffer_id = interp.current_buffer_id();
+    let result = read_minibuffer_text_from_kbd_macro_inner(interp, env, initial);
+    if interp.has_buffer_id(saved_buffer_id) {
+        let _ = interp.set_current_buffer_id(saved_buffer_id);
+    }
+    result
+}
+
+fn read_minibuffer_text_from_kbd_macro_inner(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    initial: &str,
+) -> Result<Option<String>, LispError> {
     if interp.kbd_macro_executions.is_empty() {
         return Ok(None);
     }
@@ -521,8 +534,12 @@ fn read_minibuffer_text_from_unread_events(
     // A recursive minibuffer command loop has its own prefix state.  Preserve
     // the caller's prefix (which may control what the prompting command asks)
     // while simulated keys start unprefixed and may build a fresh C-u prefix.
+    let saved_buffer_id = interp.current_buffer_id();
     let restore = interp.bind_special_dynamic("current-prefix-arg", Value::Nil, env)?;
     let result = read_minibuffer_text_from_unread_events_inner(interp, env, initial);
+    if interp.has_buffer_id(saved_buffer_id) {
+        let _ = interp.set_current_buffer_id(saved_buffer_id);
+    }
     let restore_result = interp.restore_special_dynamic(restore, env);
     match (result, restore_result) {
         (Err(error), _) => Err(error),

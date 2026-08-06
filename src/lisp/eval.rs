@@ -129,98 +129,129 @@ const GNU_CHANGE_HOOK_SPECIAL_VARIABLES: &[&str] = &[
 // newly exercised preloaded variable from accidentally behaving like an
 // ordinary Emaxx global (the fill-column/string-fill regression did exactly
 // that after lexical closure boundaries became correct).
-const GNU_NATIVE_PER_BUFFER_VARIABLES: &[&str] = &[
-    "abbrev-mode",
-    "auto-fill-function",
-    "bidi-display-reordering",
-    "bidi-paragraph-direction",
-    "bidi-paragraph-separate-re",
-    "bidi-paragraph-start-re",
-    "buffer-auto-save-file-format",
-    "buffer-auto-save-file-name",
-    "buffer-backed-up",
-    "buffer-display-count",
-    "buffer-display-table",
-    "buffer-display-time",
-    "buffer-file-coding-system",
-    "buffer-file-format",
-    "buffer-file-name",
-    "buffer-file-truename",
-    "buffer-invisibility-spec",
-    "buffer-read-only",
-    "buffer-saved-size",
-    "buffer-undo-list",
-    "cache-long-scans",
-    "ctl-arrow",
-    "cursor-in-non-selected-windows",
-    "cursor-type",
-    "default-directory",
-    "enable-multibyte-characters",
-    "fill-column",
-    "fringe-cursor-alist",
-    "fringe-indicator-alist",
-    "fringes-outside-margins",
-    "header-line-format",
-    "horizontal-scroll-bar",
-    "indicate-buffer-boundaries",
-    "indicate-empty-lines",
-    "left-fringe-width",
-    "left-margin",
-    "left-margin-width",
-    "line-spacing",
-    "local-abbrev-table",
-    "local-minor-modes",
-    "major-mode",
-    "mark-active",
-    "mode-line-format",
-    "mode-name",
-    "overwrite-mode",
-    "point-before-scroll",
-    "right-fringe-width",
-    "right-margin-width",
-    "scroll-bar-height",
-    "scroll-bar-width",
-    "scroll-down-aggressively",
-    "scroll-up-aggressively",
-    "selective-display",
-    "selective-display-ellipses",
-    "tab-line-format",
-    "tab-width",
-    "text-conversion-style",
-    "truncate-lines",
-    "vertical-scroll-bar",
-    "word-wrap",
-];
+#[derive(Clone, Copy)]
+struct NativePerBufferVariable {
+    name: &'static str,
+    always_local: bool,
+    permanent: bool,
+}
 
-// buffer.c's buffer_permanent_local_flags table.  Unlike Lisp variables
-// carrying only a `permanent-local' property, these slots are made permanent
-// by the host and must retain that metadata before dumped Lisp is loaded.
-const GNU_NATIVE_PERMANENT_LOCAL_VARIABLES: &[&str] =
-    &["truncate-lines", "buffer-file-coding-system"];
+impl NativePerBufferVariable {
+    const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            always_local: false,
+            permanent: false,
+        }
+    }
 
-// The DEFVAR_PER_BUFFER slots absent from buffer.c's buffer_local_flags table
-// have index -1: unlike the default-inheriting entries above, every buffer
-// owns their value unconditionally.
-const GNU_ALWAYS_LOCAL_PER_BUFFER_VARIABLES: &[&str] = &[
-    "buffer-auto-save-file-format",
-    "buffer-auto-save-file-name",
-    "buffer-backed-up",
-    "buffer-display-count",
-    "buffer-display-time",
-    "buffer-file-format",
-    "buffer-file-name",
-    "buffer-file-truename",
-    "buffer-invisibility-spec",
-    "buffer-read-only",
-    "buffer-saved-size",
-    "buffer-undo-list",
-    "default-directory",
-    "enable-multibyte-characters",
-    "local-minor-modes",
-    "major-mode",
-    "mark-active",
-    "mode-name",
-    "point-before-scroll",
+    const fn always_local(mut self) -> Self {
+        self.always_local = true;
+        self
+    }
+
+    const fn permanent(mut self) -> Self {
+        self.permanent = true;
+        self
+    }
+}
+
+// This is also the single source for buffer.c's always-local slots (those
+// absent from buffer_local_flags), buffer_permanent_local_flags, and the
+// permanent-local properties that dumped bindings.el adds to native slots.
+// Encoding those properties on the owning entry makes it impossible to add a
+// name to one registry while forgetting its matching entry in another.
+const GNU_NATIVE_PER_BUFFER_VARIABLES: &[NativePerBufferVariable] = &[
+    NativePerBufferVariable::new("abbrev-mode"),
+    NativePerBufferVariable::new("auto-fill-function"),
+    NativePerBufferVariable::new("bidi-display-reordering"),
+    NativePerBufferVariable::new("bidi-paragraph-direction"),
+    NativePerBufferVariable::new("bidi-paragraph-separate-re"),
+    NativePerBufferVariable::new("bidi-paragraph-start-re"),
+    NativePerBufferVariable::new("buffer-auto-save-file-format")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-auto-save-file-name")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-backed-up")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-display-count")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-display-table"),
+    NativePerBufferVariable::new("buffer-display-time")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-file-coding-system").permanent(),
+    NativePerBufferVariable::new("buffer-file-format")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-file-name")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-file-truename")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-invisibility-spec").always_local(),
+    NativePerBufferVariable::new("buffer-read-only")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-saved-size")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("buffer-undo-list")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("cache-long-scans"),
+    NativePerBufferVariable::new("ctl-arrow"),
+    NativePerBufferVariable::new("cursor-in-non-selected-windows"),
+    NativePerBufferVariable::new("cursor-type"),
+    NativePerBufferVariable::new("default-directory")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("enable-multibyte-characters")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("fill-column"),
+    NativePerBufferVariable::new("fringe-cursor-alist"),
+    NativePerBufferVariable::new("fringe-indicator-alist"),
+    NativePerBufferVariable::new("fringes-outside-margins"),
+    NativePerBufferVariable::new("header-line-format"),
+    NativePerBufferVariable::new("horizontal-scroll-bar"),
+    NativePerBufferVariable::new("indicate-buffer-boundaries"),
+    NativePerBufferVariable::new("indicate-empty-lines"),
+    NativePerBufferVariable::new("left-fringe-width"),
+    NativePerBufferVariable::new("left-margin"),
+    NativePerBufferVariable::new("left-margin-width"),
+    NativePerBufferVariable::new("line-spacing"),
+    NativePerBufferVariable::new("local-abbrev-table"),
+    NativePerBufferVariable::new("local-minor-modes").always_local(),
+    NativePerBufferVariable::new("major-mode").always_local(),
+    NativePerBufferVariable::new("mark-active")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("mode-line-format"),
+    NativePerBufferVariable::new("mode-name").always_local(),
+    NativePerBufferVariable::new("overwrite-mode"),
+    NativePerBufferVariable::new("point-before-scroll")
+        .always_local()
+        .permanent(),
+    NativePerBufferVariable::new("right-fringe-width"),
+    NativePerBufferVariable::new("right-margin-width"),
+    NativePerBufferVariable::new("scroll-bar-height"),
+    NativePerBufferVariable::new("scroll-bar-width"),
+    NativePerBufferVariable::new("scroll-down-aggressively"),
+    NativePerBufferVariable::new("scroll-up-aggressively"),
+    NativePerBufferVariable::new("selective-display"),
+    NativePerBufferVariable::new("selective-display-ellipses"),
+    NativePerBufferVariable::new("tab-line-format"),
+    NativePerBufferVariable::new("tab-width"),
+    NativePerBufferVariable::new("text-conversion-style"),
+    NativePerBufferVariable::new("truncate-lines").permanent(),
+    NativePerBufferVariable::new("vertical-scroll-bar"),
+    NativePerBufferVariable::new("word-wrap"),
 ];
 
 // Edebug specs that GNU Emacs registers through `declare (debug ...)` forms
@@ -2677,14 +2708,15 @@ impl Interpreter {
             interp.set_global_binding(name, Value::Nil);
             interp.mark_special_variable(name);
         }
-        for name in GNU_NATIVE_PER_BUFFER_VARIABLES {
-            interp.mark_per_buffer_special(name);
-        }
-        for name in GNU_NATIVE_PERMANENT_LOCAL_VARIABLES {
-            interp.put_symbol_property(name, "permanent-local", Value::T);
-        }
-        for name in GNU_ALWAYS_LOCAL_PER_BUFFER_VARIABLES {
-            interp.mark_always_buffer_local_special(name);
+        for variable in GNU_NATIVE_PER_BUFFER_VARIABLES {
+            if variable.always_local {
+                interp.mark_always_buffer_local_special(variable.name);
+            } else {
+                interp.mark_per_buffer_special(variable.name);
+            }
+            if variable.permanent {
+                interp.put_symbol_property(variable.name, "permanent-local", Value::T);
+            }
         }
         // search.c uses its own Lisp variable rather than a Buffer field, but
         // GNU gives it the same always-buffer-local behavior.
@@ -3367,24 +3399,8 @@ impl Interpreter {
             };
             interp.put_symbol_property(name, "lisp-indent-function", value);
         }
-        interp.put_symbol_property("default-directory", "permanent-local", Value::T);
-        // GNU declares default-directory with DEFVAR_PER_BUFFER: setting it
-        // only ever affects the current buffer, so a dired/find-file in one
-        // buffer must not redirect unrelated buffers (and later `ls' spawns)
-        // into a directory that gets deleted by test cleanup.
-        // Special (dynamically scoped) like every DEFVAR_PER_BUFFER
-        // variable: `let' must go through the special-binding machinery,
-        // which records the binding buffer, so a setq from another buffer
-        // creates that buffer's own local instead of mutating the binding.
-        interp.mark_always_buffer_local_special("default-directory");
-        // buffer.c exposes these native Buffer fields through
-        // DEFVAR_PER_BUFFER.  They are therefore dynamic specials as well as
-        // automatically buffer-local: a lexical caller may bind a file name
-        // for separately defined code (bookmark.el does), but that binding
-        // must not become the file name of a newly selected buffer.
-        for name in ["buffer-file-name", "buffer-file-truename"] {
-            interp.mark_always_buffer_local_special(name);
-        }
+        // Defaults not synthesized by `builtin_var_value'; locality and
+        // permanence come exclusively from GNU_NATIVE_PER_BUFFER_VARIABLES.
         for name in ["buffer-auto-save-file-name", "selective-display"] {
             interp.set_global_binding(name, Value::Nil);
         }

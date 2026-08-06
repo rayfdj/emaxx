@@ -354,6 +354,13 @@ impl Interpreter {
             "dir-locals-file" => Some(Value::String(".dir-locals.el".into())),
             // GNU xdisp.c defvar; tests let-bind it around noisy calls.
             "inhibit-message" => Some(Value::Nil),
+            // GNU's dumped image leaves automatic mini-window resizing at
+            // its user-facing default and exposes textprop.c's point-motion
+            // guard before any Lisp library is loaded.
+            "resize-mini-windows" => Some(Value::Symbol("grow-only".into())),
+            "max-mini-window-height" => Some(Value::Float(0.25)),
+            "inhibit-point-motion-hooks" => Some(Value::T),
+            "inhibit-x-resources" => Some(Value::T),
             // GNU isearch.el defcustom; package.el's quick-help reads it.
             "search-default-mode" => Some(Value::Nil),
             // GNU keyboard.c keymaps; simple.el define-keys them at load
@@ -703,17 +710,6 @@ impl Interpreter {
             "load-file-name" => Some(
                 self.current_load_file
                     .clone()
-                    .map(Value::String)
-                    .unwrap_or(Value::Nil),
-            ),
-            // Macro expansion can happen when an interpreted ERT body is
-            // invoked, after its defining file has finished loading.  GNU's
-            // macroexp-file-name still identifies that call-site file; the
-            // native ERT runner retains it explicitly for this purpose.
-            "macroexp-file-name" => Some(
-                self.current_load_file
-                    .clone()
-                    .or_else(|| self.ert_test_source_file.clone())
                     .map(Value::String)
                     .unwrap_or(Value::Nil),
             ),

@@ -1608,7 +1608,6 @@ fn is_builtin_uncached(name: &str) -> bool {
             | "where-is-internal"
             | "default-value"
             | "interactive-form"
-            | "macroexp-file-name"
             | "hash-table-p"
             | "char-from-name"
             | "always"

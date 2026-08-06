@@ -783,6 +783,23 @@ fn simulated_minibuffer_keys_preserve_the_callers_prefix_argument() {
 }
 
 #[test]
+fn simulated_minibuffer_keys_restore_the_prompting_buffer_after_hooks() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((outer (current-buffer)))
+                 (with-temp-buffer
+                   (let ((inner (current-buffer))
+                         (post-command-hook
+                          (list (lambda () (set-buffer outer)))))
+                     (ert-simulate-keys "nick\r"
+                       (read-string "Nick: "))
+                     (eq inner (current-buffer)))))"#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn call_interactively_skips_interactive_guard_prefixes() {
     assert_eq!(
         eval_str(

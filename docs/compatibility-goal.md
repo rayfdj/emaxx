@@ -29,6 +29,36 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-06 cumulative robustness checkpoint pauses frontier work at
+  selector 4,582 while the ordered prefix is recertified.  The first
+  canonical replay through C# Mode matched 331/351 files and exposed 20
+  cumulative mismatches in
+  `target/compat/run-1786025390850455000-12418`; Comint's oracle-only failure
+  passed immediately in isolation.  Backquote, Dired/Dired Aux, ERC Stamp,
+  Eshell, LS Lisp, Newcomment, Macroexp, and ERC are repaired, leaving ten
+  known files/themes: Electric's 874-test subject timeout, Edebug, ERT Font
+  Lock, Viper undo, Eshell control-code display, HL-Line stickiness, Mule
+  prefix input, Isearch invisibility, Kmacro extended-command editing, and
+  TRAMP shell-prompt startup.  Macroexp is fully green in
+  `target/compat/run-1786032407892199000-55821`; full ERC is green in
+  `target/compat/run-1786033566972886000-56817`.
+
+  The repair also removes several drift-prone parallel registries.  Every
+  synthesized startup value now inherits special-variable semantics from its
+  value registry; native per-buffer name, always-local status, and effective
+  permanence are one typed manifest; `local-variable-p` consumes that runtime
+  metadata instead of its own list.  The generated GNU primitive, arity, and
+  dumped-autoload manifests remain protected by their whole-manifest tests.
+  Byte compilation now uses real scoped special bindings, native bootstrap
+  ERT expands bodies at definition time, and the synthetic
+  `macroexp-file-name` variable/primitive fallback is gone.  Simulated
+  minibuffer readers restore their caller buffer across command hooks and
+  errors, eliminating ERC's cross-test leak.  Focused invariants and
+  regressions, formatting, diff check, regenerated/rustfmt-normalized autoload
+  validation, all-target/all-feature check, and strict Clippy pass.  Native
+  remains 1,420/1,420; the frontier remains 4,582/7,080 (2,498 selectors left)
+  until the cumulative replay is fully green, after which selector 4,583 is
+  next.
 - The 2026-08-06 C# Mode checkpoint advances the fresh contiguous
   compatibility prefix to 4,582/7,080, leaving 2,498 selectors.  Both
   canonical outcomes in `test/lisp/progmodes/csharp-mode-tests.el` match GNU
