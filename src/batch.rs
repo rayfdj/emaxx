@@ -1824,6 +1824,38 @@ mod tests {
     }
 
     #[test]
+    fn batch_runtime_installs_generated_builtin_package_versions() {
+        run_with_large_stack(|| {
+            let options = BatchRunOptions::default();
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("initialize batch interpreter");
+            let form = Reader::new(
+                "(list (length package--builtin-versions)
+                       (cdr (assq 'allout package--builtin-versions))
+                       (cdr (assq 'org package--builtin-versions))
+                       (cdr (assq 'xref package--builtin-versions))
+                       (cdr (assq 'compat package--builtin-versions)))",
+            )
+            .read_all()
+            .expect("read dumped package-version probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("inspect dumped package versions"),
+                Value::list([
+                    Value::Integer(78),
+                    Value::list([Value::Integer(2), Value::Integer(3)]),
+                    Value::list([Value::Integer(9), Value::Integer(7), Value::Integer(11),]),
+                    Value::list([Value::Integer(1), Value::Integer(7), Value::Integer(0)]),
+                    Value::list([Value::Integer(30), Value::Integer(2), Value::Integer(9999),]),
+                ])
+            );
+        });
+    }
+
+    #[test]
     fn batch_runtime_can_load_ert_helpers() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");

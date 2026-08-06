@@ -18,6 +18,18 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-06 ORG/BUILT-IN PACKAGE CHECKPOINT: the fresh contiguous ordered
+  frontier is 4,458/7,080, leaving 2,622 selectors.  `org-package-version`
+  matches GNU in `target/compat/run-1785993514101910000-57431`.  This extends
+  the generated dumped-initializer theme: GNU `loaddefs.el` top-level `push`
+  forms now install the complete 78-entry `package--builtin-versions` catalog,
+  including Org 9.7.11, without an Org-specific runtime constant.  Generated-
+  manifest and package-catalog regressions pass; the batch-startup cluster is
+  22/23 with only the inherited CCL boundary, and formatting, diff check,
+  all-target/all-feature check, and strict Clippy pass.  The immediately
+  preceding full Rust audit remains current.  Native remains 1,420/1,420.
+  NEXT is selector 4,459, `paren-tests-categorize-paren`, in
+  `test/lisp/paren-tests.el` (7 selected outcomes).
 - 2026-08-06 OBARRAY/OBSOLETE CHECKPOINT: the fresh contiguous ordered
   frontier is 4,457/7,080, leaving 2,623 selectors.  All 16 newly ordered
   outcomes match GNU: Obarray 7/7, obsolete CL 1/1, Inversion 1/1, Makesum

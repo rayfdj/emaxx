@@ -141,6 +141,11 @@ Quoted data and function bodies are not executable initializer calls."
                       ;; startup image too.  Among other contracts, NXML uses
                       ;; one to register its autoloaded XSD datatype compiler.
                       (eq (car form) 'put)
+                      ;; Versioned built-in packages are registered by
+                      ;; generated top-level pushes.  Preserve the complete
+                      ;; catalog instead of hard-coding individual packages
+                      ;; such as Org in the runtime.
+                      (eq (car form) 'push)
                       (and (eq (car form) 'dolist)
                            (emaxx--form-contains-call-p form 'add-to-list))
                       ;; A generated helper can be followed by a top-level
