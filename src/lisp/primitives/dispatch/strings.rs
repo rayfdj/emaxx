@@ -272,7 +272,38 @@ pub(super) fn call(
             let mut result = String::new();
             let mut props = Vec::new();
             let mut multibyte = false;
+            // Plain-string arguments only need one text copy; the generic
+            // StringLike route below clones each argument and re-derives
+            // property offsets, which made repeated accumulation
+            // (`(setq s (concat "x" s))') quadratic with a large constant.
+            // The final value can skip the result re-scan only when every
+            // argument's multibyte verdict came from an authoritative scan
+            // here, so track that.
+            let mut all_plain_scanned = true;
             for a in args {
+                match a {
+                    Value::String(text) => {
+                        if !multibyte && !text.is_ascii() {
+                            multibyte |= text
+                                .chars()
+                                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
+                        }
+                        result.push_str(text);
+                        continue;
+                    }
+                    Value::StringObject(state) if state.borrow().props.is_empty() => {
+                        let state = state.borrow();
+                        // Cached flags may be stale relative to the text, so
+                        // route the final value through the re-scanning
+                        // constructor below.
+                        all_plain_scanned = false;
+                        multibyte |= state.multibyte;
+                        result.push_str(&state.text);
+                        continue;
+                    }
+                    _ => {}
+                }
+                all_plain_scanned = false;
                 if let Some(string) = string_like(a) {
                     let offset = result.chars().count();
                     result.push_str(&string.text);
@@ -293,6 +324,9 @@ pub(super) fn call(
                         a.clone(),
                     ])));
                 }
+            }
+            if all_plain_scanned && !multibyte {
+                return Ok(Value::String(result));
             }
             Ok(string_like_value_with_multibyte(
                 result,
