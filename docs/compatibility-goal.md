@@ -35,13 +35,15 @@ handoff and retry instruction are in
   cumulative mismatches in
   `target/compat/run-1786025390850455000-12418`; Comint's oracle-only failure
   passed immediately in isolation.  Backquote, Dired/Dired Aux, ERC Stamp,
-  Eshell, LS Lisp, Newcomment, Macroexp, and ERC are repaired, leaving ten
-  known files/themes: Electric's 874-test subject timeout, Edebug, ERT Font
-  Lock, Viper undo, Eshell control-code display, HL-Line stickiness, Mule
-  prefix input, Isearch invisibility, Kmacro extended-command editing, and
-  TRAMP shell-prompt startup.  Macroexp is fully green in
+  Eshell, LS Lisp, Newcomment, Macroexp, ERC, Edebug, and Kmacro are repaired,
+  leaving eight known files/themes: Electric's 874-test subject timeout, ERT
+  Font Lock, Viper undo, Eshell control-code display, HL-Line stickiness, Mule
+  prefix input, Isearch invisibility, and TRAMP shell-prompt startup.  Macroexp
+  is fully green in
   `target/compat/run-1786032407892199000-55821`; full ERC is green in
-  `target/compat/run-1786033566972886000-56817`.
+  `target/compat/run-1786033566972886000-56817`; full Kmacro is green in
+  `target/compat/run-1786036330691925000-60434`; and full Edebug is green in
+  `target/compat/run-1786036349252896000-60588`.
 
   The repair also removes several drift-prone parallel registries.  Every
   synthesized startup value now inherits special-variable semantics from its
@@ -51,9 +53,14 @@ handoff and retry instruction are in
   dumped-autoload manifests remain protected by their whole-manifest tests.
   Byte compilation now uses real scoped special bindings, native bootstrap
   ERT expands bodies at definition time, and the synthetic
-  `macroexp-file-name` variable/primitive fallback is gone.  Simulated
-  minibuffer readers restore their caller buffer across command hooks and
-  errors, eliminating ERC's cross-test leak.  Focused invariants and
+  `macroexp-file-name` variable/primitive fallback is gone.  Plain and
+  completing reads now share one real minibuffer activation/setup/restore
+  lifecycle and one keyboard-macro input engine.  Caller-local hooks no
+  longer leak into minibuffer commands, and RET completes the prompting
+  command before its post-command hook, repairing Edebug and Kmacro.  Native
+  builtin status is derived directly from its dispatch route, deleting a
+  1,730-line parallel name inventory, and `fboundp` uses the evaluator's one
+  special-form registry instead of a divergent copy.  Focused invariants and
   regressions, formatting, diff check, regenerated/rustfmt-normalized autoload
   validation, all-target/all-feature check, and strict Clippy pass.  Native
   remains 1,420/1,420; the frontier remains 4,582/7,080 (2,498 selectors left)

@@ -1046,7 +1046,21 @@ pub(crate) fn completing_read(
     }
     ensure_interaction_allowed(interp, env)?;
 
+    if !interp.kbd_macro_executions.is_empty() {
+        crate::lisp::primitives::dispatch::prepare_kbd_macro_minibuffer_entry(interp, env)?;
+    }
     let minibuffer = activate_completing_read_minibuffer(interp, args, env)?;
+    run_active_minibuffer(interp, env, minibuffer, |interp, env| {
+        completing_read_contents(interp, args, env)
+    })
+}
+
+pub(crate) fn run_active_minibuffer<T>(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    minibuffer: ActiveMinibuffer,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
     let result = (|| {
         run_named_hooks(
             interp,
@@ -1061,14 +1075,14 @@ pub(crate) fn completing_read(
             interp.set_current_buffer_id(minibuffer.buffer_id)?;
         }
 
-        completing_read_contents(interp, args, env)
+        body(interp, env)
     })();
-    restore_completing_read_minibuffer(interp, minibuffer);
+    restore_active_minibuffer(interp, minibuffer);
     result
 }
 
-struct ActiveCompletingRead {
-    buffer_id: u64,
+pub(crate) struct ActiveMinibuffer {
+    pub(crate) buffer_id: u64,
     saved_buffer_id: u64,
     saved_selected_window_id: u64,
     saved_selected_window_buffer_id: u64,
@@ -1082,7 +1096,7 @@ fn activate_completing_read_minibuffer(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut Env,
-) -> Result<ActiveCompletingRead, LispError> {
+) -> Result<ActiveMinibuffer, LispError> {
     let prompt = args
         .first()
         .and_then(string_like)
@@ -1093,6 +1107,47 @@ fn activate_completing_read_minibuffer(
             )
         })?
         .text;
+    let initial_input = completing_read_initial_input(args).unwrap_or_default();
+    let require_match = args.get(3).is_some_and(Value::is_truthy);
+    let map_name = if require_match {
+        "minibuffer-local-must-match-map"
+    } else {
+        "minibuffer-local-completion-map"
+    };
+    let local_map = interp.lookup_var(map_name, env).unwrap_or(Value::Nil);
+    let active = activate_minibuffer(interp, &prompt, &initial_input, local_map, env)?;
+    let buffer_id = active.buffer_id;
+
+    interp.set_buffer_local_value(
+        buffer_id,
+        "minibuffer-completion-table",
+        args.get(1).cloned().unwrap_or(Value::Nil),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "minibuffer-completion-predicate",
+        args.get(2).cloned().unwrap_or(Value::Nil),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "minibuffer--require-match",
+        args.get(3).cloned().unwrap_or(Value::Nil),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "minibuffer-default",
+        args.get(6).cloned().unwrap_or(Value::Nil),
+    );
+    Ok(active)
+}
+
+pub(crate) fn activate_minibuffer(
+    interp: &mut Interpreter,
+    prompt: &str,
+    initial_input: &str,
+    local_map: Value,
+    env: &Env,
+) -> Result<ActiveMinibuffer, LispError> {
     let previous_depth = interp
         .lookup_var("emaxx--minibuffer-depth", env)
         .and_then(|value| value.as_integer().ok())
@@ -1130,40 +1185,13 @@ fn activate_completing_read_minibuffer(
             .map_err(|error| LispError::Signal(error.to_string()))?;
     }
     interp.buffer.goto_char(interp.buffer.point_min());
-    interp.buffer.insert(&prompt);
-    if let Some(initial_input) = completing_read_initial_input(args) {
-        interp.buffer.insert(&initial_input);
+    interp.buffer.insert(prompt);
+    if !initial_input.is_empty() {
+        interp.buffer.insert(initial_input);
     }
     interp.buffer.goto_char(interp.buffer.point_max());
 
-    let require_match = args.get(3).is_some_and(Value::is_truthy);
-    let map_name = if require_match {
-        "minibuffer-local-must-match-map"
-    } else {
-        "minibuffer-local-completion-map"
-    };
-    let local_map = interp.lookup_var(map_name, env).unwrap_or(Value::Nil);
     interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
-    interp.set_buffer_local_value(
-        buffer_id,
-        "minibuffer-completion-table",
-        args.get(1).cloned().unwrap_or(Value::Nil),
-    );
-    interp.set_buffer_local_value(
-        buffer_id,
-        "minibuffer-completion-predicate",
-        args.get(2).cloned().unwrap_or(Value::Nil),
-    );
-    interp.set_buffer_local_value(
-        buffer_id,
-        "minibuffer--require-match",
-        args.get(3).cloned().unwrap_or(Value::Nil),
-    );
-    interp.set_buffer_local_value(
-        buffer_id,
-        "minibuffer-default",
-        args.get(6).cloned().unwrap_or(Value::Nil),
-    );
 
     let active = interp
         .buffer_identity_value(buffer_id)
@@ -1174,9 +1202,9 @@ fn activate_completing_read_minibuffer(
         interp.selected_window_value(),
     );
     interp.set_global_binding("emaxx--minibuffer-depth", Value::Integer(depth));
-    interp.set_global_binding("emaxx--minibuffer-prompt", Value::String(prompt));
+    interp.set_global_binding("emaxx--minibuffer-prompt", Value::String(prompt.into()));
 
-    Ok(ActiveCompletingRead {
+    Ok(ActiveMinibuffer {
         buffer_id,
         saved_buffer_id,
         saved_selected_window_id,
@@ -1188,7 +1216,7 @@ fn activate_completing_read_minibuffer(
     })
 }
 
-fn restore_completing_read_minibuffer(interp: &mut Interpreter, state: ActiveCompletingRead) {
+pub(crate) fn restore_active_minibuffer(interp: &mut Interpreter, state: ActiveMinibuffer) {
     interp.set_global_binding("emaxx--active-minibuffer", state.previous_active);
     interp.set_global_binding(
         "emaxx--active-minibuffer-window",
@@ -1234,6 +1262,16 @@ fn completing_read_contents(
     }
 
     let initial_input = completing_read_initial_input(args);
+    if !interp.kbd_macro_executions.is_empty()
+        && let Some(contents) =
+            crate::lisp::primitives::dispatch::read_minibuffer_text_from_kbd_macro_inner(
+                interp,
+                env,
+                initial_input.as_deref().unwrap_or_default(),
+            )?
+    {
+        return Ok(Value::String(contents));
+    }
     if let Some(initial_input) = initial_input {
         return Ok(Value::String(initial_input));
     }

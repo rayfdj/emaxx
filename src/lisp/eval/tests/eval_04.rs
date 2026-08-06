@@ -783,17 +783,44 @@ fn simulated_minibuffer_keys_preserve_the_callers_prefix_argument() {
 }
 
 #[test]
-fn simulated_minibuffer_keys_restore_the_prompting_buffer_after_hooks() {
+fn simulated_minibuffer_keys_do_not_run_prompting_buffer_local_hooks() {
     assert_eq!(
         eval_str(
-            r#"(let ((outer (current-buffer)))
+            r#"(let ((calls 0))
                  (with-temp-buffer
-                   (let ((inner (current-buffer))
-                         (post-command-hook
-                          (list (lambda () (set-buffer outer)))))
-                     (ert-simulate-keys "nick\r"
-                       (read-string "Nick: "))
-                     (eq inner (current-buffer)))))"#
+                   (let ((prompting-buffer (current-buffer)))
+                     (add-hook 'post-command-hook
+                               (lambda () (setq calls (1+ calls))) nil t)
+                     (let ((answer
+                            (ert-simulate-keys "nick\r"
+                              (read-string "Nick: "))))
+                       (list answer calls
+                             (eq prompting-buffer (current-buffer)))))))"#
+        ),
+        Value::list([Value::String("nick".into()), Value::Integer(0), Value::T,])
+    );
+}
+
+#[test]
+fn completing_read_consumes_keyboard_macro_input_in_the_minibuffer() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defvar emaxx--completion-target-called nil)
+                 (defun emaxx--completion-target ()
+                   (interactive)
+                   (setq emaxx--completion-target-called t))
+                 (defun emaxx--completion-driver (name)
+                   (interactive
+                    (list (completing-read
+                           "Command: " '("emaxx--completion-target"))))
+                   (call-interactively (intern name)))
+                 (global-set-key (kbd "C-t") 'emaxx--completion-driver)
+                 (with-temp-buffer
+                   (execute-kbd-macro
+                    (vconcat (kbd "C-t")
+                             "emaxx--completion-target" [return])))
+                 emaxx--completion-target-called)"#
         ),
         Value::T
     );
