@@ -28,6 +28,121 @@ macro_rules! dispatch_handles {
     };
 }
 
+macro_rules! dispatch_select_builtin_override {
+    ($name:ident, $pattern:pat =>) => {
+        false
+    };
+    ($name:ident, $pattern:pat => builtin_override $(, $rest:ident)*) => {
+        matches!($name, $pattern)
+    };
+    ($name:ident, $pattern:pat => $other:ident $(, $rest:ident)*) => {
+        dispatch_select_builtin_override!($name, $pattern => $($rest),*)
+    };
+}
+
+macro_rules! dispatch_select_resets_undo {
+    ($name:ident, $pattern:pat =>) => {
+        false
+    };
+    ($name:ident, $pattern:pat => resets_undo $(, $rest:ident)*) => {
+        matches!($name, $pattern)
+    };
+    ($name:ident, $pattern:pat => $other:ident $(, $rest:ident)*) => {
+        dispatch_select_resets_undo!($name, $pattern => $($rest),*)
+    };
+}
+
+macro_rules! dispatch_property {
+    ($selector:ident, $name:ident;) => {
+        false
+    };
+    ($selector:ident, $name:ident; , $($rest:tt)*) => {
+        dispatch_property!($selector, $name; $($rest)*)
+    };
+    (
+        $selector:ident, $name:ident;
+        #[dispatch($($property:ident),+)]
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:block
+        $($rest:tt)*
+    ) => {
+        $selector!($name, $pattern => $($property),+)
+            || dispatch_property!($selector, $name; $($rest)*)
+    };
+    (
+        $selector:ident, $name:ident;
+        #[dispatch($($property:ident),+)]
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:expr,
+        $($rest:tt)*
+    ) => {
+        $selector!($name, $pattern => $($property),+)
+            || dispatch_property!($selector, $name; $($rest)*)
+    };
+    (
+        $selector:ident, $name:ident;
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_property!($selector, $name; $($rest)*)
+    };
+    (
+        $selector:ident, $name:ident;
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_property!($selector, $name; $($rest)*)
+    };
+}
+
+macro_rules! dispatch_call {
+    ($name:ident; $($arms:tt)*) => {
+        dispatch_call!(@collect $name [] $($arms)*)
+    };
+    (@collect $name:ident [$($collected:tt)*]) => {
+        match $name {
+            $($collected)*
+            _ => unreachable!("primitive dispatcher called for unsupported name: {}", $name),
+        }
+    };
+    (@collect $name:ident [$($collected:tt)*] , $($rest:tt)*) => {
+        dispatch_call!(@collect $name [$($collected)*] $($rest)*)
+    };
+    (
+        @collect $name:ident [$($collected:tt)*]
+        #[dispatch($($property:ident),+)]
+        $($rest:tt)*
+    ) => {
+        dispatch_call!(@collect $name [$($collected)*] $($rest)*)
+    };
+    (
+        @collect $name:ident [$($collected:tt)*]
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:block
+        $($rest:tt)*
+    ) => {
+        dispatch_call!(@collect $name [
+            $($collected)*
+            $(#[$attribute])*
+            $pattern $(if $guard)? => $body,
+        ] $($rest)*)
+    };
+    (
+        @collect $name:ident [$($collected:tt)*]
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:expr,
+        $($rest:tt)*
+    ) => {
+        dispatch_call!(@collect $name [
+            $($collected)*
+            $(#[$attribute])*
+            $pattern $(if $guard)? => $body,
+        ] $($rest)*)
+    };
+}
+
 macro_rules! define_dispatch {
     (
         $(#[$attribute:meta])*
@@ -43,14 +158,21 @@ macro_rules! define_dispatch {
             dispatch_handles!(name; $($arms)*)
         }
 
+        $visibility fn prefer_builtin(name: &str) -> bool {
+            let _ = name;
+            dispatch_property!(dispatch_select_builtin_override, name; $($arms)*)
+        }
+
+        $visibility fn resets_undo(name: &str) -> bool {
+            let _ = name;
+            dispatch_property!(dispatch_select_resets_undo, name; $($arms)*)
+        }
+
         $(#[$attribute])*
         $visibility fn $call(
             $($argument: $argument_type),*
         ) -> $return_type {
-            match $name {
-                $($arms)*
-                _ => unreachable!("primitive dispatcher called for unsupported name: {}", $name),
-            }
+            dispatch_call!($name; $($arms)*)
         }
     };
 }

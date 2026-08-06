@@ -828,6 +828,7 @@ define_dispatch!(
                     },
                 )
             }
+            #[dispatch(builtin_override)]
             "cl-endp" => {
                 need_args(name, args, 1)?;
                 if is_vector_like_value(interp, &args[0]) {

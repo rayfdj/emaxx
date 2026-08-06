@@ -311,6 +311,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(Value::Float(numeric_to_f64(interp, &args[0])?))
             }
+            #[dispatch(builtin_override)]
             "cl-parse-integer" => parse_cl_integer(args),
             "frexp" => {
                 need_args(name, args, 1)?;

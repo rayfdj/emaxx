@@ -1498,6 +1498,7 @@ define_dispatch!(
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
                 Ok(args[0].clone())
             }
+            #[dispatch(builtin_override)]
             "cl-prin1" => {
                 need_arg_range(name, args, 1, 3)?;
                 let rendered = if matches!(args.get(2), None | Some(Value::Nil)) {
@@ -1557,6 +1558,7 @@ define_dispatch!(
                 sync_print_number_table(env, args.get(2), &print_env);
                 Ok(Value::String(rendered))
             }
+            #[dispatch(builtin_override)]
             "cl-prin1-to-string" => {
                 need_arg_range(name, args, 1, 3)?;
                 if matches!(args.get(2), None | Some(Value::Nil)) {
@@ -1567,6 +1569,7 @@ define_dispatch!(
                 sync_print_number_table(env, args.get(2), &print_env);
                 Ok(rendered)
             }
+            #[dispatch(builtin_override)]
             "cl-print--expand-ellipsis" => {
                 need_args(name, args, 2)?;
                 let parts = args[0].to_vec()?;
@@ -2144,6 +2147,7 @@ define_dispatch!(
                 )?;
                 Ok(if enabled { Value::T } else { Value::Nil })
             }
+            #[dispatch(builtin_override)]
             "header-line-indent-mode" => {
                 let enabled = args
                     .first()
@@ -2267,6 +2271,7 @@ define_dispatch!(
                 font_lock_ensure_region(interp, start, end, env)?;
                 Ok(Value::Nil)
             }
+            #[dispatch(builtin_override)]
             "font-lock-ensure" | "font-lock-fontify-region" => {
                 // font-lock-fontify-region also takes GNU's optional LOUDLY.
                 need_arg_range(name, args, 0, 3)?;
@@ -3791,6 +3796,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 Ok(interp.selected_frame_value())
             }
+            #[dispatch(builtin_override)]
             "face-set-after-frame-default" => {
                 need_arg_range(name, args, 1, 2)?;
                 Ok(Value::Nil)

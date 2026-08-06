@@ -296,6 +296,22 @@ fn dabbrev_word_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '-' || ch == '_'
 }
 
+fn cl_find_class_value(
+    interp: &Interpreter,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    need_args(name, args, 1)?;
+    let symbol = args[0].as_symbol()?;
+    Ok(if let Some(class_value) = interp.class_value(symbol) {
+        class_value
+    } else if is_builtin_class_name(symbol) {
+        Value::Symbol(symbol.into())
+    } else {
+        Value::Nil
+    })
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -671,12 +687,14 @@ define_dispatch!(
                 }
                 Ok(args[2].clone())
             }
+            #[dispatch(builtin_override)]
             "tool-bar-local-item" => {
                 if args.len() < 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 Ok(args[3].clone())
             }
+            #[dispatch(builtin_override)]
             "tool-bar-local-item-from-menu" => {
                 if args.len() < 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -806,6 +824,7 @@ define_dispatch!(
                 }
                 Ok(Value::Integer(start as i64))
             }
+            #[dispatch(builtin_override)]
             "push-button" => {
                 need_arg_range(name, args, 0, 2)?;
                 let pos = args
@@ -1058,6 +1077,7 @@ define_dispatch!(
                     .map(Value::String)
                     .unwrap_or(Value::Nil))
             }
+            #[dispatch(resets_undo)]
             "save-buffer" => {
                 let Some(path) = interp.buffer.file.clone() else {
                     return Ok(Value::Nil);
@@ -2084,11 +2104,13 @@ define_dispatch!(
                     Ok(Value::Nil)
                 }
             }
+            #[dispatch(builtin_override)]
             "byte-compile-check-lambda-list" => {
                 need_args(name, args, 1)?;
                 validate_lambda_params(&args[0])?;
                 Ok(Value::Nil)
             }
+            #[dispatch(builtin_override)]
             "byte-compile" => {
                 need_args(name, args, 1)?;
                 let (compile_target, suppressions) = byte_compile_target_and_suppressions(&args[0]);
@@ -2124,8 +2146,11 @@ define_dispatch!(
                 }
                 Ok(compile_target)
             }
+            #[dispatch(builtin_override)]
             "byte-compile-from-buffer" => byte_compile_from_buffer(interp, args, env),
+            #[dispatch(builtin_override)]
             "byte-compile-file" => byte_compile_file(interp, args, env),
+            #[dispatch(builtin_override)]
             "byte-compile--wide-docstring-p" => {
                 need_args(name, args, 2)?;
                 let docstring = string_text(&args[0])?;
@@ -2136,6 +2161,7 @@ define_dispatch!(
                     Value::Nil
                 })
             }
+            #[dispatch(builtin_override)]
             "byte-decompile-bytecode" => {
                 need_args(name, args, 2)?;
                 if args[0].is_list() {
@@ -2325,6 +2351,7 @@ define_dispatch!(
                     .collect::<Vec<_>>();
                 Ok(Value::list(locals))
             }
+            #[dispatch(builtin_override)]
             "backtrace-expand-ellipses" => {
                 need_arg_range(name, args, 0, 1)?;
                 let no_limit = args.first().is_some_and(Value::is_truthy);
@@ -2684,6 +2711,7 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 2)?;
                 Ok(Value::Nil)
             }
+            #[dispatch(builtin_override)]
             "dired-mark-pop-up" => {
                 need_arg_range(name, args, 4, usize::MAX)?;
                 call_function_value(interp, &args[3], &args[4..], env)
@@ -2987,23 +3015,17 @@ define_dispatch!(
                 };
                 Ok(Value::Symbol(name.into()))
             }
+            #[dispatch(builtin_override)]
             "cl-type-of" => {
                 need_args(name, args, 1)?;
                 Ok(Value::Symbol(cl_type_name(interp, &args[0])?.into()))
             }
             // GNU cl-macs.el defines `cl--find-class' as `(get TYPE 'cl--class)',
             // which projects to the same class storage as `cl-find-class' here.
-            "cl-find-class" | "cl--find-class" => {
-                need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
-                Ok(if let Some(class_value) = interp.class_value(symbol) {
-                    class_value
-                } else if is_builtin_class_name(symbol) {
-                    Value::Symbol(symbol.into())
-                } else {
-                    Value::Nil
-                })
-            }
+            #[dispatch(builtin_override)]
+            "cl-find-class" => cl_find_class_value(interp, name, args),
+            "cl--find-class" => cl_find_class_value(interp, name, args),
+            #[dispatch(builtin_override)]
             "cl--struct-get-class" => {
                 need_args(name, args, 1)?;
                 let symbol = args[0].as_symbol()?;
@@ -3102,6 +3124,7 @@ define_dispatch!(
                 }
                 Ok(table)
             }
+            #[dispatch(builtin_override)]
             "cl-struct-define" => {
                 need_args(name, args, 9)?;
                 let struct_name = args[0].as_symbol()?.to_string();
@@ -3141,6 +3164,7 @@ define_dispatch!(
                 }
                 Ok(Value::Symbol(struct_name))
             }
+            #[dispatch(builtin_override)]
             "cl-old-struct-compat-mode" => {
                 need_args(name, args, 1)?;
                 let enabled = !args[0].is_nil()
@@ -3157,10 +3181,12 @@ define_dispatch!(
                 };
                 Ok(crate::lisp::types::interned_symbol_value(class_name))
             }
+            #[dispatch(builtin_override)]
             "cl--class-parents" => {
                 need_args(name, args, 1)?;
                 interp.class_parents_value(&args[0])
             }
+            #[dispatch(builtin_override)]
             "cl--class-allparents" => {
                 need_args(name, args, 1)?;
                 let Some(symbol) = interp.class_name_from_value(&args[0]) else {
@@ -3176,6 +3202,7 @@ define_dispatch!(
                     },
                 )
             }
+            #[dispatch(builtin_override)]
             "cl--class-children" | "eieio-class-children" => {
                 need_args(name, args, 1)?;
                 if let Some(children) = interp.raw_eieio_class_slot(&args[0], 5) {
@@ -3186,6 +3213,7 @@ define_dispatch!(
                 };
                 Ok(Value::list(interp.class_children(&symbol)))
             }
+            #[dispatch(builtin_override)]
             "class-abstract-p" => {
                 need_args(name, args, 1)?;
                 let Some(symbol) = interp.class_name_from_value(&args[0]) else {
@@ -3205,6 +3233,7 @@ define_dispatch!(
                     });
                 Ok(if abstractp { Value::T } else { Value::Nil })
             }
+            #[dispatch(builtin_override)]
             "same-class-p" => {
                 need_args(name, args, 2)?;
                 let Value::Record(id) = &args[0] else {
@@ -3228,6 +3257,7 @@ define_dispatch!(
                     Value::Nil
                 })
             }
+            #[dispatch(builtin_override)]
             "eieio-oref-default" => {
                 need_args(name, args, 2)?;
                 // GNU accepts a class symbol, a class object, or an instance.
@@ -3308,6 +3338,7 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
+            #[dispatch(builtin_override)]
             "eieio-oset-default" => {
                 need_args(name, args, 3)?;
                 // GNU accepts a class symbol, a class object, or an instance.
@@ -3376,6 +3407,7 @@ define_dispatch!(
                 }
                 Ok(args[2].clone())
             }
+            #[dispatch(builtin_override)]
             "eieio--object-class" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
@@ -3404,6 +3436,7 @@ define_dispatch!(
                     )),
                 }
             }
+            #[dispatch(builtin_override)]
             "eieio--class-children" => {
                 need_args(name, args, 1)?;
                 if let Some(children) = interp.raw_eieio_class_slot(&args[0], 5) {
@@ -3416,6 +3449,7 @@ define_dispatch!(
                 // (`eieio-defclass-internal' pushes the symbol).
                 Ok(Value::list(interp.class_children(&symbol)))
             }
+            #[dispatch(builtin_override)]
             "eieio--class-name" => {
                 need_args(name, args, 1)?;
                 interp
@@ -3423,6 +3457,7 @@ define_dispatch!(
                     .map(Value::Symbol)
                     .ok_or_else(|| LispError::TypeError("class".into(), args[0].type_name()))
             }
+            #[dispatch(builtin_override)]
             "eieio-object-p" => {
                 need_args(name, args, 1)?;
                 Ok(if interp.value_is_eieio_object(&args[0]) {
@@ -3431,11 +3466,13 @@ define_dispatch!(
                     Value::Nil
                 })
             }
+            #[dispatch(builtin_override)]
             "slot-boundp" => {
                 need_args(name, args, 2)?;
                 let slot_name = args[1].as_symbol()?;
                 eieio_slot_boundp(interp, &args[0], slot_name)
             }
+            #[dispatch(builtin_override)]
             "eieio--class-slots" | "eieio--class-class-slots" => {
                 need_args(name, args, 1)?;
                 let raw_index = if name == "eieio--class-slots" { 3 } else { 7 };
@@ -3455,6 +3492,7 @@ define_dispatch!(
                 }
                 Ok(Value::list(items))
             }
+            #[dispatch(builtin_override)]
             "eieio--class-initarg-tuples" => {
                 need_args(name, args, 1)?;
                 if let Some(tuples) = interp.raw_eieio_class_slot(&args[0], 6) {
@@ -3475,6 +3513,7 @@ define_dispatch!(
                 }
                 Ok(Value::list(tuples))
             }
+            #[dispatch(builtin_override)]
             "cl--slot-descriptor-name"
             | "cl--slot-descriptor-initform"
             | "cl--slot-descriptor-type"
@@ -3566,22 +3605,27 @@ define_dispatch!(
                 }
                 clone_eieio_instance(interp, &args[0], &args[1..])
             }
+            #[dispatch(builtin_override)]
             "semanticdb-find-tags-by-class" => {
                 need_arg_range(name, args, 1, 3)?;
                 semanticdb_find_tags_by_class(interp, args, env)
             }
+            #[dispatch(builtin_override)]
             "semanticdb-find-tags-by-name" => {
                 need_arg_range(name, args, 1, 3)?;
                 semanticdb_find_tags_by_name(interp, args, env)
             }
+            #[dispatch(builtin_override)]
             "semanticdb-find-tags-for-completion" => {
                 need_arg_range(name, args, 1, 3)?;
                 semanticdb_find_tags_for_completion(interp, args, env)
             }
+            #[dispatch(builtin_override)]
             "semantic-fetch-tags" => {
                 need_arg_range(name, args, 0, 1)?;
                 semantic_fetch_tags_compat(interp, env)
             }
+            #[dispatch(builtin_override)]
             "semantic-current-tag" => {
                 need_arg_range(name, args, 0, 1)?;
                 let result = semantic_current_tag_compat(interp, env);
@@ -3597,11 +3641,13 @@ define_dispatch!(
                 }
                 result
             }
+            #[dispatch(builtin_override)]
             "semantic-current-tag-of-class" => {
                 need_args(name, args, 1)?;
                 let target_class = args[0].as_symbol()?.to_string();
                 semantic_current_tag_of_class_compat(interp, env, &target_class)
             }
+            #[dispatch(builtin_override)]
             "semantic-find-tag-by-overlay-prev" | "semantic-find-tag-by-overlay-next" => {
                 need_arg_range(name, args, 0, 2)?;
                 let start = match args.first() {
@@ -3633,12 +3679,14 @@ define_dispatch!(
                 }
                 Ok(best.map(|(_, tag)| tag).unwrap_or(Value::Nil))
             }
+            #[dispatch(builtin_override)]
             "semantic-ctxt-current-symbol" => {
                 need_args(name, args, 0)?;
                 Ok(semantic_ctxt_current_symbol(interp)
                     .map(|symbol| symbol.parts_value)
                     .unwrap_or(Value::Nil))
             }
+            #[dispatch(builtin_override)]
             "semantic-ctxt-current-symbol-and-bounds" => {
                 need_args(name, args, 0)?;
                 Ok(if let Some(symbol) = semantic_ctxt_current_symbol(interp) {
@@ -3659,42 +3707,52 @@ define_dispatch!(
                 let thing = args[0].as_symbol()?;
                 Ok(bounds_of_thing_at_point(interp, thing).unwrap_or(Value::Nil))
             }
+            #[dispatch(builtin_override)]
             "semantic-analyze-possible-completions" => {
                 need_args(name, args, 1)?;
                 semantic_analyze_possible_completions(interp, env)
             }
+            #[dispatch(builtin_override)]
             "semantic-analyze-tag-references" => {
                 need_args(name, args, 1)?;
                 semantic_analyze_tag_references(interp, &args[0], env)
             }
+            #[dispatch(builtin_override)]
             "semantic-analyze-refs-impl" => {
                 need_arg_range(name, args, 1, 2)?;
                 semantic_analyze_refs_part(&args[0], 1)
             }
+            #[dispatch(builtin_override)]
             "semantic-analyze-refs-proto" => {
                 need_arg_range(name, args, 1, 2)?;
                 semantic_analyze_refs_part(&args[0], 2)
             }
+            #[dispatch(builtin_override)]
             "semantic-symref-find-references-by-name" => {
                 need_arg_range(name, args, 1, 3)?;
                 semantic_symref_find_references_by_name(interp, &args[0])
             }
+            #[dispatch(builtin_override)]
             "semantic-symref-result-get-files" => {
                 need_args(name, args, 1)?;
                 semantic_symref_result_part(&args[0], 2)
             }
+            #[dispatch(builtin_override)]
             "semantic-symref-result-get-tags" => {
                 need_arg_range(name, args, 1, 2)?;
                 semantic_symref_result_part(&args[0], 3)
             }
+            #[dispatch(builtin_override)]
             "semantic-symref-hits-in-region" => {
                 need_args(name, args, 4)?;
                 semantic_symref_hits_in_region(interp, args, env)
             }
+            #[dispatch(builtin_override)]
             "semantic-symref-test-count-hits-in-tag" => {
                 need_args(name, args, 0)?;
                 semantic_symref_test_count_hits_in_tag(interp)
             }
+            #[dispatch(builtin_override)]
             "semantic-equivalent-tag-p" => {
                 need_args(name, args, 2)?;
                 let matches = semantic_tags_equivalent(&args[0], &args[1]);
@@ -3703,22 +3761,27 @@ define_dispatch!(
                 }
                 Ok(if matches { Value::T } else { Value::Nil })
             }
+            #[dispatch(builtin_override)]
             "semantic-go-to-tag" => {
                 need_arg_range(name, args, 1, 2)?;
                 semantic_go_to_tag(interp, &args[0], env)
             }
+            #[dispatch(builtin_override)]
             "semantic-clear-toplevel-cache" => {
                 need_arg_range(name, args, 0, 1)?;
                 Ok(Value::Nil)
             }
+            #[dispatch(builtin_override)]
             "semanticdb-typecache-find" => {
                 need_arg_range(name, args, 1, 3)?;
                 semanticdb_typecache_find(interp, args, env)
             }
+            #[dispatch(builtin_override)]
             "semanticdb-typecache-add-dependant" => {
                 need_args(name, args, 1)?;
                 Ok(Value::Nil)
             }
+            #[dispatch(builtin_override)]
             "srecode-template-get-table" => {
                 need_arg_range(name, args, 2, 4)?;
                 srecode_template_get_table(interp, args, env)
@@ -3729,6 +3792,7 @@ define_dispatch!(
                 let initargs = args[1].to_vec()?;
                 make_eieio_instance(interp, class_name, &initargs, true, env)
             }
+            #[dispatch(builtin_override)]
             "eieio-oref" | "slot-value" => {
                 need_args(name, args, 2)?;
                 let slot_name = args[1].as_symbol()?.to_string();
@@ -3743,6 +3807,7 @@ define_dispatch!(
                 }
                 eieio_oref_dispatch(interp, env, &args[0], &slot_name)
             }
+            #[dispatch(builtin_override)]
             "eieio-oset" => {
                 need_args(name, args, 3)?;
                 let slot_name = args[1].as_symbol()?.to_string();
@@ -3758,11 +3823,13 @@ define_dispatch!(
                 }
                 eieio_oset_dispatch(interp, env, &args[0], &slot_name, args[2].clone())
             }
+            #[dispatch(builtin_override)]
             "slot-makeunbound" => {
                 need_args(name, args, 2)?;
                 let slot_name = args[1].as_symbol()?.to_string();
                 eieio_slot_makeunbound(interp, &args[0], &slot_name)
             }
+            #[dispatch(builtin_override)]
             "slot-exists-p" => {
                 need_args(name, args, 2)?;
                 let slot_name = args[1].as_symbol()?;
@@ -3784,6 +3851,7 @@ define_dispatch!(
                     Value::Nil
                 })
             }
+            #[dispatch(builtin_override)]
             "map-elt" | "map-contains-key" => {
                 // GNU map.el dispatches on the map's shape: a list is a plist
                 // when its first element is an atom, otherwise an alist;
@@ -3864,11 +3932,13 @@ define_dispatch!(
                     found.unwrap_or(default)
                 })
             }
+            #[dispatch(builtin_override)]
             "ert-set-test" => {
                 need_args(name, args, 2)?;
                 let symbol = args[0].as_symbol()?.to_string();
                 interp.ert_set_test(&symbol, &args[1])
             }
+            #[dispatch(builtin_override)]
             "emaxx--cl-generic-apply-next" => {
                 need_args(name, args, 4)?;
                 let next = &args[0];
@@ -3899,10 +3969,12 @@ define_dispatch!(
                     std::iter::once(Value::Symbol(hook.into())).chain(hook_args),
                 )))
             }
+            #[dispatch(builtin_override)]
             "eieio--class-parents" => {
                 need_args(name, args, 1)?;
                 interp.class_parents_value(&args[0])
             }
+            #[dispatch(builtin_override)]
             "eieio--class-default-object-cache" => {
                 need_args(name, args, 1)?;
                 if let Some(cache) = interp.raw_eieio_class_slot(&args[0], 9) {
@@ -3915,6 +3987,7 @@ define_dispatch!(
                     .class_default_object_cache(&class_name)
                     .unwrap_or(Value::Nil))
             }
+            #[dispatch(builtin_override)]
             "eieio--class-options" => {
                 need_args(name, args, 1)?;
                 if let Some(options) = interp.raw_eieio_class_slot(&args[0], 10) {
@@ -3927,6 +4000,7 @@ define_dispatch!(
                     .get_symbol_property(&class_name, "emaxx-class-options")
                     .unwrap_or(Value::Nil))
             }
+            #[dispatch(builtin_override)]
             "built-in-class-p" => {
                 need_args(name, args, 1)?;
                 Ok(
@@ -3937,11 +4011,13 @@ define_dispatch!(
                     },
                 )
             }
+            #[dispatch(builtin_override)]
             "cl-typep" => {
                 need_args(name, args, 2)?;
                 let matches = cl_typep_matches(interp, env, &args[0], &args[1])?;
                 Ok(if matches { Value::T } else { Value::Nil })
             }
+            #[dispatch(builtin_override)]
             "cl-functionp" => {
                 need_args(name, args, 1)?;
                 Ok(
@@ -3971,6 +4047,7 @@ define_dispatch!(
                 );
                 Ok(Value::Nil)
             }
+            #[dispatch(builtin_override)]
             "url-scheme-get-property" => {
                 // GNU url-methods.el maintains the real scheme registry once
                 // loaded; the native table below is the no-file fallback.

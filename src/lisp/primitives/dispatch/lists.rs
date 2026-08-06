@@ -2033,8 +2033,9 @@ define_dispatch!(
             // Fast native ports of the GNU cl-seq.el sequence functions.  The
             // interpreted Lisp definitions are semantically fine but far too
             // slow for the multi-million-element sequences in
-            // cl-seq-test-bug24264, so these names are also listed in
-            // `prefer_builtin_override'.
+            // cl-seq-test-bug24264, so these arms carry the native-override
+            // metadata consumed by function definition.
+            #[dispatch(builtin_override)]
             "cl-position" => {
                 need_args(name, args, 2)?;
                 let keys = parse_cl_seq_keys(
@@ -2063,6 +2064,7 @@ define_dispatch!(
                 }
                 Ok(result)
             }
+            #[dispatch(builtin_override)]
             "cl-remove" => {
                 need_args(name, args, 2)?;
                 let keys = parse_cl_seq_keys(
@@ -2113,6 +2115,7 @@ define_dispatch!(
                 }
                 cl_seq_rebuild(&args[1], kept)
             }
+            #[dispatch(builtin_override)]
             "cl-substitute" => {
                 need_args(name, args, 3)?;
                 let keys = parse_cl_seq_keys(
@@ -2157,6 +2160,7 @@ define_dispatch!(
                 }
                 cl_seq_rebuild(&args[2], items)
             }
+            #[dispatch(builtin_override)]
             "cl-replace" => {
                 need_args(name, args, 2)?;
                 let keys =
@@ -2203,6 +2207,7 @@ define_dispatch!(
                 }
                 Ok(args[0].clone())
             }
+            #[dispatch(builtin_override)]
             "cl-fill" => {
                 need_args(name, args, 2)?;
                 let keys = parse_cl_seq_keys(&args[2..], &[":start", ":end"])?;
@@ -3096,6 +3101,7 @@ define_dispatch!(
                 set_abbrev_table_entries_from_definitions(interp, &table, &args[1])?;
                 Ok(table)
             }
+            #[dispatch(builtin_override)]
             "read-key" => {
                 need_arg_range(name, args, 0, 2)?;
                 ensure_interaction_allowed(interp, env)?;

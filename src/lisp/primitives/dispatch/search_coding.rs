@@ -676,6 +676,7 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
+            #[dispatch(resets_undo)]
             "replace-buffer-contents" => {
                 need_arg_range(name, args, 1, 3)?;
                 let source_id = interp.resolve_buffer_id(&args[0])?;
@@ -1155,7 +1156,9 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
 
+            #[dispatch(resets_undo)]
             "insert-before-markers" => insert_impl(interp, args, env, false, true),
+            #[dispatch(resets_undo)]
             "insert-before-markers-and-inherit" => insert_impl(interp, args, env, true, true),
         }
     }

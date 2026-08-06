@@ -451,8 +451,10 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             // ── Buffer operations ──
+            #[dispatch(resets_undo)]
             "insert" => insert_impl(interp, args, env, false, false),
             "insert-and-inherit" => insert_impl(interp, args, env, true, false),
+            #[dispatch(resets_undo)]
             "insert-char" => insert_char_impl(interp, args, env),
             "self-insert-command" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -2011,6 +2013,7 @@ define_dispatch!(
                 }
                 Ok(Value::String(interp.buffer.name.clone()))
             }
+            #[dispatch(resets_undo)]
             "set-buffer-multibyte" => {
                 need_args(name, args, 1)?;
                 let enabled = args[0].is_truthy();
@@ -2176,6 +2179,7 @@ define_dispatch!(
             } else {
                 Value::Nil
             }),
+            #[dispatch(resets_undo)]
             "delete-region" => {
                 need_args(name, args, 2)?;
                 let from = position_from_value(interp, &args[0])?;
@@ -2184,6 +2188,7 @@ define_dispatch!(
                 delete_region_with_hooks(interp, from, to, env)?;
                 Ok(Value::Nil)
             }
+            #[dispatch(resets_undo)]
             "delete-and-extract-region" => {
                 need_args(name, args, 2)?;
                 let from = position_from_value(interp, &args[0])?;
@@ -2198,12 +2203,14 @@ define_dispatch!(
                     multibyte,
                 ))
             }
+            #[dispatch(resets_undo)]
             "kill-region" => {
                 let result = super::call(interp, "delete-region", args, env)?;
                 // GNU kill-region records itself for kill-append chaining.
                 interp.set_variable("this-command", Value::Symbol("kill-region".into()), env);
                 Ok(result)
             }
+            #[dispatch(resets_undo)]
             "delete-line" | "kill-whole-line" => {
                 need_arg_range(name, args, 0, 0)?;
                 let start = interp.buffer.beginning_of_line();
@@ -2219,6 +2226,7 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
+            #[dispatch(resets_undo)]
             "delete-horizontal-space" => {
                 need_arg_range(name, args, 0, 1)?;
                 let backward_only = args.first().is_some_and(Value::is_truthy);
@@ -2251,6 +2259,7 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
+            #[dispatch(resets_undo)]
             "delete-char" => {
                 let n = if args.is_empty() {
                     1
@@ -2286,6 +2295,7 @@ define_dispatch!(
                     .unwrap_or(1);
                 super::call(interp, "delete-char", &[Value::Integer(-count)], env)
             }
+            #[dispatch(resets_undo)]
             "delete-forward-char" => {
                 if interp.buffer.mark_active()
                     && interp
@@ -2308,6 +2318,7 @@ define_dispatch!(
                 };
                 super::call(interp, "delete-char", &[Value::Integer(n)], env)
             }
+            #[dispatch(resets_undo)]
             "kill-word" => {
                 let count = if args.is_empty() {
                     1
@@ -2325,6 +2336,7 @@ define_dispatch!(
                     env,
                 )
             }
+            #[dispatch(resets_undo)]
             "erase-buffer" => {
                 let size = interp.buffer.buffer_size();
                 if size > 0 {
@@ -3568,6 +3580,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 object_intervals_value(interp, &args[0])
             }
+            #[dispatch(resets_undo)]
             "put-text-property" => {
                 if args.len() < 4 || args.len() > 5 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -3623,6 +3636,7 @@ define_dispatch!(
                 }
                 Ok(Value::T)
             }
+            #[dispatch(resets_undo)]
             "add-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -3670,6 +3684,7 @@ define_dispatch!(
                 }
                 Ok(Value::T)
             }
+            #[dispatch(resets_undo)]
             "set-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -3760,6 +3775,7 @@ define_dispatch!(
                     Ok(Value::Nil)
                 }
             }
+            #[dispatch(builtin_override)]
             "dired-restore-positions" => {
                 need_args(name, args, 1)?;
                 let positions = args[0].to_vec()?;
@@ -3786,6 +3802,7 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
+            #[dispatch(resets_undo)]
             "remove-list-of-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -3833,6 +3850,7 @@ define_dispatch!(
                 }
                 Ok(Value::T)
             }
+            #[dispatch(resets_undo)]
             "remove-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -3879,13 +3897,17 @@ define_dispatch!(
                 }
                 Ok(Value::T)
             }
+            #[dispatch(resets_undo)]
             "add-face-text-property" => add_face_text_property(interp, name, args),
+            #[dispatch(resets_undo)]
             "font-lock-append-text-property" => {
                 font_lock_add_text_property(interp, name, args, true)
             }
+            #[dispatch(resets_undo)]
             "font-lock-prepend-text-property" => {
                 font_lock_add_text_property(interp, name, args, false)
             }
+            #[dispatch(resets_undo)]
             "font-lock--remove-face-from-text-property" => {
                 need_arg_range(name, args, 4, 5)?;
                 let prop = args[2].as_symbol()?.to_string();
