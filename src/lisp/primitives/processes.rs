@@ -1177,6 +1177,37 @@ pub(crate) fn delete_process_notifying(
     }
 }
 
+fn network_io_error_detail(error: &std::io::Error) -> String {
+    let rendered = error.to_string();
+    match rendered.split_once(" (os error") {
+        Some((detail, _)) => detail.into(),
+        None => rendered,
+    }
+}
+
+pub(super) fn network_server_error(error: &std::io::Error) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::symbol("file-error"),
+        Value::string("Cannot bind server socket"),
+        Value::string(&network_io_error_detail(error)),
+    ]))
+}
+
+pub(super) fn network_client_error(error: &std::io::Error, args: &[Value]) -> LispError {
+    let condition = if error.kind() == std::io::ErrorKind::NotFound {
+        "file-missing"
+    } else {
+        "file-error"
+    };
+    let mut data = vec![
+        Value::symbol(condition),
+        Value::string("make client process failed"),
+        Value::string(&network_io_error_detail(error)),
+    ];
+    data.extend_from_slice(args);
+    LispError::SignalValue(Value::list(data))
+}
+
 /// Create a network server (`:server t`) or client stream.  emaxx models
 /// the subset erc-d exercises: a local/ipv4 TCP server with :filter,
 /// :sentinel and :log, plus TCP client streams.
@@ -1272,7 +1303,13 @@ pub(crate) fn make_network_process(
         let address_port = service.unwrap_or(0) as u16;
         let address =
             std::net::ToSocketAddrs::to_socket_addrs(&(address_host.as_str(), address_port))
-                .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?
+                .map_err(|error| {
+                    if is_server {
+                        network_server_error(&error)
+                    } else {
+                        network_client_error(&error, args)
+                    }
+                })?
                 .find(|address| !family_ipv4 || address.is_ipv4())
                 .ok_or_else(|| {
                     LispError::Signal(format!(
@@ -1290,10 +1327,20 @@ pub(crate) fn make_network_process(
             };
             std::net::UdpSocket::bind(local)
         }
-        .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
-        socket
-            .set_nonblocking(true)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+        .map_err(|error| {
+            if is_server {
+                network_server_error(&error)
+            } else {
+                network_client_error(&error, args)
+            }
+        })?;
+        socket.set_nonblocking(true).map_err(|error| {
+            if is_server {
+                network_server_error(&error)
+            } else {
+                network_client_error(&error, args)
+            }
+        })?;
         let local_addr = socket.local_addr().ok();
         let remote = (!is_server).then_some(address);
         if let Some(local_addr) = local_addr {
@@ -1348,10 +1395,10 @@ pub(crate) fn make_network_process(
         })?;
         if is_server {
             let listener = std::os::unix::net::UnixListener::bind(&path)
-                .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+                .map_err(|error| network_server_error(&error))?;
             listener
                 .set_nonblocking(true)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
+                .map_err(|error| network_server_error(&error))?;
             plist_items_put(&mut contact_items, ":local", Value::String(path.clone()));
             return interp.create_network_process(
                 &name,
@@ -1370,10 +1417,10 @@ pub(crate) fn make_network_process(
             );
         }
         let stream = std::os::unix::net::UnixStream::connect(&path)
-            .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+            .map_err(|error| network_client_error(&error, args))?;
         stream
             .set_nonblocking(true)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+            .map_err(|error| network_client_error(&error, args))?;
         plist_items_put(&mut contact_items, ":remote", Value::String(path.clone()));
         plist_items_put(&mut contact_items, ":local", Value::String(String::new()));
         let process = interp.create_network_process(
@@ -1406,7 +1453,7 @@ pub(crate) fn make_network_process(
         let listener = if family_ipv4 {
             let address =
                 std::net::ToSocketAddrs::to_socket_addrs(&(bind_host.as_str(), bind_port))
-                    .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?
+                    .map_err(|error| network_server_error(&error))?
                     .find(std::net::SocketAddr::is_ipv4)
                     .ok_or_else(|| {
                         LispError::Signal(format!(
@@ -1417,10 +1464,10 @@ pub(crate) fn make_network_process(
         } else {
             std::net::TcpListener::bind((bind_host.as_str(), bind_port))
         }
-        .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+        .map_err(|error| network_server_error(&error))?;
         listener
             .set_nonblocking(true)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+            .map_err(|error| network_server_error(&error))?;
         let local_addr = listener.local_addr().ok();
         let bound_port = local_addr.map(|addr| addr.port() as i64).or(service);
         if let Some(port) = bound_port {
@@ -1448,10 +1495,10 @@ pub(crate) fn make_network_process(
         let connect_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
         let stream =
             std::net::TcpStream::connect((connect_host.as_str(), service.unwrap_or(0) as u16))
-                .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+                .map_err(|error| network_client_error(&error, args))?;
         stream
             .set_nonblocking(true)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+            .map_err(|error| network_client_error(&error, args))?;
         if let Ok(addr) = stream.peer_addr() {
             plist_items_put(&mut contact_items, ":remote", sockaddr_vector(addr));
         }

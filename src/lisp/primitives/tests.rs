@@ -11187,6 +11187,38 @@ fn native_datagram_addresses_track_udp_peer_state_and_contact_metadata() {
 }
 
 #[test]
+fn native_network_socket_errors_preserve_gnu_file_conditions() {
+    let server = crate::lisp::eval::error_condition_value(&processes::network_server_error(
+        &std::io::Error::from_raw_os_error(libc::EPERM),
+    ))
+    .to_vec()
+    .expect("server error should be a condition list");
+    assert_eq!(server[0], Value::symbol("file-error"));
+    assert_eq!(server[1], Value::string("Cannot bind server socket"));
+    assert!(
+        !string_text(&server[2])
+            .expect("server detail should be a string")
+            .contains("(os error")
+    );
+
+    let args = [Value::symbol(":name"), Value::string("probe")];
+    let client = crate::lisp::eval::error_condition_value(&processes::network_client_error(
+        &std::io::Error::from_raw_os_error(libc::ENOENT),
+        &args,
+    ))
+    .to_vec()
+    .expect("client error should be a condition list");
+    assert_eq!(client[0], Value::symbol("file-missing"));
+    assert_eq!(client[1], Value::string("make client process failed"));
+    assert!(
+        !string_text(&client[2])
+            .expect("client detail should be a string")
+            .contains("(os error")
+    );
+    assert_eq!(&client[3..], args.as_slice());
+}
+
+#[test]
 fn native_udp_event_pump_preserves_datagrams_and_updates_the_reply_peer() {
     let program = r#"(progn
                        (setq emaxx-test-udp-received nil)
