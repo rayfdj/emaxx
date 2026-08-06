@@ -36,15 +36,16 @@ handoff and retry instruction are in
   `target/compat/run-1786025390850455000-12418`; Comint's oracle-only failure
   passed immediately in isolation.  Backquote, Dired/Dired Aux, ERC Stamp,
   Eshell, LS Lisp, Newcomment, Macroexp, ERC, Edebug, Kmacro, and Mule are
-  repaired, leaving seven known files/themes: Electric's 874-test subject
-  timeout, ERT Font Lock, Viper undo, Eshell control-code display, HL-Line
-  stickiness, Isearch invisibility, and TRAMP shell-prompt startup.  Macroexp
+  repaired, leaving six known files/themes: Electric's 874-test subject
+  timeout, ERT Font Lock, Eshell control-code display, HL-Line stickiness,
+  Isearch invisibility, and TRAMP shell-prompt startup.  Macroexp
   is fully green in
   `target/compat/run-1786032407892199000-55821`; full ERC is green in
   `target/compat/run-1786033566972886000-56817`; full Kmacro is green in
   `target/compat/run-1786036330691925000-60434`; and full Edebug is green in
   `target/compat/run-1786036349252896000-60588`.  Full Mule is green in
-  `target/compat/run-1786037344431196000-62043`.
+  `target/compat/run-1786037344431196000-62043`; full Viper is green in
+  `target/compat/run-1786044170066876000-67710`.
 
   The repair also removes several drift-prone parallel registries.  Every
   synthesized startup value now inherits special-variable semantics from its
@@ -64,9 +65,12 @@ handoff and retry instruction are in
   special-form registry instead of a divergent copy.  Prefix keys now run a
   real shared command cycle, so package hooks preserve scoped state across
   C-u/digit/minus input; the live minibuffer buffer, rather than a parallel
-  side string, is authoritative for simulated edits.  Focused invariants and
-  regressions, formatting, diff check, regenerated/rustfmt-normalized autoload
-  validation, all-target/all-feature check, and strict Clippy pass.  Native
+  side string, is authoritative for simulated edits.  Each buffer now exposes
+  one stable, incrementally extended Lisp undo-list view, preserving GNU
+  change-group tail identity instead of rebuilding a detached parallel list.
+  Focused invariants and regressions, formatting, diff check,
+  regenerated/rustfmt-normalized autoload validation, all-target/all-feature
+  check, and strict Clippy pass.  Native
   remains 1,420/1,420; the frontier remains 4,582/7,080 (2,498 selectors left)
   until the cumulative replay is fully green, after which selector 4,583 is
   next.

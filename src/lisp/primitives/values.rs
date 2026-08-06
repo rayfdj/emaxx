@@ -1,45 +1,7 @@
 use super::*;
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
-    if buffer.undo_is_disabled() {
-        return Value::T;
-    }
-    let mut entries = buffer
-        .undo_entries()
-        .iter()
-        .rev()
-        .map(|entry| match entry {
-            // GNU records an insertion as (BEG . END).
-            crate::buffer::UndoEntry::Insert { pos, len } => Value::cons(
-                Value::Integer(*pos as i64),
-                Value::Integer((*pos + *len) as i64),
-            ),
-            crate::buffer::UndoEntry::Delete { pos, text, .. } => {
-                Value::cons(Value::String(text.clone()), Value::Integer(*pos as i64))
-            }
-            crate::buffer::UndoEntry::Combined { display, .. }
-            | crate::buffer::UndoEntry::Opaque(display) => display.clone(),
-            crate::buffer::UndoEntry::Boundary => Value::Nil,
-        })
-        .collect::<Vec<_>>();
-    entries.extend(buffer.undo_meta_entries().iter().rev().cloned());
-    if buffer.file.is_some()
-        && buffer.undo_entries().iter().any(|entry| {
-            matches!(
-                entry,
-                crate::buffer::UndoEntry::Insert { .. } | crate::buffer::UndoEntry::Delete { .. }
-            )
-        })
-    {
-        entries.push(Value::list([
-            Value::T,
-            Value::Integer(0),
-            Value::Integer(0),
-            Value::Integer(0),
-            Value::Integer(0),
-        ]));
-    }
-    Value::list(entries)
+    buffer.undo_list_value()
 }
 
 pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {

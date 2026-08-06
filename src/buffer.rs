@@ -2,6 +2,7 @@
 
 use crate::lisp::types::Value;
 use ropey::Rope;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::SystemTime;
 
@@ -79,6 +80,13 @@ pub struct Buffer {
     /// `buffer-undo-list` matches Emacs more closely.
     undo_meta: Vec<Value>,
 
+    /// Stable Lisp view of the undo log.  GNU change-group handles retain a
+    /// tail of `buffer-undo-list' and later compare/mutate that exact cons
+    /// structure, so rebuilding an equal-looking list on every read is not
+    /// sufficient.  Appending a native undo entry extends this view at the
+    /// front while preserving the identity of its existing tail.
+    undo_list_view: UndoListViewCache,
+
     /// When true, don't record undo entries.
     undo_disabled: bool,
 
@@ -115,6 +123,51 @@ pub enum UndoEntry {
     Opaque(Value),
     /// Boundary between undo groups.
     Boundary,
+}
+
+#[derive(Clone)]
+struct UndoListView {
+    value: Value,
+    undo_len: usize,
+    meta_len: usize,
+    file_present: bool,
+    has_file_marker: bool,
+}
+
+#[derive(Default)]
+struct UndoListViewCache(RefCell<Option<UndoListView>>);
+
+impl Clone for UndoListViewCache {
+    fn clone(&self) -> Self {
+        // A cloned buffer is an independent text/undo snapshot.  Rebuild its
+        // view lazily so destructive Lisp mutation cannot cross buffer state.
+        Self::default()
+    }
+}
+
+fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
+    match entry {
+        // GNU records an insertion as (BEG . END).
+        UndoEntry::Insert { pos, len } => Value::cons(
+            Value::Integer(*pos as i64),
+            Value::Integer((*pos + *len) as i64),
+        ),
+        UndoEntry::Delete { pos, text, .. } => {
+            Value::cons(Value::String(text.clone()), Value::Integer(*pos as i64))
+        }
+        UndoEntry::Combined { display, .. } | UndoEntry::Opaque(display) => display.clone(),
+        UndoEntry::Boundary => Value::Nil,
+    }
+}
+
+fn undo_file_marker() -> Value {
+    Value::list([
+        Value::T,
+        Value::Integer(0),
+        Value::Integer(0),
+        Value::Integer(0),
+        Value::Integer(0),
+    ])
 }
 
 #[derive(Clone, Debug)]
@@ -190,6 +243,7 @@ impl Buffer {
             visited_file_modtime: None,
             undo_list: Vec::new(),
             undo_meta: Vec::new(),
+            undo_list_view: UndoListViewCache::default(),
             undo_disabled: false,
             overlays: Vec::new(),
             text_properties: Vec::new(),
@@ -222,6 +276,7 @@ impl Buffer {
             visited_file_modtime: None,
             undo_list: Vec::new(),
             undo_meta: Vec::new(),
+            undo_list_view: UndoListViewCache::default(),
             undo_disabled: false,
             overlays: Vec::new(),
             text_properties: Vec::new(),
@@ -790,7 +845,7 @@ impl Buffer {
 
         // Record undo
         if !self.undo_disabled {
-            self.undo_list.push(UndoEntry::Insert {
+            self.push_undo_entry(UndoEntry::Insert {
                 pos: insert_at,
                 len: nchars,
             });
@@ -835,13 +890,13 @@ impl Buffer {
         if !self.undo_disabled && !noundo {
             let old: String = self.text.slice(from0..to0).to_string();
             let props = self.substring_property_spans(from, to);
-            self.undo_list.push(UndoEntry::Delete {
+            self.push_undo_entry(UndoEntry::Delete {
                 pos: from,
                 text: old,
                 props,
                 markers: Vec::new(),
             });
-            self.undo_list.push(UndoEntry::Insert {
+            self.push_undo_entry(UndoEntry::Insert {
                 pos: from,
                 len: text.chars().count(),
             });
@@ -879,7 +934,7 @@ impl Buffer {
         let nchars = to - from;
 
         if !self.undo_disabled {
-            self.undo_list.push(UndoEntry::Delete {
+            self.push_undo_entry(UndoEntry::Delete {
                 pos: from,
                 text: deleted.clone(),
                 props: deleted_props,
@@ -1027,6 +1082,9 @@ impl Buffer {
     }
 
     pub fn enable_undo(&mut self) {
+        if self.undo_disabled {
+            self.invalidate_undo_list_view();
+        }
         self.undo_disabled = false;
     }
 
@@ -1034,33 +1092,87 @@ impl Buffer {
         self.undo_disabled = true;
         self.undo_list.clear();
         self.undo_meta.clear();
+        self.invalidate_undo_list_view();
     }
 
     pub fn undo_entries(&self) -> &[UndoEntry] {
         &self.undo_list
     }
 
-    pub fn undo_is_disabled(&self) -> bool {
-        self.undo_disabled
-    }
-
     pub fn undo_groups(&self) -> Vec<Vec<UndoEntry>> {
         self.collect_undo_groups()
     }
 
-    pub fn undo_meta_entries(&self) -> &[Value] {
-        &self.undo_meta
+    pub fn undo_list_value(&self) -> Value {
+        if self.undo_disabled {
+            return Value::T;
+        }
+
+        let has_file_marker = self.file.is_some()
+            && self
+                .undo_list
+                .iter()
+                .any(|entry| matches!(entry, UndoEntry::Insert { .. } | UndoEntry::Delete { .. }));
+        if let Some(view) = self.undo_list_view.0.borrow().as_ref()
+            && view.undo_len == self.undo_list.len()
+            && view.meta_len == self.undo_meta.len()
+            && view.file_present == self.file.is_some()
+            && view.has_file_marker == has_file_marker
+        {
+            return view.value.clone();
+        }
+
+        let mut entries = self
+            .undo_list
+            .iter()
+            .rev()
+            .map(undo_entry_lisp_value)
+            .collect::<Vec<_>>();
+        entries.extend(self.undo_meta.iter().rev().cloned());
+        if has_file_marker {
+            entries.push(undo_file_marker());
+        }
+        let value = Value::list(entries);
+        *self.undo_list_view.0.borrow_mut() = Some(UndoListView {
+            value: value.clone(),
+            undo_len: self.undo_list.len(),
+            meta_len: self.undo_meta.len(),
+            file_present: self.file.is_some(),
+            has_file_marker,
+        });
+        value
+    }
+
+    pub fn invalidate_undo_list_view(&self) {
+        *self.undo_list_view.0.borrow_mut() = None;
     }
 
     pub fn push_undo_meta(&mut self, entry: Value) {
         // Meta entries (marker adjustments, ...) live in the main undo list
         // as opaque riders so the Lisp `buffer-undo-list' view keeps
         // chronological order (change groups reason about it by position).
-        self.undo_list.push(UndoEntry::Opaque(entry));
+        self.push_undo_entry(UndoEntry::Opaque(entry));
     }
 
     pub fn push_undo_entry(&mut self, entry: UndoEntry) {
+        let entry_is_text = matches!(entry, UndoEntry::Insert { .. } | UndoEntry::Delete { .. });
+        let entry_value = undo_entry_lisp_value(&entry);
         self.undo_list.push(entry);
+        let file_present = self.file.is_some();
+        let mut view = self.undo_list_view.0.borrow_mut();
+        if let Some(view) = view.as_mut() {
+            let has_file_marker = file_present && (view.has_file_marker || entry_is_text);
+            if view.undo_len + 1 == self.undo_list.len()
+                && view.meta_len == self.undo_meta.len()
+                && view.file_present == file_present
+                && view.has_file_marker == has_file_marker
+            {
+                view.value = Value::cons(entry_value, view.value.clone());
+                view.undo_len += 1;
+                return;
+            }
+        }
+        *view = None;
     }
 
     pub fn undo_len(&self) -> usize {
@@ -1068,7 +1180,9 @@ impl Buffer {
     }
 
     pub fn take_undo_entries_since(&mut self, start: usize) -> Vec<UndoEntry> {
-        self.undo_list.split_off(start)
+        let entries = self.undo_list.split_off(start);
+        self.invalidate_undo_list_view();
+        entries
     }
 
     pub fn attach_markers_to_last_delete(&mut self, markers: Vec<UndoMarker>) {
@@ -1086,16 +1200,18 @@ impl Buffer {
 
     pub fn push_undo_boundary(&mut self) {
         if !matches!(self.undo_list.last(), Some(UndoEntry::Boundary)) {
-            self.undo_list.push(UndoEntry::Boundary);
+            self.push_undo_entry(UndoEntry::Boundary);
         }
     }
 
     pub fn clear_undo_history(&mut self) {
         self.undo_list.clear();
         self.undo_meta.clear();
+        self.invalidate_undo_list_view();
     }
 
     pub fn take_undo_state(&mut self) -> UndoState {
+        self.invalidate_undo_list_view();
         UndoState {
             entries: std::mem::take(&mut self.undo_list),
             metadata: std::mem::take(&mut self.undo_meta),
@@ -1107,6 +1223,7 @@ impl Buffer {
         self.undo_list = state.entries;
         self.undo_meta = state.metadata;
         self.undo_disabled = state.disabled;
+        self.invalidate_undo_list_view();
     }
 
     pub fn modified_tick(&self) -> ModCount {
@@ -1337,6 +1454,7 @@ impl Buffer {
     }
 
     fn pop_latest_undo_group(&mut self) -> Result<Vec<UndoEntry>, BufferError> {
+        self.invalidate_undo_list_view();
         while matches!(self.undo_list.last(), Some(UndoEntry::Boundary)) {
             self.undo_list.pop();
         }
@@ -1362,6 +1480,7 @@ impl Buffer {
         &mut self,
         skip_newest_groups: usize,
     ) -> Result<Vec<UndoEntry>, BufferError> {
+        self.invalidate_undo_list_view();
         let mut end = self.undo_list.len();
         while end > 0 && matches!(self.undo_list[end - 1], UndoEntry::Boundary) {
             end -= 1;
@@ -1423,6 +1542,7 @@ impl Buffer {
     }
 
     fn restore_undo_groups(&mut self, groups: &[Vec<UndoEntry>]) {
+        self.invalidate_undo_list_view();
         self.undo_list.clear();
         for (index, group) in groups.iter().enumerate() {
             self.undo_list.extend(group.iter().cloned());

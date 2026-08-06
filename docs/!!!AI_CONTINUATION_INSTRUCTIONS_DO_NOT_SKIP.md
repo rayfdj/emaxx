@@ -24,15 +24,16 @@ counts as the progress denominator.
   in `target/compat/run-1786025390850455000-12418`; Comint's oracle-only
   failure passed immediately in isolation.  Backquote, Dired/Dired Aux, ERC
   Stamp, Eshell, LS Lisp, Newcomment, Macroexp, ERC, Edebug, Kmacro, and Mule
-  are repaired.  Seven known files/themes remain: Electric's 874-test subject
-  timeout, ERT Font Lock, Viper undo, Eshell control-code display, HL-Line
-  stickiness, Isearch invisibility, and TRAMP shell-prompt startup.  Macroexp
+  are repaired.  Six known files/themes remain: Electric's 874-test subject
+  timeout, ERT Font Lock, Eshell control-code display, HL-Line stickiness,
+  Isearch invisibility, and TRAMP shell-prompt startup.  Macroexp
   is fully green in
   `target/compat/run-1786032407892199000-55821`; full ERC is green in
   `target/compat/run-1786033566972886000-56817`; full Kmacro is green in
   `target/compat/run-1786036330691925000-60434`; and full Edebug is green in
   `target/compat/run-1786036349252896000-60588`.  Full Mule is green in
-  `target/compat/run-1786037344431196000-62043`.
+  `target/compat/run-1786037344431196000-62043`; full Viper is green in
+  `target/compat/run-1786044170066876000-67710`.
 
   The repair removes drift-prone parallel registries: synthesized startup
   values automatically imply special binding semantics; native per-buffer
@@ -51,7 +52,10 @@ counts as the progress denominator.
   of a second list.  C-u/digit/minus input runs one shared prefix-command
   lifecycle so package hooks preserve scoped state; simulated readers now
   return the live minibuffer buffer's contents instead of a divergent side
-  string.  Focused invariants and regressions, formatting, diff check,
+  string.  Each buffer's native undo log now owns one stable, incrementally
+  extended Lisp view, so GNU change-group handles retain real tail identity
+  instead of observing detached equal-looking lists.  Focused invariants and
+  regressions, formatting, diff check,
   regenerated/rustfmt-normalized autoload validation, all-target/all-feature
   check, and strict Clippy pass.  Native remains 1,420/1,420.  Do not resume
   selector 4,583 until the remaining cumulative mismatches and final 1..4,582
