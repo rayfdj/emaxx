@@ -44,7 +44,9 @@ counts as the progress denominator.
   the same atomic path, and timer queues rely on their lazy default registry
   instead of a redundant name list.  Native per-buffer
   names, always-local status, and effective permanence are one typed
-  manifest; and `local-variable-p` consumes that registered metadata.  GNU
+  manifest; `local-variable-p` consumes that registered metadata, and the old
+  seven-name `auto_buffer_locals` shadow subset is gone.  Only two Lisp-owned
+  `defvar-local` bootstrap names remain pre-seeded.  GNU
   primitive, arity, and dumped-autoload metadata remain generated and
   whole-manifest tested.  Byte compilation uses real scoped special bindings;
   bootstrap ERT expands bodies at definition time; the synthetic

@@ -2512,17 +2512,10 @@ impl Interpreter {
             buffer_locals: Vec::new(),
             buffer_syntax_tables: Vec::new(),
             auto_buffer_locals: vec![
-                "case-fold-search".into(),
                 // font-core.el: (defvar-local font-lock-defaults nil)
                 "font-lock-defaults".into(),
                 // syntax.el: (defvar-local syntax-propertize--done -1)
                 "syntax-propertize--done".into(),
-                "cursor-in-non-selected-windows".into(),
-                "left-margin".into(),
-                "line-spacing".into(),
-                "overwrite-mode".into(),
-                "scroll-up-aggressively".into(),
-                "vertical-scroll-bar".into(),
             ],
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
