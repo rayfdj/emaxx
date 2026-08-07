@@ -1072,6 +1072,17 @@ pub(crate) struct CombinedAfterChangeState {
     pub(crate) changes: Vec<(i64, i64, i64)>,
 }
 
+/// A memoized funcall resolution for a symbol callee (see
+/// `function_resolution_cache`).
+#[derive(Clone)]
+pub(crate) enum FunctionResolution {
+    /// Direct native dispatch by name is valid; carries the name facts so
+    /// the hit path performs no facts probe at all.
+    DirectBuiltin(crate::lisp::primitives::NameFacts),
+    /// The name resolved to this exact function value.
+    Resolved(Value),
+}
+
 /// Which standard hash-table test a runtime-accelerated table uses; custom
 /// user tests stay on the entry-list slow path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -1087,7 +1098,7 @@ pub(crate) enum RuntimeHashTest {
 struct EqualHashTableState {
     test: RuntimeHashTest,
     entries: Vec<(Value, Value)>,
-    key_index: HashMap<Option<i64>, Vec<usize>>,
+    key_index: HashMap<Option<i64>, Vec<usize>, crate::lisp::primitives::FnvBuildHasher>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1602,7 +1613,7 @@ pub struct Interpreter {
     special_variables: Vec<String>,
     /// Membership index over `special_variables` so hot binding paths can
     /// test specialness in O(1).
-    special_variables_index: HashSet<String>,
+    special_variables_index: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Names ever declared locally special via a non-top-level one-arg
     /// `defvar`; lets of other names skip the env marker scan entirely.
     local_special_names: HashSet<String>,
@@ -1810,6 +1821,12 @@ pub struct Interpreter {
     /// Bumped on every function/macro (re)definition; validates the
     /// `not_macro_names` verdicts below.
     definition_generation: u64,
+    /// Per-name funcall resolutions stamped with the generation they were
+    /// computed at; consulted only when the env carries no
+    /// cl-flet/cl-labels frames, so repeat calls skip name-facts probes
+    /// and function-cell lookup entirely (see call_function_value_inner).
+    pub(crate) function_resolution_cache:
+        HashMap<String, (u64, FunctionResolution), crate::lisp::primitives::FnvBuildHasher>,
     /// Names the macroexpansion probe determined are NOT macros, from
     /// GLOBAL state only (no cl-flet frame involved), stamped with the
     /// generation that verdict was computed at.  Skips the whole probe on
@@ -2209,7 +2226,7 @@ impl Interpreter {
             ],
             variable_aliases: Vec::new(),
             variable_aliases_index: HashMap::new(),
-            special_variables_index: HashSet::new(),
+            special_variables_index: HashSet::default(),
             local_special_names: HashSet::new(),
             soft_special_names: HashSet::new(),
             dlet_active_names: HashMap::new(),
@@ -2528,6 +2545,7 @@ impl Interpreter {
             functions_index: HashMap::default(),
             network_connect_counter: 0,
             definition_generation: 0,
+            function_resolution_cache: HashMap::default(),
             not_macro_names: HashMap::new(),
             macro_expansion_cache: HashMap::new(),
             lambda_source_bodies: HashMap::new(),
