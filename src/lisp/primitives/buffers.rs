@@ -458,24 +458,46 @@ pub(crate) fn vector_root_slot(value: &Value) -> Option<ConsSlot> {
     }
 }
 
+/// Run OP against the cached slot vector of VALUE without cloning the
+/// `Rc<Vec>` per access; a cold cache falls back to the filling path.
+fn with_vector_slots<T>(value: &Value, op: impl Fn(&[ConsSlot]) -> Option<T>) -> Option<T> {
+    let root = vector_root_slot(value)?;
+    let key = Rc::as_ptr(&root) as usize;
+    let mut hit = false;
+    let cached = VECTOR_SLOT_CACHE.with_borrow(|cache| {
+        let (cached_root, slots) = cache.get(&key)?;
+        let live = cached_root.upgrade()?;
+        if !Rc::ptr_eq(&live, &root) {
+            return None;
+        }
+        hit = true;
+        op(slots)
+    });
+    if hit {
+        return cached;
+    }
+    let slots = vector_slot_refs(value).ok()?;
+    op(&slots)
+}
+
 /// O(1) element read for the VM's Baref: Some only when VALUE is a plain
 /// list-vector and INDEX is in range; strings, char-tables, records,
 /// closures, and out-of-range all return None so the caller takes the
 /// full `aref' path (and its exact errors).
 pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
-    vector_root_slot(value)?;
-    let slots = vector_slot_refs(value).ok()?;
-    slots.get(index).map(|slot| slot.borrow().clone())
+    with_vector_slots(value, |slots| {
+        slots.get(index).map(|slot| slot.borrow().clone())
+    })
 }
 
 /// O(1) element write for the VM's Baset, same contract as
 /// [`vector_aref_fast`].
 pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -> Option<()> {
-    vector_root_slot(value)?;
-    let slots = vector_slot_refs(value).ok()?;
-    let slot = slots.get(index)?;
-    *slot.borrow_mut() = new_value.clone();
-    Some(())
+    with_vector_slots(value, |slots| {
+        let slot = slots.get(index)?;
+        *slot.borrow_mut() = new_value.clone();
+        Some(())
+    })
 }
 
 pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispError> {

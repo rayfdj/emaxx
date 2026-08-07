@@ -108,10 +108,20 @@ pub(crate) fn sort_compare_ordering(
     right: &Value,
     env: &mut Env,
 ) -> Result<Ordering, LispError> {
-    if let Some(function) = lessp
-        && let Some(ordering) = direct_sort_ordering(interp, function, left, right, env)?
-    {
-        return Ok(ordering);
+    let direct = lessp.and_then(|function| direct_sort_comparator(interp, function, env));
+    sort_compare_ordering_resolved(interp, lessp, direct.as_ref(), left, right, env)
+}
+
+fn sort_compare_ordering_resolved(
+    interp: &mut Interpreter,
+    lessp: Option<&Value>,
+    direct: Option<&DirectSortComparator>,
+    left: &Value,
+    right: &Value,
+    env: &mut Env,
+) -> Result<Ordering, LispError> {
+    if let Some(comparator) = direct {
+        return apply_direct_sort_comparator(interp, comparator, left, right, env);
     }
 
     let left_lt_right = if let Some(function) = lessp {
@@ -333,7 +343,19 @@ pub(crate) fn direct_sort_ordering(
     let Some(comparator) = direct_sort_comparator(interp, function, env) else {
         return Ok(None);
     };
+    apply_direct_sort_comparator(interp, &comparator, left, right, env).map(Some)
+}
 
+/// Apply an already-recognized comparator; `sort' resolves it once for
+/// the whole sequence instead of re-parsing the predicate per
+/// comparison (n log n times).
+pub(crate) fn apply_direct_sort_comparator(
+    interp: &mut Interpreter,
+    comparator: &DirectSortComparator,
+    left: &Value,
+    right: &Value,
+    env: &mut Env,
+) -> Result<Ordering, LispError> {
     for form in &comparator.prelude {
         let _ = interp.eval(form, env)?;
     }
@@ -370,7 +392,7 @@ pub(crate) fn direct_sort_ordering(
             }
         }
     };
-    Ok(Some(ordering))
+    Ok(ordering)
 }
 
 pub(crate) fn sort_sequence_items(
@@ -395,13 +417,21 @@ pub(crate) fn sort_sequence_items(
         keyed.reverse();
     }
 
+    let direct = lessp.and_then(|function| direct_sort_comparator(interp, function, env));
     let mut error = None;
     keyed.sort_by(|(_, left_key), (_, right_key)| {
         if let Some(existing) = &error {
             let _ = existing;
             return Ordering::Equal;
         }
-        match sort_compare_ordering(interp, lessp, left_key, right_key, env) {
+        match sort_compare_ordering_resolved(
+            interp,
+            lessp,
+            direct.as_ref(),
+            left_key,
+            right_key,
+            env,
+        ) {
             Ok(ordering) => ordering,
             Err(err) => {
                 error = Some(err);
