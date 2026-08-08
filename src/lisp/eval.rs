@@ -136,6 +136,125 @@ const GNU_CHANGE_HOOK_SPECIAL_VARIABLES: &[&str] = &[
     "inhibit-modification-hooks",
 ];
 
+#[derive(Clone, Copy)]
+struct StartupFeature {
+    name: &'static str,
+    subfeatures: Option<fn() -> Value>,
+}
+
+impl StartupFeature {
+    const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            subfeatures: None,
+        }
+    }
+
+    const fn with_subfeatures(mut self, subfeatures: fn() -> Value) -> Self {
+        self.subfeatures = Some(subfeatures);
+        self
+    }
+}
+
+fn make_network_process_subfeatures() -> Value {
+    let pair = |key: &str, value: Value| Value::list([Value::Symbol(key.into()), value]);
+    Value::list([
+        Value::Symbol(":reuseaddr".into()),
+        Value::Symbol(":priority".into()),
+        Value::Symbol(":oobinline".into()),
+        Value::Symbol(":linger".into()),
+        Value::Symbol(":keepalive".into()),
+        Value::Symbol(":dontroute".into()),
+        Value::Symbol(":broadcast".into()),
+        Value::Symbol(":bindtodevice".into()),
+        pair(":server", Value::T),
+        pair(":service", Value::T),
+        pair(":family", Value::Symbol("ipv6".into())),
+        pair(":family", Value::Symbol("ipv4".into())),
+        pair(":family", Value::Symbol("local".into())),
+        pair(":type", Value::Symbol("seqpacket".into())),
+        pair(":type", Value::Symbol("datagram".into())),
+        pair(":nowait", Value::T),
+    ])
+}
+
+fn overlay_subfeatures() -> Value {
+    Value::list([
+        Value::Symbol("display".into()),
+        Value::Symbol("syntax-table".into()),
+        Value::Symbol("field".into()),
+    ])
+}
+
+fn text_properties_subfeatures() -> Value {
+    Value::list([
+        Value::Symbol("display".into()),
+        Value::Symbol("syntax-table".into()),
+        Value::Symbol("field".into()),
+        Value::Symbol("point-entered".into()),
+    ])
+}
+
+// One manifest owns startup feature membership and capability metadata.
+// A feature with subfeatures must not require its name to be repeated in a
+// separate property-registration block.
+const STARTUP_FEATURES: &[StartupFeature] = &[
+    // GNU bindings.el advertises this host-backed primitive family.
+    StartupFeature::new("base64"),
+    // GNU dumps cl-preloaded.el's circular CL class/structure foundation.
+    StartupFeature::new("cl-preloaded"),
+    StartupFeature::new("emacs"),
+    StartupFeature::new("emaxx"),
+    StartupFeature::new("ert"),
+    StartupFeature::new("kqueue"),
+    StartupFeature::new("lcms2"),
+    StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
+    StartupFeature::new("md5"),
+    StartupFeature::new("native-compile"),
+    // Emaxx implements preloaded oclosures natively.
+    StartupFeature::new("oclosure"),
+    StartupFeature::new("overlay").with_subfeatures(overlay_subfeatures),
+    StartupFeature::new("sha1"),
+    StartupFeature::new("text-properties").with_subfeatures(text_properties_subfeatures),
+    // `url' remains a Lisp package; only its HTTP entry points are native.
+    StartupFeature::new("url-http"),
+    StartupFeature::new("threads"),
+];
+
+#[derive(Clone, Copy)]
+enum StaticStartupValue {
+    Nil,
+    Integer(i64),
+}
+
+impl StaticStartupValue {
+    fn value(self) -> Value {
+        match self {
+            Self::Nil => Value::Nil,
+            Self::Integer(value) => Value::Integer(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DumpedAutoBufferLocal {
+    name: &'static str,
+    default: StaticStartupValue,
+}
+
+// Dumped Lisp `defvar-local' contracts whose defaults are available before
+// their owning libraries load.  Locality and value come from the same entry.
+const DUMPED_AUTO_BUFFER_LOCALS: &[DumpedAutoBufferLocal] = &[
+    DumpedAutoBufferLocal {
+        name: "font-lock-defaults",
+        default: StaticStartupValue::Nil,
+    },
+    DumpedAutoBufferLocal {
+        name: "syntax-propertize--done",
+        default: StaticStartupValue::Integer(-1),
+    },
+];
+
 // buffer.c's complete GNU 30.2 DEFVAR_PER_BUFFER contract.  These variables
 // are both special under lexical binding and automatically local to the
 // current buffer when assigned.  Keeping the manifest together prevents a
@@ -2511,12 +2630,10 @@ impl Interpreter {
             buffer_local_hooks: Vec::new(),
             buffer_locals: Vec::new(),
             buffer_syntax_tables: Vec::new(),
-            auto_buffer_locals: vec![
-                // font-core.el: (defvar-local font-lock-defaults nil)
-                "font-lock-defaults".into(),
-                // syntax.el: (defvar-local syntax-propertize--done -1)
-                "syntax-propertize--done".into(),
-            ],
+            auto_buffer_locals: DUMPED_AUTO_BUFFER_LOCALS
+                .iter()
+                .map(|variable| variable.name.to_string())
+                .collect(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
@@ -2531,39 +2648,10 @@ impl Interpreter {
             not_macro_names: HashMap::new(),
             macro_expansion_cache: HashMap::new(),
             lambda_source_bodies: HashMap::new(),
-            provided_features: vec![
-                // GNU bindings.el advertises these host-backed primitive
-                // families in the dumped image.
-                "base64".into(),
-                // GNU dumps cl-preloaded.el's circular CL class/structure
-                // foundation.  Emaxx's equivalent host metadata is
-                // installed below before any included struct is defined.
-                "cl-preloaded".into(),
-                "emacs".into(),
-                "emaxx".into(),
-                "ert".into(),
-                "kqueue".into(),
-                "lcms2".into(),
-                // GNU process.c provides make-network-process with its
-                // capability subfeatures; the property is set alongside in
-                // Interpreter::new (featurep consults it).
-                "make-network-process".into(),
-                "md5".into(),
-                "native-compile".into(),
-                // GNU preloads oclosure.el (loadup.el); emaxx implements
-                // oclosures natively, so (require 'oclosure) must not load
-                // the GNU file over them.
-                "oclosure".into(),
-                "overlay".into(),
-                "sha1".into(),
-                "text-properties".into(),
-                // `url' itself is a Lisp package: claiming its feature here
-                // would make `(require 'url)' skip url.el's parser, record,
-                // cookie, and method setup.  Only the HTTP transport entry
-                // points are pinned to Rust (see `prefer_builtin_override').
-                "url-http".into(),
-                "threads".into(),
-            ],
+            provided_features: STARTUP_FEATURES
+                .iter()
+                .map(|feature| feature.name.to_string())
+                .collect(),
             after_load_forms: Vec::new(),
             current_load_file: None,
             load_history_suppressed_files: Vec::new(),
@@ -2660,7 +2748,19 @@ impl Interpreter {
             globals_index: HashMap::default(),
         };
         interp.globals_index = interp.globals.iter().cloned().collect();
-        interp.special_variables_index = interp.special_variables.iter().cloned().collect();
+        // Startup globals are dumped `defvar'/DEFVAR value cells, hence
+        // intrinsically special.  Fold declarations and values through one
+        // registration path so a new startup global cannot require a shadow
+        // entry in `special_variables'; this also removes duplicate names.
+        let declared_specials = std::mem::take(&mut interp.special_variables);
+        let startup_globals = interp
+            .globals
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        for name in declared_specials.into_iter().chain(startup_globals) {
+            interp.mark_special_variable(&name);
+        }
         // GNU's dumped autoload variables originate in `defvar' / `defcustom'
         // forms: keep their defaults lazy, but install the special declaration.
         for name in generated_autoloads::generated_dumped_variable_names() {
@@ -2698,50 +2798,11 @@ impl Interpreter {
         // search.c uses its own Lisp variable rather than a Buffer field, but
         // GNU gives it the same always-buffer-local behavior.
         interp.mark_per_buffer_special("case-fold-search");
-        // GNU process.c: (provide 'make-network-process '(...subfeatures)),
-        // consulted by two-argument `featurep' (erc-d's unix-socket test
-        // checks (featurep 'make-network-process '(:family local))).
-        {
-            let pair = |key: &str, value: Value| Value::list([Value::Symbol(key.into()), value]);
-            let subfeatures = Value::list([
-                Value::Symbol(":reuseaddr".into()),
-                Value::Symbol(":priority".into()),
-                Value::Symbol(":oobinline".into()),
-                Value::Symbol(":linger".into()),
-                Value::Symbol(":keepalive".into()),
-                Value::Symbol(":dontroute".into()),
-                Value::Symbol(":broadcast".into()),
-                Value::Symbol(":bindtodevice".into()),
-                pair(":server", Value::T),
-                pair(":service", Value::T),
-                pair(":family", Value::Symbol("ipv6".into())),
-                pair(":family", Value::Symbol("ipv4".into())),
-                pair(":family", Value::Symbol("local".into())),
-                pair(":type", Value::Symbol("seqpacket".into())),
-                pair(":type", Value::Symbol("datagram".into())),
-                pair(":nowait", Value::T),
-            ]);
-            interp.put_symbol_property("make-network-process", "subfeatures", subfeatures);
+        for feature in STARTUP_FEATURES {
+            if let Some(subfeatures) = feature.subfeatures {
+                interp.put_symbol_property(feature.name, "subfeatures", subfeatures());
+            }
         }
-        interp.put_symbol_property(
-            "overlay",
-            "subfeatures",
-            Value::list([
-                Value::Symbol("display".into()),
-                Value::Symbol("syntax-table".into()),
-                Value::Symbol("field".into()),
-            ]),
-        );
-        interp.put_symbol_property(
-            "text-properties",
-            "subfeatures",
-            Value::list([
-                Value::Symbol("display".into()),
-                Value::Symbol("syntax-table".into()),
-                Value::Symbol("field".into()),
-                Value::Symbol("point-entered".into()),
-            ]),
-        );
         for class in primitives::builtin_classes() {
             interp.put_symbol_property(
                 class.name,
@@ -3046,8 +3107,7 @@ impl Interpreter {
             Value::list([Value::Symbol("visual-line-mode".into())]),
         );
         primitives::ensure_standard_abbrev_tables(&mut interp);
-        interp.define_special_variable("visual-line-mode", Value::Nil);
-        interp.mark_auto_buffer_local("visual-line-mode");
+        interp.define_per_buffer_special("visual-line-mode", Value::Nil);
         for hook in [
             "visual-line-mode-hook",
             "visual-line-mode-on-hook",
@@ -3055,16 +3115,11 @@ impl Interpreter {
         ] {
             interp.define_special_variable(hook, Value::Nil);
         }
-        interp.set_global_binding("font-lock-mode", Value::Nil);
-        interp.mark_auto_buffer_local("font-lock-mode");
-        interp.set_global_binding("font-lock-fontified", Value::Nil);
-        interp.mark_auto_buffer_local("font-lock-fontified");
-        interp.set_global_binding("header-line-indent-mode", Value::Nil);
-        interp.mark_auto_buffer_local("header-line-indent-mode");
+        interp.define_per_buffer_special("font-lock-mode", Value::Nil);
+        interp.define_per_buffer_special("font-lock-fontified", Value::Nil);
+        interp.define_per_buffer_special("header-line-indent-mode", Value::Nil);
         interp.set_global_binding("major-mode", Value::Symbol("fundamental-mode".into()));
-        interp.mark_auto_buffer_local("major-mode");
         interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
-        interp.mark_auto_buffer_local("mode-name");
         let mode_line_format = default_mode_line_format();
         interp.define_per_buffer_special("mode-line-format", mode_line_format.clone());
         interp.put_symbol_property(
@@ -3135,8 +3190,7 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, value);
         }
-        interp.set_global_binding("read-only-mode", Value::Nil);
-        interp.mark_auto_buffer_local("read-only-mode");
+        interp.define_per_buffer_special("read-only-mode", Value::Nil);
         // GNU's preloaded `(declare (indent N))' effects: every symbol
         // carrying a `lisp-indent-function' property at oracle startup
         // (None encodes the symbol `defun').  calculate-lisp-indent and
@@ -3546,8 +3600,7 @@ impl Interpreter {
                     .unwrap_or_else(primitives::default_directory),
             ),
         );
-        interp.set_global_binding("mark-ring", Value::Nil);
-        interp.mark_auto_buffer_local("mark-ring");
+        interp.define_per_buffer_special("mark-ring", Value::Nil);
         interp.put_symbol_property("mark-ring", "permanent-local", Value::T);
         interp.set_global_binding("mark-ring-max", Value::Integer(16));
         interp.put_symbol_property(
@@ -3781,6 +3834,18 @@ impl Interpreter {
         );
         interp.set_global_binding("emaxx-minibuffer-window", minibuffer_window);
         interp.set_global_binding("emaxx-minibuffer-selected-window", Value::Nil);
+        // Interpreter::new also constructs several dumped values after the
+        // base struct exists (keymaps, tables, and window objects).  Reconcile
+        // the completed image through the same registry before exposing it;
+        // later user `setq' calls are intentionally outside this boundary.
+        let completed_startup_globals = interp
+            .globals
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        for name in completed_startup_globals {
+            interp.mark_special_variable(&name);
+        }
         interp
     }
 

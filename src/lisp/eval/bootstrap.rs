@@ -350,6 +350,22 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             ),
         },
         CodingSystemState {
+            name: "windows-1251".into(),
+            base: "windows-1251".into(),
+            kind: "charset".into(),
+            eol_type: None,
+            plist: coding_plist(
+                '*',
+                [
+                    (
+                        ":charset-list".into(),
+                        Value::list([Value::Symbol("windows-1251".into())]),
+                    ),
+                    (":mime-charset".into(), Value::Symbol("windows-1251".into())),
+                ],
+            ),
+        },
+        CodingSystemState {
             name: "cyrillic-koi8".into(),
             base: "cyrillic-koi8".into(),
             kind: "charset".into(),
@@ -674,6 +690,7 @@ pub(super) fn builtin_coding_aliases() -> Vec<(String, String)> {
         ("iso-8859-1-unix".into(), "iso-latin-1-unix".into()),
         ("iso-8859-1-dos".into(), "iso-latin-1-dos".into()),
         ("cp1252".into(), "windows-1252".into()),
+        ("cp1251".into(), "windows-1251".into()),
         ("koi8-r".into(), "cyrillic-koi8".into()),
         ("binary".into(), "raw-text".into()),
         ("utf8".into(), "utf-8".into()),

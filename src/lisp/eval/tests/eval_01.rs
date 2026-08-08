@@ -2871,6 +2871,8 @@ fn expand_file_name_dispatches_a_relative_name_through_its_remote_base() {
                    default-directory 'expand-file-name)
                   (expand-file-name "sh")
                   (expand-file-name "../bin/sh" default-directory)
+                  (expand-file-name
+                   "child" "/mock:host:/:/tmp/quoted-base")
                   (expand-file-name "~")
                   (expand-file-name "/bin/sh")))"#
         ),
@@ -2878,8 +2880,72 @@ fn expand_file_name_dispatches_a_relative_name_through_its_remote_base() {
             Value::symbol("emaxx-mock-file-name-handler"),
             Value::String("/mock::/tmp/work/sh".into()),
             Value::String("/mock::/tmp/bin/sh".into()),
+            Value::String("/mock:host:/:/tmp/quoted-base/child".into()),
             Value::String(std::env::var("HOME").expect("test host has a home directory")),
             Value::String("/bin/sh".into()),
+        ])
+    );
+}
+
+#[test]
+fn mock_remote_path_policies_share_the_typed_handler_registry() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((default-directory "/mock::/tmp/work/")
+                     (exec-path '("/bin" "/usr/bin"))
+                     (tramp-remote-path '("/" "/" "/definitely-missing")))
+                 (list
+                  (expand-file-name ".." "./")
+                  (let ((tramp-tolerate-tilde t))
+                    (expand-file-name "/mock::~"))
+                  (funcall
+                   (find-file-name-handler default-directory 'exec-path)
+                   'exec-path)
+                  (let ((handler
+                         (find-file-name-handler
+                          "/mock::/tmp/" 'file-system-info)))
+                    (list handler
+                          (length
+                           (funcall handler 'file-system-info
+                                    "/mock::/tmp/"))))
+                  (let ((tramp-mode nil))
+                    (find-file-name-handler
+                     "/mock::/tmp/work/" 'expand-file-name))))"#
+        ),
+        Value::list([
+            Value::String("/mock::/tmp".into()),
+            Value::String("/mock::/:~".into()),
+            Value::list([
+                Value::String("/".into()),
+                Value::String("/tmp/work/".into()),
+            ]),
+            Value::list([
+                Value::symbol("emaxx-mock-file-name-handler"),
+                Value::Integer(3),
+            ]),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn mock_remote_abbreviation_applies_directory_rules_before_home() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((process-environment
+                      '("HOME=/tmp/emaxx-remote-home"))
+                     (directory-abbrev-alist
+                      '(("\\`/mock::/tmp/emaxx-remote-home/foo"
+                         . "/mock::/tmp/emaxx-remote-home/f"))))
+                 (list
+                  (abbreviate-file-name
+                   "/mock::/tmp/emaxx-remote-home/other")
+                  (abbreviate-file-name
+                   "/mock::/tmp/emaxx-remote-home/foo/bar")))"#
+        ),
+        Value::list([
+            Value::String("/mock::~/other".into()),
+            Value::String("/mock::~/f/bar".into()),
         ])
     );
 }
@@ -2928,15 +2994,27 @@ fn mock_truename_preserves_the_connection_and_canonicalizes_its_local_part() {
     assert_eq!(
         eval_str(
             r#"(let ((default-directory "/mock::/tmp/work/"))
-                 (list
-                  (file-truename "missing")
-                  (file-truename "/mock::/bin/sh")
-                  (file-truename "/bin/sh")))"#
+                 (let ((relative (file-truename "missing"))
+                       (remote (file-truename "/mock::/bin/sh")))
+                   (list
+                    (equal (file-remote-p relative 'method) "mock")
+                    (equal (file-remote-p relative 'host) (system-name))
+                    (equal (file-remote-p relative 'localname)
+                           (file-truename "/tmp/work/missing"))
+                    (equal (file-remote-p remote 'method) "mock")
+                    (equal (file-remote-p remote 'host) (system-name))
+                    (equal (file-remote-p remote 'localname)
+                           (file-truename "/bin/sh"))
+                    (equal (file-truename "/bin/sh") "/bin/sh"))))"#
         ),
         Value::list([
-            Value::String("/mock::/tmp/work/missing".into()),
-            Value::String("/mock::/bin/sh".into()),
-            Value::String("/bin/sh".into()),
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
         ])
     );
 }
@@ -2967,6 +3045,162 @@ fn mock_make_process_uses_the_shared_native_process_path() {
             Value::list([Value::T, Value::T])
         );
     });
+}
+
+#[test]
+fn mock_shell_command_uses_the_same_typed_transport_registry() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((default-directory "/mock::/tmp/"))
+                 (list
+                  (eq (find-file-name-handler default-directory 'shell-command)
+                      'emaxx-mock-file-name-handler)
+                  (eq (find-file-name-handler default-directory 'process-file)
+                      'emaxx-mock-file-name-handler)
+                  (with-temp-buffer
+                    (shell-command
+                     "printf '%s' \"$INSIDE_EMACS\"" (current-buffer))
+                    (buffer-string))
+                  (with-temp-buffer
+                    (list
+                     (process-file "/bin/sh" nil (current-buffer) nil
+                                   "-c" "printf '%s' \"$INSIDE_EMACS\"")
+                     (buffer-string)))))"#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::String("emaxx,tramp".into()),
+            Value::list([Value::Integer(0), Value::String("emaxx,tramp".into())]),
+        ])
+    );
+}
+
+#[test]
+fn buffer_lock_lifecycle_uses_the_public_file_handler_route() {
+    assert_eq!(
+        eval_str(
+            r#"(let (operations)
+                  (defun emaxx-test-lock-handler (operation &rest _args)
+                    (push operation operations)
+                    nil)
+                  (let ((file-name-handler-alist
+                         '(("\\`/sample:" . emaxx-test-lock-handler))))
+                    (with-temp-buffer
+                      (setq buffer-file-name "/sample:host:/tmp/file"
+                            buffer-file-truename buffer-file-name)
+                      (insert "x")
+                      (set-buffer-modified-p nil)))
+                  (nreverse operations))"#,
+        ),
+        Value::list([Value::symbol("lock-file"), Value::symbol("unlock-file"),])
+    );
+}
+
+#[test]
+fn mock_backup_policy_preserves_the_logical_connection_spelling() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun find-backup-file-name (file)
+                   (let ((handler
+                          (find-file-name-handler
+                           file 'find-backup-file-name)))
+                     (if handler
+                         (funcall handler 'find-backup-file-name file)
+                       (list (concat file "~")))))
+                 (defun tramp-handle-find-backup-file-name (file)
+                   (find-backup-file-name file))
+                 (let ((tramp-mode t))
+                   (list
+                    (car (find-backup-file-name
+                          "/mock::/tmp/emaxx-backup-source"))
+                    (car (find-backup-file-name
+                          "/mock:host:/:/tmp/emaxx-backup-source")))))"#,
+        ),
+        Value::list([
+            Value::String("/mock::/tmp/emaxx-backup-source~".into()),
+            Value::String("/mock:host:/:/tmp/emaxx-backup-source~".into()),
+        ])
+    );
+}
+
+#[test]
+fn mock_remote_metadata_reads_establish_the_connection_lifecycle() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defvar observed-mock-connection nil)
+                 (defun tramp-dissect-file-name (file) file)
+                 (defun tramp-get-process (_vector)
+                   observed-mock-connection)
+                 (defun tramp-get-connection-buffer (_vector)
+                   (get-buffer-create " *emaxx-mock-connection*"))
+                 (defun tramp-get-connection-name (_vector)
+                   "emaxx-mock-connection")
+                 (defun tramp-post-process-creation (process _vector)
+                   (setq observed-mock-connection process))
+                 (defun tramp-set-connection-property (&rest _args) t)
+                 (defun tramp-set-connection-local-variables (_vector) t)
+                 (let ((tramp-mode t))
+                   (file-symlink-p
+                    "/mock::/tmp/emaxx-missing-symlink-probe")
+                   (let ((first observed-mock-connection))
+                     (delete-process first)
+                     (file-symlink-p
+                      "/mock::/tmp/emaxx-missing-symlink-probe")
+                     (list (process-live-p first)
+                           (process-live-p observed-mock-connection)
+                           (not (eq first observed-mock-connection))))))"#,
+        ),
+        Value::list([Value::Nil, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn mock_full_directory_entries_retain_the_implicit_remote_directory() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((directory (make-temp-file "emaxx-mock-listing-" t))
+                     (tramp-mode t))
+                 (unwind-protect
+                     (progn
+                       (make-empty-file (expand-file-name "sample" directory))
+                       (let ((default-directory
+                              (concat "/mock::" directory "/")))
+                         (let ((entry (car (directory-files
+                                            "." t "\\`sample\\'"))))
+                           (and (string-prefix-p "/mock::" entry)
+                                (string-suffix-p "/sample" entry)))))
+                   (delete-directory directory t)))"#,
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn mock_processes_overlay_the_remote_environment_with_lisp_precedence() {
+    assert_eq!(
+        eval_str(
+            r#"(list
+                 (let ((default-directory "/mock:localhost#11111:/tmp/")
+                       (tramp-mode t)
+                       (tramp-remote-process-environment
+                        '("EMAXX_REMOTE_PORT=11111")))
+                   (with-temp-buffer
+                     (shell-command
+                      "printf %s \"$EMAXX_REMOTE_PORT\"" t)
+                     (buffer-string)))
+                 (let ((process-environment
+                        '("EMAXX_ENV_ORDER=first"
+                          "EMAXX_ENV_ORDER=last")))
+                   (with-temp-buffer
+                     (shell-command
+                      "printf %s \"$EMAXX_ENV_ORDER\"" t)
+                     (buffer-string))))"#,
+        ),
+        Value::list([Value::String("11111".into()), Value::String("first".into()),])
+    );
 }
 
 #[test]
@@ -3665,6 +3899,75 @@ fn builtin_startup_defaults_are_intrinsically_special() {
         ),
         Value::list([Value::Nil, Value::Integer(7), Value::Nil, Value::Nil])
     );
+}
+
+#[test]
+fn startup_global_values_and_special_declarations_share_one_registry() {
+    let interp = Interpreter::new();
+    for (name, _) in &interp.globals {
+        assert!(
+            interp.is_special_variable(name),
+            "startup global `{name}` was not registered as special"
+        );
+    }
+    let names = interp.special_variable_names();
+    let unique = names.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        unique.len(),
+        names.len(),
+        "special-variable registry contains duplicate declarations"
+    );
+}
+
+#[test]
+fn startup_features_own_their_capability_metadata_in_one_manifest() {
+    let interp = Interpreter::new();
+    let mut unique = std::collections::HashSet::new();
+    for feature in STARTUP_FEATURES {
+        assert!(
+            unique.insert(feature.name),
+            "startup feature manifest contains duplicate `{}`",
+            feature.name
+        );
+        assert!(
+            interp.has_feature(feature.name),
+            "startup feature `{}` was not provided",
+            feature.name
+        );
+        if let Some(subfeatures) = feature.subfeatures {
+            assert_eq!(
+                interp.get_symbol_property(feature.name, "subfeatures"),
+                Some(subfeatures()),
+                "startup feature `{}` lost its subfeatures",
+                feature.name
+            );
+        }
+    }
+}
+
+#[test]
+fn dumped_auto_buffer_locals_share_their_defaults_and_locality_manifest() {
+    let interp = Interpreter::new();
+    let mut unique = std::collections::HashSet::new();
+    for variable in DUMPED_AUTO_BUFFER_LOCALS {
+        assert!(
+            unique.insert(variable.name),
+            "dumped auto-buffer-local manifest contains duplicate `{}`",
+            variable.name
+        );
+        assert_eq!(
+            interp.builtin_var_value(variable.name),
+            Some(variable.default.value()),
+            "dumped auto-buffer-local `{}` lost its default",
+            variable.name
+        );
+        assert!(
+            interp.is_auto_buffer_local(variable.name),
+            "dumped auto-buffer-local `{}` lost its locality",
+            variable.name
+        );
+        assert!(interp.is_special_variable(variable.name));
+    }
 }
 
 #[test]

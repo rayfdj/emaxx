@@ -901,7 +901,7 @@ define_dispatch!(
                     return Ok(fundef);
                 }
                 let ignore_errors = !loads_macro && macro_only.is_truthy();
-                match interp.load_target(&file) {
+                match interp.load_target_with_env(&file, env) {
                     Ok(_) => {}
                     Err(_) if ignore_errors => return Ok(Value::Nil),
                     Err(error) => return Err(error),
@@ -1020,7 +1020,7 @@ define_dispatch!(
                 if let (Some(symbol), Some((file, _, _))) =
                     (args[0].as_symbol().ok(), autoload_parts(&value))
                 {
-                    interp.load_target(&file)?;
+                    interp.load_target_with_env(&file, env)?;
                     value = interp.lookup_function(symbol, env)?;
                 }
                 Ok(interactive_form_items(&value)

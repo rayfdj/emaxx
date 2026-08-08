@@ -1,4 +1,5 @@
 use super::*;
+use encoding_rs::{Encoding, KOI8_R, WINDOWS_1251, WINDOWS_1252};
 
 pub(crate) fn coding_system_error(name: impl Into<String>) -> LispError {
     let name = name.into();
@@ -820,57 +821,43 @@ pub(crate) fn encode_iso_latin_bytes(text: &str) -> Result<Vec<u8>, LispError> {
     encode_raw_text_bytes(text)
 }
 
-const KOI8_R_LOWER: &str = "юабцдефгхийклмнопярстужвьызшэщчъ";
-const KOI8_R_UPPER: &str = "ЮАБЦДЕФГХИЙКЛМНОПЯРСТУЖВЬЫЗШЭЩЧЪ";
-
-fn koi8_r_byte(ch: char) -> Option<u8> {
-    match ch {
-        'ё' => Some(0xA3),
-        'Ё' => Some(0xB3),
-        _ => KOI8_R_LOWER
-            .chars()
-            .position(|candidate| candidate == ch)
-            .map(|index| 0xC0 + index as u8)
-            .or_else(|| {
-                KOI8_R_UPPER
-                    .chars()
-                    .position(|candidate| candidate == ch)
-                    .map(|index| 0xE0 + index as u8)
-            }),
+fn legacy_single_byte_encoding(interp: &Interpreter, coding: &str) -> Option<&'static Encoding> {
+    match interp.coding_system_base_name(coding)?.as_str() {
+        "cyrillic-koi8" => Some(KOI8_R),
+        "windows-1251" => Some(WINDOWS_1251),
+        "windows-1252" => Some(WINDOWS_1252),
+        _ => None,
     }
 }
 
-fn encode_koi8_r_bytes(text: &str) -> Result<Vec<u8>, LispError> {
-    text.chars()
-        .map(|ch| {
-            if let Some(byte) = raw_byte_from_regex_char(ch) {
-                Ok(byte)
-            } else if ch.is_ascii() {
-                Ok(ch as u8)
-            } else {
-                koi8_r_byte(ch)
-                    .ok_or_else(|| LispError::Signal("Character cannot be encoded".into()))
-            }
-        })
-        .collect()
+fn encode_legacy_single_byte_bytes(
+    encoding: &'static Encoding,
+    text: &str,
+) -> Result<Vec<u8>, LispError> {
+    let mut bytes = Vec::with_capacity(text.len());
+    for character in text.chars() {
+        if let Some(byte) = raw_byte_from_regex_char(character) {
+            bytes.push(byte);
+            continue;
+        }
+        let text = character.to_string();
+        let (encoded, _, had_errors) = encoding.encode(&text);
+        if had_errors {
+            return Err(LispError::Signal("Character cannot be encoded".into()));
+        }
+        bytes.extend_from_slice(&encoded);
+    }
+    Ok(bytes)
 }
 
-fn decode_koi8_r_bytes(bytes: &[u8]) -> String {
+fn decode_legacy_single_byte_bytes(encoding: &'static Encoding, bytes: &[u8]) -> String {
     bytes
         .iter()
-        .map(|byte| match *byte {
-            0x00..=0x7F => char::from(*byte),
-            0xA3 => 'ё',
-            0xB3 => 'Ё',
-            0xC0..=0xDF => KOI8_R_LOWER
-                .chars()
-                .nth((*byte - 0xC0) as usize)
-                .unwrap_or_else(|| raw_byte_regex_char(*byte)),
-            0xE0..=0xFF => KOI8_R_UPPER
-                .chars()
-                .nth((*byte - 0xE0) as usize)
-                .unwrap_or_else(|| raw_byte_regex_char(*byte)),
-            _ => raw_byte_regex_char(*byte),
+        .map(|byte| {
+            encoding
+                .decode_without_bom_handling_and_without_replacement(std::slice::from_ref(byte))
+                .and_then(|decoded| decoded.chars().next())
+                .unwrap_or_else(|| raw_byte_regex_char(*byte))
         })
         .collect()
 }
@@ -940,72 +927,6 @@ pub(crate) fn decode_latin_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| char::from(*byte)).collect()
 }
 
-const WINDOWS_1252_C1: [Option<char>; 32] = [
-    Some('\u{20ac}'),
-    None,
-    Some('\u{201a}'),
-    Some('\u{0192}'),
-    Some('\u{201e}'),
-    Some('\u{2026}'),
-    Some('\u{2020}'),
-    Some('\u{2021}'),
-    Some('\u{02c6}'),
-    Some('\u{2030}'),
-    Some('\u{0160}'),
-    Some('\u{2039}'),
-    Some('\u{0152}'),
-    None,
-    Some('\u{017d}'),
-    None,
-    None,
-    Some('\u{2018}'),
-    Some('\u{2019}'),
-    Some('\u{201c}'),
-    Some('\u{201d}'),
-    Some('\u{2022}'),
-    Some('\u{2013}'),
-    Some('\u{2014}'),
-    Some('\u{02dc}'),
-    Some('\u{2122}'),
-    Some('\u{0161}'),
-    Some('\u{203a}'),
-    Some('\u{0153}'),
-    None,
-    Some('\u{017e}'),
-    Some('\u{0178}'),
-];
-
-fn windows_1252_byte(ch: char) -> Option<u8> {
-    if (ch as u32) <= 0x7f || (0xa0..=0xff).contains(&(ch as u32)) {
-        return Some(ch as u8);
-    }
-    WINDOWS_1252_C1
-        .iter()
-        .position(|candidate| *candidate == Some(ch))
-        .map(|index| 0x80 + index as u8)
-}
-
-fn encode_windows_1252_bytes(text: &str) -> Result<Vec<u8>, LispError> {
-    text.chars()
-        .map(|ch| {
-            raw_byte_from_regex_char(ch)
-                .or_else(|| windows_1252_byte(ch))
-                .ok_or_else(|| LispError::Signal("Character cannot be encoded".into()))
-        })
-        .collect()
-}
-
-fn decode_windows_1252_bytes(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte| match byte {
-            0x80..=0x9f => WINDOWS_1252_C1[(byte - 0x80) as usize]
-                .unwrap_or_else(|| raw_byte_regex_char(*byte)),
-            _ => char::from(*byte),
-        })
-        .collect()
-}
-
 pub(crate) fn decode_utf8_bytes(bytes: &[u8]) -> String {
     let mut decoded = String::new();
     let mut remaining = bytes;
@@ -1047,11 +968,8 @@ pub(crate) fn encode_text_bytes(
         .unwrap_or_else(|| canonical.clone());
     let eol_type = interp.coding_system_eol_type_value(&canonical);
     let text = encode_text_with_eol(text, eol_type);
-    if interp.coding_system_base_name(&canonical).as_deref() == Some("cyrillic-koi8") {
-        return encode_koi8_r_bytes(&text);
-    }
-    if interp.coding_system_base_name(&canonical).as_deref() == Some("windows-1252") {
-        return encode_windows_1252_bytes(&text);
+    if let Some(encoding) = legacy_single_byte_encoding(interp, &canonical) {
+        return encode_legacy_single_byte_bytes(encoding, &text);
     }
     match kind.as_str() {
         "utf-8" | "prefer-utf-8" | "utf-8-auto" => {
@@ -1245,11 +1163,8 @@ pub(crate) fn decode_text_bytes(
     let kind = interp
         .coding_system_kind_name(&canonical)
         .unwrap_or_else(|| canonical.clone());
-    if interp.coding_system_base_name(&canonical).as_deref() == Some("cyrillic-koi8") {
-        return Ok(decode_koi8_r_bytes(bytes));
-    }
-    if interp.coding_system_base_name(&canonical).as_deref() == Some("windows-1252") {
-        return Ok(decode_windows_1252_bytes(bytes));
+    if let Some(encoding) = legacy_single_byte_encoding(interp, &canonical) {
+        return Ok(decode_legacy_single_byte_bytes(encoding, bytes));
     }
     match kind.as_str() {
         "utf-8" | "prefer-utf-8" | "utf-8-auto" => {
@@ -1287,9 +1202,7 @@ pub(crate) fn string_unencodable_positions(
     let kind = interp
         .coding_system_kind_name(&canonical)
         .unwrap_or_else(|| canonical.clone());
-    let koi8_r = interp.coding_system_base_name(&canonical).as_deref() == Some("cyrillic-koi8");
-    let windows_1252 =
-        interp.coding_system_base_name(&canonical).as_deref() == Some("windows-1252");
+    let legacy_single_byte = legacy_single_byte_encoding(interp, &canonical);
     let mut failures = Vec::new();
     for (index, ch) in text.chars().enumerate() {
         let raw_byte = raw_byte_from_regex_char(ch);
@@ -1298,8 +1211,9 @@ pub(crate) fn string_unencodable_positions(
             "utf-8" | "utf-8-with-signature" | "utf-8-auto" | "prefer-utf-8" | "undecided" => {
                 ch != json::INVALID_UNICODE_SENTINEL
             }
-            _ if koi8_r => raw_byte.is_some() || ch.is_ascii() || koi8_r_byte(ch).is_some(),
-            _ if windows_1252 => raw_byte.is_some() || windows_1252_byte(ch).is_some(),
+            _ if let Some(encoding) = legacy_single_byte => {
+                raw_byte.is_some() || !encoding.encode(&ch.to_string()).2
+            }
             "iso-latin-1" | "raw-text" | "no-conversion" => raw_byte.is_some() || code <= 0xFF,
             "us-ascii" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
             "sjis" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F || ch == 'あ',
@@ -1332,10 +1246,8 @@ pub(crate) fn string_identity_for_coding(
     let kind = interp
         .coding_system_kind_name(coding)
         .unwrap_or_else(|| coding.to_string());
-    let koi8_r = interp.coding_system_base_name(coding).as_deref() == Some("cyrillic-koi8");
-    let windows_1252 = interp.coding_system_base_name(coding).as_deref() == Some("windows-1252");
-    let single_byte_translation =
-        koi8_r || windows_1252 || matches!(kind.as_str(), "iso-latin-1" | "charset");
+    let single_byte_translation = legacy_single_byte_encoding(interp, coding).is_some()
+        || matches!(kind.as_str(), "iso-latin-1" | "charset");
     if encode {
         if matches!(eol_type, Some(1) | Some(2)) && text.contains('\n') {
             return false;

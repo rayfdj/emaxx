@@ -12,6 +12,9 @@ regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 walkdir = "2.5"
+# Delegate shell-style `*`, `?`, and bracket-class path expansion to the
+# established crate instead of maintaining a partial handwritten matcher.
+glob = "=0.3.4"
 num-bigint = "0.4"
 num-traits = "0.2"
 chrono = "0.4"
@@ -23,6 +26,9 @@ unicode-general-category = "1.1"
 unicode_names2 = "=1.2.2"
 unicode-width = "0.2"
 flate2 = "1.1"
+# Delegate standardized legacy single-byte encodings to the mature WHATWG
+# implementation instead of maintaining error-prone handwritten tables.
+encoding_rs = "=0.8.35"
 libxml = "0.3.16"
 rusqlite = { version = "0.34", features = ["bundled"] }
 lcms2 = "6.1.1"

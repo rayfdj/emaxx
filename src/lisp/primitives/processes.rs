@@ -17,7 +17,6 @@ pub(crate) fn run_external_process(
     });
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    apply_process_environment(interp, env, &mut command);
     let mut child = command
         .spawn()
         .map_err(|error| LispError::SignalValue(file_error_value(&error.to_string(), program)))?;
@@ -39,8 +38,11 @@ pub(crate) fn configure_external_command(interp: &Interpreter, env: &Env, comman
         .and_then(|value| string_like(&value).map(|string| string.text))
         .filter(|directory| !directory.is_empty())
     {
-        command
-            .current_dir(unquote_local_file_name(&default_directory).unwrap_or(default_directory));
+        // `Command::current_dir` is a host boundary.  A file-name handler may
+        // retain Lisp's logical remote directory while its transport runs the
+        // actual program locally, so resolve it through the same path policy
+        // as every other host filesystem operation.
+        command.current_dir(resolve_file_name_in_env(interp, env, &default_directory));
     }
     apply_process_environment(interp, env, command);
 }
@@ -569,7 +571,10 @@ pub(crate) fn apply_process_environment(interp: &Interpreter, env: &Env, command
         return;
     };
     command.env_clear();
-    for entry in entries {
+    // Lisp environment lists are first-match-wins (`getenv-internal').
+    // Apply them back-to-front so duplicate names have the same precedence
+    // when materialized in the host command environment.
+    for entry in entries.into_iter().rev() {
         if let Some((name, value)) = entry.split_once('=') {
             command.env(name, value);
         }

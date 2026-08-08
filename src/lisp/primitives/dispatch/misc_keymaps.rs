@@ -4,7 +4,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
 thread_local! {
@@ -1059,8 +1058,16 @@ define_dispatch!(
             }
             "file-truename" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                Ok(Value::String(canonical_file_name(&path)))
+                let requested = string_text(&args[0])?;
+                let path = resolve_file_name_in_env(interp, env, &requested);
+                let canonical = canonical_file_name(&path);
+                Ok(Value::String(
+                    if parse_remote_file_name(&requested).is_none() {
+                        quote_local_file_name_if_needed(canonical)
+                    } else {
+                        canonical
+                    },
+                ))
             }
             "user-uid" => Ok(Value::Integer(current_user_id()? as i64)),
             "user-real-uid" => Ok(Value::Integer(current_real_user_id()? as i64)),
@@ -9870,18 +9877,11 @@ fn process_file_compat(
         .iter()
         .map(string_text)
         .collect::<Result<Vec<_>, _>>()?;
-    let mut command = Command::new(&program);
-    command.args(command_args);
-    if let Some(default_directory) = interp
-        .lookup_var("default-directory", env)
-        .and_then(|value| string_text(&value).ok())
-    {
-        command
-            .current_dir(unquote_local_file_name(&default_directory).unwrap_or(default_directory));
-    }
-    let output = command
-        .output()
-        .map_err(|error| LispError::Signal(format!("process-file: {error}")))?;
+    // Synchronous processes share the same environment, working-directory,
+    // and coding boundary as every other external command.  A private
+    // `Command' setup here previously omitted Lisp's process environment and
+    // duplicated an incomplete remote-directory translation.
+    let output = run_external_process(interp, &program, &command_args, None, env)?;
     write_process_output(
         interp,
         args.get(2).unwrap_or(&Value::Nil),

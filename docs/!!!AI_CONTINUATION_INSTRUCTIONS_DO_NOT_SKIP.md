@@ -18,6 +18,25 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-07 CUMULATIVE RUNTIME/FILE-CONTRACT CHECKPOINT: the frontier remains
+  paused at 4,582/7,080 (2,498 selectors left).  Startup value/special/locality
+  metadata, feature capability metadata, ERT registration, and `/mock:' file
+  operations now use atomic or typed single-owner registries.  Focused Tramp
+  evidence is green for the four-case replay
+  `target/compat/run-1786110165644545000-43265` and canonical copy-directory
+  `target/compat/run-1786113356154275000-2428`; the combined upstream DnD
+  remote lifecycle test is also green, 2/2 in 98.68 seconds.  Its missing-file
+  messages are expected negative cases, not regressions.  The full Rust gate
+  reached the late `eval_05` tail but was not green: one Eshell background
+  subcommand hit the debug harness's 60-second wall-clock limit, and the run
+  was later interrupted while DnD was still executing.  The four upstream
+  Eshell suites subsequently passed twice under the same two-interpreter
+  stress (4/4 in 147.63s and 258.18s); their test-only deadline is now five
+  minutes with process/thread diagnostics.  DnD's two cases passed separately
+  and together.  Formatting, diff check, generated-autoload validation,
+  all-target/all-feature check, and strict Clippy pass.  Native remains
+  1,420/1,420.  NEXT is the complete canonical replay of selectors 1..4,582;
+  do not start selector 4,583 until that prefix is confirmed green.
 - 2026-08-07 ISEARCH CUMULATIVE REPAIR: the frontier stays paused at
   4,582/7,080 and only two known cumulative themes remain.  All 5 canonical
   Isearch outcomes match GNU in

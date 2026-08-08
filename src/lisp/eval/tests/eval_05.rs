@@ -186,6 +186,35 @@ fn windows_1252_is_a_preloaded_single_byte_round_tripping_coding() {
 }
 
 #[test]
+fn windows_1251_alias_uses_the_preloaded_single_byte_codec() {
+    assert_eq!(
+        eval_str(
+            "(let* ((text \"Привет\")
+                    (encoded (encode-coding-string text 'cp1251)))
+               (list (coding-system-type 'windows-1251)
+                     (coding-system-base 'cp1251)
+                     (coding-system-get 'windows-1251 :mime-charset)
+                     (string-to-list encoded)
+                     (decode-coding-string encoded 'windows-1251)))"
+        ),
+        Value::list([
+            Value::Symbol("charset".into()),
+            Value::Symbol("windows-1251".into()),
+            Value::Symbol("windows-1251".into()),
+            Value::list([
+                Value::Integer(207),
+                Value::Integer(240),
+                Value::Integer(232),
+                Value::Integer(226),
+                Value::Integer(229),
+                Value::Integer(242),
+            ]),
+            Value::String("Привет".into()),
+        ])
+    );
+}
+
+#[test]
 fn latin_1_aliases_resolve_to_iso_latin_1() {
     assert_eq!(
         eval_str(
@@ -723,16 +752,24 @@ fn file_expand_wildcards_returns_existing_matches() {
              (unwind-protect
                  (progn
                    (make-empty-file (expand-file-name "a.el" dir))
+                   (make-empty-file (expand-file-name "b.el" dir))
                    (make-empty-file (expand-file-name "b.txt" dir))
-                   (let ((matches (file-expand-wildcards
-                                   (expand-file-name "*.el" dir)
-                                   t)))
-                     (list (= (length matches) 1)
-                           (file-name-absolute-p (car matches))
-                           (not (null (string-match-p "a\\.el\\'" (car matches)))))))
+                   (let ((star (file-expand-wildcards
+                                (expand-file-name "*.el" dir) t))
+                         (question (file-expand-wildcards
+                                    (expand-file-name "?.el" dir) t))
+                         (class (file-expand-wildcards
+                                 (expand-file-name "[ab].el" dir) t)))
+                     (list (= (length star) 2)
+                           (file-name-absolute-p (car star))
+                           (= (length question) 2)
+                           (= (length class) 2))))
                (delete-directory dir t)))"#,
     );
-    assert_eq!(result, Value::list([Value::T, Value::T, Value::T]));
+    assert_eq!(
+        result,
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
 }
 
 #[test]
@@ -740,6 +777,7 @@ fn mock_tramp_file_operations_use_localname() {
     let prefix = format!("/mock:{}:", crate::lisp::primitives::system_name_value());
     let result = eval_str(
         r#"(let ((dir (make-temp-file "emaxx-mock-tramp-" t))
+                 (create-lockfiles nil)
                  ;; Model the broad handler installed when real Tramp is
                  ;; loaded.  Every supported /mock: operation must select
                  ;; Emaxx's in-process transport before reaching this one.
@@ -759,6 +797,9 @@ fn mock_tramp_file_operations_use_localname() {
                                (file-remote-p remote)
                                (file-directory-p remote)
                                (file-writable-p remote)
+                               (with-temp-buffer
+                                 (insert-file-contents remote-file)
+                                 (equal (buffer-string) "sample"))
                                (and copy
                                     (not (file-remote-p copy))
                                     (file-exists-p copy))
@@ -778,8 +819,450 @@ fn mock_tramp_file_operations_use_localname() {
             Value::T,
             Value::T,
             Value::T,
+            Value::T,
             Value::Nil,
         ])
+    );
+}
+
+#[test]
+fn mock_transport_ownership_beats_a_quoted_local_operand() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((root (make-temp-file "emaxx-mock-owner-" t))
+                       (local-source (expand-file-name "source" root))
+                       (remote (concat "/mock::" root))
+                       (remote-target (expand-file-name "target" remote))
+                       (quoted-source (concat "/:" local-source))
+                       (quoted-target
+                        (concat (file-remote-p remote-target)
+                                "/:" (file-remote-p remote-target 'localname)))
+                       (file-name-handler-alist
+                        '(("\\`/:" . file-name-non-special)
+                          ("\\`/mock:" . error)))
+                       (handlers file-name-handler-alist))
+                  (unwind-protect
+                      (progn
+                        (write-region "sample" nil local-source)
+                        (rename-file quoted-source quoted-target)
+                        (list
+                         (eq handlers file-name-handler-alist)
+                         (not (file-exists-p local-source))
+                         (with-temp-buffer
+                           (insert-file-contents remote-target)
+                           (equal (buffer-string) "sample"))))
+                    (let ((file-name-handler-alist nil))
+                      (delete-directory root t))))"#
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn mock_copy_directory_is_owned_by_the_typed_transport_boundary() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((root (make-temp-file "emaxx-mock-copy-directory-" t))
+                      (source (concat "/mock::" root "/missing"))
+                      (target (concat "/mock::" root "/target")))
+                 (unwind-protect
+                     (list
+                      (eq (find-file-name-handler source 'copy-directory)
+                          'emaxx-mock-file-name-handler)
+                      (condition-case err
+                          (emaxx-mock-file-name-handler
+                           'copy-directory source target nil nil nil)
+                        (file-missing (car err)))
+                      (not (file-exists-p target))
+                      (progn
+                        (make-directory source)
+                        (make-directory target)
+                        (condition-case err
+                            (emaxx-mock-file-name-handler
+                             'copy-directory source target nil nil nil)
+                          (file-already-exists (car err)))))
+                   (let ((file-name-handler-alist nil))
+                     (delete-directory root t))))"#
+        ),
+        Value::list([
+            Value::T,
+            Value::symbol("file-missing"),
+            Value::T,
+            Value::symbol("file-already-exists"),
+        ])
+    );
+}
+
+#[test]
+fn buffer_file_name_assignment_derives_remote_visit_policy_atomically() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((root (make-temp-file "emaxx-remote-visit-" t))
+                      (remote (concat "/mock::" root "/file"))
+                      (noninteractive nil)
+                      prompt)
+                 (unwind-protect
+                     (progn
+                       (write-region "foo" nil (concat root "/file"))
+                       (with-temp-buffer
+                         (setq buffer-file-name remote
+                               buffer-file-truename remote)
+                         (insert "foo")
+                         (set-buffer-modified-p nil)
+                         (set-visited-file-modtime
+                          (time-add (current-time) -60))
+                         (cl-letf (((symbol-function #'read-char-choice)
+                                    (lambda (text &rest _)
+                                      (setq prompt text)
+                                      ?y)))
+                           (insert "bar"))
+                         (and (stringp prompt)
+                              (not
+                               (null
+                                (string-match-p
+                                 " changed on disk; really edit the buffer\\?\\'"
+                                 prompt))))))
+                   (let ((file-name-handler-alist nil))
+                     (delete-directory root t))))"#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn with_no_warnings_is_one_ordinary_callable_function() {
+    assert_eq!(
+        eval_str(
+            r#"(list
+                 (special-form-p 'with-no-warnings)
+                 (with-no-warnings 1 2 3)
+                 (funcall #'with-no-warnings 4 5 6)
+                 (funcall
+                  (byte-compile
+                   '(lambda () (with-no-warnings 7 8 9)))))"#
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Integer(3),
+            Value::Integer(6),
+            Value::Integer(9),
+        ])
+    );
+}
+
+#[test]
+fn mock_tramp_deletions_share_the_remote_trash_policy() {
+    let result = eval_str(
+        r#"(let ((dir (make-temp-file "emaxx-mock-trash-" t))
+                  (original-trash-function
+                   (symbol-function 'system-move-file-to-trash)))
+              (unwind-protect
+                  (let* ((remote (concat "/mock::" dir))
+                         (remote-file (expand-file-name "sample.txt" remote))
+                         (remote-directory
+                          (expand-file-name "sample-directory" remote)))
+                    (write-region "sample" nil remote-file)
+                    (make-directory remote-directory)
+                    (fset 'system-move-file-to-trash
+                          (lambda (_file)
+                            (error "remote deletion reached system trash")))
+                    (let ((delete-by-moving-to-trash t)
+                          (remote-file-name-inhibit-delete-by-moving-to-trash t))
+                      (delete-file remote-file 'trash)
+                      (delete-directory remote-directory t 'trash)
+                      (list (file-exists-p remote-file)
+                            (file-exists-p remote-directory)
+                            delete-by-moving-to-trash
+                            remote-file-name-inhibit-delete-by-moving-to-trash)))
+                (fset 'system-move-file-to-trash original-trash-function)
+                (delete-directory dir t)))"#,
+    );
+    assert_eq!(
+        result,
+        Value::list([Value::Nil, Value::Nil, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn mock_remote_mutations_and_metadata_share_one_transport_registry() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((root (make-temp-file "emaxx-mock-transport-" t))
+                     (create-lockfiles nil)
+                     ;; Any operation omitted from the typed mock registry
+                     ;; falls through to this sentinel and fails the test.
+                     (file-name-handler-alist '(("\\`/mock:" . error))))
+                 (unwind-protect
+                     (let* ((remote (concat "/mock::" root))
+                            (source (expand-file-name "source" remote))
+                            (link-source (expand-file-name "link-source" remote))
+                            (link (expand-file-name "link" remote))
+                            (remote-looking-link
+                             (expand-file-name "remote-looking-link" remote))
+                            (quoted-target-link
+                             (expand-file-name "quoted-target-link" remote))
+                            (local-link (expand-file-name "local-link" root))
+                            (copy-parent (expand-file-name "copies" remote))
+                            (rename-parent (expand-file-name "renamed" remote)))
+                       (make-directory source)
+                       (write-region "sample" nil
+                                     (expand-file-name "foo" source))
+                       (write-region "sample" nil link-source)
+                       (make-symbolic-link link-source link)
+                       (make-directory copy-parent)
+                       (copy-file source (file-name-as-directory copy-parent))
+                       (let* ((copy
+                               (expand-file-name
+                                (file-name-nondirectory source) copy-parent))
+                              (copy-file (expand-file-name "foo" copy))
+                              (attributes
+                               (directory-files-and-attributes copy 'full)))
+                         (make-directory rename-parent)
+                         (rename-file source
+                                      (file-name-as-directory rename-parent))
+                         (list
+                          (file-directory-p copy)
+                          (file-regular-p copy-file)
+                          (consp (cdr (assoc copy-file attributes)))
+                          (not (file-exists-p source))
+                          (file-exists-p
+                           (expand-file-name
+                            (concat (file-name-nondirectory source) "/foo")
+                            rename-parent))
+                          (equal (file-name-completion "fo" copy) "foo")
+                          (equal (file-name-as-directory "/mock::")
+                                 "/mock::./")
+                          (equal (file-symlink-p link)
+                                 (file-remote-p link-source 'localname))
+                          (equal (file-attribute-type (file-attributes link))
+                                 (file-remote-p link-source 'localname))
+                          (condition-case err
+                              (make-symbolic-link link-source link)
+                            (file-already-exists (car err)))
+                          (cl-letf (((symbol-function #'yes-or-no-p) #'ignore))
+                            (condition-case err
+                                (make-symbolic-link link-source link 0)
+                              (file-already-exists (car err))))
+                          (cl-letf (((symbol-function #'yes-or-no-p) #'always))
+                            (make-symbolic-link link-source link 0)
+                            (equal (file-symlink-p link)
+                                   (file-remote-p link-source 'localname)))
+                          (progn
+                            (make-symbolic-link
+                             link-source link 'ok-if-already-exists)
+                            (equal (file-symlink-p link)
+                                   (file-remote-p link-source 'localname)))
+                          (progn
+                            (make-symbolic-link link-source local-link)
+                            (equal (file-symlink-p local-link) link-source))
+                          (progn
+                            (make-symbolic-link
+                             "/penguin:motd:" remote-looking-link)
+                            (equal
+                             (file-truename remote-looking-link)
+                             (concat
+                              (file-remote-p remote-looking-link)
+                              "/:/penguin:motd:")))
+                          (progn
+                            (make-symbolic-link
+                             (concat
+                              "/:" (file-remote-p link-source 'localname))
+                             quoted-target-link)
+                            (equal
+                             (file-symlink-p quoted-target-link)
+                             (file-remote-p link-source 'localname)))
+                          (let ((non-essential t))
+                            (equal (file-name-as-directory "/mock::")
+                                   "/mock::")))))
+                   (let ((file-name-handler-alist nil))
+                     (delete-directory root t))))"#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::symbol("file-already-exists"),
+            Value::symbol("file-already-exists"),
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn mock_remote_io_errors_keep_their_typed_conditions() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((root (make-temp-file "emaxx-mock-errors-" t))
+                      (remote (concat "/mock::" root))
+                      (missing (expand-file-name "missing" remote))
+                      (target (expand-file-name "target" remote)))
+                 (unwind-protect
+                     (list
+                      (condition-case err (copy-file missing target)
+                        (file-missing (car err)))
+                      (condition-case err (rename-file missing target)
+                        (file-missing (car err)))
+                      (condition-case err (set-file-modes missing #o777)
+                        (file-missing (car err)))
+                      (condition-case err (set-file-times missing)
+                        (file-missing (car err)))
+                      (condition-case err
+                          (directory-files-and-attributes missing)
+                        (file-missing (car err)))
+                      (condition-case err (insert-directory missing nil)
+                        (file-missing (car err)))
+                      (condition-case err (access-file missing "probe")
+                        (file-missing (car err)))
+                      (let ((remote-file-name-access-timeout 0.001))
+                        (cl-letf (((symbol-function #'file-exists-p)
+                                   (lambda (_file) (sleep-for 0.01) t)))
+                          (condition-case err (access-file missing "probe")
+                            (file-error (car err)))))
+                      (cl-letf (((symbol-function #'file-exists-p) #'always)
+                                ((symbol-function #'file-directory-p) #'ignore)
+                                ((symbol-function #'file-readable-p) #'ignore))
+                        (condition-case err (access-file missing "probe")
+                          (permission-denied (car err))))
+                      (progn
+                        (write-region "source" nil missing)
+                        (write-region "target" nil target)
+                        (prog1
+                            (condition-case err (rename-file missing target)
+                              (file-already-exists (car err)))
+                          (delete-file missing)
+                          (delete-file target)))
+                      (progn
+                        (make-directory target)
+                        (condition-case err (make-directory target)
+                          (file-already-exists (car err)))))
+                   (delete-directory root t)))"#
+        ),
+        Value::list([
+            Value::symbol("file-missing"),
+            Value::symbol("file-missing"),
+            Value::symbol("file-missing"),
+            Value::symbol("file-missing"),
+            Value::symbol("file-missing"),
+            Value::symbol("file-missing"),
+            Value::symbol("file-missing"),
+            Value::symbol("file-error"),
+            Value::symbol("permission-denied"),
+            Value::symbol("file-already-exists"),
+            Value::symbol("file-already-exists"),
+        ])
+    );
+}
+
+#[test]
+fn mock_truename_preserves_quoted_files_and_directories() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((root (make-temp-file "emaxx-mock-truename-" t))
+                      (local-file (expand-file-name "file" root))
+                      (quoted-file (concat "/mock::/:" local-file))
+                      (quoted-directory (concat "/mock::/:" root)))
+                 (unwind-protect
+                     (progn
+                       (write-region "sample" nil local-file)
+                       (list
+                        (equal (file-remote-p quoted-file 'localname)
+                               (concat "/:" local-file))
+                        (equal (file-local-name quoted-file)
+                               (concat "/:" local-file))
+                        (equal
+                         (file-truename quoted-file)
+                         (concat (file-remote-p quoted-file)
+                                 "/:" (file-truename local-file)))
+                        (equal
+                         (file-truename quoted-directory)
+                         (concat (file-remote-p quoted-directory)
+                                 "/:" (file-truename root)))))
+                   (delete-directory root t)))"#
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn file_replacement_and_offset_writes_share_gnu_file_io_contracts() {
+    let result = eval_str(
+        r#"(let ((file (make-temp-file "emaxx-file-io-contract-")))
+              (unwind-protect
+                  (progn
+                    (write-region "foobla" nil file)
+                    (write-region "baz" nil file 3)
+                    (let ((offset-result
+                           (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))))
+                      (write-region "foo" nil file)
+                      (list
+                       offset-result
+                       (with-temp-buffer
+                         (insert "fooofoooo")
+                         (goto-char (point-min))
+                         (list (insert-file-contents
+                                file nil nil nil 'replace)
+                               (buffer-string)
+                               (point)))
+                       (with-temp-buffer
+                         (insert "bar")
+                         (goto-char (point-min))
+                         (list (insert-file-contents
+                                file nil nil nil 'replace)
+                               (buffer-string)
+                               (point))))))
+                (delete-file file)))"#,
+    );
+    let file_name = result
+        .to_vec()
+        .expect("outer result")
+        .get(1)
+        .expect("first replacement")
+        .to_vec()
+        .expect("first replacement result")[0]
+        .to_vec()
+        .expect("insert-file result")[0]
+        .clone();
+    assert_eq!(
+        result,
+        Value::list([
+            Value::String("foobaz".into()),
+            Value::list([
+                Value::list([file_name.clone(), Value::Integer(0)]),
+                Value::String("foo".into()),
+                Value::Integer(1),
+            ]),
+            Value::list([
+                Value::list([file_name, Value::Integer(3)]),
+                Value::String("foo".into()),
+                Value::Integer(1),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn missing_mock_local_copy_keeps_the_file_missing_condition() {
+    assert_eq!(
+        eval_str(
+            r#"(condition-case err
+                   (file-local-copy
+                    "/mock::/emaxx-definitely-missing-local-copy")
+                 (file-missing (car err)))"#
+        ),
+        Value::Symbol("file-missing".into())
     );
 }
 
@@ -6207,13 +6690,12 @@ fn eshell_test_interpreter(test_file: &str) -> Interpreter {
     // larger debug test binary, with several upstream suites in parallel.
     // Keep the upstream observable-condition wait, but give that event loop
     // a debug-suite deadline instead of turning scheduler pressure into a
-    // false semantic failure.  A single isolated external-pipeline case can
-    // take 16 seconds in this unoptimized interpreter; the complete suite
-    // concurrently runs another large-stack interpreter and native child
-    // process probes.
+    // false semantic failure.  The complete all-targets gate concurrently
+    // runs another large-stack interpreter and native child-process probes;
+    // focused stress runs stay green but can exceed one minute per wait.
     interp.set_variable(
         "eshell-test--max-wait-time",
-        Value::Integer(60),
+        Value::Integer(300),
         &mut Vec::new(),
     );
     interp
@@ -6260,9 +6742,25 @@ fn upstream_eshell_command_regressions_stay_green() {
                       esh-cmd-test/which/plain/eshell-builtin)",
         );
         let summary = interp.run_ert_tests_with_selector(Some(&selector));
+        let process_diagnostics = eval_str_with(
+            &mut interp,
+            "(list eshell-test--max-wait-time
+                   eshell-process-list
+                   (mapcar (lambda (process)
+                             (list (process-name process)
+                                   (process-status process)
+                                   (process-command process)
+                                   (process-thread process)))
+                           (process-list))
+                   (eshell-get-debug-logs))",
+        );
 
         assert_eq!(summary.total, 6, "{:#?}", interp.test_results);
-        assert_eq!(summary.passed, 6, "{:#?}", interp.test_results);
+        assert_eq!(
+            summary.passed, 6,
+            "tests: {:#?}\nprocesses: {process_diagnostics:#?}",
+            interp.test_results
+        );
     });
 }
 

@@ -29,6 +29,28 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-08-07 cumulative runtime/file-contract checkpoint keeps the ordered
+  frontier at 4,582/7,080 (2,498 remaining) while making startup globals,
+  special/per-buffer metadata, startup features, ERT registration, and the
+  `/mock:' transport operation surface single-owner contracts.  Mock remote
+  mutations, metadata, quoting, copying, true names, typed errors, and process
+  path resolution now stay on one typed transport boundary even after real
+  Tramp loads.  The focused four-case Tramp replay is green in
+  `target/compat/run-1786110165644545000-43265`; canonical
+  `tramp-test15-copy-directory` is green in
+  `target/compat/run-1786113356154275000-2428`; and the combined upstream DnD
+  mock-remote lifecycle regression is green (both cases in 98.68 seconds,
+  including the expected inaccessible-file diagnostics).  Two focused
+  concurrent Eshell stress replays are 4/4 green; the all-target debug gate's
+  sole observed failure was its artificial 60-second background-process wait,
+  so that test-only deadline is now five minutes and failures report live
+  process/thread diagnostics.  Formatting, diff check, generated-autoload
+  validation, all-target/all-feature check, and strict Clippy pass.  The full
+  Rust test run itself was not green: it was stopped after that Eshell timeout
+  while the slow DnD case was still running, then both boundaries were
+  recertified in focus.  Native remains 1,420/1,420.  The complete ordered
+  compatibility prefix 1..4,582 is still unconfirmed and MUST be replayed
+  before selector 4,583.
 - The 2026-08-07 Isearch cumulative repair keeps the ordered frontier at
   4,582/7,080 and reduces the known cumulative mismatch set to two themes.
   All 5 canonical outcomes in `test/lisp/isearch-tests.el` match GNU in

@@ -116,6 +116,22 @@ fn translate_elisp_regex_with_point(
                 Some('(') => {
                     match consume_regex_group_prefix(&mut chars) {
                         Ok(RegexGroupPrefix::NonCapturing) => {
+                            let mut preview = chars.clone();
+                            if preview.next() == Some('\\') && preview.next() == Some(')') {
+                                chars.next();
+                                chars.next();
+                                // `rx' legitimately emits empty shy groups.
+                                // fancy-regex rejects a quantifier applied to
+                                // one, although every repetition of the empty
+                                // language is still empty.  Consume both at
+                                // this semantic boundary.
+                                translated
+                                    .push_str(&translate_zero_width_assertion(&mut chars, ""));
+                                at_branch_start = false;
+                                can_repeat_previous = false;
+                                last_was_quantifier = false;
+                                continue;
+                            }
                             translated.push_str("(?:");
                             at_branch_start = true;
                             can_repeat_previous = false;

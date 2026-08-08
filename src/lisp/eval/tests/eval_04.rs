@@ -325,6 +325,22 @@ fn assigning_features_stays_authoritative_across_later_provides() {
 }
 
 #[test]
+fn dynamic_features_bindings_keep_the_native_feature_index_in_sync() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (provide 'sample-dynamic-feature)
+               (list
+                (let ((features
+                       (delq 'sample-dynamic-feature (copy-sequence features))))
+                  (featurep 'sample-dynamic-feature))
+                (featurep 'sample-dynamic-feature)))"
+        ),
+        Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
 fn provide_subfeatures_and_require_noerror_match_gnu_primitive_contracts() {
     assert_eq!(
         eval_str(

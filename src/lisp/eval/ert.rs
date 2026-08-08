@@ -169,14 +169,11 @@ impl Interpreter {
                     .unwrap_or(Value::Nil),
             ],
         );
-        self.put_symbol_property(&name, "ert--test", record);
-        self.ert_tests.push(ErtTestDefinition {
-            name,
-            body,
-            source_file: self.current_load_file.clone(),
-            tags,
-            expected_result,
-        });
+        // `ert_set_test' is the single registration boundary for both the
+        // public symbol property and the native execution index.  Keeping a
+        // second inline write here made `ert-deftest' and `ert-set-test'
+        // capable of exposing different metadata for the same record.
+        self.ert_set_test(&name, &record)?;
         Ok(Value::Nil)
     }
 
@@ -340,6 +337,32 @@ impl Interpreter {
         self.last_selected_tests = tests.iter().map(|test| test.name.clone()).collect();
         summary.total = tests.len();
 
+        // GNU keeps the selector and per-run state dynamically visible while
+        // each test runs.  Some upstream suites use that public ERT context to
+        // decide whether optional expensive subcases were selected.
+        let mut stats_env = Vec::new();
+        let stats_tests = Value::list(
+            tests
+                .iter()
+                .map(|test| {
+                    self.get_symbol_property(&test.name, "ert--test")
+                        .unwrap_or(Value::Nil)
+                })
+                .collect::<Vec<_>>(),
+        );
+        let stats_selector = selector.map(unquote).unwrap_or(Value::T);
+        let run_stats = self
+            .lookup_function("ert--make-stats", &stats_env)
+            .and_then(|function| {
+                self.call_function_value(
+                    function,
+                    Some("ert--make-stats"),
+                    &[stats_tests, stats_selector],
+                    &mut stats_env,
+                )
+            })
+            .unwrap_or(Value::Nil);
+
         for test in &tests {
             let mut env: Env = Vec::new();
             // GNU can deliver SIGCHLD-driven process state changes between
@@ -357,6 +380,8 @@ impl Interpreter {
             let previous =
                 std::mem::replace(&mut self.ert_test_source_file, test.source_file.clone());
             let previous_name = self.current_ert_test_name.replace(test.name.clone());
+            let stats_restore =
+                self.bind_special_variable("ert--current-run-stats", run_stats.clone(), &mut env);
             // GNU pushes the executing test onto `ert--running-tests';
             // helpers like `ert-running-test' read it.
             let test_struct = self
@@ -397,9 +422,9 @@ impl Interpreter {
             // of being rejected early as an unhandled `no-catch'.
             self.active_catch_tags
                 .push(Value::Symbol("ert--pass".into()));
-            let mut result = match lexical_restore.as_ref() {
-                Ok(_) => self.call_function_value(test.body.clone(), None, &[], &mut env),
-                Err(error) => Err(error.clone()),
+            let mut result = match (stats_restore.as_ref(), lexical_restore.as_ref()) {
+                (Ok(_), Ok(_)) => self.call_function_value(test.body.clone(), None, &[], &mut env),
+                (Err(error), _) | (_, Err(error)) => Err(error.clone()),
             };
             self.active_catch_tags.pop();
             // GNU's native `kill-emacs` exits immediately: ERT never turns it
@@ -432,6 +457,12 @@ impl Interpreter {
                     &[Value::Buffer(id, String::new())],
                     &mut env,
                 );
+            }
+            if let Ok(restore) = stats_restore
+                && let Err(error) = self.restore_special_binding(restore, &mut env)
+                && result.is_ok()
+            {
+                result = Err(error);
             }
             self.set_variable("ert--running-tests", previous_running, &mut env);
             self.ert_test_source_file = previous;

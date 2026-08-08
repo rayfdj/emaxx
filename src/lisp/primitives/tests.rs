@@ -1062,6 +1062,15 @@ fn translate_elisp_regex_handles_rx_generated_hyphen_classes() {
 }
 
 #[test]
+fn translate_elisp_regex_elides_repeated_empty_shy_groups() {
+    let pattern = r"\(?:\)?x\(?:\)*";
+    let translated = regexp::translate_elisp_regex(pattern);
+    let rendered = format!("(?m:{translated})");
+    let regex = FancyRegex::new(&rendered).expect("translated regexp should compile");
+    assert!(regex.is_match("x").expect("match should complete"));
+}
+
+#[test]
 fn subregexp_context_rejects_classes_bounds_and_trailing_escape() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -3716,6 +3725,8 @@ fn substitute_in_file_name_expands_shell_style_env_vars() {
         substitute_in_file_name("$EMAXX_SUBST_TEST/${EMAXX_SUBST_TEST}/$$"),
         "value/value/$"
     );
+    assert_eq!(substitute_in_file_name("/path///file"), "/file");
+    assert_eq!(substitute_in_file_name("path//file"), "/file");
     if let Some(value) = old {
         unsafe {
             std::env::set_var("EMAXX_SUBST_TEST", value);
@@ -4543,6 +4554,18 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
     assert_eq!(interp.buffer.full_buffer_string(), "ready");
     assert_eq!(
         wait_duration(&[Value::Integer(10)]).expect("ten-second wait should be valid"),
+        std::time::Duration::from_secs(10)
+    );
+    call(
+        &mut interp,
+        "accept-process-output",
+        &[Value::Nil, Value::Integer(0), Value::Nil, Value::T],
+        &mut env,
+    )
+    .expect("an explicit nil MILLISEC should mean zero milliseconds");
+    assert_eq!(
+        wait_duration(&[Value::Integer(10), Value::Nil])
+            .expect("nil optional milliseconds should be zero"),
         std::time::Duration::from_secs(10)
     );
 }

@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
 use std::fs;
 use std::io::ErrorKind;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]

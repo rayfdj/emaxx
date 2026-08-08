@@ -265,7 +265,6 @@ define_native_forms! {
     Internal RxLet => "rx-let";
     Internal RxLetEval => "rx-let-eval";
     Special WithEvalAfterLoad => "with-eval-after-load";
-    Special WithNoWarnings => "with-no-warnings";
     Special Declare => "declare" | "declare-function" | "cl-declaim" | "declaim";
     Special DefEdebugSpec => "def-edebug-spec";
     Special DefEdebugElemSpec => "def-edebug-elem-spec";
@@ -645,8 +644,7 @@ impl Interpreter {
                                             .chain(items[3..].iter().cloned()),
                                     );
                                     let expander = self.eval(&lambda_form, env)?;
-                                    self.note_macro_added(&rewriter_name);
-                                    self.macros.push(MacroBinding {
+                                    self.push_macro_binding(MacroBinding {
                                         name: rewriter_name,
                                         expander,
                                     });
@@ -1010,7 +1008,6 @@ impl Interpreter {
                             NativeForm::WithEvalAfterLoad => {
                                 return self.sf_with_eval_after_load(&items, env);
                             }
-                            NativeForm::WithNoWarnings => return self.sf_progn(&items[1..], env),
                             NativeForm::Declare => {
                                 return Ok(Value::Nil);
                             }
@@ -1245,7 +1242,7 @@ impl Interpreter {
                             func,
                         ])));
                     };
-                    match self.load_target(&file) {
+                    match self.load_target_with_env(&file, env) {
                         Ok(_) => self.lookup_function(name, env)?,
                         // A file-less environment (unit tests) falls back to
                         // the native arm when one exists.
