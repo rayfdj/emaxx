@@ -11,7 +11,8 @@ use super::primitives;
 use super::reader::{CHAR_TABLE_LITERAL_SYMBOL, RECORD_LITERAL_SYMBOL};
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    EmacsTermination, Env, LispError, SharedEnv, Value, interned_symbol_value, shared_env,
+    EmacsTermination, Env, LispError, SharedEnv, Value, WeakConsSlot, interned_symbol_value,
+    shared_env,
 };
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use hashlink::LinkedHashMap;
@@ -2164,7 +2165,7 @@ pub(crate) enum ActiveHandler {
     Case(Vec<Value>),
 }
 
-type LambdaSourceBodyCacheEntry = (Weak<std::cell::RefCell<Value>>, Weak<Vec<Value>>);
+type LambdaSourceBodyCacheEntry = (WeakConsSlot, Weak<Vec<Value>>);
 
 fn make_query_replace_map(interp: &mut Interpreter) -> Value {
     let map = primitives::make_runtime_keymap(interp, Some("query-replace-map"));
@@ -4312,9 +4313,9 @@ fn bounded_value_eq(left: &Value, right: &Value, budget: &mut usize) -> bool {
     }
     *budget -= 1;
     match (left, right) {
-        (Value::Cons(a1, a2), Value::Cons(b1, b2)) => {
-            bounded_value_eq(&a1.borrow(), &b1.borrow(), budget)
-                && bounded_value_eq(&a2.borrow(), &b2.borrow(), budget)
+        (Value::Cons(a), Value::Cons(b)) => {
+            bounded_value_eq(&a.car.borrow(), &b.car.borrow(), budget)
+                && bounded_value_eq(&a.cdr.borrow(), &b.cdr.borrow(), budget)
         }
         (Value::Lambda(ap, ab, ae), Value::Lambda(bp, bb, be)) => {
             ap == bp
@@ -4349,7 +4350,7 @@ fn quoted_symbol_name(value: &Value) -> Option<String> {
 
 fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
     match value {
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = value.to_vec()?;
             if items.len() == 2
                 && matches!(items.first(), Some(Value::Symbol(name)) if name == "setf")
@@ -4383,7 +4384,7 @@ fn assignment_target_name(value: &Value) -> Result<String, LispError> {
 
 fn unquote(value: &Value) -> Value {
     match value {
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             if let Ok(items) = value.to_vec()
                 && items.len() == 2
                 && matches!(items.first(), Some(Value::Symbol(name)) if name == "quote")
@@ -4461,9 +4462,8 @@ fn forms_to_progn(forms: &[Value]) -> Value {
 
 fn normalize_if_let_spec(spec: &Value) -> Result<Vec<Value>, LispError> {
     let items = spec.to_vec()?;
-    let old_single_binding_syntax = !items.is_empty()
-        && items.len() <= 2
-        && !matches!(items[0], Value::Nil | Value::Cons(_, _));
+    let old_single_binding_syntax =
+        !items.is_empty() && items.len() <= 2 && !matches!(items[0], Value::Nil | Value::Cons(_));
     Ok(if old_single_binding_syntax {
         vec![spec.clone()]
     } else {
@@ -4548,7 +4548,7 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
 fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
     match value {
         Value::Nil => crate::buffer::UndoEntry::Boundary,
-        Value::Cons(_, _) => match value.cons_values() {
+        Value::Cons(_) => match value.cons_values() {
             // GNU records an insertion as (BEG . END).
             Some((Value::Integer(beg), Value::Integer(end))) if beg >= 0 && end >= beg => {
                 crate::buffer::UndoEntry::Insert {
@@ -4625,13 +4625,15 @@ fn render_undo_value(value: &Value) -> String {
         Value::String(s) => format!("\"{}\"", s),
         Value::StringObject(state) => format!("\"{}\"", state.borrow().text),
         Value::Symbol(s) => s.clone(),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let mut rendered = String::from("(");
             let mut current = value.clone();
             let mut first = true;
             loop {
                 match current {
-                    Value::Cons(car, cdr) => {
+                    Value::Cons(cons_cell) => {
+                        let car = &cons_cell.car;
+                        let cdr = &cons_cell.cdr;
                         if !first {
                             rendered.push(' ');
                         }
@@ -4747,7 +4749,7 @@ fn function_declare_gv_setter_handler(form: &Value) -> Option<Value> {
     items[1..].iter().find_map(|declaration| {
         let declaration_items = declaration.to_vec().ok()?;
         match declaration_items.as_slice() {
-            [Value::Symbol(kind), handler @ Value::Cons(_, _)] if kind == "gv-setter" => {
+            [Value::Symbol(kind), handler @ Value::Cons(_)] if kind == "gv-setter" => {
                 Some(handler.clone())
             }
             _ => None,
@@ -4807,7 +4809,7 @@ fn is_record_literal_slot_form(value: &Value) -> bool {
         | Value::BuiltinFunc(_)
         | Value::Lambda(_, _, _)
         | Value::Unbound => true,
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Ok(items) = value.to_vec() else {
                 return false;
             };
@@ -4824,7 +4826,7 @@ fn is_record_literal_slot_form(value: &Value) -> bool {
 fn is_record_literal_reader_form(value: &Value) -> bool {
     // Cheap car probe first: every list evaluation passes through here,
     // and to_vec would allocate for each one.
-    let Value::Cons(car, _) = value else {
+    let Some((car, _)) = (value).cons_cells() else {
         return false;
     };
     if !matches!(&*car.borrow(), Value::Symbol(name) if name == RECORD_LITERAL_SYMBOL) {
@@ -4837,7 +4839,7 @@ fn is_record_literal_reader_form(value: &Value) -> bool {
 }
 
 fn is_char_table_literal_reader_form(value: &Value) -> bool {
-    let Value::Cons(car, _) = value else {
+    let Some((car, _)) = (value).cons_cells() else {
         return false;
     };
     matches!(&*car.borrow(), Value::Symbol(name) if name == CHAR_TABLE_LITERAL_SYMBOL)
@@ -4918,13 +4920,13 @@ fn nested_backquote_body(value: &Value) -> Option<Value> {
 
 fn defface_spec_literal(spec_form: &Value) -> Option<Value> {
     match spec_form {
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = spec_form.to_vec().ok()?;
             match items.as_slice() {
                 [Value::Symbol(symbol), value] if symbol == "quote" => Some(value.clone()),
                 _ if items
                     .iter()
-                    .all(|item| matches!(item, Value::Cons(_, _) | Value::Nil)) =>
+                    .all(|item| matches!(item, Value::Cons(_) | Value::Nil)) =>
                 {
                     Some(spec_form.clone())
                 }
@@ -4955,7 +4957,7 @@ fn defface_clause_attributes(
     }
 
     let attribute_source = if parts.len() == 2
-        && matches!(&parts[1], Value::Cons(_, _))
+        && matches!(&parts[1], Value::Cons(_))
         && parts[1].to_vec().ok().is_some_and(|items| {
             items
                 .first()
@@ -5083,7 +5085,7 @@ enum ClDefunSection {
 fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun, LispError> {
     let items = match spec {
         Value::Nil => Vec::new(),
-        Value::Cons(_, _) => spec.to_vec()?,
+        Value::Cons(_) => spec.to_vec()?,
         _ => return Err(invalid_function(spec.clone())),
     };
 
@@ -5149,7 +5151,7 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
                 required_count += 1;
                 if let Value::Symbol(symbol) = item {
                     lowered.push(Value::Symbol(symbol));
-                } else if matches!(item, Value::Cons(_, _)) {
+                } else if matches!(item, Value::Cons(_)) {
                     let temp_name = format!("emaxx--cl-defun-{name}-arg-{index}");
                     lowered.push(Value::Symbol(temp_name.clone()));
                     destructuring_bindings.push((item, temp_name));
@@ -5161,7 +5163,7 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
                 optional_bindings.push(parse_cl_defun_optional_binding(item)?);
             }
             ClDefunSection::RestName => {
-                if !matches!(item, Value::Symbol(_) | Value::Cons(_, _)) {
+                if !matches!(item, Value::Symbol(_) | Value::Cons(_)) {
                     return Err(invalid_function(spec.clone()));
                 }
                 rest_binding = Some(item);
@@ -5175,7 +5177,7 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
                     default_value: Value::Nil,
                     supplied_name: None,
                 }),
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     keyword_bindings.push(parse_cl_defun_key_binding(item)?);
                 }
                 _ => return Err(invalid_function(spec.clone())),
@@ -5229,7 +5231,7 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
 fn parse_cl_defun_optional_binding(spec: Value) -> Result<ClOptionalBinding, LispError> {
     let (pattern, default_value, supplied_name) = match spec {
         Value::Symbol(_) => (spec, Value::Nil, None),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = spec.to_vec()?;
             if items.is_empty() || items.len() > 3 {
                 return Err(LispError::Signal(
@@ -5237,7 +5239,7 @@ fn parse_cl_defun_optional_binding(spec: Value) -> Result<ClOptionalBinding, Lis
                 ));
             }
             let pattern = items[0].clone();
-            if !matches!(pattern, Value::Symbol(_) | Value::Cons(_, _)) {
+            if !matches!(pattern, Value::Symbol(_) | Value::Cons(_)) {
                 return Err(LispError::Signal(
                     "Unsupported cl-defun &optional binding".into(),
                 ));
@@ -5307,7 +5309,7 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
             default_value.clone(),
             Some(supplied_name.clone()),
         ),
-        [pattern @ Value::Cons(_, _)] => {
+        [pattern @ Value::Cons(_)] => {
             let pair = pattern.to_vec()?;
             let [Value::Symbol(keyword_name), Value::Symbol(variable_name)] = pair.as_slice()
             else {
@@ -5322,7 +5324,7 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
                 None,
             )
         }
-        [pattern @ Value::Cons(_, _), default_value] => {
+        [pattern @ Value::Cons(_), default_value] => {
             let pair = pattern.to_vec()?;
             let [Value::Symbol(keyword_name), Value::Symbol(variable_name)] = pair.as_slice()
             else {
@@ -5338,7 +5340,7 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
             )
         }
         [
-            pattern @ Value::Cons(_, _),
+            pattern @ Value::Cons(_),
             default_value,
             Value::Symbol(supplied_name),
         ] => {
@@ -5430,13 +5432,13 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<LoweredClDefmethodLamb
                 }
                 lowered.push(Value::Symbol(symbol));
             }
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 if skipping_context {
                     continue;
                 }
                 let parts = item.to_vec()?;
                 if required
-                    && let Some(pattern @ Value::Cons(_, _)) = parts.first()
+                    && let Some(pattern @ Value::Cons(_)) = parts.first()
                     && cl_defmethod_specializer_kind(parts.get(1)).is_some()
                 {
                     let parameter = cl_defmethod_destructuring_parameter_name(index);
@@ -5624,7 +5626,7 @@ fn cl_defmethod_specializer_kind(spec: Option<&Value>) -> Option<ClDefmethodSpec
             Some(ClDefmethodSpecializerKind::Class(class_name.clone()))
         }
         Some(Value::T) => Some(ClDefmethodSpecializerKind::Class("t".into())),
-        Some(compound @ Value::Cons(_, _)) => {
+        Some(compound @ Value::Cons(_)) => {
             let specializer = compound.to_vec().ok()?;
             match specializer.first() {
                 Some(Value::Symbol(name)) if name == "eql" => {
@@ -5654,13 +5656,13 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
             next_is_context = true;
             continue;
         }
-        let Value::Cons(_, _) = item else {
+        let Value::Cons(_) = item else {
             continue;
         };
         let parts = item.to_vec()?;
         // &context (EXPR SPEC) where EXPR is an expression, not a variable
         // (context rewriters expand to this shape): dispatch evaluates EXPR.
-        if next_is_context && let Some(expr @ Value::Cons(_, _)) = parts.first() {
+        if next_is_context && let Some(expr @ Value::Cons(_)) = parts.first() {
             if let Some(kind) = cl_defmethod_specializer_kind(parts.get(1)) {
                 // Two methods that differ only in their context EXPR are
                 // distinct methods, so the variable naming (which feeds the
@@ -5680,7 +5682,7 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
             next_is_context = false;
             continue;
         }
-        if let Some(Value::Cons(_, _)) = parts.first()
+        if let Some(Value::Cons(_)) = parts.first()
             && let Some(kind) = cl_defmethod_specializer_kind(parts.get(1))
         {
             specializers.push(ClDefmethodSpecializer {
@@ -5695,7 +5697,7 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
         let Some(Value::Symbol(variable)) = parts.first() else {
             continue;
         };
-        if next_is_context && let Some(Value::Cons(_, _)) = parts.get(1) {
+        if next_is_context && let Some(Value::Cons(_)) = parts.get(1) {
             let specializer = parts[1].to_vec()?;
             if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "eql")
                 && let Some(value) = specializer.get(1)
@@ -6125,7 +6127,9 @@ fn cl_defmethod_replace_ignore_previous_bindings_inner(
                 ) || replaced
             })
         }
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             let cons_id = car.as_ptr() as usize;
             if !seen_cons.insert(cons_id) {
                 return false;
@@ -6193,7 +6197,9 @@ fn cl_defmethod_replace_terminal_previous_bindings(function: &Value, replacement
                     replace(&value, replacement, seen_envs, seen_cons) || replaced
                 })
             }
-            Value::Cons(car, cdr) => {
+            Value::Cons(cons_cell) => {
+                let car = &cons_cell.car;
+                let cdr = &cons_cell.cdr;
                 let cons_id = car.as_ptr() as usize;
                 if !seen_cons.insert(cons_id) {
                     return false;
@@ -6272,7 +6278,9 @@ fn cl_defmethod_previous_binding_inner(
             }
             None
         }
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             let cons_id = car.as_ptr() as usize;
             if !seen_cons.insert(cons_id) {
                 return None;
@@ -6441,7 +6449,7 @@ fn substitute_symbol_macros(
             .get(symbol)
             .cloned()
             .unwrap_or_else(|| form.clone())),
-        Value::Cons(_, _) => substitute_symbol_macros_in_list(form, expansions),
+        Value::Cons(_) => substitute_symbol_macros_in_list(form, expansions),
         _ => Ok(form.clone()),
     }
 }
@@ -6509,7 +6517,7 @@ fn substitute_symbol_macros_in_let(
                 scoped.remove(symbol);
                 rewritten_bindings.push(Value::Symbol(symbol.clone()));
             }
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let parts = binding.to_vec()?;
                 let Some(Value::Symbol(symbol)) = parts.first() else {
                     rewritten_bindings.push(substitute_symbol_macros(binding, &scoped)?);
@@ -6536,7 +6544,7 @@ fn substitute_symbol_macros_in_let(
                 Value::Symbol(symbol) => {
                     body_scope.remove(symbol);
                 }
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     if let Ok(parts) = binding.to_vec()
                         && let Some(Value::Symbol(symbol)) = parts.first()
                     {
@@ -6737,7 +6745,9 @@ pub(crate) fn form_mentions_setcdr(value: &Value, budget: &mut u32) -> bool {
     *budget -= 1;
     match value {
         Value::Symbol(name) => name == "setcdr",
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             form_mentions_setcdr(&car.borrow(), budget)
                 || form_mentions_setcdr(&cdr.borrow(), budget)
         }
@@ -6798,9 +6808,9 @@ fn restore_tail_alias_values(interp: &mut Interpreter, aliases: &[(String, Value
 
 fn deep_copy_value(value: &Value) -> Value {
     match value {
-        Value::Cons(car, cdr) => Value::cons(
-            deep_copy_value(&car.borrow()),
-            deep_copy_value(&cdr.borrow()),
+        Value::Cons(cell) => Value::cons(
+            deep_copy_value(&cell.car.borrow()),
+            deep_copy_value(&cell.cdr.borrow()),
         ),
         _ => value.clone(),
     }
@@ -6821,7 +6831,7 @@ fn parse_cl_defstruct_constructor_params(
         if in_aux {
             match item {
                 Value::Symbol(name) => aux_bindings.push((name, Value::Nil)),
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     if let Ok(parts) = item.to_vec()
                         && let Some(name) = parts.first().and_then(|value| value.as_symbol().ok())
                     {
@@ -7145,7 +7155,7 @@ fn pcase_pattern_bindings_inner(
                 for slot_pattern in &parts[2..] {
                     let (slot_name, nested_pattern) = match slot_pattern {
                         Value::Symbol(name) => (name.clone(), slot_pattern.clone()),
-                        Value::Cons(_, _) => {
+                        Value::Cons(_) => {
                             let Ok(slot_parts) = slot_pattern.to_vec() else {
                                 bindings.truncate(start);
                                 return Ok(false);
@@ -7284,12 +7294,12 @@ fn pcase_pattern_bindings_inner(
     }
 
     match (pattern, value) {
-        (Value::Cons(pattern_car, pattern_cdr), Value::Cons(value_car, value_cdr)) => {
+        (Value::Cons(pattern), Value::Cons(value)) => {
             let start = bindings.len();
-            let pattern_car = pattern_car.borrow().clone();
-            let pattern_cdr = pattern_cdr.borrow().clone();
-            let value_car = value_car.borrow().clone();
-            let value_cdr = value_cdr.borrow().clone();
+            let pattern_car = pattern.car.borrow().clone();
+            let pattern_cdr = pattern.cdr.borrow().clone();
+            let value_car = value.car.borrow().clone();
+            let value_cdr = value.cdr.borrow().clone();
             if !pcase_pattern_bindings_inner(
                 interp,
                 env,
@@ -7316,10 +7326,10 @@ fn pcase_pattern_bindings_inner(
             }
             Ok(true)
         }
-        (Value::Cons(pattern_car, pattern_cdr), Value::Nil) if lenient_list_match => {
+        (Value::Cons(pattern), Value::Nil) if lenient_list_match => {
             let start = bindings.len();
-            let pattern_car = pattern_car.borrow().clone();
-            let pattern_cdr = pattern_cdr.borrow().clone();
+            let pattern_car = pattern.car.borrow().clone();
+            let pattern_cdr = pattern.cdr.borrow().clone();
             if !pcase_pattern_bindings_inner(
                 interp,
                 env,
@@ -7346,7 +7356,7 @@ fn pcase_pattern_bindings_inner(
             }
             Ok(true)
         }
-        (Value::Nil, Value::Cons(_, _)) if lenient_list_match => Ok(true),
+        (Value::Nil, Value::Cons(_)) if lenient_list_match => Ok(true),
         (Value::Nil, Value::Nil) => Ok(true),
         _ => Ok(pattern == value),
     }

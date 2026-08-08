@@ -143,7 +143,7 @@ pub(crate) fn eval_impl(
         let (capture_lexical, trim_context, mut eval_env) = match lexical {
             Value::Nil => (false, false, Vec::new()),
             Value::T => (true, false, env.clone()),
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let frame = lexical_alist_frame(lexical)?;
                 (true, true, vec![frame])
             }
@@ -211,7 +211,7 @@ pub(crate) fn unload_feature_impl(
     let load_history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
     let mut entries = load_history.to_vec().unwrap_or_default();
     let feature_entry = entries.iter().position(|entry| {
-        let Value::Cons(_, defs) = entry else {
+        let Some((_, defs)) = (entry).cons_cells() else {
             return false;
         };
         let defs = defs.borrow().clone();
@@ -223,7 +223,7 @@ pub(crate) fn unload_feature_impl(
         // evaluation of the same file stacks entries, and a stale entry
         // keeps pointing at a temp file after it is deleted.
         let feature_file = match &entries[index] {
-            Value::Cons(file, _) => Some(file.borrow().clone()),
+            Value::Cons(cell) => Some(cell.car.borrow().clone()),
             _ => None,
         };
         let mut removed = vec![entries.remove(index)];
@@ -232,7 +232,7 @@ pub(crate) fn unload_feature_impl(
             for entry in entries {
                 let same_file = matches!(
                     &entry,
-                    Value::Cons(file, _) if &*file.borrow() == feature_file
+                    Value::Cons(cell) if &*cell.car.borrow() == feature_file
                 );
                 if same_file {
                     removed.push(entry);
@@ -243,12 +243,12 @@ pub(crate) fn unload_feature_impl(
             entries = kept;
         }
         for entry in &removed {
-            let Value::Cons(_, defs) = entry else {
+            let Some((_, defs)) = (entry).cons_cells() else {
                 continue;
             };
             let defs = defs.borrow().clone();
             for def in defs.to_vec().unwrap_or_default() {
-                let Value::Cons(kind, target) = &def else {
+                let Some((kind, target)) = def.cons_cells() else {
                     continue;
                 };
                 let kind = kind.borrow().clone();

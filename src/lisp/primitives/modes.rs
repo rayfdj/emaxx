@@ -551,7 +551,7 @@ fn mark_semantic_buffer_active_if_enabled(
 fn auto_mode_symbol_from_value(value: &Value) -> Option<String> {
     match value {
         Value::Symbol(symbol) => Some(symbol.clone()),
-        Value::Cons(_, _) => value.to_vec().ok().and_then(|parts| {
+        Value::Cons(_) => value.to_vec().ok().and_then(|parts| {
             if parts.len() == 2
                 && matches!(parts.first(), Some(Value::Symbol(keyword)) if keyword == "quote")
             {
@@ -572,7 +572,7 @@ fn auto_mode_function_from_entries(
 ) -> Result<Option<String>, LispError> {
     for candidate in auto_mode_candidates(interp, env, path) {
         for entry in entries.to_vec()? {
-            let Value::Cons(pattern, mode) = entry else {
+            let Some((pattern, mode)) = (entry).cons_cells() else {
                 continue;
             };
             let pattern = pattern.borrow().clone();

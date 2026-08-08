@@ -292,16 +292,16 @@ define_dispatch!(
                     && let Some(reuse) = args.get(1)
                 {
                     let mut tail = reuse.clone();
-                    while let Value::Cons(car, cdr) = tail {
-                        let marker_id = match &*car.borrow() {
+                    while let Value::Cons(cell) = tail {
+                        let marker_id = match &*cell.car.borrow() {
                             Value::Marker(marker_id) => Some(*marker_id),
                             _ => None,
                         };
                         if let Some(marker_id) = marker_id {
                             interp.set_marker(marker_id, None, None)?;
-                            *car.borrow_mut() = Value::Nil;
+                            *cell.car.borrow_mut() = Value::Nil;
                         }
-                        tail = cdr.borrow().clone();
+                        tail = cell.cdr.borrow().clone();
                     }
                 }
                 let use_integers = args.first().is_some_and(Value::is_truthy);
@@ -349,20 +349,18 @@ define_dispatch!(
                 {
                     items.push(buffer);
                 }
-                let Some(reuse) = args
-                    .get(1)
-                    .filter(|value| matches!(value, Value::Cons(_, _)))
+                let Some(reuse) = args.get(1).filter(|value| matches!(value, Value::Cons(_)))
                 else {
                     return Ok(Value::list(items));
                 };
                 let mut tail = reuse.clone();
                 let mut previous = None;
                 let mut item_index = 0usize;
-                while let Value::Cons(car, cdr) = tail {
-                    *car.borrow_mut() = items.get(item_index).cloned().unwrap_or(Value::Nil);
+                while let Value::Cons(cell) = tail {
+                    *cell.car.borrow_mut() = items.get(item_index).cloned().unwrap_or(Value::Nil);
                     item_index += 1;
-                    previous = Some(Value::Cons(car.clone(), cdr.clone()));
-                    tail = cdr.borrow().clone();
+                    previous = Some(Value::Cons(cell.clone()));
+                    tail = cell.cdr.borrow().clone();
                 }
                 if item_index < items.len()
                     && let Some(previous) = previous
@@ -415,16 +413,16 @@ define_dispatch!(
                 }
                 if args.get(1).is_some_and(Value::is_truthy) {
                     let mut tail = args[0].clone();
-                    while let Value::Cons(car, cdr) = tail {
-                        let marker_id = match &*car.borrow() {
+                    while let Value::Cons(cell) = tail {
+                        let marker_id = match &*cell.car.borrow() {
                             Value::Marker(marker_id) => Some(*marker_id),
                             _ => None,
                         };
                         if let Some(marker_id) = marker_id {
                             interp.set_marker(marker_id, None, None)?;
-                            *car.borrow_mut() = Value::Nil;
+                            *cell.car.borrow_mut() = Value::Nil;
                         }
-                        tail = cdr.borrow().clone();
+                        tail = cell.cdr.borrow().clone();
                     }
                 }
                 interp.last_match_data = Some(restored);

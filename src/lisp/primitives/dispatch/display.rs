@@ -962,7 +962,7 @@ fn valid_window_cursor_type(value: &Value) -> bool {
     match value {
         Value::Nil | Value::T => true,
         Value::Symbol(symbol) => matches!(symbol.as_str(), "box" | "hollow" | "bar" | "hbar"),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Ok(kind) = value
                 .car()
                 .and_then(|kind| kind.as_symbol().map(str::to_owned))

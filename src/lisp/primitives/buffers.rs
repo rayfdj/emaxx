@@ -451,8 +451,8 @@ pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool 
 
 pub(crate) fn vector_root_slot(value: &Value) -> Option<ConsSlot> {
     match value {
-        Value::Cons(car, _) if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") => {
-            Some(car.clone())
+        Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") => {
+            Some(ConsSlot::car(cell))
         }
         _ => None,
     }
@@ -462,12 +462,12 @@ pub(crate) fn vector_root_slot(value: &Value) -> Option<ConsSlot> {
 /// `Rc<Vec>` per access; a cold cache falls back to the filling path.
 fn with_vector_slots<T>(value: &Value, op: impl Fn(&[ConsSlot]) -> Option<T>) -> Option<T> {
     let root = vector_root_slot(value)?;
-    let key = Rc::as_ptr(&root) as usize;
+    let key = root.cell_id();
     let mut hit = false;
     let cached = VECTOR_SLOT_CACHE.with_borrow(|cache| {
         let (cached_root, slots) = cache.get(&key)?;
         let live = cached_root.upgrade()?;
-        if !Rc::ptr_eq(&live, &root) {
+        if !live.ptr_eq(&root) {
             return None;
         }
         hit = true;
@@ -504,10 +504,10 @@ pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispE
     let Some(root) = vector_root_slot(value) else {
         return Err(LispError::TypeError("vector".into(), value.type_name()));
     };
-    let key = Rc::as_ptr(&root) as usize;
+    let key = root.cell_id();
     if let Some(slots) = VECTOR_SLOT_CACHE.with_borrow_mut(|cache| match cache.get(&key) {
         Some((cached_root, slots)) => match cached_root.upgrade() {
-            Some(cached_root) if Rc::ptr_eq(&cached_root, &root) => Some(slots.clone()),
+            Some(cached_root) if cached_root.ptr_eq(&root) => Some(slots.clone()),
             _ => {
                 cache.remove(&key);
                 None
@@ -518,16 +518,16 @@ pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispE
         return Ok(slots);
     }
 
-    let Value::Cons(_, cdr) = value else {
+    let Some((_, cdr)) = (value).cons_cells() else {
         return Err(LispError::TypeError("vector".into(), value.type_name()));
     };
     let mut current = cdr.borrow().clone();
     let mut slots = Vec::new();
     loop {
         match current {
-            Value::Cons(car, cdr) => {
-                slots.push(car.clone());
-                current = cdr.borrow().clone();
+            Value::Cons(cell) => {
+                slots.push(ConsSlot::car(&cell));
+                current = cell.cdr.borrow().clone();
             }
             Value::Nil => break,
             _ => return Err(LispError::TypeError("vector".into(), value.type_name())),
@@ -536,7 +536,7 @@ pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispE
 
     let slots = Rc::new(slots);
     VECTOR_SLOT_CACHE.with_borrow_mut(|cache| {
-        cache.insert(key, (Rc::downgrade(&root), slots.clone()));
+        cache.insert(key, (root.downgrade(), slots.clone()));
     });
     Ok(slots)
 }
@@ -1418,8 +1418,8 @@ pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'stat
         Value::Float(_) => "float",
         Value::String(_) | Value::StringObject(_) => "string",
         Value::Symbol(_) => "symbol",
-        Value::Cons(_, _) if is_vector_value(value) => "vector",
-        Value::Cons(_, _) => "cons",
+        Value::Cons(_) if is_vector_value(value) => "vector",
+        Value::Cons(_) => "cons",
         Value::BuiltinFunc(name) if is_special_form_name(name) => "special-form",
         Value::BuiltinFunc(_) => "primitive-function",
         Value::Lambda(_, _, _) => "interpreted-function",
@@ -1510,7 +1510,9 @@ pub(crate) fn char_table_range_spec(value: &Value) -> Result<Option<(u32, u32)>,
         Value::Integer(codepoint) if *codepoint >= 0 => {
             Ok(Some((*codepoint as u32, *codepoint as u32)))
         }
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             let start = car.borrow().as_integer()?;
             let end = cdr.borrow().as_integer()?;
             if start < 0 || end < 0 {
@@ -1701,7 +1703,7 @@ pub(crate) fn prefix_numeric_value(value: &Value) -> Result<Value, LispError> {
         Value::Nil => Ok(Value::Integer(1)),
         Value::Integer(_) | Value::BigInteger(_) => Ok(value.clone()),
         Value::Symbol(symbol) if symbol == "-" => Ok(Value::Integer(-1)),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = value.to_vec()?;
             if items.len() == 1 {
                 prefix_numeric_value(&items[0])

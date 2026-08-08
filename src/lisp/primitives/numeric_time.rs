@@ -806,7 +806,9 @@ pub(crate) fn exact_time_from_value(
         Value::Integer(value) => exact_time_value(BigInt::from(*value), BigInt::from(1u8)),
         Value::BigInteger(value) => exact_time_value(value.clone(), BigInt::from(1u8)),
         Value::Float(value) => exact_time_from_float(*value),
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             if let Ok(items) = value.to_vec()
                 && (2..=4).contains(&items.len())
             {
@@ -1341,7 +1343,7 @@ fn explicit_zone_spec_from_value(
                 is_dst: false,
             }))
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = zone.to_vec()?;
             if items.is_empty() {
                 return Err(LispError::TypeError("time-zone".into(), zone.type_name()));

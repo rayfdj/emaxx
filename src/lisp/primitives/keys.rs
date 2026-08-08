@@ -477,7 +477,7 @@ pub(crate) fn key_description_events(sequence: &Value) -> Result<Vec<Value>, Lis
 
     match sequence {
         Value::Nil => Ok(Vec::new()),
-        Value::Cons(_, _) => Ok(vector_items(sequence)?
+        Value::Cons(_) => Ok(vector_items(sequence)?
             .into_iter()
             .map(normalize_key_description_event)
             .collect()),
@@ -581,7 +581,7 @@ pub(crate) fn concat_sequence_string(
 pub(crate) fn sequence_string_like(value: &Value) -> Option<StringLike> {
     match value {
         Value::String(_) | Value::StringObject(_) => string_like(value),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = value.to_vec().ok()?;
             if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
                 && matches!(items.get(1), Some(Value::String(_)))
@@ -605,7 +605,7 @@ pub(crate) fn single_key_description_text(
         Value::T => Ok(describe_symbolic_key("t", no_angles)),
         Value::String(text) => Ok(text.clone()),
         Value::StringObject(state) => Ok(state.borrow().text.clone()),
-        Value::Cons(_, _) => list_event_key_description_text(key, no_angles),
+        Value::Cons(_) => list_event_key_description_text(key, no_angles),
         _ => Err(LispError::TypeError(
             "integer, symbol, or string".into(),
             key.type_name(),

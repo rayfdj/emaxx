@@ -90,7 +90,9 @@ fn resolve_ccl_program(
         let value = match item {
             Value::Integer(number) => Some(number),
             Value::BigInteger(_) => item.as_integer().ok(),
-            Value::Cons(car, cdr) => {
+            Value::Cons(cons_cell) => {
+                let car = &cons_cell.car;
+                let cdr = &cons_cell.cdr;
                 let symbol = car.borrow().as_symbol()?.to_string();
                 let property = cdr.borrow().as_symbol()?.to_string();
                 interp
@@ -208,11 +210,11 @@ fn register_code_conversion_map(
     let mut index = None;
     for (candidate, slot) in slots.iter().enumerate() {
         match slot {
-            Value::Cons(car, _) if car.borrow().as_symbol().ok() == Some(symbol.as_str()) => {
+            Value::Cons(cell) if cell.car.borrow().as_symbol().ok() == Some(symbol.as_str()) => {
                 index = Some(candidate);
                 break;
             }
-            Value::Cons(_, _) => {}
+            Value::Cons(_) => {}
             _ => {
                 index = Some(candidate);
                 break;
@@ -485,7 +487,7 @@ impl CclMachine {
             .default_value("translation-hash-table-vector")
             .ok_or_else(|| self.error(self.pc.saturating_sub(1)))?;
         let slot = vector_slot_value(&tables, table_id)?;
-        let Value::Cons(_, table) = slot else {
+        let Some((_, table)) = (slot).cons_cells() else {
             return Err(self.error(self.pc.saturating_sub(1)));
         };
         let table = table.borrow().clone();

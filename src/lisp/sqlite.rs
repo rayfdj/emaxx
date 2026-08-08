@@ -401,7 +401,7 @@ fn bind_parameters(values: &Value) -> Result<Vec<SqlValue>, LispError> {
     if values.is_nil() {
         return Ok(Vec::new());
     }
-    if !matches!(values, Value::Cons(_, _)) {
+    if !matches!(values, Value::Cons(_)) {
         return Err(LispError::Signal(
             "VALUES must be a list or a vector".into(),
         ));

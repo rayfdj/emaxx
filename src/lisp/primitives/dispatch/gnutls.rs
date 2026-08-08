@@ -427,12 +427,10 @@ fn descriptor(spec: &DigestSpec) -> Value {
 
 fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
     let mut current = plist.clone();
-    while let Value::Cons(key, rest) = current {
-        let rest = rest.borrow().clone();
-        let Value::Cons(value, tail) = rest else {
-            return None;
-        };
-        if matches!(&*key.borrow(), Value::Symbol(name) if name == property) {
+    while let Value::Cons(cell) = current {
+        let rest = cell.cdr.borrow().clone();
+        let (value, tail) = rest.cons_cells()?;
+        if matches!(&*cell.car.borrow(), Value::Symbol(name) if name == property) {
             return value.borrow().as_integer().ok();
         }
         current = tail.borrow().clone();

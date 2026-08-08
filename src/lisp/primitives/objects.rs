@@ -546,7 +546,9 @@ fn eieio_validate_constant_initform(
         return Ok(());
     }
     let constant = match initform {
-        Value::Cons(car, _) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let _ = &cons_cell.cdr;
             matches!(&*car.borrow(), Value::Symbol(head) if head == "quote" || head == "function" || head == "vector-literal")
         }
         Value::Symbol(symbol) => symbol.starts_with(':'),
@@ -611,7 +613,7 @@ pub(crate) fn eieio_slot_descriptor_record(
         ]),
         Some(form) => {
             let head = match form {
-                Value::Cons(car, _) => match &*car.borrow() {
+                Value::Cons(cell) => match &*cell.car.borrow() {
                     Value::Symbol(symbol) => Some(symbol.clone()),
                     _ => None,
                 },

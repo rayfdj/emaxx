@@ -201,7 +201,7 @@ fn materialize_constant_cons(
     let Some((car, cdr)) = constant.cons_cells() else {
         return Ok(constant.clone());
     };
-    let identity = std::rc::Rc::as_ptr(&car) as usize;
+    let identity = car.cell_id();
     if !seen.insert(identity) {
         return Ok(constant.clone());
     }
@@ -678,11 +678,11 @@ fn run_with_stack(
                 }
             }
             Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => match stack.last() {
-                Some(Value::Cons(car, cdr)) => {
+                Some(Value::Cons(cell)) => {
                     let value = if matches!(op, Op::Car | Op::CarSafe) {
-                        car.borrow().clone()
+                        cell.car.borrow().clone()
                     } else {
-                        cdr.borrow().clone()
+                        cell.cdr.borrow().clone()
                     };
                     *stack.last_mut().expect("validated bytecode") = value;
                     continue;
@@ -1260,12 +1260,12 @@ fn run_with_stack(
                 Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
                     let a = pop!();
                     match (&a, op) {
-                        (Value::Cons(car, _), Op::Car | Op::CarSafe) => {
-                            let value = car.borrow().clone();
+                        (Value::Cons(cell), Op::Car | Op::CarSafe) => {
+                            let value = cell.car.borrow().clone();
                             stack.push(value);
                         }
-                        (Value::Cons(_, cdr), _) => {
-                            let value = cdr.borrow().clone();
+                        (Value::Cons(cell), _) => {
+                            let value = cell.cdr.borrow().clone();
                             stack.push(value);
                         }
                         (Value::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => stack.push(Value::Nil),

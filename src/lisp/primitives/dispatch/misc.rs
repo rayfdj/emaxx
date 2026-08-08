@@ -627,7 +627,7 @@ define_dispatch!(
                 let condition_name = args[0].as_symbol()?.to_string();
                 let parent = args.get(2).filter(|value| value.is_truthy()).cloned();
                 let parent = parent.unwrap_or_else(|| Value::Symbol("error".into()));
-                let parent_is_list = matches!(parent, Value::Cons(_, _));
+                let parent_is_list = matches!(parent, Value::Cons(_));
                 let parents = if parent_is_list {
                     parent.to_vec()?
                 } else {
@@ -1661,7 +1661,7 @@ define_dispatch!(
             "macroexp-quote" => {
                 need_args(name, args, 1)?;
                 Ok(match &args[0] {
-                    Value::Cons(_, _) | Value::Symbol(_) => {
+                    Value::Cons(_) | Value::Symbol(_) => {
                         Value::list([Value::Symbol("quote".into()), args[0].clone()])
                     }
                     other => other.clone(),
@@ -1828,9 +1828,7 @@ define_dispatch!(
                     (Value::StringObject(left), Value::StringObject(right)) => {
                         Rc::ptr_eq(left, right)
                     }
-                    (Value::Cons(left_car, left_cdr), Value::Cons(right_car, right_cdr)) => {
-                        Rc::ptr_eq(left_car, right_car) && Rc::ptr_eq(left_cdr, right_cdr)
-                    }
+                    (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
                     (Value::Lambda(_, left_body, _), Value::Lambda(_, right_body, _)) => {
                         Rc::ptr_eq(left_body, right_body)
                     }

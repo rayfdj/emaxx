@@ -41,8 +41,8 @@ fn help_function_arglist_value(function: &Value) -> Value {
             }
             Value::list(parameters)
         }
-        Value::Cons(car, cdr) if matches!(&*car.borrow(), Value::Symbol(s) if s == "macro") => {
-            help_function_arglist_value(&cdr.borrow())
+        Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(s) if s == "macro") => {
+            help_function_arglist_value(&cell.cdr.borrow())
         }
         _ => Value::Nil,
     }

@@ -87,8 +87,8 @@ pub(crate) fn is_vector_like_value(interp: &Interpreter, value: &Value) -> bool 
 pub(crate) fn is_vector_value(value: &Value) -> bool {
     matches!(
         value,
-        Value::Cons(car, _)
-            if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal")
+        Value::Cons(cell)
+            if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal")
     )
 }
 
@@ -407,8 +407,8 @@ pub(crate) fn unread_command_events(
 pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
     match value {
         Value::Integer(code) if *code >= 0 => modified_event_code_char(*code),
-        Value::Cons(car, cdr) if matches!(car.borrow().clone(), Value::T) => {
-            match cdr.borrow().clone() {
+        Value::Cons(cell) if matches!(cell.car.borrow().clone(), Value::T) => {
+            match cell.cdr.borrow().clone() {
                 Value::Integer(code) if code >= 0 => modified_event_code_char(code),
                 _ => None,
             }
@@ -561,7 +561,7 @@ pub(crate) fn read_decoded_input_event(
 pub(crate) fn input_event_symbol(value: &Value) -> Option<String> {
     match value {
         Value::Symbol(symbol) => Some(symbol.clone()),
-        Value::Cons(_, _) => value
+        Value::Cons(_) => value
             .to_vec()
             .ok()
             .and_then(|items| items.first().cloned())
@@ -573,7 +573,7 @@ pub(crate) fn input_event_symbol(value: &Value) -> Option<String> {
 pub(crate) fn update_input_event_symbol(value: &Value, symbol: &str) -> Value {
     match value {
         Value::Symbol(_) => Value::Symbol(symbol.into()),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let mut items = value.to_vec().unwrap_or_default();
             if let Some(first) = items.first_mut() {
                 *first = Value::Symbol(symbol.into());

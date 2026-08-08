@@ -305,7 +305,7 @@ impl Interpreter {
         if let Some(termination) = self.pending_termination().cloned() {
             return Err(LispError::Terminate(termination));
         }
-        if !matches!(expr, Value::Cons(_, _)) {
+        if !matches!(expr, Value::Cons(_)) {
             return self.eval_inner(expr, env);
         }
         self.lisp_eval_depth += 1;
@@ -359,7 +359,7 @@ impl Interpreter {
 
             Value::Symbol(name) => self.lookup(name, env),
 
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let items = expr.to_vec()?;
                 if items.is_empty() {
                     return Ok(Value::Nil);
@@ -1262,7 +1262,7 @@ impl Interpreter {
         };
         let original_name = original_name.or(owned_name.as_deref());
         let func = match func {
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let func = if is_lambda_form(&func) {
                     self.eval(&func, env)?
                 } else {
@@ -1643,7 +1643,7 @@ fn eval_semantic_action_expr(expr: &Value, args: &[Value]) -> Result<Value, Lisp
         Value::Symbol(symbol) if symbol == "vals" => Ok(args[0].clone()),
         Value::Symbol(symbol) if symbol == "start" => Ok(args[1].clone()),
         Value::Symbol(symbol) if symbol == "end" => Ok(args[2].clone()),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = expr.to_vec()?;
             let Some(Value::Symbol(head)) = items.first() else {
                 return Err(LispError::Signal("unsupported semantic action".into()));

@@ -538,7 +538,7 @@ fn selector_atom(value: &Value) -> String {
 fn parse_ert_tags(value: &Value) -> Vec<String> {
     match unquote(value) {
         Value::Nil => Vec::new(),
-        Value::Cons(_, _) => unquote(value)
+        Value::Cons(_) => unquote(value)
             .to_vec()
             .map(|values| values.iter().map(selector_atom).collect())
             .unwrap_or_default(),
@@ -578,7 +578,7 @@ fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
         Value::String(pattern) => Regex::new(&pattern)
             .map(|regex| regex.is_match(&test.name))
             .unwrap_or(false),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Ok(items) = unquote(selector).to_vec() else {
                 return false;
             };

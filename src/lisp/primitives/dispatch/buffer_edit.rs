@@ -3,7 +3,7 @@ use super::*;
 fn stickiness_names_property(setting: &Value, prop: &str) -> bool {
     match setting {
         Value::T => true,
-        Value::Cons(_, _) => setting.to_vec().is_ok_and(|items| {
+        Value::Cons(_) => setting.to_vec().is_ok_and(|items| {
             items
                 .iter()
                 .any(|item| matches!(item, Value::Symbol(name) if name == prop))
@@ -14,7 +14,7 @@ fn stickiness_names_property(setting: &Value, prop: &str) -> bool {
 
 fn property_is_default_nonsticky(defaults: &Value, prop: &str) -> bool {
     defaults.to_vec().unwrap_or_default().iter().any(|entry| {
-        let Value::Cons(name, nonsticky) = entry else {
+        let Some((name, nonsticky)) = (entry).cons_cells() else {
             return false;
         };
         matches!(&*name.borrow(), Value::Symbol(candidate) if candidate == prop)
@@ -1184,7 +1184,7 @@ define_dispatch!(
             "vertical-motion" => {
                 need_arg_range(name, args, 1, 3)?;
                 let (goal_col, n) = match &args[0] {
-                    cons @ Value::Cons(_, _) => {
+                    cons @ Value::Cons(_) => {
                         let (car, cdr) = cons.cons_values().ok_or_else(|| {
                             LispError::TypeError("cons".into(), args[0].type_name())
                         })?;
@@ -1898,7 +1898,7 @@ define_dispatch!(
                 if list_backed {
                     return match &args[2] {
                         Value::Nil => Ok(Value::Nil),
-                        Value::Cons(_, _) => Ok(args[2]
+                        Value::Cons(_) => Ok(args[2]
                             .to_vec()?
                             .get(slot_index)
                             .cloned()
@@ -4088,7 +4088,7 @@ fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> 
             .lookup_var(name, env)
             .map(|value| display_spec_width(interp, env, &value))
             .unwrap_or(0),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Ok(items) = spec.to_vec() else { return 0 };
             match items.first() {
                 Some(Value::Symbol(op)) if op == "-" || op == "+" => {

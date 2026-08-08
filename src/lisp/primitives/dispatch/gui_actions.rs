@@ -38,7 +38,7 @@ fn validate_popup_position(interp: &Interpreter, position: &Value) -> Result<(),
     let items = position
         .to_vec()
         .map_err(|_| wrong_type_argument("listp", position.clone()))?;
-    if let Some(Value::Cons(_, _)) = items.first() {
+    if let Some(Value::Cons(_)) = items.first() {
         let coordinates = items[0]
             .to_vec()
             .map_err(|_| wrong_type_argument("listp", items[0].clone()))?;
@@ -158,7 +158,7 @@ define_dispatch!(
                         if interp
                             .find_record(*id)
                             .is_some_and(|record| record.type_name == "window") => {}
-                    Value::Cons(_, _) => {}
+                    Value::Cons(_) => {}
                     _ => return Err(wrong_type_argument("windowp", Value::Nil)),
                 }
                 let contents = args[1]

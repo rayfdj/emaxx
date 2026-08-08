@@ -1011,7 +1011,7 @@ impl Interpreter {
             body_index = 5;
             match items.get(4) {
                 Some(Value::Symbol(symbol)) => symbol.clone(),
-                Some(Value::Cons(_, _)) => {
+                Some(Value::Cons(_)) => {
                     let quoted = items[4].to_vec()?;
                     quoted
                         .get(1)
@@ -1077,7 +1077,7 @@ impl Interpreter {
             body_index = 3;
             match items.get(2) {
                 Some(Value::Symbol(symbol)) => symbol.clone(),
-                Some(Value::Cons(_, _)) => {
+                Some(Value::Cons(_)) => {
                     let quoted = items[2].to_vec()?;
                     quoted
                         .get(1)
@@ -1516,7 +1516,7 @@ impl Interpreter {
                             frame.push((name.clone(), value));
                         }
                     }
-                    Value::Cons(_, _) => {
+                    Value::Cons(_) => {
                         let place = parts[0].to_vec()?;
                         if matches!(
                             place.first(),
@@ -1776,7 +1776,9 @@ fn patch_returned_closure_binding(value: &Value, name: &str, current_value: &Val
                 }
             }
         }
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             patch_returned_closure_binding(&car.borrow(), name, current_value);
             patch_returned_closure_binding(&cdr.borrow(), name, current_value);
         }

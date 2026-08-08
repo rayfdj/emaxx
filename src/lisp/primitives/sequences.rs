@@ -18,7 +18,7 @@ pub(crate) fn copy_sequence_value(
 
     match value {
         Value::Nil => Ok(Value::Nil),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Some((car, cdr)) = value.cons_values() else {
                 return Ok(value.clone());
             };
@@ -95,7 +95,7 @@ pub(crate) fn sort_sequence_kind_and_items(
             items.into_iter().skip(1).collect(),
         ));
     }
-    if matches!(value, Value::Nil | Value::Cons(_, _)) {
+    if matches!(value, Value::Nil | Value::Cons(_)) {
         return Ok((SortSequenceKind::List, value.to_vec()?));
     }
     Err(list_or_vector_type_error(value))
@@ -203,7 +203,7 @@ pub(crate) fn parse_direct_sort_operand(
     match value {
         Value::Symbol(symbol) if symbol == &params[0] => Some(DirectSortOperand::Left),
         Value::Symbol(symbol) if symbol == &params[1] => Some(DirectSortOperand::Right),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = value.to_vec().ok()?;
             match items.as_slice() {
                 [Value::Symbol(name), Value::Symbol(symbol)]
@@ -436,7 +436,9 @@ pub(crate) fn write_sorted_sequence(
             let mut current = target.clone();
             for item in items {
                 match current {
-                    Value::Cons(car, cdr) => {
+                    Value::Cons(cons_cell) => {
+                        let car = &cons_cell.car;
+                        let cdr = &cons_cell.cdr;
                         *car.borrow_mut() = item.clone();
                         current = cdr.borrow().clone();
                     }

@@ -183,7 +183,9 @@ pub(crate) fn print_ref_key(
     options: PrintOptions,
 ) -> Option<PrintRefKey> {
     match value {
-        Value::Cons(car, _) => Some(PrintRefKey::Cons(Rc::as_ptr(car) as usize)),
+        Value::Cons(cell) => Some(PrintRefKey::Cons(crate::lisp::types::ConsCell::identity(
+            cell,
+        ))),
         Value::StringObject(state) => Some(PrintRefKey::StringObject(Rc::as_ptr(state) as usize)),
         Value::Symbol(symbol)
             if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) =>
@@ -351,12 +353,12 @@ pub(crate) fn collect_print_counts(
     }
 
     match value {
-        Value::Cons(_, _) if is_vector_value(value) => {
+        Value::Cons(_) if is_vector_value(value) => {
             for item in vector_items(value)? {
                 collect_print_counts(interp, &item, options, counts, expanded)?;
             }
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Some((car, cdr)) = value.cons_values() else {
                 return Ok(());
             };
@@ -400,12 +402,12 @@ pub(crate) fn collect_print_table_objects(
     }
 
     match value {
-        Value::Cons(_, _) if is_vector_value(value) => {
+        Value::Cons(_) if is_vector_value(value) => {
             for item in vector_items(value)? {
                 collect_print_table_objects(interp, &item, options, counts, expanded)?;
             }
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Some((car, cdr)) = value.cons_values() else {
                 return Ok(());
             };
@@ -507,7 +509,7 @@ fn render_cl_list_tail_expansion(
     loop {
         match current {
             Value::Nil => return Ok(rendered.join(" ")),
-            Value::Cons(_, _) if is_vector_value(&current) => {
+            Value::Cons(_) if is_vector_value(&current) => {
                 let tail_rendered =
                     render_prin1_with_context(interp, &current, env, &mut expansion_context, 0)?;
                 return Ok(if rendered.is_empty() {
@@ -516,7 +518,7 @@ fn render_cl_list_tail_expansion(
                     format!("{} . {}", rendered.join(" "), tail_rendered)
                 });
             }
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 if expansion_context
                     .options
                     .length
@@ -720,7 +722,7 @@ pub(crate) fn render_prin1_list(
         }
         match tail {
             Value::Nil => return Ok(format!("({})", rendered.join(" "))),
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 if context
                     .options
                     .length
@@ -1057,7 +1059,7 @@ pub(crate) fn render_prin1_body(
                 context.record_ellipsis_expansion(expansion);
                 return Ok("...".into());
             }
-            Value::Cons(_, _) if is_vector_value(value) => {
+            Value::Cons(_) if is_vector_value(value) => {
                 let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
                 context.record_ellipsis_expansion(expansion);
                 return Ok("...".into());
@@ -1069,7 +1071,7 @@ pub(crate) fn render_prin1_body(
                 context.record_ellipsis_expansion(expansion);
                 return Ok("...".into());
             }
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
                 context.record_ellipsis_expansion(expansion);
                 return Ok("...".into());
@@ -1189,7 +1191,7 @@ pub(crate) fn render_prin1_body(
         Value::Symbol(symbol) if symbol == "comma" || symbol == "," => Ok("\\,".into()),
         Value::Symbol(symbol) if symbol == "comma-at" || symbol == ",@" => Ok("\\,@".into()),
         Value::Symbol(symbol) => Ok(render_prin1_symbol(symbol, context.options)),
-        Value::Cons(_, _) if is_vector_value(value) => {
+        Value::Cons(_) if is_vector_value(value) => {
             let items = vector_items(value)?;
             let mut rendered_items = Vec::new();
             for (index, item) in items.iter().enumerate() {
@@ -1212,7 +1214,7 @@ pub(crate) fn render_prin1_body(
             }
             Ok(format!("[{}]", rendered_items.join(" ")))
         }
-        Value::Cons(_, _) => render_prin1_list(interp, value, env, context, depth),
+        Value::Cons(_) => render_prin1_list(interp, value, env, context, depth),
         Value::Lambda(params, body, closure_env) => {
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
@@ -1623,7 +1625,9 @@ fn position_symbols_in_value(
                 Value::Symbol(symbol)
             }
         }
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             let positioned_car = position_symbols_in_value(interp, car.borrow().clone(), tokens);
             let positioned_cdr = position_symbols_in_value(interp, cdr.borrow().clone(), tokens);
             Value::cons(positioned_car, positioned_cdr)
@@ -1704,9 +1708,7 @@ pub(crate) fn record_literal_items(value: &Value) -> Option<Vec<Value>> {
     // proper list: callers use this as a type predicate on hot paths such as
     // `aset', where walking a vector for every element would turn a fill
     // loop into quadratic work.
-    let Value::Cons(car, _) = value else {
-        return None;
-    };
+    let (car, _) = value.cons_cells()?;
     if !matches!(
         &*car.borrow(),
         Value::Symbol(name) if name == crate::lisp::reader::RECORD_LITERAL_SYMBOL
@@ -1843,13 +1845,13 @@ fn materialize_char_table_literals_inner(
     value: &Value,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
-    let Value::Cons(car_cell, cdr_cell) = value else {
+    let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
         return Ok(value.clone());
     };
     if let Some(fields) = char_table_literal_fields(value) {
         return char_table_from_literal_fields(interp, &fields, seen);
     }
-    let ptr = Rc::as_ptr(car_cell) as usize;
+    let ptr = car_cell.cell_id();
     if !seen.insert(ptr) {
         return Ok(value.clone());
     }
@@ -2208,7 +2210,7 @@ fn materialize_hash_table_literals_inner(
     value: &Value,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
-    let Value::Cons(car_cell, cdr_cell) = value else {
+    let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
         return Ok(value.clone());
     };
     if let Some(fields) = quoted_hash_table_literal_fields(value) {
@@ -2217,7 +2219,7 @@ fn materialize_hash_table_literals_inner(
     if let Some(fields) = bare_hash_table_literal_fields(value) {
         return hash_table_from_literal_fields(interp, &fields, seen);
     }
-    let ptr = Rc::as_ptr(car_cell) as usize;
+    let ptr = car_cell.cell_id();
     if !seen.insert(ptr) {
         return Ok(value.clone());
     }

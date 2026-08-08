@@ -11,8 +11,8 @@ impl Interpreter {
         // ...)' literals) that must be resolved first, but marker-free
         // templates — the common case — are returned directly.  The verdict
         // is cached per template so hot code doesn't rescan large constants.
-        if let Value::Cons(car_cell, _) = &items[1] {
-            let key = std::rc::Rc::as_ptr(car_cell) as usize;
+        if let Value::Cons(cell) = &items[1] {
+            let key = crate::lisp::types::ConsCell::identity(cell);
             if self.plain_quote_templates.contains_key(&key) {
                 return Ok(items[1].clone());
             }
@@ -121,7 +121,7 @@ impl Interpreter {
                         };
                         (Some(name), value)
                     }
-                    Value::Cons(_, _) => {
+                    Value::Cons(_) => {
                         let parts = binding.to_vec()?;
                         match parts.as_slice() {
                             [expr] => {
@@ -216,7 +216,7 @@ impl Interpreter {
         for binding in bindings {
             let value = match binding {
                 Value::Symbol(name) => self.lookup(&name, env)?,
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     let parts = binding.to_vec()?;
                     match parts.as_slice() {
                         [expr] => self.eval(expr, env)?,
@@ -785,7 +785,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                         frame.push((name.clone(), Value::Nil));
                     }
                 }
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     let parts = binding.to_vec()?;
                     let Some(name_value) = parts.first() else {
                         return Err(LispError::ReadError("bad let binding".into()));
@@ -835,7 +835,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                     Self::check_let_binding_name(name)?;
                     evaluated.push((name.clone(), Value::Nil));
                 }
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     let parts = binding.to_vec()?;
                     let Some(name_value) = parts.first() else {
                         return Err(LispError::ReadError("bad dlet binding".into()));
@@ -905,7 +905,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                         Self::check_let_binding_name(name)?;
                         (name.clone(), Value::Nil)
                     }
-                    Value::Cons(_, _) => {
+                    Value::Cons(_) => {
                         let parts = binding.to_vec()?;
                         let Some(name_value) = parts.first() else {
                             return Err(LispError::ReadError("bad let* binding".into()));
@@ -952,7 +952,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                     names.push(name);
                     initializers.push(None);
                 }
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     let parts = binding.to_vec()?;
                     let Some(name_value) = parts.first() else {
                         return Err(LispError::ReadError("bad letrec binding".into()));
@@ -1005,7 +1005,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                         Self::check_let_binding_name(name)?;
                         (name.clone(), Value::Nil)
                     }
-                    Value::Cons(_, _) => {
+                    Value::Cons(_) => {
                         let parts = binding.to_vec()?;
                         let Some(name_value) = parts.first() else {
                             return Err(LispError::ReadError("bad let* binding".into()));

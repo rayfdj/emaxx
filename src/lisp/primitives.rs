@@ -3,7 +3,7 @@ use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
 use super::types::{
     ConsSlot, EmacsTermination, Env, LispError, SharedStringState, StringPropertySpan, Value,
-    shared_env,
+    WeakConsSlot, shared_env,
 };
 use crate::buffer::TextPropertySpan;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
@@ -41,10 +41,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{
-    cell::RefCell,
-    rc::{Rc, Weak},
-};
+use std::{cell::RefCell, rc::Rc};
 use unicode_general_category::get_general_category;
 use unicode_names2::name as unicode_name;
 use unicode_width::UnicodeWidthChar;
@@ -137,8 +134,7 @@ const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 type FileChangeFingerprint = Option<(u64, u128)>;
 type FileChangeCache = HashMap<String, FileChangeFingerprint>;
-type VectorSlotCache =
-    HashMap<usize, (Weak<RefCell<Value>>, Rc<Vec<ConsSlot>>), dispatch::FnvBuildHasher>;
+type VectorSlotCache = HashMap<usize, (WeakConsSlot, Rc<Vec<ConsSlot>>), dispatch::FnvBuildHasher>;
 static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);

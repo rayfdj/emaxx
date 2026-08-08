@@ -202,7 +202,7 @@ define_dispatch!(
                         props.extend(shift_string_props(&string.props, offset));
                         multibyte |= string.multibyte;
                     } else if a.is_nil() {
-                    } else if matches!(a, Value::Cons(_, _))
+                    } else if matches!(a, Value::Cons(_))
                         || is_vector_value(a)
                         || is_bool_vector_value(interp, a)
                     {
