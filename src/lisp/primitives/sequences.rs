@@ -101,17 +101,6 @@ pub(crate) fn sort_sequence_kind_and_items(
     Err(list_or_vector_type_error(value))
 }
 
-pub(crate) fn sort_compare_ordering(
-    interp: &mut Interpreter,
-    lessp: Option<&Value>,
-    left: &Value,
-    right: &Value,
-    env: &mut Env,
-) -> Result<Ordering, LispError> {
-    let direct = lessp.and_then(|function| direct_sort_comparator(interp, function, env));
-    sort_compare_ordering_resolved(interp, lessp, direct.as_ref(), left, right, env)
-}
-
 fn sort_compare_ordering_resolved(
     interp: &mut Interpreter,
     lessp: Option<&Value>,
@@ -331,19 +320,6 @@ pub(crate) fn direct_sort_abs_value(value: &Value) -> Result<Value, LispError> {
         Value::Float(number) => Ok(Value::Float(number.abs())),
         _ => Err(LispError::TypeError("numberp".into(), value.type_name())),
     }
-}
-
-pub(crate) fn direct_sort_ordering(
-    interp: &mut Interpreter,
-    function: &Value,
-    left: &Value,
-    right: &Value,
-    env: &mut Env,
-) -> Result<Option<Ordering>, LispError> {
-    let Some(comparator) = direct_sort_comparator(interp, function, env) else {
-        return Ok(None);
-    };
-    apply_direct_sort_comparator(interp, &comparator, left, right, env).map(Some)
 }
 
 /// Apply an already-recognized comparator; `sort' resolves it once for
