@@ -609,7 +609,7 @@ impl Interpreter {
                 std::iter::once(program)
                     .chain(process.argv.iter())
                     .cloned()
-                    .map(Value::String),
+                    .map(|value| Value::String(value.into())),
             )
         })
     }
@@ -1859,7 +1859,7 @@ impl Interpreter {
                         self,
                         "message",
                         &[
-                            Value::String(format!("Error running timer{label}: %S")),
+                            Value::String(format!("Error running timer{label}: %S").into()),
                             super::error_condition_value(&error),
                         ],
                         env,
@@ -2661,8 +2661,8 @@ impl Interpreter {
                 .or_else(|_| Ok(ThreadProgram::Call(function.clone()))),
             Value::BuiltinFunc(name) if name == "ignore" => Ok(ThreadProgram::Ignore),
             Value::BuiltinFunc(_) => Ok(ThreadProgram::Call(function.clone())),
-            Value::Lambda(params, body, _) if params.is_empty() => self
-                .thread_program_from_lambda(function_executable_body(body))
+            Value::Lambda(lambda) if lambda.params.is_empty() => self
+                .thread_program_from_lambda(function_executable_body(&lambda.body))
                 .or_else(|_| Ok(ThreadProgram::Call(function.clone()))),
             _ => Err(LispError::Signal("Unsupported thread entry point".into())),
         }

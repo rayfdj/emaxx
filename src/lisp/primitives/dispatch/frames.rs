@@ -49,7 +49,7 @@ fn default_frame_parameters(interp: &Interpreter, id: u64) -> Vec<(String, Value
         interp
             .buffer_list
             .iter()
-            .map(|(id, name)| Value::Buffer(*id, name.clone())),
+            .map(|(id, name)| Value::buffer(*id, name.clone())),
     );
     vec![
         ("tab-bar-lines".into(), Value::Integer(0)),

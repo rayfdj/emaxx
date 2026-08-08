@@ -8,9 +8,11 @@ pub(crate) fn replacement_content(
         return Ok(string);
     }
     match source {
-        Value::Buffer(id, _) => {
+        Value::Buffer(buffer_value) => {
+            let id = buffer_value.id;
+            let _ = &buffer_value.name;
             let buffer = interp
-                .get_buffer_by_id(*id)
+                .get_buffer_by_id(id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", id)))?;
             let text = buffer
                 .buffer_substring(buffer.point_min(), buffer.point_max())
@@ -58,7 +60,7 @@ pub(crate) struct StringLike {
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value {
         Value::String(text) => Some(StringLike {
-            text: text.clone(),
+            text: text.to_string(),
             props: Vec::new(),
             multibyte: text
                 .chars()
@@ -106,7 +108,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 .chars()
                 .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
             Some(StringLike {
-                text,
+                text: text.to_string(),
                 props,
                 multibyte,
             })
@@ -266,7 +268,7 @@ pub(crate) fn assoc_string_text(value: &Value) -> Result<String, LispError> {
     match value {
         Value::Nil => Ok("nil".into()),
         Value::T => Ok("t".into()),
-        Value::Symbol(name) => Ok(name.clone()),
+        Value::Symbol(name) => Ok(name.to_string()),
         _ => string_text(value),
     }
 }
@@ -275,7 +277,7 @@ pub(crate) fn assoc_string_candidate_text(value: &Value) -> Option<String> {
     match value {
         Value::Nil => Some("nil".into()),
         Value::T => Some("t".into()),
-        Value::Symbol(name) => Some(name.clone()),
+        Value::Symbol(name) => Some(name.to_string()),
         _ => string_like(value).map(|string| string.text),
     }
 }
@@ -379,7 +381,7 @@ pub(crate) fn string_like_value_with_multibyte(
         .chars()
         .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
     if props.is_empty() && !multibyte && !inferred_multibyte {
-        Value::String(text)
+        Value::String(text.into())
     } else {
         make_shared_string_value_with_multibyte(text, props, multibyte)
     }
@@ -504,7 +506,7 @@ pub(crate) fn plist_pairs(value: &Value) -> Result<Vec<(String, Value)>, LispErr
 pub(crate) fn plist_value(props: &[(String, Value)]) -> Value {
     let mut items = Vec::new();
     for (key, value) in props {
-        items.push(Value::Symbol(key.clone()));
+        items.push(Value::Symbol(key.clone().into()));
         items.push(value.clone());
     }
     Value::list(items)

@@ -12,7 +12,7 @@ pub(crate) fn normalize_bigint_value(value: BigInt) -> Value {
     value
         .to_i64()
         .map(Value::Integer)
-        .unwrap_or(Value::BigInteger(value))
+        .unwrap_or(Value::BigInteger(value.into()))
 }
 
 pub(crate) fn version_leq(left: &str, right: &str) -> Result<bool, LispError> {
@@ -265,7 +265,7 @@ pub(crate) fn function_arity_value(
                     .and_then(|doc| docstring_arity_text(&doc))
             })
             .ok_or_else(|| LispError::TypeError("function".into(), function.type_name())),
-        Value::Lambda(params, _, _) => Ok(lambda_arity_value(params)),
+        Value::Lambda(lambda) => Ok(lambda_arity_value(&lambda.params)),
         Value::Symbol(symbol) => {
             if let Some(arity) = special_form_arity_value(symbol) {
                 Ok(arity)
@@ -351,7 +351,7 @@ pub(crate) fn integer_like_bigint(
 ) -> Result<BigInt, LispError> {
     match value {
         Value::Integer(n) => Ok(BigInt::from(*n)),
-        Value::BigInteger(n) => Ok(n.clone()),
+        Value::BigInteger(n) => Ok(n.clone().into()),
         Value::Marker(id) => interp
             .marker_position(*id)
             .map(BigInt::from)
@@ -662,7 +662,7 @@ pub(crate) fn exact_binary_rational(
     match value {
         Value::Float(value) => Ok(exact_float_binary_rational(*value)),
         Value::Integer(value) => Ok(Some((BigInt::from(*value), 0))),
-        Value::BigInteger(value) => Ok(Some((value.clone(), 0))),
+        Value::BigInteger(value) => Ok(Some((value.clone().into(), 0))),
         Value::Marker(_) => Ok(Some((BigInt::from(integer_like_i64(interp, value)?), 0))),
         _ => Err(LispError::TypeError("number".into(), value.type_name())),
     }
@@ -804,7 +804,7 @@ pub(crate) fn exact_time_from_value(
     match value {
         Value::Nil => Ok(now.clone()),
         Value::Integer(value) => exact_time_value(BigInt::from(*value), BigInt::from(1u8)),
-        Value::BigInteger(value) => exact_time_value(value.clone(), BigInt::from(1u8)),
+        Value::BigInteger(value) => exact_time_value(value.clone().into(), BigInt::from(1u8)),
         Value::Float(value) => exact_time_from_float(*value),
         Value::Cons(cons_cell) => {
             let car = &cons_cell.car;
@@ -1847,7 +1847,7 @@ define_dispatch!(
                     zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
                 let (datetime, _) = time_local_datetime(&time, &zone)?;
                 Ok(Value::String(
-                    datetime.format("%a %b %e %H:%M:%S %Y").to_string(),
+                    datetime.format("%a %b %e %H:%M:%S %Y").to_string().into(),
                 ))
             }
             "time-since" => {
@@ -2032,9 +2032,9 @@ define_dispatch!(
                 let time = exact_time_from_value(interp, args.get(1).unwrap_or(&Value::Nil), &now)?;
                 let zone =
                     zone_spec_from_value(interp, args.get(2).unwrap_or(&Value::Nil), Some(&time))?;
-                Ok(Value::String(format_time_string_value(
-                    interp, &format, &time, &zone,
-                )?))
+                Ok(Value::String(
+                    format_time_string_value(interp, &format, &time, &zone)?.into(),
+                ))
             }
             "current-time-zone" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -2050,7 +2050,7 @@ define_dispatch!(
                 };
                 Ok(Value::list([
                     Value::Integer(zone.offset_seconds as i64),
-                    Value::String(zone.abbreviation),
+                    Value::String(zone.abbreviation.into()),
                 ]))
             }
         }
@@ -2195,7 +2195,7 @@ pub(crate) fn numeric_result_value(
 ) -> Result<Value, LispError> {
     match value {
         Value::Integer(number) => Ok(Value::Integer(*number)),
-        Value::BigInteger(number) => Ok(normalize_bigint_value(number.clone())),
+        Value::BigInteger(number) => Ok(normalize_bigint_value(number.clone().into())),
         Value::Float(number) => Ok(Value::Float(*number)),
         Value::Marker(id) => {
             Ok(Value::Integer(interp.marker_position(*id).ok_or_else(|| {

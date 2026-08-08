@@ -11,7 +11,7 @@ fn args_out_of_range(values: impl IntoIterator<Item = Value>) -> LispError {
 }
 
 fn current_buffer_value(interp: &Interpreter) -> Value {
-    Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone())
+    Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone())
 }
 
 fn checked_buffer_region(

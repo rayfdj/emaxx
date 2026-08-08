@@ -315,7 +315,7 @@ pub(crate) fn process_buffer_target(
                 .unwrap_or_else(|| interp.create_buffer(&buffer.text).0),
         ));
     }
-    if matches!(value, Value::Buffer(_, _)) {
+    if matches!(value, Value::Buffer(_)) {
         return Ok(Some(interp.resolve_buffer_id(value)?));
     }
     Err(LispError::TypeError(
@@ -456,7 +456,10 @@ pub(crate) fn deliver_process_output(
         let result = call_function_value(
             interp,
             &filter,
-            &[Value::Record(process_id), Value::String(output.to_string())],
+            &[
+                Value::Record(process_id),
+                Value::String(output.to_string().into()),
+            ],
             env,
         );
         if switched {
@@ -594,7 +597,12 @@ pub(crate) fn process_environment_entries(value: &Value) -> Result<Vec<String>, 
 }
 
 pub(crate) fn process_environment_from_entries(entries: &[String]) -> Value {
-    Value::list(entries.iter().cloned().map(Value::String))
+    Value::list(
+        entries
+            .iter()
+            .cloned()
+            .map(|value| Value::String(value.into())),
+    )
 }
 
 pub(crate) fn setenv_in_environment_entries(
@@ -653,7 +661,7 @@ pub(crate) fn getenv_in_environment(
     let prefix = format!("{variable}=");
     for entry in process_environment_entries(environment)? {
         if let Some(value) = entry.strip_prefix(&prefix) {
-            return Ok(Some(Value::String(value.to_string())));
+            return Ok(Some(Value::String(value.to_string().into())));
         }
         if entry == variable {
             return Ok(Some(if negative_entry_is_truthy {
@@ -679,7 +687,7 @@ pub(crate) fn append_process_bytes_to_buffer(
     }
     let target_id = match destination {
         Value::T => interp.current_buffer_id(),
-        Value::Buffer(_, _) => interp.resolve_buffer_id(destination)?,
+        Value::Buffer(_) => interp.resolve_buffer_id(destination)?,
         value => {
             let Some(name) = string_like(value) else {
                 return Err(LispError::TypeError(
@@ -765,7 +773,11 @@ pub(crate) fn append_process_bytes_to_buffer(
             )
         };
     interp.insert_current_buffer(&text);
-    interp.set_variable("last-coding-system-used", Value::Symbol(coding_used), env);
+    interp.set_variable(
+        "last-coding-system-used",
+        Value::Symbol(coding_used.into()),
+        env,
+    );
     if target_id != original_id {
         interp.switch_to_buffer_id(original_id)?;
     }
@@ -938,7 +950,7 @@ pub(crate) fn start_url_retrieval(
     let buffer = call(
         interp,
         "generate-new-buffer",
-        &[Value::String(format!(" *http {url}*"))],
+        &[Value::String(format!(" *http {url}*").into())],
         env,
     )?;
     let buffer_id = interp.resolve_buffer_id(&buffer)?;
@@ -1013,7 +1025,7 @@ pub(crate) fn run_pending_url_retrievals(
                 Value::Symbol(":error".into()),
                 Value::list([
                     Value::Symbol("error".into()),
-                    Value::String(format!("{}: {}", pending.url, message)),
+                    Value::String(format!("{}: {}", pending.url, message).into()),
                 ]),
             ]),
         };
@@ -1404,7 +1416,11 @@ pub(crate) fn make_network_process(
             listener
                 .set_nonblocking(true)
                 .map_err(|error| network_server_error(&error))?;
-            plist_items_put(&mut contact_items, ":local", Value::String(path.clone()));
+            plist_items_put(
+                &mut contact_items,
+                ":local",
+                Value::String(path.clone().into()),
+            );
             return interp.create_network_process(
                 &name,
                 buffer_id,
@@ -1426,8 +1442,16 @@ pub(crate) fn make_network_process(
         stream
             .set_nonblocking(true)
             .map_err(|error| network_client_error(&error, args))?;
-        plist_items_put(&mut contact_items, ":remote", Value::String(path.clone()));
-        plist_items_put(&mut contact_items, ":local", Value::String(String::new()));
+        plist_items_put(
+            &mut contact_items,
+            ":remote",
+            Value::String(path.clone().into()),
+        );
+        plist_items_put(
+            &mut contact_items,
+            ":local",
+            Value::String(String::new().into()),
+        );
         let process = interp.create_network_process(
             &name,
             buffer_id,
@@ -1635,11 +1659,14 @@ fn serial_configuration(
     plist_items_put(
         &mut contact_items,
         ":summary",
-        Value::String(format!(
-            "{}{parity_summary}{}",
-            bytesize.as_integer()?,
-            stopbits.as_integer()?
-        )),
+        Value::String(
+            format!(
+                "{}{parity_summary}{}",
+                bytesize.as_integer()?,
+                stopbits.as_integer()?
+            )
+            .into(),
+        ),
     );
     Ok((config, Value::list(contact_items)))
 }
@@ -1860,7 +1887,7 @@ pub(crate) fn make_serial_process(
         .unwrap_or_else(|| port_name.clone());
     let buffer = plist_member_value(args, ":buffer")
         .filter(Value::is_truthy)
-        .unwrap_or_else(|| Value::String(name.clone()));
+        .unwrap_or_else(|| Value::String(name.clone().into()));
     let buffer_id =
         process_buffer_target(interp, &buffer)?.expect("a serial process always has a buffer");
     let filter = plist_member_value(args, ":filter").filter(Value::is_truthy);
@@ -1915,7 +1942,10 @@ fn run_process_sentinel(
         call_function_value(
             interp,
             &sentinel,
-            &[Value::Record(process_id), Value::String(event.to_string())],
+            &[
+                Value::Record(process_id),
+                Value::String(event.to_string().into()),
+            ],
             env,
         )?;
     } else {
@@ -1938,7 +1968,7 @@ fn run_process_log(
             &[
                 Value::Record(server_id),
                 Value::Record(client_id),
-                Value::String(message.to_string()),
+                Value::String(message.to_string().into()),
             ],
             env,
         )?;
@@ -2085,7 +2115,7 @@ pub(crate) fn pump_connection_processes(
                     plist_items_put(
                         &mut contact_items,
                         ":host",
-                        Value::String(peer_addr.ip().to_string()),
+                        Value::String(peer_addr.ip().to_string().into()),
                     );
                     plist_items_put(
                         &mut contact_items,
@@ -2102,7 +2132,11 @@ pub(crate) fn pump_connection_processes(
                 }
                 None => {
                     plist_items_put(&mut contact_items, ":host", Value::T);
-                    plist_items_put(&mut contact_items, ":remote", Value::String(String::new()));
+                    plist_items_put(
+                        &mut contact_items,
+                        ":remote",
+                        Value::String(String::new().into()),
+                    );
                     String::new()
                 }
             };

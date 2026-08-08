@@ -7,7 +7,13 @@ const PORTABLE_DUMPER_UNAVAILABLE: &str = "Portable dumper backend is unavailabl
 /// `(macro . lambda)` cons, and nil otherwise.
 fn help_function_arglist_value(function: &Value) -> Value {
     match function {
-        Value::Lambda(params, _, _) => Value::list(params.iter().cloned().map(Value::Symbol)),
+        Value::Lambda(lambda) => Value::list(
+            lambda
+                .params
+                .iter()
+                .cloned()
+                .map(|value| Value::Symbol(value.into())),
+        ),
         Value::BuiltinFunc(name) => {
             let Some(arity) = builtin_arity_value(name).or_else(|| special_form_arity_value(name))
             else {
@@ -20,13 +26,14 @@ fn help_function_arglist_value(function: &Value) -> Value {
                 return Value::T;
             };
             let mut parameters = (1..=minimum)
-                .map(|index| Value::Symbol(format!("arg{index}")))
+                .map(|index| Value::Symbol(format!("arg{index}").into()))
                 .collect::<Vec<_>>();
             match maximum {
                 Value::Integer(maximum) if maximum > minimum => {
                     parameters.push(Value::Symbol("&optional".into()));
                     parameters.extend(
-                        (minimum + 1..=maximum).map(|index| Value::Symbol(format!("arg{index}"))),
+                        (minimum + 1..=maximum)
+                            .map(|index| Value::Symbol(format!("arg{index}").into())),
                     );
                 }
                 Value::Symbol(kind) if kind == "many" => {
@@ -408,7 +415,7 @@ define_dispatch!(
                 }
                 Ok(Value::Integer(constrained as i64))
             }
-            "current-buffer" => Ok(Value::Buffer(
+            "current-buffer" => Ok(Value::buffer(
                 interp.current_buffer_id(),
                 interp.buffer.name.clone(),
             )),
@@ -433,16 +440,16 @@ define_dispatch!(
                 if !inhibit_hooks {
                     run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
                 }
-                Ok(Value::Buffer(id, buf_name))
+                Ok(Value::buffer(id, buf_name))
             }
             "get-buffer" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::Buffer(id, _) if interp.has_buffer_id(*id) => Ok(args[0].clone()),
-                    Value::Buffer(_, _) => Ok(Value::Nil),
+                    Value::Buffer(buffer) if interp.has_buffer_id(buffer.id) => Ok(args[0].clone()),
+                    Value::Buffer(_) => Ok(Value::Nil),
                     _ => match string_like(&args[0]) {
                         Some(name) => match interp.find_buffer(&name.text) {
-                            Some((id, buffer_name)) => Ok(Value::Buffer(id, buffer_name)),
+                            Some((id, buffer_name)) => Ok(Value::buffer(id, buffer_name)),
                             None => Ok(Value::Nil),
                         },
                         None => Err(LispError::TypeError(
@@ -456,20 +463,20 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let inhibit_hooks = args.get(1).is_some_and(|value| value.is_truthy());
                 let buf_name = match &args[0] {
-                    Value::Buffer(_, n) => n.clone(),
-                    _ => string_text(&args[0]).map_err(|_| {
+                    Value::Buffer(buffer) => buffer.name.clone(),
+                    _ => string_text(&args[0]).map(Into::into).map_err(|_| {
                         LispError::TypeError("string-or-buffer".into(), args[0].type_name())
                     })?,
                 };
                 if let Some((id, name)) = interp.find_buffer(&buf_name) {
-                    Ok(Value::Buffer(id, name))
+                    Ok(Value::buffer(id, name))
                 } else {
                     let (id, _) = interp.create_buffer(&buf_name);
                     interp.set_buffer_hooks_inhibited(id, inhibit_hooks);
                     if !inhibit_hooks {
                         run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
                     }
-                    Ok(Value::Buffer(id, buf_name))
+                    Ok(Value::buffer(id, buf_name))
                 }
             }
             "generate-new-buffer-name" => {
@@ -481,13 +488,13 @@ define_dispatch!(
                     None
                 };
                 if !interp.has_buffer(&base) || ignore.as_deref() == Some(base.as_str()) {
-                    Ok(Value::String(base))
+                    Ok(Value::String(base.into()))
                 } else {
                     let mut n = 2;
                     loop {
                         let candidate = format!("{}<{}>", base, n);
                         if !interp.has_buffer(&candidate) || ignore.as_deref() == Some(&candidate) {
-                            break Ok(Value::String(candidate));
+                            break Ok(Value::String(candidate.into()));
                         }
                         n += 1;
                     }
@@ -551,11 +558,11 @@ define_dispatch!(
                 if !inhibit_hooks {
                     run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
                 }
-                Ok(Value::Buffer(new_id, new_name))
+                Ok(Value::buffer(new_id, new_name))
             }
             "clone-indirect-buffer" => {
                 need_arg_range(name, args, 0, 2)?;
-                let base = Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+                let base = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
                 let name = args
                     .first()
                     .and_then(|value| string_like(value).map(|string| string.text))
@@ -566,7 +573,7 @@ define_dispatch!(
                     "make-indirect-buffer",
                     &[
                         base,
-                        Value::String(name),
+                        Value::String(name.into()),
                         if clone { Value::T } else { Value::Nil },
                     ],
                     env,
@@ -604,12 +611,12 @@ define_dispatch!(
                 }
                 interp.buffer.last_name = Some(old_name);
                 interp.buffer.name = final_name.clone();
-                Ok(Value::String(final_name))
+                Ok(Value::String(final_name.into()))
             }
             "other-buffer" => {
                 let exclude = if !args.is_empty() {
                     match &args[0] {
-                        Value::Buffer(_, n) => n.clone(),
+                        Value::Buffer(buffer) => buffer.name.to_string(),
                         _ => interp.buffer.name.clone(),
                     }
                 } else {
@@ -617,10 +624,10 @@ define_dispatch!(
                 };
                 for (id, buf_name) in &interp.buffer_list {
                     if *buf_name != exclude && !buf_name.starts_with(' ') {
-                        return Ok(Value::Buffer(*id, buf_name.clone()));
+                        return Ok(Value::buffer(*id, buf_name.clone()));
                     }
                 }
-                Ok(Value::Buffer(0, "*scratch*".into()))
+                Ok(Value::buffer(0, "*scratch*"))
             }
             "buffer-base-buffer" => {
                 let buffer_id = if let Some(buffer) = args.first() {
@@ -633,7 +640,7 @@ define_dispatch!(
                     .and_then(|base_id| {
                         interp
                             .get_buffer_by_id(base_id)
-                            .map(|buffer| Value::Buffer(base_id, buffer.name.clone()))
+                            .map(|buffer| Value::buffer(base_id, buffer.name.clone()))
                     })
                     .unwrap_or(Value::Nil))
             }
@@ -672,7 +679,7 @@ define_dispatch!(
                 let mut vars = interp
                     .buffer_local_variables(buffer_id)
                     .into_iter()
-                    .map(|(name, value)| Value::cons(Value::Symbol(name), value))
+                    .map(|(name, value)| Value::cons(Value::Symbol(name.into()), value))
                     .collect::<Vec<_>>();
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)
@@ -694,14 +701,14 @@ define_dispatch!(
                     env,
                 )?;
                 interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
-                Ok(Value::Symbol(symbol))
+                Ok(Value::Symbol(symbol.into()))
             }
             "make-local-variable" => {
                 need_args(name, args, 1)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
                 let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Nil);
                 interp.set_buffer_local_value(interp.current_buffer_id(), &symbol, value);
-                Ok(Value::Symbol(symbol))
+                Ok(Value::Symbol(symbol.into()))
             }
             "set-buffer-local-toplevel-value" => {
                 need_args(name, args, 2)?;
@@ -725,7 +732,7 @@ define_dispatch!(
                 let bufs: Vec<Value> = interp
                     .buffer_list
                     .iter()
-                    .map(|(id, n)| Value::Buffer(*id, n.clone()))
+                    .map(|(id, n)| Value::buffer(*id, n.clone()))
                     .collect();
                 Ok(Value::list(bufs))
             }
@@ -771,11 +778,11 @@ define_dispatch!(
                     };
                 };
                 match entry {
-                    Value::Buffer(id, _) if interp.has_buffer_id(id) => Ok(entry),
-                    Value::Buffer(_, _) if error_if_non_existent => {
+                    Value::Buffer(ref buffer) if interp.has_buffer_id(buffer.id) => Ok(entry),
+                    Value::Buffer(_) if error_if_non_existent => {
                         Err(LispError::Signal("This buffer has been killed".into()))
                     }
-                    Value::Buffer(_, _) => Ok(Value::Nil),
+                    Value::Buffer(_) => Ok(Value::Nil),
                     other => Err(LispError::TypeError("buffer".into(), other.type_name())),
                 }
             }
@@ -901,7 +908,7 @@ define_dispatch!(
             "subr-name" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::BuiltinFunc(symbol) => Ok(Value::String(symbol.clone())),
+                    Value::BuiltinFunc(symbol) => Ok(Value::String(symbol.clone().into())),
                     other => Err(LispError::TypeError("subr".into(), other.type_name())),
                 }
             }
@@ -924,10 +931,9 @@ define_dispatch!(
                 let arity = builtin_arity_value(symbol)
                     .or_else(|| special_form_arity_value(symbol))
                     .unwrap_or_else(|| fallback_subr_arity_value(symbol));
-                Ok(Value::String(format!(
-                    "{symbol}{}",
-                    render_prin1(interp, &arity, env)?
-                )))
+                Ok(Value::String(
+                    format!("{symbol}{}", render_prin1(interp, &arity, env)?).into(),
+                ))
             }
             "comp-libgccjit-version"
             | "comp-native-compiler-options-effective-p"
@@ -988,7 +994,7 @@ define_dispatch!(
                 match &args[0] {
                     Value::BuiltinFunc(symbol) => Ok(interp.create_record(
                         "native-comp-unit",
-                        vec![Value::String(format!("{symbol}.eln"))],
+                        vec![Value::String(format!("{symbol}.eln").into())],
                     )),
                     other => Err(LispError::TypeError("subr".into(), other.type_name())),
                 }
@@ -1112,11 +1118,14 @@ define_dispatch!(
                     Ok(priority
                         .first()
                         .cloned()
-                        .map(Value::Symbol)
+                        .map(|value| Value::Symbol(value.into()))
                         .unwrap_or(Value::Nil))
                 } else {
                     Ok(Value::list(
-                        priority.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
+                        priority
+                            .into_iter()
+                            .map(|value| Value::Symbol(value.into()))
+                            .collect::<Vec<_>>(),
                     ))
                 }
             }
@@ -1194,7 +1203,7 @@ define_dispatch!(
                 let alias = args[0].as_symbol()?;
                 let target = args[1].as_symbol()?;
                 interp.define_charset_alias(alias, target)?;
-                Ok(Value::Symbol(alias.to_string()))
+                Ok(Value::Symbol(alias.to_string().into()))
             }
             "set-charset-plist" => {
                 need_args(name, args, 2)?;
@@ -1243,7 +1252,7 @@ define_dispatch!(
                 let final_char = args[2].as_integer()?;
                 Ok(interp
                     .iso_charset(dimension, chars, final_char as u32)
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "split-char" => {
@@ -1294,7 +1303,7 @@ define_dispatch!(
             "check-coding-system" => {
                 need_args(name, args, 1)?;
                 Ok(match checked_coding_name(interp, &args[0])? {
-                    Some(coding) => Value::Symbol(coding),
+                    Some(coding) => Value::Symbol(coding.into()),
                     None => Value::Nil,
                 })
             }
@@ -1309,11 +1318,11 @@ define_dispatch!(
                     interp
                         .coding_system_list(false)
                         .into_iter()
-                        .map(|coding| Value::list([Value::String(coding)])),
+                        .map(|coding| Value::list([Value::String(coding.into())])),
                 );
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
                 let default = match default {
-                    Value::Symbol(symbol) => Value::String(symbol),
+                    Value::Symbol(symbol) => Value::String(symbol.into()),
                     value => value,
                 };
                 let completion_args = [
@@ -1341,7 +1350,7 @@ define_dispatch!(
                         }
                         return Ok(Value::Nil);
                     }
-                    return Ok(Value::Symbol(entered));
+                    return Ok(Value::Symbol(entered.into()));
                 }
             }
             "coding-system-list" => {
@@ -1350,7 +1359,7 @@ define_dispatch!(
                     interp
                         .coding_system_list(args.first().is_some_and(Value::is_truthy))
                         .into_iter()
-                        .map(Value::Symbol)
+                        .map(|value| Value::Symbol(value.into()))
                         .collect::<Vec<_>>(),
                 ))
             }
@@ -1362,7 +1371,7 @@ define_dispatch!(
                 Ok(match checked_coding_name(interp, &args[0])? {
                     Some(coding) => interp
                         .coding_system_kind_name(&coding)
-                        .map(Value::Symbol)
+                        .map(|value| Value::Symbol(value.into()))
                         .unwrap_or(Value::Nil),
                     None => Value::Nil,
                 })
@@ -1376,11 +1385,14 @@ define_dispatch!(
                     Ok(priority
                         .first()
                         .cloned()
-                        .map(Value::Symbol)
+                        .map(|value| Value::Symbol(value.into()))
                         .unwrap_or(Value::Nil))
                 } else {
                     Ok(Value::list(
-                        priority.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
+                        priority
+                            .into_iter()
+                            .map(|value| Value::Symbol(value.into()))
+                            .collect::<Vec<_>>(),
                     ))
                 }
             }
@@ -1404,7 +1416,7 @@ define_dispatch!(
                         .coding_system_alias_list(&coding)
                         .unwrap_or_default()
                         .into_iter()
-                        .map(Value::Symbol)
+                        .map(|value| Value::Symbol(value.into()))
                         .collect::<Vec<_>>(),
                 ))
             }
@@ -1483,8 +1495,11 @@ define_dispatch!(
                         .all(|variant| interp.has_coding_system(variant))
                     {
                         Value::list(
-                            std::iter::once(Value::Symbol("vector-literal".into()))
-                                .chain(variants.into_iter().map(Value::Symbol)),
+                            std::iter::once(Value::Symbol("vector-literal".into())).chain(
+                                variants
+                                    .into_iter()
+                                    .map(|value| Value::Symbol(value.into())),
+                            ),
                         )
                     } else {
                         Value::Nil
@@ -1502,7 +1517,7 @@ define_dispatch!(
                 let coding = checked_coding_symbol(interp, &args[0])?;
                 Ok(interp
                     .coding_system_base_name(&coding)
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "coding-system-change-eol-conversion" => {
@@ -1541,7 +1556,7 @@ define_dispatch!(
                     return Ok(if original.is_none() {
                         args[0].clone()
                     } else {
-                        Value::Symbol(base)
+                        Value::Symbol(base.into())
                     });
                 };
                 if original == Some(eol_type) {
@@ -1555,7 +1570,7 @@ define_dispatch!(
                 };
                 let variant = format!("{base}-{suffix}");
                 Ok(if interp.has_coding_system(&variant) {
-                    Value::Symbol(variant)
+                    Value::Symbol(variant.into())
                 } else {
                     Value::Nil
                 })
@@ -1587,17 +1602,18 @@ define_dispatch!(
                 if let Some(default) = args.get(2)
                     && let Some(coding) = first_valid_coding_candidate(interp, default)?
                 {
-                    return Ok(Value::Symbol(coding));
+                    return Ok(Value::Symbol(coding.into()));
                 }
                 if let Some(coding) = interp
                     .lookup_var("coding-system-for-write", env)
                     .and_then(|value| checked_coding_name(interp, &value).ok().flatten())
                 {
-                    return Ok(Value::Symbol(coding));
+                    return Ok(Value::Symbol(coding.into()));
                 }
                 Ok(Value::Symbol(
                     checked_coding_name(interp, &Value::Symbol("utf-8-emacs".into()))?
-                        .unwrap_or_else(|| "utf-8".into()),
+                        .unwrap_or_else(|| "utf-8".into())
+                        .into(),
                 ))
             }
             "detect-coding-string" => {
@@ -1656,7 +1672,7 @@ define_dispatch!(
             }
             "terminal-coding-system" => Ok(interp
                 .terminal_coding_system()
-                .map(Value::Symbol)
+                .map(|value| Value::Symbol(value.into()))
                 .unwrap_or(Value::Nil)),
             "set-terminal-coding-system-internal" | "set-safe-terminal-coding-system-internal" => {
                 if args.is_empty() || args.len() > 2 {
@@ -1664,11 +1680,13 @@ define_dispatch!(
                 }
                 let coding = checked_coding_name(interp, &args[0])?;
                 interp.set_terminal_coding_system(coding.clone());
-                Ok(coding.map(Value::Symbol).unwrap_or(Value::Nil))
+                Ok(coding
+                    .map(|value| Value::Symbol(value.into()))
+                    .unwrap_or(Value::Nil))
             }
             "keyboard-coding-system" => Ok(interp
                 .keyboard_coding_system()
-                .map(Value::Symbol)
+                .map(|value| Value::Symbol(value.into()))
                 .unwrap_or(Value::Nil)),
             "set-keyboard-coding-system" | "set-keyboard-coding-system-internal" => {
                 if args.is_empty() || args.len() > 2 {
@@ -1676,7 +1694,9 @@ define_dispatch!(
                 }
                 let coding = checked_coding_name(interp, &args[0])?;
                 interp.set_keyboard_coding_system(coding.clone());
-                Ok(coding.map(Value::Symbol).unwrap_or(Value::Nil))
+                Ok(coding
+                    .map(|value| Value::Symbol(value.into()))
+                    .unwrap_or(Value::Nil))
             }
             "find-operation-coding-system" => find_operation_coding_system_value(interp, args, env),
             "set-coding-system-priority" => {
@@ -1726,14 +1746,14 @@ define_dispatch!(
                     _ => None,
                 };
                 interp.define_coding_system(coding, mnemonic, kind, plist, eol_type)?;
-                Ok(Value::Symbol(coding.to_string()))
+                Ok(Value::Symbol(coding.to_string().into()))
             }
             "define-coding-system-alias" => {
                 need_args(name, args, 2)?;
                 let alias = args[0].as_symbol()?;
                 let target = args[1].as_symbol()?;
                 interp.define_coding_system_alias(alias, target)?;
-                Ok(Value::Symbol(alias.to_string()))
+                Ok(Value::Symbol(alias.to_string().into()))
             }
         }
     }

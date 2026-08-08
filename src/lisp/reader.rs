@@ -26,7 +26,7 @@ fn structure_slot_eval_form(value: Value) -> Value {
         | Value::Float(_)
         | Value::String(_)
         | Value::StringObject(_)
-        | Value::Buffer(_, _)
+        | Value::Buffer(_)
         | Value::Marker(_)
         | Value::Overlay(_)
         | Value::CharTable(_)
@@ -35,7 +35,7 @@ fn structure_slot_eval_form(value: Value) -> Value {
         | Value::Record(_)
         | Value::Finalizer(_)
         | Value::BuiltinFunc(_)
-        | Value::Lambda(_, _, _)
+        | Value::Lambda(_)
         | Value::Unbound => value,
         Value::Symbol(symbol) => Value::list([Value::symbol("quote"), Value::Symbol(symbol)]),
         Value::Cons(_) => {
@@ -1185,7 +1185,7 @@ impl<'a> Reader<'a> {
             }
             Some(b'_') => {
                 self.advance();
-                Ok(Some(Value::Symbol(String::new())))
+                Ok(Some(Value::Symbol(String::new().into())))
             }
             Some(b'\'') => {
                 // #'symbol — function quote, treat as (function sym)
@@ -1310,7 +1310,7 @@ impl<'a> Reader<'a> {
                 }
                 let bytes = match self.read()?.ok_or(LispError::EndOfInput)? {
                     Value::String(text) => text,
-                    Value::StringObject(state) => state.borrow().text.clone(),
+                    Value::StringObject(state) => state.borrow().text.clone().into(),
                     other => {
                         return Err(LispError::ReadError(format!(
                             "invalid bool vector literal bytes: expected string, got {}",
@@ -1355,7 +1355,9 @@ impl<'a> Reader<'a> {
                     ));
                 };
                 let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-                Ok(Some(Value::Symbol(make_uninterned_symbol_name(&base, id))))
+                Ok(Some(Value::Symbol(
+                    make_uninterned_symbol_name(&base, id).into(),
+                )))
             }
             Some(b'(') => {
                 // #(...) — either a self-evaluating vector literal or a
@@ -1571,7 +1573,7 @@ impl<'a> Reader<'a> {
             return Ok(None);
         };
         let (text, mut props, multibyte) = match first {
-            Value::String(text) => (text.clone(), Vec::new(), false),
+            Value::String(text) => (text.to_string(), Vec::new(), false),
             Value::StringObject(state) => {
                 let state = state.borrow();
                 (state.text.clone(), state.props.clone(), state.multibyte)
@@ -1673,7 +1675,7 @@ impl<'a> Reader<'a> {
             return Ok(Some(match token.as_str() {
                 "nil" => Value::Nil,
                 "t" => Value::T,
-                _ => Value::Symbol(token),
+                _ => Value::Symbol(token.into()),
             }));
         }
 
@@ -1700,7 +1702,7 @@ impl<'a> Reader<'a> {
         match token.as_str() {
             "nil" => Ok(Some(Value::Nil)),
             "t" => Ok(Some(Value::T)),
-            _ => Ok(Some(Value::Symbol(token))),
+            _ => Ok(Some(Value::Symbol(token.into()))),
         }
     }
 
@@ -1788,7 +1790,7 @@ fn normalize_bigint(value: BigInt) -> Value {
     value
         .to_i64()
         .map(Value::Integer)
-        .unwrap_or(Value::BigInteger(value))
+        .unwrap_or(Value::BigInteger(value.into()))
 }
 
 fn valid_unicode_scalar(value: u32) -> bool {
@@ -1958,7 +1960,7 @@ mod tests {
     #[test]
     fn hash_dispatch_edge_cases() {
         assert!(Reader::new("#").read().is_err());
-        assert_eq!(read_one("#_"), Value::Symbol(String::new()));
+        assert_eq!(read_one("#_"), Value::Symbol(String::new().into()));
         assert_eq!(read_one("#@00 ignored"), Value::Nil);
         assert!(Reader::new("#[0 \"\"]").read().is_err());
     }

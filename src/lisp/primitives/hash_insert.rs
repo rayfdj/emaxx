@@ -340,7 +340,7 @@ pub(crate) fn keymap_entry_key_value(parts: &[String], key: &str) -> Value {
             && named_kbd_key_code(part).is_none()
             && part.chars().count() > 1
         {
-            return Value::Symbol(part.clone());
+            return Value::Symbol(part.clone().into());
         }
 
         let mut events = parse_kbd_token(part)
@@ -478,12 +478,12 @@ fn libxml_node_value(node: &LibxmlNode) -> Value {
             )
         }
         Some(LibxmlNodeType::TextNode | LibxmlNodeType::CDataSectionNode) => {
-            Value::String(node.get_content())
+            Value::String(node.get_content().into())
         }
         Some(LibxmlNodeType::CommentNode) => Value::list([
             Value::symbol("comment"),
             Value::Nil,
-            Value::String(node.get_content()),
+            Value::String(node.get_content().into()),
         ]),
         _ => Value::Nil,
     }
@@ -516,7 +516,7 @@ fn libxml_attributes_in_source_order(node: &LibxmlNode) -> Vec<Value> {
         if !name.is_empty() {
             attributes.push(Value::cons(
                 Value::symbol(&name),
-                Value::String(node.get_property(&name).unwrap_or_default()),
+                Value::String(node.get_property(&name).unwrap_or_default().into()),
             ));
         }
         attribute = next;

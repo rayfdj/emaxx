@@ -174,7 +174,7 @@ fn symbol_property(value: &Value, lowercase: bool) -> Result<Value, LispError> {
         Value::String(_) | Value::StringObject(_) => string_text(value)?,
         Value::Nil => return Ok(Value::Nil),
         Value::T => "t".into(),
-        Value::Symbol(name) => name.clone(),
+        Value::Symbol(name) => name.to_string(),
         _ => return Err(invalid_font_property()),
     };
     let name = if lowercase { name.to_lowercase() } else { name };
@@ -494,7 +494,7 @@ fn put_font_property(
 
 fn xlfd_field(value: Option<&Value>) -> String {
     match value {
-        Some(Value::Symbol(symbol)) if !symbol.is_empty() => symbol.clone(),
+        Some(Value::Symbol(symbol)) if !symbol.is_empty() => symbol.to_string(),
         Some(Value::T) => "t".into(),
         _ => "*".into(),
     }
@@ -614,7 +614,7 @@ fn resolve_fontset(interp: &Interpreter, value: &Value) -> Result<usize, LispErr
 fn font_pattern_component(value: &Value) -> Result<Option<String>, LispError> {
     match value {
         Value::Nil => Ok(None),
-        Value::Symbol(symbol) => Ok(Some(symbol.clone())),
+        Value::Symbol(symbol) => Ok(Some(symbol.to_string())),
         Value::String(_) | Value::StringObject(_) => Ok(Some(string_text(value)?)),
         _ => Err(invalid_font_property()),
     }
@@ -622,7 +622,7 @@ fn font_pattern_component(value: &Value) -> Result<Option<String>, LispError> {
 
 fn font_pattern_from_slots(slots: &[Value]) -> FontPatternState {
     let component = |index| match slots.get(index) {
-        Some(Value::Symbol(symbol)) => Some(symbol.clone()),
+        Some(Value::Symbol(symbol)) => Some(symbol.to_string()),
         _ => None,
     };
     FontPatternState {
@@ -670,7 +670,7 @@ fn parse_fontset_target(value: &Value) -> Result<FontsetTargetState, LispError> 
         Value::Integer(character) if (0..=0x3f_ffff).contains(character) => {
             Ok(FontsetTargetState::Character(*character))
         }
-        Value::Symbol(script) => Ok(FontsetTargetState::Script(script.clone())),
+        Value::Symbol(script) => Ok(FontsetTargetState::Script(script.to_string())),
         Value::Cons(_) => {
             let (from, to) = value
                 .cons_values()

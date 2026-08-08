@@ -78,7 +78,7 @@ define_dispatch!(
                 interp.set_buffer_local_value(
                     buffer_id,
                     "comment-end",
-                    Value::String(String::new()),
+                    Value::String(String::new().into()),
                 );
                 interp.set_buffer_local_value(buffer_id, "c-basic-offset", Value::Integer(4));
                 interp.set_buffer_local_value(
@@ -120,7 +120,7 @@ define_dispatch!(
                 interp.set_buffer_local_value(
                     buffer_id,
                     "comment-end",
-                    Value::String(String::new()),
+                    Value::String(String::new().into()),
                 );
                 Ok(Value::Nil)
             }
@@ -183,7 +183,7 @@ define_dispatch!(
                 interp.set_buffer_local_value(
                     buffer_id,
                     "comment-end",
-                    Value::String(String::new()),
+                    Value::String(String::new().into()),
                 );
                 Ok(Value::Nil)
             }
@@ -341,12 +341,12 @@ fn activate_ruby_mode(interp: &mut Interpreter) -> Result<Value, LispError> {
         interp.char_table_set(
             syntax_table_id,
             open as u32,
-            Value::String(format!("({close}")),
+            Value::String(format!("({close}").into()),
         )?;
         interp.char_table_set(
             syntax_table_id,
             close as u32,
-            Value::String(format!("){open}")),
+            Value::String(format!("){open}").into()),
         )?;
     }
     Ok(Value::Nil)
@@ -550,7 +550,7 @@ fn mark_semantic_buffer_active_if_enabled(
 
 fn auto_mode_symbol_from_value(value: &Value) -> Option<String> {
     match value {
-        Value::Symbol(symbol) => Some(symbol.clone()),
+        Value::Symbol(symbol) => Some(symbol.to_string()),
         Value::Cons(_) => value.to_vec().ok().and_then(|parts| {
             if parts.len() == 2
                 && matches!(parts.first(), Some(Value::Symbol(keyword)) if keyword == "quote")

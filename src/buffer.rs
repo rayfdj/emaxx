@@ -147,9 +147,10 @@ fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
             Value::Integer(*pos as i64),
             Value::Integer((*pos + *len) as i64),
         ),
-        UndoEntry::Delete { pos, text, .. } => {
-            Value::cons(Value::String(text.clone()), Value::Integer(*pos as i64))
-        }
+        UndoEntry::Delete { pos, text, .. } => Value::cons(
+            Value::String(text.clone().into()),
+            Value::Integer(*pos as i64),
+        ),
         UndoEntry::Combined { display, .. } | UndoEntry::Opaque(display) => display.clone(),
         UndoEntry::Boundary => Value::Nil,
     }
@@ -1785,16 +1786,13 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         | (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
-        (
-            Value::Lambda(left_params, left_body, left_env),
-            Value::Lambda(right_params, right_body, right_env),
-        ) => {
-            left_params == right_params
-                && left_body == right_body
-                && Rc::ptr_eq(left_env, right_env)
+        (Value::Lambda(left), Value::Lambda(right)) => {
+            left.params == right.params
+                && left.body == right.body
+                && Rc::ptr_eq(&left.env, &right.env)
         }
-        (Value::Buffer(left, _), Value::Buffer(right, _))
-        | (Value::Marker(left), Value::Marker(right))
+        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
+        (Value::Marker(left), Value::Marker(right))
         | (Value::Overlay(left), Value::Overlay(right))
         | (Value::CharTable(left), Value::CharTable(right))
         | (Value::Frame(left), Value::Frame(right))

@@ -36,8 +36,8 @@ pub(crate) fn refresh_buffer_menu(
     let rendered = entries
         .iter()
         .filter_map(|entry| match entry {
-            Value::Buffer(id, _) => interp
-                .get_buffer_by_id(*id)
+            Value::Buffer(buffer) => interp
+                .get_buffer_by_id(buffer.id)
                 .map(|buffer| buffer.name.clone()),
             _ => None,
         })
@@ -45,10 +45,10 @@ pub(crate) fn refresh_buffer_menu(
         .join("\n");
 
     let menu_buffer = match interp.find_buffer(BUFFER_MENU_BUFFER_NAME) {
-        Some((id, name)) => Value::Buffer(id, name),
+        Some((id, name)) => Value::buffer(id, name),
         None => {
             let (id, _) = interp.create_buffer(BUFFER_MENU_BUFFER_NAME);
-            Value::Buffer(id, BUFFER_MENU_BUFFER_NAME.into())
+            Value::buffer(id, BUFFER_MENU_BUFFER_NAME)
         }
     };
     let menu_buffer_id = interp.resolve_buffer_id(&menu_buffer)?;
@@ -82,14 +82,14 @@ pub(crate) fn collect_buffer_menu_entries(
     filter_predicate: Option<&Value>,
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
-    let current = Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+    let current = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
     let candidates = match buffer_list {
         Some(value) if !value.is_nil() => resolve_buffer_menu_source(interp, value, env)?,
         _ => {
             let mut ordered = vec![current];
             for (id, name) in interp.buffer_list.clone() {
                 if id != interp.current_buffer_id() {
-                    ordered.push(Value::Buffer(id, name));
+                    ordered.push(Value::buffer(id, name));
                 }
             }
             ordered
@@ -113,7 +113,7 @@ pub(crate) fn collect_buffer_menu_entries(
         if files_only && file.is_none() {
             continue;
         }
-        let buffer_value = Value::Buffer(buffer_id, name);
+        let buffer_value = Value::buffer(buffer_id, name);
         if let Some(predicate) = filter_predicate.filter(|value| !value.is_nil()) {
             let keep = interp.call_function_value(
                 predicate.clone(),
@@ -127,7 +127,7 @@ pub(crate) fn collect_buffer_menu_entries(
         }
         if entries
             .iter()
-            .any(|entry| matches!(entry, Value::Buffer(id, _) if *id == buffer_id))
+            .any(|entry| matches!(entry, Value::Buffer(buffer) if buffer.id == buffer_id))
         {
             continue;
         }
@@ -143,7 +143,7 @@ pub(crate) fn resolve_buffer_menu_source(
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
     let source = match value {
-        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) => {
+        Value::BuiltinFunc(_) | Value::Lambda(_) => {
             interp.call_function_value(value.clone(), None, &[], env)?
         }
         Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
@@ -222,11 +222,11 @@ pub(crate) fn obarray_symbols(
     };
     if record.type_name == ABBREV_TABLE_RECORD_TYPE {
         return abbrev_table_entries(interp, obarray).map(|entries| {
-            std::iter::once(Value::Symbol(abbrev_symbol_name(*id, "")))
+            std::iter::once(Value::Symbol(abbrev_symbol_name(*id, "").into()))
                 .chain(
                     entries
                         .into_iter()
-                        .map(|(name, _, _)| Value::Symbol(abbrev_symbol_name(*id, &name))),
+                        .map(|(name, _, _)| Value::Symbol(abbrev_symbol_name(*id, &name).into())),
                 )
                 .collect()
         });
@@ -266,16 +266,16 @@ pub(crate) fn intern_in_obarray(
         if symbol_name.is_empty() {
             let symbol = abbrev_symbol_name(*id, "");
             interp.set_global_binding(&symbol, Value::Nil);
-            return Ok(Value::Symbol(symbol));
+            return Ok(Value::Symbol(symbol.into()));
         }
         if abbrev_table_entries(interp, obarray)?
             .iter()
             .any(|(existing, _, _)| existing == symbol_name)
         {
-            return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name)));
+            return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name).into()));
         }
         define_abbrev_entry(interp, obarray, symbol_name, Value::Nil, Value::Nil)?;
-        return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name)));
+        return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name).into()));
     }
     if record.type_name != OBARRAY_RECORD_TYPE {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
@@ -293,10 +293,8 @@ pub(crate) fn intern_in_obarray(
     {
         return Ok(existing);
     }
-    let symbol = Value::Symbol(crate::lisp::types::make_obarray_symbol_name(
-        symbol_name,
-        *id,
-    ));
+    let symbol =
+        Value::Symbol(crate::lisp::types::make_obarray_symbol_name(symbol_name, *id).into());
     symbols.push(symbol.clone());
     if record.slots.is_empty() {
         record.slots.push(Value::list(symbols));
@@ -383,16 +381,13 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
-        (
-            Value::Lambda(left_params, left_body, left_env),
-            Value::Lambda(right_params, right_body, right_env),
-        ) => {
-            left_params == right_params
-                && left_body == right_body
-                && Rc::ptr_eq(left_env, right_env)
+        (Value::Lambda(left), Value::Lambda(right)) => {
+            left.params == right.params
+                && left.body == right.body
+                && Rc::ptr_eq(&left.env, &right.env)
         }
-        (Value::Buffer(left_id, _), Value::Buffer(right_id, _))
-        | (Value::Marker(left_id), Value::Marker(right_id))
+        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
+        (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
         | (Value::CharTable(left_id), Value::CharTable(right_id))
         | (Value::Record(left_id), Value::Record(right_id))
@@ -561,7 +556,8 @@ pub(crate) fn ensure_completion_list_item_identity(item: &ConsSlot) -> Result<Va
     let current = item.borrow().clone();
     match current {
         Value::String(text) => {
-            let shared = make_shared_string_value_with_multibyte(text, Vec::new(), false);
+            let shared =
+                make_shared_string_value_with_multibyte(text.to_string(), Vec::new(), false);
             *item.borrow_mut() = shared.clone();
             Ok(shared)
         }
@@ -752,7 +748,7 @@ pub(crate) fn filtered_completion_matches(
             interp,
             collection,
             &[
-                Value::String(input.to_string()),
+                Value::String(input.to_string().into()),
                 predicate.clone().unwrap_or(Value::Nil),
                 Value::T,
             ],
@@ -802,7 +798,7 @@ fn completion_collection_function(
     env: &Env,
 ) -> Option<Value> {
     match collection {
-        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) => Some(collection.clone()),
+        Value::BuiltinFunc(_) | Value::Lambda(_) => Some(collection.clone()),
         Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok(),
         _ => None,
     }
@@ -859,23 +855,21 @@ pub(crate) fn try_completion(
             if matches.len() == 1 {
                 return Ok(Value::T);
             }
-            return Ok(Value::String(candidate.name.clone()));
+            return Ok(Value::String(candidate.name.clone().into()));
         }
         if let Some(candidate) = matches
             .iter()
             .find(|candidate| candidate.name.eq_ignore_ascii_case(&input))
         {
-            return Ok(Value::String(candidate.name.clone()));
+            return Ok(Value::String(candidate.name.clone().into()));
         }
     } else if matches.iter().all(|candidate| candidate.name == input) {
         return Ok(Value::T);
     }
 
-    Ok(Value::String(completion_common_prefix(
-        &matches,
-        &input,
-        ignore_case,
-    )))
+    Ok(Value::String(
+        completion_common_prefix(&matches, &input, ignore_case).into(),
+    ))
 }
 
 pub(crate) fn all_completions(
@@ -978,7 +972,7 @@ pub(crate) fn internal_complete_buffer(
             .map(|(id, name)| {
                 Value::cons(
                     make_shared_string_value_with_multibyte(name.clone(), Vec::new(), false),
-                    Value::Buffer(*id, name.clone()),
+                    Value::buffer(*id, name.clone()),
                 )
             })
             .collect::<Vec<_>>(),
@@ -1269,10 +1263,10 @@ fn completing_read_contents(
                 initial_input.as_deref().unwrap_or_default(),
             )?
     {
-        return Ok(Value::String(contents));
+        return Ok(Value::String(contents.into()));
     }
     if let Some(initial_input) = initial_input {
-        return Ok(Value::String(initial_input));
+        return Ok(Value::String(initial_input.into()));
     }
 
     let default = args.get(6).and_then(|value| match value {
@@ -1284,7 +1278,7 @@ fn completing_read_contents(
         && let Some(string) = string_like(&default)
         && !string.text.is_empty()
     {
-        return Ok(Value::String(string.text));
+        return Ok(Value::String(string.text.into()));
     }
 
     if let Some(collection) = args.get(1) {
@@ -1294,11 +1288,11 @@ fn completing_read_contents(
                 .into_iter()
                 .next()
         {
-            return Ok(Value::String(candidate.name));
+            return Ok(Value::String(candidate.name.into()));
         }
     }
 
-    Ok(Value::String(String::new()))
+    Ok(Value::String(String::new().into()))
 }
 
 pub(crate) fn list_contains_with(
@@ -1346,10 +1340,10 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     {
         return items.get(2..).and_then(interactive_form_in_body);
     }
-    let Value::Lambda(_, body, _) = func else {
+    let Value::Lambda(lambda) = func else {
         return None;
     };
-    interactive_form_in_body(body)
+    interactive_form_in_body(&lambda.body)
 }
 
 /// Return GNU's `(interactive SPEC)' metadata for every callable
@@ -1408,9 +1402,11 @@ pub(crate) fn strip_advice_wrappers(func: &Value) -> Value {
 }
 
 pub(crate) fn advice_wrapper_original(func: &Value) -> Option<Value> {
-    let Value::Lambda(params, _, closure_env) = func else {
+    let Value::Lambda(lambda) = func else {
         return None;
     };
+    let params = &lambda.params;
+    let closure_env = &lambda.env;
     if params.first().map(String::as_str) != Some("&rest")
         || !params.get(1).is_some_and(|name| {
             name.starts_with("__emaxx-advice-around-args-")
@@ -1461,9 +1457,10 @@ pub(crate) fn interactive_list_form_items(form: &Value) -> Option<Vec<Value>> {
 }
 
 pub(crate) fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
-    let Value::Lambda(_, body, _) = func else {
+    let Value::Lambda(lambda) = func else {
         return Vec::new();
     };
+    let body = &lambda.body;
     let mut overrides = Vec::new();
     for form in body.iter() {
         if matches!(form, Value::String(_) | Value::StringObject(_)) {
@@ -1489,7 +1486,7 @@ pub(crate) fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
                 if entry.len() >= 2
                     && let Value::Symbol(name) = &entry[0]
                 {
-                    overrides.push((name.clone(), entry[1].clone()));
+                    overrides.push((name.to_string(), entry[1].clone()));
                 }
             }
         }
@@ -1500,7 +1497,7 @@ pub(crate) fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
 // Whether COLLECTION is a programmed completion table (a function).
 pub(crate) fn completion_table_is_function(_interp: &Interpreter, collection: &Value) -> bool {
     match collection {
-        Value::Symbol(_) | Value::Lambda(_, _, _) | Value::BuiltinFunc(_) => true,
+        Value::Symbol(_) | Value::Lambda(_) | Value::BuiltinFunc(_) => true,
         Value::Cons(_) => matches!(
             collection.car(),
             Ok(Value::Symbol(head)) if head == "lambda" || head == "closure"
@@ -1597,7 +1594,7 @@ fn partial_completion_wildcard_try(
     // replacing the pattern with their textual prefix can discard a literal
     // suffix after `*`; leave that case to the normal completion listing.
     Ok(match matches.as_slice() {
-        [only] => Value::String(only.clone()),
+        [only] => Value::String(only.clone().into()),
         _ => Value::Nil,
     })
 }
@@ -1761,7 +1758,7 @@ fn simulated_completing_read(
                         interp,
                         &Value::Symbol("completion-try-completion".into()),
                         &[
-                            Value::String(current),
+                            Value::String(current.into()),
                             collection.clone(),
                             predicate.clone().unwrap_or(Value::Nil),
                             Value::Integer(cursor as i64),
@@ -1845,6 +1842,6 @@ fn simulated_completing_read(
         }
     }
     Ok(Value::String(
-        accepted.unwrap_or_else(|| contents.iter().collect()),
+        accepted.unwrap_or_else(|| contents.iter().collect()).into(),
     ))
 }

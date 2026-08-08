@@ -381,8 +381,8 @@ define_dispatch!(
                 let mut restored_buffer_id = None;
                 let mut index = 0usize;
                 while index + 1 < items.len() {
-                    if let Value::Buffer(buffer_id, _) = &items[index] {
-                        restored_buffer_id = Some(*buffer_id);
+                    if let Value::Buffer(buffer) = &items[index] {
+                        restored_buffer_id = Some(buffer.id);
                         break;
                     }
                     for item in [&items[index], &items[index + 1]] {
@@ -408,8 +408,8 @@ define_dispatch!(
                     });
                     index += 2;
                 }
-                if let Some(Value::Buffer(buffer_id, _)) = items.get(index) {
-                    restored_buffer_id = Some(*buffer_id);
+                if let Some(Value::Buffer(buffer)) = items.get(index) {
+                    restored_buffer_id = Some(buffer.id);
                 }
                 if args.get(1).is_some_and(Value::is_truthy) {
                     let mut tail = args[0].clone();
@@ -451,7 +451,7 @@ define_dispatch!(
                 let pattern = string_text(&args[0])?;
                 interp.set_variable(
                     "last-looking-at-pattern",
-                    Value::String(pattern.clone()),
+                    Value::String(pattern.clone().into()),
                     &mut env.clone(),
                 );
                 regexp::looking_at_impl(

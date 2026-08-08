@@ -821,12 +821,12 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
                         Value::list(
                             conditions
                                 .iter()
-                                .map(|condition| Value::Symbol((*condition).to_string())),
+                                .map(|condition| Value::Symbol((*condition).to_string().into())),
                         ),
                     ),
                     (
                         "error-message".to_string(),
-                        Value::String((*message).to_string()),
+                        Value::String((*message).to_string().into()),
                     ),
                 ],
             )
@@ -902,7 +902,7 @@ fn builtin_symbol_properties() -> Vec<(String, Value)> {
         .map(|(symbol, properties)| {
             let plist = properties
                 .into_iter()
-                .flat_map(|(property, value)| [Value::Symbol(property), value]);
+                .flat_map(|(property, value)| [Value::Symbol(property.into()), value]);
             (symbol, Value::list(plist))
         })
         .collect()
@@ -2268,7 +2268,7 @@ impl Interpreter {
         let standard_obarray_id = 2u64;
         let standard_syntax_table_id = 1u64;
         let local_time_zone_rule = std::env::var("TZ")
-            .map(Value::String)
+            .map(|value| Value::String(value.into()))
             .unwrap_or_else(|_| Value::Symbol("wall".into()));
         let frame_name =
             primitives::make_shared_string_value_with_multibyte("F1".into(), Vec::new(), true);
@@ -3689,7 +3689,8 @@ impl Interpreter {
             "exec-directory",
             Value::String(
                 primitives::current_invocation_directory()
-                    .unwrap_or_else(primitives::default_directory),
+                    .unwrap_or_else(primitives::default_directory)
+                    .into(),
             ),
         );
         interp.define_per_buffer_special("mark-ring", Value::Nil);
@@ -4231,7 +4232,7 @@ impl Interpreter {
             None
         };
         if let Some((var, captured)) = live_update {
-            self.set_variable(&var, Value::String(captured), env);
+            self.set_variable(&var, Value::String(captured.into()), env);
         }
     }
 
@@ -4317,13 +4318,13 @@ fn bounded_value_eq(left: &Value, right: &Value, budget: &mut usize) -> bool {
             bounded_value_eq(&a.car.borrow(), &b.car.borrow(), budget)
                 && bounded_value_eq(&a.cdr.borrow(), &b.cdr.borrow(), budget)
         }
-        (Value::Lambda(ap, ab, ae), Value::Lambda(bp, bb, be)) => {
-            ap == bp
-                && Rc::ptr_eq(ae, be)
-                && ab.len() == bb.len()
-                && ab
+        (Value::Lambda(a), Value::Lambda(b)) => {
+            a.params == b.params
+                && Rc::ptr_eq(&a.env, &b.env)
+                && a.body.len() == b.body.len()
+                && a.body
                     .iter()
-                    .zip(bb.iter())
+                    .zip(b.body.iter())
                     .all(|(a, b)| bounded_value_eq(a, b, budget))
         }
         _ => left == right,
@@ -4332,7 +4333,7 @@ fn bounded_value_eq(left: &Value, right: &Value, budget: &mut usize) -> bool {
 
 fn symbol_name(value: &Value) -> Option<String> {
     match value {
-        Value::Symbol(name) => Some(name.clone()),
+        Value::Symbol(name) => Some(name.to_string()),
         _ => None,
     }
 }
@@ -4343,7 +4344,7 @@ fn keyword_symbol_name(value: &Value) -> Option<String> {
 
 fn quoted_symbol_name(value: &Value) -> Option<String> {
     match unquote(value) {
-        Value::Symbol(name) => Some(name),
+        Value::Symbol(name) => Some(name.to_string()),
         _ => None,
     }
 }
@@ -4367,7 +4368,7 @@ fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
             Err(LispError::TypeError("symbol".into(), other.type_name()))
         }
         _ => match unquote(value) {
-            Value::Symbol(name) => Ok(name),
+            Value::Symbol(name) => Ok(name.to_string()),
             other => Err(LispError::TypeError("symbol".into(), other.type_name())),
         },
     }
@@ -4375,7 +4376,7 @@ fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
 
 fn assignment_target_name(value: &Value) -> Result<String, LispError> {
     match value {
-        Value::Symbol(name) => Ok(name.clone()),
+        Value::Symbol(name) => Ok(name.to_string()),
         Value::Nil => Ok("nil".into()),
         Value::T => Ok("t".into()),
         other => Err(LispError::TypeError("symbol".into(), other.type_name())),
@@ -4503,37 +4504,37 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
     match error {
         LispError::TypeError(expected, got) => Value::list([
             Value::Symbol("wrong-type-argument".into()),
-            Value::Symbol(expected.clone()),
+            Value::Symbol(expected.clone().into()),
             match got.as_str() {
                 "nil" => Value::Nil,
-                _ => Value::String(got.clone()),
+                _ => Value::String(got.clone().into()),
             },
         ]),
         LispError::Void(symbol) => Value::list([
             Value::Symbol("void-variable".into()),
-            Value::Symbol(symbol.clone()),
+            Value::Symbol(symbol.clone().into()),
         ]),
         LispError::VoidFunction(symbol) => Value::list([
             Value::Symbol("void-function".into()),
-            Value::Symbol(symbol.clone()),
+            Value::Symbol(symbol.clone().into()),
         ]),
         LispError::WrongNumberOfArgs(name, count) => Value::list([
             Value::Symbol("wrong-number-of-arguments".into()),
-            Value::Symbol(name.clone()),
+            Value::Symbol(name.clone().into()),
             Value::Integer(*count as i64),
         ]),
         LispError::EndOfInput => Value::list([Value::Symbol("end-of-file".into()), Value::Nil]),
         LispError::TestSkipped(message) => Value::list([
             Value::Symbol("ert-test-skipped".into()),
-            Value::String(message.clone()),
+            Value::String(message.clone().into()),
         ]),
         LispError::ErtTestFailed(message) => Value::list([
             Value::Symbol("ert-test-failed".into()),
-            Value::String(message.clone()),
+            Value::String(message.clone().into()),
         ]),
         LispError::ReadError(message) | LispError::Signal(message) => Value::list([
             Value::Symbol("error".into()),
-            Value::String(message.clone()),
+            Value::String(message.clone().into()),
         ]),
         LispError::Throw(tag, value) => {
             Value::list([Value::Symbol("no-catch".into()), tag.clone(), value.clone()])
@@ -4559,7 +4560,7 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
             Some((Value::String(text), Value::Integer(pos))) if pos >= 0 => {
                 crate::buffer::UndoEntry::Delete {
                     pos: pos as usize,
-                    text,
+                    text: text.to_string(),
                     props: Vec::new(),
                     markers: Vec::new(),
                 }
@@ -4590,9 +4591,10 @@ fn undo_entry_display(entry: &crate::buffer::UndoEntry) -> Value {
             Value::Integer(*pos as i64),
             Value::Integer((*pos + *len) as i64),
         ),
-        crate::buffer::UndoEntry::Delete { pos, text, .. } => {
-            Value::cons(Value::String(text.clone()), Value::Integer(*pos as i64))
-        }
+        crate::buffer::UndoEntry::Delete { pos, text, .. } => Value::cons(
+            Value::String(text.clone().into()),
+            Value::Integer(*pos as i64),
+        ),
         crate::buffer::UndoEntry::Combined { display, .. }
         | crate::buffer::UndoEntry::Opaque(display) => display.clone(),
         crate::buffer::UndoEntry::Boundary => Value::Nil,
@@ -4624,7 +4626,7 @@ fn render_undo_value(value: &Value) -> String {
         }
         Value::String(s) => format!("\"{}\"", s),
         Value::StringObject(state) => format!("\"{}\"", state.borrow().text),
-        Value::Symbol(s) => s.clone(),
+        Value::Symbol(s) => s.to_string(),
         Value::Cons(_) => {
             let mut rendered = String::from("(");
             let mut current = value.clone();
@@ -4653,8 +4655,8 @@ fn render_undo_value(value: &Value) -> String {
             rendered
         }
         Value::BuiltinFunc(name) => format!("#<builtin {name}>"),
-        Value::Lambda(params, _, _) => format!("#<lambda ({})>", params.join(" ")),
-        Value::Buffer(_, name) => format!("#<buffer {name}>"),
+        Value::Lambda(lambda) => format!("#<lambda ({})>", lambda.params.join(" ")),
+        Value::Buffer(buffer) => format!("#<buffer {}>", buffer.name),
         Value::Marker(id) => format!("#<marker id:{id}>"),
         Value::Overlay(id) => format!("#<overlay id:{id}>"),
         Value::CharTable(id) => format!("#<char-table id:{id}>"),
@@ -4734,7 +4736,7 @@ fn function_declare_gv_setter(form: &Value) -> Option<String> {
         let declaration_items = declaration.to_vec().ok()?;
         match declaration_items.as_slice() {
             [Value::Symbol(kind), Value::Symbol(setter)] if kind == "gv-setter" => {
-                Some(setter.clone())
+                Some(setter.to_string())
             }
             _ => None,
         }
@@ -4798,7 +4800,7 @@ fn is_record_literal_slot_form(value: &Value) -> bool {
         | Value::Float(_)
         | Value::String(_)
         | Value::StringObject(_)
-        | Value::Buffer(_, _)
+        | Value::Buffer(_)
         | Value::Marker(_)
         | Value::Overlay(_)
         | Value::CharTable(_)
@@ -4807,7 +4809,7 @@ fn is_record_literal_slot_form(value: &Value) -> bool {
         | Value::Record(_)
         | Value::Finalizer(_)
         | Value::BuiltinFunc(_)
-        | Value::Lambda(_, _, _)
+        | Value::Lambda(_)
         | Value::Unbound => true,
         Value::Cons(_) => {
             let Ok(items) = value.to_vec() else {
@@ -5153,7 +5155,7 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
                     lowered.push(Value::Symbol(symbol));
                 } else if matches!(item, Value::Cons(_)) {
                     let temp_name = format!("emaxx--cl-defun-{name}-arg-{index}");
-                    lowered.push(Value::Symbol(temp_name.clone()));
+                    lowered.push(Value::Symbol(temp_name.clone().into()));
                     destructuring_bindings.push((item, temp_name));
                 } else {
                     return Err(invalid_function(spec.clone()));
@@ -5172,7 +5174,7 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
             ClDefunSection::AfterRest => return Err(invalid_function(spec.clone())),
             ClDefunSection::Key => match item {
                 Value::Symbol(symbol) => keyword_bindings.push(ClKeyBinding {
-                    variable_name: symbol.clone(),
+                    variable_name: symbol.to_string(),
                     keyword_name: cl_keyword_name_for_variable(&symbol),
                     default_value: Value::Nil,
                     supplied_name: None,
@@ -5208,7 +5210,7 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
         let raw_name = format!("emaxx--cl-defun-{name}-raw-rest");
         let remaining_name = format!("emaxx--cl-defun-{name}-remaining");
         lowered.push(Value::Symbol("&rest".into()));
-        lowered.push(Value::Symbol(raw_name.clone()));
+        lowered.push(Value::Symbol(raw_name.clone().into()));
         (Some(raw_name), Some(remaining_name))
     } else {
         (None, None)
@@ -5266,7 +5268,7 @@ fn parse_cl_defun_optional_binding(spec: Value) -> Result<ClOptionalBinding, Lis
     Ok(ClOptionalBinding {
         pattern,
         default_value,
-        supplied_name,
+        supplied_name: supplied_name.map(|name| name.to_string()),
     })
 }
 
@@ -5274,7 +5276,7 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
     if let Value::Symbol(variable_name) = spec {
         return Ok(ClKeyBinding {
             keyword_name: cl_keyword_name_for_variable(&variable_name),
-            variable_name,
+            variable_name: variable_name.to_string(),
             default_value: Value::Nil,
             supplied_name: None,
         });
@@ -5289,13 +5291,13 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
     let (keyword_name, variable_name, default_value, supplied_name) = match items.as_slice() {
         [Value::Symbol(variable_name)] => (
             cl_keyword_name_for_variable(variable_name),
-            variable_name.clone(),
+            variable_name.to_string(),
             Value::Nil,
             None,
         ),
         [Value::Symbol(variable_name), default_value] => (
             cl_keyword_name_for_variable(variable_name),
-            variable_name.clone(),
+            variable_name.to_string(),
             default_value.clone(),
             None,
         ),
@@ -5305,9 +5307,9 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
             Value::Symbol(supplied_name),
         ] => (
             cl_keyword_name_for_variable(variable_name),
-            variable_name.clone(),
+            variable_name.to_string(),
             default_value.clone(),
-            Some(supplied_name.clone()),
+            Some(supplied_name.to_string()),
         ),
         [pattern @ Value::Cons(_)] => {
             let pair = pattern.to_vec()?;
@@ -5318,8 +5320,8 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
                 ));
             };
             (
-                keyword_name.clone(),
-                variable_name.clone(),
+                keyword_name.to_string(),
+                variable_name.to_string(),
                 Value::Nil,
                 None,
             )
@@ -5333,8 +5335,8 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
                 ));
             };
             (
-                keyword_name.clone(),
-                variable_name.clone(),
+                keyword_name.to_string(),
+                variable_name.to_string(),
                 default_value.clone(),
                 None,
             )
@@ -5352,10 +5354,10 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
                 ));
             };
             (
-                keyword_name.clone(),
-                variable_name.clone(),
+                keyword_name.to_string(),
+                variable_name.to_string(),
                 default_value.clone(),
-                Some(supplied_name.clone()),
+                Some(supplied_name.to_string()),
             )
         }
         _ => {
@@ -5442,13 +5444,13 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<LoweredClDefmethodLamb
                     && cl_defmethod_specializer_kind(parts.get(1)).is_some()
                 {
                     let parameter = cl_defmethod_destructuring_parameter_name(index);
-                    lowered.push(Value::Symbol(parameter.clone()));
+                    lowered.push(Value::Symbol(parameter.clone().into()));
                     destructuring_bindings.push((pattern.clone(), parameter));
                 } else if let Some(Value::Symbol(variable_name)) = parts.first() {
                     lowered.push(Value::Symbol(variable_name.clone()));
                 } else if required {
                     let parameter = cl_defmethod_destructuring_parameter_name(index);
-                    lowered.push(Value::Symbol(parameter.clone()));
+                    lowered.push(Value::Symbol(parameter.clone().into()));
                     destructuring_bindings.push((item, parameter));
                 } else {
                     lowered.push(item);
@@ -5464,11 +5466,11 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<LoweredClDefmethodLamb
 
     if let Some(pattern) = key_pattern {
         let parameter = if let Some(parameter) = rest_parameter {
-            parameter
+            parameter.to_string()
         } else {
             let parameter = cl_defmethod_destructuring_parameter_name(lowered.len());
             lowered.push(Value::Symbol("&rest".into()));
-            lowered.push(Value::Symbol(parameter.clone()));
+            lowered.push(Value::Symbol(parameter.clone().into()));
             parameter
         };
         destructuring_bindings.push((Value::list(pattern), parameter));
@@ -5603,11 +5605,11 @@ impl ClDefmethodSpecializer {
         match &self.kind {
             ClDefmethodSpecializerKind::Class(class_name) => Value::list([
                 Value::Symbol("class".into()),
-                Value::Symbol(class_name.clone()),
+                Value::Symbol(class_name.clone().into()),
             ]),
             ClDefmethodSpecializerKind::Subclass(class_name) => Value::list([
                 Value::Symbol("subclass".into()),
-                Value::Symbol(class_name.clone()),
+                Value::Symbol(class_name.clone().into()),
             ]),
             ClDefmethodSpecializerKind::Eql(value) => {
                 Value::list([Value::Symbol("eql".into()), value.clone()])
@@ -5623,7 +5625,7 @@ impl ClDefmethodSpecializer {
 fn cl_defmethod_specializer_kind(spec: Option<&Value>) -> Option<ClDefmethodSpecializerKind> {
     match spec {
         Some(Value::Symbol(class_name)) => {
-            Some(ClDefmethodSpecializerKind::Class(class_name.clone()))
+            Some(ClDefmethodSpecializerKind::Class(class_name.to_string()))
         }
         Some(Value::T) => Some(ClDefmethodSpecializerKind::Class("t".into())),
         Some(compound @ Value::Cons(_)) => {
@@ -5634,7 +5636,7 @@ fn cl_defmethod_specializer_kind(spec: Option<&Value>) -> Option<ClDefmethodSpec
                 }
                 Some(Value::Symbol(name)) if name == "subclass" => match specializer.get(1) {
                     Some(Value::Symbol(class_name)) => {
-                        Some(ClDefmethodSpecializerKind::Subclass(class_name.clone()))
+                        Some(ClDefmethodSpecializerKind::Subclass(class_name.to_string()))
                     }
                     _ => None,
                 },
@@ -5703,7 +5705,7 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
                 && let Some(value) = specializer.get(1)
             {
                 specializers.push(ClDefmethodSpecializer {
-                    variable: variable.clone(),
+                    variable: variable.to_string(),
                     kind: ClDefmethodSpecializerKind::Eql(value.clone()),
                     is_context: true,
                     context_expr: None,
@@ -5714,7 +5716,7 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
         }
         if let Some(kind) = cl_defmethod_specializer_kind(parts.get(1)) {
             specializers.push(ClDefmethodSpecializer {
-                variable: variable.clone(),
+                variable: variable.to_string(),
                 kind,
                 is_context: next_is_context,
                 context_expr: None,
@@ -5767,24 +5769,29 @@ fn cl_generic_no_applicable_function(method_name: &str, params: &[String]) -> Va
     let fixed_params = lambda_list_fixed_params(params);
     let rest_param = lambda_list_rest_param_from_params(params);
     let mut args = vec![Value::Symbol("list".into())];
-    args.extend(fixed_params.iter().cloned().map(Value::Symbol));
+    args.extend(
+        fixed_params
+            .iter()
+            .cloned()
+            .map(|value| Value::Symbol(value.into())),
+    );
     let args = if let Some(rest_param) = rest_param {
         Value::list([
             Value::Symbol("append".into()),
             Value::list(args),
-            Value::Symbol(rest_param),
+            Value::Symbol(rest_param.into()),
         ])
     } else {
         Value::list(args)
     };
-    Value::Lambda(
+    Value::lambda(
         params.to_vec().into(),
         vec![Value::list([
             Value::Symbol("emaxx--cl-generic-apply-next".into()),
             Value::Nil,
             Value::list([
                 Value::Symbol("quote".into()),
-                Value::Symbol(method_name.to_string()),
+                Value::Symbol(method_name.to_string().into()),
             ]),
             Value::list([
                 Value::Symbol("quote".into()),
@@ -5806,9 +5813,10 @@ fn cl_defmethod_around_previous_binding(
         "__emaxx_previous_method_{}_around_",
         method_name.replace('-', "_")
     );
-    let Value::Lambda(_, _, closure_env) = function else {
+    let Value::Lambda(lambda) = function else {
         return None;
     };
+    let closure_env = &lambda.env;
     for frame in closure_env.borrow().iter() {
         for (name, value) in frame {
             if name.starts_with(&prefix) {
@@ -5828,9 +5836,10 @@ fn cl_defmethod_around_previous_binding(
                             if candidate_name != &current_method_name {
                                 continue;
                             }
-                            let Value::Lambda(_, _, current_method_env) = candidate_value else {
+                            let Value::Lambda(current_method) = candidate_value else {
                                 continue;
                             };
+                            let current_method_env = &current_method.env;
                             for current_method_frame in current_method_env.borrow().iter() {
                                 for (current_method_name, current_method_value) in
                                     current_method_frame
@@ -5866,10 +5875,10 @@ fn cl_defmethod_advice_original_binding(function: &Value) -> Option<(SharedEnv, 
     if oclosure_lambda_type(function).is_some_and(|type_name| type_name == "advice") {
         let mut current = function.clone();
         loop {
-            let Value::Lambda(_, _, closure_env) = &current else {
+            let Value::Lambda(lambda) = &current else {
                 return None;
             };
-            let closure_env = closure_env.clone();
+            let closure_env = lambda.env.clone();
             let cdr = {
                 let contents = closure_env.borrow();
                 contents.iter().rev().find_map(|frame| {
@@ -5892,9 +5901,11 @@ fn cl_defmethod_advice_original_binding(function: &Value) -> Option<(SharedEnv, 
             return Some((closure_env, "cdr".to_string(), cdr));
         }
     }
-    let Value::Lambda(params, _, closure_env) = function else {
+    let Value::Lambda(lambda) = function else {
         return None;
     };
+    let params = &lambda.params;
+    let closure_env = &lambda.env;
     // Only a function that IS an advice wrapper counts: its rest parameter
     // carries the wrapper's unique suffix, which names the captured original.
     // Dispatch wrappers can capture unrelated advice activations in their
@@ -5920,9 +5931,11 @@ fn cl_defmethod_advice_original_binding(function: &Value) -> Option<(SharedEnv, 
 }
 
 fn oclosure_lambda_type(value: &Value) -> Option<String> {
-    let Value::Lambda(_, body, closure_env) = value else {
+    let Value::Lambda(lambda) = value else {
         return None;
     };
+    let body = &lambda.body;
+    let closure_env = &lambda.env;
     // Real oclosures carry the oclosure marker as their first executable
     // body form; a dispatch wrapper that merely CAPTURED an oclosure's
     // frames must not be mistaken for one.
@@ -5974,9 +5987,10 @@ fn cl_defmethod_replace_child_environment(
         replacement: &Value,
         seen_envs: &mut HashSet<usize>,
     ) -> bool {
-        let Value::Lambda(_, _, closure_env) = function else {
+        let Value::Lambda(lambda) = function else {
             return false;
         };
+        let closure_env = &lambda.env;
         let env_id = closure_env.as_ptr() as usize;
         if !seen_envs.insert(env_id) {
             return false;
@@ -5990,7 +6004,7 @@ fn cl_defmethod_replace_child_environment(
                     if !name.starts_with("__emaxx_") {
                         continue;
                     }
-                    if matches!(value, Value::Lambda(_, _, child) if child.as_ptr() as usize == target_env_id)
+                    if matches!(value, Value::Lambda(child) if child.env.as_ptr() as usize == target_env_id)
                     {
                         *value = replacement.clone();
                         changed = true;
@@ -6011,9 +6025,10 @@ fn cl_defmethod_replace_child_environment(
 
 fn cl_defmethod_contains_binding_fragment(function: &Value, fragment: &str) -> bool {
     fn contains(function: &Value, fragment: &str, seen_envs: &mut HashSet<usize>) -> bool {
-        let Value::Lambda(_, _, closure_env) = function else {
+        let Value::Lambda(lambda) = function else {
             return false;
         };
+        let closure_env = &lambda.env;
         let env_id = closure_env.as_ptr() as usize;
         if !seen_envs.insert(env_id) {
             return false;
@@ -6040,9 +6055,10 @@ fn cl_defmethod_named_binding_inner(
     replacement: Option<&Value>,
     seen_envs: &mut HashSet<usize>,
 ) -> Option<Value> {
-    let Value::Lambda(_, _, closure_env) = function else {
+    let Value::Lambda(lambda) = function else {
         return None;
     };
+    let closure_env = &lambda.env;
     let env_id = closure_env.as_ptr() as usize;
     if !seen_envs.insert(env_id) {
         return None;
@@ -6094,7 +6110,10 @@ fn cl_defmethod_replace_ignore_previous_bindings_inner(
     seen_cons: &mut HashSet<usize>,
 ) -> bool {
     match function {
-        Value::Lambda(_, _, closure_env) => {
+        Value::Lambda(lambda_value) => {
+            let _ = &lambda_value.params;
+            let _ = &lambda_value.body;
+            let closure_env = &lambda_value.env;
             let env_id = closure_env.as_ptr() as usize;
             if !seen_envs.insert(env_id) {
                 return false;
@@ -6169,7 +6188,10 @@ fn cl_defmethod_replace_terminal_previous_bindings(function: &Value, replacement
         seen_cons: &mut HashSet<usize>,
     ) -> bool {
         match function {
-            Value::Lambda(_, _, closure_env) => {
+            Value::Lambda(lambda_value) => {
+                let _ = &lambda_value.params;
+                let _ = &lambda_value.body;
+                let closure_env = &lambda_value.env;
                 let env_id = closure_env.as_ptr() as usize;
                 if !seen_envs.insert(env_id) {
                     return false;
@@ -6226,9 +6248,10 @@ fn cl_defmethod_replace_terminal_previous_bindings(function: &Value, replacement
 fn cl_defmethod_qualifier_wrapper_parts(
     function: &Value,
 ) -> Option<(SharedEnv, String, Value, Option<Value>)> {
-    let Value::Lambda(_, _, closure_env) = function else {
+    let Value::Lambda(lambda) = function else {
         return None;
     };
+    let closure_env = &lambda.env;
     let borrowed = closure_env.borrow();
     let frame = borrowed.first()?;
     let mut previous = None;
@@ -6252,7 +6275,10 @@ fn cl_defmethod_previous_binding_inner(
     seen_cons: &mut HashSet<usize>,
 ) -> Option<(SharedEnv, String, Value)> {
     match function {
-        Value::Lambda(_, _, closure_env) => {
+        Value::Lambda(lambda_value) => {
+            let _ = &lambda_value.params;
+            let _ = &lambda_value.body;
+            let closure_env = &lambda_value.env;
             let env_id = closure_env.as_ptr() as usize;
             if !seen_envs.insert(env_id) {
                 return None;
@@ -6385,7 +6411,7 @@ fn rewrite_cl_call_next_method_form(
                     Value::Symbol("ignore".into()),
                 ])
             } else {
-                Value::Symbol(previous_method_symbol.to_string())
+                Value::Symbol(previous_method_symbol.to_string().into())
             })
         }
         "quote" | "function" => Ok(form.clone()),
@@ -6408,14 +6434,14 @@ fn rewrite_cl_call_next_method_form(
             let previous_reference = if previous_method_symbol == "ignore" {
                 Value::Nil
             } else {
-                Value::Symbol(previous_method_symbol.to_string())
+                Value::Symbol(previous_method_symbol.to_string().into())
             };
             Ok(Value::list([
                 Value::Symbol("emaxx--cl-generic-apply-next".into()),
                 previous_reference,
                 Value::list([
                     Value::Symbol("quote".into()),
-                    Value::Symbol(generic_name.to_string()),
+                    Value::Symbol(generic_name.to_string().into()),
                 ]),
                 Value::list([
                     Value::Symbol("quote".into()),
@@ -6446,7 +6472,7 @@ fn substitute_symbol_macros(
 ) -> Result<Value, LispError> {
     match form {
         Value::Symbol(symbol) => Ok(expansions
-            .get(symbol)
+            .get(symbol.as_str())
             .cloned()
             .unwrap_or_else(|| form.clone())),
         Value::Cons(_) => substitute_symbol_macros_in_list(form, expansions),
@@ -6514,7 +6540,7 @@ fn substitute_symbol_macros_in_let(
     for binding in &bindings {
         match binding {
             Value::Symbol(symbol) => {
-                scoped.remove(symbol);
+                scoped.remove(symbol.as_str());
                 rewritten_bindings.push(Value::Symbol(symbol.clone()));
             }
             Value::Cons(_) => {
@@ -6529,7 +6555,7 @@ fn substitute_symbol_macros_in_let(
                 for form in &parts[1..] {
                     rewritten.push(substitute_symbol_macros(form, init_scope)?);
                 }
-                scoped.remove(symbol);
+                scoped.remove(symbol.as_str());
                 rewritten_bindings.push(Value::list(rewritten));
             }
             other => rewritten_bindings.push(substitute_symbol_macros(other, &scoped)?),
@@ -6542,13 +6568,13 @@ fn substitute_symbol_macros_in_let(
         for binding in &bindings {
             match binding {
                 Value::Symbol(symbol) => {
-                    body_scope.remove(symbol);
+                    body_scope.remove(symbol.as_str());
                 }
                 Value::Cons(_) => {
                     if let Ok(parts) = binding.to_vec()
                         && let Some(Value::Symbol(symbol)) = parts.first()
                     {
-                        body_scope.remove(symbol);
+                        body_scope.remove(symbol.as_str());
                     }
                 }
                 _ => {}
@@ -6770,7 +6796,7 @@ fn collect_setcdr_tail_aliases(
         && interp.lookup_var(name, env).as_ref() == Some(tail)
         && !aliases.iter().any(|alias| alias == name)
     {
-        aliases.push(name.clone());
+        aliases.push(name.to_string());
     }
     for item in &items {
         collect_setcdr_tail_aliases(interp, item, tail, env, aliases);
@@ -6830,7 +6856,7 @@ fn parse_cl_defstruct_constructor_params(
         }
         if in_aux {
             match item {
-                Value::Symbol(name) => aux_bindings.push((name, Value::Nil)),
+                Value::Symbol(name) => aux_bindings.push((name.to_string(), Value::Nil)),
                 Value::Cons(_) => {
                     if let Ok(parts) = item.to_vec()
                         && let Some(name) = parts.first().and_then(|value| value.as_symbol().ok())
@@ -6888,7 +6914,7 @@ fn cl_defstruct_constructor_aux_let_bindings(
             "key" => Value::list([
                 Value::Symbol("plist-get".into()),
                 Value::Symbol("args".into()),
-                Value::Symbol(format!(":{param}")),
+                Value::Symbol(format!(":{param}").into()),
             ]),
             "rest" => {
                 mode = "after-rest";
@@ -6909,12 +6935,15 @@ fn cl_defstruct_constructor_aux_let_bindings(
                 form
             }
         };
-        bindings.push(Value::list([Value::Symbol(param.clone()), value_form]));
+        bindings.push(Value::list([
+            Value::Symbol(param.clone().into()),
+            value_form,
+        ]));
     }
     bindings.extend(
         aux_bindings
             .into_iter()
-            .map(|(name, form)| Value::list([Value::Symbol(name), form])),
+            .map(|(name, form)| Value::list([Value::Symbol(name.into()), form])),
     );
     bindings
 }
@@ -7013,7 +7042,7 @@ fn pcase_pattern_bindings_inner(
         if backquoted {
             return Ok(lenient_list_match || pattern == value);
         }
-        bindings.push((name.clone(), value.clone()));
+        bindings.push((name.to_string(), value.clone()));
         return Ok(true);
     }
     if let Ok(parts) = pattern.to_vec() {
@@ -7035,7 +7064,7 @@ fn pcase_pattern_bindings_inner(
                     return Ok(false);
                 };
                 if let Value::Symbol(name) = pattern {
-                    bindings.push((name.clone(), value.clone()));
+                    bindings.push((name.to_string(), value.clone()));
                     return Ok(true);
                 }
                 return pcase_pattern_bindings_inner(
@@ -7154,7 +7183,7 @@ fn pcase_pattern_bindings_inner(
                 let start = bindings.len();
                 for slot_pattern in &parts[2..] {
                     let (slot_name, nested_pattern) = match slot_pattern {
-                        Value::Symbol(name) => (name.clone(), slot_pattern.clone()),
+                        Value::Symbol(name) => (name.to_string(), slot_pattern.clone()),
                         Value::Cons(_) => {
                             let Ok(slot_parts) = slot_pattern.to_vec() else {
                                 bindings.truncate(start);
@@ -7250,7 +7279,7 @@ fn pcase_pattern_bindings_inner(
             if matches!(parts.first(), Some(Value::Symbol(name)) if comma_head_kind(name).is_some())
                 && let Some(Value::Symbol(name)) = parts.get(1)
             {
-                bindings.push((name.clone(), value.clone()));
+                bindings.push((name.to_string(), value.clone()));
                 return Ok(true);
             }
             // GNU (app FUN PAT): apply FUN to the object (`_' in a call

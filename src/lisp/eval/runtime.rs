@@ -88,7 +88,7 @@ impl Interpreter {
     pub(super) fn make_generated_symbol(&mut self, prefix: &str) -> Value {
         let id = self.next_generated_symbol_id;
         self.next_generated_symbol_id += 1;
-        Value::Symbol(format!("{prefix}--emaxx-gensym-{id}"))
+        Value::Symbol(format!("{prefix}--emaxx-gensym-{id}").into())
     }
 
     pub(crate) fn resolve_load_target(&self, target: &str) -> Option<PathBuf> {
@@ -227,7 +227,9 @@ impl Interpreter {
             let _ = crate::lisp::primitives::call(
                 self,
                 "message",
-                &[Value::String(format!("Loading {}...", path.display()))],
+                &[Value::String(
+                    format!("Loading {}...", path.display()).into(),
+                )],
                 &mut env.clone(),
             )?;
         }
@@ -263,7 +265,7 @@ impl Interpreter {
         // dependency graph from these entries.
         self.record_require_in_load_history(feature);
         if self.has_feature(feature) || self.loading_features.iter().any(|name| name == feature) {
-            return Ok(Value::Symbol(feature.to_string()));
+            return Ok(Value::Symbol(feature.to_string().into()));
         }
         // GNU does not preload map.el; its cl-generic definitions
         // (map-put!, map-insert, ...) and the map-elt gv-expander only
@@ -318,22 +320,26 @@ impl Interpreter {
         if !self.has_feature(feature) {
             return self.provide_feature_with_after_load(feature);
         }
-        Ok(Value::Symbol(feature.to_string()))
+        Ok(Value::Symbol(feature.to_string().into()))
     }
 
     /// Resolve a Lisp string-or-buffer value to a live buffer ID.
     pub fn resolve_buffer_id(&self, value: &Value) -> Result<u64, LispError> {
         match value {
-            Value::Buffer(id, _) if self.has_buffer_id(*id) => Ok(*id),
-            Value::Buffer(_, name) => self.find_buffer(name).map(|(id, _)| id).ok_or_else(|| {
-                if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some() {
-                    eprintln!(
-                        "[buf] resolve failed for dead buffer {name} (current {})",
-                        self.buffer.name
-                    );
-                }
-                LispError::Signal(format!("No buffer named {}", name))
-            }),
+            Value::Buffer(buffer) if self.has_buffer_id(buffer.id) => Ok(buffer.id),
+            Value::Buffer(buffer) => {
+                self.find_buffer(&buffer.name)
+                    .map(|(id, _)| id)
+                    .ok_or_else(|| {
+                        if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some() {
+                            eprintln!(
+                                "[buf] resolve failed for dead buffer {} (current {})",
+                                buffer.name, self.buffer.name
+                            );
+                        }
+                        LispError::Signal(format!("No buffer named {}", buffer.name))
+                    })
+            }
             _ => Err(LispError::TypeError(
                 "string-or-buffer".into(),
                 value.type_name(),
@@ -1036,7 +1042,7 @@ impl Interpreter {
     pub(crate) fn class_name_from_value(&self, value: &Value) -> Option<String> {
         match value {
             Value::T => Some("t".into()),
-            Value::Symbol(symbol) => Some(symbol.clone()),
+            Value::Symbol(symbol) => Some(symbol.to_string()),
             Value::Record(record_id) => self
                 .find_class_state_by_record_id(*record_id)
                 .map(|state| state.name.clone())
@@ -1175,7 +1181,7 @@ impl Interpreter {
         {
             return Ok(Value::list(parents.iter().map(|parent| {
                 self.class_value(parent)
-                    .unwrap_or_else(|| Value::Symbol(parent.clone()))
+                    .unwrap_or_else(|| Value::Symbol(parent.clone().into()))
             })));
         }
         // GNU registers a new class before it fills the record's parent
@@ -1187,7 +1193,7 @@ impl Interpreter {
         if let Some(state) = self.find_class_state_by_record_id(*record_id) {
             return Ok(Value::list(state.parents.iter().map(|parent| {
                 self.class_value(parent)
-                    .unwrap_or_else(|| Value::Symbol(parent.clone()))
+                    .unwrap_or_else(|| Value::Symbol(parent.clone().into()))
             })));
         }
         Ok(Value::Nil)
@@ -1234,7 +1240,7 @@ impl Interpreter {
         self.put_symbol_property(
             name,
             "emaxx-class-parents",
-            Value::list(parents.into_iter().map(Value::Symbol)),
+            Value::list(parents.into_iter().map(|value| Value::Symbol(value.into()))),
         );
         Ok(())
     }
@@ -1283,8 +1289,13 @@ impl Interpreter {
             self.create_record(
                 "eieio--class",
                 vec![
-                    Value::Symbol(name.to_string()),
-                    Value::list(parents.iter().cloned().map(Value::Symbol)),
+                    Value::Symbol(name.to_string().into()),
+                    Value::list(
+                        parents
+                            .iter()
+                            .cloned()
+                            .map(|value| Value::Symbol(value.into())),
+                    ),
                     Value::list(slot_specs.iter().cloned()),
                     Value::list(options.iter().cloned()),
                 ],
@@ -1306,8 +1317,13 @@ impl Interpreter {
 
         if let Some(record) = self.find_record_mut(record_id) {
             record.slots = vec![
-                Value::Symbol(name.to_string()),
-                Value::list(parents.iter().cloned().map(Value::Symbol)),
+                Value::Symbol(name.to_string().into()),
+                Value::list(
+                    parents
+                        .iter()
+                        .cloned()
+                        .map(|value| Value::Symbol(value.into())),
+                ),
                 Value::list(slot_specs.iter().cloned()),
                 Value::list(options.iter().cloned()),
             ];
@@ -1340,7 +1356,7 @@ impl Interpreter {
         self.put_symbol_property(
             name,
             "emaxx-class-parents",
-            Value::list(parents.into_iter().map(Value::Symbol)),
+            Value::list(parents.into_iter().map(|value| Value::Symbol(value.into()))),
         );
         self.put_symbol_property(name, "emaxx-class-slots", Value::list(slot_specs));
         self.put_symbol_property(name, "emaxx-class-options", Value::list(options));
@@ -1547,7 +1563,7 @@ impl Interpreter {
                     .children
                     .iter()
                     .cloned()
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -1570,7 +1586,7 @@ impl Interpreter {
             self.create_record(
                 "cl--generic-generalizer",
                 vec![
-                    Value::Symbol(name.to_string()),
+                    Value::Symbol(name.to_string().into()),
                     Value::Integer(priority),
                     tagcode_function.clone(),
                     specializers_function.clone(),
@@ -1583,7 +1599,7 @@ impl Interpreter {
 
         if let Some(record) = self.find_record_mut(record_id) {
             record.slots = vec![
-                Value::Symbol(name.to_string()),
+                Value::Symbol(name.to_string().into()),
                 Value::Integer(priority),
                 tagcode_function.clone(),
                 specializers_function.clone(),
@@ -1964,7 +1980,7 @@ impl Interpreter {
             Value::Nil
         };
         state.extra_slots = vec![
-            Value::Symbol(property.to_string()),
+            Value::Symbol(property.to_string().into()),
             Value::Nil,
             Value::Nil,
             description,
@@ -2551,7 +2567,11 @@ impl Interpreter {
         }
         self.set_global_binding(
             "features",
-            Value::list(features.into_iter().map(Value::Symbol)),
+            Value::list(
+                features
+                    .into_iter()
+                    .map(|value| Value::Symbol(value.into())),
+            ),
         );
         if feature == "abbrev" {
             primitives::ensure_standard_abbrev_tables(self);
@@ -2570,7 +2590,7 @@ impl Interpreter {
         }
         let entry = Value::cons(
             Value::Symbol("provide".into()),
-            Value::Symbol(feature.to_string()),
+            Value::Symbol(feature.to_string().into()),
         );
         let entries = current_load_list.to_vec().unwrap_or_default();
         if entries.iter().any(|item| item == &entry) {
@@ -2601,7 +2621,7 @@ impl Interpreter {
         }
         let entry = Value::cons(
             Value::Symbol("require".into()),
-            Value::Symbol(feature.to_string()),
+            Value::Symbol(feature.to_string().into()),
         );
         if entries.iter().any(|item| item == &entry) {
             return;
@@ -2620,11 +2640,11 @@ impl Interpreter {
             return;
         }
         let entry = if kind == "defvar" {
-            Value::Symbol(name.to_string())
+            Value::Symbol(name.to_string().into())
         } else {
             Value::cons(
-                Value::Symbol(kind.to_string()),
-                Value::Symbol(name.to_string()),
+                Value::Symbol(kind.to_string().into()),
+                Value::Symbol(name.to_string().into()),
             )
         };
         if current_load_list
@@ -2695,7 +2715,7 @@ impl Interpreter {
             return;
         }
 
-        let filename = Value::String(filename.to_string());
+        let filename = Value::String(filename.to_string().into());
         let mut history = self
             .lookup_var("load-history", &Env::new())
             .and_then(|value| value.to_vec().ok())
@@ -2714,7 +2734,7 @@ impl Interpreter {
             .iter()
             .filter(|name| name.as_str() != feature)
             .cloned()
-            .map(Value::Symbol);
+            .map(|value| Value::Symbol(value.into()));
         self.set_global_binding("features", Value::list(features));
     }
 
@@ -2737,7 +2757,7 @@ impl Interpreter {
         for (body, mut env) in pending {
             self.sf_progn(&body, &mut env)?;
         }
-        Ok(Value::Symbol(feature.to_string()))
+        Ok(Value::Symbol(feature.to_string().into()))
     }
 
     // Whether NAME has an interpreted (Lisp-defined) function binding,
@@ -2762,7 +2782,7 @@ impl Interpreter {
             self.provided_features
                 .iter()
                 .cloned()
-                .map(Value::Symbol)
+                .map(|value| Value::Symbol(value.into()))
                 .collect::<Vec<_>>(),
         )
     }

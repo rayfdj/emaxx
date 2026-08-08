@@ -222,7 +222,7 @@ fn register_code_conversion_map(
         }
     }
     let index = index.unwrap_or(slots.len());
-    let entry = Value::cons(Value::Symbol(symbol.clone()), map.clone());
+    let entry = Value::cons(Value::Symbol(symbol.clone().into()), map.clone());
     if index < slots.len() {
         aset_vector_value(&table, index, entry)?;
     } else {
@@ -763,7 +763,7 @@ mod tests {
         )
         .expect("execute GNU's pgg CRC24 program");
 
-        assert_eq!(result, Value::String(String::new()));
+        assert_eq!(result, Value::String(String::new().into()));
         let values = vector_items(&status).expect("status vector");
         assert_eq!(
             values,

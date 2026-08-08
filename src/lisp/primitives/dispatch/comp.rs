@@ -24,8 +24,8 @@ fn source_bytes(path: &Path) -> Result<Vec<u8>, LispError> {
         LispError::SignalValue(Value::list([
             Value::symbol("file-error"),
             Value::string("Opening source file"),
-            Value::String(error.to_string()),
-            Value::String(path.display().to_string()),
+            Value::String(error.to_string().into()),
+            Value::String(path.display().to_string().into()),
         ]))
     })?;
     let mut bytes = Vec::new();
@@ -38,7 +38,7 @@ fn source_bytes(path: &Path) -> Result<Vec<u8>, LispError> {
         LispError::SignalValue(Value::list([
             Value::symbol("file-notify-error"),
             Value::string("hashing failed"),
-            Value::String(path.display().to_string()),
+            Value::String(path.display().to_string().into()),
         ]))
     })?;
     Ok(bytes)
@@ -64,7 +64,7 @@ fn comp_el_to_eln_rel_filename(
     let canonical = fs::canonicalize(&expanded).map_err(|_| {
         LispError::SignalValue(Value::list([
             Value::symbol("file-missing"),
-            Value::String(expanded.clone()),
+            Value::String(expanded.clone().into()),
         ]))
     })?;
     let canonical = canonical.display().to_string();
@@ -105,12 +105,9 @@ fn comp_el_to_eln_filename(
         directory =
             expand_file_name_runtime(interp, env, &string_argument(&version)?, Some(&directory))?;
     }
-    Ok(Value::String(expand_file_name_runtime(
-        interp,
-        env,
-        &relative,
-        Some(&directory),
-    )?))
+    Ok(Value::String(
+        expand_file_name_runtime(interp, env, &relative, Some(&directory))?.into(),
+    ))
 }
 
 fn native_elisp_load(
@@ -124,12 +121,12 @@ fn native_elisp_load(
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("native-lisp-load-failed"),
             Value::string("file does not exists"),
-            Value::String(filename),
+            Value::String(filename.into()),
         ])));
     }
     Err(LispError::SignalValue(Value::list([
         Value::symbol("native-lisp-load-failed"),
-        Value::String(filename),
+        Value::String(filename.into()),
         Value::string(NATIVE_COMPILER_UNAVAILABLE),
     ])))
 }
@@ -144,7 +141,8 @@ define_dispatch!(
         match name {
             "comp-el-to-eln-rel-filename" => {
                 need_args(name, args, 1)?;
-                comp_el_to_eln_rel_filename(interp, &args[0], env).map(Value::String)
+                comp_el_to_eln_rel_filename(interp, &args[0], env)
+                    .map(|value| Value::String(value.into()))
             }
             "comp-el-to-eln-filename" => {
                 need_arg_range(name, args, 1, 2)?;

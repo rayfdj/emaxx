@@ -586,7 +586,7 @@ pub(crate) fn serialize(
     let text = serialize_value(interp, value, &options)?;
     let bytes_text = utf8_bytes_to_unibyte_text(text.as_bytes());
     let bytes_value = if bytes_text == text {
-        Value::String(bytes_text.clone())
+        Value::String(bytes_text.clone().into())
     } else {
         make_shared_string_value_with_multibyte(bytes_text.clone(), Vec::new(), false)
     };
@@ -614,7 +614,7 @@ pub(crate) fn make_hash_table(
     let table = interp.create_record(
         HASH_TABLE_RECORD_TYPE,
         vec![
-            Value::Symbol(test.to_string()),
+            Value::Symbol(test.to_string().into()),
             entries_to_list(entries.clone()),
         ],
     );
@@ -707,9 +707,9 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
         JsonNode::False => options.false_object.clone(),
         JsonNode::True => Value::T,
         JsonNode::Integer(value) => Value::Integer(value),
-        JsonNode::BigInteger(value) => Value::BigInteger(value),
+        JsonNode::BigInteger(value) => Value::BigInteger(value.into()),
         JsonNode::Float(value) => Value::Float(value),
-        JsonNode::String(value) => Value::String(value),
+        JsonNode::String(value) => Value::String(value.into()),
         JsonNode::Array(items) => {
             let items: Vec<Value> = items
                 .into_iter()
@@ -738,17 +738,20 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
                     "equal",
                     deduped
                         .into_iter()
-                        .map(|(key, value)| (Value::String(key), value))
+                        .map(|(key, value)| (Value::String(key.into()), value))
                         .collect(),
                 )
             }
             JsonObjectType::Alist => Value::list(entries.into_iter().map(|(key, value)| {
-                Value::cons(Value::Symbol(key), node_to_lisp(interp, value, options))
+                Value::cons(
+                    Value::Symbol(key.into()),
+                    node_to_lisp(interp, value, options),
+                )
             })),
             JsonObjectType::Plist => {
                 let mut items = Vec::new();
                 for (key, value) in entries {
-                    items.push(Value::Symbol(format!(":{key}")));
+                    items.push(Value::Symbol(format!(":{key}").into()));
                     items.push(node_to_lisp(interp, value, options));
                 }
                 Value::list(items)
@@ -976,7 +979,7 @@ fn serialize_object_entries(
         seen.push(key.clone());
         rendered.push(format!(
             "{}:{}",
-            serialize_string(&Value::String(key))?,
+            serialize_string(&Value::String(key.into()))?,
             serialize_value(interp, value, options)?
         ));
     }

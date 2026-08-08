@@ -494,7 +494,7 @@ define_dispatch!(
             }
             "emacs-version" => {
                 need_args(name, args, 0)?;
-                Ok(Value::String(emacs_version_description()))
+                Ok(Value::String(emacs_version_description().into()))
             }
             "<" => {
                 if args.is_empty() {
@@ -678,7 +678,7 @@ define_dispatch!(
                 if string.text.chars().any(is_rtl_char) {
                     let mut text = string.text.clone();
                     text.push('\u{200e}');
-                    Ok(Value::String(text))
+                    Ok(Value::String(text.into()))
                 } else {
                     Ok(args[0].clone())
                 }

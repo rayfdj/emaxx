@@ -19,7 +19,7 @@ fn module_load(file: &Value) -> Result<Value, LispError> {
     let library = unsafe { Library::new(&path) }.map_err(|error| {
         module_condition(
             "module-open-failed",
-            [file.clone(), Value::String(error.to_string())],
+            [file.clone(), Value::String(error.to_string().into())],
         )
     })?;
     // SAFETY: Only symbol presence is inspected.  The exported data is never

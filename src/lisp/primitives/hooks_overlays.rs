@@ -203,14 +203,14 @@ pub(crate) fn safe_run_named_hooks(
             Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
             Err(error) => {
                 let function_name = match &hook {
-                    Value::Symbol(name) | Value::BuiltinFunc(name) => name.clone(),
+                    Value::Symbol(name) | Value::BuiltinFunc(name) => name.to_string(),
                     _ => "anonymous-function".to_string(),
                 };
                 let message = format!("Error in {hook_name} ({function_name}): {error}");
                 let _ = crate::lisp::primitives::call(
                     interp,
                     "message",
-                    &[Value::String(message)],
+                    &[Value::String(message.into())],
                     env,
                 );
             }
@@ -355,7 +355,7 @@ pub(crate) fn callable_display_action_function(
     env: &Env,
 ) -> Option<Value> {
     match value {
-        Value::BuiltinFunc(_) | Value::Lambda(..) => Some(value.clone()),
+        Value::BuiltinFunc(_) | Value::Lambda(_) => Some(value.clone()),
         Value::Symbol(name) if interp.lookup_function(name, env).is_ok() => Some(value.clone()),
         _ => None,
     }
@@ -660,7 +660,7 @@ fn buffer_read_only_active(
 fn buffer_read_only_signal(interp: &Interpreter) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("buffer-read-only".into()),
-        Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
+        Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
     ]))
 }
 
@@ -1844,7 +1844,11 @@ pub(crate) fn face_inherit_spec(interp: &Interpreter, face: &str, global: bool) 
                 .get_symbol_property(face, &face_attribute_property_name(":inherit"))
                 .filter(|value| !value.is_nil())
         })
-        .or_else(|| interp.face_inherit_target(face).map(Value::Symbol))
+        .or_else(|| {
+            interp
+                .face_inherit_target(face)
+                .map(|value| Value::Symbol(value.into()))
+        })
 }
 
 pub(crate) fn resolve_face_attribute_inherit(

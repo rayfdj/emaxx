@@ -35,7 +35,7 @@ fn current_or_named_buffer(
 ) -> Result<(u64, u64), LispError> {
     let buffer_id = match value {
         None | Some(Value::Nil) => interp.current_buffer_id(),
-        Some(buffer @ Value::Buffer(..)) => interp.resolve_buffer_id(buffer)?,
+        Some(buffer @ Value::Buffer(_)) => interp.resolve_buffer_id(buffer)?,
         Some(other) => {
             return Err(LispError::TypeError("bufferp".into(), other.type_name()));
         }
@@ -224,7 +224,7 @@ fn query_error(error: tree_sitter::QueryError, source: String) -> LispError {
         Value::symbol("treesit-query-error"),
         Value::String(description.into()),
         Value::Integer(error.offset.saturating_add(1) as i64),
-        Value::String(source),
+        Value::String(source.into()),
         Value::String("Debug the query with `treesit-query-validate'".into()),
     ]))
 }
@@ -725,6 +725,7 @@ fn collect_query_matches(
 }
 
 fn query_predicate_error(message: impl Into<String>) -> LispError {
+    let message: String = message.into();
     LispError::SignalValue(Value::list([
         Value::symbol("treesit-query-error"),
         Value::String(message.into()),
@@ -795,7 +796,7 @@ fn query_match_passes(
                 let capture = capture_arg(&found.captures, &predicate.args[1])?;
                 if !regexp_matches(
                     interp,
-                    &Value::String(pattern.to_string()),
+                    &Value::String(pattern.to_string().into()),
                     &capture.text,
                     env,
                 )? {
@@ -1073,7 +1074,9 @@ define_dispatch!(
             }
             "treesit-node-string" => {
                 need_args(name, args, 1)?;
-                node_or_nil(interp, &args[0], |node, _| Value::String(node.to_sexp()))
+                node_or_nil(interp, &args[0], |node, _| {
+                    Value::String(node.to_sexp().into())
+                })
             }
             "treesit-node-child-count" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -1262,11 +1265,11 @@ define_dispatch!(
             }
             "treesit-pattern-expand" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(pattern_expand(interp, &args[0], env)?))
+                Ok(Value::String(pattern_expand(interp, &args[0], env)?.into()))
             }
             "treesit-query-expand" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(query_expand(interp, &args[0], env)?))
+                Ok(Value::String(query_expand(interp, &args[0], env)?.into()))
             }
             "treesit-compiled-query-p" => {
                 need_args(name, args, 1)?;

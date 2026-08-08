@@ -191,7 +191,7 @@ pub(crate) fn record_equals_record_literal_form(
     let expected_fields = if record.type_name == "literal-record" {
         record.slots.clone()
     } else {
-        std::iter::once(Value::Symbol(record.type_name.clone()))
+        std::iter::once(Value::Symbol(record.type_name.clone().into()))
             .chain(record.slots.iter().cloned())
             .collect()
     };
@@ -246,16 +246,16 @@ pub(crate) fn values_equal_recursive(
         (Value::Integer(a), Value::Integer(b)) => a == b,
         (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
         (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
-            &BigInt::from(*a) == b
+            BigInt::from(*a) == **b
         }
         (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
         (Value::String(a), Value::String(b)) => a == b,
         (Value::StringObject(a), Value::StringObject(b)) => a.borrow().text == b.borrow().text,
-        (Value::String(a), Value::StringObject(b)) => *a == b.borrow().text,
-        (Value::StringObject(a), Value::String(b)) => a.borrow().text == *b,
+        (Value::String(a), Value::StringObject(b)) => a.as_str() == b.borrow().text,
+        (Value::StringObject(a), Value::String(b)) => a.borrow().text == b.as_str(),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
-        (Value::Buffer(a, _), Value::Buffer(b, _)) => a == b,
+        (Value::Buffer(a), Value::Buffer(b)) => a.id == b.id,
         (Value::Marker(a), Value::Marker(b)) => markers_equal(interp, *a, *b),
         (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b),
         (Value::CharTable(left_id), Value::CharTable(right_id)) => {
@@ -344,29 +344,26 @@ pub(crate) fn values_equal_recursive(
         // advice--member-p relies on it — while closures over differing
         // captured values do not — testcover's 1value detection relies on
         // THAT).
-        (
-            Value::Lambda(left_params, left_body, left_env),
-            Value::Lambda(right_params, right_body, right_env),
-        ) => {
-            if left_params != right_params || left_body != right_body {
+        (Value::Lambda(left), Value::Lambda(right)) => {
+            if left.params != right.params || left.body != right.body {
                 return false;
             }
-            let left_ptr = Rc::as_ptr(left_env) as usize;
-            let right_ptr = Rc::as_ptr(right_env) as usize;
+            let left_ptr = Rc::as_ptr(&left.env) as usize;
+            let right_ptr = Rc::as_ptr(&right.env) as usize;
             if left_ptr == right_ptr || !seen.insert((left_ptr, right_ptr)) {
                 return true;
             }
             let mut symbols = HashSet::new();
-            for form in right_body.iter() {
+            for form in right.body.iter() {
                 collect_free_symbol_candidates(form, &mut symbols);
             }
-            for param in right_params.iter() {
+            for param in right.params.iter() {
                 symbols.remove(param.as_str());
             }
             symbols.iter().all(|symbol| {
                 match (
-                    interp.effective_captured_binding(left_env, symbol),
-                    interp.effective_captured_binding(right_env, symbol),
+                    interp.effective_captured_binding(&left.env, symbol),
+                    interp.effective_captured_binding(&right.env, symbol),
                 ) {
                     (None, None) => true,
                     (Some(left_value), Some(right_value)) => {
@@ -386,7 +383,7 @@ pub(crate) fn values_equal_recursive(
 fn collect_free_symbol_candidates(form: &Value, symbols: &mut HashSet<String>) {
     match form {
         Value::Symbol(name) => {
-            symbols.insert(name.clone());
+            symbols.insert(name.to_string());
         }
         Value::Cons(cons_cell) => {
             let car = &cons_cell.car;
@@ -411,16 +408,13 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
-        (
-            Value::Lambda(left_params, left_body, left_env),
-            Value::Lambda(right_params, right_body, right_env),
-        ) => {
-            left_params == right_params
-                && left_body == right_body
-                && Rc::ptr_eq(left_env, right_env)
+        (Value::Lambda(left), Value::Lambda(right)) => {
+            left.params == right.params
+                && left.body == right.body
+                && Rc::ptr_eq(&left.env, &right.env)
         }
-        (Value::Buffer(left_id, _), Value::Buffer(right_id, _))
-        | (Value::Marker(left_id), Value::Marker(right_id))
+        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
+        (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
         | (Value::CharTable(left_id), Value::CharTable(right_id))
         | (Value::Frame(left_id), Value::Frame(right_id))
@@ -453,16 +447,13 @@ pub(crate) fn values_eq_in_env(
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
-        (
-            Value::Lambda(left_params, left_body, left_env),
-            Value::Lambda(right_params, right_body, right_env),
-        ) => {
-            left_params == right_params
-                && left_body == right_body
-                && Rc::ptr_eq(left_env, right_env)
+        (Value::Lambda(left), Value::Lambda(right)) => {
+            left.params == right.params
+                && left.body == right.body
+                && Rc::ptr_eq(&left.env, &right.env)
         }
-        (Value::Buffer(left_id, _), Value::Buffer(right_id, _))
-        | (Value::Marker(left_id), Value::Marker(right_id))
+        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
+        (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
         | (Value::CharTable(left_id), Value::CharTable(right_id))
         | (Value::Frame(left_id), Value::Frame(right_id))
@@ -505,7 +496,7 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
 pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispError> {
     let mut remaining = match count {
         Value::Integer(n) => BigInt::from(*n),
-        Value::BigInteger(n) => n.clone(),
+        Value::BigInteger(n) => n.clone().into(),
         _ => return Err(LispError::TypeError("integer".into(), count.type_name())),
     };
 
@@ -959,10 +950,10 @@ pub(crate) fn value_ordering(
         };
     }
 
-    if matches!(left, Value::Buffer(_, _)) || matches!(right, Value::Buffer(_, _)) {
+    if matches!(left, Value::Buffer(_)) || matches!(right, Value::Buffer(_)) {
         return match (left, right) {
-            (Value::Buffer(left_id, _), Value::Buffer(right_id, _)) => {
-                Ok(compare_buffer_ids(interp, *left_id, *right_id))
+            (Value::Buffer(left), Value::Buffer(right)) => {
+                Ok(compare_buffer_ids(interp, left.id, right.id))
             }
             _ => Err(type_mismatch_signal(left, right)),
         };
@@ -1209,11 +1200,14 @@ pub(crate) fn format_prompt(
             Some(string) => string.text,
             None => default.to_string(),
         };
-        let format_args = [Value::String(default_format), Value::String(default_string)];
+        let format_args = [
+            Value::String(default_format.into()),
+            Value::String(default_string.into()),
+        ];
         result.push_str(&string_text(&call(interp, "format", &format_args, env)?)?);
     }
     result.push_str(": ");
-    Ok(Value::String(result))
+    Ok(Value::String(result.into()))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1526,11 +1520,11 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
     ) -> bool {
         match value {
             Value::Record(_)
-            | Value::Buffer(_, _)
+            | Value::Buffer(_)
             | Value::Marker(_)
             | Value::Overlay(_)
             | Value::CharTable(_)
-            | Value::Lambda(_, _, _) => false,
+            | Value::Lambda(_) => false,
             Value::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
@@ -1682,13 +1676,18 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 6);
             hash_str(state, name);
         }
-        Value::Lambda(_, _, env) => {
+        Value::Lambda(lambda_value) => {
+            let _ = &lambda_value.params;
+            let _ = &lambda_value.body;
+            let env = &lambda_value.env;
             hash_mix(state, 7);
             hash_mix(state, Rc::as_ptr(env) as usize as u64);
         }
-        Value::Buffer(id, _) => {
+        Value::Buffer(buffer_value) => {
+            let id = buffer_value.id;
+            let _ = &buffer_value.name;
             hash_mix(state, 8);
-            hash_mix(state, *id);
+            hash_mix(state, id);
         }
         Value::Marker(id) => {
             hash_mix(state, 9);
@@ -1810,7 +1809,10 @@ pub(crate) fn hash_value_equal(
             hash_mix(state, 39);
             hash_str(state, name);
         }
-        Value::Lambda(params, body, _) => {
+        Value::Lambda(lambda_value) => {
+            let params = &lambda_value.params;
+            let body = &lambda_value.body;
+            let _ = &lambda_value.env;
             hash_mix(state, 40);
             for param in params.iter() {
                 hash_str(state, param);
@@ -1819,9 +1821,11 @@ pub(crate) fn hash_value_equal(
                 hash_value_equal(interp, state, form, include_properties);
             }
         }
-        Value::Buffer(id, name) => {
+        Value::Buffer(buffer_value) => {
+            let id = buffer_value.id;
+            let name = &buffer_value.name;
             hash_mix(state, 41);
-            hash_mix(state, *id);
+            hash_mix(state, id);
             hash_str(state, name);
         }
         Value::Marker(id) => {
@@ -1970,7 +1974,10 @@ pub(crate) fn custom_set_current_group(interp: &mut Interpreter, group: &str) {
     let Some(file) = custom_current_group_file(interp) else {
         return;
     };
-    let entry = Value::cons(Value::String(file.clone()), Value::Symbol(group.into()));
+    let entry = Value::cons(
+        Value::String(file.clone().into()),
+        Value::Symbol(group.into()),
+    );
     let existing = interp
         .symbol_value_cell("custom-current-group-alist")
         .unwrap_or(Value::Nil);
@@ -2139,9 +2146,9 @@ pub(crate) fn invoke_function_value(
 
 pub(crate) fn callable_name(original: &Value, resolved: &Value) -> Option<String> {
     match original {
-        Value::Symbol(name) => Some(name.clone()),
+        Value::Symbol(name) => Some(name.to_string()),
         _ => match resolved {
-            Value::BuiltinFunc(name) => Some(name.clone()),
+            Value::BuiltinFunc(name) => Some(name.to_string()),
             _ => None,
         },
     }
@@ -2304,7 +2311,7 @@ pub(crate) fn keymap_direct_bindings(
                 let event = keymap_entry_key_value(&binding_key_parts(binding), &binding.key);
                 match event {
                     Value::Integer(code) => (0u8, code, String::new()),
-                    Value::Symbol(name) => (1u8, 0, name),
+                    Value::Symbol(name) => (1u8, 0, name.to_string()),
                     _ => (2u8, 0, binding.key.clone()),
                 }
             });
@@ -2379,7 +2386,7 @@ pub(crate) fn keymap_value_identity(interp: &Interpreter, keymap: &Value) -> Opt
 pub(crate) fn keymap_bindings_value(bindings: Vec<RuntimeKeymapBinding>) -> Value {
     Value::list(bindings.into_iter().map(|binding| {
         Value::list([
-            Value::String(binding.key),
+            Value::String(binding.key.into()),
             binding.value,
             if binding.after_prompt {
                 Value::T
@@ -2388,7 +2395,9 @@ pub(crate) fn keymap_bindings_value(bindings: Vec<RuntimeKeymapBinding>) -> Valu
             },
             binding
                 .parts
-                .map(|parts| Value::list(parts.into_iter().map(Value::String)))
+                .map(|parts| {
+                    Value::list(parts.into_iter().map(|value| Value::String(value.into())))
+                })
                 .unwrap_or(Value::Nil),
         ])
     }))
@@ -2614,7 +2623,7 @@ pub(crate) fn keymap_remove_binding(
 }
 
 pub(crate) fn approximate_key_parts(key: &str) -> Vec<String> {
-    textual_key_sequence_keymap_parts(&Value::String(key.to_string()))
+    textual_key_sequence_keymap_parts(&Value::String(key.to_string().into()))
         .unwrap_or_else(|_| key.split_whitespace().map(str::to_string).collect())
 }
 
@@ -3071,7 +3080,7 @@ pub(crate) fn unwrap_function_quote(value: &Value) -> Value {
 pub(crate) fn keymap_binding_display_name(value: &Value) -> String {
     match value {
         Value::Nil => "undefined".into(),
-        Value::Symbol(name) | Value::BuiltinFunc(name) => name.clone(),
+        Value::Symbol(name) | Value::BuiltinFunc(name) => name.to_string(),
         Value::Record(_) => "Prefix Command".into(),
         Value::Cons(_) => value
             .to_vec()
@@ -3178,7 +3187,7 @@ pub(crate) fn key_parts_to_sequence_value(parts: &[String]) -> Value {
             && named_kbd_key_code(part).is_none()
             && part.chars().count() > 1
         {
-            items.push(Value::Symbol(part.clone()));
+            items.push(Value::Symbol(part.clone().into()));
             continue;
         }
         items.extend(
@@ -3397,7 +3406,7 @@ pub(crate) fn active_minor_mode_bindings(
                 continue;
             }
             if let Some(map) = keymap_reference_map(interp, &map, env) {
-                bindings.push((mode_name, map));
+                bindings.push((mode_name.to_string(), map));
             }
         }
     }
@@ -3610,8 +3619,8 @@ pub(crate) fn maybe_prefer_modifier_notation(
         return parts.to_vec();
     };
     let Some(preferred) = (match preferred {
-        Value::Symbol(symbol) => Some(symbol),
-        Value::String(text) => Some(text),
+        Value::Symbol(symbol) => Some(symbol.to_string()),
+        Value::String(text) => Some(text.to_string()),
         Value::StringObject(state) => Some(state.borrow().text.clone()),
         _ => None,
     }) else {
@@ -3727,7 +3736,7 @@ pub(crate) fn remap_key_binding_text(command: &str) -> String {
 
 pub(crate) fn command_name_for_remapping(value: &Value) -> Option<String> {
     match value {
-        Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.clone()),
+        Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.to_string()),
         Value::Cons(_) => value
             .to_vec()
             .ok()

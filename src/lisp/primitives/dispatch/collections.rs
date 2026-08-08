@@ -474,20 +474,21 @@ define_dispatch!(
                     }
                     // Interpreted functions expose arglist, body, and captured
                     // environment through aref like GNU's closure objects.
-                    Value::Lambda(params, body, closure_env) => Ok(match idx {
+                    Value::Lambda(lambda) => Ok(match idx {
                         0 => Value::list(
-                            params
+                            lambda
+                                .params
                                 .iter()
-                                .map(|param| Value::Symbol(param.clone()))
+                                .map(|param| Value::Symbol(param.clone().into()))
                                 .collect::<Vec<_>>(),
                         ),
-                        1 => Value::list(body.as_ref().clone()),
+                        1 => Value::list(lambda.body.as_ref().clone()),
                         2 => {
                             let mut entries = Vec::new();
-                            for frame in closure_env.borrow().iter().rev() {
+                            for frame in lambda.env.borrow().iter().rev() {
                                 for (name, value) in frame.iter().rev() {
                                     entries.push(Value::cons(
-                                        Value::Symbol(name.clone()),
+                                        Value::Symbol(name.clone().into()),
                                         value.clone(),
                                     ));
                                 }
@@ -542,7 +543,7 @@ define_dispatch!(
                                 .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                         }
                         if idx == 0 {
-                            Ok(Value::Symbol(record.type_name.clone()))
+                            Ok(Value::Symbol(record.type_name.clone().into()))
                         } else {
                             record
                                 .slots
@@ -597,7 +598,7 @@ define_dispatch!(
                         // tag to the class symbol this way).
                         if idx == 0 {
                             let (type_name, tagged) = match &args[2] {
-                                Value::Symbol(symbol) => (symbol.clone(), false),
+                                Value::Symbol(symbol) => (symbol.to_string(), false),
                                 Value::Record(class_id) => {
                                     let Some(class_name) =
                                         interp.find_class_state_name_by_record_id(*class_id)
@@ -641,7 +642,7 @@ define_dispatch!(
                         Value::BuiltinFunc(fname) => {
                             super::call(interp, fname, std::slice::from_ref(item), env)?
                         }
-                        Value::Lambda(_, _, _) => {
+                        Value::Lambda(_) => {
                             call_function_value(interp, &pred, std::slice::from_ref(item), env)?
                         }
                         _ => return Err(LispError::TypeError("function".into(), pred.type_name())),
@@ -672,7 +673,7 @@ define_dispatch!(
                             })?;
                             text.push(ch);
                         }
-                        Ok(Value::String(text))
+                        Ok(Value::String(text.into()))
                     }
                     kind => Err(LispError::Signal(format!(
                         "seq-into unsupported target type: {kind}"
@@ -810,7 +811,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let subtype = match &args[0] {
                     Value::Nil => None,
-                    Value::Symbol(symbol) => Some(symbol.clone()),
+                    Value::Symbol(symbol) => Some(symbol.to_string()),
                     other => return Err(LispError::TypeError("symbol".into(), other.type_name())),
                 };
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
@@ -862,7 +863,7 @@ define_dispatch!(
                 Ok(interp
                     .char_table_subtype(id)
                     .flatten()
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .unwrap_or(Value::Nil))
             }
 
@@ -1125,7 +1126,12 @@ define_dispatch!(
                     }
                     None => interp.current_syntax_table_id(),
                 };
-                interp.char_table_set_range(table_id, start, end, Value::String(syntax.clone()))?;
+                interp.char_table_set_range(
+                    table_id,
+                    start,
+                    end,
+                    Value::String(syntax.clone().into()),
+                )?;
                 if table_id == interp.standard_syntax_table_id()
                     || table_id == interp.current_syntax_table_id()
                 {
@@ -1185,10 +1191,10 @@ define_dispatch!(
                 }
             }
 
-            "make-category-table" => {
-                Ok(interp
-                    .make_char_table(Some("category-table".into()), Value::String(String::new())))
-            }
+            "make-category-table" => Ok(interp.make_char_table(
+                Some("category-table".into()),
+                Value::String(String::new().into()),
+            )),
 
             "category-table-p" => {
                 need_args(name, args, 1)?;
@@ -1235,7 +1241,7 @@ define_dispatch!(
                 let table = category_table_arg(interp, args.get(1), false)?;
                 Ok(interp
                     .category_docstring(table, category)
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
 
@@ -1255,13 +1261,13 @@ define_dispatch!(
             "make-category-set" => {
                 need_args(name, args, 1)?;
                 let text = string_text(&args[0])?;
-                Ok(Value::String(normalize_category_set(&text)))
+                Ok(Value::String(normalize_category_set(&text).into()))
             }
 
             "category-set-mnemonics" => {
                 need_args(name, args, 1)?;
                 let text = string_text(&args[0])?;
-                Ok(Value::String(normalize_category_set(&text)))
+                Ok(Value::String(normalize_category_set(&text).into()))
             }
 
             "modify-category-entry" => {

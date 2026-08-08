@@ -38,7 +38,7 @@ pub(crate) fn secure_hash_source_bytes(
     }
 
     match source {
-        Value::Buffer(_, _) => {
+        Value::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
@@ -111,7 +111,7 @@ pub(crate) fn secure_hash_value(
     if binary.is_some_and(Value::is_truthy) {
         Ok(bytes_to_shared_unibyte_value(&digest))
     } else {
-        Ok(Value::String(digest_hex(&digest)))
+        Ok(Value::String(digest_hex(&digest).into()))
     }
 }
 
@@ -124,7 +124,7 @@ pub(crate) fn buffer_hash_value(
         _ => internal_text_bytes(&interp.buffer.buffer_string(), interp.buffer.is_multibyte())?,
     };
     let digest = secure_hash_digest("sha1", &bytes)?;
-    Ok(Value::String(digest_hex(&digest)))
+    Ok(Value::String(digest_hex(&digest).into()))
 }
 
 pub(crate) fn text_byte_len(ch: char, multibyte: bool) -> usize {
@@ -276,8 +276,8 @@ pub(crate) fn format_s_conversion(
         return Ok((text, props));
     }
     // `%s' uses princ semantics: a buffer prints as its name.
-    if let Value::Buffer(_, buffer_name) = arg {
-        let mut text = buffer_name.clone();
+    if let Value::Buffer(buffer) = arg {
+        let mut text = buffer.name.to_string();
         if let Some(precision) = precision {
             text = text.chars().take(precision).collect();
         }
@@ -329,7 +329,7 @@ pub(crate) fn integer_for_format(
 ) -> Result<(Option<i64>, BigInt), LispError> {
     match value {
         Value::Integer(n) => Ok((Some(*n), BigInt::from(*n))),
-        Value::BigInteger(n) => Ok((None, n.clone())),
+        Value::BigInteger(n) => Ok((None, n.clone().into())),
         Value::Float(f) => Ok((None, bigint_from_truncated_float(*f)?)),
         Value::Marker(_) => {
             let n = integer_like_i64(interp, value)?;

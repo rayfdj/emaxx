@@ -14,8 +14,8 @@ impl Interpreter {
         }
         let feature_value = self.eval(&items[1], env)?;
         let feature = match feature_value {
-            Value::Symbol(name) => name,
-            Value::String(name) => name,
+            Value::Symbol(name) => name.to_string(),
+            Value::String(name) => name.to_string(),
             Value::StringObject(state) => state.borrow().text.clone(),
             other => {
                 return Err(LispError::TypeError(
@@ -141,7 +141,7 @@ impl Interpreter {
         {
             self.mark_lexical_closure_env(&closure_env);
         }
-        let body = Value::Lambda(Vec::new().into(), body.into(), closure_env);
+        let body = Value::lambda(Vec::new().into(), body.into(), closure_env);
         // Mirror `ert-set-test': tests are also reachable through the
         // `ert--test' symbol property as an `ert-test' struct, which
         // `ert-get-test' and the struct accessors read.
@@ -157,15 +157,15 @@ impl Interpreter {
                 docstring,
                 body.clone(),
                 Value::Nil,
-                Value::Symbol(expected_result.clone()),
+                Value::Symbol(expected_result.clone().into()),
                 Value::list(
                     tags.iter()
-                        .map(|tag| Value::Symbol(tag.clone()))
+                        .map(|tag| Value::Symbol(tag.clone().into()))
                         .collect::<Vec<_>>(),
                 ),
                 self.current_load_file
                     .clone()
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil),
             ],
         );
@@ -454,7 +454,7 @@ impl Interpreter {
                 let _ = primitives::call(
                     self,
                     "kill-buffer",
-                    &[Value::Buffer(id, String::new())],
+                    &[Value::buffer(id, String::new())],
                     &mut env,
                 );
             }
@@ -529,8 +529,8 @@ impl Interpreter {
 
 fn selector_atom(value: &Value) -> String {
     match unquote(value) {
-        Value::Symbol(name) => name.clone(),
-        Value::String(value) => value.clone(),
+        Value::Symbol(name) => name.to_string(),
+        Value::String(value) => value.to_string(),
         other => other.to_string(),
     }
 }

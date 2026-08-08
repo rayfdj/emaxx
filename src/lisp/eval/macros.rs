@@ -175,7 +175,7 @@ impl Interpreter {
             }
         }
         lambda_body.extend(body);
-        Ok(Value::Lambda(
+        Ok(Value::lambda(
             params.into(),
             lambda_body.into(),
             closure_env,
@@ -319,7 +319,10 @@ impl Interpreter {
         let lambda_form = Value::list(
             std::iter::once(Value::Symbol("lambda".into()))
                 .chain(std::iter::once(Value::list(
-                    params.iter().cloned().map(Value::Symbol),
+                    params
+                        .iter()
+                        .cloned()
+                        .map(|value| Value::Symbol(value.into())),
                 )))
                 .chain(body.iter().cloned()),
         );
@@ -351,7 +354,7 @@ impl Interpreter {
             }
             self.set_function_binding(&name, Some(cell));
         }
-        Ok(Value::Symbol(name))
+        Ok(Value::Symbol(name.into()))
     }
 
     fn record_defmacro_declarations(&mut self, name: &str, declarations: &[Value]) {
@@ -391,7 +394,7 @@ impl Interpreter {
         }
         let Some(symbol_name) = (match &items[1] {
             Value::Nil => None,
-            Value::Symbol(name) => Some(name.clone()),
+            Value::Symbol(name) => Some(name.to_string()),
             other => {
                 return Err(LispError::TypeError("symbol".into(), other.type_name()));
             }
@@ -409,7 +412,7 @@ impl Interpreter {
         if self.lookup_function(&symbol_name, env).is_err() {
             self.set_function_binding(&symbol_name, Some(Value::BuiltinFunc("ignore".into())));
         }
-        Ok(Value::Symbol(symbol_name))
+        Ok(Value::Symbol(symbol_name.into()))
     }
 
     /// Implement GNU's ordinary `defalias' primitive after its arguments
@@ -467,7 +470,7 @@ impl Interpreter {
         if !docstring.is_nil() {
             self.put_symbol_property(&name, "function-documentation", docstring);
         }
-        Ok(Value::Symbol(name))
+        Ok(Value::Symbol(name.into()))
     }
 
     pub(super) fn try_macroexpand(
@@ -771,7 +774,7 @@ impl Interpreter {
         }
         let quoted_name = Value::list([
             Value::Symbol("quote".into()),
-            Value::Symbol(name.to_string()),
+            Value::Symbol(name.to_string().into()),
         ]);
         let warn = Value::list([
             Value::Symbol("macroexp-warn-and-return".into()),
@@ -1296,7 +1299,7 @@ impl Interpreter {
                     if let (Some(Value::Symbol(name)), Some(expansion)) =
                         (parts.first(), parts.get(1))
                     {
-                        substitutions.push((name.clone(), expansion.clone()));
+                        substitutions.push((name.to_string(), expansion.clone()));
                     }
                 }
                 let macro_environment = self
@@ -1364,7 +1367,7 @@ impl Interpreter {
                 // GNU cl-defstruct signals at expansion time when the name
                 // fails cl--struct-name-p (nil, keyword, or built-in type).
                 let struct_name = args.first().and_then(|spec| match spec {
-                    Value::Symbol(name) => Some(name.clone()),
+                    Value::Symbol(name) => Some(name.to_string()),
                     Value::Cons(_) => spec
                         .car()
                         .ok()
@@ -1379,7 +1382,7 @@ impl Interpreter {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("wrong-type-argument".into()),
                         Value::Symbol("cl-struct-name-p".into()),
-                        Value::Symbol(name),
+                        Value::Symbol(name.into()),
                         Value::Symbol("name".into()),
                     ])));
                 }
@@ -1403,7 +1406,7 @@ impl Interpreter {
                         Value::Symbol("defalias".into()),
                         Value::list([
                             Value::Symbol("quote".into()),
-                            Value::Symbol(mode.to_string()),
+                            Value::Symbol(mode.to_string().into()),
                         ]),
                         Value::list([
                             Value::Symbol("function".into()),
@@ -1414,7 +1417,7 @@ impl Interpreter {
                 for suffix in ["hook", "map", "syntax-table", "abbrev-table"] {
                     forms.push(Value::list([
                         Value::Symbol("defvar".into()),
-                        Value::Symbol(format!("{mode}-{suffix}")),
+                        Value::Symbol(format!("{mode}-{suffix}").into()),
                     ]));
                 }
                 forms.push(Value::list(
@@ -1485,7 +1488,7 @@ impl Interpreter {
                 Value::Nil,
             ];
             if let Some(mode) = mode {
-                call.push(quoted_literal(&Value::Symbol(mode)));
+                call.push(quoted_literal(&Value::Symbol(mode.into())));
             }
             let value = self.eval(&Value::list(call), env)?;
             return Ok(quoted_literal(&value));
@@ -1497,7 +1500,7 @@ impl Interpreter {
         ];
         if let Some(mode) = mode {
             call.push(Value::Nil);
-            call.push(quoted_literal(&Value::Symbol(mode)));
+            call.push(quoted_literal(&Value::Symbol(mode.into())));
         }
         Ok(Value::list(call))
     }
@@ -1665,7 +1668,7 @@ impl Interpreter {
         for name in names {
             let name = name.as_symbol()?.to_string();
             bindings.push(Value::list([
-                Value::Symbol(name.clone()),
+                Value::Symbol(name.clone().into()),
                 Value::list([
                     Value::Symbol("quote".into()),
                     self.make_generated_symbol(&name),
@@ -1696,11 +1699,11 @@ impl Interpreter {
                         return Err(LispError::ReadError("bad letrec binding".into()));
                     };
                     let name = name_value.as_symbol()?.to_string();
-                    lowered_bindings.push(Value::Symbol(name.clone()));
+                    lowered_bindings.push(Value::Symbol(name.clone().into()));
                     if parts.len() > 1 {
                         initializers.push(Value::list([
                             Value::Symbol("setq".into()),
-                            Value::Symbol(name),
+                            Value::Symbol(name.into()),
                             parts[1].clone(),
                         ]));
                     }
@@ -1740,7 +1743,7 @@ impl Interpreter {
                     let Some(param) = parts.first() else {
                         return Err(LispError::ReadError("bad named-let binding".into()));
                     };
-                    params.push(Value::Symbol(param.as_symbol()?.to_string()));
+                    params.push(Value::Symbol(param.as_symbol()?.to_string().into()));
                     inits.push(parts.get(1).cloned().unwrap_or(Value::Nil));
                 }
                 other => return Err(wrong_type_argument("listp", other)),
@@ -1760,8 +1763,8 @@ impl Interpreter {
                     vec![Value::Nil]
                 }),
         );
-        let binding = Value::list([Value::Symbol(name.clone()), lambda]);
-        let call = Value::list(std::iter::once(Value::Symbol(name)).chain(inits));
+        let binding = Value::list([Value::Symbol(name.clone().into()), lambda]);
+        let call = Value::list(std::iter::once(Value::Symbol(name.into())).chain(inits));
 
         Ok(Value::list([
             Value::Symbol("letrec".into()),
@@ -2035,11 +2038,9 @@ impl Interpreter {
     }
 
     pub(super) fn sf_rx(&mut self, items: &[Value], env: &Env) -> Result<Value, LispError> {
-        Ok(Value::String(rx::compile_rx_sequence(
-            self,
-            env,
-            &items[1..],
-        )?))
+        Ok(Value::String(
+            rx::compile_rx_sequence(self, env, &items[1..])?.into(),
+        ))
     }
 
     pub(super) fn sf_rx_define(&mut self, items: &[Value]) -> Result<Value, LispError> {
@@ -2060,7 +2061,7 @@ impl Interpreter {
             }
         };
         self.put_symbol_property(&name, "rx-definition", binding);
-        Ok(Value::Symbol(name))
+        Ok(Value::Symbol(name.into()))
     }
 
     pub(super) fn sf_rx_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -2116,7 +2117,7 @@ fn validate_oclosure_lambda_slots(args: &[Value]) -> Result<(), LispError> {
     let mut seen: Vec<String> = Vec::new();
     for binding in spec_items.get(1..).unwrap_or(&[]) {
         let slot = match binding {
-            Value::Symbol(name) => Some(name.clone()),
+            Value::Symbol(name) => Some(name.to_string()),
             other => other.to_vec().ok().and_then(|parts| {
                 parts
                     .first()
@@ -2161,7 +2162,7 @@ impl Interpreter {
             .collect();
         for slot in args.get(1..).unwrap_or(&[]) {
             let slot_name = match slot {
-                Value::Symbol(name) => Some(name.clone()),
+                Value::Symbol(name) => Some(name.to_string()),
                 Value::Cons(_) => slot.to_vec().ok().and_then(|parts| {
                     parts
                         .first()
@@ -2203,7 +2204,7 @@ impl Interpreter {
     // native definer that follows them).
     pub(super) fn cl_defstruct_expansion_with_stubs(args: &[Value]) -> Value {
         let (name, options) = match args.first() {
-            Some(Value::Symbol(name)) => (name.clone(), Vec::new()),
+            Some(Value::Symbol(name)) => (name.to_string(), Vec::new()),
             Some(spec @ Value::Cons(_)) => {
                 let parts = spec.to_vec().unwrap_or_default();
                 let name = parts
@@ -2224,25 +2225,25 @@ impl Interpreter {
             match parts.first().and_then(|key| key.as_symbol().ok()) {
                 Some(":conc-name") => {
                     conc_name = match parts.get(1) {
-                        Some(Value::Symbol(prefix)) => prefix.clone(),
-                        Some(Value::String(prefix)) => prefix.clone(),
+                        Some(Value::Symbol(prefix)) => prefix.to_string(),
+                        Some(Value::String(prefix)) => prefix.to_string(),
                         _ => String::new(),
                     }
                 }
                 Some(":predicate") => {
                     predicate = parts.get(1).and_then(|v| match v {
-                        Value::Symbol(name) => Some(name.clone()),
+                        Value::Symbol(name) => Some(name.to_string()),
                         _ => None,
                     })
                 }
                 Some(":copier") => {
                     copier = parts.get(1).and_then(|v| match v {
-                        Value::Symbol(name) => Some(name.clone()),
+                        Value::Symbol(name) => Some(name.to_string()),
                         _ => None,
                     })
                 }
                 Some(":constructor") => match parts.get(1) {
-                    Some(Value::Symbol(ctor)) => constructors.push(ctor.clone()),
+                    Some(Value::Symbol(ctor)) => constructors.push(ctor.to_string()),
                     Some(Value::Nil) | None => suppress_default_constructor = true,
                     _ => {}
                 },
@@ -2257,7 +2258,7 @@ impl Interpreter {
         generated.extend(copier);
         for slot in args.iter().skip(1) {
             let slot_name = match slot {
-                Value::Symbol(slot_name) => Some(slot_name.clone()),
+                Value::Symbol(slot_name) => Some(slot_name.to_string()),
                 Value::Cons(_) => slot
                     .car()
                     .ok()
@@ -2272,7 +2273,10 @@ impl Interpreter {
         for function in generated {
             forms.push(Value::list([
                 Value::Symbol("defalias".into()),
-                Value::list([Value::Symbol("quote".into()), Value::Symbol(function)]),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol(function.into()),
+                ]),
                 Value::list([
                     Value::Symbol("function".into()),
                     Value::Symbol("ignore".into()),
@@ -2341,7 +2345,7 @@ fn substitute_symbol_macros(form: &Value, substitutions: &[(String, Value)]) -> 
                     for binding in items[1].to_vec().unwrap_or_default() {
                         match &binding {
                             Value::Symbol(name) => {
-                                bound.push(name.clone());
+                                bound.push(name.to_string());
                                 new_bindings.push(binding.clone());
                             }
                             Value::Cons(_) => {

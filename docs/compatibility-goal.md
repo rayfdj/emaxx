@@ -34,6 +34,30 @@ the compact-value interpreter work.
 
 ## Current State
 
+- The 2026-08-09 compact shared-value checkpoint keeps the ordered frontier at
+  4,582/7,080 while reducing `Value` from 40 to 16 bytes on the measured
+  64-bit target.  Text, ordinary interned symbol names, immutable big
+  integers, lambdas, and buffer descriptors now share their backing
+  allocations; uninterned names retain their distinct identity and
+  reclamation behavior.  Focused tests pin object size, clone sharing,
+  interning, reclamation, and cons identity.  The paired post-bootstrap
+  source benchmark in `target/perf/run-1786218758` improves list walking by
+  13.76%, cons allocation by 11.68%, and interpreted calls by 11.38% against
+  the tagged baseline, with a corroborating repeat in `run-1786218701`.
+  Electric remains exact at 874/874 in
+  `target/compat/run-1786218571954271000-9089` (0.809 seconds GNU, 12.375
+  seconds Emaxx).  The full replay through C# Mode matched 350/351 files in
+  `target/compat/run-1786218796753084000-9393`; its sole mismatch is the
+  pre-existing TRAMP load timeout after 1,800 seconds, so there is no new
+  mismatch but the prefix is not fully recertified.  The exhaustive Rust run
+  passed 1,837/1,845 initially; the eight exceptions resolved to restricted
+  localhost access and known process-output scheduling flakes in exact
+  replay.  Both GnuTLS cases now pass with one shared, diagnostic 30-second
+  fixture-start deadline, and the two later test-only sharing invariants pass
+  in the focused 11/11 type suite.  Publication tests, generated autoloads,
+  formatting, diff check, all-target/all-feature compilation, and strict
+  Clippy pass.  Native remains 1,420/1,420.  Continue with measured
+  source-dispatch/list-materialization work; do not start selector 4,583.
 - The 2026-08-08 pre-compact-value checkpoint keeps the ordered frontier at
   4,582/7,080 (2,498 remaining) and freezes the accumulated compiled-library,
   VM cleanup, runtime-index, loading, and performance-harness work before the

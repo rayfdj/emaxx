@@ -401,7 +401,9 @@ pub(crate) fn casify_value(
         ) as i64));
     }
     let input = string_text(value)?;
-    Ok(Value::String(casify_string(interp, &input, action, env)?))
+    Ok(Value::String(
+        casify_string(interp, &input, action, env)?.into(),
+    ))
 }
 
 pub(crate) fn replace_buffer_region_with_text(

@@ -541,7 +541,7 @@ fn expand_file_name_joins_invocation_components() {
     let expected = exe.display().to_string();
     assert_eq!(
         eval_str("(expand-file-name invocation-name invocation-directory)"),
-        Value::String(expected)
+        Value::String(expected.into())
     );
 }
 
@@ -557,7 +557,7 @@ fn expand_file_name_uses_dynamic_default_directory() {
         "(let ((default-directory {:?})) (expand-file-name \"child\"))",
         base
     );
-    assert_eq!(eval_str(&expr), Value::String(expected));
+    assert_eq!(eval_str(&expr), Value::String(expected.into()));
 }
 
 #[test]
@@ -1068,7 +1068,7 @@ fn byte_compile_file_logs_and_suppresses_structural_warnings() {
         result,
         Value::list([
             Value::Integer(9),
-            Value::String(String::new()),
+            Value::String(String::new().into()),
             Value::T,
             Value::T
         ])
@@ -1759,9 +1759,9 @@ fn byte_compile_warns_for_unused_args_and_ignored_assq_values() {
         ),
         Value::list([
             Value::T,
-            Value::String(String::new()),
+            Value::String(String::new().into()),
             Value::T,
-            Value::String(String::new())
+            Value::String(String::new().into())
         ])
     );
 }
@@ -1821,7 +1821,7 @@ fn byte_compile_warns_for_dodgy_eq_and_eql_literal_args() {
             Value::T,
             Value::T,
             Value::T,
-            Value::String(String::new())
+            Value::String(String::new().into())
         ])
     );
 }
@@ -1880,7 +1880,7 @@ fn byte_compile_warns_for_dodgy_identity_member_literal_args() {
             Value::T,
             Value::T,
             Value::T,
-            Value::String(String::new())
+            Value::String(String::new().into())
         ])
     );
 }
@@ -2759,8 +2759,8 @@ fn emacs_version_function_mentions_version_and_system_configuration() {
     let value = eval_str_with(&mut interp, "(emacs-version)");
     match (version, configuration, value) {
         (Value::String(version), Value::String(configuration), Value::String(description)) => {
-            assert!(description.contains(&version));
-            assert!(description.contains(&configuration));
+            assert!(description.contains(version.as_str()));
+            assert!(description.contains(configuration.as_str()));
         }
         other => panic!("expected strings, got {other:?}"),
     }
@@ -2839,7 +2839,7 @@ fn locate_library_searches_configured_load_path() {
     interp.set_load_path(vec![temp.clone()]);
     assert_eq!(
         eval_str_with(&mut interp, "(locate-library \"sample-lib\")"),
-        Value::String(library.display().to_string())
+        Value::String(library.display().to_string().into())
     );
 
     std::fs::remove_file(&library).unwrap();
@@ -3876,7 +3876,7 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
     );
     interp.set_global_binding(
         "emaxx--find-file-noselect-probe",
-        Value::String(noselect_file.display().to_string()),
+        Value::String(noselect_file.display().to_string().into()),
     );
     assert_eq!(
         eval_str_with(
@@ -4358,7 +4358,7 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
     );
     assert!(matches!(
         interp.lookup_function("eval-defun", &env).unwrap(),
-        Value::Lambda(_, _, _)
+        Value::Lambda(_)
     ));
     assert_eq!(
         interp.lookup_function("fill-region", &env).unwrap(),
@@ -6015,7 +6015,7 @@ fn null_device_matches_unix_batch_default() {
 fn exec_suffixes_matches_unix_batch_default() {
     assert_eq!(
         eval_str("exec-suffixes"),
-        Value::list([Value::String(String::new())])
+        Value::list([Value::String(String::new().into())])
     );
 }
 
@@ -6044,7 +6044,7 @@ fn locate_file_searches_directories_and_suffixes() {
         "(locate-file \"sample\" '(\"{dir_text}\") '(\".el\" \".txt\")
                           (lambda (path) (string-suffix-p \".txt\" path)))"
     ));
-    assert_eq!(found, Value::String(accepted.display().to_string()));
+    assert_eq!(found, Value::String(accepted.display().to_string().into()));
     std::fs::remove_file(rejected).unwrap();
     std::fs::remove_file(accepted).unwrap();
     std::fs::remove_dir(dir).unwrap();
@@ -6074,13 +6074,13 @@ fn locate_file_access_predicates_cover_public_and_internal_paths() {
         eval_str(&format!(
             "(locate-file \"sample-tool\" '(\"{dir_text}\") '(\"\") 'executable)"
         )),
-        Value::String(script.display().to_string())
+        Value::String(script.display().to_string().into())
     );
     assert_eq!(
         eval_str(&format!(
             "(locate-file-internal \"sample-tool\" '(\"{dir_text}\") '(\"\") 1)"
         )),
-        Value::String(script.display().to_string())
+        Value::String(script.display().to_string().into())
     );
 
     std::fs::remove_file(script).unwrap();
@@ -6106,7 +6106,7 @@ fn executable_find_observes_dynamic_exec_path_and_empty_path_entries() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
     let directory = primitives::path_to_directory_string(&dir);
-    let expected = Value::String(script.display().to_string());
+    let expected = Value::String(script.display().to_string().into());
 
     assert_eq!(
         eval_str_with_upstream_batch(&format!(

@@ -794,7 +794,7 @@ pub(crate) fn set_abbrev_table_property(
         index += 2;
     }
     if !updated {
-        items.push(Value::Symbol(key));
+        items.push(Value::Symbol(key.into()));
         items.push(value);
     }
     set_abbrev_table_props_value(interp, table, Value::list(items))
@@ -857,12 +857,10 @@ pub(crate) fn set_abbrev_table_entries(
             .slots
             .resize(ABBREV_TABLE_ENTRIES_SLOT + 1, Value::Nil);
     }
-    record.slots[ABBREV_TABLE_ENTRIES_SLOT] = Value::list(
-        entries
-            .iter()
-            .cloned()
-            .map(|(name, expansion, props)| Value::list([Value::String(name), expansion, props])),
-    );
+    record.slots[ABBREV_TABLE_ENTRIES_SLOT] =
+        Value::list(entries.iter().cloned().map(|(name, expansion, props)| {
+            Value::list([Value::String(name.into()), expansion, props])
+        }));
     for (entry_name, expansion, props) in entries {
         set_abbrev_symbol_state(interp, id, &entry_name, expansion, props)?;
     }
@@ -1085,7 +1083,7 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
             .iter()
             .any(|value| value.as_symbol().ok() == Some(symbol))
         {
-            items.push(Value::Symbol(symbol.to_string()));
+            items.push(Value::Symbol(symbol.to_string().into()));
         }
     }
     interp.set_global_binding("abbrev-table-name-list", Value::list(items));
@@ -1103,7 +1101,7 @@ pub(crate) fn register_abbrev_table_symbol(interp: &mut Interpreter, symbol: &st
         .iter()
         .any(|value| value.as_symbol().ok() == Some(symbol))
     {
-        items.insert(0, Value::Symbol(symbol.to_string()));
+        items.insert(0, Value::Symbol(symbol.to_string().into()));
         interp.set_global_binding("abbrev-table-name-list", Value::list(items));
     }
 }
@@ -1409,7 +1407,7 @@ pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'stat
             }
         }
         Value::BigInteger(number) => {
-            if number >= &BigInt::from(min_fixnum) && number <= &BigInt::from(max_fixnum) {
+            if **number >= BigInt::from(min_fixnum) && **number <= BigInt::from(max_fixnum) {
                 "fixnum"
             } else {
                 "bignum"
@@ -1422,8 +1420,8 @@ pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'stat
         Value::Cons(_) => "cons",
         Value::BuiltinFunc(name) if is_special_form_name(name) => "special-form",
         Value::BuiltinFunc(_) => "primitive-function",
-        Value::Lambda(_, _, _) => "interpreted-function",
-        Value::Buffer(_, _) => "buffer",
+        Value::Lambda(_) => "interpreted-function",
+        Value::Buffer(_) => "buffer",
         Value::Marker(_) => "marker",
         Value::Overlay(_) => "overlay",
         Value::CharTable(_) => "char-table",

@@ -641,7 +641,7 @@ fn unibyte_bytes(text: &str) -> Result<Vec<u8>, ByteCodeError> {
 
 fn string_text(value: &Value) -> Option<String> {
     match value {
-        Value::String(text) => Some(text.clone()),
+        Value::String(text) => Some(text.to_string()),
         Value::StringObject(state) => Some(state.borrow().text.clone()),
         _ => None,
     }
@@ -946,7 +946,7 @@ pub(crate) mod tests {
             if let Some(slots) = slot_lists.first()
                 && let Ok(Some(object)) = ByteCodeObject::from_slots(slots)
             {
-                objects.insert(name.clone(), object);
+                objects.insert(name.to_string(), object);
             }
         }
         objects
@@ -1037,7 +1037,7 @@ pub(crate) mod tests {
     fn from_slots_ignores_emaxx_facade_objects() {
         // Emaxx facade: slot 0 is an executable lambda, not an argspec.
         let slots = [
-            Value::Lambda(
+            Value::lambda(
                 Vec::new().into(),
                 std::rc::Rc::new(Vec::new()),
                 std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),

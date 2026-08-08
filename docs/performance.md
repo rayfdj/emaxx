@@ -194,6 +194,36 @@ including shared/interned symbol identities, one-object cons cells, and source
 dispatch that does not repeatedly materialize owned syntax vectors.  Treat
 lazy backtrace materialization as a related follow-up, not as the main fix.
 
+### Post-Compact-Value Result
+
+The retained compact shared-value slice is recorded in
+`target/perf/run-1786218758/interpreter/source-eval-suite.perf/comparison.json`:
+
+| Case | GNU Emacs | `emaxx` | Ratio | Emaxx improvement |
+|---|---:|---:|---:|---:|
+| list walk | 0.013797 s | 0.114756 s | 8.317x | 13.76% |
+| cons allocation | 0.001308 s | 0.018681 s | 14.282x | 11.68% |
+| interpreted function calls | 0.001322 s | 0.021070 s | 15.938x | 11.38% |
+
+The improvement column compares Emaxx with the pre-migration Emaxx medians
+above, not with GNU.  The independent repeat in `run-1786218701` reports
+0.115651, 0.018858, and 0.021062 seconds respectively, confirming that the
+gain is well outside the roughly one-percent machine-noise concern.
+
+The change reduces `Value` from 40 bytes to 16 bytes on the measured target
+and makes text, symbol names, big integers, lambdas, and buffer descriptors
+cheap to clone while retaining uninterned-symbol and mutable-object identity
+contracts.  It does not yet remove source evaluation's repeated list
+flattening and owned dispatch materialization, so the remaining 8-16x gap is
+still thematic work rather than an inherent Rust-versus-C cost.
+
+Electric's focused compatibility run stayed exact at 874/874 and measured
+0.809 seconds for GNU versus 12.375 seconds for Emaxx; its ordered-prefix run
+measured 0.745 versus 11.784 seconds.  The pre-migration focused Emaxx result
+was 13.475 seconds.  These unsegmented end-to-end measurements include the
+startup/loading cost and therefore are supporting evidence, not direct input
+to the post-bootstrap 2x gate.
+
 Before a representation change is retained it must pass all of these gates:
 
 - the paired source-interpreter suite with semantic checks and interleaved

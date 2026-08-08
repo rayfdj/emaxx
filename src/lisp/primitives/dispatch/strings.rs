@@ -45,7 +45,9 @@ define_dispatch!(
             }
             "make-temp-name" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(make_temp_name(&string_text(&args[0])?)))
+                Ok(Value::String(
+                    make_temp_name(&string_text(&args[0])?).into(),
+                ))
             }
             "make-vector" => {
                 need_args(name, args, 2)?;
@@ -218,7 +220,7 @@ define_dispatch!(
                     }
                 }
                 if all_plain_scanned && !multibyte {
-                    return Ok(Value::String(result));
+                    return Ok(Value::String(result.into()));
                 }
                 Ok(string_like_value_with_multibyte(
                     result,
@@ -309,24 +311,24 @@ define_dispatch!(
                 if coding_system {
                     let bytes = text.as_bytes();
                     if bytes.len() <= limit {
-                        return Ok(Value::String(text));
+                        return Ok(Value::String(text.into()));
                     }
                     if end {
                         let mut start = bytes.len().saturating_sub(limit);
                         while start < bytes.len() && !text.is_char_boundary(start) {
                             start += 1;
                         }
-                        return Ok(Value::String(text[start..].to_string()));
+                        return Ok(Value::String(text[start..].to_string().into()));
                     }
                     let mut end_byte = limit.min(bytes.len());
                     while end_byte > 0 && !text.is_char_boundary(end_byte) {
                         end_byte -= 1;
                     }
-                    return Ok(Value::String(text[..end_byte].to_string()));
+                    return Ok(Value::String(text[..end_byte].to_string().into()));
                 }
                 let char_len = text.chars().count();
                 if char_len <= limit {
-                    return Ok(Value::String(text));
+                    return Ok(Value::String(text.into()));
                 }
                 let limited = if end {
                     text.chars()
@@ -335,7 +337,7 @@ define_dispatch!(
                 } else {
                     text.chars().take(limit).collect::<String>()
                 };
-                Ok(Value::String(limited))
+                Ok(Value::String(limited.into()))
             }
             "split-string" => {
                 if args.is_empty() || args.len() > 4 {
@@ -494,7 +496,7 @@ define_dispatch!(
                         result_width += pad_width;
                     }
                 }
-                Ok(Value::String(result))
+                Ok(Value::String(result.into()))
             }
             "string" => {
                 let mut result = String::new();
@@ -606,7 +608,7 @@ define_dispatch!(
                     if multibyte {
                         make_shared_string_value_with_multibyte(text, Vec::new(), true)
                     } else {
-                        Value::String(text)
+                        Value::String(text.into())
                     }
                 } else {
                     make_shared_string_value_with_multibyte(text, string.props, multibyte)
@@ -682,7 +684,7 @@ define_dispatch!(
             }
             "number-to-string" | "int-to-string" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(number_to_string(&args[0])?))
+                Ok(Value::String(number_to_string(&args[0])?.into()))
             }
             "format" | "format-message" => {
                 if args.is_empty() {
@@ -964,7 +966,7 @@ define_dispatch!(
                     address.push(':');
                     address.push_str(&port.as_integer()?.to_string());
                 }
-                Ok(Value::String(address))
+                Ok(Value::String(address.into()))
             }
             "internal--format-docstring-line" => {
                 if args.is_empty() {
@@ -983,7 +985,9 @@ define_dispatch!(
                 let singular = string_text(&args[0])?;
                 let plural = string_text(&args[1])?;
                 let count = args[2].as_integer()?;
-                Ok(Value::String(if count == 1 { singular } else { plural }))
+                Ok(Value::String(
+                    (if count == 1 { singular } else { plural }).into(),
+                ))
             }
             #[dispatch(builtin_override)]
             "format-spec" => {
@@ -1066,7 +1070,7 @@ define_dispatch!(
                             .skip(split_start)
                             .take(result.chars().count() - split_start)
                             .collect::<String>();
-                        split_result.push(Value::String(part));
+                        split_result.push(Value::String(part.into()));
                     }
 
                     let replacement =
@@ -1080,13 +1084,13 @@ define_dispatch!(
                             .extend(sources.iter().map(|source| (instance, *source, spec_start)));
                         result.push_str(&formatted);
                         if split {
-                            split_result.push(Value::String(formatted));
+                            split_result.push(Value::String(formatted.into()));
                             split_start = result.chars().count();
                         }
                     } else if matches!(ignore_missing, Value::Symbol(symbol) if symbol == "delete")
                     {
                         if split {
-                            split_result.push(Value::String(String::new()));
+                            split_result.push(Value::String(String::new().into()));
                             split_start = result.chars().count();
                         }
                     } else if ignore_missing.is_nil() {
@@ -1099,7 +1103,7 @@ define_dispatch!(
                         provenance.extend((spec_start..parsed.end).map(|index| (0, None, index)));
                         result.push_str(&original);
                         if split {
-                            split_result.push(Value::String(original));
+                            split_result.push(Value::String(original.into()));
                             split_start = result.chars().count();
                         }
                     }
@@ -1118,7 +1122,7 @@ define_dispatch!(
                     Ok(Value::list(split_result))
                 } else if format_props.is_empty() && rep_props.iter().all(|props| props.is_empty())
                 {
-                    Ok(Value::String(result))
+                    Ok(Value::String(result.into()))
                 } else {
                     // Merge runs by SOURCE INTERVAL IDENTITY, not value
                     // equality: GNU's buffer-based implementation carries the
@@ -1209,7 +1213,7 @@ define_dispatch!(
                         }
                     }
                     if spans.is_empty() {
-                        Ok(Value::String(result))
+                        Ok(Value::String(result.into()))
                     } else {
                         Ok(Value::StringObject(std::rc::Rc::new(
                             std::cell::RefCell::new(crate::lisp::types::SharedStringState {
@@ -1260,7 +1264,7 @@ define_dispatch!(
                 let from = string_text(&args[0])?;
                 let to = string_text(&args[1])?;
                 let input = string_text(&args[2])?;
-                Ok(Value::String(input.replace(&from, &to)))
+                Ok(Value::String(input.replace(&from, &to).into()))
             }
             "subst-char-in-string" => {
                 need_arg_range(name, args, 3, 4)?;
@@ -1364,7 +1368,7 @@ define_dispatch!(
                         let value = call_function_value(
                             interp,
                             &args[1],
-                            &[Value::String(matched_text)],
+                            &[Value::String(matched_text.into())],
                             env,
                         );
                         interp.last_match_data = saved_match_data.clone();
@@ -1402,7 +1406,7 @@ define_dispatch!(
                 ));
                 interp.last_match_data = saved_match_data;
                 interp.last_match_data_buffer_id = saved_match_data_buffer_id;
-                Ok(Value::String(result))
+                Ok(Value::String(result.into()))
             }
             "edmacro-parse-keys" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -1433,7 +1437,7 @@ define_dispatch!(
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ");
-                Ok(Value::String(cleaned))
+                Ok(Value::String(cleaned.into()))
             }
             "url-hexify-string" => {
                 if args.is_empty() || args.len() > 2 {
@@ -1459,11 +1463,13 @@ define_dispatch!(
                         }
                     }
                 }
-                Ok(Value::String(output))
+                Ok(Value::String(output.into()))
             }
             "url-encode-url" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(url_encode_url(&string_text(&args[0])?)))
+                Ok(Value::String(
+                    url_encode_url(&string_text(&args[0])?).into(),
+                ))
             }
             "url-insert-entities-in-string" => {
                 need_args(name, args, 1)?;
@@ -1478,7 +1484,7 @@ define_dispatch!(
                         _ => output.push(ch),
                     }
                 }
-                Ok(Value::String(output))
+                Ok(Value::String(output.into()))
             }
             "base64-encode-region" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -1584,7 +1590,7 @@ define_dispatch!(
                 }
                 let c = char::from_u32(n as u32)
                     .ok_or_else(|| LispError::Signal(format!("Invalid byte: {}", n)))?;
-                Ok(Value::String(c.to_string()))
+                Ok(Value::String(c.to_string().into()))
             }
             "make-char" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -1825,8 +1831,8 @@ fn registered_unicode_property(
         return Ok(Some(registered));
     };
     crate::lisp::load_file_strict(interp, &path)?;
-    registered =
-        find_registered_unicode_property(interp, property, env).unwrap_or(Value::String(filename));
+    registered = find_registered_unicode_property(interp, property, env)
+        .unwrap_or(Value::String(filename.into()));
     Ok(Some(registered))
 }
 
@@ -1908,7 +1914,7 @@ fn decode_unicode_property_value(
 fn native_char_code_property(ch: u32, property: &str) -> Value {
     match property {
         "name" => unicode_character_name(ch)
-            .map(Value::String)
+            .map(|value| Value::String(value.into()))
             .unwrap_or(Value::Nil),
         "general-category" => unicode_general_category_symbol(ch)
             .map(|symbol| Value::Symbol(symbol.into()))

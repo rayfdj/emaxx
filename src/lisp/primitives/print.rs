@@ -158,18 +158,18 @@ pub(crate) fn record_prin1_fields(
                 && slot_names.len() == record.slots.len()
             {
                 let mut fields = Vec::with_capacity(1 + record.slots.len() * 2);
-                fields.push(Value::Symbol(record.type_name.clone()));
+                fields.push(Value::Symbol(record.type_name.clone().into()));
                 for (slot_name, slot_value) in slot_names.iter().zip(record.slots.iter()) {
                     let Ok(slot_name) = slot_name.as_symbol() else {
                         return None;
                     };
-                    fields.push(Value::Symbol(format!(":{slot_name}")));
+                    fields.push(Value::Symbol(format!(":{slot_name}").into()));
                     fields.push(slot_value.clone());
                 }
                 return Some(fields);
             }
             Some(
-                std::iter::once(Value::Symbol(record.type_name.clone()))
+                std::iter::once(Value::Symbol(record.type_name.clone().into()))
                     .chain(record.slots.iter().cloned())
                     .collect(),
             )
@@ -190,7 +190,7 @@ pub(crate) fn print_ref_key(
         Value::Symbol(symbol)
             if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) =>
         {
-            Some(PrintRefKey::Symbol(symbol.clone()))
+            Some(PrintRefKey::Symbol(symbol.to_string()))
         }
         Value::Record(id) if record_prin1_fields(interp, *id, PrintDialect::Emacs).is_some() => {
             Some(PrintRefKey::Record(*id))
@@ -213,22 +213,22 @@ pub(crate) fn print_number_table_entry(key: &PrintRefKey, label: usize) -> Value
     match key {
         PrintRefKey::Cons(id) => Value::list([
             Value::Symbol("cons".into()),
-            Value::String(id.to_string()),
+            Value::String(id.to_string().into()),
             label,
         ]),
         PrintRefKey::Record(id) => Value::list([
             Value::Symbol("record".into()),
-            Value::String(id.to_string()),
+            Value::String(id.to_string().into()),
             label,
         ]),
         PrintRefKey::StringObject(id) => Value::list([
             Value::Symbol("string-object".into()),
-            Value::String(id.to_string()),
+            Value::String(id.to_string().into()),
             label,
         ]),
         PrintRefKey::Symbol(symbol) => Value::list([
             Value::Symbol("symbol".into()),
-            Value::String(symbol.clone()),
+            Value::String(symbol.clone().into()),
             label,
         ]),
     }
@@ -1215,7 +1215,10 @@ pub(crate) fn render_prin1_body(
             Ok(format!("[{}]", rendered_items.join(" ")))
         }
         Value::Cons(_) => render_prin1_list(interp, value, env, context, depth),
-        Value::Lambda(params, body, closure_env) => {
+        Value::Lambda(lambda_value) => {
+            let params = &lambda_value.params;
+            let body = &lambda_value.body;
+            let closure_env = &lambda_value.env;
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
@@ -1246,7 +1249,12 @@ pub(crate) fn render_prin1_body(
             if captured.is_empty() || !prints_closure_env {
                 return Ok(value.to_string());
             }
-            let params_value = Value::list(params.iter().cloned().map(Value::Symbol));
+            let params_value = Value::list(
+                params
+                    .iter()
+                    .cloned()
+                    .map(|value| Value::Symbol(value.into())),
+            );
             let env_value = closure_env_print_value(&captured);
             Ok(format!(
                 "#<closure {} {}>",
@@ -1255,7 +1263,7 @@ pub(crate) fn render_prin1_body(
             ))
         }
         Value::BuiltinFunc(_)
-        | Value::Buffer(_, _)
+        | Value::Buffer(_)
         | Value::Marker(_)
         | Value::Overlay(_)
         | Value::CharTable(_) => {
@@ -1410,9 +1418,9 @@ pub(crate) fn render_prin1_body(
 fn closure_env_print_value(env: &Env) -> Value {
     Value::list(env.iter().map(|frame| {
         Value::list(
-            frame
-                .iter()
-                .map(|(name, value)| Value::cons(Value::Symbol(name.clone()), value.clone())),
+            frame.iter().map(|(name, value)| {
+                Value::cons(Value::Symbol(name.clone().into()), value.clone())
+            }),
         )
     }))
 }
@@ -1474,13 +1482,13 @@ pub(crate) fn render_cl_prin1_value(
     let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
     finish_print_number_table(env, &context);
     let Some(expansion) = context.first_ellipsis_expansion else {
-        return Ok(Value::String(rendered));
+        return Ok(Value::String(rendered.into()));
     };
     let Some(start) = rendered
         .find("...")
         .map(|byte| rendered[..byte].chars().count())
     else {
-        return Ok(Value::String(rendered));
+        return Ok(Value::String(rendered.into()));
     };
     Ok(string_like_value(
         rendered,
@@ -1491,7 +1499,7 @@ pub(crate) fn render_cl_prin1_value(
                 "cl-print-ellipsis".into(),
                 Value::list([
                     Value::Symbol("emaxx-cl-print-ellipsis".into()),
-                    Value::String(expansion),
+                    Value::String(expansion.into()),
                 ]),
             )],
         }],
@@ -1523,7 +1531,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     match source {
-        Value::Buffer(_, _) => {
+        Value::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
             let (start, end, text) = {
                 let buffer = interp
@@ -1571,7 +1579,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
             interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
             Ok(value)
         }
-        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) => {
+        Value::BuiltinFunc(_) | Value::Lambda(_) => {
             let value = read_from_callable_source(interp, source, env)?;
             Ok(position_symbols_in_value(
                 interp,
@@ -1880,7 +1888,7 @@ fn char_table_from_literal_fields(
     let subtype = match &fields[2] {
         Value::Nil => None,
         Value::T => Some("t".into()),
-        Value::Symbol(symbol) => Some(symbol.clone()),
+        Value::Symbol(symbol) => Some(symbol.to_string()),
         _ => None,
     };
     let uncompress_property_values = subtype.as_deref() == Some("char-code-property-table");
@@ -2164,8 +2172,8 @@ fn char_table_values_share_identity(left: &Value, right: &Value) -> bool {
         (Value::Integer(left), Value::Integer(right)) => left == right,
         (Value::Symbol(left), Value::Symbol(right)) => left == right,
         (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
-        (Value::Buffer(left, _), Value::Buffer(right, _))
-        | (Value::Marker(left), Value::Marker(right))
+        (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
+        (Value::Marker(left), Value::Marker(right))
         | (Value::Overlay(left), Value::Overlay(right))
         | (Value::CharTable(left), Value::CharTable(right))
         | (Value::Record(left), Value::Record(right))
@@ -2294,7 +2302,7 @@ fn read_from_lisp_source_raw(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     match source {
-        Value::Buffer(_, _) => {
+        Value::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
             let (start, end, text) = {
                 let buffer = interp
@@ -2342,9 +2350,7 @@ fn read_from_lisp_source_raw(
             interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
             Ok(value)
         }
-        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) => {
-            read_from_callable_source(interp, source, env)
-        }
+        Value::BuiltinFunc(_) | Value::Lambda(_) => read_from_callable_source(interp, source, env),
         Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
             read_from_callable_source(interp, source, env)
         }
@@ -2362,7 +2368,7 @@ pub(crate) fn md5_source_text(
     end: Option<&Value>,
 ) -> Result<String, LispError> {
     match source {
-        Value::Buffer(_, _) => {
+        Value::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
             let buffer = interp
                 .get_buffer_by_id(buffer_id)

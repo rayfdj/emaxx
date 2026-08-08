@@ -385,7 +385,7 @@ define_dispatch!(
                     }
                     _ => text.into_bytes(),
                 };
-                Ok(Value::String(format!("{:x}", md5::compute(bytes))))
+                Ok(Value::String(format!("{:x}", md5::compute(bytes)).into()))
             }
             "sha1" => {
                 need_arg_range(name, args, 1, 4)?;
@@ -439,7 +439,7 @@ define_dispatch!(
                     dst.push(HEX_UTIL_DIGITS[(byte / 16) as usize] as char);
                     dst.push(HEX_UTIL_DIGITS[(byte % 16) as usize] as char);
                 }
-                Ok(Value::String(dst))
+                Ok(Value::String(dst.into()))
             }
             // rfc2104.el HMAC (native for speed; the feature is compat-preloaded).
             // HASH is funcalled for wrapper functions (sasl-scram-sha256 etc.);
@@ -482,9 +482,9 @@ define_dispatch!(
                     )));
                 }
                 opad.extend_from_slice(&inner[..hash_length]);
-                Ok(Value::String(rfc2104_hash_hex(
-                    interp, &args[0], &opad, env,
-                )?))
+                Ok(Value::String(
+                    rfc2104_hash_hex(interp, &args[0], &opad, env)?.into(),
+                ))
             }
             "secure-hash-algorithms" => {
                 need_args(name, args, 0)?;
@@ -562,7 +562,7 @@ define_dispatch!(
                 };
                 Err(LispError::SignalValue(Value::list([
                     Value::Symbol("user-error".into()),
-                    Value::String(msg),
+                    Value::String(msg.into()),
                 ])))
             }
             "signal" => {
@@ -634,7 +634,7 @@ define_dispatch!(
                     vec![parent]
                 };
 
-                let mut conditions = vec![Value::Symbol(condition_name.clone())];
+                let mut conditions = vec![Value::Symbol(condition_name.clone().into())];
                 for parent in parents {
                     let parent_name = parent.as_symbol()?.to_string();
                     if !conditions.contains(&parent) {
@@ -737,7 +737,7 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let symbol_name = match &args[0] {
-                    Value::Symbol(symbol) => symbol.clone(),
+                    Value::Symbol(symbol) => symbol.to_string(),
                     _ => string_text(&args[0])?,
                 };
                 let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
@@ -784,7 +784,7 @@ define_dispatch!(
                         // must still miss here.
                         return Ok(Value::Symbol(symbol.clone()));
                     }
-                    Value::Symbol(symbol) => symbol.clone(),
+                    Value::Symbol(symbol) => symbol.to_string(),
                     _ => string_text(&args[0])?,
                 };
                 let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
@@ -833,7 +833,7 @@ define_dispatch!(
                 let base = string_text(&args[0])?;
                 let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
                 Ok(Value::Symbol(
-                    crate::lisp::types::make_uninterned_symbol_name(&base, id),
+                    crate::lisp::types::make_uninterned_symbol_name(&base, id).into(),
                 ))
             }
             "gensym" => {
@@ -849,7 +849,7 @@ define_dispatch!(
                 let id = GENSYM_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
                 let visible = format!("{prefix}{counter}");
                 Ok(Value::Symbol(
-                    crate::lisp::types::make_uninterned_symbol_name(&visible, id),
+                    crate::lisp::types::make_uninterned_symbol_name(&visible, id).into(),
                 ))
             }
             "autoload" => {
@@ -874,7 +874,7 @@ define_dispatch!(
                 }
                 let autoload = Value::list([
                     Value::Symbol("autoload".into()),
-                    Value::String(file),
+                    Value::String(file.into()),
                     docstring,
                     interactive,
                     kind,
@@ -884,7 +884,7 @@ define_dispatch!(
                     interp.record_function_redefinition(&function, old_definition);
                 }
                 interp.set_function_binding(&function, Some(autoload));
-                Ok(Value::Symbol(function))
+                Ok(Value::Symbol(function.into()))
             }
             "autoload-do-load" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -1068,7 +1068,7 @@ define_dispatch!(
                     {
                         continue;
                     }
-                    let symbol = Value::Symbol(symbol_name);
+                    let symbol = Value::Symbol(symbol_name.into());
                     if let Some(predicate) = &predicate {
                         let keep = interp.call_function_value(
                             predicate.clone(),
@@ -1164,7 +1164,7 @@ define_dispatch!(
                 need_args(name, args, 0)?;
                 let value = interp.lookup_var(name, env).unwrap_or(Value::Nil);
                 Ok(string_like(&value)
-                    .map(|string| Value::String(string.text))
+                    .map(|string| Value::String(string.text.into()))
                     .unwrap_or(value))
             }
             "Snarf-documentation" => {
@@ -1226,7 +1226,11 @@ define_dispatch!(
                         let loaded = super::call(
                             interp,
                             "autoload-do-load",
-                            &[function.clone(), Value::Symbol(symbol.clone()), macro_only],
+                            &[
+                                function.clone(),
+                                Value::Symbol(symbol.clone().into()),
+                                macro_only,
+                            ],
                             env,
                         )?;
                         if !values_equal(interp, &function, &loaded) {
@@ -1234,7 +1238,7 @@ define_dispatch!(
                         }
                     }
                     match function {
-                        Value::Symbol(next) if next != symbol => symbol = next,
+                        Value::Symbol(next) if next != symbol => symbol = next.to_string(),
                         _ => return Ok(Value::Nil),
                     }
                 }
@@ -1251,7 +1255,7 @@ define_dispatch!(
                 {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("setting-constant".into()),
-                        Value::Symbol(symbol),
+                        Value::Symbol(symbol.into()),
                     ])));
                 }
                 if interp
@@ -1280,7 +1284,7 @@ define_dispatch!(
                     )?;
                     interp.remove_global_binding(&symbol);
                 }
-                Ok(Value::Symbol(symbol))
+                Ok(Value::Symbol(symbol.into()))
             }
             "lread--substitute-object-in-subtree" => {
                 need_args(name, args, 3)?;
@@ -1298,7 +1302,7 @@ define_dispatch!(
                 if !interp.variable_watchers(&alias).is_empty() {
                     interp.notify_variable_watchers(
                         &alias,
-                        Value::Symbol(target.clone()),
+                        Value::Symbol(target.clone().into()),
                         "defvaralias",
                         None,
                         env,
@@ -1319,11 +1323,11 @@ define_dispatch!(
                     let warning = Value::list([
                         Value::Symbol("defvaralias".into()),
                         Value::Symbol("losing-value".into()),
-                        Value::Symbol(alias.clone()),
+                        Value::Symbol(alias.clone().into()),
                     ]);
                     call_named_function(interp, "display-warning", &[warning], env)?;
                 }
-                Ok(Value::Symbol(alias))
+                Ok(Value::Symbol(alias.into()))
             }
             "define-obsolete-variable-alias" => {
                 if args.len() < 3 || args.len() > 4 {
@@ -1336,7 +1340,7 @@ define_dispatch!(
                 if !interp.variable_watchers(&alias).is_empty() {
                     interp.notify_variable_watchers(
                         &alias,
-                        Value::Symbol(target.clone()),
+                        Value::Symbol(target.clone().into()),
                         "defvaralias",
                         None,
                         env,
@@ -1352,7 +1356,11 @@ define_dispatch!(
                 interp.put_symbol_property(
                     &alias,
                     "byte-obsolete-variable",
-                    Value::list([Value::Symbol(target.clone()), Value::Nil, args[2].clone()]),
+                    Value::list([
+                        Value::Symbol(target.clone().into()),
+                        Value::Nil,
+                        args[2].clone(),
+                    ]),
                 );
                 if alias_value
                     .as_ref()
@@ -1362,16 +1370,16 @@ define_dispatch!(
                     let warning = Value::list([
                         Value::Symbol("defvaralias".into()),
                         Value::Symbol("losing-value".into()),
-                        Value::Symbol(alias.clone()),
+                        Value::Symbol(alias.clone().into()),
                     ]);
                     call_named_function(interp, "display-warning", &[warning], env)?;
                 }
-                Ok(Value::Symbol(alias))
+                Ok(Value::Symbol(alias.into()))
             }
             "indirect-variable" => {
                 need_args(name, args, 1)?;
                 let symbol = args[0].as_symbol()?;
-                Ok(Value::Symbol(interp.indirect_variable_name(symbol)?))
+                Ok(Value::Symbol(interp.indirect_variable_name(symbol)?.into()))
             }
             "internal-delete-indirect-variable" => {
                 need_args(name, args, 1)?;
@@ -1382,7 +1390,7 @@ define_dispatch!(
                 interp.remove_global_binding(symbol);
                 interp.remove_buffer_local_value(interp.current_buffer_id(), symbol);
                 interp.remove_symbol_property(symbol, "variable-documentation");
-                Ok(Value::Symbol(symbol.to_string()))
+                Ok(Value::Symbol(symbol.to_string().into()))
             }
             "internal--define-uninitialized-variable" => {
                 // GNU: (SYMBOL &optional DOC) — cus-start.el passes one arg.
@@ -1392,7 +1400,7 @@ define_dispatch!(
                 if let Some(doc) = args.get(1).filter(|value| !value.is_nil()) {
                     interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
                 }
-                Ok(Value::Symbol(symbol.to_string()))
+                Ok(Value::Symbol(symbol.to_string().into()))
             }
             "defvar-1" => {
                 if args.len() < 2 || args.len() > 3 {
@@ -1406,7 +1414,7 @@ define_dispatch!(
                 if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
                     interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
                 }
-                Ok(Value::Symbol(symbol.to_string()))
+                Ok(Value::Symbol(symbol.to_string().into()))
             }
             "defconst-1" => {
                 if args.len() < 2 || args.len() > 3 {
@@ -1419,13 +1427,13 @@ define_dispatch!(
                     interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
                 }
                 interp.put_symbol_property(symbol, "risky-local-variable", Value::T);
-                Ok(Value::Symbol(symbol.to_string()))
+                Ok(Value::Symbol(symbol.to_string().into()))
             }
             "internal-make-var-non-special" => {
                 need_args(name, args, 1)?;
                 let symbol = args[0].as_symbol()?;
                 interp.unmark_special_variable(symbol);
-                Ok(Value::Symbol(symbol.to_string()))
+                Ok(Value::Symbol(symbol.to_string().into()))
             }
             "make-interpreted-closure" => {
                 need_arg_range(name, args, 3, 5)?;
@@ -1475,7 +1483,7 @@ define_dispatch!(
                 } else {
                     string_text(&args[0])?
                 };
-                let value = Value::String(language);
+                let value = Value::String(language.into());
                 interp.set_global_binding("current-language-environment", value.clone());
                 Ok(value)
             }
@@ -1511,10 +1519,12 @@ define_dispatch!(
                 if variable == "TZ" {
                     interp.local_time_zone_rule = value
                         .as_ref()
-                        .map(|rule| Value::String(rule.clone()))
+                        .map(|rule| Value::String(rule.clone().into()))
                         .unwrap_or_else(|| Value::Symbol("wall".into()));
                 }
-                Ok(value.map(Value::String).unwrap_or(Value::Nil))
+                Ok(value
+                    .map(|value| Value::String(value.into()))
+                    .unwrap_or(Value::Nil))
             }
             "ignore" => Ok(Value::Nil),
             "byte-run--unescaped-character-literals-warning" => {
@@ -1550,7 +1560,7 @@ define_dispatch!(
             "make-obsolete" => {
                 need_arg_range(name, args, 3, 4)?;
                 let obsolete_name = obsolete_definition_symbol(&args[0])?;
-                Ok(Value::Symbol(obsolete_name.to_string()))
+                Ok(Value::Symbol(obsolete_name.to_string().into()))
             }
             "define-obsolete-face-alias" => Ok(Value::Nil),
             "define-obsolete-function-alias" => {
@@ -1574,7 +1584,7 @@ define_dispatch!(
                     make_obsolete.push(when.clone());
                 }
                 let _ = super::call(interp, "make-obsolete", &make_obsolete, env);
-                Ok(Value::Symbol(obsolete))
+                Ok(Value::Symbol(obsolete.into()))
             }
             "make-obsolete-variable" => {
                 need_arg_range(name, args, 3, 4)?;
@@ -1585,7 +1595,7 @@ define_dispatch!(
                     "byte-obsolete-variable",
                     Value::list([args[1].clone(), access_type, args[2].clone()]),
                 );
-                Ok(Value::Symbol(obsolete_name.to_string()))
+                Ok(Value::Symbol(obsolete_name.to_string().into()))
             }
             "macroexp-warn-and-return" => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
             "cl--generic-method-files" => {
@@ -1656,7 +1666,7 @@ define_dispatch!(
                 let _ = interp.delete_region_current_buffer(start, end);
                 interp.insert_current_buffer(&help_text);
                 interp.switch_to_buffer_id(previous_buffer)?;
-                Ok(Value::String(docs.join("\n")))
+                Ok(Value::String(docs.join("\n").into()))
             }
             "macroexp-quote" => {
                 need_args(name, args, 1)?;
@@ -1829,11 +1839,11 @@ define_dispatch!(
                         Rc::ptr_eq(left, right)
                     }
                     (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
-                    (Value::Lambda(_, left_body, _), Value::Lambda(_, right_body, _)) => {
-                        Rc::ptr_eq(left_body, right_body)
+                    (Value::Lambda(left), Value::Lambda(right)) => {
+                        Rc::ptr_eq(&left.body, &right.body)
                     }
-                    (Value::Buffer(left, _), Value::Buffer(right, _))
-                    | (Value::Marker(left), Value::Marker(right))
+                    (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
+                    (Value::Marker(left), Value::Marker(right))
                     | (Value::Overlay(left), Value::Overlay(right))
                     | (Value::CharTable(left), Value::CharTable(right))
                     | (Value::Frame(left), Value::Frame(right))
@@ -1892,7 +1902,7 @@ define_dispatch!(
                 let path = interp.lookup_var("exec-path", env).unwrap_or(Value::Nil);
                 let suffixes = interp
                     .lookup_var("exec-suffixes", env)
-                    .unwrap_or_else(|| Value::list([Value::String(String::new())]));
+                    .unwrap_or_else(|| Value::list([Value::String(String::new().into())]));
                 // Keep the search semantics in the same producer as `locate-file':
                 // in particular, an empty `exec-path' is one empty entry denoting
                 // the dynamically bound `default-directory'.
@@ -1966,7 +1976,7 @@ define_dispatch!(
                     super::call(
                         interp,
                         "set-default",
-                        &[Value::Symbol(hook_name.clone()), Value::list(hooks)],
+                        &[Value::Symbol(hook_name.clone().into()), Value::list(hooks)],
                         env,
                     )?;
                 } else if dynamically_local {
@@ -2046,7 +2056,7 @@ define_dispatch!(
                     interp
                         .known_symbol_names()
                         .into_iter()
-                        .map(Value::Symbol)
+                        .map(|value| Value::Symbol(value.into()))
                         .collect()
                 } else {
                     obarray_symbols(interp, &obarray)?
@@ -2106,7 +2116,7 @@ define_dispatch!(
                         super::call(
                             interp,
                             "kill-local-variable",
-                            &[Value::Symbol(hook_name.clone())],
+                            &[Value::Symbol(hook_name.clone().into())],
                             env,
                         )?;
                     } else {
@@ -2119,7 +2129,7 @@ define_dispatch!(
                     super::call(
                         interp,
                         "set-default",
-                        &[Value::Symbol(hook_name.clone()), Value::list(hooks)],
+                        &[Value::Symbol(hook_name.clone().into()), Value::list(hooks)],
                         env,
                     )?;
                 } else if dynamically_local {
@@ -2184,7 +2194,11 @@ fn ensure_hook_depth_symbol(interp: &mut Interpreter, hook_name: &str) -> String
     }
     let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
     let name = crate::lisp::types::make_uninterned_symbol_name("depth-alist", id);
-    interp.put_symbol_property(hook_name, "hook--depth-alist", Value::Symbol(name.clone()));
+    interp.put_symbol_property(
+        hook_name,
+        "hook--depth-alist",
+        Value::Symbol(name.clone().into()),
+    );
     interp.set_global_binding(&name, Value::Nil);
     name
 }
@@ -2473,15 +2487,17 @@ fn resolve_doc_reference(
         return Ok(None);
     };
     match std::fs::read(&path) {
-        Ok(bytes) => Ok(decode_doc_string(&bytes, position)?.map(Value::String)),
+        Ok(bytes) => {
+            Ok(decode_doc_string(&bytes, position)?.map(|value| Value::String(value.into())))
+        }
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound) => {
             let filename = path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or_else(|| path.to_str().unwrap_or(""));
-            Ok(Some(Value::String(format!(
-                "Cannot open doc string file \"{filename}\"\n"
-            ))))
+            Ok(Some(Value::String(
+                format!("Cannot open doc string file \"{filename}\"\n").into(),
+            )))
         }
         Err(error) => Err(LispError::SignalValue(file_error_value(
             &error.to_string(),
@@ -2547,7 +2563,9 @@ fn snarf_documentation(
                 if let Ok(Value::BuiltinFunc(native_name)) =
                     interp.lookup_function(&entry.name, env)
                 {
-                    interp.builtin_doc_offsets.insert(native_name, entry.offset);
+                    interp
+                        .builtin_doc_offsets
+                        .insert(native_name.to_string(), entry.offset);
                 }
             }
             b'V' if interp.lookup_var(&entry.name, env).is_some()
@@ -2667,7 +2685,7 @@ fn documentation(
             let offset = ensure_builtin_doc_offset(interp, name, env)?;
             if offset == 0 {
                 fallback_function_documentation(interp, name)
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil)
             } else {
                 resolve_doc_reference(interp, &Value::Integer(offset), env)?.unwrap_or(Value::Nil)
@@ -2679,7 +2697,7 @@ fn documentation(
         && let Value::Symbol(symbol) = &args[0]
     {
         doc = fallback_function_documentation(interp, symbol)
-            .map(Value::String)
+            .map(|value| Value::String(value.into()))
             .unwrap_or(Value::Nil);
     }
     if doc == Value::Integer(0) {
@@ -2868,7 +2886,7 @@ fn parse_el_source_docstrings(text: &str, map: &mut std::collections::HashMap<St
         }
         if let Ok(Some(doc)) = crate::lisp::reader::Reader::new(&text[idx..]).read() {
             let mut doc = match doc {
-                Value::String(text) => text,
+                Value::String(text) => text.to_string(),
                 Value::StringObject(state) => state.borrow().text.clone(),
                 _ => continue,
             };

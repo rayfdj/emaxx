@@ -254,7 +254,7 @@ fn beginning_of_defun_raw_fallback(
                 interp,
                 "re-search-backward",
                 &[
-                    Value::String(pattern.clone()),
+                    Value::String(pattern.clone().into()),
                     Value::Nil,
                     Value::Symbol("move".into()),
                     Value::Integer(arg),
@@ -1299,7 +1299,7 @@ define_dispatch!(
                     }
                     None => Err(LispError::SignalValue(Value::list([
                         Value::Symbol("search-failed".into()),
-                        Value::String(needle),
+                        Value::String(needle.into()),
                     ]))),
                 }
             }
@@ -1669,7 +1669,7 @@ define_dispatch!(
                 Ok(candidates
                     .into_iter()
                     .find(|candidate| parents.iter().any(|parent| parent == candidate))
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "derived-mode-all-parents" => {
@@ -1678,7 +1678,7 @@ define_dispatch!(
                 Ok(Value::list(
                     derived_mode_parent_chain(interp, &mode)
                         .into_iter()
-                        .map(Value::Symbol),
+                        .map(|value| Value::Symbol(value.into())),
                 ))
             }
             "derived-mode-add-parents" => {
@@ -1734,16 +1734,28 @@ define_dispatch!(
                         .and_then(|value| value.as_string().ok().map(str::to_string))
                         .unwrap_or_else(|| "*/".into());
                     interp.set_variable("c-block-comment-flag", Value::T, env);
-                    interp.set_variable("comment-start", Value::String(format!("{starter} ")), env);
-                    interp.set_variable("comment-end", Value::String(format!(" {ender}")), env);
+                    interp.set_variable(
+                        "comment-start",
+                        Value::String(format!("{starter} ").into()),
+                        env,
+                    );
+                    interp.set_variable(
+                        "comment-end",
+                        Value::String(format!(" {ender}").into()),
+                        env,
+                    );
                 } else {
                     let starter = interp
                         .lookup_var("c-line-comment-starter", env)
                         .and_then(|value| value.as_string().ok().map(str::to_string))
                         .unwrap_or_else(|| "//".into());
                     interp.set_variable("c-block-comment-flag", Value::Nil, env);
-                    interp.set_variable("comment-start", Value::String(format!("{starter} ")), env);
-                    interp.set_variable("comment-end", Value::String(String::new()), env);
+                    interp.set_variable(
+                        "comment-start",
+                        Value::String(format!("{starter} ").into()),
+                        env,
+                    );
+                    interp.set_variable("comment-end", Value::String(String::new().into()), env);
                 }
                 Ok(Value::Nil)
             }
@@ -2003,15 +2015,15 @@ define_dispatch!(
             "treesit-ready-p" => Ok(Value::Nil),
             "buffer-name" => {
                 if !args.is_empty()
-                    && let Value::Buffer(_, name) = &args[0]
+                    && let Value::Buffer(buffer) = &args[0]
                 {
                     return Ok(interp
                         .resolve_buffer_id(&args[0])
                         .ok()
-                        .map(|_| Value::String(name.clone()))
+                        .map(|_| Value::String(buffer.name.clone()))
                         .unwrap_or(Value::Nil));
                 }
-                Ok(Value::String(interp.buffer.name.clone()))
+                Ok(Value::String(interp.buffer.name.clone().into()))
             }
             #[dispatch(resets_undo)]
             "set-buffer-multibyte" => {
@@ -3619,7 +3631,7 @@ define_dispatch!(
                 let prop = args[2].as_symbol()?.to_string();
                 let prop_value = match &args[3] {
                     Value::StringObject(state) if state.borrow().props.is_empty() => {
-                        Value::String(state.borrow().text.clone())
+                        Value::String(state.borrow().text.clone().into())
                     }
                     _ => args[3].clone(),
                 };
