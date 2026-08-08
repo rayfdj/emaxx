@@ -63,7 +63,10 @@ pub(crate) fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
         .map(Value::as_float)
         .transpose()?
         .unwrap_or(0.0);
-    let millis = args.get(1).map(Value::as_float).transpose()?.unwrap_or(0.0);
+    let millis = match args.get(1) {
+        None | Some(Value::Nil) => 0.0,
+        Some(value) => value.as_float()?,
+    };
     let total = seconds + millis / 1000.0;
     if !total.is_finite() || total <= 0.0 {
         return Ok(Duration::ZERO);

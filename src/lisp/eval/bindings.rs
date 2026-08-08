@@ -154,6 +154,12 @@ impl Interpreter {
     }
 
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
+        if let Some(variable) = DUMPED_AUTO_BUFFER_LOCALS
+            .iter()
+            .find(|variable| variable.name == name)
+        {
+            return Some(variable.default.value());
+        }
         match name {
             "nil" => Some(Value::Nil),
             "t" => Some(Value::T),
@@ -489,10 +495,6 @@ impl Interpreter {
             // files.el: derived modes consult this when setting
             // `require-final-newline' buffer-locally.
             "mode-require-final-newline" => Some(Value::T),
-            // syntax.el: propertize progress marker (defvar-local -1).
-            "syntax-propertize--done" => Some(Value::Integer(-1)),
-            // font-lock.el: defvar-local, nil until a mode installs defaults.
-            "font-lock-defaults" => Some(Value::Nil),
             // insdel.c: change hooks run unless a primitive binds this.
             "inhibit-modification-hooks" => Some(Value::Nil),
             // doc.c: name of the DOC file inside `doc-directory'.
@@ -1007,11 +1009,16 @@ impl Interpreter {
             || self.symbol_property_index(name).is_some()
     }
 
-    /// Track a macro-table insertion so name-count lookups stay in sync;
-    /// every push/extend into `macros` must call this.
+    /// Track a macro-table insertion so name-count lookups stay in sync.
     pub(crate) fn note_macro_added(&mut self, name: &str) {
         *self.macros_name_counts.entry(name.to_string()).or_insert(0) += 1;
         self.note_definition_changed();
+    }
+
+    /// Insert a macro and update every derived index atomically.
+    pub(crate) fn push_macro_binding(&mut self, binding: MacroBinding) {
+        self.note_macro_added(&binding.name);
+        self.macros.push(binding);
     }
 
     /// Track a macro-table removal (drain/rename); the counterpart of
@@ -1079,8 +1086,7 @@ impl Interpreter {
     ) -> (usize, usize) {
         let local_start = self.macros.len();
         for binding in local_macros {
-            self.note_macro_added(&binding.name);
-            self.macros.push(binding.clone());
+            self.push_macro_binding(binding.clone());
         }
         (local_start, local_macros.len())
     }
@@ -1151,12 +1157,13 @@ impl Interpreter {
             .unwrap_or_else(|_| name.to_string());
         let value = Self::stored_value(value);
         if resolved == "buffer-file-name" {
-            self.buffer.file = match value {
+            let file = match value {
                 Value::Nil => None,
                 Value::String(path) => Some(path),
                 Value::StringObject(state) => Some(state.borrow().text.clone()),
                 other => Some(other.to_string()),
             };
+            self.set_current_buffer_file_name(file);
             return;
         }
         if resolved == "buffer-file-truename" {

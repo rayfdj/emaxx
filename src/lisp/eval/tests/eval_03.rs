@@ -5870,6 +5870,37 @@ fn ert_selector_excludes_expensive_tests_by_tag() {
 }
 
 #[test]
+fn ert_runner_exposes_the_current_run_selector_to_test_helpers() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize batch interpreter");
+        eval_str_with(
+            &mut interp,
+            r#"
+                (progn
+                  (load "ert" nil nil)
+                  (ert-deftest current-run-selector-test ()
+                    (should
+                     (equal (ert--stats-selector ert--current-run-stats)
+                            '(not (tag :expensive-test))))))
+                "#,
+        );
+        let selector = Reader::new("'(not (tag :expensive-test))")
+            .read_all()
+            .expect("selector should parse")
+            .remove(0);
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+        assert_eq!(summary.passed, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
 fn ert_tests_get_independent_window_excursions() {
     let mut interp = Interpreter::new();
     eval_str_with(

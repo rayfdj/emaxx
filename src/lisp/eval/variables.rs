@@ -1,6 +1,28 @@
 use super::*;
 
 impl Interpreter {
+    /// Set the current buffer's visited name together with metadata derived
+    /// from that name.  `buffer-file-name' is one logical state transition:
+    /// callers must not have to remember a second remote-visit registration
+    /// for modification-time, locking, or supersession policy to work.
+    pub(crate) fn set_current_buffer_file_name(&mut self, file: Option<String>) {
+        let buffer_id = self.current_buffer_id();
+        let remote_prefix = file
+            .as_deref()
+            .and_then(primitives::parse_remote_file_name)
+            .map(|remote| remote.prefix);
+        self.buffer.file = file;
+        if let Some(prefix) = remote_prefix {
+            self.set_buffer_local_value(
+                buffer_id,
+                "emaxx--visited-remote-prefix",
+                Value::String(prefix),
+            );
+        } else {
+            self.remove_buffer_local_value(buffer_id, "emaxx--visited-remote-prefix");
+        }
+    }
+
     pub fn buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> Option<Vec<Value>> {
         self.buffer_local_hooks
             .iter()
@@ -1014,13 +1036,7 @@ impl Interpreter {
                 None
             };
             self.notify_variable_watchers(&name, value.clone(), "let", None, env)?;
-            let value = Self::stored_value(value);
-            self.globals_index.insert(name.clone(), value.clone());
-            if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == &name) {
-                self.globals[index].1 = value;
-            } else {
-                self.globals.push((name.clone(), value));
-            }
+            self.set_global_binding(&name, value);
             SpecialBindingRestore {
                 binding_id,
                 name,
@@ -1105,18 +1121,7 @@ impl Interpreter {
                     env,
                 )?;
                 if let Some(value) = restore.previous {
-                    let value = Self::stored_value(value);
-                    self.globals_index
-                        .insert(restore.name.clone(), value.clone());
-                    if let Some(index) = self
-                        .globals
-                        .iter()
-                        .rposition(|(symbol, _)| symbol == &restore.name)
-                    {
-                        self.globals[index].1 = value;
-                    } else {
-                        self.globals.push((restore.name.clone(), value));
-                    }
+                    self.set_global_binding(&restore.name, value);
                 } else {
                     self.remove_global_binding(&restore.name);
                 }

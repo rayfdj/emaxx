@@ -146,9 +146,8 @@ pub(crate) fn set_file_times_path(
         if result == 0 {
             Ok(())
         } else {
-            Err(LispError::Signal(
-                std::io::Error::last_os_error().to_string(),
-            ))
+            let error = std::io::Error::last_os_error();
+            Err(file_operation_error("Setting file times", &error, path))
         }
     }
     #[cfg(not(unix))]
@@ -156,7 +155,7 @@ pub(crate) fn set_file_times_path(
         let _ = (modified, nofollow);
         fs::metadata(path)
             .map(|_| ())
-            .map_err(|error| LispError::Signal(error.to_string()))
+            .map_err(|error| file_operation_error("Setting file times", &error, path))
     }
 }
 
@@ -187,23 +186,43 @@ pub(crate) fn file_error_with_detail_value(message: &str, detail: &str, path: &s
     ])
 }
 
-pub(crate) fn file_input_error_value(error: &std::io::Error, path: &str) -> Value {
-    let condition = if error.kind() == ErrorKind::NotFound {
-        "file-missing"
-    } else {
-        "file-error"
+pub(crate) fn permission_denied_error_value(message: &str, path: &str) -> Value {
+    Value::list([
+        Value::Symbol("permission-denied".into()),
+        Value::String(message.into()),
+        Value::String("Permission denied".into()),
+        Value::String(path.into()),
+    ])
+}
+
+pub(crate) fn file_operation_error_value(
+    message: &str,
+    error: &std::io::Error,
+    path: &str,
+) -> Value {
+    let condition = match error.kind() {
+        ErrorKind::NotFound => "file-missing",
+        ErrorKind::AlreadyExists => "file-already-exists",
+        _ => "file-error",
     };
     let rendered = error.to_string();
     let detail = rendered
         .split_once(" (os error")
-        .map(|(detail, _)| detail)
-        .unwrap_or(rendered.as_str());
+        .map_or(rendered.as_str(), |(detail, _)| detail);
     Value::list([
         Value::Symbol(condition.into()),
-        Value::String("Opening input file".into()),
+        Value::String(message.into()),
         Value::String(detail.into()),
         Value::String(path.into()),
     ])
+}
+
+pub(crate) fn file_operation_error(message: &str, error: &std::io::Error, path: &str) -> LispError {
+    LispError::SignalValue(file_operation_error_value(message, error, path))
+}
+
+pub(crate) fn file_input_error_value(error: &std::io::Error, path: &str) -> Value {
+    file_operation_error_value("Opening input file", error, path)
 }
 
 pub(crate) fn file_output_error(path: &str, error: &std::io::Error) -> LispError {
@@ -219,18 +238,39 @@ pub(crate) fn file_output_error(path: &str, error: &std::io::Error) -> LispError
     ))
 }
 
-pub(crate) fn file_locked_p(path: &str) -> Result<Value, LispError> {
-    let lock_path = lock_path_for_file(path);
-    match fs::metadata(&lock_path) {
+pub(crate) fn file_locked_p(
+    interp: &Interpreter,
+    env: &Env,
+    logical_path: &str,
+) -> Result<Value, LispError> {
+    let path = resolve_file_name_in_env(interp, env, logical_path);
+    let lock_path = lock_path_for_file(&path);
+    match fs::symlink_metadata(&lock_path) {
         Ok(metadata) => {
             if metadata.is_dir() {
-                Err(LispError::SignalValue(file_error_value(
+                return Err(LispError::SignalValue(file_error_value(
                     "Testing file lock",
-                    path,
-                )))
-            } else {
-                Ok(Value::T)
+                    &path,
+                )));
             }
+            let owner = if metadata.file_type().is_symlink() {
+                fs::read_link(&lock_path)
+                    .ok()
+                    .map(|target| target.to_string_lossy().into_owned())
+            } else {
+                fs::read_to_string(&lock_path).ok()
+            };
+            Ok(
+                if owner.as_deref() == Some(format!("emaxx:{}", std::process::id()).as_str()) {
+                    Value::T
+                } else {
+                    Value::String(
+                        owner
+                            .filter(|owner| !owner.is_empty())
+                            .unwrap_or_else(|| "unknown".into()),
+                    )
+                },
+            )
         }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(Value::Nil),
         Err(error) => Err(LispError::Signal(error.to_string())),
@@ -428,6 +468,17 @@ pub(crate) fn write_region_value(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    let logical_path = string_text(&args[2])?;
+    write_region_value_with_logical_path(interp, args, &logical_path, None, env)
+}
+
+pub(crate) fn write_region_value_with_logical_path(
+    interp: &mut Interpreter,
+    args: &[Value],
+    logical_path: &str,
+    logical_lock_path: Option<&str>,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let requested_path = string_text(&args[2])?;
     let path = resolve_file_name_in_env(interp, env, &requested_path);
     validate_file_name(&path)?;
@@ -445,16 +496,82 @@ pub(crate) fn write_region_value(
     };
     let coding = current_write_coding(interp, env, &text, false)?;
     let bytes = encode_text_bytes(interp, &text, &coding)?;
-    if args.get(3).is_some_and(Value::is_truthy) {
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|error| file_output_error(&path, &error))?;
-        file.write_all(&bytes)
-            .map_err(|error| file_output_error(&path, &error))?;
+    if let Some(mustbenew) = args.get(6).filter(|value| value.is_truthy())
+        && fs::symlink_metadata(&path).is_ok()
+    {
+        let overwrite = if mustbenew.as_symbol().ok() == Some("excl") {
+            false
+        } else {
+            call_named_function(
+                interp,
+                "y-or-n-p",
+                &[Value::String(format!(
+                    "File {logical_path} exists; overwrite? "
+                ))],
+                env,
+            )?
+            .is_truthy()
+        };
+        if !overwrite {
+            return Err(file_operation_error(
+                "Opening output file",
+                &std::io::Error::from(ErrorKind::AlreadyExists),
+                logical_path,
+            ));
+        }
+    }
+    let lock_path = logical_lock_path
+        .map(str::to_string)
+        .or_else(|| args.get(5).and_then(string_like).map(|string| string.text))
+        .or_else(|| args.get(4).and_then(string_like).map(|string| string.text))
+        .unwrap_or_else(|| logical_path.to_string());
+    let lock_enabled = interp
+        .lookup_var("create-lockfiles", env)
+        .is_some_and(|value| value.is_truthy());
+    if lock_enabled {
+        call_named_function(
+            interp,
+            "lock-file",
+            &[Value::String(lock_path.clone())],
+            env,
+        )?;
+    }
+    let write_result = (|| {
+        if let Some(offset) = args
+            .get(3)
+            .filter(|value| value.is_truthy())
+            .and_then(|value| value.as_integer().ok())
+        {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+                .map_err(|error| file_output_error(&path, &error))?;
+            file.seek(SeekFrom::Start(offset.max(0) as u64))
+                .map_err(|error| file_output_error(&path, &error))?;
+            file.write_all(&bytes)
+                .map_err(|error| file_output_error(&path, &error))
+        } else if args.get(3).is_some_and(Value::is_truthy) {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|error| file_output_error(&path, &error))?;
+            file.write_all(&bytes)
+                .map_err(|error| file_output_error(&path, &error))
+        } else {
+            fs::write(&path, &bytes).map_err(|error| file_output_error(&path, &error))
+        }
+    })();
+    let unlock_result = if lock_enabled {
+        call_named_function(interp, "unlock-file", &[Value::String(lock_path)], env).map(drop)
     } else {
-        fs::write(&path, &bytes).map_err(|error| file_output_error(&path, &error))?;
+        Ok(())
+    };
+    match (write_result, unlock_result) {
+        (Err(error), _) | (Ok(()), Err(error)) => return Err(error),
+        (Ok(()), Ok(())) => {}
     }
     set_last_coding_system_used(interp, &coding, env);
     dispatch_file_notification(interp, env, &path, "changed")?;
@@ -463,7 +580,7 @@ pub(crate) fn write_region_value(
         && (matches!(visit, Value::T) || string_like(visit).is_some())
     {
         let visited_name = if matches!(visit, Value::T) {
-            requested_path
+            logical_path.to_string()
         } else {
             string_text(visit)?
         };
@@ -472,6 +589,20 @@ pub(crate) fn write_region_value(
         interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
         interp.buffer.set_unmodified();
         unlock_current_buffer(interp, env)?;
+    }
+    if interp
+        .lookup_var("noninteractive", env)
+        .is_none_or(|value| value.is_nil())
+        && args.get(4).is_none_or(|visit| {
+            visit.is_nil() || matches!(visit, Value::T) || string_like(visit).is_some()
+        })
+    {
+        call_named_function(
+            interp,
+            "message",
+            &[Value::String(format!("Wrote {logical_path}"))],
+            env,
+        )?;
     }
     Ok(Value::Nil)
 }
@@ -1265,15 +1396,50 @@ pub(crate) fn insert_file_contents(
     } else {
         None
     };
+    let mut inserted_chars = text.chars().count();
+    let original_point = interp.buffer.point();
     let edit_result = (|| {
         if replace {
-            let start = interp.buffer.point_min();
-            let end = interp.buffer.point_max();
+            let old = interp.buffer.buffer_string();
+            let old_chars = old.chars().collect::<Vec<_>>();
+            let new_chars = text.chars().collect::<Vec<_>>();
+            let prefix = old_chars
+                .iter()
+                .zip(&new_chars)
+                .take_while(|(left, right)| left == right)
+                .count();
+            let suffix = old_chars[prefix..]
+                .iter()
+                .rev()
+                .zip(new_chars[prefix..].iter().rev())
+                .take_while(|(left, right)| left == right)
+                .count();
+            let old_end = old_chars.len() - suffix;
+            let new_end = new_chars.len() - suffix;
+            let start = interp.buffer.point_min() + prefix;
+            let end = interp.buffer.point_min() + old_end;
+            let replacement = new_chars[prefix..new_end].iter().collect::<String>();
+            inserted_chars = replacement.chars().count();
+            if start != end {
+                // GNU runs the modification hooks only for the portion that
+                // actually differs (track-changes relies on these bounds).
+                crate::lisp::primitives::delete_region_with_hooks(interp, start, end, env)?;
+            }
             interp.buffer.goto_char(start);
-            // GNU runs the modification hooks for the replaced region
-            // (track-changes keeps buffers in sync across reverts).
-            crate::lisp::primitives::delete_region_with_hooks(interp, start, end, env)?;
-            interp.buffer.goto_char(start);
+            if !replacement.is_empty() {
+                crate::lisp::primitives::insert_text_with_hooks(
+                    interp,
+                    &replacement,
+                    &[],
+                    false,
+                    false,
+                    env,
+                )?;
+            }
+            interp
+                .buffer
+                .goto_char(original_point.min(interp.buffer.point_max()));
+            return Ok(());
         }
         if let Some(hooks) = interp.lookup_var("after-insert-file-functions", env)
             && is_circular_list_value(&hooks)
@@ -1305,7 +1471,7 @@ pub(crate) fn insert_file_contents(
         interp.buffer.set_unmodified();
     }
     set_last_coding_system_used(interp, &detected, env);
-    let inserted = finish_insert_file_contents(interp, env, text.chars().count(), &args[1..])?;
+    let inserted = finish_insert_file_contents(interp, env, inserted_chars, &args[1..])?;
     Ok(Value::list([
         Value::String(path),
         Value::Integer(inserted as i64),
@@ -1387,7 +1553,7 @@ pub(crate) fn current_buffer_file(interp: &Interpreter) -> Option<&str> {
 
 pub(crate) fn maybe_lock_current_buffer(
     interp: &mut Interpreter,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<(), LispError> {
     if !interp.buffer.is_modified() {
         return Ok(());
@@ -1397,7 +1563,7 @@ pub(crate) fn maybe_lock_current_buffer(
 
 pub(crate) fn maybe_lock_current_buffer_on_change(
     interp: &mut Interpreter,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<(), LispError> {
     // GNU's prepare_to_modify_buffer locks only ordinary first changes to a
     // real file-visiting buffer.  Silent/internal edits bind this variable
@@ -1419,22 +1585,28 @@ pub(crate) fn maybe_lock_current_buffer_on_change(
 
 pub(crate) fn maybe_lock_current_buffer_file(
     interp: &mut Interpreter,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<(), LispError> {
-    let Some(path) = current_buffer_file(interp).map(str::to_string) else {
+    let Some(logical_path) = current_buffer_file(interp).map(str::to_string) else {
         return Ok(());
     };
-    lock_file_path(interp, env, &path)
+    call_named_function(interp, "lock-file", &[Value::String(logical_path)], env)?;
+    Ok(())
 }
 
-pub(crate) fn lock_file_path(interp: &Interpreter, env: &Env, path: &str) -> Result<(), LispError> {
+pub(crate) fn lock_file_path(
+    interp: &Interpreter,
+    env: &Env,
+    logical_path: &str,
+) -> Result<(), LispError> {
     if !interp
         .lookup_var("create-lockfiles", env)
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(());
     }
-    let lock_path = lock_path_for_file(path);
+    let path = resolve_file_name_in_env(interp, env, logical_path);
+    let lock_path = lock_path_for_file(&path);
     match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1455,7 +1627,7 @@ pub(crate) fn unlock_current_buffer(
     let Some(path) = current_buffer_file(interp).map(str::to_string) else {
         return Ok(Value::Nil);
     };
-    unlock_file_path(interp, env, &path)
+    call_named_function(interp, "unlock-file", &[Value::String(path)], env)
 }
 
 pub(crate) fn unlock_buffer_by_id(
@@ -1477,21 +1649,22 @@ pub(crate) fn unlock_buffer_by_id(
     else {
         return Ok(Value::Nil);
     };
-    unlock_file_path(interp, env, &path)
+    call_named_function(interp, "unlock-file", &[Value::String(path)], env)
 }
 
 pub(crate) fn unlock_file_path(
     interp: &mut Interpreter,
     env: &mut Env,
-    path: &str,
+    logical_path: &str,
 ) -> Result<Value, LispError> {
-    let lock_path = lock_path_for_file(path);
+    let path = resolve_file_name_in_env(interp, env, logical_path);
+    let lock_path = lock_path_for_file(&path);
     match fs::metadata(&lock_path) {
         Ok(metadata) if metadata.is_dir() => {
             call_named_function(
                 interp,
                 "userlock--handle-unlock-error",
-                &[file_error_value("Unlocking file", path)],
+                &[file_error_value("Unlocking file", &path)],
                 env,
             )?;
             Ok(Value::Nil)
@@ -1545,9 +1718,10 @@ pub(crate) fn ensure_no_supersession_threat(
     {
         return Ok(());
     }
-    let Some(path) = current_buffer_file(interp).map(str::to_string) else {
+    let Some(logical_path) = current_buffer_file(interp).map(str::to_string) else {
         return Ok(());
     };
+    let path = resolve_file_name_in_env(interp, env, &logical_path);
     let Some(current_modtime) = file_modtime(&path)? else {
         return Ok(());
     };
@@ -1557,12 +1731,17 @@ pub(crate) fn ensure_no_supersession_threat(
     if visited_modtime.is_none() || visited_modtime == Some(current_modtime) {
         return Ok(());
     }
-    let (disk_text, _, _) = current_buffer_file_text(interp, env, &path)?;
-    if disk_text == interp.buffer.saved_text() {
-        interp
-            .buffer
-            .set_visited_file_modtime(Some(current_modtime));
-        return Ok(());
+    let remote_visit = interp
+        .buffer_local_value(interp.current_buffer_id(), "emaxx--visited-remote-prefix")
+        .is_some_and(|value| value.is_truthy());
+    if !remote_visit {
+        let (disk_text, _, _) = current_buffer_file_text(interp, env, &path)?;
+        if disk_text == interp.buffer.saved_text() {
+            interp
+                .buffer
+                .set_visited_file_modtime(Some(current_modtime));
+            return Ok(());
+        }
     }
     if interp
         .lookup_var("noninteractive", env)
@@ -1574,7 +1753,7 @@ pub(crate) fn ensure_no_supersession_threat(
     }
     let prompt = format!(
         "{} changed on disk; really edit the buffer?",
-        file_name_nondirectory(&path)
+        file_name_nondirectory(&logical_path)
     );
     let answer = call_named_function(
         interp,
@@ -1609,13 +1788,13 @@ pub(crate) fn ensure_no_supersession_threat(
             Err(LispError::SignalValue(Value::list([
                 Value::Symbol("file-supersession".into()),
                 Value::String("File reverted".into()),
-                Value::String(path),
+                Value::String(logical_path),
             ])))
         }
         _ => Err(LispError::SignalValue(Value::list([
             Value::Symbol("file-supersession".into()),
             Value::String("File changed on disk".into()),
-            Value::String(path),
+            Value::String(logical_path),
         ]))),
     }
 }

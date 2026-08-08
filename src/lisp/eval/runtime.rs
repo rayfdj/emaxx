@@ -197,12 +197,42 @@ impl Interpreter {
     }
 
     pub fn load_target(&mut self, target: &str) -> Result<PathBuf, LispError> {
-        let Some(path) = self.resolve_load_target(target) else {
+        self.load_target_with_env(target, &Env::new())
+    }
+
+    pub(crate) fn load_target_with_env(
+        &mut self,
+        target: &str,
+        env: &Env,
+    ) -> Result<PathBuf, LispError> {
+        let Some(path) = crate::lisp::primitives::resolve_load_target_in_env(self, target, env)
+        else {
             return Err(load_file_missing_error(target));
         };
         self.materialize_cl_macs_runtime_dependency(target)?;
-        crate::lisp::load_file_strict(self, &path)?;
+        self.load_resolved_path(&path, env, true)?;
         Ok(path)
+    }
+
+    pub(crate) fn load_resolved_path(
+        &mut self,
+        path: &std::path::Path,
+        env: &Env,
+        nomessage: bool,
+    ) -> Result<Value, LispError> {
+        let force_message = self
+            .lookup_var("force-load-messages", env)
+            .is_some_and(|value| value.is_truthy());
+        if !nomessage || force_message {
+            let _ = crate::lisp::primitives::call(
+                self,
+                "message",
+                &[Value::String(format!("Loading {}...", path.display()))],
+                &mut env.clone(),
+            )?;
+        }
+        crate::lisp::load_file_strict(self, path)?;
+        Ok(Value::T)
     }
 
     fn materialize_cl_macs_runtime_dependency(&mut self, target: &str) -> Result<(), LispError> {
@@ -272,13 +302,13 @@ impl Interpreter {
             return Err(load_file_missing_error(load_target));
         };
         self.loading_features.push(feature.to_string());
-        let load_result = crate::lisp::load_file_strict(self, &path);
+        let load_result = self.load_resolved_path(&path, env, true).map(|_| ());
         self.loading_features.pop();
         load_result?;
         if (feature == "semantic/symref" || load_target == "semantic/symref")
             && let Some(grep_path) = self.resolve_load_target("semantic/symref/grep")
         {
-            crate::lisp::load_file_strict(self, &grep_path)?;
+            self.load_resolved_path(&grep_path, env, true)?;
         }
         if !self.has_feature(feature) && target.is_some() {
             return Err(LispError::Signal(format!(
@@ -2438,10 +2468,14 @@ impl Interpreter {
     }
 
     pub fn provide_feature(&mut self, feature: &str) {
-        if !self.provided_features.iter().any(|name| name == feature) {
-            self.provided_features.push(feature.to_string());
+        let mut features = self.provided_features.clone();
+        if !features.iter().any(|name| name == feature) {
+            features.push(feature.to_string());
         }
-        self.set_global_binding("features", self.features_value());
+        self.set_global_binding(
+            "features",
+            Value::list(features.into_iter().map(Value::Symbol)),
+        );
         if feature == "abbrev" {
             primitives::ensure_standard_abbrev_tables(self);
         }
@@ -2598,8 +2632,13 @@ impl Interpreter {
     }
 
     pub fn unprovide_feature(&mut self, feature: &str) {
-        self.provided_features.retain(|name| name != feature);
-        self.set_global_binding("features", self.features_value());
+        let features = self
+            .provided_features
+            .iter()
+            .filter(|name| name.as_str() != feature)
+            .cloned()
+            .map(Value::Symbol);
+        self.set_global_binding("features", Value::list(features));
     }
 
     pub(crate) fn provide_feature_with_after_load(

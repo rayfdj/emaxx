@@ -2099,17 +2099,7 @@ impl Interpreter {
             index += 2;
         }
 
-        let stored = Self::stored_value(keymap);
-        self.globals_index.insert(resolved.clone(), stored.clone());
-        if let Some(existing) = self
-            .globals
-            .iter_mut()
-            .rposition(|(symbol, _)| symbol == &resolved)
-        {
-            self.globals[existing].1 = stored;
-        } else {
-            self.globals.push((resolved, stored));
-        }
+        self.set_global_binding(&resolved, keymap);
         Ok(Value::Nil)
     }
 
@@ -2196,16 +2186,11 @@ impl Interpreter {
                     self.mark_special_variable("local-minor-modes");
                     self.mark_auto_buffer_local("local-minor-modes");
                     if self.lookup_var("local-minor-modes", &Vec::new()).is_none() {
-                        self.globals_index
-                            .insert("local-minor-modes".into(), Value::Nil);
-                        self.globals.push(("local-minor-modes".into(), Value::Nil));
+                        self.set_global_binding("local-minor-modes", Value::Nil);
                     }
                 }
                 if self.lookup_var(&variable_name, &Vec::new()).is_none() {
-                    let stored = Self::stored_value(init_value);
-                    self.globals_index
-                        .insert(variable_name.clone(), stored.clone());
-                    self.globals.push((variable_name.clone(), stored));
+                    self.set_global_binding(&variable_name, init_value);
                 }
                 let toggle = Value::Symbol(variable_name.clone());
                 let mut minor_modes = self
@@ -2388,9 +2373,7 @@ impl Interpreter {
             if kind == "define-globalized-minor-mode" {
                 self.mark_special_variable(name);
                 if self.lookup_var(name, &Vec::new()).is_none() {
-                    self.globals_index.insert(name.to_string(), Value::Nil);
-                    self.globals
-                        .push((name.to_string(), Self::stored_value(Value::Nil)));
+                    self.set_global_binding(name, Value::Nil);
                 }
             }
 
@@ -2405,11 +2388,10 @@ impl Interpreter {
                 let default_syntax_table_name = format!("{name}-syntax-table");
                 let default_abbrev_table_name = format!("{name}-abbrev-table");
                 if self.lookup_var(&map_name, &Vec::new()).is_none() {
-                    let stored = Self::stored_value(crate::lisp::primitives::keymap_placeholder(
-                        Some(&map_name),
-                    ));
-                    self.globals_index.insert(map_name.clone(), stored.clone());
-                    self.globals.push((map_name.clone(), stored));
+                    self.set_global_binding(
+                        &map_name,
+                        crate::lisp::primitives::keymap_placeholder(Some(&map_name)),
+                    );
                 }
                 let mut index = 4;
                 if matches!(

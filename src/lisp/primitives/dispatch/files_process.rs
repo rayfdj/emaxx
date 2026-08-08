@@ -110,6 +110,568 @@ fn move_to_system_trash(path: &str) -> Result<(), trash::Error> {
     }
 }
 
+fn mock_local_arguments(
+    interp: &Interpreter,
+    env: &Env,
+    args: &[Value],
+    indices: &[usize],
+) -> Result<Vec<Value>, LispError> {
+    let mut local_args = args.to_vec();
+    for index in indices {
+        let Some(argument) = local_args.get_mut(*index) else {
+            continue;
+        };
+        let Some(file) = string_like(argument).map(|string| string.text) else {
+            continue;
+        };
+        if let Some(remote) = mock_remote_path(interp, env, &file) {
+            *argument = Value::String(remote.localname);
+        }
+    }
+    Ok(local_args)
+}
+
+fn call_mock_local_operation(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    operation: &str,
+    args: &[Value],
+    indices: &[usize],
+    inhibit_remote_trash: bool,
+) -> Result<Value, LispError> {
+    let local_args = mock_local_arguments(interp, env, args, indices)?;
+
+    // Real Tramp applies this policy in both deletion skeletons before it
+    // invokes the backend.  The in-process mock transport bypasses those
+    // skeletons, so carry the policy across the local-operation boundary in
+    // one place for both files and directories.
+    let trash_restore = if inhibit_remote_trash
+        && interp
+            .lookup_var("remote-file-name-inhibit-delete-by-moving-to-trash", env)
+            .is_some_and(|value| value.is_truthy())
+    {
+        Some(interp.bind_special_dynamic("delete-by-moving-to-trash", Value::Nil, env)?)
+    } else {
+        None
+    };
+    // The handler has already classified and translated every file-name
+    // argument.  Re-entering outer dispatch would inspect logical operands
+    // again and recurse when one must remain remote text, such as a remote
+    // symlink target stored verbatim in a local link.
+    let result = call(interp, operation, &local_args, env);
+    let restore_result = match trash_restore {
+        Some(restore) => interp.restore_special_dynamic(restore, env),
+        None => Ok(()),
+    };
+    match (result, restore_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+fn call_mock_access_file(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let requested = string_text(&args[0])?;
+    let message = string_text(&args[1])?;
+    let timeout = interp
+        .lookup_var("remote-file-name-access-timeout", env)
+        .filter(Value::is_truthy)
+        .and_then(|value| match value {
+            Value::Integer(seconds) => Some(seconds as f64),
+            Value::Float(seconds) => Some(seconds),
+            _ => None,
+        })
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .map(Duration::from_secs_f64);
+    let started = Instant::now();
+    let file = call_named_function(
+        interp,
+        "file-truename",
+        &[Value::String(requested.clone())],
+        env,
+    )?;
+    let exists = call_named_function(interp, "file-exists-p", std::slice::from_ref(&file), env)?;
+    if timeout.is_some_and(|timeout| started.elapsed() >= timeout) {
+        return Err(LispError::SignalValue(file_error_with_detail_value(
+            &message,
+            "Remote file access timed out",
+            &requested,
+        )));
+    }
+    if exists.is_nil() {
+        return Err(file_operation_error(
+            &message,
+            &std::io::Error::from(ErrorKind::NotFound),
+            &requested,
+        ));
+    }
+    let directory =
+        call_named_function(interp, "file-directory-p", std::slice::from_ref(&file), env)?;
+    let predicate = if directory.is_truthy() {
+        "file-accessible-directory-p"
+    } else {
+        "file-readable-p"
+    };
+    if call_named_function(interp, predicate, &[file], env)?.is_nil() {
+        return Err(LispError::SignalValue(permission_denied_error_value(
+            &message, &requested,
+        )));
+    }
+    Ok(Value::Nil)
+}
+
+fn unquote_mock_local_file_result(value: Value) -> Value {
+    match value {
+        Value::String(path) => Value::String(unquote_local_file_name(&path).unwrap_or(path)),
+        value => value,
+    }
+}
+
+fn call_mock_file_attributes(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let local_args = mock_local_arguments(interp, env, args, &[0])?;
+    let result = call(interp, "file-attributes", &local_args, env)?;
+    let Ok(mut attributes) = result.to_vec() else {
+        return Ok(result);
+    };
+    if let Some(file_type) = attributes.first_mut() {
+        *file_type = unquote_mock_local_file_result(file_type.clone());
+    }
+    Ok(Value::list(attributes))
+}
+
+fn call_mock_file_symlink_p(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let logical_file = string_text(&args[0])?;
+    // A remote metadata read establishes a Tramp connection even though the
+    // mock transport can answer it from the host filesystem.  Lock handling
+    // relies on that lifecycle: a read after cleanup creates a new connection
+    // whose subsequent explicit `unlock-file' is allowed to remove the lock.
+    let vector = call_named_function(
+        interp,
+        "tramp-dissect-file-name",
+        &[Value::String(logical_file)],
+        env,
+    )?;
+    ensure_mock_connection(interp, env, &vector)?;
+    let local_args = mock_local_arguments(interp, env, args, &[0])?;
+    call(interp, "file-symlink-p", &local_args, env).map(unquote_mock_local_file_result)
+}
+
+fn ensure_mock_connection(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    vector: &Value,
+) -> Result<(), LispError> {
+    // The lightweight evaluator advertises unloaded optional Tramp helpers
+    // with `t'.  There is no connection object to maintain in that mode;
+    // full Tramp and focused lifecycle tests provide an actual vector token.
+    if matches!(vector, Value::Nil | Value::T) {
+        return Ok(());
+    }
+    let process = call_named_function(
+        interp,
+        "tramp-get-process",
+        std::slice::from_ref(vector),
+        env,
+    )?;
+    if call(interp, "process-live-p", &[process], env)?.is_truthy() {
+        return Ok(());
+    }
+
+    // The mock transport performs filesystem operations in-process, but
+    // Tramp still uses a process attached to its connection buffer as the
+    // connection's lifecycle token.  A commandless pipe process supplies
+    // exactly that contract without recursively invoking a real backend.
+    let buffer = call_named_function(
+        interp,
+        "tramp-get-connection-buffer",
+        std::slice::from_ref(vector),
+        env,
+    )?;
+    let mut name = call_named_function(
+        interp,
+        "tramp-get-connection-name",
+        std::slice::from_ref(vector),
+        env,
+    )?;
+    if string_like(&name).is_none() {
+        name = call_named_function(
+            interp,
+            "tramp-buffer-name",
+            std::slice::from_ref(vector),
+            env,
+        )?;
+    }
+    let process = call(
+        interp,
+        "make-pipe-process",
+        &[
+            Value::Symbol(":name".into()),
+            name,
+            Value::Symbol(":buffer".into()),
+            buffer,
+            Value::Symbol(":noquery".into()),
+            Value::T,
+        ],
+        env,
+    )?;
+    call_named_function(
+        interp,
+        "tramp-post-process-creation",
+        &[process.clone(), vector.clone()],
+        env,
+    )?;
+    call_named_function(
+        interp,
+        "tramp-set-connection-property",
+        &[process, Value::String("connected".into()), Value::T],
+        env,
+    )?;
+    call_named_function(
+        interp,
+        "tramp-set-connection-local-variables",
+        std::slice::from_ref(vector),
+        env,
+    )?;
+    Ok(())
+}
+
+fn call_mock_insert_file_contents(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let requested = string_text(&args[0])?;
+    let logical_name = expand_file_name_runtime(interp, env, &requested, None)?;
+    let local_args = mock_local_arguments(interp, env, args, &[0])?;
+    let result = call(interp, "insert-file-contents", &local_args, env)?;
+    let mut values = result.to_vec()?;
+    if let Some(name) = values.first_mut() {
+        *name = Value::String(logical_name);
+    }
+    Ok(Value::list(values))
+}
+
+fn call_mock_file_expand_wildcards(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let pattern = string_text(&args[0])?;
+    let explicitly_remote = parse_remote_file_name(&pattern).is_some();
+    let remote = require_mock_remote_path(interp, env, &pattern)?;
+    let mut local_args = args.to_vec();
+    local_args[0] = Value::String(remote.localname);
+    let full = args.get(1).is_some_and(Value::is_truthy);
+    let result = call(interp, "file-expand-wildcards", &local_args, env)?;
+    let values = result
+        .to_vec()?
+        .into_iter()
+        .map(|value| {
+            string_text(&value).map(|path| {
+                if full || explicitly_remote {
+                    Value::String(mock_logical_path(&remote.prefix, &path, remote.quoted))
+                } else {
+                    Value::String(file_name_nondirectory(&path))
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Value::list(values))
+}
+
+fn call_mock_add_name_to_file(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let source = string_text(&args[0])?;
+    let target = string_text(&args[1])?;
+    let source_remote = mock_path_uses_remote_transport(interp, env, &source);
+    let target_remote = mock_path_uses_remote_transport(interp, env, &target);
+    if source_remote != target_remote {
+        return Err(LispError::SignalValue(file_error_with_detail_value(
+            "Adding new name",
+            "Cross-device link",
+            &target,
+        )));
+    }
+    let local_args = mock_local_arguments(interp, env, args, &[0, 1])?;
+    call(interp, "add-name-to-file", &local_args, env)
+}
+
+fn call_mock_make_symbolic_link(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let link = string_text(&args[1])?;
+    let link_is_remote = mock_path_uses_remote_transport(interp, env, &link);
+    let indices: &[usize] = if link_is_remote { &[0, 1] } else { &[1] };
+    let mut local_args = mock_local_arguments(interp, env, args, indices)?;
+    if link_is_remote
+        && let Some(source) = local_args.first_mut()
+        && let Some(path) = string_like(source).map(|string| string.text)
+        && let Some(unquoted) = unquote_local_file_name(&path)
+    {
+        *source = Value::String(unquoted);
+    }
+    call(interp, "make-symbolic-link", &local_args, env)
+}
+
+fn copy_mock_directory(source: &Path, target: &Path) -> Result<(), std::io::Error> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source = entry.path();
+        let target = target.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_mock_directory(&source, &target)?;
+        } else {
+            fs::copy(source, target)?;
+        }
+    }
+    Ok(())
+}
+
+fn file_already_exists_error(path: &str) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("file-already-exists".into()),
+        Value::String("File exists".into()),
+        Value::String(path.into()),
+    ]))
+}
+
+fn call_mock_copy_directory(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let local_args = mock_local_arguments(interp, env, args, &[0, 1])?;
+    let source = resolve_file_name_in_env(interp, env, &string_text(&local_args[0])?);
+    if let Err(error) = fs::metadata(&source) {
+        return Err(file_operation_error(
+            "Opening directory",
+            &error,
+            &string_text(&args[0])?,
+        ));
+    }
+    let target = string_text(&local_args[1])?;
+    if !directory_name_p(&target) && fs::symlink_metadata(&target).is_ok() {
+        return Err(file_already_exists_error(&string_text(&args[1])?));
+    }
+    call_without_mock_file_name_operation(
+        interp,
+        env,
+        "copy-directory",
+        "copy-directory",
+        &local_args,
+    )
+}
+
+fn call_mock_copy_file(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let local_args = mock_local_arguments(interp, env, args, &[0, 1])?;
+    let source = PathBuf::from(resolve_file_name_in_env(
+        interp,
+        env,
+        &string_text(&local_args[0])?,
+    ));
+    if !source.is_dir() {
+        return call(interp, "copy-file", &local_args, env);
+    }
+    let requested_target = resolve_file_name_in_env(interp, env, &string_text(&local_args[1])?);
+    let mut target = PathBuf::from(&requested_target);
+    if directory_name_p(&requested_target) || target.is_dir() {
+        let name = source
+            .file_name()
+            .ok_or_else(|| LispError::Signal("Invalid directory source".into()))?;
+        target.push(name);
+    }
+    if target.exists() && args.get(2).is_none_or(Value::is_nil) {
+        return Err(file_already_exists_error(&target.display().to_string()));
+    }
+    copy_mock_directory(&source, &target).map_err(|error| {
+        LispError::SignalValue(file_error_with_detail_value(
+            "Copying directory",
+            &error.to_string(),
+            &target.display().to_string(),
+        ))
+    })?;
+    Ok(Value::Nil)
+}
+
+fn call_mock_directory_files_and_attributes(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let requested = string_text(&args[0])?;
+    let remote = require_mock_remote_path(interp, env, &requested)?;
+    let local_args = mock_local_arguments(interp, env, args, &[0])?;
+    let result = call(interp, "directory-files-and-attributes", &local_args, env)?;
+    if !args.get(1).is_some_and(Value::is_truthy) {
+        return Ok(result);
+    }
+    Ok(Value::list(
+        result
+            .to_vec()?
+            .into_iter()
+            .map(|entry| {
+                let (name, attributes) = entry
+                    .cons_values()
+                    .ok_or_else(|| LispError::TypeError("consp".into(), entry.type_name()))?;
+                Ok(Value::cons(
+                    Value::String(mock_logical_path(
+                        &remote.prefix,
+                        &string_text(&name)?,
+                        remote.quoted,
+                    )),
+                    attributes,
+                ))
+            })
+            .collect::<Result<Vec<_>, LispError>>()?,
+    ))
+}
+
+fn call_mock_directory_files(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let requested = string_text(&args[0])?;
+    let remote = require_mock_remote_path(interp, env, &requested)?;
+    let local_args = mock_local_arguments(interp, env, args, &[0])?;
+    let result = call(interp, "directory-files", &local_args, env)?;
+    if !args.get(1).is_some_and(Value::is_truthy) {
+        return Ok(result);
+    }
+    Ok(Value::list(
+        result
+            .to_vec()?
+            .into_iter()
+            .map(|name| {
+                Ok(Value::String(mock_logical_path(
+                    &remote.prefix,
+                    &string_text(&name)?,
+                    remote.quoted,
+                )))
+            })
+            .collect::<Result<Vec<_>, LispError>>()?,
+    ))
+}
+
+fn mock_remote_exec_paths(interp: &Interpreter, env: &Env) -> Result<Vec<String>, LispError> {
+    let fallback = interp.lookup_var("exec-path", env).unwrap_or(Value::Nil);
+    let configured = interp
+        .lookup_var("tramp-remote-path", env)
+        .unwrap_or_else(|| fallback.clone());
+    let fallback_paths = fallback
+        .to_vec()?
+        .into_iter()
+        .filter_map(|value| string_like(&value).map(|string| string.text))
+        .collect::<Vec<_>>();
+    let home = lisp_environment_string(interp, env, "HOME");
+    let mut paths = Vec::new();
+    for value in configured.to_vec()? {
+        match value.as_symbol().ok() {
+            Some("tramp-default-remote-path" | "tramp-own-remote-path") => {
+                paths.extend(fallback_paths.iter().cloned());
+            }
+            _ => {
+                if let Some(path) = string_like(&value) {
+                    paths.push(expand_home_prefix_with_home(&path.text, home.as_deref()));
+                }
+            }
+        }
+    }
+    paths.retain(|path| Path::new(path).is_dir());
+    let mut seen = HashSet::new();
+    paths.reverse();
+    paths.retain(|path| seen.insert(path.clone()));
+    paths.reverse();
+
+    let default_directory = interp
+        .lookup_var("default-directory", env)
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .ok_or_else(|| LispError::Signal("Invalid mock remote directory".into()))?;
+    paths.push(mock_remote_local_path(interp, env, &default_directory)?);
+    Ok(paths)
+}
+
+fn mock_remote_exec_path(interp: &Interpreter, env: &Env) -> Result<Value, LispError> {
+    Ok(Value::list(
+        mock_remote_exec_paths(interp, env)?
+            .into_iter()
+            .map(Value::String),
+    ))
+}
+
+fn mock_abbreviate_file_name(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    file: &Value,
+) -> Result<Value, LispError> {
+    let mut abbreviated = file.clone();
+    let entries = interp
+        .lookup_var("directory-abbrev-alist", env)
+        .unwrap_or(Value::Nil)
+        .to_vec()?;
+    for entry in entries {
+        let Some((pattern, replacement)) = entry.cons_values() else {
+            continue;
+        };
+        if regexp::string_match_impl(interp, &[pattern, abbreviated.clone()], env, true)?
+            .is_truthy()
+        {
+            abbreviated = super::call(
+                interp,
+                "replace-match",
+                &[replacement, Value::T, Value::Nil, abbreviated],
+                env,
+            )?;
+            break;
+        }
+    }
+
+    let text = string_text(&abbreviated)?;
+    let Some(remote) = parse_remote_file_name(&text) else {
+        return Ok(abbreviated);
+    };
+    let Some(home) = lisp_environment_string(interp, env, "HOME") else {
+        return Ok(abbreviated);
+    };
+    let home = file_name_as_directory(&home);
+    if home == "/" {
+        return Ok(abbreviated);
+    }
+    let localname = resolved_remote_localname_in_env(interp, env, &remote);
+    let shortened = if localname == directory_file_name(&home) {
+        Some("~".to_string())
+    } else {
+        localname
+            .strip_prefix(&home)
+            .map(|suffix| format!("~/{suffix}"))
+    };
+    Ok(shortened
+        .map(|localname| Value::String(format!("{}{localname}", remote.prefix)))
+        .unwrap_or(abbreviated))
+}
+
 fn remote_identification_prefix(remote: &RemoteFileNameParts) -> String {
     // Tramp canonicalizes the empty host in a mock connection to the local
     // system name when asked for the complete remote identification.  Keep
@@ -120,6 +682,69 @@ fn remote_identification_prefix(remote: &RemoteFileNameParts) -> String {
     } else {
         remote.prefix.clone()
     }
+}
+
+fn mock_file_remote_p_value(
+    interp: &Interpreter,
+    env: &Env,
+    remote: RemoteFileNameParts,
+    identification: &Value,
+) -> Value {
+    match identification.as_symbol().ok() {
+        None | Some("nil") | Some("t") => Value::String(remote_identification_prefix(&remote)),
+        Some("method") => Value::String(remote.method),
+        Some("user") => remote.user.map(Value::String).unwrap_or(Value::Nil),
+        Some("host") => Value::String(remote.host),
+        Some("localname") => Value::String(logical_remote_localname_in_env(interp, env, &remote)),
+        // `hop' describes a prefix before this connection.  A plain mock
+        // connection has no hop; treating an unknown identification as the
+        // complete prefix made interactive completion invent one.
+        Some("hop") => Value::Nil,
+        _ => Value::String(remote_identification_prefix(&remote)),
+    }
+}
+
+fn call_without_mock_file_name_operation(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    operation: &str,
+    function: &str,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let restore = interp.bind_special_dynamic(
+        "emaxx--inhibit-mock-file-name-operation",
+        Value::Symbol(operation.into()),
+        env,
+    )?;
+    let call_result = interp
+        .lookup_function(function, env)
+        .and_then(|callable| interp.call_function_value(callable, Some(function), args, env));
+    let restore_result = interp.restore_special_dynamic(restore, env);
+    match (call_result, restore_result) {
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+fn restore_mock_connection_spelling(
+    value: Value,
+    requested: &RemoteFileNameParts,
+) -> Result<Value, LispError> {
+    let canonical = remote_identification_prefix(requested);
+    let preserve_local_quote = unquote_local_file_name(&requested.localname).is_some();
+    let restore = |value: Value| match value {
+        Value::String(path) if path.starts_with(&canonical) => {
+            let suffix = &path[canonical.len()..];
+            let suffix = if preserve_local_quote && !suffix.starts_with("/:") {
+                format!("/:{suffix}")
+            } else {
+                suffix.to_string()
+            };
+            Value::String(format!("{}{suffix}", requested.prefix))
+        }
+        other => other,
+    };
+    Ok(Value::list(value.to_vec()?.into_iter().map(restore)))
 }
 
 fn buffer_visiting_exact_file_name(
@@ -1243,7 +1868,7 @@ define_dispatch!(
                 let file = string_text(&args[0])?;
                 Ok(parse_remote_file_name(&file)
                     .map(|remote| {
-                        Value::String(resolved_remote_localname_in_env(interp, env, &remote))
+                        Value::String(logical_remote_localname_in_env(interp, env, &remote))
                     })
                     .unwrap_or(Value::String(file)))
             }
@@ -1265,19 +1890,12 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 };
                 let identification = args.get(1).cloned().unwrap_or(Value::Nil);
-                let result = match identification.as_symbol().ok() {
-                    None | Some("nil") | Some("t") => {
-                        Value::String(remote_identification_prefix(&remote))
-                    }
-                    Some("method") => Value::String(remote.method),
-                    Some("user") => remote.user.map(Value::String).unwrap_or(Value::Nil),
-                    Some("host") => Value::String(remote.host),
-                    Some("localname") => {
-                        Value::String(resolved_remote_localname_in_env(interp, env, &remote))
-                    }
-                    _ => Value::String(remote_identification_prefix(&remote)),
-                };
-                Ok(result)
+                Ok(mock_file_remote_p_value(
+                    interp,
+                    env,
+                    remote,
+                    &identification,
+                ))
             }
             "file-expand-wildcards" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -1315,38 +1933,92 @@ define_dispatch!(
             "emaxx-mock-file-name-handler" => {
                 need_arg_range(name, args, 1, usize::MAX)?;
                 let operation = args[0].as_symbol()?;
-                match operation {
-                    "abbreviate-file-name" => {
+                let Some(handler_operation) = mock_file_name_handler_operation(operation) else {
+                    return Ok(Value::Nil);
+                };
+                match handler_operation {
+                    MockFileNameHandlerOperation::AccessFile => {
+                        need_args(name, args, 3)?;
+                        call_mock_access_file(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::AddNameToFile => {
+                        need_arg_range(name, args, 3, 4)?;
+                        call_mock_add_name_to_file(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::AbbreviateFileName => {
                         need_args(name, args, 2)?;
-                        Ok(args[1].clone())
+                        mock_abbreviate_file_name(interp, env, &args[1])
                     }
-                    "exec-path" => {
+                    MockFileNameHandlerOperation::CopyDirectory => {
+                        need_arg_range(name, args, 3, 7)?;
+                        call_mock_copy_directory(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::CopyFile => {
+                        need_arg_range(name, args, 3, 7)?;
+                        call_mock_copy_file(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::DirectoryFileName => {
+                        need_args(name, args, 2)?;
+                        let file = string_text(&args[1])?;
+                        Ok(Value::String(
+                            parse_remote_file_name(&file)
+                                .filter(|remote| remote.localname.is_empty())
+                                .map(|_| file.clone())
+                                .unwrap_or_else(|| directory_file_name(&file)),
+                        ))
+                    }
+                    MockFileNameHandlerOperation::DirectoryFiles => {
+                        need_arg_range(name, args, 2, 6)?;
+                        call_mock_directory_files(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::DirectoryFilesAndAttributes => {
+                        need_arg_range(name, args, 2, 7)?;
+                        call_mock_directory_files_and_attributes(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::ExecPath => {
                         need_args(name, args, 1)?;
-                        Ok(interp.lookup_var("exec-path", env).unwrap_or(Value::Nil))
+                        mock_remote_exec_path(interp, env)
                     }
-                    "expand-file-name" => {
+                    MockFileNameHandlerOperation::ExpandFileName => {
                         need_arg_range(name, args, 2, 3)?;
                         let file = string_text(&args[1])?;
                         let file_remote =
                             parse_remote_file_name(&file).filter(|remote| remote.method == "mock");
-                        let base = args
+                        let explicit_base = args
                             .get(2)
                             .filter(|value| !value.is_nil())
                             .map(string_text)
                             .transpose()?;
-                        let base_remote = base
-                            .as_deref()
-                            .and_then(parse_remote_file_name)
-                            .filter(|remote| remote.method == "mock");
-                        if file_remote.is_none() && file_name_absolute_p(&file) {
+                        if file_remote.is_none()
+                            && (file_name_absolute_p(&file) || file.starts_with('~'))
+                        {
                             return Ok(Value::String(expand_file_name_in_env(
                                 interp, env, &file, None,
                             )));
                         }
+                        if file_remote.is_none()
+                            && let Some(base) = explicit_base.as_deref()
+                            && mock_remote_path(interp, env, base).is_none()
+                        {
+                            return Ok(Value::String(expand_file_name_in_env(
+                                interp,
+                                env,
+                                &file,
+                                Some(base),
+                            )));
+                        }
+                        let base = explicit_base.or_else(|| {
+                            interp
+                                .lookup_var("default-directory", env)
+                                .and_then(|value| string_like(&value).map(|string| string.text))
+                        });
+                        let base_remote = base
+                            .as_deref()
+                            .and_then(|base| mock_remote_path(interp, env, base));
                         let remote_prefix = file_remote
                             .as_ref()
-                            .or(base_remote.as_ref())
                             .map(|remote| remote.prefix.clone())
+                            .or_else(|| base_remote.as_ref().map(|remote| remote.prefix.clone()))
                             .ok_or_else(|| {
                                 LispError::Signal(format!(
                                     "Invalid mock remote file name: {file:?} with base {base:?}"
@@ -1354,35 +2026,128 @@ define_dispatch!(
                             })?;
                         let remote_localname = file_remote
                             .as_ref()
-                            .map(|remote| resolved_remote_localname_in_env(interp, env, remote))
+                            .map(|remote| {
+                                if matches!(remote.localname.as_str(), "~" | "/:~")
+                                    && interp
+                                        .lookup_var("tramp-tolerate-tilde", env)
+                                        .is_some_and(|value| value.is_truthy())
+                                {
+                                    "/:~".to_string()
+                                } else {
+                                    resolved_remote_localname_in_env(interp, env, remote)
+                                }
+                            })
                             .unwrap_or(file);
+                        let preserve_local_quote = file_remote.as_ref().map_or_else(
+                            || base_remote.as_ref().is_some_and(|remote| remote.quoted),
+                            |remote| unquote_local_file_name(&remote.localname).is_some(),
+                        );
                         let base_localname = base_remote
                             .as_ref()
-                            .map(|remote| resolved_remote_localname_in_env(interp, env, remote))
-                            .or(base);
-                        let localname = expand_file_name_in_env(
-                            interp,
-                            env,
-                            &remote_localname,
-                            base_localname.as_deref(),
-                        );
+                            .map(|remote| remote.localname.as_str())
+                            .or(base.as_deref());
+                        let mut localname =
+                            expand_file_name_in_env(interp, env, &remote_localname, base_localname);
+                        if preserve_local_quote && !localname.starts_with("/:") {
+                            localname = format!("/:{localname}");
+                        }
                         Ok(Value::String(format!("{remote_prefix}{localname}")))
                     }
-                    "file-local-copy" => {
+                    MockFileNameHandlerOperation::FileAttributes => {
+                        need_arg_range(name, args, 2, 4)?;
+                        call_mock_file_attributes(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::FileExpandWildcards => {
+                        need_arg_range(name, args, 2, 4)?;
+                        call_mock_file_expand_wildcards(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::FindBackupFileName => {
+                        need_args(name, args, 2)?;
+                        let requested = parse_remote_file_name(&string_text(&args[1])?)
+                            .ok_or_else(|| LispError::Signal("Invalid mock file name".into()))?;
+                        let result = call_without_mock_file_name_operation(
+                            interp,
+                            env,
+                            "find-backup-file-name",
+                            "tramp-handle-find-backup-file-name",
+                            &args[1..],
+                        )?;
+                        restore_mock_connection_spelling(result, &requested)
+                    }
+                    MockFileNameHandlerOperation::FileLocalCopy => {
                         need_args(name, args, 2)?;
                         mock_file_local_copy(interp, env, &string_text(&args[1])?)
                             .map(Value::String)
                     }
-                    "file-truename" => {
+                    MockFileNameHandlerOperation::FileNameCompletion => {
+                        call_mock_local_operation(interp, env, operation, &args[1..], &[1], false)
+                    }
+                    MockFileNameHandlerOperation::FileNameAsDirectory => {
                         need_args(name, args, 2)?;
-                        let (prefix, localname) =
-                            mock_remote_path_parts(interp, env, &string_text(&args[1])?)?;
+                        let file = string_text(&args[1])?;
+                        let directory = if parse_remote_file_name(&file)
+                            .is_some_and(|remote| remote.localname.is_empty())
+                        {
+                            if interp
+                                .lookup_var("non-essential", env)
+                                .is_some_and(|value| value.is_truthy())
+                            {
+                                file
+                            } else {
+                                format!("{file}./")
+                            }
+                        } else {
+                            file_name_as_directory(&file)
+                        };
+                        Ok(Value::String(directory))
+                    }
+                    MockFileNameHandlerOperation::FileNameDirectory => {
+                        need_args(name, args, 2)?;
+                        let file = string_text(&args[1])?;
+                        Ok(
+                            if parse_remote_file_name(&file)
+                                .is_some_and(|remote| remote.localname.is_empty())
+                            {
+                                Value::String(file)
+                            } else {
+                                file_name_directory(&file)
+                                    .map(Value::String)
+                                    .unwrap_or(Value::Nil)
+                            },
+                        )
+                    }
+                    MockFileNameHandlerOperation::FileNameNondirectory => {
+                        need_args(name, args, 2)?;
+                        let file = string_text(&args[1])?;
+                        Ok(Value::String(
+                            if parse_remote_file_name(&file)
+                                .is_some_and(|remote| remote.localname.is_empty())
+                            {
+                                String::new()
+                            } else {
+                                file_name_nondirectory(&file)
+                            },
+                        ))
+                    }
+                    MockFileNameHandlerOperation::FileTruename => {
+                        need_args(name, args, 2)?;
+                        let remote =
+                            require_mock_remote_path(interp, env, &string_text(&args[1])?)?;
+                        let canonical = canonical_file_name(&remote.localname);
+                        let localname = if remote.quoted {
+                            format!("/:{canonical}")
+                        } else {
+                            quote_local_file_name_if_needed(canonical)
+                        };
+                        // A truename is canonical in both halves: GNU Tramp
+                        // resolves an omitted mock host to the connection's
+                        // system name as well as canonicalizing the localname.
                         Ok(Value::String(format!(
-                            "{prefix}{}",
-                            canonical_file_name(&localname)
+                            "{}{localname}",
+                            remote.identification_prefix
                         )))
                     }
-                    "file-remote-p" => {
+                    MockFileNameHandlerOperation::FileRemoteP => {
                         need_arg_range(name, args, 2, 4)?;
                         let remote = parse_remote_file_name(&string_text(&args[1])?)
                             .filter(|remote| remote.method == "mock")
@@ -1393,29 +2158,72 @@ define_dispatch!(
                                 ))
                             })?;
                         let identification = args.get(2).cloned().unwrap_or(Value::Nil);
-                        Ok(match identification.as_symbol().ok() {
-                            None | Some("nil") | Some("t") => {
-                                Value::String(remote_identification_prefix(&remote))
-                            }
-                            Some("method") => Value::String(remote.method),
-                            Some("user") => remote.user.map(Value::String).unwrap_or(Value::Nil),
-                            Some("host") => Value::String(remote.host),
-                            Some("localname") => Value::String(resolved_remote_localname_in_env(
-                                interp, env, &remote,
-                            )),
-                            _ => Value::String(remote_identification_prefix(&remote)),
-                        })
+                        Ok(mock_file_remote_p_value(
+                            interp,
+                            env,
+                            remote,
+                            &identification,
+                        ))
                     }
-                    "file-user-uid" => {
+                    MockFileNameHandlerOperation::FileSymlinkP => {
+                        need_args(name, args, 2)?;
+                        call_mock_file_symlink_p(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::FileUserUid => {
                         need_args(name, args, 1)?;
                         super::call(interp, "user-uid", &[], env)
                     }
-                    "file-group-gid" => {
+                    MockFileNameHandlerOperation::FileGroupGid => {
                         need_args(name, args, 1)?;
                         super::call(interp, "group-gid", &[], env)
                     }
-                    "make-process" => make_process_value(interp, env, &args[1..]),
-                    "start-file-process" => {
+                    MockFileNameHandlerOperation::InsertDirectory => {
+                        need_arg_range(name, args, 3, 5)?;
+                        let logical_file = string_text(&args[1])?;
+                        let local_args = mock_local_arguments(interp, env, &args[1..], &[0])?;
+                        let restore = interp.bind_special_dynamic(
+                            "emaxx--insert-directory-logical-file",
+                            Value::String(logical_file),
+                            env,
+                        )?;
+                        let result = call(interp, "insert-directory", &local_args, env);
+                        let restore_result = interp.restore_special_dynamic(restore, env);
+                        match (result, restore_result) {
+                            (Err(error), _) => Err(error),
+                            (Ok(_), Err(error)) => Err(error),
+                            (Ok(value), Ok(())) => Ok(value),
+                        }
+                    }
+                    MockFileNameHandlerOperation::InsertFileContents => {
+                        need_arg_range(name, args, 2, 6)?;
+                        call_mock_insert_file_contents(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::MakeSymbolicLink => {
+                        need_arg_range(name, args, 3, 4)?;
+                        call_mock_make_symbolic_link(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::MakeProcess => {
+                        make_process_value(interp, env, &args[1..])
+                    }
+                    MockFileNameHandlerOperation::ProcessFile => {
+                        need_arg_range(name, args, 2, usize::MAX)?;
+                        env.push(mock_remote_process_frame(interp, env)?.ok_or_else(|| {
+                            LispError::Signal("Invalid mock remote directory".into())
+                        })?);
+                        let result = super::call(interp, "process-file", &args[1..], env);
+                        env.pop();
+                        result
+                    }
+                    MockFileNameHandlerOperation::ShellCommand => {
+                        need_arg_range(name, args, 2, 4)?;
+                        env.push(mock_remote_process_frame(interp, env)?.ok_or_else(|| {
+                            LispError::Signal("Invalid mock remote directory".into())
+                        })?);
+                        let result = call(interp, "shell-command", &args[1..], env);
+                        env.pop();
+                        result
+                    }
+                    MockFileNameHandlerOperation::StartFileProcess => {
                         need_arg_range(name, args, 4, usize::MAX)?;
                         env.push(mock_remote_process_frame(interp, env)?.ok_or_else(|| {
                             LispError::Signal("Invalid mock remote directory".into())
@@ -1424,27 +2232,40 @@ define_dispatch!(
                         env.pop();
                         result
                     }
-                    _ => {
-                        let Some(MockFileNameHandlerOperation::LocalPathArguments(indices)) =
-                            mock_file_name_handler_operation(operation)
-                        else {
-                            return Ok(Value::Nil);
-                        };
-                        let mut local_args = args[1..].to_vec();
-                        for index in indices {
-                            let Some(argument) = local_args.get_mut(*index) else {
-                                continue;
-                            };
-                            let Some(file) = string_like(argument).map(|string| string.text) else {
-                                continue;
-                            };
-                            if mock_path_uses_remote_transport(interp, env, &file) {
-                                *argument =
-                                    Value::String(mock_remote_local_path(interp, env, &file)?);
-                            }
-                        }
-                        super::call(interp, operation, &local_args, env)
+                    MockFileNameHandlerOperation::UnhandledFileNameDirectory => {
+                        need_args(name, args, 2)?;
+                        Ok(Value::Nil)
                     }
+                    MockFileNameHandlerOperation::WriteRegion => {
+                        need_arg_range(name, args, 4, 8)?;
+                        let local_args = mock_local_arguments(interp, env, &args[1..], &[2, 5])?;
+                        let logical_file =
+                            expand_file_name_runtime(interp, env, &string_text(&args[3])?, None)?;
+                        let logical_lock_path = args
+                            .get(6)
+                            .and_then(string_like)
+                            .or_else(|| args.get(5).and_then(string_like))
+                            .map(|string| expand_file_name_runtime(interp, env, &string.text, None))
+                            .transpose()?;
+                        write_region_value_with_logical_path(
+                            interp,
+                            &local_args,
+                            &logical_file,
+                            logical_lock_path.as_deref(),
+                            env,
+                        )
+                    }
+                    MockFileNameHandlerOperation::LocalPathArguments {
+                        indices,
+                        inhibit_remote_trash,
+                    } => call_mock_local_operation(
+                        interp,
+                        env,
+                        operation,
+                        &args[1..],
+                        indices,
+                        inhibit_remote_trash,
+                    ),
                 }
             }
             "dired-noselect" => {
@@ -1675,8 +2496,7 @@ define_dispatch!(
                         Value::String(target),
                     ])));
                 };
-                crate::lisp::load_file_strict(interp, &path)?;
-                Ok(Value::T)
+                interp.load_resolved_path(&path, env, args.get(2).is_some_and(Value::is_truthy))
             }
             "load-file" => {
                 need_args(name, args, 1)?;
@@ -1837,6 +2657,40 @@ define_dispatch!(
                     Value::Nil
                 })
             }
+            "file-ownership-preserved-p" => {
+                need_arg_range(name, args, 1, 2)?;
+                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                let Some(parent) = Path::new(&path).parent() else {
+                    return Ok(Value::T);
+                };
+                #[cfg(unix)]
+                {
+                    let metadata = fs::metadata(if Path::new(&path).exists() {
+                        Path::new(&path)
+                    } else {
+                        parent
+                    })
+                    .map_err(|error| {
+                        file_operation_error("Checking file ownership", &error, &path)
+                    })?;
+                    let user_matches = metadata.uid() == unsafe { libc::geteuid() };
+                    let group_matches = metadata.gid() == unsafe { libc::getegid() };
+                    Ok(
+                        if user_matches
+                            && (!args.get(1).is_some_and(Value::is_truthy) || group_matches)
+                        {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        },
+                    )
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = parent;
+                    Ok(Value::T)
+                }
+            }
             "file-exists-p" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
@@ -1909,11 +2763,32 @@ define_dispatch!(
                 );
                 #[cfg(not(unix))]
                 let (links, uid, gid, inode, device) = (1, 0, 0, 0, 0);
+                let string_ids =
+                    args.get(1).and_then(|value| value.as_symbol().ok()) == Some("string");
+                let user = if string_ids {
+                    #[cfg(unix)]
+                    {
+                        Value::String(
+                            user_name_from_uid(uid as u32).unwrap_or_else(|| uid.to_string()),
+                        )
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Value::String(uid.to_string())
+                    }
+                } else {
+                    Value::Integer(uid)
+                };
+                let group = if string_ids {
+                    Value::String(group_name_from_gid(gid)?.unwrap_or_else(|| gid.to_string()))
+                } else {
+                    Value::Integer(gid)
+                };
                 Ok(Value::list([
                     type_value,
                     Value::Integer(links),
-                    Value::Integer(uid),
-                    Value::Integer(gid),
+                    user,
+                    group,
                     accessed,
                     modified,
                     changed,
@@ -2080,10 +2955,23 @@ define_dispatch!(
                 if directory_name_p(&target) {
                     target = file_name_concat(&[target, file_name_nondirectory(&source)]);
                 }
-                if fs::metadata(&target).is_ok() && args.get(2).is_none_or(Value::is_nil) {
-                    return Err(LispError::Signal(format!("File already exists: {target}")));
+                if fs::symlink_metadata(&target).is_ok() && args.get(2).is_none_or(Value::is_nil) {
+                    return Err(file_operation_error(
+                        "Copying file",
+                        &std::io::Error::from(ErrorKind::AlreadyExists),
+                        &target,
+                    ));
                 }
-                fs::copy(&source, &target).map_err(|error| LispError::Signal(error.to_string()))?;
+                fs::copy(&source, &target).map_err(|error| {
+                    let path = if error.kind() == ErrorKind::NotFound
+                        && fs::symlink_metadata(&source).is_err()
+                    {
+                        &source
+                    } else {
+                        &target
+                    };
+                    file_operation_error("Copying file", &error, path)
+                })?;
                 Ok(Value::Nil)
             }
             "rename-file" => {
@@ -2092,16 +2980,27 @@ define_dispatch!(
                 validate_file_name(&source)?;
                 let mut target = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
                 validate_file_name(&target)?;
-                if directory_name_p(&target)
-                    || fs::metadata(&target).is_ok_and(|metadata| metadata.is_dir())
-                {
+                if directory_name_p(&target) {
                     target = file_name_concat(&[target, file_name_nondirectory(&source)]);
                 }
-                if fs::metadata(&target).is_ok() && args.get(2).is_none_or(Value::is_nil) {
-                    return Err(LispError::Signal(format!("File already exists: {target}")));
+                let target_metadata = fs::symlink_metadata(&target);
+                if target_metadata.is_ok() && args.get(2).is_none_or(Value::is_nil) {
+                    return Err(file_operation_error(
+                        "Renaming file",
+                        &std::io::Error::from(ErrorKind::AlreadyExists),
+                        &target,
+                    ));
                 }
-                fs::rename(&source, &target)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                fs::rename(&source, &target).map_err(|error| {
+                    let path = if error.kind() == ErrorKind::NotFound
+                        && fs::symlink_metadata(&source).is_err()
+                    {
+                        &source
+                    } else {
+                        &target
+                    };
+                    file_operation_error("Renaming file", &error, path)
+                })?;
                 interp.invalidate_file_notify_watches_for_path(&source);
                 dispatch_file_notification(interp, env, &source, "deleted")?;
                 dispatch_file_notification(interp, env, &target, "created")?;
@@ -2145,10 +3044,21 @@ define_dispatch!(
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
                 if args.get(1).is_some_and(Value::is_truthy) {
-                    fs::remove_dir_all(&path)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    fs::remove_dir_all(&path).map_err(|error| {
+                        LispError::SignalValue(file_error_with_detail_value(
+                            "Removing directory",
+                            &error.to_string(),
+                            &path,
+                        ))
+                    })?;
                 } else {
-                    fs::remove_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+                    fs::remove_dir(&path).map_err(|error| {
+                        LispError::SignalValue(file_error_with_detail_value(
+                            "Removing directory",
+                            &error.to_string(),
+                            &path,
+                        ))
+                    })?;
                 }
                 interp.invalidate_file_notify_watches_for_path(&path);
                 dispatch_file_notification(interp, env, &path, "deleted")?;
@@ -2169,11 +3079,30 @@ define_dispatch!(
                 }
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
-                if args.get(1).is_some_and(Value::is_truthy) {
-                    fs::create_dir_all(&path)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                let parents = args.get(1).is_some_and(Value::is_truthy);
+                let existed = Path::new(&path).is_dir();
+                if parents {
+                    fs::create_dir_all(&path).map_err(|error| {
+                        file_operation_error("Creating directory", &error, &path)
+                    })?;
                 } else {
-                    fs::create_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+                    fs::create_dir(&path).map_err(|error| {
+                        file_operation_error("Creating directory", &error, &path)
+                    })?;
+                }
+                #[cfg(unix)]
+                {
+                    let mode = interp
+                        .lookup_var("emaxx-default-file-modes", env)
+                        .and_then(|value| value.as_integer().ok())
+                        .unwrap_or(0o755);
+                    let mut permissions = fs::metadata(&path)
+                        .map_err(|error| file_operation_error("Creating directory", &error, &path))?
+                        .permissions();
+                    permissions.set_mode(mode as u32);
+                    fs::set_permissions(&path, permissions).map_err(|error| {
+                        file_operation_error("Creating directory", &error, &path)
+                    })?;
                 }
                 if interp
                     .lookup_var("dired-auto-revert-buffer", env)
@@ -2182,7 +3111,11 @@ define_dispatch!(
                     refresh_current_dired_buffer_for_path(interp, &path, env)?;
                     interp.buffer.goto_char(interp.buffer.point_max());
                 }
-                Ok(Value::Nil)
+                Ok(if parents && existed {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "make-empty-file" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -2190,11 +3123,11 @@ define_dispatch!(
                 validate_file_name(&path)?;
                 let create_parents = args.get(1).is_some_and(Value::is_truthy);
                 if !create_parents && fs::metadata(&path).is_ok() {
-                    return Err(LispError::SignalValue(file_error_with_detail_value(
-                        "File exists",
-                        "File exists",
+                    return Err(file_operation_error(
+                        "Opening output file",
+                        &std::io::Error::from(ErrorKind::AlreadyExists),
                         &path,
-                    )));
+                    ));
                 }
                 if create_parents
                     && let Some(parent) = Path::new(&path).parent()
@@ -2221,17 +3154,33 @@ define_dispatch!(
             "add-name-to-file" | "add-name-to-file-internal" => {
                 need_arg_range(name, args, 2, 3)?;
                 let source = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                let target = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
-                if args.get(2).is_some_and(Value::is_truthy) && Path::new(&target).exists() {
-                    return Ok(Value::Nil);
+                let mut target = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+                if directory_name_p(&target) {
+                    target = file_name_concat(&[target, file_name_nondirectory(&source)]);
                 }
-                fs::hard_link(&source, &target).map_err(|error| {
-                    LispError::SignalValue(file_error_with_detail_value(
+                if fs::symlink_metadata(&target).is_ok() {
+                    let accept_existing = match args.get(2) {
+                        Some(Value::Integer(_)) => call_named_function(
+                            interp,
+                            "yes-or-no-p",
+                            &[Value::String(format!("File {target} exists; keep it? "))],
+                            env,
+                        )?
+                        .is_truthy(),
+                        Some(value) => value.is_truthy(),
+                        None => false,
+                    };
+                    if accept_existing {
+                        return Ok(Value::Nil);
+                    }
+                    return Err(file_operation_error(
                         "Adding new name",
-                        &error.to_string(),
+                        &std::io::Error::from(ErrorKind::AlreadyExists),
                         &target,
-                    ))
-                })?;
+                    ));
+                }
+                fs::hard_link(&source, &target)
+                    .map_err(|error| file_operation_error("Adding new name", &error, &target))?;
                 Ok(Value::Nil)
             }
             "make-temp-file" => {
@@ -2287,8 +3236,7 @@ define_dispatch!(
             }
             "file-locked-p" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                file_locked_p(&path)
+                file_locked_p(interp, env, &string_text(&args[0])?)
             }
             "memory-info" => {
                 need_args(name, args, 0)?;
@@ -2321,14 +3269,12 @@ define_dispatch!(
             }
             "lock-file" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                lock_file_path(interp, env, &path)?;
+                lock_file_path(interp, env, &string_text(&args[0])?)?;
                 Ok(Value::Nil)
             }
             "unlock-file" => {
                 need_args(name, args, 1)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
-                unlock_file_path(interp, env, &path)
+                unlock_file_path(interp, env, &string_text(&args[0])?)
             }
             #[dispatch(resets_undo)]
             "write-region" => {
@@ -2384,7 +3330,7 @@ define_dispatch!(
                 need_args(name, args, 0)?;
                 Ok(interp
                     .lookup_var("emaxx-default-file-modes", env)
-                    .unwrap_or(Value::Integer(0o666)))
+                    .unwrap_or(Value::Integer(0o755)))
             }
             "file-modes" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -2445,11 +3391,12 @@ define_dispatch!(
                 #[cfg(unix)]
                 {
                     let mut permissions = fs::metadata(&path)
-                        .map_err(|error| LispError::Signal(error.to_string()))?
+                        .map_err(|error| file_operation_error("Setting file modes", &error, &path))?
                         .permissions();
                     permissions.set_mode(mode as u32);
-                    fs::set_permissions(&path, permissions)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    fs::set_permissions(&path, permissions).map_err(|error| {
+                        file_operation_error("Setting file modes", &error, &path)
+                    })?;
                 }
                 Ok(Value::Nil)
             }
@@ -2528,12 +3475,26 @@ define_dispatch!(
                     env,
                     &string_text(&args[1])?,
                 ));
-                let names = super::call(
+                let names = match super::call(
                     interp,
                     "file-name-all-completions",
                     &[args[0].clone(), args[1].clone()],
                     env,
-                )?;
+                ) {
+                    Ok(names) => names,
+                    Err(LispError::SignalValue(condition))
+                        if condition
+                            .to_vec()
+                            .ok()
+                            .and_then(|items| items.first().cloned())
+                            .and_then(|head| head.as_symbol().ok().map(str::to_string))
+                            .as_deref()
+                            == Some("file-missing") =>
+                    {
+                        return Ok(Value::Nil);
+                    }
+                    Err(error) => return Err(error),
+                };
                 // GNU dired.c specbinds DIRECTORY while its optional predicate
                 // examines each relative candidate.  Reuse the ordinary
                 // completion engine so predicates, regexp filters, case folding,
@@ -2647,7 +3608,15 @@ define_dispatch!(
             "insert-directory" => {
                 need_arg_range(name, args, 2, 4)?;
                 let file = string_text(&args[0])?;
-                let switches = string_text(&args[1])?;
+                let logical_file = interp
+                    .lookup_var("emaxx--insert-directory-logical-file", env)
+                    .and_then(|value| string_like(&value).map(|string| string.text))
+                    .unwrap_or_else(|| file.clone());
+                let switches = if args[1].is_nil() {
+                    String::new()
+                } else {
+                    string_text(&args[1])?
+                };
                 let program = interp
                     .lookup_var("insert-directory-program", env)
                     .filter(|value| value.is_truthy())
@@ -2655,6 +3624,11 @@ define_dispatch!(
                     .transpose()?
                     .unwrap_or_else(|| "ls".into());
                 let files = expand_simple_wildcard_paths(&file)?;
+                if !file.contains(['*', '?', '['])
+                    && let Err(error) = fs::symlink_metadata(&file)
+                {
+                    return Err(file_operation_error("Reading directory", &error, &file));
+                }
                 let argv = switches
                     .split_whitespace()
                     .map(str::to_string)
@@ -2665,14 +3639,19 @@ define_dispatch!(
                     let stderr = String::from_utf8_lossy(&process_output.stderr)
                         .trim()
                         .to_string();
-                    return Err(LispError::Signal(if stderr.is_empty() {
+                    let detail = if stderr.is_empty() {
                         format!(
                             "{program} exited with status {}",
                             exit_status_code(&process_output.status)
                         )
                     } else {
                         stderr
-                    }));
+                    };
+                    return Err(LispError::SignalValue(file_error_with_detail_value(
+                        "Reading directory",
+                        &detail,
+                        &logical_file,
+                    )));
                 }
                 let mut output = String::from_utf8_lossy(&process_output.stdout).into_owned();
                 // GNU insert-directory-clean: with "--dired" in the switches, ls
@@ -2702,6 +3681,15 @@ define_dispatch!(
                     output = kept_lines.concat();
                 }
                 let mut free_space_offset = 0;
+                if Path::new(&file).is_dir() && !args.get(3).is_some_and(Value::is_truthy) {
+                    let header = if switches.is_empty() {
+                        format!("{logical_file}:\n")
+                    } else {
+                        format!("  {logical_file}\n")
+                    };
+                    free_space_offset += header.chars().count();
+                    output.insert_str(0, &header);
+                }
                 if let Some(free_space_line) = insert_directory_free_space_line(interp, env, &file)?
                 {
                     free_space_offset = free_space_line.chars().count();
@@ -2806,17 +3794,40 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let target = string_text(&args[0])?;
-                let link = string_text(&args[1])?;
+                let mut link = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+                if directory_name_p(&link) {
+                    link = file_name_concat(&[link, file_name_nondirectory(&target)]);
+                }
                 validate_file_name(&target)?;
                 validate_file_name(&link)?;
-                if args.get(2).is_some_and(Value::is_truthy) && fs::symlink_metadata(&link).is_ok()
-                {
-                    fs::remove_file(&link).map_err(|error| LispError::Signal(error.to_string()))?;
+                if fs::symlink_metadata(&link).is_ok() {
+                    let replace = match args.get(2) {
+                        Some(Value::Integer(_)) => call_named_function(
+                            interp,
+                            "yes-or-no-p",
+                            &[Value::String(format!("File {link} exists; replace it? "))],
+                            env,
+                        )?
+                        .is_truthy(),
+                        Some(value) => value.is_truthy(),
+                        None => false,
+                    };
+                    if !replace {
+                        return Err(file_operation_error(
+                            "Making symbolic link",
+                            &std::io::Error::from(ErrorKind::AlreadyExists),
+                            &link,
+                        ));
+                    }
+                    fs::remove_file(&link).map_err(|error| {
+                        file_operation_error("Removing old name", &error, &link)
+                    })?;
                 }
                 #[cfg(unix)]
                 {
-                    symlink(&target, &link)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    symlink(&target, &link).map_err(|error| {
+                        file_operation_error("Making symbolic link", &error, &link)
+                    })?;
                     Ok(Value::Nil)
                 }
                 #[cfg(not(unix))]
@@ -3775,7 +4786,21 @@ define_dispatch!(
                         }
                         _ => Some(interp.current_buffer_id()),
                     };
-                    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+                    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+                    // With no separate ERROR-BUFFER, GNU's synchronous shell
+                    // process sends stderr to the same destination.  This is
+                    // observable for batch children: load messages are emitted
+                    // on stderr and `shell-command-to-string' must retain them.
+                    if args.get(2).is_none_or(Value::is_nil) {
+                        text.push_str(&String::from_utf8_lossy(&output.stderr));
+                    } else if let Some(error_buffer) = args.get(2)
+                        && let Ok(buffer_id) = interp.resolve_buffer_id(error_buffer)
+                    {
+                        let error_text = String::from_utf8_lossy(&output.stderr);
+                        if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+                            buffer.insert(&error_text);
+                        }
+                    }
                     if let Some(buffer_id) = target_buffer_id {
                         let saved = interp.current_buffer_id();
                         if buffer_id != saved {
@@ -4125,7 +5150,7 @@ fn mock_file_local_copy(interp: &Interpreter, env: &Env, file: &str) -> Result<S
         resolved_remote_localname_in_env(interp, env, &remote),
         &target,
     )
-    .map_err(|error| LispError::Signal(error.to_string()))?;
+    .map_err(|error| LispError::SignalValue(file_input_error_value(&error, file)))?;
     Ok(target)
 }
 
@@ -4134,41 +5159,61 @@ fn mock_remote_local_path(
     env: &Env,
     file: &str,
 ) -> Result<String, LispError> {
-    mock_remote_path_parts(interp, env, file).map(|(_, localname)| localname)
+    require_mock_remote_path(interp, env, file).map(|remote| remote.localname)
+}
+
+fn mock_logical_path(prefix: &str, localname: &str, quoted: bool) -> String {
+    if quoted && !localname.starts_with("/:") {
+        format!("{prefix}/:{localname}")
+    } else {
+        format!("{prefix}{localname}")
+    }
 }
 
 fn mock_path_uses_remote_transport(interp: &Interpreter, env: &Env, file: &str) -> bool {
-    parse_remote_file_name(file).is_some_and(|remote| remote.method == "mock")
-        || (!file_name_absolute_p(file)
-            && interp
-                .lookup_var("default-directory", env)
-                .and_then(|directory| string_like(&directory).map(|directory| directory.text))
-                .and_then(|directory| parse_remote_file_name(&directory))
-                .is_some_and(|remote| remote.method == "mock"))
+    mock_remote_path(interp, env, file).is_some()
 }
 
-fn mock_remote_path_parts(
-    interp: &Interpreter,
-    env: &Env,
-    file: &str,
-) -> Result<(String, String), LispError> {
+struct MockRemotePath {
+    prefix: String,
+    identification_prefix: String,
+    localname: String,
+    quoted: bool,
+}
+
+fn mock_remote_path(interp: &Interpreter, env: &Env, file: &str) -> Option<MockRemotePath> {
     if let Some(remote) = parse_remote_file_name(file).filter(|remote| remote.method == "mock") {
-        let prefix = remote.prefix.clone();
-        let localname = resolved_remote_localname_in_env(interp, env, &remote);
-        return Ok((prefix, localname));
+        return Some(MockRemotePath {
+            prefix: remote.prefix.clone(),
+            identification_prefix: remote_identification_prefix(&remote),
+            localname: resolved_remote_localname_in_env(interp, env, &remote),
+            quoted: unquote_local_file_name(&remote.localname).is_some(),
+        });
+    }
+    if file_name_absolute_p(file) {
+        return None;
     }
     let remote = interp
         .lookup_var("default-directory", env)
         .and_then(|directory| string_like(&directory).map(|directory| directory.text))
         .and_then(|directory| parse_remote_file_name(&directory))
-        .filter(|remote| remote.method == "mock")
-        .ok_or_else(|| LispError::Signal("Invalid mock remote file name".into()))?;
-    let prefix = remote.prefix.clone();
+        .filter(|remote| remote.method == "mock")?;
     let base = resolved_remote_localname_in_env(interp, env, &remote);
-    Ok((
-        prefix,
-        expand_file_name_in_env(interp, env, file, Some(&base)),
-    ))
+    Some(MockRemotePath {
+        prefix: remote.prefix.clone(),
+        identification_prefix: remote_identification_prefix(&remote),
+        localname: expand_file_name_in_env(interp, env, file, Some(&base)),
+        quoted: unquote_local_file_name(&remote.localname).is_some(),
+    })
+}
+
+fn require_mock_remote_path(
+    interp: &Interpreter,
+    env: &Env,
+    file: &str,
+) -> Result<MockRemotePath, LispError> {
+    mock_remote_path(interp, env, file)
+        .ok_or_else(|| LispError::Signal("Invalid mock remote file name".into()))
 }
 
 fn mock_remote_process_frame(
@@ -4186,6 +5231,23 @@ fn mock_remote_process_frame(
     let process_environment = interp
         .lookup_var("process-environment", env)
         .unwrap_or(Value::Nil);
+    let mut child_environment_entries = process_environment_entries(&process_environment)?;
+    let remote_environment = interp
+        .lookup_var("tramp-remote-process-environment", env)
+        .unwrap_or(Value::Nil);
+    let remote_environment_entries = process_environment_entries(&remote_environment)?;
+    // Like GNU Tramp, the first remote entry wins and an empty value removes
+    // an inherited variable from the child environment.
+    for entry in remote_environment_entries.iter().rev() {
+        let (variable, value) = entry.split_once('=').unwrap_or((entry, ""));
+        setenv_in_environment_entries(
+            &mut child_environment_entries,
+            variable,
+            (!value.is_empty()).then_some(value),
+            true,
+        );
+    }
+    let process_environment = process_environment_from_entries(&child_environment_entries);
     let inside_emacs = getenv_in_environment("INSIDE_EMACS", &process_environment, false)?
         .and_then(|value| string_like(&value).map(|string| string.text))
         .unwrap_or_else(|| "emaxx".into());
@@ -4194,6 +5256,16 @@ fn mock_remote_process_frame(
     } else {
         format!("{inside_emacs},tramp")
     };
+    // Derive the child's PATH from the exact same ordered search path exposed
+    // by `(exec-path)'.  The final element is GNU's exec-directory and is not
+    // part of the shell search path.
+    let remote_exec_paths = mock_remote_exec_paths(interp, env)?;
+    let path = remote_exec_paths
+        .split_last()
+        .map(|(_, search_path)| search_path.join(":"))
+        .unwrap_or_default();
+    let process_environment =
+        updated_process_environment(&process_environment, "PATH", Some(&path), true)?;
     let process_environment = updated_process_environment(
         &process_environment,
         "INSIDE_EMACS",

@@ -181,8 +181,7 @@ impl Interpreter {
                 .chain(body.iter().cloned()),
         );
         let expander = self.eval(&lambda_form, env)?;
-        self.note_macro_added(&name);
-        self.macros.push(MacroBinding {
+        self.push_macro_binding(MacroBinding {
             name: name.clone(),
             expander: expander.clone(),
         });
@@ -508,7 +507,7 @@ impl Interpreter {
             }
             // A file-less environment (unit tests) falls back to whatever
             // native arm handles the name.
-            if self.load_target(&file).is_err() {
+            if self.load_target_with_env(&file, env).is_err() {
                 return Ok(None);
             }
             attempted_autoload = true;

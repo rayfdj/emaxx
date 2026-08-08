@@ -1067,7 +1067,6 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
         }
     }
     interp.set_global_binding("abbrev-table-name-list", Value::list(items));
-    interp.mark_auto_buffer_local("local-abbrev-table");
     if let Some(table) = interp.lookup_var("fundamental-mode-abbrev-table", &Vec::new()) {
         interp.set_global_binding("local-abbrev-table", table);
     }

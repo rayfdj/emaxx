@@ -218,7 +218,7 @@ fn load_autoloaded_prefix_map(
     if let Some((file, _, Value::Symbol(kind))) = autoload_parts(&function)
         && kind == "keymap"
     {
-        interp.load_target(&file)?;
+        interp.load_target_with_env(&file, env)?;
     }
     Ok(())
 }
@@ -3337,6 +3337,10 @@ define_dispatch!(
                     intern_in_obarray(interp, &obarray, &symbol)
                 }
             }
+            // GNU byte-run.el defines this as an ordinary &rest function.
+            // Keeping it on the callable dispatch route makes interpreted
+            // and byte-compiled calls share one function-cell contract.
+            "with-no-warnings" => Ok(args.last().cloned().unwrap_or(Value::Nil)),
             "read-file-name" => {
                 need_arg_range(name, args, 1, 6)?;
                 if let Some(function) = interp.lookup_var("read-file-name-function", env)
@@ -3354,7 +3358,10 @@ define_dispatch!(
                     Some("completing-read"),
                     &[
                         prompt,
-                        Value::Nil,
+                        // File-name completion is a programmed table.  A
+                        // nil collection only echoes simulated input and
+                        // silently disables Tramp method/host completion.
+                        Value::Symbol("completion-file-name-table".into()),
                         Value::Nil,
                         mustmatch,
                         initial,

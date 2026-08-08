@@ -105,7 +105,7 @@ pub(crate) fn call_interactively_impl(
     }
     let mut func = resolve_callable(interp, &args[0], env)?;
     if let (Some(symbol), Some((file, _, _))) = (args[0].as_symbol().ok(), autoload_parts(&func)) {
-        interp.load_target(&file)?;
+        interp.load_target_with_env(&file, env)?;
         func = interp.lookup_function(symbol, env)?;
     }
     let interactive_args = collect_interactive_args(interp, &func, env)?;
