@@ -27,11 +27,11 @@ pub(super) fn install_eieio_slot_accessors(
         };
         let quoted_slot = Value::list([
             Value::Symbol("quote".into()),
-            Value::Symbol(slot_name.clone()),
+            Value::Symbol(slot_name.clone().into()),
         ]);
         let this_specializer = Value::list([
             Value::Symbol("this".into()),
-            Value::Symbol(class_name.to_string()),
+            Value::Symbol(class_name.to_string().into()),
         ]);
         let mut class_allocated = false;
         let mut accessor = None;
@@ -59,7 +59,7 @@ pub(super) fn install_eieio_slot_accessors(
                 Value::Symbol("cl-defmethod".into()),
                 Value::list([
                     Value::Symbol("setf".into()),
-                    Value::Symbol(accessor.clone()),
+                    Value::Symbol(accessor.clone().into()),
                 ]),
                 Value::list([Value::Symbol("value".into()), this_specializer.clone()]),
                 Value::list([
@@ -71,7 +71,7 @@ pub(super) fn install_eieio_slot_accessors(
             ]));
             method_forms.push(Value::list([
                 Value::Symbol("cl-defmethod".into()),
-                Value::Symbol(accessor.clone()),
+                Value::Symbol(accessor.clone().into()),
                 Value::list([this_specializer.clone()]),
                 Value::list([
                     Value::Symbol("slot-value".into()),
@@ -82,12 +82,12 @@ pub(super) fn install_eieio_slot_accessors(
             if class_allocated {
                 method_forms.push(Value::list([
                     Value::Symbol("cl-defmethod".into()),
-                    Value::Symbol(accessor),
+                    Value::Symbol(accessor.into()),
                     Value::list([Value::list([
                         Value::Symbol("this".into()),
                         Value::list([
                             Value::Symbol("subclass".into()),
-                            Value::Symbol(class_name.to_string()),
+                            Value::Symbol(class_name.to_string().into()),
                         ]),
                     ])]),
                     Value::list([
@@ -109,7 +109,7 @@ pub(super) fn install_eieio_slot_accessors(
         if let Some(reader) = reader {
             method_forms.push(Value::list([
                 Value::Symbol("cl-defmethod".into()),
-                Value::Symbol(reader),
+                Value::Symbol(reader.into()),
                 Value::list([this_specializer.clone()]),
                 Value::list([
                     Value::Symbol("slot-value".into()),
@@ -121,7 +121,7 @@ pub(super) fn install_eieio_slot_accessors(
         if let Some(writer) = writer {
             method_forms.push(Value::list([
                 Value::Symbol("cl-defmethod".into()),
-                Value::Symbol(writer),
+                Value::Symbol(writer.into()),
                 Value::list([this_specializer.clone(), Value::Symbol("value".into())]),
                 Value::list([
                     Value::Symbol("eieio-oset".into()),

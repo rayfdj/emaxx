@@ -346,8 +346,8 @@ impl Interpreter {
             Value::String(_) => Ok(Self::stored_value(expr.clone())),
 
             Value::BuiltinFunc(_)
-            | Value::Lambda(_, _, _)
-            | Value::Buffer(_, _)
+            | Value::Lambda(_)
+            | Value::Buffer(_)
             | Value::Marker(_)
             | Value::Overlay(_)
             | Value::CharTable(_)
@@ -668,7 +668,7 @@ impl Interpreter {
                                         return Ok(Value::Symbol(name.clone()));
                                     }
                                     if let Ok(name) = function_name_from_binding_form(&items[1]) {
-                                        return Ok(Value::Symbol(name));
+                                        return Ok(Value::Symbol(name.into()));
                                     }
                                     if matches!(
                                         items[1].car(),
@@ -1153,8 +1153,8 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let backtrace_function = original_name
-            .map(|name| Value::Symbol(name.to_string()))
-            .unwrap_or_else(|| Value::Symbol(name.to_string()));
+            .map(|name| Value::Symbol(name.to_string().into()))
+            .unwrap_or_else(|| Value::Symbol(name.to_string().into()));
         self.push_backtrace_frame(backtrace_function, args);
         self.capture_current_backtrace_context(original_name.or(Some(name)), env, None);
         let result = match primitives::call_with_facts(self, name, facts, args, env) {
@@ -1194,7 +1194,7 @@ impl Interpreter {
                 let frames_present = Self::env_has_function_binding_frames(env);
                 if !frames_present
                     && let Some((generation, resolution)) =
-                        self.function_resolution_cache.get(&name)
+                        self.function_resolution_cache.get(name.as_str())
                     && *generation == self.definition_generation
                 {
                     match resolution {
@@ -1211,7 +1211,7 @@ impl Interpreter {
                         FunctionResolution::Resolved(value) => {
                             let resolved = value.clone();
                             if original_name.is_none() {
-                                owned_name = Some(name);
+                                owned_name = Some(name.to_string());
                             }
                             resolved
                         }
@@ -1234,7 +1234,7 @@ impl Interpreter {
                         && !frames_present
                     {
                         self.function_resolution_cache.insert(
-                            name.clone(),
+                            name.to_string(),
                             (
                                 self.definition_generation,
                                 FunctionResolution::DirectBuiltin(facts),
@@ -1245,7 +1245,7 @@ impl Interpreter {
                     let resolved = self.lookup_function(&name, env)?;
                     if !frames_present {
                         self.function_resolution_cache.insert(
-                            name.clone(),
+                            name.to_string(),
                             (
                                 self.definition_generation,
                                 FunctionResolution::Resolved(resolved.clone()),
@@ -1253,7 +1253,7 @@ impl Interpreter {
                         );
                     }
                     if original_name.is_none() {
-                        owned_name = Some(name);
+                        owned_name = Some(name.to_string());
                     }
                     resolved
                 }
@@ -1281,7 +1281,7 @@ impl Interpreter {
                         // the native arm when one exists.
                         Err(error) => {
                             if crate::lisp::primitives::is_builtin(name) {
-                                Value::BuiltinFunc(name.to_string())
+                                Value::BuiltinFunc(name.to_string().into())
                             } else {
                                 return Err(error);
                             }
@@ -1297,13 +1297,13 @@ impl Interpreter {
         match func {
             Value::BuiltinFunc(ref name) if name == "selected-window" => {
                 if !args.is_empty() {
-                    return Err(LispError::WrongNumberOfArgs(name.clone(), args.len()));
+                    return Err(LispError::WrongNumberOfArgs(name.to_string(), args.len()));
                 }
                 Ok(self.selected_window_value())
             }
             Value::BuiltinFunc(ref name) => {
                 let backtrace_function = original_name
-                    .map(|name| Value::Symbol(name.to_string()))
+                    .map(|name| Value::Symbol(name.to_string().into()))
                     .unwrap_or_else(|| Value::Symbol(name.clone()));
                 self.push_backtrace_frame(backtrace_function, args);
                 self.capture_current_backtrace_context(original_name, env, None);
@@ -1354,7 +1354,10 @@ impl Interpreter {
                     self.call_function_value(inner, original_name, args, env)
                 }
             }
-            Value::Lambda(ref params, ref body, ref closure_env) => {
+            Value::Lambda(ref lambda) => {
+                let params = &lambda.params;
+                let body = &lambda.body;
+                let closure_env = &lambda.env;
                 self.register_captured_lexical_frames(closure_env);
                 if is_semantic_lambda_params(params) {
                     return self.call_semantic_lambda(body, closure_env, args);
@@ -1434,7 +1437,7 @@ impl Interpreter {
                     }
                 }
                 let backtrace_function = original_name
-                    .map(|name| Value::Symbol(name.to_string()))
+                    .map(|name| Value::Symbol(name.to_string().into()))
                     .unwrap_or_else(|| func.clone());
                 self.push_backtrace_frame_with_locals(
                     backtrace_function,
@@ -1700,7 +1703,7 @@ fn eval_semantic_action_expr(expr: &Value, args: &[Value]) -> Result<Value, Lisp
                             item, args,
                         )?)?);
                     }
-                    Ok(Value::String(text))
+                    Ok(Value::String(text.into()))
                 }
                 "if" if items.len() >= 3 => {
                     if eval_semantic_action_expr(&items[1], args)?.is_truthy() {
@@ -1748,7 +1751,8 @@ fn eval_semantic_action_expr(expr: &Value, args: &[Value]) -> Result<Value, Lisp
 
 fn semantic_action_string(value: &Value) -> Result<String, LispError> {
     match value {
-        Value::String(text) | Value::Symbol(text) => Ok(text.clone()),
+        Value::String(text) => Ok(text.to_string()),
+        Value::Symbol(text) => Ok(text.to_string()),
         Value::Integer(value) => Ok(value.to_string()),
         _ => Err(LispError::TypeError("string".into(), value.type_name())),
     }

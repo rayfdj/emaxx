@@ -159,7 +159,7 @@ impl Interpreter {
                             env,
                         )?);
                     } else if let Some(frame) = env.get_mut(frame_index) {
-                        frame.push((name, Self::stored_value(value.clone())));
+                        frame.push((name.to_string(), Self::stored_value(value.clone())));
                     }
                 }
                 all_non_nil &= value.is_truthy();
@@ -225,7 +225,7 @@ impl Interpreter {
                             if name != "_"
                                 && let Some(frame) = env.last_mut()
                             {
-                                frame.push((name.clone(), Self::stored_value(value.clone())));
+                                frame.push((name.to_string(), Self::stored_value(value.clone())));
                             }
                             value
                         }
@@ -513,11 +513,15 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         };
         let body = items[body_start..].to_vec();
         let expander_name = format!("{name}--pcase-macroexpander");
-        let expander = Value::Lambda(params.into(), body.into(), shared_env(env.clone()));
+        let expander = Value::lambda(params.into(), body.into(), shared_env(env.clone()));
         self.validate_function_binding(&expander_name, &expander)?;
         self.set_function_binding(&expander_name, Some(expander));
-        self.put_symbol_property(&name, "pcase-macroexpander", Value::Symbol(expander_name));
-        Ok(Value::Symbol(name))
+        self.put_symbol_property(
+            &name,
+            "pcase-macroexpander",
+            Value::Symbol(expander_name.into()),
+        );
+        Ok(Value::Symbol(name.into()))
     }
 
     pub(super) fn sf_pcase_exhaustive(
@@ -708,7 +712,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
             Value::Nil
         };
         Err(LispError::Throw(
-            Value::Symbol(format!("--cl-block-{name}--")),
+            Value::Symbol(format!("--cl-block-{name}--").into()),
             value,
         ))
     }
@@ -761,7 +765,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         if matches!(name, "nil" | "t") || name.starts_with(':') {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("setting-constant".into()),
-                Value::Symbol(name.to_string()),
+                Value::Symbol(name.to_string().into()),
             ])));
         }
         Ok(())
@@ -780,9 +784,9 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                 Value::Symbol(name) => {
                     Self::check_let_binding_name(name)?;
                     if self.binding_is_dynamic(name, env) {
-                        special_bindings.push((name.clone(), Value::Nil));
+                        special_bindings.push((name.to_string(), Value::Nil));
                     } else {
-                        frame.push((name.clone(), Value::Nil));
+                        frame.push((name.to_string(), Value::Nil));
                     }
                 }
                 Value::Cons(_) => {
@@ -798,9 +802,9 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                         Value::Nil
                     };
                     if self.binding_is_dynamic(&name, env) {
-                        special_bindings.push((name, val));
+                        special_bindings.push((name.to_string(), val));
                     } else {
-                        frame.push((name, Self::stored_value(val)));
+                        frame.push((name.to_string(), Self::stored_value(val)));
                     }
                 }
                 _ => return Err(wrong_type_argument("listp", binding.clone())),
@@ -833,7 +837,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
             match binding {
                 Value::Symbol(name) => {
                     Self::check_let_binding_name(name)?;
-                    evaluated.push((name.clone(), Value::Nil));
+                    evaluated.push((name.to_string(), Value::Nil));
                 }
                 Value::Cons(_) => {
                     let parts = binding.to_vec()?;
@@ -847,7 +851,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                     } else {
                         Value::Nil
                     };
-                    evaluated.push((name, val));
+                    evaluated.push((name.to_string(), val));
                 }
                 _ => return Err(wrong_type_argument("listp", binding.clone())),
             }
@@ -856,7 +860,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         let mut entered: Vec<String> = Vec::with_capacity(evaluated.len());
         for (name, value) in evaluated {
             self.enter_dlet_name(&name);
-            entered.push(name.clone());
+            entered.push(name.to_string());
             match self.bind_special_variable(&name, value, env) {
                 Ok(restore) => restores.push(restore),
                 Err(error) => {
@@ -903,7 +907,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                 let (name, value) = match binding {
                     Value::Symbol(name) => {
                         Self::check_let_binding_name(name)?;
-                        (name.clone(), Value::Nil)
+                        (name.to_string(), Value::Nil)
                     }
                     Value::Cons(_) => {
                         let parts = binding.to_vec()?;
@@ -948,8 +952,8 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         for binding in bindings {
             match binding {
                 Value::Symbol(name) => {
-                    frame.push((name.clone(), Value::Nil));
-                    names.push(name);
+                    frame.push((name.to_string(), Value::Nil));
+                    names.push(name.to_string());
                     initializers.push(None);
                 }
                 Value::Cons(_) => {
@@ -1003,7 +1007,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                 let (name, value) = match binding {
                     Value::Symbol(name) => {
                         Self::check_let_binding_name(name)?;
-                        (name.clone(), Value::Nil)
+                        (name.to_string(), Value::Nil)
                     }
                     Value::Cons(_) => {
                         let parts = binding.to_vec()?;
@@ -1024,7 +1028,10 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                 if self.binding_is_dynamic(&name, env) {
                     restores.push(self.bind_special_variable(&name, value, env)?);
                 } else {
-                    Self::push_marked_frame(env, vec![(name, Self::stored_value(value))]);
+                    Self::push_marked_frame(
+                        env,
+                        vec![(name.to_string(), Self::stored_value(value))],
+                    );
                 }
             }
             Ok(())
@@ -1173,8 +1180,8 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
 
 fn patch_letrec_lambda_captures(frame: &[(String, Value)], names: &[String]) {
     for (_, value) in frame {
-        if let Value::Lambda(_, _, closure_env) = value {
-            let mut captured_env = closure_env.borrow_mut();
+        if let Value::Lambda(lambda) = value {
+            let mut captured_env = lambda.env.borrow_mut();
             for captured_frame in captured_env.iter_mut() {
                 for name in names {
                     let Some((_, replacement)) = frame.iter().find(|(key, _)| key == name) else {

@@ -302,12 +302,12 @@ pub(crate) fn current_invocation_path() -> PathBuf {
 pub(crate) fn command_line_args_value() -> Value {
     let invocation = current_invocation_path().display().to_string();
     let mut args = std::env::args_os()
-        .map(|value| Value::String(value.to_string_lossy().into_owned()))
+        .map(|value| Value::String(value.to_string_lossy().into_owned().into()))
         .collect::<Vec<_>>();
     if let Some(first) = args.first_mut() {
-        *first = Value::String(invocation);
+        *first = Value::String(invocation.into());
     } else {
-        args.push(Value::String(invocation));
+        args.push(Value::String(invocation.into()));
     }
     Value::list(args)
 }
@@ -402,20 +402,20 @@ pub(crate) fn process_attributes_value(pid: i64) -> Value {
             let uid = **uid;
             push("euid", Value::Integer(i64::from(uid)));
             if let Some(user) = user_name_from_uid(uid) {
-                push("user", Value::String(user));
+                push("user", Value::String(user.into()));
             }
         }
         if let Some(gid) = process.effective_group_id().or_else(|| process.group_id()) {
             push("egid", Value::Integer(i64::from(*gid)));
             if let Ok(Some(group)) = group_name_from_gid(i64::from(*gid)) {
-                push("group", Value::String(group));
+                push("group", Value::String(group.into()));
             }
         }
     }
 
     push(
         "comm",
-        Value::String(process.name().to_string_lossy().into_owned()),
+        Value::String(process.name().to_string_lossy().into_owned().into()),
     );
     push(
         "state",
@@ -458,7 +458,7 @@ pub(crate) fn process_attributes_value(pid: i64) -> Value {
         .collect::<Vec<_>>()
         .join(" ");
     if !command.is_empty() {
-        push("args", Value::String(command));
+        push("args", Value::String(command.into()));
     }
     Value::list(attributes)
 }
@@ -541,8 +541,8 @@ pub(crate) fn expand_file_name_runtime(
             &function,
             &[
                 Value::Symbol("expand-file-name".into()),
-                Value::String(path.to_string()),
-                base.map(|value| Value::String(value.to_string()))
+                Value::String(path.to_string().into()),
+                base.map(|value| Value::String(value.to_string().into()))
                     .unwrap_or(Value::Nil),
             ],
             env,
@@ -1151,25 +1151,28 @@ pub(crate) fn initialize_dired_buffer(
     interp.set_buffer_local_value(
         buffer_id,
         "dired-directory",
-        Value::String(if directory.contains('*') {
-            directory.to_string()
-        } else {
-            file_name_as_directory(directory)
-        }),
+        Value::String(
+            (if directory.contains('*') {
+                directory.to_string()
+            } else {
+                file_name_as_directory(directory)
+            })
+            .into(),
+        ),
     );
     let expanded_directory = file_name_as_directory(&expand_file_name(&base_directory, None));
     interp.set_buffer_local_value(
         buffer_id,
         "dired-subdir-alist",
         Value::list([Value::cons(
-            Value::String(expanded_directory.clone()),
+            Value::String(expanded_directory.clone().into()),
             Value::Integer(1),
         )]),
     );
     interp.set_buffer_local_value(
         buffer_id,
         "default-directory",
-        Value::String(file_name_as_directory(&base_directory)),
+        Value::String(file_name_as_directory(&base_directory).into()),
     );
     interp.set_buffer_local_value(
         buffer_id,
@@ -1182,14 +1185,14 @@ pub(crate) fn initialize_dired_buffer(
         Value::Symbol("dired-buffer-stale-p".into()),
     );
     interp.set_buffer_local_value(buffer_id, "buffer-auto-revert-by-notification", Value::Nil);
-    let buffer_value = Value::Buffer(buffer_id, buffer_name.to_string());
+    let buffer_value = Value::buffer(buffer_id, buffer_name.to_string());
     let existing = interp
         .lookup_var("dired-buffers", &Vec::new())
         .and_then(|value| value.to_vec().ok())
         .unwrap_or_default();
     let mut entries = Vec::new();
     entries.push(Value::cons(
-        Value::String(expanded_directory.clone()),
+        Value::String(expanded_directory.clone().into()),
         buffer_value.clone(),
     ));
     for entry in existing {
@@ -1197,7 +1200,7 @@ pub(crate) fn initialize_dired_buffer(
             continue;
         };
         if matches!(&dir, Value::String(existing_dir) if existing_dir == &expanded_directory)
-            || matches!(buffer, Value::Buffer(existing_id, _) if existing_id == buffer_id)
+            || matches!(&buffer, Value::Buffer(existing) if existing.id == buffer_id)
         {
             continue;
         }
@@ -1250,7 +1253,7 @@ pub(crate) fn refresh_current_dired_buffer_for_path(
     let _ = call_named_function(
         interp,
         "dired-goto-file",
-        &[Value::String(target_text)],
+        &[Value::String(target_text.into())],
         env,
     )?;
     Ok(())
@@ -1469,7 +1472,7 @@ pub(crate) fn find_file_name_handler(
         .lookup_var("file-name-handler-alist", env)
         .unwrap_or(Value::Nil);
     let entries = handlers.to_vec()?;
-    let operation = Value::Symbol(operation.to_string());
+    let operation = Value::Symbol(operation.to_string().into());
     let inhibited = if interp
         .lookup_var("inhibit-file-name-operation", env)
         .as_ref()
@@ -1754,8 +1757,12 @@ pub(crate) fn dispatch_file_name_handler(
         if operation == "verify-visited-file-modtime" && args.is_empty() {
             handler_args.push(Value::Nil);
         }
-        let result =
-            interp.call_function_value(function, original_name.as_deref(), &handler_args, env)?;
+        let result = interp.call_function_value(
+            function,
+            original_name.as_ref().map(|name| name.as_str()),
+            &handler_args,
+            env,
+        )?;
         if operation == "insert-file-contents" {
             let inserted = result
                 .to_vec()
@@ -1930,7 +1937,10 @@ pub(crate) fn charsets_for_text(text: &str, interp: &Interpreter) -> Vec<Value> 
     }
     names.sort_by_key(|name| interp.charset_priority_rank(name));
     names.dedup();
-    names.into_iter().map(Value::Symbol).collect()
+    names
+        .into_iter()
+        .map(|value| Value::Symbol(value.into()))
+        .collect()
 }
 
 pub(crate) fn charset_max_codepoint(name: &str) -> i64 {

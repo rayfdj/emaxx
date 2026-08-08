@@ -227,7 +227,7 @@ impl Interpreter {
     pub fn face_inherit_target(&self, face: &str) -> Option<String> {
         self.lisp_face_attribute(face, LFACE_INHERIT_INDEX, false)
             .and_then(|value| match value {
-                Value::Symbol(symbol) if symbol != "unspecified" => Some(symbol),
+                Value::Symbol(symbol) if symbol != "unspecified" => Some(symbol.to_string()),
                 _ => None,
             })
     }
@@ -243,10 +243,12 @@ impl Interpreter {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("error".into()),
                 Value::String("Face inheritance results in inheritance cycle".into()),
-                Value::Symbol(target.clone()),
+                Value::Symbol(target.clone().into()),
             ])));
         }
-        let value = inherit.map(Value::Symbol).unwrap_or(Value::Nil);
+        let value = inherit
+            .map(|value| Value::Symbol(value.into()))
+            .unwrap_or(Value::Nil);
         self.set_lisp_face_attribute(face, LFACE_INHERIT_INDEX, value, false)?;
         Ok(())
     }

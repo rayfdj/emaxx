@@ -158,7 +158,7 @@ fn decode_coding_region_inserts_into_destination_buffer() {
                 Value::Integer(1),
                 Value::Integer(4),
                 Value::Symbol("utf-8".into()),
-                Value::Buffer(buffer_id, buffer_name),
+                Value::buffer(buffer_id, buffer_name),
             ],
             &mut env,
         )
@@ -589,7 +589,7 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
     call(
         &mut interp,
         "rename-visited-file",
-        &[Value::String(new_path.clone())],
+        &[Value::String(new_path.clone().into())],
         &mut env,
     )
     .expect("rename visited file");
@@ -849,7 +849,7 @@ fn get_byte_reads_unibyte_buffer_positions() {
         call(
             &mut interp,
             "get-byte",
-            &[Value::Nil, Value::String(String::new())],
+            &[Value::Nil, Value::String(String::new().into())],
             &mut env,
         )
         .expect("read terminating NUL from an empty string"),
@@ -909,7 +909,7 @@ fn write_process_output_supports_stdout_buffer_and_stderr_file() {
         .join("emaxx-process-stderr-test")
         .display()
         .to_string();
-    let destination = Value::list([Value::T, Value::String(stderr_path.clone())]);
+    let destination = Value::list([Value::T, Value::String(stderr_path.clone().into())]);
 
     write_process_output(
         &mut interp,
@@ -1055,7 +1055,7 @@ fn file_regular_p_distinguishes_files_from_directories() {
         call(
             &mut interp,
             "file-regular-p",
-            &[Value::String(file.display().to_string())],
+            &[Value::String(file.display().to_string().into())],
             &mut env,
         )
         .expect("regular file"),
@@ -1065,7 +1065,7 @@ fn file_regular_p_distinguishes_files_from_directories() {
         call(
             &mut interp,
             "file-regular-p",
-            &[Value::String(dir.display().to_string())],
+            &[Value::String(dir.display().to_string().into())],
             &mut env,
         )
         .expect("directory"),
@@ -1123,7 +1123,7 @@ fn write_region_reports_output_errors_as_file_error() {
         &[
             Value::String("content".into()),
             Value::Nil,
-            Value::String(path.clone()),
+            Value::String(path.clone().into()),
         ],
         &mut env,
     )
@@ -1137,7 +1137,7 @@ fn write_region_reports_output_errors_as_file_error() {
         items.get(1),
         Some(&Value::String("Opening output file".into()))
     );
-    assert_eq!(items.get(3), Some(&Value::String(path)));
+    assert_eq!(items.get(3), Some(&Value::String(path.into())));
     std::fs::remove_dir_all(directory).expect("cleanup temp directory");
 }
 
@@ -1155,7 +1155,7 @@ fn make_empty_file_creates_empty_file_and_optional_parents() {
         call(
             &mut interp,
             "make-empty-file",
-            &[Value::String(nested_text.clone()), Value::T],
+            &[Value::String(nested_text.clone().into()), Value::T],
             &mut env,
         )
         .expect("create empty file with parents"),
@@ -1172,7 +1172,7 @@ fn make_empty_file_creates_empty_file_and_optional_parents() {
         call(
             &mut interp,
             "make-empty-file",
-            &[Value::String(nested_text.clone())],
+            &[Value::String(nested_text.clone().into())],
             &mut env,
         )
         .is_err()
@@ -1181,7 +1181,7 @@ fn make_empty_file_creates_empty_file_and_optional_parents() {
         call(
             &mut interp,
             "make-empty-file",
-            &[Value::String(nested_text), Value::T],
+            &[Value::String(nested_text.into()), Value::T],
             &mut env,
         )
         .expect("truncate existing file with parents"),
@@ -1225,7 +1225,7 @@ fn value_less_vectors_break_ties_after_equal_prefix_values() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*value-less-buffer*");
-    let buffer = Value::Buffer(buffer_id, buffer_name);
+    let buffer = Value::buffer(buffer_id, buffer_name);
     let marker = interp.make_marker();
     let Value::Marker(marker_id) = marker else {
         panic!("make_marker should return a marker");
@@ -1296,9 +1296,9 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
     let (buf1_id, buf1_name) = interp.create_buffer(" *one*");
     let (buf2_id, buf2_name) = interp.create_buffer(" *two*");
     let (buf3_id, buf3_name) = interp.create_buffer(" *three*");
-    let buf1 = Value::Buffer(buf1_id, buf1_name);
-    let buf2 = Value::Buffer(buf2_id, buf2_name);
-    let buf3 = Value::Buffer(buf3_id, buf3_name);
+    let buf1 = Value::buffer(buf1_id, buf1_name);
+    let buf2 = Value::buffer(buf2_id, buf2_name);
+    let buf3 = Value::buffer(buf3_id, buf3_name);
     interp.kill_buffer_id(buf3_id);
 
     let mark1 = interp.make_marker();
@@ -1581,13 +1581,13 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         ("live_buffers", buf1.clone(), buf2),
         (
             "dead_buffer_before_live",
-            Value::Buffer(buf3_id, " *three*".into()),
+            Value::buffer(buf3_id, " *three*"),
             buf1.clone(),
         ),
         (
             "dead_buffer_before_live_2",
-            Value::Buffer(buf3_id, " *three*".into()),
-            Value::Buffer(buf2_id, " *two*".into()),
+            Value::buffer(buf3_id, " *three*"),
+            Value::buffer(buf2_id, " *two*"),
         ),
         ("dead_buffer_before_live_3", buf3, buf1),
         ("process", proc1, proc2),
@@ -1863,13 +1863,13 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
     .expect("make uninterned a");
     let dead_buf1 = {
         let (id, name) = interp.create_buffer(" *dead-one*");
-        let buffer = Value::Buffer(id, name);
+        let buffer = Value::buffer(id, name);
         interp.kill_buffer_id(id);
         buffer
     };
     let dead_buf2 = {
         let (id, name) = interp.create_buffer(" *dead-two*");
-        let buffer = Value::Buffer(id, name);
+        let buffer = Value::buffer(id, name);
         interp.kill_buffer_id(id);
         buffer
     };
@@ -1884,7 +1884,7 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
         ("float_neg_zero", Value::Float(0.0), Value::Float(-0.0)),
         (
             "large_int_float_equal",
-            Value::BigInteger(BigInt::from(72057594037927936_i128)),
+            Value::big_integer(BigInt::from(72057594037927936_i128)),
             Value::Float(72057594037927936.0),
         ),
         ("nan", Value::Integer(1), Value::Float(f64::NAN)),

@@ -125,7 +125,7 @@ fn mock_local_arguments(
             continue;
         };
         if let Some(remote) = mock_remote_path(interp, env, &file) {
-            *argument = Value::String(remote.localname);
+            *argument = Value::String(remote.localname.into());
         }
     }
     Ok(local_args)
@@ -191,7 +191,7 @@ fn call_mock_access_file(
     let file = call_named_function(
         interp,
         "file-truename",
-        &[Value::String(requested.clone())],
+        &[Value::String(requested.clone().into())],
         env,
     )?;
     let exists = call_named_function(interp, "file-exists-p", std::slice::from_ref(&file), env)?;
@@ -226,7 +226,11 @@ fn call_mock_access_file(
 
 fn unquote_mock_local_file_result(value: Value) -> Value {
     match value {
-        Value::String(path) => Value::String(unquote_local_file_name(&path).unwrap_or(path)),
+        Value::String(path) => Value::String(
+            unquote_local_file_name(&path)
+                .unwrap_or_else(|| path.to_string())
+                .into(),
+        ),
         value => value,
     }
 }
@@ -260,7 +264,7 @@ fn call_mock_file_symlink_p(
     let vector = call_named_function(
         interp,
         "tramp-dissect-file-name",
-        &[Value::String(logical_file)],
+        &[Value::String(logical_file.into())],
         env,
     )?;
     ensure_mock_connection(interp, env, &vector)?;
@@ -358,7 +362,7 @@ fn call_mock_insert_file_contents(
     let result = call(interp, "insert-file-contents", &local_args, env)?;
     let mut values = result.to_vec()?;
     if let Some(name) = values.first_mut() {
-        *name = Value::String(logical_name);
+        *name = Value::String(logical_name.into());
     }
     Ok(Value::list(values))
 }
@@ -372,7 +376,7 @@ fn call_mock_file_expand_wildcards(
     let explicitly_remote = parse_remote_file_name(&pattern).is_some();
     let remote = require_mock_remote_path(interp, env, &pattern)?;
     let mut local_args = args.to_vec();
-    local_args[0] = Value::String(remote.localname);
+    local_args[0] = Value::String(remote.localname.into());
     let full = args.get(1).is_some_and(Value::is_truthy);
     let result = call(interp, "file-expand-wildcards", &local_args, env)?;
     let values = result
@@ -381,9 +385,9 @@ fn call_mock_file_expand_wildcards(
         .map(|value| {
             string_text(&value).map(|path| {
                 if full || explicitly_remote {
-                    Value::String(mock_logical_path(&remote.prefix, &path, remote.quoted))
+                    Value::String(mock_logical_path(&remote.prefix, &path, remote.quoted).into())
                 } else {
-                    Value::String(file_name_nondirectory(&path))
+                    Value::String(file_name_nondirectory(&path).into())
                 }
             })
         })
@@ -425,7 +429,7 @@ fn call_mock_make_symbolic_link(
         && let Some(path) = string_like(source).map(|string| string.text)
         && let Some(unquoted) = unquote_local_file_name(&path)
     {
-        *source = Value::String(unquoted);
+        *source = Value::String(unquoted.into());
     }
     call(interp, "make-symbolic-link", &local_args, env)
 }
@@ -536,11 +540,10 @@ fn call_mock_directory_files_and_attributes(
                     .cons_values()
                     .ok_or_else(|| LispError::TypeError("consp".into(), entry.type_name()))?;
                 Ok(Value::cons(
-                    Value::String(mock_logical_path(
-                        &remote.prefix,
-                        &string_text(&name)?,
-                        remote.quoted,
-                    )),
+                    Value::String(
+                        mock_logical_path(&remote.prefix, &string_text(&name)?, remote.quoted)
+                            .into(),
+                    ),
                     attributes,
                 ))
             })
@@ -565,11 +568,9 @@ fn call_mock_directory_files(
             .to_vec()?
             .into_iter()
             .map(|name| {
-                Ok(Value::String(mock_logical_path(
-                    &remote.prefix,
-                    &string_text(&name)?,
-                    remote.quoted,
-                )))
+                Ok(Value::String(
+                    mock_logical_path(&remote.prefix, &string_text(&name)?, remote.quoted).into(),
+                ))
             })
             .collect::<Result<Vec<_>, LispError>>()?,
     ))
@@ -617,7 +618,7 @@ fn mock_remote_exec_path(interp: &Interpreter, env: &Env) -> Result<Value, LispE
     Ok(Value::list(
         mock_remote_exec_paths(interp, env)?
             .into_iter()
-            .map(Value::String),
+            .map(|value| Value::String(value.into())),
     ))
 }
 
@@ -668,7 +669,7 @@ fn mock_abbreviate_file_name(
             .map(|suffix| format!("~/{suffix}"))
     };
     Ok(shortened
-        .map(|localname| Value::String(format!("{}{localname}", remote.prefix)))
+        .map(|localname| Value::String(format!("{}{localname}", remote.prefix).into()))
         .unwrap_or(abbreviated))
 }
 
@@ -691,16 +692,23 @@ fn mock_file_remote_p_value(
     identification: &Value,
 ) -> Value {
     match identification.as_symbol().ok() {
-        None | Some("nil") | Some("t") => Value::String(remote_identification_prefix(&remote)),
-        Some("method") => Value::String(remote.method),
-        Some("user") => remote.user.map(Value::String).unwrap_or(Value::Nil),
-        Some("host") => Value::String(remote.host),
-        Some("localname") => Value::String(logical_remote_localname_in_env(interp, env, &remote)),
+        None | Some("nil") | Some("t") => {
+            Value::String(remote_identification_prefix(&remote).into())
+        }
+        Some("method") => Value::String(remote.method.into()),
+        Some("user") => remote
+            .user
+            .map(|value| Value::String(value.into()))
+            .unwrap_or(Value::Nil),
+        Some("host") => Value::String(remote.host.into()),
+        Some("localname") => {
+            Value::String(logical_remote_localname_in_env(interp, env, &remote).into())
+        }
         // `hop' describes a prefix before this connection.  A plain mock
         // connection has no hop; treating an unknown identification as the
         // complete prefix made interactive completion invent one.
         Some("hop") => Value::Nil,
-        _ => Value::String(remote_identification_prefix(&remote)),
+        _ => Value::String(remote_identification_prefix(&remote).into()),
     }
 }
 
@@ -740,7 +748,7 @@ fn restore_mock_connection_spelling(
             } else {
                 suffix.to_string()
             };
-            Value::String(format!("{}{suffix}", requested.prefix))
+            Value::String(format!("{}{suffix}", requested.prefix).into())
         }
         other => other,
     };
@@ -865,7 +873,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let id = interp.resolve_buffer_id(&args[0])?;
                 interp.set_current_buffer_id(id)?;
-                Ok(Value::Buffer(id, interp.buffer.name.clone()))
+                Ok(Value::buffer(id, interp.buffer.name.clone()))
             }
             "switch-to-buffer" => {
                 need_args(name, args, 1)?;
@@ -882,7 +890,7 @@ define_dispatch!(
                 if !norecord {
                     interp.record_buffer_front(id);
                 }
-                Ok(Value::Buffer(id, interp.buffer.name.clone()))
+                Ok(Value::buffer(id, interp.buffer.name.clone()))
             }
             "pop-to-buffer" | "pop-to-buffer-same-window" | "switch-to-buffer-other-window" => {
                 need_args(name, args, 1)?;
@@ -904,7 +912,7 @@ define_dispatch!(
                 if !norecord {
                     interp.record_buffer_front(id);
                 }
-                Ok(Value::Buffer(id, interp.buffer.name.clone()))
+                Ok(Value::buffer(id, interp.buffer.name.clone()))
             }
             "create-file-buffer" => {
                 need_args(name, args, 1)?;
@@ -933,7 +941,7 @@ define_dispatch!(
                     basename
                 };
                 let (id, _) = interp.create_buffer(&buf_name);
-                Ok(Value::Buffer(id, buf_name))
+                Ok(Value::buffer(id, buf_name))
             }
             "buffer-file-name" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -945,7 +953,7 @@ define_dispatch!(
                 Ok(interp
                     .get_buffer_by_id(buffer_id)
                     .and_then(|buffer| buffer.file.clone())
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "backup-file-name-p" => {
@@ -1077,7 +1085,7 @@ define_dispatch!(
                 let coding = checked_coding_name(interp, &args[0])?;
                 let value = coding
                     .as_ref()
-                    .map(|coding| Value::Symbol(coding.clone()))
+                    .map(|coding| Value::Symbol(coding.clone().into()))
                     .unwrap_or(Value::Nil);
                 interp.set_buffer_local_value(
                     interp.current_buffer_id(),
@@ -1087,7 +1095,9 @@ define_dispatch!(
                 if !args.get(2).is_some_and(Value::is_truthy) {
                     interp.buffer.set_modified();
                 }
-                Ok(coding.map(Value::Symbol).unwrap_or(Value::Nil))
+                Ok(coding
+                    .map(|value| Value::Symbol(value.into()))
+                    .unwrap_or(Value::Nil))
             }
             "after-insert-file-set-coding" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -1112,7 +1122,7 @@ define_dispatch!(
                     interp.set_buffer_local_value(
                         interp.current_buffer_id(),
                         "buffer-file-coding-system",
-                        Value::Symbol(coding),
+                        Value::Symbol(coding.into()),
                     );
                 }
                 Ok(Value::Integer(inserted))
@@ -1251,7 +1261,7 @@ define_dispatch!(
                 interp.set_buffer_local_value(
                     buffer_id,
                     "comment-end",
-                    Value::String(String::new()),
+                    Value::String(String::new().into()),
                 );
                 interp.set_buffer_local_value(buffer_id, "comment-use-syntax", Value::T);
                 interp.set_buffer_local_value(buffer_id, "comment-add", Value::Integer(1));
@@ -1367,7 +1377,7 @@ define_dispatch!(
                         interp.set_buffer_local_value(
                             interp.current_buffer_id(),
                             "sh-shell",
-                            Value::Symbol(dialect),
+                            Value::Symbol(dialect.into()),
                         );
                     }
                     return Ok(Value::Nil);
@@ -1400,7 +1410,7 @@ define_dispatch!(
                 let visited_name = string_text(&super::call(
                     interp,
                     "expand-file-name",
-                    &[Value::String(requested)],
+                    &[Value::String(requested.into())],
                     env,
                 )?)?;
                 let remote_prefix =
@@ -1411,7 +1421,7 @@ define_dispatch!(
                     return super::call(
                         interp,
                         "dired-noselect",
-                        &[Value::String(visited_name)],
+                        &[Value::String(visited_name.into())],
                         env,
                     );
                 }
@@ -1421,15 +1431,15 @@ define_dispatch!(
                         interp.set_buffer_local_value(
                             id,
                             "emaxx--visited-remote-prefix",
-                            Value::String(prefix),
+                            Value::String(prefix.into()),
                         );
                     }
-                    return Ok(Value::Buffer(id, name));
+                    return Ok(Value::buffer(id, name));
                 }
                 let buffer = super::call(
                     interp,
                     "create-file-buffer",
-                    &[Value::String(visited_name.clone())],
+                    &[Value::String(visited_name.clone().into())],
                     env,
                 )?;
                 let id = interp.resolve_buffer_id(&buffer)?;
@@ -1472,7 +1482,7 @@ define_dispatch!(
                     let truename = string_text(&super::call(
                         interp,
                         "file-truename",
-                        &[Value::String(visited_name.clone())],
+                        &[Value::String(visited_name.clone().into())],
                         env,
                     )?)?;
                     interp.buffer = crate::buffer::Buffer::from_text(&buffer_name, &contents);
@@ -1485,13 +1495,13 @@ define_dispatch!(
                         interp.set_buffer_local_value(
                             interp.current_buffer_id(),
                             "default-directory",
-                            Value::String(parent),
+                            Value::String(parent.into()),
                         );
                     }
                     interp.set_buffer_local_value(
                         interp.current_buffer_id(),
                         "buffer-file-coding-system",
-                        Value::Symbol(coding.clone()),
+                        Value::Symbol(coding.clone().into()),
                     );
                     set_last_coding_system_used(interp, &coding, env);
                     if literal {
@@ -1525,12 +1535,12 @@ define_dispatch!(
                     interp.set_buffer_local_value(
                         id,
                         "emaxx--visited-remote-prefix",
-                        Value::String(prefix),
+                        Value::String(prefix.into()),
                     );
                 }
                 let _ = interp.set_current_buffer_id(saved_buffer_id);
                 result?;
-                Ok(Value::Buffer(id, buffer_name))
+                Ok(Value::buffer(id, buffer_name))
             }
             "find-file-literally" => {
                 need_args(name, args, 1)?;
@@ -1557,7 +1567,7 @@ define_dispatch!(
                     let Some((id, name)) = candidate else {
                         return Ok(None);
                     };
-                    let buffer = Value::Buffer(id, name);
+                    let buffer = Value::buffer(id, name);
                     if let Some(predicate) = predicate {
                         let accepted = call_function_value(
                             interp,
@@ -1581,13 +1591,13 @@ define_dispatch!(
                 let truename = string_text(&super::call(
                     interp,
                     "file-truename",
-                    &[Value::String(expanded)],
+                    &[Value::String(expanded.into())],
                     env,
                 )?)?;
                 let abbreviated = string_text(&super::call(
                     interp,
                     "abbreviate-file-name",
-                    &[Value::String(truename)],
+                    &[Value::String(truename.into())],
                     env,
                 )?)?;
                 let candidate = interp.buffer_list.iter().find_map(|(id, name)| {
@@ -1617,7 +1627,7 @@ define_dispatch!(
                         let buffer = super::call(
                             interp,
                             "find-file-noselect",
-                            &[Value::String(entry)],
+                            &[Value::String(entry.into())],
                             env,
                         )?;
                         buffers.push(buffer);
@@ -1638,7 +1648,7 @@ define_dispatch!(
                     env,
                 )?)?;
                 Ok(buffer_visiting_exact_file_name(interp, &expanded)
-                    .map(|(id, name)| Value::Buffer(id, name))
+                    .map(|(id, name)| Value::buffer(id, name))
                     .unwrap_or(Value::Nil))
             }
             "get-truename-buffer" => {
@@ -1652,7 +1662,7 @@ define_dispatch!(
                             .get_buffer_by_id(*id)
                             .and_then(|buffer| buffer.file_truename.as_deref())
                             .filter(|truename| *truename == file)
-                            .map(|_| Value::Buffer(*id, name.clone()))
+                            .map(|_| Value::buffer(*id, name.clone()))
                     })
                     .unwrap_or(Value::Nil))
             }
@@ -1664,17 +1674,22 @@ define_dispatch!(
                     .iter()
                     .find_map(|(id, name)| {
                         let value = match variable {
-                            "buffer-file-name" => interp
-                                .get_buffer_by_id(*id)
-                                .and_then(|buffer| buffer.file.clone().map(Value::String)),
-                            "buffer-file-truename" => interp
-                                .get_buffer_by_id(*id)
-                                .and_then(|buffer| buffer.file_truename.clone().map(Value::String)),
+                            "buffer-file-name" => interp.get_buffer_by_id(*id).and_then(|buffer| {
+                                buffer.file.clone().map(|value| Value::String(value.into()))
+                            }),
+                            "buffer-file-truename" => {
+                                interp.get_buffer_by_id(*id).and_then(|buffer| {
+                                    buffer
+                                        .file_truename
+                                        .clone()
+                                        .map(|value| Value::String(value.into()))
+                                })
+                            }
                             _ => interp.buffer_local_value(*id, variable),
                         };
                         value
                             .filter(|value| values_equal(interp, value, &args[1]))
-                            .map(|_| Value::Buffer(*id, name.clone()))
+                            .map(|_| Value::buffer(*id, name.clone()))
                     })
                     .unwrap_or(Value::Nil))
             }
@@ -1710,12 +1725,9 @@ define_dispatch!(
                         .lookup_var("default-directory", env)
                         .and_then(|value| string_like(&value).map(|string| string.text)),
                 };
-                Ok(Value::String(expand_file_name_runtime(
-                    interp,
-                    env,
-                    &path,
-                    base.as_deref(),
-                )?))
+                Ok(Value::String(
+                    expand_file_name_runtime(interp, env, &path, base.as_deref())?.into(),
+                ))
             }
             "locate-file" => {
                 need_arg_range(name, args, 2, 4)?;
@@ -1740,7 +1752,7 @@ define_dispatch!(
                 };
                 let file = expand_file_name_runtime(interp, env, &file, None)?;
                 let directory = expand_file_name_runtime(interp, env, &directory, None)?;
-                Ok(Value::String(file_relative_name(&file, &directory)))
+                Ok(Value::String(file_relative_name(&file, &directory).into()))
             }
             "jka-compr-get-compression-info" => {
                 need_args(name, args, 1)?;
@@ -1753,23 +1765,21 @@ define_dispatch!(
             }
             "substitute-in-file-name" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(substitute_in_file_name_in_env(
-                    interp,
-                    env,
-                    &string_text(&args[0])?,
-                )))
+                Ok(Value::String(
+                    substitute_in_file_name_in_env(interp, env, &string_text(&args[0])?).into(),
+                ))
             }
             "file-name-directory" => {
                 need_args(name, args, 1)?;
                 Ok(file_name_directory(&string_text(&args[0])?)
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "file-name-nondirectory" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(file_name_nondirectory(&string_text(
-                    &args[0],
-                )?)))
+                Ok(Value::String(
+                    file_name_nondirectory(&string_text(&args[0])?).into(),
+                ))
             }
             "file-name-split" => {
                 need_args(name, args, 1)?;
@@ -1783,14 +1793,14 @@ define_dispatch!(
                         Component::ParentDir => "..".into(),
                         Component::Normal(part) => part.to_string_lossy().into(),
                     })
-                    .map(Value::String);
+                    .map(|value| Value::String(value.into()));
                 Ok(Value::list(parts))
             }
             "file-name-sans-extension" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(file_name_sans_extension(&string_text(
-                    &args[0],
-                )?)))
+                Ok(Value::String(
+                    file_name_sans_extension(&string_text(&args[0])?).into(),
+                ))
             }
             "file-name-sans-versions" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -1804,12 +1814,14 @@ define_dispatch!(
                 {
                     file.truncate(index);
                 }
-                Ok(Value::String(file))
+                Ok(Value::String(file.into()))
             }
             "file-name-base" => {
                 need_args(name, args, 1)?;
                 let nondirectory = file_name_nondirectory(&string_text(&args[0])?);
-                Ok(Value::String(file_name_sans_extension(&nondirectory)))
+                Ok(Value::String(
+                    file_name_sans_extension(&nondirectory).into(),
+                ))
             }
             "file-name-extension" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -1817,17 +1829,21 @@ define_dispatch!(
                     &string_text(&args[0])?,
                     args.get(1).is_some_and(Value::is_truthy),
                 );
-                Ok(extension.map(Value::String).unwrap_or(Value::Nil))
+                Ok(extension
+                    .map(|value| Value::String(value.into()))
+                    .unwrap_or(Value::Nil))
             }
             "file-name-as-directory" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(file_name_as_directory(&string_text(
-                    &args[0],
-                )?)))
+                Ok(Value::String(
+                    file_name_as_directory(&string_text(&args[0])?).into(),
+                ))
             }
             "directory-file-name" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(directory_file_name(&string_text(&args[0])?)))
+                Ok(Value::String(
+                    directory_file_name(&string_text(&args[0])?).into(),
+                ))
             }
             "directory-name-p" => {
                 need_args(name, args, 1)?;
@@ -1849,18 +1865,21 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(Value::Nil)
             }
-            "file-name-concat" => Ok(Value::String(file_name_concat(
-                &args
-                    .iter()
-                    .filter(|value| !value.is_nil())
-                    .map(string_text)
-                    .collect::<Result<Vec<_>, _>>()?,
-            ))),
+            "file-name-concat" => Ok(Value::String(
+                file_name_concat(
+                    &args
+                        .iter()
+                        .filter(|value| !value.is_nil())
+                        .map(string_text)
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+                .into(),
+            )),
             "file-name-unquote" => {
                 need_arg_range(name, args, 1, 2)?;
                 let file = string_text(&args[0])?;
                 Ok(Value::String(
-                    unquote_local_file_name(&file).unwrap_or(file),
+                    unquote_local_file_name(&file).unwrap_or(file).into(),
                 ))
             }
             "file-local-name" => {
@@ -1868,15 +1887,16 @@ define_dispatch!(
                 let file = string_text(&args[0])?;
                 Ok(parse_remote_file_name(&file)
                     .map(|remote| {
-                        Value::String(logical_remote_localname_in_env(interp, env, &remote))
+                        Value::String(logical_remote_localname_in_env(interp, env, &remote).into())
                     })
-                    .unwrap_or(Value::String(file)))
+                    .unwrap_or(Value::String(file.into())))
             }
             "file-local-copy" => {
                 need_args(name, args, 1)?;
                 let file = string_text(&args[0])?;
                 if parse_remote_file_name(&file).is_some_and(|remote| remote.method == "mock") {
-                    mock_file_local_copy(interp, env, &file).map(Value::String)
+                    mock_file_local_copy(interp, env, &file)
+                        .map(|value| Value::String(value.into()))
                 } else {
                     Ok(Value::Nil)
                 }
@@ -1910,9 +1930,9 @@ define_dispatch!(
                     .filter(|path| Path::new(path).exists())
                     .map(|path| {
                         if full {
-                            Value::String(resolve_file_name_in_env(interp, env, &path))
+                            Value::String(resolve_file_name_in_env(interp, env, &path).into())
                         } else {
-                            Value::String(path)
+                            Value::String(path.into())
                         }
                     })
                     .collect::<Vec<_>>();
@@ -1926,9 +1946,9 @@ define_dispatch!(
             }
             "unhandled-file-name-directory" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(file_name_as_directory(&string_text(
-                    &args[0],
-                )?)))
+                Ok(Value::String(
+                    file_name_as_directory(&string_text(&args[0])?).into(),
+                ))
             }
             "emaxx-mock-file-name-handler" => {
                 need_arg_range(name, args, 1, usize::MAX)?;
@@ -1964,7 +1984,8 @@ define_dispatch!(
                             parse_remote_file_name(&file)
                                 .filter(|remote| remote.localname.is_empty())
                                 .map(|_| file.clone())
-                                .unwrap_or_else(|| directory_file_name(&file)),
+                                .unwrap_or_else(|| directory_file_name(&file))
+                                .into(),
                         ))
                     }
                     MockFileNameHandlerOperation::DirectoryFiles => {
@@ -1992,20 +2013,17 @@ define_dispatch!(
                         if file_remote.is_none()
                             && (file_name_absolute_p(&file) || file.starts_with('~'))
                         {
-                            return Ok(Value::String(expand_file_name_in_env(
-                                interp, env, &file, None,
-                            )));
+                            return Ok(Value::String(
+                                expand_file_name_in_env(interp, env, &file, None).into(),
+                            ));
                         }
                         if file_remote.is_none()
                             && let Some(base) = explicit_base.as_deref()
                             && mock_remote_path(interp, env, base).is_none()
                         {
-                            return Ok(Value::String(expand_file_name_in_env(
-                                interp,
-                                env,
-                                &file,
-                                Some(base),
-                            )));
+                            return Ok(Value::String(
+                                expand_file_name_in_env(interp, env, &file, Some(base)).into(),
+                            ));
                         }
                         let base = explicit_base.or_else(|| {
                             interp
@@ -2051,7 +2069,7 @@ define_dispatch!(
                         if preserve_local_quote && !localname.starts_with("/:") {
                             localname = format!("/:{localname}");
                         }
-                        Ok(Value::String(format!("{remote_prefix}{localname}")))
+                        Ok(Value::String(format!("{remote_prefix}{localname}").into()))
                     }
                     MockFileNameHandlerOperation::FileAttributes => {
                         need_arg_range(name, args, 2, 4)?;
@@ -2077,7 +2095,7 @@ define_dispatch!(
                     MockFileNameHandlerOperation::FileLocalCopy => {
                         need_args(name, args, 2)?;
                         mock_file_local_copy(interp, env, &string_text(&args[1])?)
-                            .map(Value::String)
+                            .map(|value| Value::String(value.into()))
                     }
                     MockFileNameHandlerOperation::FileNameCompletion => {
                         call_mock_local_operation(interp, env, operation, &args[1..], &[1], false)
@@ -2099,7 +2117,7 @@ define_dispatch!(
                         } else {
                             file_name_as_directory(&file)
                         };
-                        Ok(Value::String(directory))
+                        Ok(Value::String(directory.into()))
                     }
                     MockFileNameHandlerOperation::FileNameDirectory => {
                         need_args(name, args, 2)?;
@@ -2108,10 +2126,10 @@ define_dispatch!(
                             if parse_remote_file_name(&file)
                                 .is_some_and(|remote| remote.localname.is_empty())
                             {
-                                Value::String(file)
+                                Value::String(file.into())
                             } else {
                                 file_name_directory(&file)
-                                    .map(Value::String)
+                                    .map(|value| Value::String(value.into()))
                                     .unwrap_or(Value::Nil)
                             },
                         )
@@ -2126,7 +2144,8 @@ define_dispatch!(
                                 String::new()
                             } else {
                                 file_name_nondirectory(&file)
-                            },
+                            }
+                            .into(),
                         ))
                     }
                     MockFileNameHandlerOperation::FileTruename => {
@@ -2142,10 +2161,9 @@ define_dispatch!(
                         // A truename is canonical in both halves: GNU Tramp
                         // resolves an omitted mock host to the connection's
                         // system name as well as canonicalizing the localname.
-                        Ok(Value::String(format!(
-                            "{}{localname}",
-                            remote.identification_prefix
-                        )))
+                        Ok(Value::String(
+                            format!("{}{localname}", remote.identification_prefix).into(),
+                        ))
                     }
                     MockFileNameHandlerOperation::FileRemoteP => {
                         need_arg_range(name, args, 2, 4)?;
@@ -2183,7 +2201,7 @@ define_dispatch!(
                         let local_args = mock_local_arguments(interp, env, &args[1..], &[0])?;
                         let restore = interp.bind_special_dynamic(
                             "emaxx--insert-directory-logical-file",
-                            Value::String(logical_file),
+                            Value::String(logical_file.into()),
                             env,
                         )?;
                         let result = call(interp, "insert-directory", &local_args, env);
@@ -2284,11 +2302,11 @@ define_dispatch!(
                     interp.set_buffer_local_value(
                         buffer_id,
                         "emaxx--visited-remote-prefix",
-                        Value::String(prefix),
+                        Value::String(prefix.into()),
                     );
                 }
                 interp.switch_to_buffer_id(saved_buffer_id)?;
-                Ok(Value::Buffer(buffer_id, buffer_name))
+                Ok(Value::buffer(buffer_id, buffer_name))
             }
             "dired-revert" | "emaxx-dired-revert" => {
                 need_arg_range(name, args, 0, 4)?;
@@ -2351,7 +2369,7 @@ define_dispatch!(
             "shell-quote-argument" => {
                 need_args(name, args, 1)?;
                 let argument = string_text(&args[0])?;
-                Ok(Value::String(shell_quote_argument(&argument)))
+                Ok(Value::String(shell_quote_argument(&argument).into()))
             }
             "locate-user-emacs-file" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -2387,15 +2405,15 @@ define_dispatch!(
                     let home = expand_home_prefix("~");
                     let legacy = expand_file_name(&string_text(old_name)?, Some(&home));
                     if !file_readable_p(&resolved) && file_readable_p(&legacy) {
-                        return Ok(Value::String(legacy));
+                        return Ok(Value::String(legacy.into()));
                     }
                 }
-                Ok(Value::String(resolved))
+                Ok(Value::String(resolved.into()))
             }
             "ert-resource-directory" => {
                 need_args(name, args, 0)?;
                 Ok(ert_resource_directory(interp)
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "ert-resource-file" => {
@@ -2406,7 +2424,9 @@ define_dispatch!(
                         "Cannot determine the current ERT resource directory".into(),
                     ));
                 };
-                Ok(Value::String(expand_file_name(&file, Some(&directory))))
+                Ok(Value::String(
+                    expand_file_name(&file, Some(&directory)).into(),
+                ))
             }
             "ert-gcc-is-clang-p" => {
                 if !args.is_empty() {
@@ -2425,7 +2445,7 @@ define_dispatch!(
             "ert-fail" => {
                 need_args(name, args, 1)?;
                 let message = match &args[0] {
-                    Value::String(message) => message.clone(),
+                    Value::String(message) => message.to_string(),
                     Value::StringObject(state) => state.borrow().text.clone(),
                     value => value.to_string(),
                 };
@@ -2465,14 +2485,14 @@ define_dispatch!(
                             let candidate =
                                 std::path::Path::new(&dir_text).join(format!("{library}{suffix}"));
                             if candidate.is_file() {
-                                return Ok(Value::String(candidate.display().to_string()));
+                                return Ok(Value::String(candidate.display().to_string().into()));
                             }
                         }
                     }
                     return Ok(Value::Nil);
                 }
                 Ok(resolve_load_target_in_env(interp, &library, env)
-                    .map(|path| Value::String(path.display().to_string()))
+                    .map(|path| Value::String(path.display().to_string().into()))
                     .unwrap_or(Value::Nil))
             }
             "get-load-suffixes" => {
@@ -2493,7 +2513,7 @@ define_dispatch!(
                         Value::Symbol("file-missing".into()),
                         Value::String("Cannot open load file".into()),
                         Value::String("No such file or directory".into()),
-                        Value::String(target),
+                        Value::String(target.into()),
                     ])));
                 };
                 interp.load_resolved_path(&path, env, args.get(2).is_some_and(Value::is_truthy))
@@ -2507,7 +2527,7 @@ define_dispatch!(
                         Value::Symbol("file-missing".into()),
                         Value::String("Cannot open load file".into()),
                         Value::String("No such file or directory".into()),
-                        Value::String(path),
+                        Value::String(path.into()),
                     ])));
                 }
                 crate::lisp::load_file_strict(interp, &path_buf)?;
@@ -2563,7 +2583,7 @@ define_dispatch!(
                         let attributes = super::call(
                             interp,
                             "file-attributes",
-                            &[Value::String(attribute_path), id_format.clone()],
+                            &[Value::String(attribute_path.into()), id_format.clone()],
                             env,
                         )?;
                         Ok(Value::cons(name_value, attributes))
@@ -2725,8 +2745,8 @@ define_dispatch!(
                 } else if file_type.is_symlink() {
                     fs::read_link(&path)
                         .ok()
-                        .map(|target| Value::String(target.to_string_lossy().into_owned()))
-                        .unwrap_or(Value::String(path.clone()))
+                        .map(|target| Value::String(target.to_string_lossy().into_owned().into()))
+                        .unwrap_or(Value::String(path.clone().into()))
                 } else {
                     Value::Nil
                 };
@@ -2769,18 +2789,24 @@ define_dispatch!(
                     #[cfg(unix)]
                     {
                         Value::String(
-                            user_name_from_uid(uid as u32).unwrap_or_else(|| uid.to_string()),
+                            user_name_from_uid(uid as u32)
+                                .unwrap_or_else(|| uid.to_string())
+                                .into(),
                         )
                     }
                     #[cfg(not(unix))]
                     {
-                        Value::String(uid.to_string())
+                        Value::String(uid.to_string().into())
                     }
                 } else {
                     Value::Integer(uid)
                 };
                 let group = if string_ids {
-                    Value::String(group_name_from_gid(gid)?.unwrap_or_else(|| gid.to_string()))
+                    Value::String(
+                        group_name_from_gid(gid)?
+                            .unwrap_or_else(|| gid.to_string())
+                            .into(),
+                    )
                 } else {
                     Value::Integer(gid)
                 };
@@ -2816,7 +2842,7 @@ define_dispatch!(
                 need_args(name, args, 0)?;
                 let mut users = system_user_names()
                     .into_iter()
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .collect::<Vec<_>>();
                 if users.is_empty() {
                     users.push(
@@ -2830,7 +2856,9 @@ define_dispatch!(
             "system-groups" => {
                 need_args(name, args, 0)?;
                 Ok(Value::list(
-                    system_group_names().into_iter().map(Value::String),
+                    system_group_names()
+                        .into_iter()
+                        .map(|value| Value::String(value.into())),
                 ))
             }
             "car-less-than-car" => {
@@ -3163,7 +3191,9 @@ define_dispatch!(
                         Some(Value::Integer(_)) => call_named_function(
                             interp,
                             "yes-or-no-p",
-                            &[Value::String(format!("File {target} exists; keep it? "))],
+                            &[Value::String(
+                                format!("File {target} exists; keep it? ").into(),
+                            )],
                             env,
                         )?
                         .is_truthy(),
@@ -3187,9 +3217,12 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 4)?;
                 let prefix = string_text(&args[0])?;
                 let dir_flag = args.get(1).cloned().unwrap_or(Value::Nil);
-                let suffix = args.get(2).cloned().unwrap_or(Value::String(String::new()));
+                let suffix = args
+                    .get(2)
+                    .cloned()
+                    .unwrap_or(Value::String(String::new().into()));
                 let suffix = if suffix.is_nil() {
-                    Value::String(String::new())
+                    Value::String(String::new().into())
                 } else {
                     suffix
                 };
@@ -3216,10 +3249,13 @@ define_dispatch!(
                 };
                 let created =
                     make_temp_file_internal(&prefix_path, &dir_flag, &suffix_text, args.get(3))?;
-                Ok(Value::String(match remote_prefix {
-                    Some(remote) => format!("{remote}{created}"),
-                    None => created,
-                }))
+                Ok(Value::String(
+                    match remote_prefix {
+                        Some(remote) => format!("{remote}{created}"),
+                        None => created,
+                    }
+                    .into(),
+                ))
             }
             "make-temp-file-internal" => {
                 need_args(name, args, 4)?;
@@ -3227,12 +3263,9 @@ define_dispatch!(
                 let suffix = string_text(&args[2])?;
                 validate_file_name(&prefix)?;
                 validate_file_name(&suffix)?;
-                Ok(Value::String(make_temp_file_internal(
-                    &prefix,
-                    &args[1],
-                    &suffix,
-                    args.get(3),
-                )?))
+                Ok(Value::String(
+                    make_temp_file_internal(&prefix, &args[1], &suffix, args.get(3))?.into(),
+                ))
             }
             "file-locked-p" => {
                 need_args(name, args, 1)?;
@@ -3375,7 +3408,9 @@ define_dispatch!(
                         )
                     }
                 };
-                Ok(Value::String(file_modes_number_to_symbolic(mode, filetype)))
+                Ok(Value::String(
+                    file_modes_number_to_symbolic(mode, filetype).into(),
+                ))
             }
             "set-default-file-modes" => {
                 need_args(name, args, 1)?;
@@ -3425,7 +3460,7 @@ define_dispatch!(
                         ),
                         Value::String("Opening directory".into()),
                         Value::String(detail.into()),
-                        Value::String(directory.clone()),
+                        Value::String(directory.clone().into()),
                     ]))
                 })?;
                 let ignore_case = completion_ignores_case(interp, env);
@@ -3466,7 +3501,9 @@ define_dispatch!(
                     });
                 }
                 names.sort();
-                Ok(Value::list(names.into_iter().map(Value::String)))
+                Ok(Value::list(
+                    names.into_iter().map(|value| Value::String(value.into())),
+                ))
             }
             "file-name-completion" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -3501,7 +3538,7 @@ define_dispatch!(
                 // and exact-match results share one implementation.
                 let restore = interp.bind_special_dynamic(
                     "default-directory",
-                    Value::String(directory),
+                    Value::String(directory.into()),
                     env,
                 )?;
                 let result = (|| {
@@ -3585,7 +3622,7 @@ define_dispatch!(
                 let _ = super::call(
                     interp,
                     "rename-buffer",
-                    &[Value::String(base), Value::T],
+                    &[Value::String(base.into()), Value::T],
                     env,
                 );
                 if !args.get(2).is_some_and(Value::is_truthy) {
@@ -3762,7 +3799,7 @@ define_dispatch!(
                 let info = interp.call_function_value(
                     info_function,
                     Some("file-system-info"),
-                    &[Value::String(target)],
+                    &[Value::String(target.into())],
                     env,
                 )?;
                 let Some(available_bytes) = nth_list_item(&info, 2) else {
@@ -3771,11 +3808,9 @@ define_dispatch!(
                 if available_bytes.is_nil() {
                     return Ok(Value::Nil);
                 }
-                Ok(Value::String(file_size_human_readable(
-                    interp,
-                    env,
-                    &available_bytes,
-                )?))
+                Ok(Value::String(
+                    file_size_human_readable(interp, env, &available_bytes)?.into(),
+                ))
             }
             "file-symlink-p" => {
                 need_args(name, args, 1)?;
@@ -3786,7 +3821,7 @@ define_dispatch!(
                     .filter(|metadata| metadata.file_type().is_symlink())
                     .and_then(|_| fs::read_link(&path).ok());
                 Ok(target
-                    .map(|path| Value::String(path.to_string_lossy().into_owned()))
+                    .map(|path| Value::String(path.to_string_lossy().into_owned().into()))
                     .unwrap_or(Value::Nil))
             }
             "make-symbolic-link" => {
@@ -3805,7 +3840,9 @@ define_dispatch!(
                         Some(Value::Integer(_)) => call_named_function(
                             interp,
                             "yes-or-no-p",
-                            &[Value::String(format!("File {link} exists; replace it? "))],
+                            &[Value::String(
+                                format!("File {link} exists; replace it? ").into(),
+                            )],
                             env,
                         )?
                         .is_truthy(),
@@ -4178,7 +4215,7 @@ define_dispatch!(
                 let process_id = interp.resolve_process_id(&args[0])?;
                 Ok(interp
                     .process_name(process_id)
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "process-command" => {
@@ -4307,7 +4344,7 @@ define_dispatch!(
                         let _ = super::call(
                             interp,
                             "message",
-                            &[Value::String(format!("{host}/0 {error}"))],
+                            &[Value::String(format!("{host}/0 {error}").into())],
                             env,
                         )?;
                         return Ok(Value::Nil);
@@ -4501,7 +4538,7 @@ define_dispatch!(
                 let buffer = super::call(
                     interp,
                     "generate-new-buffer",
-                    &[Value::String(format!(" *http {url}*"))],
+                    &[Value::String(format!(" *http {url}*").into())],
                     env,
                 )?;
                 let buffer_id = interp.resolve_buffer_id(&buffer)?;
@@ -4637,7 +4674,7 @@ define_dispatch!(
                 }
                 let lines = String::from_utf8_lossy(&process_output.stdout)
                     .lines()
-                    .map(|line| Value::String(line.to_string()))
+                    .map(|line| Value::String(line.to_string().into()))
                     .collect::<Vec<_>>();
                 Ok(Value::list(lines))
             }
@@ -4654,7 +4691,7 @@ define_dispatch!(
                 }
                 let locales = String::from_utf8_lossy(&output.stdout)
                     .lines()
-                    .map(|line| Value::String(line.to_string()))
+                    .map(|line| Value::String(line.to_string().into()))
                     .collect::<Vec<_>>();
                 Ok(Value::list(locales))
             }
@@ -4781,7 +4818,7 @@ define_dispatch!(
                         .map_err(|error| LispError::Signal(error.to_string()))?;
                     let target_buffer_id = match args.get(1) {
                         Some(Value::T) => Some(interp.current_buffer_id()),
-                        Some(value @ (Value::Buffer(..) | Value::String(_))) => {
+                        Some(value @ (Value::Buffer(_) | Value::String(_))) => {
                             interp.resolve_buffer_id(value).ok()
                         }
                         _ => Some(interp.current_buffer_id()),
@@ -4826,7 +4863,7 @@ define_dispatch!(
                 let id = if let Some(buffer) = args.first().filter(|buffer| !buffer.is_nil()) {
                     match interp.resolve_buffer_id(buffer) {
                         Ok(id) => id,
-                        Err(_) if matches!(buffer, Value::Buffer(_, _)) => return Ok(Value::Nil),
+                        Err(_) if matches!(buffer, Value::Buffer(_)) => return Ok(Value::Nil),
                         Err(error) => return Err(error),
                     }
                 } else {
@@ -4991,7 +5028,7 @@ define_dispatch!(
                             .find(|(id, _)| *id == buffer_id)
                             .map(|(_, name)| name.clone())
                             .unwrap_or_else(|| "*unknown*".to_string());
-                        Ok(Value::Buffer(buffer_id, buffer_name))
+                        Ok(Value::buffer(buffer_id, buffer_name))
                     }
                     None => Ok(Value::Nil),
                 }
@@ -5119,7 +5156,7 @@ fn insert_directory_free_space_line(
     let info = interp.call_function_value(
         info_function,
         Some("file-system-info"),
-        &[Value::String(target)],
+        &[Value::String(target.into())],
         env,
     )?;
     let Some(available_bytes) = nth_list_item(&info, 2)
@@ -5275,7 +5312,7 @@ fn mock_remote_process_frame(
     Ok(Some(vec![
         (
             "default-directory".into(),
-            Value::String(resolved_remote_localname_in_env(interp, env, &remote)),
+            Value::String(resolved_remote_localname_in_env(interp, env, &remote).into()),
         ),
         ("process-environment".into(), process_environment),
     ]))
@@ -5493,7 +5530,7 @@ fn signal_names_value() -> Value {
         names
             .into_values()
             .rev()
-            .map(Value::String)
+            .map(|value| Value::String(value.into()))
             .collect::<Vec<_>>(),
     )
 }

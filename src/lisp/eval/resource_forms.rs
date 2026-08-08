@@ -119,7 +119,7 @@ impl Interpreter {
                         continue;
                     }
                     if let Some(ref var_name) = var {
-                        Self::push_marked_frame(env, vec![(var_name.clone(), val.clone())]);
+                        Self::push_marked_frame(env, vec![(var_name.to_string(), val.clone())]);
                     }
                     let result = self.sf_progn(&parts[1..], env);
                     if let (Some(var_name), Ok(value)) = (&var, &result)
@@ -160,7 +160,7 @@ impl Interpreter {
                     if let Some(ref var_name) = var {
                         Self::push_marked_frame(
                             env,
-                            vec![(var_name.clone(), error_condition_value(&e))],
+                            vec![(var_name.to_string(), error_condition_value(&e))],
                         );
                     }
                     let result = self.sf_progn(&parts[1..], env);
@@ -312,7 +312,7 @@ impl Interpreter {
         let buffer = crate::lisp::primitives::call(
             self,
             "generate-new-buffer",
-            &[Value::String(buffer_name)],
+            &[Value::String(buffer_name.into())],
             env,
         )?;
         let temp_id = self.resolve_buffer_id(&buffer)?;
@@ -379,9 +379,9 @@ impl Interpreter {
         let path =
             std::env::temp_dir().join(format!("emaxx-ert-dir-{}-{}", std::process::id(), stamp));
         fs::create_dir_all(&path).map_err(|error| LispError::Signal(error.to_string()))?;
-        let dir_value = Value::String(crate::lisp::primitives::file_name_as_directory(
-            &path.display().to_string(),
-        ));
+        let dir_value = Value::String(
+            crate::lisp::primitives::file_name_as_directory(&path.display().to_string()).into(),
+        );
         // Upstream expands to `let', which binds special names dynamically.
         let special_restore = if self.binding_is_dynamic(&name, env) {
             match self.bind_special_variable(&name, dir_value, env) {
@@ -430,13 +430,14 @@ impl Interpreter {
         // permanent `defvar', the dlet marker neither changes
         // `special-variable-p' nor escapes this native compatibility form.
         self.enter_dlet_name(&name);
-        let restore = match self.bind_special_variable(&name, Value::String(String::new()), env) {
-            Ok(restore) => restore,
-            Err(error) => {
-                self.leave_dlet_name(&name);
-                return Err(error);
-            }
-        };
+        let restore =
+            match self.bind_special_variable(&name, Value::String(String::new().into()), env) {
+                Ok(restore) => restore,
+                Err(error) => {
+                    self.leave_dlet_name(&name);
+                    return Err(error);
+                }
+            };
         self.message_capture_stack.push(MessageCapture {
             text: String::new(),
             live_var: Some(name.clone()),
@@ -478,7 +479,7 @@ impl Interpreter {
         // binding must be dynamic for `princ' in callees to see it.
         let restore = self.bind_special_variable(
             "standard-output",
-            Value::Buffer(temp_id, temp_name.clone()),
+            Value::buffer(temp_id, temp_name.clone()),
             env,
         )?;
         let mut body_result = self.sf_progn(&items[1..], env);
@@ -487,7 +488,7 @@ impl Interpreter {
         {
             body_result = Err(error);
         }
-        let output = Value::String(self.buffer.buffer_string());
+        let output = Value::String(self.buffer.buffer_string().into());
         let _ = self.set_current_buffer_id(saved_buffer_id);
         self.kill_buffer_id(temp_id);
         body_result?;
@@ -519,7 +520,7 @@ impl Interpreter {
                 &[
                     Value::Nil,
                     Value::Nil,
-                    Value::String(file),
+                    Value::String(file.into()),
                     Value::Nil,
                     Value::Integer(0),
                 ],
@@ -735,7 +736,7 @@ impl Interpreter {
                 .get_buffer_by_id(target_id)
                 .map(|buffer| buffer.name.clone())
                 .unwrap_or_default();
-            Ok(Value::Buffer(target_id, buffer_name))
+            Ok(Value::buffer(target_id, buffer_name))
         } else {
             self.sf_progn(&items[2..], env)
         };
@@ -893,8 +894,8 @@ impl Interpreter {
         let how = args[0].clone();
         let params = self.parse_params(&args[1])?;
         let advice_name = match args.get(2) {
-            Some(Value::String(name)) => Some(name.clone()),
-            Some(Value::Symbol(name)) => Some(name.clone()),
+            Some(Value::String(name)) => Some(name.to_string()),
+            Some(Value::Symbol(name)) => Some(name.to_string()),
             Some(Value::Nil) | None => None,
             Some(other) => {
                 return Err(LispError::SignalValue(Value::list([
@@ -906,15 +907,15 @@ impl Interpreter {
         };
         let advice = if let Some(name) = advice_name {
             let function_name = format!("{target}@{name}");
-            let lambda = Value::Lambda(
+            let lambda = Value::lambda(
                 params.into(),
                 items[3..].to_vec().into(),
                 shared_env(env.clone()),
             );
             self.push_function_binding(&function_name, lambda);
-            Value::Symbol(function_name)
+            Value::Symbol(function_name.into())
         } else {
-            Value::Lambda(
+            Value::lambda(
                 params.into(),
                 items[3..].to_vec().into(),
                 shared_env(env.clone()),
@@ -923,10 +924,10 @@ impl Interpreter {
         primitives::call(
             self,
             "advice-add",
-            &[Value::Symbol(target.clone()), how, advice],
+            &[Value::Symbol(target.clone().into()), how, advice],
             env,
         )?;
-        Ok(Value::Symbol(target))
+        Ok(Value::Symbol(target.into()))
     }
 
     pub(super) fn sf_with_environment_variables(
@@ -1010,7 +1011,7 @@ impl Interpreter {
         let label = if matches!(items.get(3), Some(Value::Symbol(s)) if s == ":label") {
             body_index = 5;
             match items.get(4) {
-                Some(Value::Symbol(symbol)) => symbol.clone(),
+                Some(Value::Symbol(symbol)) => symbol.to_string(),
                 Some(Value::Cons(_)) => {
                     let quoted = items[4].to_vec()?;
                     quoted
@@ -1076,7 +1077,7 @@ impl Interpreter {
         let label = if matches!(items.get(1), Some(Value::Symbol(s)) if s == ":label") {
             body_index = 3;
             match items.get(2) {
-                Some(Value::Symbol(symbol)) => symbol.clone(),
+                Some(Value::Symbol(symbol)) => symbol.to_string(),
                 Some(Value::Cons(_)) => {
                     let quoted = items[2].to_vec()?;
                     quoted
@@ -1513,7 +1514,7 @@ impl Interpreter {
                         {
                             *existing = value;
                         } else {
-                            frame.push((name.clone(), value));
+                            frame.push((name.to_string(), value));
                         }
                     }
                     Value::Cons(_) => {
@@ -1599,7 +1600,7 @@ impl Interpreter {
                 params.push(p.as_symbol()?.to_string());
             }
             let body: Vec<Value> = parts[2..].to_vec();
-            let lambda = Value::Lambda(params.into(), body.into(), shared_env(env.clone()));
+            let lambda = Value::lambda(params.into(), body.into(), shared_env(env.clone()));
             frame.push((fname, lambda));
         }
         frame.insert(
@@ -1645,7 +1646,7 @@ impl Interpreter {
             let body: Vec<Value> = parts[2..].to_vec();
             frame.push((
                 fname,
-                Value::Lambda(params.into(), body.into(), closure_env.clone()),
+                Value::lambda(params.into(), body.into(), closure_env.clone()),
             ));
         }
 
@@ -1762,7 +1763,10 @@ fn current_frame_binding<'a>(env: &'a Env, name: &str) -> Option<&'a Value> {
 
 fn patch_returned_closure_binding(value: &Value, name: &str, current_value: &Value) {
     match value {
-        Value::Lambda(_, _, closure_env) => {
+        Value::Lambda(lambda_value) => {
+            let _ = &lambda_value.params;
+            let _ = &lambda_value.body;
+            let closure_env = &lambda_value.env;
             let mut closure_env = closure_env.borrow_mut();
             if closure_env.is_empty() {
                 closure_env.push(vec![(name.to_string(), current_value.clone())]);

@@ -76,7 +76,7 @@ impl Interpreter {
                 items
                     .into_iter()
                     .map(|v| match v {
-                        Value::Symbol(s) => Ok(s),
+                        Value::Symbol(s) => Ok(s.to_string()),
                         _ => Err(invalid_function(spec.clone())),
                     })
                     .collect()
@@ -459,7 +459,7 @@ impl Interpreter {
                 .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
                 .as_symbol()?;
             index += 2;
-            Some(Value::Symbol(format!("--cl-block-{name}--")))
+            Some(Value::Symbol(format!("--cl-block-{name}--").into()))
         } else {
             None
         };
@@ -636,7 +636,7 @@ impl Interpreter {
                                 crate::lisp::primitives::vector_items(&sequence)?
                             };
                             specs.push(LoopSpec::List {
-                                pattern: Value::Symbol(name),
+                                pattern: Value::Symbol(name.into()),
                                 values,
                             });
                             index += 4;
@@ -2274,7 +2274,7 @@ impl Interpreter {
                 let target = self.eval(target_expr, env)?;
                 if matches!(name.as_str(), "car" | "cdr") {
                     return Ok(Value::list([
-                        Value::Symbol(format!("--emaxx-setf-{name}-place")),
+                        Value::Symbol(format!("--emaxx-setf-{name}-place").into()),
                         target,
                     ]));
                 }
@@ -2448,7 +2448,7 @@ impl Interpreter {
                 let expander = self
                     .get_symbol_property(name, "gv-expander")
                     .expect("checked above");
-                let getter_do = Value::Lambda(
+                let getter_do = Value::lambda(
                     vec!["--emaxx-gv-getter--".into(), "--emaxx-gv-setter--".into()].into(),
                     vec![Value::Symbol("--emaxx-gv-getter--".into())].into(),
                     shared_env(env.clone()),
@@ -2485,7 +2485,7 @@ impl Interpreter {
                 for arg in &items[1..] {
                     funcall.push(Value::list([Value::Symbol("quote".into()), arg.clone()]));
                 }
-                let setter = Value::Lambda(
+                let setter = Value::lambda(
                     vec!["--emaxx-gv-value--".into()].into(),
                     vec![Value::list(funcall)].into(),
                     shared_env(env.clone()),
@@ -2551,7 +2551,7 @@ impl Interpreter {
         match pattern {
             Value::Symbol(name) if name == "nil" => Ok(()),
             Value::Symbol(name) => {
-                Self::upsert_frame_binding(frame, name.clone(), Self::stored_value(value));
+                Self::upsert_frame_binding(frame, name.to_string(), Self::stored_value(value));
                 Ok(())
             }
             Value::Cons(_) => {
@@ -2653,7 +2653,7 @@ impl Interpreter {
                 let frame = env
                     .last_mut()
                     .expect("destructuring binding frame must be present");
-                Self::upsert_frame_binding(frame, name.clone(), Self::stored_value(value));
+                Self::upsert_frame_binding(frame, name.to_string(), Self::stored_value(value));
                 Ok(())
             }
             Value::Cons(_) => {
@@ -2778,7 +2778,7 @@ impl Interpreter {
                             let binding =
                                 parse_cl_defun_key_binding(pattern_items[pattern_index].clone())?;
                             accepted_keys.push(binding.keyword_name.clone());
-                            let key = Value::Symbol(binding.keyword_name);
+                            let key = Value::Symbol(binding.keyword_name.into());
                             let matching = values[value_index..]
                                 .chunks(2)
                                 .find(|pair| pair.first() == Some(&key));
@@ -2789,7 +2789,7 @@ impl Interpreter {
                                 None => self.eval(&binding.default_value, env)?,
                             };
                             self.bind_cl_destructuring_pattern(
-                                &Value::Symbol(binding.variable_name),
+                                &Value::Symbol(binding.variable_name.into()),
                                 bound_value,
                                 env,
                             )?;
@@ -2918,7 +2918,7 @@ impl Interpreter {
             Value::Symbol(name) if name == "nil" => Ok(()),
             Value::Symbol(name) => {
                 if !bindings.iter().any(|(existing, _)| existing == name) {
-                    bindings.push((name.clone(), Value::Nil));
+                    bindings.push((name.to_string(), Value::Nil));
                 }
                 Ok(())
             }

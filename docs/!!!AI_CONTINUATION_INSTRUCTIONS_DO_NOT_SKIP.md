@@ -18,6 +18,47 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-09 COMPACT SHARED-VALUE CHECKPOINT: the published ordered frontier
+  remains 4,582/7,080 (2,498 selectors left).  `Value` is now 16 bytes on the
+  measured 64-bit target, down from 40: strings and symbol names share text,
+  ordinary symbol names are interned by one runtime-thread-lifetime authority,
+  big integers share their immutable allocation, and lambda/buffer values
+  clone their existing descriptor instead of deeply cloning it.  Uninterned
+  symbol names still bypass interning and reclaim normally.  Focused tests
+  pin the two-word size, sharing, interning, reclamation, and cons-cell
+  identity/weak-reference contracts.
+
+  The comparable post-bootstrap source benchmark is
+  `target/perf/run-1786218758/interpreter/source-eval-suite.perf/comparison.json`:
+  list walking is 8.317x GNU time (`emaxx` 0.114756 seconds), cons allocation
+  14.282x (0.018681 seconds), and interpreted calls 15.938x (0.021070
+  seconds).  Against the tagged baseline those are repeatable Emaxx
+  improvements of 13.76%, 11.68%, and 11.38%; run `1786218701` corroborates
+  them.  Electric remains 874/874 exact in
+  `target/compat/run-1786218571954271000-9089` at 0.809 seconds GNU versus
+  12.375 seconds Emaxx; the ordered-prefix replay measured 0.745 versus
+  11.784 seconds, improving on the 13.475-second pre-migration Emaxx result.
+  The complete replay through C# Mode matched 350/351 files in
+  `target/compat/run-1786218796753084000-9393`; the only mismatch is the
+  pre-existing `test/lisp/net/tramp-tests.el` load timeout after 1,800
+  seconds (GNU 98.634 seconds).  Therefore this slice introduced no new
+  prefix mismatch, but the full prefix is still not recertified and selector
+  4,583 must not start.
+
+  The exhaustive Rust library run executed 1,845 tests: 1,837 passed and the
+  eight initial failures resolved to six sandbox-denied localhost cases plus
+  two pre-existing process-output scheduling flakes in exact replay.  Both
+  GnuTLS cases now pass outside the sandbox after their duplicated five-second
+  test-server polls were replaced by one diagnostic 30-second helper; the
+  X509 fixture needed 25.13 seconds, proving the old deadline was flaky.
+  Two additional test-only sharing invariants were added afterward and pass
+  in the focused 11/11 type suite.  Compatibility-harness 29/29,
+  performance-harness 1/1, CLI 10/10, ERT runner 3/3, the generated-autoload
+  comparison, rustfmt, diff check, all-target/all-feature check, and strict
+  Clippy pass.  The native C-primitive contract remains 1,420/1,420.  NEXT is
+  the next measured representation/source-dispatch slice, especially
+  eliminating repeated owned list flattening; retain only thematic wins with
+  the same identity, correctness, and performance gates.
 - 2026-08-08 PRE-COMPACT-VALUE CHECKPOINT: the published ordered frontier
   remains 4,582/7,080 (2,498 selectors left).  The checkpoint immediately
   before the Lisp value representation migration is tagged

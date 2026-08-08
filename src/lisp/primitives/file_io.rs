@@ -267,7 +267,8 @@ pub(crate) fn file_locked_p(
                     Value::String(
                         owner
                             .filter(|owner| !owner.is_empty())
-                            .unwrap_or_else(|| "unknown".into()),
+                            .unwrap_or_else(|| "unknown".into())
+                            .into(),
                     )
                 },
             )
@@ -281,7 +282,7 @@ pub(crate) fn gensym_prefix(value: Option<&Value>) -> Result<String, LispError> 
     match value {
         None | Some(Value::Nil) => Ok("g".into()),
         // `gensym' renders its prefix with %s, so symbols work too.
-        Some(Value::Symbol(name)) => Ok(name.clone()),
+        Some(Value::Symbol(name)) => Ok(name.to_string()),
         Some(value) => string_text(value),
     }
 }
@@ -505,9 +506,9 @@ pub(crate) fn write_region_value_with_logical_path(
             call_named_function(
                 interp,
                 "y-or-n-p",
-                &[Value::String(format!(
-                    "File {logical_path} exists; overwrite? "
-                ))],
+                &[Value::String(
+                    format!("File {logical_path} exists; overwrite? ").into(),
+                )],
                 env,
             )?
             .is_truthy()
@@ -532,7 +533,7 @@ pub(crate) fn write_region_value_with_logical_path(
         call_named_function(
             interp,
             "lock-file",
-            &[Value::String(lock_path.clone())],
+            &[Value::String(lock_path.clone().into())],
             env,
         )?;
     }
@@ -565,7 +566,13 @@ pub(crate) fn write_region_value_with_logical_path(
         }
     })();
     let unlock_result = if lock_enabled {
-        call_named_function(interp, "unlock-file", &[Value::String(lock_path)], env).map(drop)
+        call_named_function(
+            interp,
+            "unlock-file",
+            &[Value::String(lock_path.into())],
+            env,
+        )
+        .map(drop)
     } else {
         Ok(())
     };
@@ -600,7 +607,7 @@ pub(crate) fn write_region_value_with_logical_path(
         call_named_function(
             interp,
             "message",
-            &[Value::String(format!("Wrote {logical_path}"))],
+            &[Value::String(format!("Wrote {logical_path}").into())],
             env,
         )?;
     }
@@ -617,7 +624,7 @@ pub(crate) fn write_file_value(
         interp.set_buffer_local_value(
             interp.current_buffer_id(),
             "emaxx--visited-remote-prefix",
-            Value::String(remote.prefix),
+            Value::String(remote.prefix.into()),
         );
     }
     let mut path = resolve_file_name_in_env(interp, env, &requested);
@@ -643,7 +650,7 @@ pub(crate) fn write_file_value(
     interp.set_buffer_local_value(
         interp.current_buffer_id(),
         "buffer-file-coding-system",
-        Value::Symbol(coding.clone()),
+        Value::Symbol(coding.clone().into()),
     );
     set_last_coding_system_used(interp, &coding, env);
     if visiting_new_file {
@@ -671,7 +678,7 @@ pub(crate) fn write_file_value(
             hook_buffer,
         )?;
     }
-    Ok(Value::String(path))
+    Ok(Value::String(path.into()))
 }
 
 pub(crate) fn append_external_debugging_output(
@@ -744,7 +751,7 @@ pub(crate) fn write_printer_output(
             interp.buffer.insert(text);
             Ok(())
         }
-        Some(Value::Buffer(_, _)) => {
+        Some(Value::Buffer(_)) => {
             let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
             if buffer_id == interp.current_buffer_id() {
                 interp.insert_current_buffer(text);
@@ -794,7 +801,7 @@ pub(crate) fn write_printer_output(
         Some(Value::Symbol(name)) if name == "external-debugging-output" => {
             append_external_debugging_output(interp, text)
         }
-        Some(Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) => {
+        Some(Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Lambda(_)) => {
             let function = stream.expect("matched Some").clone();
             for ch in text.chars() {
                 call_function_value(interp, &function, &[Value::Integer(ch as i64)], env)?;
@@ -904,7 +911,7 @@ pub(crate) fn printer_stream_at_line_start(
             &interp.buffer,
             interp.buffer.point(),
         )),
-        Some(Value::Buffer(_, _)) => {
+        Some(Value::Buffer(_)) => {
             let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
@@ -933,7 +940,7 @@ pub(crate) fn printer_stream_at_line_start(
             let empty = buffer.point_min() == buffer.point_max();
             Ok(!empty && buffer_position_at_line_start(buffer, buffer.point()))
         }
-        Some(Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) => Ok(false),
+        Some(Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Lambda(_)) => Ok(false),
         Some(other) => Err(LispError::TypeError(
             "output-stream".into(),
             other.type_name(),
@@ -959,10 +966,10 @@ pub(crate) fn buffer_position_at_line_start(
 
 pub(crate) fn render_princ(value: &Value) -> String {
     match value {
-        Value::String(text) => text.clone(),
+        Value::String(text) => text.to_string(),
         Value::StringObject(state) => state.borrow().text.clone(),
         // princ prints a buffer as its name.
-        Value::Buffer(_, name) => name.clone(),
+        Value::Buffer(buffer) => buffer.name.to_string(),
         _ => value.to_string(),
     }
 }
@@ -1050,7 +1057,7 @@ pub(crate) fn format_spec_replacement(
             return Ok(None);
         }
         let callable = resolve_callable(interp, &value_value, env).unwrap_or(value_value.clone());
-        if matches!(callable, Value::BuiltinFunc(_) | Value::Lambda(_, _, _))
+        if matches!(callable, Value::BuiltinFunc(_) | Value::Lambda(_))
             || is_lambda_expression(&callable)
         {
             value_value = call_function_value(interp, &callable, &[], env)?;
@@ -1215,7 +1222,7 @@ fn auto_coding_for_file(
         function,
         None,
         &[
-            Value::String(filename.to_string()),
+            Value::String(filename.to_string().into()),
             Value::Integer(bytes.len() as i64),
         ],
         &mut detection_env,
@@ -1462,7 +1469,7 @@ pub(crate) fn insert_file_contents(
     interp.set_buffer_local_value(
         interp.current_buffer_id(),
         "buffer-file-coding-system",
-        Value::Symbol(detected.clone()),
+        Value::Symbol(detected.clone().into()),
     );
     if visit {
         interp.buffer.file = Some(path.clone());
@@ -1473,7 +1480,7 @@ pub(crate) fn insert_file_contents(
     set_last_coding_system_used(interp, &detected, env);
     let inserted = finish_insert_file_contents(interp, env, inserted_chars, &args[1..])?;
     Ok(Value::list([
-        Value::String(path),
+        Value::String(path.into()),
         Value::Integer(inserted as i64),
     ]))
 }
@@ -1590,7 +1597,12 @@ pub(crate) fn maybe_lock_current_buffer_file(
     let Some(logical_path) = current_buffer_file(interp).map(str::to_string) else {
         return Ok(());
     };
-    call_named_function(interp, "lock-file", &[Value::String(logical_path)], env)?;
+    call_named_function(
+        interp,
+        "lock-file",
+        &[Value::String(logical_path.into())],
+        env,
+    )?;
     Ok(())
 }
 
@@ -1627,7 +1639,7 @@ pub(crate) fn unlock_current_buffer(
     let Some(path) = current_buffer_file(interp).map(str::to_string) else {
         return Ok(Value::Nil);
     };
-    call_named_function(interp, "unlock-file", &[Value::String(path)], env)
+    call_named_function(interp, "unlock-file", &[Value::String(path.into())], env)
 }
 
 pub(crate) fn unlock_buffer_by_id(
@@ -1649,7 +1661,7 @@ pub(crate) fn unlock_buffer_by_id(
     else {
         return Ok(Value::Nil);
     };
-    call_named_function(interp, "unlock-file", &[Value::String(path)], env)
+    call_named_function(interp, "unlock-file", &[Value::String(path.into())], env)
 }
 
 pub(crate) fn unlock_file_path(
@@ -1759,7 +1771,7 @@ pub(crate) fn ensure_no_supersession_threat(
         interp,
         "read-char-choice",
         &[
-            Value::String(prompt),
+            Value::String(prompt.into()),
             Value::list([
                 Value::Integer('y' as i64),
                 Value::Integer('n' as i64),
@@ -1788,13 +1800,13 @@ pub(crate) fn ensure_no_supersession_threat(
             Err(LispError::SignalValue(Value::list([
                 Value::Symbol("file-supersession".into()),
                 Value::String("File reverted".into()),
-                Value::String(logical_path),
+                Value::String(logical_path.into()),
             ])))
         }
         _ => Err(LispError::SignalValue(Value::list([
             Value::Symbol("file-supersession".into()),
             Value::String("File changed on disk".into()),
-            Value::String(logical_path),
+            Value::String(logical_path.into()),
         ]))),
     }
 }
@@ -1871,7 +1883,7 @@ pub(crate) fn revert_current_buffer(
     interp.set_buffer_local_value(
         interp.current_buffer_id(),
         "buffer-file-coding-system",
-        Value::Symbol(coding.clone()),
+        Value::Symbol(coding.clone().into()),
     );
     let visited_file_modtime = file_modtime(&path)?;
     for buffer_id in related {
@@ -1886,7 +1898,7 @@ pub(crate) fn revert_current_buffer(
         interp.set_buffer_local_value(
             buffer_id,
             "buffer-file-coding-system",
-            Value::Symbol(coding.clone()),
+            Value::Symbol(coding.clone().into()),
         );
     }
     crate::lisp::primitives::run_named_hooks(

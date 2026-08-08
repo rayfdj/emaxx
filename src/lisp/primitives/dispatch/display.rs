@@ -274,7 +274,7 @@ fn current_frame_and_buffer_state(interp: &Interpreter) -> Vec<Value> {
         let Some(buffer) = interp.get_buffer_by_id(*buffer_id) else {
             continue;
         };
-        state.push(Value::Buffer(*buffer_id, name.clone()));
+        state.push(Value::buffer(*buffer_id, name.clone()));
         state.push(
             interp
                 .buffer_local_value(*buffer_id, "buffer-read-only")
@@ -1078,7 +1078,7 @@ fn buffer_match_condition(
         return Ok(super::call(
             interp,
             "string-match-p",
-            &[condition.clone(), Value::String(buffer_name)],
+            &[condition.clone(), Value::String(buffer_name.into())],
             env,
         )?
         .is_truthy());
@@ -1192,7 +1192,7 @@ define_dispatch!(
                 // GNU's C primitive intentionally makes formatting a no-op in
                 // noninteractive mode, before it inspects FORMAT or frame state.
                 // Emaxx currently has only this batch/noninteractive host mode.
-                Ok(Value::String(String::new()))
+                Ok(Value::String(String::new().into()))
             }
             // ── Output ──
             "substitute-command-keys" => {
@@ -1275,7 +1275,7 @@ define_dispatch!(
                 if args.first().is_some_and(Value::is_nil) {
                     Ok(Value::Nil)
                 } else {
-                    Ok(Value::String(text))
+                    Ok(Value::String(text.into()))
                 }
             }
             "message-box" | "message-or-box" => {
@@ -1297,7 +1297,12 @@ define_dispatch!(
                 } else {
                     format!("Warning: {text}")
                 };
-                let _ = super::call(interp, "message", &[Value::String(warning.clone())], env)?;
+                let _ = super::call(
+                    interp,
+                    "message",
+                    &[Value::String(warning.clone().into())],
+                    env,
+                )?;
                 append_to_warnings_buffer(interp, &warning);
                 Ok(Value::Nil)
             }
@@ -1310,7 +1315,12 @@ define_dispatch!(
                 } else {
                     format!("Warning ({warning_type}): {message}")
                 };
-                let _ = super::call(interp, "message", &[Value::String(warning.clone())], env)?;
+                let _ = super::call(
+                    interp,
+                    "message",
+                    &[Value::String(warning.clone().into())],
+                    env,
+                )?;
                 let buffer_name = args
                     .get(3)
                     .and_then(string_like)
@@ -1361,7 +1371,7 @@ define_dispatch!(
                     .buffer_string()
                     .lines()
                     .next_back()
-                    .map(|line| Value::String(line.to_string()))
+                    .map(|line| Value::String(line.to_string().into()))
                     .unwrap_or(Value::Nil))
             }
             "error-message-string" => {
@@ -1375,9 +1385,9 @@ define_dispatch!(
                 if let Some(items) = items
                     && let Some(message) = items.get(1).and_then(string_like)
                 {
-                    Ok(Value::String(message.text))
+                    Ok(Value::String(message.text.into()))
                 } else {
-                    Ok(Value::String(args[0].to_string()))
+                    Ok(Value::String(args[0].to_string().into()))
                 }
             }
             "command-error-default-function" => {
@@ -1559,15 +1569,15 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 // NOESCAPE non-nil prints like `princ' (no quoting).
                 if args.get(1).is_some_and(|value| value.is_truthy()) {
-                    return Ok(Value::String(render_princ(&args[0])));
+                    return Ok(Value::String(render_princ(&args[0]).into()));
                 }
                 if matches!(args.get(2), None | Some(Value::Nil)) {
-                    return Ok(Value::String(render_prin1(interp, &args[0], env)?));
+                    return Ok(Value::String(render_prin1(interp, &args[0], env)?.into()));
                 }
                 let mut print_env = printer_env_with_overrides(env, args.get(2))?;
                 let rendered = render_prin1(interp, &args[0], &mut print_env)?;
                 sync_print_number_table(env, args.get(2), &print_env);
-                Ok(Value::String(rendered))
+                Ok(Value::String(rendered.into()))
             }
             #[dispatch(builtin_override)]
             "cl-prin1-to-string" => {
@@ -1612,7 +1622,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 2)?;
                 let target = match args.first() {
                     None | Some(Value::Nil) => Value::Nil,
-                    Some(value) => Value::String(string_text(value)?),
+                    Some(value) => Value::String(string_text(value)?.into()),
                 };
                 interp.set_global_binding("emaxx-external-debugging-output-target", target.clone());
                 Ok(target)
@@ -1789,7 +1799,7 @@ define_dispatch!(
                 } else {
                     append_key_description_parts(&args[0], &mut parts)?;
                 }
-                Ok(Value::String(parts.join(" ")))
+                Ok(Value::String(parts.join(" ").into()))
             }
             "single-key-description" => {
                 if args.is_empty() || args.len() > 2 {
@@ -1799,15 +1809,15 @@ define_dispatch!(
                     ));
                 }
                 let no_angles = args.get(1).is_some_and(Value::is_truthy);
-                Ok(Value::String(single_key_description_text(
-                    &args[0], no_angles,
-                )?))
+                Ok(Value::String(
+                    single_key_description_text(&args[0], no_angles)?.into(),
+                ))
             }
             "text-char-description" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(text_char_description_text(
-                    args[0].as_integer()?,
-                )?))
+                Ok(Value::String(
+                    text_char_description_text(args[0].as_integer()?)?.into(),
+                ))
             }
 
             // ── More buffer ops ──
@@ -1837,7 +1847,8 @@ define_dispatch!(
                     .buffer
                     .last_name
                     .clone()
-                    .unwrap_or_else(|| interp.buffer.name.clone()),
+                    .unwrap_or_else(|| interp.buffer.name.clone())
+                    .into(),
             )),
 
             // ── Display stubs ──
@@ -2175,7 +2186,7 @@ define_dispatch!(
                 interp.set_buffer_local_value(
                     buffer_id,
                     "header-line-indent",
-                    Value::String(String::new()),
+                    Value::String(String::new().into()),
                 );
                 interp.set_buffer_local_value(
                     buffer_id,
@@ -2514,14 +2525,16 @@ define_dispatch!(
                 };
 
                 if candidate.is_none()
-                    && let Some(buffer @ Value::Buffer(buffer_id, _)) =
+                    && let Some(buffer @ Value::Buffer(_)) =
                         interp.lookup_var("other-window-scroll-buffer", env)
-                    && interp.has_buffer_id(buffer_id)
+                    && let Value::Buffer(buffer_value) = &buffer
+                    && interp.has_buffer_id(buffer_value.id)
                 {
                     candidate = live_ordinary_window_ids(interp)
                         .into_iter()
                         .find(|window_id| {
-                            window_buffer_id(interp, &Value::Record(*window_id)) == Some(buffer_id)
+                            window_buffer_id(interp, &Value::Record(*window_id))
+                                == Some(buffer_value.id)
                         })
                         .map(Value::Record);
                     if candidate.is_none() {
@@ -3024,14 +3037,15 @@ define_dispatch!(
                 let Some(buffer) = args.first().filter(|value| !value.is_nil()) else {
                     return Ok(current_bidi_paragraph_direction_value(interp, env));
                 };
-                let Value::Buffer(buffer_id, _) = buffer else {
+                let Value::Buffer(buffer_value) = buffer else {
                     return Err(wrong_type_argument("bufferp", buffer.clone()));
                 };
-                if !interp.has_buffer_id(*buffer_id) {
+                let buffer_id = buffer_value.id;
+                if !interp.has_buffer_id(buffer_id) {
                     return Err(wrong_type_argument("bufferp", buffer.clone()));
                 }
                 let saved_buffer = interp.current_buffer_id();
-                interp.set_current_buffer_id(*buffer_id)?;
+                interp.set_current_buffer_id(buffer_id)?;
                 let direction = current_bidi_paragraph_direction_value(interp, env);
                 interp.set_current_buffer_id(saved_buffer)?;
                 Ok(direction)
@@ -3218,7 +3232,7 @@ define_dispatch!(
                 if !face_exists(interp, face) {
                     return Err(LispError::Signal(format!("Not a face: {face}")));
                 }
-                Ok(Value::String(face.to_string()))
+                Ok(Value::String(face.to_string().into()))
             }
             "face-foreground" | "face-background" => {
                 if args.is_empty() || args.len() > 3 {
@@ -3292,7 +3306,7 @@ define_dispatch!(
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("error".into()),
                         Value::String("Invalid face".into()),
-                        Value::Symbol(face),
+                        Value::Symbol(face.into()),
                     ])));
                 }
                 let set_global = matches!(args.get(1), Some(Value::T | Value::Nil));
@@ -3304,7 +3318,7 @@ define_dispatch!(
                     if attribute == ":inherit" && set_local {
                         let inherit = match value {
                             Value::Nil => None,
-                            Value::Symbol(symbol) => Some(symbol.clone()),
+                            Value::Symbol(symbol) => Some(symbol.to_string()),
                             _ => None,
                         };
                         if value.is_nil() || matches!(value, Value::Symbol(_)) {
@@ -3430,7 +3444,7 @@ define_dispatch!(
                     return Ok(Value::T);
                 }
                 let buffer_id = match object {
-                    Value::Buffer(id, _) if interp.has_buffer_id(*id) => Some(*id),
+                    Value::Buffer(buffer) if interp.has_buffer_id(buffer.id) => Some(buffer.id),
                     _ => string_like(object)
                         .and_then(|string| interp.find_buffer(&string.text).map(|(id, _)| id)),
                 };
@@ -3581,14 +3595,14 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 };
                 if buffer_id == interp.current_buffer_id() {
-                    Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
+                    Ok(Value::buffer(buffer_id, interp.buffer.name.clone()))
                 } else if let Some((_, name)) = interp
                     .buffer_list
                     .iter()
                     .find(|(id, _)| *id == buffer_id)
                     .cloned()
                 {
-                    Ok(Value::Buffer(buffer_id, name))
+                    Ok(Value::buffer(buffer_id, name))
                 } else {
                     Ok(Value::Nil)
                 }
@@ -4254,7 +4268,7 @@ define_dispatch!(
                         .map(|(_, name)| name.clone())
                         .unwrap_or_else(|| interp.buffer.name.clone())
                 };
-                let buffer = Value::Buffer(buffer_id, buffer_name);
+                let buffer = Value::buffer(buffer_id, buffer_name);
                 let action = args.get(1).cloned().unwrap_or(Value::Nil);
                 let mut actions = Vec::new();
                 if let Some(user_action) =

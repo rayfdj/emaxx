@@ -240,7 +240,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         }
     );
     assert_eq!(
-        termination_for(&[Value::BigInteger(BigInt::from(i64::MAX) + 1)]),
+        termination_for(&[Value::big_integer(BigInt::from(i64::MAX) + 1)]),
         EmacsTermination {
             exit_code: 0,
             restart: false,
@@ -282,7 +282,7 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::Nil,
         Value::T,
         Value::Integer(1),
-        Value::BigInteger(BigInt::from(i64::MAX) + 1),
+        Value::big_integer(BigInt::from(i64::MAX) + 1),
         Value::Float(1.5),
         Value::String("inline string".into()),
         string_object,
@@ -290,7 +290,7 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::cons(Value::Integer(1), Value::Nil),
         Value::BuiltinFunc("car".into()),
         lambda,
-        Value::Buffer(1, "*scratch*".into()),
+        Value::buffer(1, "*scratch*"),
         Value::Marker(1),
         Value::Overlay(1),
         Value::CharTable(1),
@@ -795,7 +795,7 @@ fn module_load_validates_real_libraries_without_fabricating_the_gnu_value_abi() 
         Value::symbol("error-data"),
         Value::list([
             Value::symbol("module-load"),
-            Value::String(library.display().to_string()),
+            Value::String(library.display().to_string().into()),
         ]),
         Value::list([Value::symbol("error"), Value::symbol("error-data")]),
     ]);
@@ -2214,7 +2214,7 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
             "command-error-default-function",
             &[
                 Value::list([Value::Symbol("error".into()), Value::String("boom".into())]),
-                Value::String(String::new()),
+                Value::String(String::new().into()),
                 Value::Nil,
             ],
             &mut env,
@@ -3084,7 +3084,7 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let result = call(
         &mut interp,
         "directory-files",
-        &[Value::String(directory.display().to_string())],
+        &[Value::String(directory.display().to_string().into())],
         &mut env,
     )
     .expect("directory-files should succeed");
@@ -3100,7 +3100,7 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
 
     interp.set_variable(
         "default-directory",
-        Value::String(format!("{}/", directory.display())),
+        Value::String(format!("{}/", directory.display()).into()),
         &mut env,
     );
     let relative_full = call(
@@ -3116,7 +3116,9 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     .expect("relative directory-files should honor dynamic default-directory");
     assert_eq!(
         relative_full,
-        Value::list([Value::String(directory.join("ext4").display().to_string())])
+        Value::list([Value::String(
+            directory.join("ext4").display().to_string().into(),
+        )])
     );
 
     let file_name = result.to_vec().expect("directory entries")[2].clone();
@@ -3422,7 +3424,7 @@ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
             &mut interp,
             "puthash",
             &[
-                Value::String(format!("UNICODE NAME {index}")),
+                Value::String(format!("UNICODE NAME {index}").into()),
                 Value::Integer(index),
                 table.clone(),
             ],
@@ -3436,7 +3438,7 @@ fn equal_string_hash_tables_scale_without_losing_public_semantics() {
                 &mut interp,
                 "gethash",
                 &[
-                    Value::String(format!("UNICODE NAME {index}")),
+                    Value::String(format!("UNICODE NAME {index}").into()),
                     table.clone(),
                 ],
                 &mut env,
@@ -3530,7 +3532,7 @@ fn equal_structured_hash_tables_use_structural_buckets() {
             Value::Symbol("macroexp-warning".into()),
             Value::list([
                 Value::Integer(index),
-                Value::String(format!("generated form {index}")),
+                Value::String(format!("generated form {index}").into()),
             ]),
         ]);
         call(
@@ -3552,7 +3554,7 @@ fn equal_structured_hash_tables_use_structural_buckets() {
             Value::Symbol("macroexp-warning".into()),
             Value::list([
                 Value::Integer(index),
-                Value::String(format!("generated form {index}")),
+                Value::String(format!("generated form {index}").into()),
             ]),
         ]);
         assert_eq!(
@@ -3582,7 +3584,7 @@ fn equal_structured_hash_tables_use_structural_buckets() {
         call(
             &mut interp,
             "gethash",
-            &[Value::BigInteger(BigInt::from(7)), table],
+            &[Value::big_integer(BigInt::from(7)), table],
             &mut env,
         )
         .expect("equal fixnum and bignum representations share a bucket"),
@@ -3594,8 +3596,9 @@ fn equal_structured_hash_tables_use_structural_buckets() {
 fn ordinary_memq_skips_symbol_with_position_mode_resolution() {
     let mut interp = Interpreter::new();
     let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)]];
-    let symbols =
-        Value::list((0..2_048).map(|index| Value::Symbol(format!("ordinary-symbol-{index}"))));
+    let symbols = Value::list(
+        (0..2_048).map(|index| Value::Symbol(format!("ordinary-symbol-{index}").into())),
+    );
 
     reset_symbol_with_pos_flag_read_count();
     for _ in 0..256 {
@@ -3857,7 +3860,7 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
     let error = call(
         &mut interp,
         "insert-file-contents",
-        &[Value::String(path.display().to_string())],
+        &[Value::String(path.display().to_string().into())],
         &mut env,
     )
     .expect_err("a nonexistent input file must signal");
@@ -3868,7 +3871,7 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
     let error = call(
         &mut interp,
         "insert-file-contents",
-        &[Value::String(path.clone()), Value::T],
+        &[Value::String(path.clone().into()), Value::T],
         &mut env,
     )
     .expect_err("visiting a nonexistent input file must still signal");
@@ -3893,7 +3896,7 @@ fn system_move_file_to_trash_preserves_gnu_missing_file_contract() {
     let error = call(
         &mut interp,
         "system-move-file-to-trash",
-        &[Value::String(path.clone())],
+        &[Value::String(path.clone().into())],
         &mut env,
     )
     .expect_err("moving a nonexistent file to trash must signal");
@@ -3906,7 +3909,7 @@ fn system_move_file_to_trash_preserves_gnu_missing_file_contract() {
             Value::Symbol("file-missing".into()),
             Value::String("Removing old name".into()),
             Value::String("No such file or directory".into()),
-            Value::String(path),
+            Value::String(path.into()),
         ])
     );
 }
@@ -3929,7 +3932,7 @@ fn process_lines_uses_default_directory_as_subprocess_cwd() {
     let mut env = Vec::new();
     interp.set_variable(
         "default-directory",
-        Value::String(cwd.display().to_string()),
+        Value::String(cwd.display().to_string().into()),
         &mut env,
     );
 
@@ -3941,7 +3944,7 @@ fn process_lines_uses_default_directory_as_subprocess_cwd() {
     )
     .expect("process-lines should succeed");
 
-    assert_eq!(result, Value::list([Value::String(expected)]));
+    assert_eq!(result, Value::list([Value::String(expected.into())]));
 
     let _ = std::fs::remove_dir_all(&cwd);
 }
@@ -3952,7 +3955,7 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*process-output*");
-    let buffer = Value::Buffer(buffer_id, buffer_name);
+    let buffer = Value::buffer(buffer_id, buffer_name);
 
     let process = call(
         &mut interp,
@@ -4152,7 +4155,7 @@ fn process_connection_probe_with_default(
         Value::Symbol(":name".into()),
         Value::String(name.into()),
         Value::Symbol(":buffer".into()),
-        Value::Buffer(buffer_id, buffer_name),
+        Value::buffer(buffer_id, buffer_name),
         Value::Symbol(":command".into()),
         Value::list([
             Value::String("/bin/sh".into()),
@@ -4239,7 +4242,7 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
             Value::Symbol(":name".into()),
             Value::String("pty-eof".into()),
             Value::Symbol(":buffer".into()),
-            Value::Buffer(buffer_id, buffer_name),
+            Value::buffer(buffer_id, buffer_name),
             Value::Symbol(":command".into()),
             Value::list([Value::String("/bin/cat".into())]),
             Value::Symbol(":connection-type".into()),
@@ -4299,7 +4302,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
             Value::Symbol(":name".into()),
             Value::String("split-pty-eof".into()),
             Value::Symbol(":buffer".into()),
-            Value::Buffer(buffer_id, buffer_name),
+            Value::buffer(buffer_id, buffer_name),
             Value::Symbol(":command".into()),
             Value::list([Value::String("/bin/cat".into())]),
             Value::Symbol(":connection-type".into()),
@@ -4440,7 +4443,7 @@ fn deleted_process_is_not_returned_for_buffer() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*deleted-process*");
-    let buffer = Value::Buffer(buffer_id, buffer_name);
+    let buffer = Value::buffer(buffer_id, buffer_name);
     let process = call(
         &mut interp,
         "start-process",
@@ -4514,7 +4517,7 @@ fn string_limit_supports_end_flag() {
 fn run_at_time_callbacks_fire_on_accept_process_output() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    let callback = Value::Lambda(
+    let callback = Value::lambda(
         Vec::new().into(),
         vec![
             Value::list([
@@ -4547,7 +4550,7 @@ fn run_at_time_callbacks_fire_on_accept_process_output() {
 fn run_with_timer_callbacks_fire_on_accept_process_output() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    let callback = Value::Lambda(
+    let callback = Value::lambda(
         Vec::new().into(),
         vec![
             Value::list([
@@ -4580,7 +4583,7 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
 fn accept_process_output_honors_seconds_with_no_millis_argument() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    let buffer = Value::Buffer(interp.current_buffer_id(), String::new());
+    let buffer = Value::buffer(interp.current_buffer_id(), String::new());
     let process = call(
         &mut interp,
         "start-process",
@@ -4632,7 +4635,7 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
 fn accept_process_output_without_timeout_waits_for_requested_process() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    let buffer = Value::Buffer(interp.current_buffer_id(), String::new());
+    let buffer = Value::buffer(interp.current_buffer_id(), String::new());
     let process = call(
         &mut interp,
         "start-process",
@@ -4810,7 +4813,7 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
         &mut env,
     )
     .expect("server should expose its port");
-    let sentinel = Value::Lambda(
+    let sentinel = Value::lambda(
         vec!["process".into(), "event".into()].into(),
         vec![Value::list([
             Value::Symbol("setq".into()),
@@ -4990,7 +4993,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
         Err(LispError::SignalValue(value))
             if matches!(value.to_vec().ok().as_deref(), Some([
                 Value::Symbol(name),
-                Value::Buffer(_, _),
+                Value::Buffer(_),
             ]) if name == "buffer-read-only")
     ));
 
@@ -6745,6 +6748,24 @@ fn native_gnutls_boot_and_bye_preserve_gnu_validation_contracts() {
     );
 }
 
+fn wait_for_local_test_server(child: &mut std::process::Child, port: u16, description: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        assert!(
+            child.try_wait().expect("poll local test server").is_none(),
+            "{description} exited before accepting a connection"
+        );
+        if std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_ok() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{description} did not start listening"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
     struct Server(std::process::Child);
@@ -6774,21 +6795,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
         .spawn()
         .expect("gnutls-serv is required for the transport regression");
     let mut server = Server(child);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        assert!(
-            server.0.try_wait().expect("poll GnuTLS server").is_none(),
-            "GnuTLS test server exited before accepting a connection"
-        );
-        if std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_ok() {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "GnuTLS test server did not start listening"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_for_local_test_server(&mut server.0, port, "GnuTLS test server");
 
     let program = format!(
         r#"
@@ -6916,21 +6923,7 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
         .spawn()
         .expect("gnutls-serv is required for the X.509 regression");
     let mut server = Server(child);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        assert!(
-            server.0.try_wait().expect("poll X.509 server").is_none(),
-            "X.509 server exited before accepting a connection"
-        );
-        if std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_ok() {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "X.509 server did not start listening"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_for_local_test_server(&mut server.0, port, "X.509 server");
 
     let program = format!(
         r#"
@@ -11312,7 +11305,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
             Value::symbol(":name"),
             Value::String("serial-io".into()),
             Value::symbol(":port"),
-            Value::String(path),
+            Value::String(path.into()),
             Value::symbol(":speed"),
             Value::Integer(9600),
             Value::symbol(":filter"),

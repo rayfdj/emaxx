@@ -146,7 +146,12 @@ fn sqlite_select(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lisp
 
     match return_type {
         Value::Symbol(symbol) if symbol == "full" => Ok(Value::cons(
-            Value::list(columns.iter().cloned().map(Value::String)),
+            Value::list(
+                columns
+                    .iter()
+                    .cloned()
+                    .map(|value| Value::String(value.into())),
+            ),
             Value::list(rows),
         )),
         Value::Symbol(symbol) if symbol == "set" => create_sqlite_handle(
@@ -243,7 +248,11 @@ fn sqlite_columns(interp: &Interpreter, args: &[Value]) -> Result<Value, LispErr
                 return Err(LispError::Signal("Statement closed".into()));
             }
             Ok(Value::list(
-                state.columns.iter().cloned().map(Value::String),
+                state
+                    .columns
+                    .iter()
+                    .cloned()
+                    .map(|value| Value::String(value.into())),
             ))
         }
         Some(SqliteHandleState::Database(_)) => Err(LispError::Signal("Invalid set object".into())),
@@ -295,7 +304,7 @@ fn sqlite_version(args: &[Value]) -> Result<Value, LispError> {
     let version = connection
         .query_row("select sqlite_version()", [], |row| row.get::<_, String>(0))
         .map_err(sqlite_error)?;
-    Ok(Value::String(version))
+    Ok(Value::String(version.into()))
 }
 
 fn sqlitep(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
@@ -342,8 +351,8 @@ fn sqlite_failure_error(error: ffi::Error, message: Option<String>) -> LispError
     LispError::SignalValue(Value::list([
         Value::Symbol(sqlite_error_symbol(&error).into()),
         Value::list([
-            Value::String(errstr),
-            Value::String(message),
+            Value::String(errstr.into()),
+            Value::String(message.into()),
             Value::Integer(primary_code as i64),
             Value::Integer(error.extended_code as i64),
         ]),

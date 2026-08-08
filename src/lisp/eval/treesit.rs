@@ -213,7 +213,7 @@ impl Interpreter {
             let library = match unsafe { libloading::Library::new(&candidate) } {
                 Ok(library) => library,
                 Err(error) => {
-                    errors.push(Value::String(error.to_string()));
+                    errors.push(Value::String(error.to_string().into()));
                     continue;
                 }
             };
@@ -221,7 +221,7 @@ impl Interpreter {
                 let constructor = library
                     .get::<unsafe extern "C" fn() -> tree_sitter::Language>(function.as_bytes())
                     .map_err(|error| {
-                        load_error("symbol-error", [Value::String(error.to_string())])
+                        load_error("symbol-error", [Value::String(error.to_string().into())])
                     })?;
                 constructor()
             };

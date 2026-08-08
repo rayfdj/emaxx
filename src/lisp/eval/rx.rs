@@ -38,7 +38,7 @@ fn expand_rx_splice_markers(
             let value = match source {
                 Value::Symbol(name) => interp
                     .lookup_var(name, env)
-                    .ok_or_else(|| LispError::Void(name.clone()))?,
+                    .ok_or_else(|| LispError::Void(name.to_string()))?,
                 other => other.clone(),
             };
             if let Ok(values) = value.to_vec() {
@@ -83,7 +83,7 @@ fn compile_rx_regexp_form(
     let mut regexp_env = env.clone();
     let value = interp.eval(&items[1], &mut regexp_env)?;
     match value {
-        Value::String(text) => Ok(text),
+        Value::String(text) => Ok(text.to_string()),
         Value::StringObject(state) => Ok(state.borrow().text.clone()),
         other => Err(LispError::TypeError("string".into(), other.type_name())),
     }

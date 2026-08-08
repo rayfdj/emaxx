@@ -181,7 +181,7 @@ fn lexical_alist_frame(value: &Value) -> Result<Vec<(String, Value)>, LispError>
             continue;
         };
         if let Value::Symbol(name) = key {
-            frame.push((name, val));
+            frame.push((name.to_string(), val));
         }
     }
     Ok(frame)
@@ -206,7 +206,7 @@ pub(crate) fn unload_feature_impl(
     }
     let provide_entry = Value::cons(
         Value::Symbol("provide".into()),
-        Value::Symbol(feature.clone()),
+        Value::Symbol(feature.clone().into()),
     );
     let load_history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
     let mut entries = load_history.to_vec().unwrap_or_default();
@@ -309,7 +309,7 @@ pub(crate) fn eval_buffer_impl(
             .unwrap_or(Value::Nil);
         interp.set_global_binding(
             "current-load-list",
-            Value::list([Value::String(file.clone())]),
+            Value::list([Value::String(file.clone().into())]),
         );
         previous
     });
@@ -370,13 +370,13 @@ pub(crate) fn eval_region_impl(
         .unwrap_or(Value::Nil);
     restores.push(interp.bind_special_variable(
         "eval-buffer-list",
-        Value::cons(Value::Buffer(buffer_id, buffer_name), eval_buffer_list),
+        Value::cons(Value::buffer(buffer_id, buffer_name), eval_buffer_list),
         env,
     )?);
     if let Some(file) = source_file {
         restores.push(interp.bind_special_variable(
             "current-load-list",
-            Value::list([Value::String(file)]),
+            Value::list([Value::String(file.into())]),
             env,
         )?);
     }
@@ -439,7 +439,7 @@ fn eval_region_via_read_function(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     interp.buffer.goto_char(start);
-    let stream = Value::Buffer(buffer_id, interp.buffer.name.clone());
+    let stream = Value::buffer(buffer_id, interp.buffer.name.clone());
     let mut result = Value::Nil;
     while interp.buffer.point() < end {
         let _ = crate::lisp::primitives::call(
@@ -693,13 +693,15 @@ pub(crate) fn get_load_suffixes_value(interp: &Interpreter, env: &Env) -> Result
         .to_vec()?;
     let rep_suffixes = interp
         .lookup_var("load-file-rep-suffixes", env)
-        .unwrap_or(Value::list([Value::String(String::new())]))
+        .unwrap_or(Value::list([Value::String(String::new().into())]))
         .to_vec()?;
     let mut values = Vec::new();
     for suffix in suffixes {
         let suffix = string_text(&suffix)?;
         for rep in &rep_suffixes {
-            values.push(Value::String(format!("{suffix}{}", string_text(rep)?)));
+            values.push(Value::String(
+                format!("{suffix}{}", string_text(rep)?).into(),
+            ));
         }
     }
     Ok(Value::list(values))
@@ -750,7 +752,7 @@ pub(crate) fn locate_file_internal(
             let candidate = unquote_local_file_name(&candidate).unwrap_or(candidate);
             let predicate = (!predicate.is_nil()).then_some(predicate);
             if locate_file_candidate_matches(interp, predicate, &candidate, env)? {
-                return Ok(Value::String(candidate));
+                return Ok(Value::String(candidate.into()));
             }
         }
     }
@@ -776,7 +778,7 @@ pub(crate) fn locate_file_candidate_matches(
         .call_function_value(
             resolve_callable(interp, predicate, env)?,
             predicate.as_symbol().ok(),
-            &[Value::String(candidate.to_string())],
+            &[Value::String(candidate.to_string().into())],
             env,
         )?
         .is_truthy())
@@ -824,10 +826,11 @@ pub(crate) fn history_args_for_call(
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
     let mut recorded = actual_args.to_vec();
-    let Value::Lambda(params, _, _) = func else {
+    let Value::Lambda(lambda) = func else {
         return Ok(recorded);
     };
-    let positional_params = params
+    let positional_params = lambda
+        .params
         .iter()
         .filter(|param| *param != "&optional" && *param != "&rest")
         .cloned()

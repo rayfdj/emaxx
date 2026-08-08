@@ -569,7 +569,7 @@ fn extract_file_local_variable(source: &str, variable: &str) -> Option<String> {
 
 fn parse_shorthand_string(value: &types::Value) -> Result<String, types::LispError> {
     match value {
-        types::Value::String(text) => Ok(text.clone()),
+        types::Value::String(text) => Ok(text.to_string()),
         types::Value::StringObject(state) => Ok(state.borrow().text.clone()),
         other => Err(types::LispError::TypeError(
             "string".into(),
@@ -600,8 +600,8 @@ fn parse_symbol_shorthands(raw_value: &str) -> Result<Vec<(String, String)>, typ
 fn read_symbol_shorthands_value(shorthands: &[(String, String)]) -> types::Value {
     types::Value::list(shorthands.iter().map(|(from, to)| {
         types::Value::cons(
-            types::Value::String(from.clone()),
-            types::Value::String(to.clone()),
+            types::Value::String(from.clone().into()),
+            types::Value::String(to.clone().into()),
         )
     }))
 }
@@ -672,10 +672,13 @@ pub fn load_file_strict(
     // file being loaded, then restored on every exit path.
     let mut dynamic_restores = Vec::with_capacity(5);
     for (name, value) in [
-        ("load-file-name", types::Value::String(load_file.clone())),
+        (
+            "load-file-name",
+            types::Value::String(load_file.clone().into()),
+        ),
         (
             "load-true-file-name",
-            types::Value::String(load_file.clone()),
+            types::Value::String(load_file.clone().into()),
         ),
         ("inhibit-file-name-operation", types::Value::Nil),
         ("load-in-progress", types::Value::T),
@@ -703,7 +706,7 @@ pub fn load_file_strict(
     );
     interp.set_global_binding(
         "current-load-list",
-        types::Value::list([types::Value::String(path.display().to_string())]),
+        types::Value::list([types::Value::String(path.display().to_string().into())]),
     );
     let forms = match reader::Reader::with_symbol_shorthands(
         &source,
@@ -781,7 +784,9 @@ pub fn load_file_strict(
     }
     let current_load_list = interp
         .lookup_var("current-load-list", &types::Env::new())
-        .unwrap_or_else(|| types::Value::list([types::Value::String(path.display().to_string())]));
+        .unwrap_or_else(|| {
+            types::Value::list([types::Value::String(path.display().to_string().into())])
+        });
     interp.commit_entire_load_history(&load_file, current_load_list);
     if let Some(message) = warning_message {
         append_message(interp, &message);
@@ -838,7 +843,7 @@ pub fn run_ert_file(
     );
     interp.set_global_binding(
         "current-load-list",
-        types::Value::list([types::Value::String(path.display().to_string())]),
+        types::Value::list([types::Value::String(path.display().to_string().into())]),
     );
     let forms = match reader::Reader::with_symbol_shorthands(
         &source,

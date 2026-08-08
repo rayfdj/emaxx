@@ -2,21 +2,370 @@
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use std::collections::HashSet;
 use std::fmt;
 use std::{
+    borrow::Borrow,
     cell::{Ref, RefCell, RefMut},
+    collections::HashSet,
+    iter::FromIterator,
+    ops::Deref,
+    path::Path,
     rc::{Rc, Weak},
 };
 
 const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
 const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 
+/// Immutable shared text stored inside compact Lisp values.
+#[repr(transparent)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SharedText(Rc<String>);
+
+impl SharedText {
+    pub fn new(text: String) -> Self {
+        Self(Rc::new(text))
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn into_string(self) -> String {
+        Rc::try_unwrap(self.0).unwrap_or_else(|text| text.as_ref().clone())
+    }
+}
+
+impl Deref for SharedText {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for SharedText {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<Path> for SharedText {
+    fn as_ref(&self) -> &Path {
+        Path::new(self.as_str())
+    }
+}
+
+impl Borrow<str> for SharedText {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Debug for SharedText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl fmt::Display for SharedText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<String> for SharedText {
+    fn from(text: String) -> Self {
+        Self::new(text)
+    }
+}
+
+impl From<&str> for SharedText {
+    fn from(text: &str) -> Self {
+        Self::new(text.to_owned())
+    }
+}
+
+impl From<&String> for SharedText {
+    fn from(text: &String) -> Self {
+        Self::from(text.as_str())
+    }
+}
+
+impl FromIterator<char> for SharedText {
+    fn from_iter<T: IntoIterator<Item = char>>(iter: T) -> Self {
+        String::from_iter(iter).into()
+    }
+}
+
+impl<'a> FromIterator<&'a char> for SharedText {
+    fn from_iter<T: IntoIterator<Item = &'a char>>(iter: T) -> Self {
+        iter.into_iter().copied().collect::<String>().into()
+    }
+}
+
+impl From<SharedText> for String {
+    fn from(text: SharedText) -> Self {
+        text.into_string()
+    }
+}
+
+impl From<&SharedText> for String {
+    fn from(text: &SharedText) -> Self {
+        text.as_str().to_owned()
+    }
+}
+
+impl PartialEq<str> for SharedText {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for SharedText {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for SharedText {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<SharedText> for String {
+    fn eq(&self, other: &SharedText) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<SharedText> for str {
+    fn eq(&self, other: &SharedText) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<SymbolName> for SharedText {
+    fn eq(&self, other: &SymbolName) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<SharedText> for SymbolName {
+    fn eq(&self, other: &SharedText) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+/// A symbol name shared by every live occurrence of the same interned name.
+///
+/// The ordinary-symbol table deliberately owns its entries for the owning
+/// runtime thread's lifetime, matching the standard obarray's ownership in
+/// Emaxx's single-threaded Lisp runtime.  Encoded
+/// `make-symbol` names bypass the table so transient uninterned symbols are
+/// still released when their last Lisp value dies.
+#[repr(transparent)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SymbolName(SharedText);
+
+thread_local! {
+    static INTERNED_SYMBOL_NAMES: RefCell<HashSet<SymbolName>> = RefCell::new(HashSet::new());
+}
+
+impl SymbolName {
+    pub fn intern(text: String) -> Self {
+        if text.contains(UNINTERNED_SYMBOL_MARKER) {
+            return Self(SharedText::from(text));
+        }
+        INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
+            if let Some(name) = names.get(text.as_str()) {
+                return name.clone();
+            }
+            let name = Self(SharedText::from(text));
+            names.insert(name.clone());
+            name
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn into_string(self) -> String {
+        self.0.as_str().to_owned()
+    }
+}
+
+impl Deref for SymbolName {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for SymbolName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for SymbolName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Debug for SymbolName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl fmt::Display for SymbolName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<String> for SymbolName {
+    fn from(text: String) -> Self {
+        Self::intern(text)
+    }
+}
+
+impl From<&str> for SymbolName {
+    fn from(text: &str) -> Self {
+        Self::intern(text.to_owned())
+    }
+}
+
+impl From<&String> for SymbolName {
+    fn from(text: &String) -> Self {
+        Self::from(text.as_str())
+    }
+}
+
+impl From<SymbolName> for String {
+    fn from(name: SymbolName) -> Self {
+        name.into_string()
+    }
+}
+
+impl From<&SymbolName> for String {
+    fn from(name: &SymbolName) -> Self {
+        name.as_str().to_owned()
+    }
+}
+
+impl From<SharedText> for SymbolName {
+    fn from(text: SharedText) -> Self {
+        Self::intern(text.into_string())
+    }
+}
+
+impl From<SymbolName> for SharedText {
+    fn from(name: SymbolName) -> Self {
+        name.0
+    }
+}
+
+impl PartialEq<str> for SymbolName {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for SymbolName {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for SymbolName {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<SymbolName> for String {
+    fn eq(&self, other: &SymbolName) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<SymbolName> for str {
+    fn eq(&self, other: &SymbolName) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<SymbolName> for &str {
+    fn eq(&self, other: &SymbolName) -> bool {
+        *self == other.as_str()
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SharedBigInt(Rc<BigInt>);
+
+impl Deref for SharedBigInt {
+    type Target = BigInt;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<BigInt> for SharedBigInt {
+    fn from(value: BigInt) -> Self {
+        Self(Rc::new(value))
+    }
+}
+
+impl From<SharedBigInt> for BigInt {
+    fn from(value: SharedBigInt) -> Self {
+        Rc::try_unwrap(value.0).unwrap_or_else(|value| value.as_ref().clone())
+    }
+}
+
+impl PartialEq<BigInt> for SharedBigInt {
+    fn eq(&self, other: &BigInt) -> bool {
+        self.0.as_ref() == other
+    }
+}
+
+impl PartialEq<SharedBigInt> for BigInt {
+    fn eq(&self, other: &SharedBigInt) -> bool {
+        self == other.0.as_ref()
+    }
+}
+
+impl fmt::Display for SharedBigInt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 pub type SharedCons = Rc<ConsCell>;
 pub type ConsCells = (ConsSlot, ConsSlot);
 pub type SharedEnv = Rc<RefCell<Env>>;
 pub type SharedLambdaParams = Rc<Vec<String>>;
 pub type SharedLambdaBody = Rc<Vec<Value>>;
+
+#[derive(Debug)]
+pub struct LambdaValue {
+    pub params: SharedLambdaParams,
+    pub body: SharedLambdaBody,
+    pub env: SharedEnv,
+}
+
+#[derive(Debug)]
+pub struct BufferValue {
+    pub id: u64,
+    pub name: SharedText,
+}
 
 /// The mutable payload of one Lisp cons.
 ///
@@ -178,22 +527,22 @@ pub enum Value {
     Nil,
     T,
     Integer(i64),
-    BigInteger(BigInt),
+    BigInteger(SharedBigInt),
     Float(f64),
-    String(String),
+    String(SharedText),
     StringObject(Rc<RefCell<SharedStringState>>),
-    Symbol(String),
+    Symbol(SymbolName),
     Cons(SharedCons),
     /// Built-in function: name, arity (min, max), function pointer handled in eval
-    BuiltinFunc(String),
+    BuiltinFunc(SymbolName),
     /// A lambda or closure: params, immutable shared body, captured env.
     ///
     /// Function-cell lookup clones Lisp values on every call.  Sharing the
     /// immutable code keeps that clone O(1) while the captured environment
     /// retains its independent Lisp identity and mutability.
-    Lambda(SharedLambdaParams, SharedLambdaBody, SharedEnv),
+    Lambda(Rc<LambdaValue>),
     /// A buffer object: (id, name). The id is used for `eq` identity.
-    Buffer(u64, String),
+    Buffer(Rc<BufferValue>),
     /// A marker object, identified by unique id.
     Marker(u64),
     /// An overlay object, identified by unique id.
@@ -265,7 +614,7 @@ pub(crate) fn interned_symbol_value(symbol: String) -> Value {
     match symbol.as_str() {
         "nil" => Value::Nil,
         "t" => Value::T,
-        _ => Value::Symbol(symbol),
+        _ => Value::Symbol(symbol.into()),
     }
 }
 
@@ -284,16 +633,31 @@ impl Value {
         Value::Integer(n)
     }
 
+    pub fn big_integer(n: BigInt) -> Self {
+        Value::BigInteger(n.into())
+    }
+
     pub fn string(s: &str) -> Self {
-        Value::String(s.to_string())
+        Value::String(s.into())
     }
 
     pub fn symbol(s: &str) -> Self {
-        Value::Symbol(s.to_string())
+        Value::Symbol(s.into())
     }
 
     pub fn cons(car: Value, cdr: Value) -> Self {
         Value::Cons(Rc::new(ConsCell::new(car, cdr)))
+    }
+
+    pub fn lambda(params: SharedLambdaParams, body: SharedLambdaBody, env: SharedEnv) -> Self {
+        Value::Lambda(Rc::new(LambdaValue { params, body, env }))
+    }
+
+    pub fn buffer(id: u64, name: impl Into<SharedText>) -> Self {
+        Value::Buffer(Rc::new(BufferValue {
+            id,
+            name: name.into(),
+        }))
     }
 
     /// Build a proper list from an iterator of values.
@@ -462,8 +826,8 @@ impl Value {
             Value::Symbol(_) => "symbol".into(),
             Value::Cons(_) => "cons".into(),
             Value::BuiltinFunc(name) => format!("builtin<{}>", name),
-            Value::Lambda(_, _, _) => "lambda".into(),
-            Value::Buffer(_, name) => format!("buffer<{}>", name),
+            Value::Lambda(_) => "lambda".into(),
+            Value::Buffer(buffer) => format!("buffer<{}>", buffer.name),
             Value::Marker(id) => format!("marker<{}>", id),
             Value::Overlay(id) => format!("overlay<{}>", id),
             Value::CharTable(id) => format!("char-table<{}>", id),
@@ -506,13 +870,19 @@ fn values_equal_recursive(
         (Value::Integer(a), Value::Integer(b)) => a == b,
         (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
         (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
-            &BigInt::from(*a) == b
+            BigInt::from(*a) == **b
         }
         (Value::Float(a), Value::Float(b)) => a == b,
         (Value::String(a), Value::String(b)) => a == b,
-        (Value::StringObject(a), Value::StringObject(b)) => a.borrow().text == b.borrow().text,
-        (Value::String(a), Value::StringObject(b)) => *a == b.borrow().text,
-        (Value::StringObject(a), Value::String(b)) => a.borrow().text == *b,
+        (Value::StringObject(a), Value::StringObject(b)) => {
+            RefCell::borrow(a.as_ref()).text == RefCell::borrow(b.as_ref()).text
+        }
+        (Value::String(a), Value::StringObject(b)) => {
+            a.as_str() == RefCell::borrow(b.as_ref()).text
+        }
+        (Value::StringObject(a), Value::String(b)) => {
+            RefCell::borrow(a.as_ref()).text == b.as_str()
+        }
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Cons(a), Value::Cons(b)) => {
             if Rc::ptr_eq(a, b) {
@@ -526,10 +896,10 @@ fn values_equal_recursive(
                 && values_equal_recursive(&a.cdr.borrow(), &b.cdr.borrow(), seen)
         }
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
-        (Value::Lambda(a_params, a_body, a_env), Value::Lambda(b_params, b_body, b_env)) => {
-            a_params == b_params && a_body == b_body && Rc::ptr_eq(a_env, b_env)
+        (Value::Lambda(a), Value::Lambda(b)) => {
+            a.params == b.params && a.body == b.body && Rc::ptr_eq(&a.env, &b.env)
         }
-        (Value::Buffer(id_a, _), Value::Buffer(id_b, _)) => id_a == id_b,
+        (Value::Buffer(a), Value::Buffer(b)) => a.id == b.id,
         (Value::Marker(a), Value::Marker(b)) => a == b,
         (Value::Overlay(a), Value::Overlay(b)) => a == b,
         (Value::CharTable(a), Value::CharTable(b)) => a == b,
@@ -554,7 +924,9 @@ fn format_value(
         Value::BigInteger(n) => write!(f, "{}", n),
         Value::Float(v) => write!(f, "{}", format_float(*v)),
         Value::String(s) => write!(f, "\"{}\"", s),
-        Value::StringObject(state) => write!(f, "\"{}\"", state.borrow().text),
+        Value::StringObject(state) => {
+            write!(f, "\"{}\"", state.as_ref().borrow().text)
+        }
         Value::Symbol(s) => write!(f, "{}", visible_symbol_name(s)),
         Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(head) if head == "vector-literal") =>
         {
@@ -615,8 +987,8 @@ fn format_value(
             write!(f, ")")
         }
         Value::BuiltinFunc(name) => write!(f, "#<builtin {}>", name),
-        Value::Lambda(params, _, _) => write!(f, "#<lambda ({})>", params.join(" ")),
-        Value::Buffer(_, name) => write!(f, "#<buffer {}>", name),
+        Value::Lambda(lambda) => write!(f, "#<lambda ({})>", lambda.params.join(" ")),
+        Value::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.name),
         Value::Marker(id) => write!(f, "#<marker id:{}>", id),
         Value::Overlay(id) => write!(f, "#<overlay id:{}>", id),
         Value::CharTable(id) => write!(f, "#<char-table id:{}>", id),
@@ -677,7 +1049,7 @@ impl LispError {
             LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
             LispError::Signal(_) => "error".into(),
             LispError::SignalValue(value) => match value.car() {
-                Ok(Value::Symbol(symbol)) => symbol,
+                Ok(Value::Symbol(symbol)) => symbol.to_string(),
                 _ => "error".into(),
             },
             LispError::ErtTestFailed(_) => "ert-test-failed".into(),
@@ -771,8 +1143,60 @@ impl From<crate::buffer::BufferError> for LispError {
 
 #[cfg(test)]
 mod tests {
-    use super::{LispError, SharedCons, Value, shared_env};
+    use super::{
+        LispError, SharedCons, SymbolName, Value, make_uninterned_symbol_name, shared_env,
+    };
     use std::rc::Rc;
+
+    #[test]
+    fn value_fits_in_two_machine_words() {
+        assert_eq!(
+            std::mem::size_of::<Value>(),
+            2 * std::mem::size_of::<usize>(),
+            "Value clone and stack traffic depends on the compact two-word representation",
+        );
+    }
+
+    #[test]
+    fn cloning_string_reuses_the_text_allocation() {
+        let value = Value::string("shared text");
+        let clone = value.clone();
+        let (Value::String(text), Value::String(cloned_text)) = (&value, &clone) else {
+            unreachable!("constructed string values")
+        };
+
+        assert!(Rc::ptr_eq(&text.0, &cloned_text.0));
+    }
+
+    #[test]
+    fn cloning_big_integer_reuses_the_integer_allocation() {
+        let value = Value::big_integer(num_bigint::BigInt::from(1_u8) << 256);
+        let clone = value.clone();
+        let (Value::BigInteger(integer), Value::BigInteger(cloned_integer)) = (&value, &clone)
+        else {
+            unreachable!("constructed big integer values")
+        };
+
+        assert!(Rc::ptr_eq(&integer.0, &cloned_integer.0));
+    }
+
+    #[test]
+    fn interned_symbol_names_reuse_one_text_allocation() {
+        let first = SymbolName::from("emaxx-compact-symbol-test");
+        let second = SymbolName::from("emaxx-compact-symbol-test");
+
+        assert!(Rc::ptr_eq(&first.0.0, &second.0.0));
+    }
+
+    #[test]
+    fn uninterned_symbol_names_remain_reclaimable() {
+        let weak = {
+            let name = SymbolName::from(make_uninterned_symbol_name("temporary", 1));
+            Rc::downgrade(&name.0.0)
+        };
+
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn nil_and_t_count_as_symbols() {
@@ -784,18 +1208,29 @@ mod tests {
 
     #[test]
     fn cloning_lambda_shares_immutable_parameters() {
-        let lambda = Value::Lambda(
+        let lambda = Value::lambda(
             vec!["value".into()].into(),
             Vec::new().into(),
             shared_env(Vec::new()),
         );
         let clone = lambda.clone();
 
-        let (Value::Lambda(params, _, _), Value::Lambda(cloned_params, _, _)) = (&lambda, &clone)
-        else {
+        let (Value::Lambda(lambda), Value::Lambda(cloned_lambda)) = (&lambda, &clone) else {
             unreachable!("constructed lambda values")
         };
-        assert!(Rc::ptr_eq(params, cloned_params));
+        assert!(Rc::ptr_eq(lambda, cloned_lambda));
+        assert!(Rc::ptr_eq(&lambda.params, &cloned_lambda.params));
+    }
+
+    #[test]
+    fn cloning_buffer_reuses_the_buffer_descriptor() {
+        let buffer = Value::buffer(7, "shared buffer");
+        let clone = buffer.clone();
+        let (Value::Buffer(buffer), Value::Buffer(cloned_buffer)) = (&buffer, &clone) else {
+            unreachable!("constructed buffer values")
+        };
+
+        assert!(Rc::ptr_eq(buffer, cloned_buffer));
     }
 
     #[test]

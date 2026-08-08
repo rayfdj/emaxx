@@ -11,15 +11,15 @@ pub(crate) fn make_advice_wrapper_after(original: Value, advice: Value) -> Value
     let args_name = format!("__emaxx-advice-after-args-{unique}");
     let original_name = format!("__emaxx-advice-after-original-{unique}");
     let advice_name = format!("__emaxx-advice-after-function-{unique}");
-    Value::Lambda(
+    Value::lambda(
         vec!["&rest".into(), args_name.clone()].into(),
         vec![
             Value::Symbol(":closure-transparent-env".into()),
             Value::list([
                 Value::Symbol("emaxx-apply-after-advice".into()),
-                Value::Symbol(original_name.clone()),
-                Value::Symbol(advice_name.clone()),
-                Value::Symbol(args_name),
+                Value::Symbol(original_name.clone().into()),
+                Value::Symbol(advice_name.clone().into()),
+                Value::Symbol(args_name.into()),
             ]),
         ]
         .into(),
@@ -32,15 +32,15 @@ pub(crate) fn make_advice_wrapper_around(original: Value, advice: Value) -> Valu
     let args_name = format!("__emaxx-advice-around-args-{unique}");
     let original_name = format!("__emaxx-advice-around-original-{unique}");
     let advice_name = format!("__emaxx-advice-around-function-{unique}");
-    Value::Lambda(
+    Value::lambda(
         vec!["&rest".into(), args_name.clone()].into(),
         vec![
             Value::Symbol(":closure-transparent-env".into()),
             Value::list([
                 Value::Symbol("emaxx-apply-around-advice".into()),
-                Value::Symbol(original_name.clone()),
-                Value::Symbol(advice_name.clone()),
-                Value::Symbol(args_name),
+                Value::Symbol(original_name.clone().into()),
+                Value::Symbol(advice_name.clone().into()),
+                Value::Symbol(args_name.into()),
             ]),
         ]
         .into(),
@@ -567,7 +567,7 @@ fn eieio_validate_constant_initform(
         }
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("invalid-slot-type".into()),
-            Value::Symbol(descriptor.name.clone()),
+            Value::Symbol(descriptor.name.clone().into()),
             descriptor.slot_type.clone(),
             value,
         ])));
@@ -621,7 +621,7 @@ pub(crate) fn eieio_slot_descriptor_record(
             };
             let constant = match form {
                 Value::Cons(..) => matches!(
-                    head.as_deref(),
+                    head.as_ref().map(|symbol| symbol.as_str()),
                     Some("quote" | "function" | "vector-literal")
                 ),
                 Value::Symbol(symbol) => symbol.starts_with(':'),
@@ -643,14 +643,13 @@ pub(crate) fn eieio_slot_descriptor_record(
     interp.create_record(
         "cl-slot-descriptor",
         vec![
-            Value::Symbol(descriptor.name.clone()),
+            Value::Symbol(descriptor.name.clone().into()),
             initform,
             descriptor.slot_type.clone(),
             Value::list(
-                descriptor
-                    .props
-                    .iter()
-                    .map(|(key, value)| Value::cons(Value::Symbol(key.clone()), value.clone())),
+                descriptor.props.iter().map(|(key, value)| {
+                    Value::cons(Value::Symbol(key.clone().into()), value.clone())
+                }),
             ),
         ],
     )
@@ -917,7 +916,7 @@ pub(crate) fn eieio_slot_unbound_dispatch(
     }
     Err(LispError::SignalValue(Value::list([
         Value::Symbol("unbound-slot".into()),
-        Value::String(format!("Unbound slot: {slot_name}")),
+        Value::String(format!("Unbound slot: {slot_name}").into()),
         object.clone(),
         Value::Symbol(slot_name.into()),
     ])))
@@ -1053,8 +1052,8 @@ pub(crate) fn eieio_oset_dispatch(
         }
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("invalid-slot-type".into()),
-            Value::Symbol(type_name.clone()),
-            Value::Symbol(slots[slot_index].name.clone()),
+            Value::Symbol(type_name.clone().into()),
+            Value::Symbol(slots[slot_index].name.clone().into()),
             slots[slot_index].slot_type.clone(),
             value,
         ])));
@@ -1077,8 +1076,8 @@ pub(crate) fn eieio_oset_dispatch(
                     {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("eieio-read-only".into()),
-                            Value::Symbol(type_name.clone()),
-                            Value::Symbol(slots[slot_index].name.clone()),
+                            Value::Symbol(type_name.clone().into()),
+                            Value::Symbol(slots[slot_index].name.clone().into()),
                         ])));
                     }
                     cursor += 1;
@@ -1244,7 +1243,7 @@ pub(crate) fn eieio_slot_value(
             return if interp.value_is_eieio_unbound(&value) {
                 Err(LispError::SignalValue(Value::list([
                     Value::Symbol("unbound-slot".into()),
-                    Value::String(format!("Unbound slot: {slot_name}")),
+                    Value::String(format!("Unbound slot: {slot_name}").into()),
                     object.clone(),
                     object.clone(),
                     Value::Symbol(slot_name.into()),
@@ -1263,14 +1262,14 @@ pub(crate) fn eieio_slot_value(
         Some(value) if interp.value_is_eieio_unbound(value) => {
             Err(LispError::SignalValue(Value::list([
                 Value::Symbol("unbound-slot".into()),
-                Value::String(format!("Unbound slot: {slot_name}")),
+                Value::String(format!("Unbound slot: {slot_name}").into()),
                 object.clone(),
                 Value::Symbol(slot_name.into()),
             ])))
         }
         None => Err(LispError::SignalValue(Value::list([
             Value::Symbol("unbound-slot".into()),
-            Value::String(format!("Unbound slot: {slot_name}")),
+            Value::String(format!("Unbound slot: {slot_name}").into()),
             object.clone(),
             Value::Symbol(slot_name.into()),
         ]))),

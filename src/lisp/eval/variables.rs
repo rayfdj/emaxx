@@ -42,7 +42,7 @@ impl Interpreter {
             self.set_buffer_local_value(
                 buffer_id,
                 "emaxx--visited-remote-prefix",
-                Value::String(prefix),
+                Value::String(prefix.into()),
             );
         } else {
             self.remove_buffer_local_value(buffer_id, "emaxx--visited-remote-prefix");
@@ -286,7 +286,7 @@ impl Interpreter {
             let existing = self.global_value("macroexp--dynvars").unwrap_or(Value::Nil);
             self.set_global_binding(
                 "macroexp--dynvars",
-                Value::cons(Value::Symbol(name.to_string()), existing),
+                Value::cons(Value::Symbol(name.to_string().into()), existing),
             );
         }
     }
@@ -338,7 +338,7 @@ impl Interpreter {
             let existing = self.global_value("macroexp--dynvars").unwrap_or(Value::Nil);
             self.set_global_binding(
                 "macroexp--dynvars",
-                Value::cons(Value::Symbol(name.to_string()), existing),
+                Value::cons(Value::Symbol(name.to_string().into()), existing),
             );
         }
     }
@@ -469,21 +469,21 @@ impl Interpreter {
                 let next = next_cell.borrow().clone();
                 if next.is_nil() {
                     *next_cell.borrow_mut() =
-                        Value::list([Value::Symbol(property.to_string()), value]);
+                        Value::list([Value::Symbol(property.to_string().into()), value]);
                     return;
                 }
                 tail = next;
             }
             if plist.is_nil() {
                 self.symbol_properties[index].1 =
-                    Value::list([Value::Symbol(property.to_string()), value]);
+                    Value::list([Value::Symbol(property.to_string().into()), value]);
             }
             return;
         }
         let index = self.symbol_properties.len();
         self.symbol_properties.push((
             name.to_string(),
-            Value::list([Value::Symbol(property.to_string()), value]),
+            Value::list([Value::Symbol(property.to_string().into()), value]),
         ));
         self.symbol_properties_index.insert(name.to_string(), index);
     }
@@ -671,9 +671,9 @@ impl Interpreter {
                 watcher,
                 None,
                 &[
-                    Value::Symbol(name.to_string()),
+                    Value::Symbol(name.to_string().into()),
                     value.clone(),
-                    Value::Symbol(action.to_string()),
+                    Value::Symbol(action.to_string().into()),
                     buffer.clone(),
                 ],
                 env,
@@ -698,7 +698,7 @@ impl Interpreter {
             if seen.iter().any(|existing| existing == &target) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-variable-indirection".into()),
-                    Value::Symbol(name.to_string()),
+                    Value::Symbol(name.to_string().into()),
                 ])));
             }
             seen.push(target.clone());
@@ -712,7 +712,7 @@ impl Interpreter {
         if target == alias {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("cyclic-variable-indirection".into()),
-                Value::Symbol(alias.to_string()),
+                Value::Symbol(alias.to_string().into()),
             ])));
         }
         self.variable_aliases_index
@@ -803,7 +803,7 @@ impl Interpreter {
         self.buffer_list
             .iter()
             .find(|(id, _)| *id == buffer_id)
-            .map(|(id, name)| Value::Buffer(*id, name.clone()))
+            .map(|(id, name)| Value::buffer(*id, name.clone()))
     }
 
     pub(super) fn active_special_assignment_scope(
@@ -988,16 +988,16 @@ impl Interpreter {
         ) {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("setting-constant".into()),
-                Value::Symbol(name.to_string()),
+                Value::Symbol(name.to_string().into()),
             ])));
         }
         if name.starts_with(':') {
-            return if value == Value::Symbol(name.to_string()) {
+            return if value == Value::Symbol(name.to_string().into()) {
                 Ok(value)
             } else {
                 Err(LispError::SignalValue(Value::list([
                     Value::Symbol("setting-constant".into()),
-                    Value::Symbol(name.to_string()),
+                    Value::Symbol(name.to_string().into()),
                 ])))
             };
         }
@@ -1288,9 +1288,7 @@ impl Interpreter {
         }
         let frame_is_oclosure = |function: &Value| -> bool {
             match function {
-                Value::Lambda(_, _, _) => {
-                    crate::lisp::primitives::oclosure_type_of(function).is_some()
-                }
+                Value::Lambda(_) => crate::lisp::primitives::oclosure_type_of(function).is_some(),
                 Value::Symbol(symbol) => self
                     .functions
                     .iter()
@@ -1304,7 +1302,7 @@ impl Interpreter {
         };
         let frame_name = |function: &Value| -> Option<String> {
             match function {
-                Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.clone()),
+                Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.to_string()),
                 _ => None,
             }
         };

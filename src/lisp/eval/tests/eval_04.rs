@@ -434,7 +434,7 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
             Value::Nil,
             Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil]),
             Value::Nil,
-            Value::String(root.join(eln_name).display().to_string()),
+            Value::String(root.join(eln_name).display().to_string().into()),
         ])
     );
     fs::write(&alias, "updated through hard link").expect("write hard-link alias");
@@ -778,7 +778,7 @@ fn read_string_preserves_non_string_defaults_on_empty_input() {
         Value::list([
             Value::Integer(6667),
             Value::Symbol("answer".into()),
-            Value::String(String::new()),
+            Value::String(String::new().into()),
         ])
     );
 }
@@ -1761,7 +1761,11 @@ fn insert_file_contents_visit_marks_buffer_as_visiting_file() {
     );
     assert_eq!(
         eval_str_with_upstream_load_path(&form),
-        Value::list([Value::String(path_text.to_string()), Value::Nil, Value::T])
+        Value::list([
+            Value::String(path_text.to_string().into()),
+            Value::Nil,
+            Value::T
+        ])
     );
     let _ = fs::remove_file(path);
 }

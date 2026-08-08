@@ -173,7 +173,7 @@ fn describe_vector_value(
         .filter(|value| !value.is_nil())
         .cloned()
         .unwrap_or_else(|| Value::Symbol("princ".into()));
-    let output_buffer = Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+    let output_buffer = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
     let restore = interp.bind_special_variable("standard-output", output_buffer, env)?;
     let mut result = (|| -> Result<Value, LispError> {
         let mut first = true;
@@ -466,7 +466,7 @@ define_dispatch!(
                     if binding.is_nil() || matches!(binding, Value::Integer(_)) {
                         continue;
                     }
-                    let entry = Value::cons(Value::Symbol(mode), binding.clone());
+                    let entry = Value::cons(Value::Symbol(mode.into()), binding.clone());
                     if keymap_reference_map(interp, &binding, env).is_some() {
                         prefix_bindings.push(entry);
                     } else if prefix_bindings.is_empty() {
@@ -490,7 +490,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(Value::list([
                     Value::Symbol("menu-item".into()),
-                    Value::String(String::new()),
+                    Value::String(String::new().into()),
                     args[0].clone(),
                     Value::Symbol(":filter".into()),
                     Value::list([
@@ -756,7 +756,7 @@ define_dispatch!(
                 };
                 interp.put_symbol_property(name, "widget-type", widget_type);
                 interp.put_symbol_property(name, "widget-documentation", doc);
-                Ok(Value::Symbol(name.to_string()))
+                Ok(Value::Symbol(name.to_string().into()))
             }
             "widget-create" => {
                 need_args(name, args, 1)?;
@@ -919,7 +919,9 @@ define_dispatch!(
                 }
                 Ok(match interp.logical_function_binding(symbol, env) {
                     Some(value) => value,
-                    None if is_special_form_name(symbol) => Value::BuiltinFunc(symbol.to_string()),
+                    None if is_special_form_name(symbol) => {
+                        Value::BuiltinFunc(symbol.to_string().into())
+                    }
                     None if symbol == "benchmark-run" => Value::list([
                         Value::Symbol("autoload".into()),
                         Value::String("benchmark.el".into()),
@@ -950,7 +952,7 @@ define_dispatch!(
                         .iter()
                         .find(|test| test.name == symbol)
                         .and_then(|test| test.source_file.clone())
-                        .map(Value::String)
+                        .map(|value| Value::String(value.into()))
                         .unwrap_or(Value::Nil));
                 }
                 if let Ok(symbol) = args[0].as_symbol()
@@ -968,9 +970,9 @@ define_dispatch!(
                     if file.ends_with("/src/lisp/simple_compat.el")
                         && let Some(path) = symbol_file_from_preloaded_sources(interp, symbol)
                     {
-                        return Ok(Value::String(path));
+                        return Ok(Value::String(path.into()));
                     }
-                    return Ok(Value::String(file));
+                    return Ok(Value::String(file.into()));
                 }
                 // GNU consults the dumped load-history; stand in for it with
                 // the preloaded sources for defun/defvar/typeless queries.
@@ -980,7 +982,7 @@ define_dispatch!(
                 ) && let Ok(symbol) = args[0].as_symbol()
                     && let Some(path) = symbol_file_from_preloaded_sources(interp, symbol)
                 {
-                    return Ok(Value::String(path));
+                    return Ok(Value::String(path.into()));
                 }
                 Ok(Value::Nil)
             }
@@ -988,7 +990,9 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let s = args[0].as_symbol()?;
                 Ok(Value::String(
-                    crate::lisp::types::visible_symbol_name(s).to_string(),
+                    crate::lisp::types::visible_symbol_name(s)
+                        .to_string()
+                        .into(),
                 ))
             }
             "user-login-name" | "user-real-login-name" => {
@@ -996,14 +1000,16 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 Ok(Value::String(
-                    current_user_login_name().unwrap_or_else(|| "user".into()),
+                    current_user_login_name()
+                        .unwrap_or_else(|| "user".into())
+                        .into(),
                 ))
             }
             "system-name" => {
                 if !args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                Ok(Value::String(system_name_value()))
+                Ok(Value::String(system_name_value().into()))
             }
             "user-full-name" => {
                 if args.len() > 1 {
@@ -1017,7 +1023,7 @@ define_dispatch!(
                     }
                 });
                 Ok(user_full_name(requested.as_deref())
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "char-from-name" => {
@@ -1062,11 +1068,12 @@ define_dispatch!(
                 let path = resolve_file_name_in_env(interp, env, &requested);
                 let canonical = canonical_file_name(&path);
                 Ok(Value::String(
-                    if parse_remote_file_name(&requested).is_none() {
+                    (if parse_remote_file_name(&requested).is_none() {
                         quote_local_file_name_if_needed(canonical)
                     } else {
                         canonical
-                    },
+                    })
+                    .into(),
                 ))
             }
             "user-uid" => Ok(Value::Integer(current_user_id()? as i64)),
@@ -1081,7 +1088,7 @@ define_dispatch!(
                     _ => return Err(LispError::Signal("Invalid GID specification".into())),
                 };
                 Ok(group_name_from_gid(gid)?
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
             #[dispatch(resets_undo)]
@@ -1318,7 +1325,7 @@ define_dispatch!(
                     interp.set_buffer_local_value(
                         interp.current_buffer_id(),
                         "buffer-auto-save-file-name",
-                        Value::String(path),
+                        Value::String(path.into()),
                     );
                     Ok(Value::T)
                 } else {
@@ -1340,7 +1347,7 @@ define_dispatch!(
                 interp.set_buffer_local_value(
                     interp.current_buffer_id(),
                     "buffer-auto-save-file-name",
-                    Value::String(path),
+                    Value::String(path.into()),
                 );
                 interp.buffer.set_autosaved();
                 Ok(Value::Nil)
@@ -1410,8 +1417,8 @@ define_dispatch!(
                     match key {
                         ":test" => {
                             test = match &args[index + 1] {
-                                Value::Symbol(name) => name.clone(),
-                                Value::BuiltinFunc(name) => name.clone(),
+                                Value::Symbol(name) => name.to_string(),
+                                Value::BuiltinFunc(name) => name.to_string(),
                                 other => {
                                     return Err(LispError::TypeError(
                                         "symbol".into(),
@@ -1652,7 +1659,7 @@ define_dispatch!(
                         Value::Symbol("pred".into()),
                     ]),
                 ]);
-                Ok(Value::Lambda(
+                Ok(Value::lambda(
                     vec!["string".into(), "pred".into(), "action".into()].into(),
                     vec![body].into(),
                     crate::lisp::types::shared_env(Vec::new()),
@@ -1765,7 +1772,7 @@ define_dispatch!(
                 let completions = all_completions(
                     interp,
                     &[
-                        Value::String(before_point),
+                        Value::String(before_point.into()),
                         args[1].clone(),
                         args[2].clone(),
                     ],
@@ -1821,7 +1828,7 @@ define_dispatch!(
                             .buffer
                             .buffer_substring(beg, end)
                             .map_err(|error| LispError::Signal(error.to_string()))?;
-                        let string_value = Value::String(string.clone());
+                        let string_value = Value::String(string.clone().into());
                         let call_exit = |interp: &mut Interpreter,
                                          env: &mut Env,
                                          text: &str,
@@ -1832,7 +1839,7 @@ define_dispatch!(
                                     interp,
                                     &exit_function,
                                     &[
-                                        Value::String(text.to_string()),
+                                        Value::String(text.to_string().into()),
                                         Value::Symbol(status.into()),
                                     ],
                                     env,
@@ -1866,7 +1873,7 @@ define_dispatch!(
                                         env,
                                     )?;
                                 }
-                                let comp_value = Value::String(comp_text.clone());
+                                let comp_value = Value::String(comp_text.clone().into());
                                 let exact = super::call(
                                     interp,
                                     "test-completion",
@@ -2146,7 +2153,7 @@ define_dispatch!(
                         byte_code_function_slots(interp, None, callable, lap, !capture_lexical);
                     return Ok(interp.create_record("byte-code-function", slots));
                 }
-                if matches!(compile_target, Value::Lambda(_, _, _)) {
+                if matches!(compile_target, Value::Lambda(_)) {
                     let slots =
                         byte_code_function_slots(interp, None, compile_target.clone(), None, false);
                     return Ok(interp.create_record("byte-code-function", slots));
@@ -2354,7 +2361,7 @@ define_dispatch!(
                     .backtrace_frame_locals_snapshot_with_base(index, base)
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|(name, value)| Value::cons(Value::Symbol(name), value))
+                    .map(|(name, value)| Value::cons(Value::Symbol(name.into()), value))
                     .collect::<Vec<_>>();
                 Ok(Value::list(locals))
             }
@@ -2409,7 +2416,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(interp
                     .thread_name(interp.resolve_thread_id(&args[0])?)
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "thread-signal" => {
@@ -2445,7 +2452,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(interp
                     .mutex_name(interp.resolve_mutex_id(&args[0])?)
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "mutex-lock" => {
@@ -2482,7 +2489,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(interp
                     .condition_variable_name(interp.resolve_condition_variable_id(&args[0])?)
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "condition-wait" => {
@@ -2537,7 +2544,7 @@ define_dispatch!(
                 }
                 replace_buffer_contents(interp, buffer_id, &text)?;
                 interp.switch_to_buffer_id(buffer_id)?;
-                Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
+                Ok(Value::buffer(buffer_id, interp.buffer.name.clone()))
             }
             "thread-list-send-error-signal" => {
                 need_args(name, args, 0)?;
@@ -2567,13 +2574,13 @@ define_dispatch!(
                 }
                 replace_buffer_contents(interp, buffer_id, &text)?;
                 interp.switch_to_buffer_id(buffer_id)?;
-                Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
+                Ok(Value::buffer(buffer_id, interp.buffer.name.clone()))
             }
             "regexp-quote" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(regexp::regexp_quote_elisp(&string_text(
-                    &args[0],
-                )?)))
+                Ok(Value::String(
+                    regexp::regexp_quote_elisp(&string_text(&args[0])?).into(),
+                ))
             }
             "regexp-opt" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -2594,7 +2601,7 @@ define_dispatch!(
                     .map(|value| string_text(value).map(|text| regexp::regexp_quote_elisp(&text)))
                     .collect::<Result<Vec<_>, _>>()?;
                 if patterns.is_empty() {
-                    return Ok(Value::String(String::new()));
+                    return Ok(Value::String(String::new().into()));
                 }
                 patterns.sort();
                 patterns.dedup();
@@ -2614,10 +2621,9 @@ define_dispatch!(
                     }
                     _ => ("\\(".into(), "\\)".into()),
                 };
-                Ok(Value::String(format!(
-                    "{open}{}{close}",
-                    patterns.join("\\|")
-                )))
+                Ok(Value::String(
+                    format!("{open}{}{close}", patterns.join("\\|")).into(),
+                ))
             }
             "regexp-opt-depth" => {
                 need_args(name, args, 1)?;
@@ -2634,9 +2640,10 @@ define_dispatch!(
                     return Ok(delegated);
                 }
                 let no_group = args.get(1).is_some_and(Value::is_truthy);
-                Ok(Value::String(crate::lisp::eval::compile_rx_to_string(
-                    interp, &args[0], env, no_group,
-                )?))
+                Ok(Value::String(
+                    crate::lisp::eval::compile_rx_to_string(interp, &args[0], env, no_group)?
+                        .into(),
+                ))
             }
             "null-device" => {
                 need_args(name, args, 0)?;
@@ -2653,13 +2660,15 @@ define_dispatch!(
                     .first()
                     .and_then(|entry| entry.to_vec().ok())
                     .and_then(|entry| entry.first().cloned())
-                    .unwrap_or(Value::String(String::new())))
+                    .unwrap_or(Value::String(String::new().into())))
             }
             "temporary-file-directory" => {
                 need_args(name, args, 0)?;
                 Ok(interp
                     .lookup_var("temporary-file-directory", env)
-                    .unwrap_or_else(|| Value::String(std::env::temp_dir().display().to_string())))
+                    .unwrap_or_else(|| {
+                        Value::String(std::env::temp_dir().display().to_string().into())
+                    }))
             }
             "convert-standard-filename" => {
                 need_args(name, args, 1)?;
@@ -2710,8 +2719,8 @@ define_dispatch!(
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| directory.clone());
                 Ok(Value::cons(
-                    Value::String(base_directory),
-                    Value::String(wildcard),
+                    Value::String(base_directory.into()),
+                    Value::String(wildcard.into()),
                 ))
             }
             "insert-directory-clean" => {
@@ -2808,7 +2817,7 @@ define_dispatch!(
             "oclosure-type" => {
                 need_args(name, args, 1)?;
                 Ok(oclosure_type_of(&args[0])
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .unwrap_or(Value::Nil))
             }
             "emaxx--oclosure-type-p" => {
@@ -2823,10 +2832,10 @@ define_dispatch!(
             "emaxx--oclosure-slot" => {
                 need_args(name, args, 2)?;
                 let slot = args[1].as_symbol()?;
-                let Value::Lambda(_, _, closure_env) = &args[0] else {
+                let Value::Lambda(lambda) = &args[0] else {
                     return Err(wrong_type_argument("oclosure", args[0].clone()));
                 };
-                let env_contents = closure_env.borrow();
+                let env_contents = lambda.env.borrow();
                 for frame in env_contents.iter().rev() {
                     if frame
                         .iter()
@@ -2869,13 +2878,13 @@ define_dispatch!(
                 if !mutable {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("setting-constant".into()),
-                        Value::Symbol(slot),
+                        Value::Symbol(slot.into()),
                     ])));
                 }
-                let Value::Lambda(_, _, closure_env) = &args[0] else {
+                let Value::Lambda(lambda) = &args[0] else {
                     return Err(wrong_type_argument("oclosure", args[0].clone()));
                 };
-                let mut env_contents = closure_env.borrow_mut();
+                let mut env_contents = lambda.env.borrow_mut();
                 for frame in env_contents.iter_mut().rev() {
                     if !frame
                         .iter()
@@ -2892,11 +2901,11 @@ define_dispatch!(
             }
             "emaxx--oclosure-copy" => {
                 need_args(name, args, 2)?;
-                let Value::Lambda(params, body, closure_env) = &args[0] else {
+                let Value::Lambda(lambda) = &args[0] else {
                     return Err(wrong_type_argument("oclosure", args[0].clone()));
                 };
                 let replacements = args[1].to_vec()?;
-                let mut contents = closure_env.borrow().clone();
+                let mut contents = lambda.env.borrow().clone();
                 for frame in contents.iter_mut().rev() {
                     if !frame
                         .iter()
@@ -2916,9 +2925,9 @@ define_dispatch!(
                     crate::lisp::eval::Interpreter::restamp_frame_identity(frame);
                     break;
                 }
-                Ok(Value::Lambda(
-                    params.clone(),
-                    body.clone(),
+                Ok(Value::lambda(
+                    lambda.params.clone(),
+                    lambda.body.clone(),
                     crate::lisp::types::shared_env(contents),
                 ))
             }
@@ -2990,7 +2999,7 @@ define_dispatch!(
             "type-of" => {
                 need_args(name, args, 1)?;
                 if let Some(type_name) = legacy_struct_vector_type(interp, &args[0], env) {
-                    return Ok(Value::Symbol(type_name));
+                    return Ok(Value::Symbol(type_name.into()));
                 }
                 let name = match &args[0] {
                     Value::Nil => "symbol",
@@ -3004,8 +3013,8 @@ define_dispatch!(
                     Value::Cons(_) if is_vector_value(&args[0]) => "vector",
                     Value::Cons(_) => "cons",
                     Value::BuiltinFunc(_) => "subr",
-                    Value::Lambda(_, _, _) => "cons", // Emacs closures are cons cells
-                    Value::Buffer(_, _) => "buffer",
+                    Value::Lambda(_) => "cons", // Emacs closures are cons cells
+                    Value::Buffer(_) => "buffer",
                     Value::Marker(_) => "marker",
                     Value::Overlay(_) => "overlay",
                     Value::CharTable(_) => "char-table",
@@ -3015,7 +3024,7 @@ define_dispatch!(
                         let record = interp.find_record(*id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{id}>"))
                         })?;
-                        return Ok(Value::Symbol(record.type_name.clone()));
+                        return Ok(Value::Symbol(record.type_name.clone().into()));
                     }
                     Value::Finalizer(_) => "finalizer",
                     Value::Unbound => "unbound",
@@ -3139,7 +3148,7 @@ define_dispatch!(
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("wrong-type-argument".into()),
                         Value::Symbol("cl--struct-name-p".into()),
-                        Value::Symbol(struct_name),
+                        Value::Symbol(struct_name.into()),
                         Value::Symbol("name".into()),
                     ])));
                 }
@@ -3162,21 +3171,21 @@ define_dispatch!(
                 {
                     let class_value = interp
                         .class_value(&struct_name)
-                        .unwrap_or_else(|| Value::Symbol(struct_name.clone()));
+                        .unwrap_or_else(|| Value::Symbol(struct_name.clone().into()));
                     interp.set_variable(tag_name, class_value, env);
                     interp.set_function_binding(
                         tag_name,
                         Some(Value::Symbol(":quick-object-witness-check".into())),
                     );
                 }
-                Ok(Value::Symbol(struct_name))
+                Ok(Value::Symbol(struct_name.into()))
             }
             #[dispatch(builtin_override)]
             "cl-old-struct-compat-mode" => {
                 need_args(name, args, 1)?;
                 let enabled = !args[0].is_nil()
                     && !matches!(&args[0], Value::Integer(n) if *n <= 0)
-                    && !matches!(&args[0], Value::BigInteger(n) if n <= &BigInt::from(0));
+                    && !matches!(&args[0], Value::BigInteger(n) if **n <= BigInt::from(0));
                 let value = if enabled { Value::T } else { Value::Nil };
                 interp.set_variable("cl-old-struct-compat-mode", value.clone(), env);
                 Ok(value)
@@ -3366,8 +3375,8 @@ define_dispatch!(
                 let Some(slot_index) = eieio_slot_index(&slots, &slot_name) else {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("invalid-slot-name".into()),
-                        Value::Symbol(class_name),
-                        Value::Symbol(slot_name),
+                        Value::Symbol(class_name.into()),
+                        Value::Symbol(slot_name.into()),
                     ])));
                 };
                 let skip_typecheck = interp
@@ -3383,8 +3392,8 @@ define_dispatch!(
                 {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("invalid-slot-type".into()),
-                        Value::Symbol(class_name),
-                        Value::Symbol(slots[slot_index].name.clone()),
+                        Value::Symbol(class_name.into()),
+                        Value::Symbol(slots[slot_index].name.clone().into()),
                         slots[slot_index].slot_type.clone(),
                         args[2].clone(),
                     ])));
@@ -3435,7 +3444,7 @@ define_dispatch!(
                         // an otherwise valid instance.
                         Ok(interp
                             .class_value(&class_name)
-                            .unwrap_or(Value::Symbol(class_name)))
+                            .unwrap_or(Value::Symbol(class_name.into())))
                     }
                     _ => Err(LispError::TypeError(
                         "eieio-object".into(),
@@ -3461,7 +3470,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 interp
                     .class_name_from_value(&args[0])
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .ok_or_else(|| LispError::TypeError("class".into(), args[0].type_name()))
             }
             #[dispatch(builtin_override)]
@@ -3513,8 +3522,8 @@ define_dispatch!(
                 for descriptor in &descriptors {
                     for initarg in &descriptor.initargs {
                         tuples.push(Value::cons(
-                            Value::Symbol(initarg.clone()),
-                            Value::Symbol(descriptor.name.clone()),
+                            Value::Symbol(initarg.clone().into()),
+                            Value::Symbol(descriptor.name.clone().into()),
                         ));
                     }
                 }
@@ -3699,7 +3708,7 @@ define_dispatch!(
                 Ok(if let Some(symbol) = semantic_ctxt_current_symbol(interp) {
                     Value::list([
                         symbol.parts_value,
-                        Value::String(symbol.text),
+                        Value::String(symbol.text.into()),
                         Value::cons(
                             Value::Integer(symbol.start as i64),
                             Value::Integer(symbol.end as i64),
@@ -3808,7 +3817,7 @@ define_dispatch!(
                     return super::call(
                         interp,
                         "emaxx--oclosure-slot",
-                        &[args[0].clone(), Value::Symbol(slot_name)],
+                        &[args[0].clone(), Value::Symbol(slot_name.into())],
                         env,
                     );
                 }
@@ -3824,7 +3833,11 @@ define_dispatch!(
                     return super::call(
                         interp,
                         "emaxx--oclosure-set-slot",
-                        &[args[0].clone(), Value::Symbol(slot_name), args[2].clone()],
+                        &[
+                            args[0].clone(),
+                            Value::Symbol(slot_name.into()),
+                            args[2].clone(),
+                        ],
                         env,
                     );
                 }
@@ -4063,7 +4076,7 @@ define_dispatch!(
                 }
                 need_args(name, args, 2)?;
                 let scheme = match &args[0] {
-                    Value::Symbol(symbol) => symbol.clone(),
+                    Value::Symbol(symbol) => symbol.to_string(),
                     _ => string_text(&args[0])?,
                 }
                 .to_ascii_lowercase();
@@ -4085,14 +4098,14 @@ define_dispatch!(
                         if scheme.is_empty() {
                             Value::String("unknown".into())
                         } else {
-                            Value::String(scheme)
+                            Value::String(scheme.into())
                         }
                     }
                     "loader" => {
                         if scheme.is_empty() {
                             Value::Symbol("url-scheme-default-loader".into())
                         } else {
-                            Value::Symbol(format!("url-{scheme}"))
+                            Value::Symbol(format!("url-{scheme}").into())
                         }
                     }
                     "parse-url" => Value::Symbol("url-generic-parse-url".into()),
@@ -4178,7 +4191,7 @@ fn semantic_ctxt_current_symbol(interp: &Interpreter) -> Option<SemanticCurrentS
     if parts.is_empty() {
         return None;
     }
-    let parts_value = Value::list(parts.into_iter().map(Value::String));
+    let parts_value = Value::list(parts.into_iter().map(|value| Value::String(value.into())));
     Some(SemanticCurrentSymbol {
         parts_value,
         text,
@@ -4808,14 +4821,14 @@ fn semantic_symref_find_references_by_name(
     let mut files = Vec::new();
     let mut tags = semantic_symref_tags_for_name(&text, search_name);
     if !tags.is_empty() {
-        files.push(Value::String(file.clone()));
+        files.push(Value::String(file.clone().into()));
     }
     if let Some(base_dir) = Path::new(&file).parent() {
         for include in semantic_quoted_include_paths(&text, base_dir) {
             if let Ok(source) = std::fs::read_to_string(&include) {
                 let include_tags = semantic_symref_header_tags_for_name(&source, search_name);
                 if !include_tags.is_empty() {
-                    files.push(Value::String(include.to_string_lossy().into_owned()));
+                    files.push(Value::String(include.to_string_lossy().into_owned().into()));
                     tags.extend(include_tags);
                 }
             }
@@ -4826,7 +4839,7 @@ fn semantic_symref_find_references_by_name(
     }
     Ok(Value::list([
         Value::Symbol("emaxx-semantic-symref-result".into()),
-        Value::String(name),
+        Value::String(name.into()),
         Value::list(files),
         Value::list(tags),
     ]))
@@ -4865,7 +4878,7 @@ fn semantic_symref_hits_in_region(
         call_function_value(
             interp,
             &args[1],
-            &[hit_start, hit_end, Value::String(name.clone())],
+            &[hit_start, hit_end, Value::String(name.clone().into())],
             env,
         )?;
     }
@@ -5180,7 +5193,7 @@ fn semantic_go_to_tag(
         let buffer = super::call(
             interp,
             "find-file-noselect",
-            &[Value::String(filename)],
+            &[Value::String(filename.into())],
             env,
         )?;
         super::call(interp, "set-buffer", &[buffer], env)?;
@@ -6922,7 +6935,7 @@ fn parse_semantic_srecode_template_tags(source: &str) -> Vec<Value> {
         }
         if let Some(rest) = line.strip_prefix("sectiondictionary ") {
             let name = parse_srecode_string(rest.trim()).unwrap_or_else(|| rest.trim().into());
-            let mut entries = vec![Value::String(name)];
+            let mut entries = vec![Value::String(name.into())];
             let mut dictionary_vars = std::collections::HashMap::new();
             index += 1;
             while index < lines.len() {
@@ -6974,7 +6987,7 @@ fn parse_semantic_srecode_template_tags(source: &str) -> Vec<Value> {
                     if let Some(rest) = header_line.strip_prefix("sectiondictionary ") {
                         let dict_name =
                             parse_srecode_string(rest.trim()).unwrap_or_else(|| rest.trim().into());
-                        let mut entries = vec![Value::String(dict_name)];
+                        let mut entries = vec![Value::String(dict_name.into())];
                         let mut dictionary_vars = std::collections::HashMap::new();
                         scan += 1;
                         while scan < lines.len() {
@@ -7035,7 +7048,7 @@ fn parse_semantic_srecode_template_tags(source: &str) -> Vec<Value> {
                         code.push('\n');
                     }
                 }
-                let mut attrs = vec![(":code", Value::String(code))];
+                let mut attrs = vec![(":code", Value::String(code.into()))];
                 if !args.is_empty() {
                     attrs.push((":arguments", Value::list(args)));
                 }
@@ -7069,7 +7082,7 @@ fn parse_srecode_value(value: &str) -> Option<Vec<Value>> {
             let Some(end) = after_quote.find('"') else {
                 break;
             };
-            parts.push(Value::String(after_quote[..end].to_string()));
+            parts.push(Value::String(after_quote[..end].to_string().into()));
             rest = after_quote[end + 1..].trim_start();
         } else if let Some(after_macro) = rest.strip_prefix("macro") {
             let after_macro = after_macro.trim_start();
@@ -7078,7 +7091,7 @@ fn parse_srecode_value(value: &str) -> Option<Vec<Value>> {
             {
                 parts.push(Value::cons(
                     Value::Symbol("macro".into()),
-                    Value::String(stripped[..end].to_string()),
+                    Value::String(stripped[..end].to_string().into()),
                 ));
                 rest = stripped[end + 1..].trim_start();
             } else {
@@ -7087,7 +7100,7 @@ fn parse_srecode_value(value: &str) -> Option<Vec<Value>> {
                 };
                 parts.push(Value::cons(
                     Value::Symbol("macro".into()),
-                    Value::String(name.to_string()),
+                    Value::String(name.to_string().into()),
                 ));
                 rest = after_macro
                     .split_once(char::is_whitespace)
@@ -7100,7 +7113,7 @@ fn parse_srecode_value(value: &str) -> Option<Vec<Value>> {
     }
 
     if parts.is_empty() {
-        parse_srecode_string(value).map(|value| vec![Value::String(value)])
+        parse_srecode_string(value).map(|value| vec![Value::String(value.into())])
     } else {
         Some(parts)
     }
@@ -7122,7 +7135,7 @@ fn parse_srecode_value_resolving(
                 if kind != "macro" {
                     return Some(parts);
                 }
-                let Some(value) = variables.get(&name) else {
+                let Some(value) = variables.get(name.as_str()) else {
                     return Some(parts);
                 };
                 resolved.push_str(value);
@@ -7133,12 +7146,12 @@ fn parse_srecode_value_resolving(
     if parts.len() == 1 && matches!(parts.first(), Some(Value::String(_))) {
         Some(parts)
     } else {
-        Some(vec![Value::String(resolved)])
+        Some(vec![Value::String(resolved.into())])
     }
 }
 
 fn parse_srecode_section_dictionary(lines: &[&str], scan: &mut usize, name: String) -> Value {
-    let mut entries = vec![Value::String(name)];
+    let mut entries = vec![Value::String(name.into())];
     let mut variables = std::collections::HashMap::new();
     while *scan < lines.len() {
         let line = lines[*scan].trim();
@@ -7152,7 +7165,7 @@ fn parse_srecode_section_dictionary(lines: &[&str], scan: &mut usize, name: Stri
         }
         if let Some(rest) = line.strip_prefix("show ") {
             let name = parse_srecode_string(rest.trim()).unwrap_or_else(|| rest.trim().into());
-            entries.push(Value::list([Value::String(name)]));
+            entries.push(Value::list([Value::String(name.into())]));
             *scan += 1;
             continue;
         }
@@ -7182,7 +7195,7 @@ fn remember_srecode_string_value(
     value: &[Value],
 ) {
     if let [Value::String(text)] = value {
-        variables.insert(name.to_string(), text.clone());
+        variables.insert(name.to_string(), text.to_string());
     }
 }
 
@@ -7316,18 +7329,19 @@ fn delegate_to_lisp_function(
 }
 
 pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
-    let Value::Lambda(_, body, closure_env) = value else {
+    let Value::Lambda(lambda) = value else {
         return None;
     };
     // Real oclosures carry the oclosure marker as their first executable
     // body form; closures that merely captured an oclosure's frames don't.
-    let first = body
+    let first = lambda
+        .body
         .iter()
         .find(|form| !matches!(form, Value::String(_) | Value::StringObject(_)))?;
     if !matches!(first, Value::Symbol(marker) if marker == ":closure-oclosure") {
         return None;
     }
-    let contents = closure_env.borrow();
+    let contents = lambda.env.borrow();
     contents.iter().rev().find_map(|frame| {
         frame
             .iter()
@@ -7454,14 +7468,14 @@ fn cl_typep_matches(
                 && let Ok(fundef) = super::call(
                     interp,
                     "symbol-function",
-                    &[Value::Symbol(class_name.clone())],
+                    &[Value::Symbol(class_name.clone().into())],
                     env,
                 )
             {
                 super::call(
                     interp,
                     "autoload-do-load",
-                    &[fundef, Value::Symbol(class_name.clone())],
+                    &[fundef, Value::Symbol(class_name.clone().into())],
                     env,
                 )?;
             }
@@ -7566,10 +7580,10 @@ fn cl_deftype_expansion(
     let Some(handler) = interp.get_symbol_property(name, "cl-deftype-handler") else {
         return Ok(None);
     };
-    let Value::Lambda(params, _, _) = &handler else {
+    let Value::Lambda(lambda) = &handler else {
         return Ok(None);
     };
-    let call_args = cl_deftype_call_args(params, args)?;
+    let call_args = cl_deftype_call_args(&lambda.params, args)?;
     interp
         .call_function_value(handler, Some(name), &call_args, env)
         .map(Some)
@@ -8842,7 +8856,7 @@ impl<'a> CppTagParser<'a> {
         semantic_type_tag(
             &alias,
             vec![
-                (":namespace-alias", Value::String(target)),
+                (":namespace-alias", Value::String(target.into())),
                 (":type", Value::String("namespace".into())),
             ],
         )
@@ -8905,7 +8919,11 @@ impl<'a> CppTagParser<'a> {
         if !template_params.is_empty() {
             attrs.push((
                 ":template-params",
-                Value::list(template_params.into_iter().map(Value::String)),
+                Value::list(
+                    template_params
+                        .into_iter()
+                        .map(|value| Value::String(value.into())),
+                ),
             ));
         }
         if let Some(superclasses) = parse_cpp_superclasses(
@@ -9462,7 +9480,7 @@ fn parse_cpp_function(statement: &str, prototype: bool) -> Option<Value> {
     let return_type = parts.join(" ");
     let mut attrs = Vec::new();
     if let Some(parent) = &parent {
-        attrs.push((":parent", Value::String(parent.clone())));
+        attrs.push((":parent", Value::String(parent.clone().into())));
     }
     if prototype {
         attrs.push((":prototype-flag", Value::T));
@@ -9793,7 +9811,7 @@ fn semantic_cpp_type_value(type_text: &str) -> Value {
         type_text.as_str(),
         "void" | "int" | "char" | "unsigned int" | "long" | "short" | "float" | "double"
     ) {
-        Value::String(type_text)
+        Value::String(type_text.into())
     } else if let Some(kind) = aggregate_kind {
         semantic_type_ref_with_kind(&type_text, kind)
     } else {
@@ -10060,7 +10078,7 @@ fn widget_get_inner(
             widget_get_inner(interp, &widget_type, property, seen)
         }
         Value::Symbol(symbol) => {
-            if !seen.insert(symbol.clone()) {
+            if !seen.insert(symbol.to_string()) {
                 return Ok(Value::Nil);
             }
             match interp.get_symbol_property(symbol, "widget-type") {
@@ -10357,7 +10375,7 @@ fn semantic_innermost_with_parent(chain: &[Value]) -> Option<Value> {
         .to_vec()
         .or::<LispError>(Ok(Vec::new()))
     {
-        attrs.insert(0, Value::String(parent));
+        attrs.insert(0, Value::String(parent.into()));
         attrs.insert(0, Value::Symbol(":parent".into()));
         if items.len() < 3 {
             items.resize(3, Value::Nil);
@@ -10459,7 +10477,8 @@ fn byte_code_function_slots(
             interp
                 .get_symbol_property(name, "function-documentation")
                 .or_else(|| {
-                    super::misc::fallback_function_documentation(interp, name).map(Value::String)
+                    super::misc::fallback_function_documentation(interp, name)
+                        .map(|value| Value::String(value.into()))
                 })
         })
         .and_then(|value| byte_code_docstring(value, &callable));
@@ -10716,7 +10735,7 @@ fn byte_compile_file(
         interp.bind_special_variable("current-load-list", Value::list([Value::Nil]), env)?;
     let current_file_restore = match interp.bind_special_variable(
         "byte-compile-current-file",
-        Value::String(source_path.clone()),
+        Value::String(source_path.clone().into()),
         env,
     ) {
         Ok(restore) => restore,
@@ -10772,11 +10791,11 @@ fn byte_compile_file_body(
             let fallback_path = byte_compile_fallback_output_path(source_path);
             fs::write(&fallback_path, compiled_stub.as_bytes())
                 .map_err(|error| byte_compile_output_error(&fallback_path, &error))?;
-            return Ok(Value::String(fallback_path));
+            return Ok(Value::String(fallback_path.into()));
         }
         return Err(byte_compile_output_error(&output_path, &error));
     }
-    Ok(Value::String(output_path))
+    Ok(Value::String(output_path.into()))
 }
 
 fn byte_compile_output_path(
@@ -10792,7 +10811,7 @@ fn byte_compile_output_path(
         let output = interp.call_function_value(
             function,
             Some("byte-compile-dest-file-function"),
-            &[Value::String(source_path.to_string())],
+            &[Value::String(source_path.to_string().into())],
             env,
         )?;
         return Ok((
@@ -10964,11 +10983,11 @@ fn byte_compile_render_form(value: &Value) -> String {
         Value::Float(number) => number.to_string(),
         Value::String(text) => byte_compile_lisp_string_literal(text),
         Value::StringObject(state) => byte_compile_lisp_string_literal(&state.borrow().text),
-        Value::Symbol(symbol) => symbol.clone(),
+        Value::Symbol(symbol) => symbol.to_string(),
         Value::Cons(_) => byte_compile_render_cons(value),
-        Value::Lambda(_, _, _) => "nil".into(),
+        Value::Lambda(_) => "nil".into(),
         Value::BuiltinFunc(name) => format!("#'{name}"),
-        Value::Buffer(_, _)
+        Value::Buffer(_)
         | Value::Marker(_)
         | Value::Overlay(_)
         | Value::CharTable(_)
@@ -11230,7 +11249,7 @@ fn byte_compile_log_warning(
     message: &str,
 ) -> Result<(), LispError> {
     let buffer_id = match interp.lookup_var("byte-compile-log-buffer", env) {
-        Some(Value::Buffer(id, _)) => id,
+        Some(Value::Buffer(buffer)) => buffer.id,
         _ => {
             let (id, _) = interp
                 .find_buffer("*Compile-Log*")
@@ -11910,7 +11929,7 @@ impl ByteCompileDiagnostics {
         let max_width = self.docstring_max_width();
         for value in items.iter().skip(1) {
             let name = match value {
-                Value::Symbol(name) => Some(name.clone()),
+                Value::Symbol(name) => Some(name.to_string()),
                 Value::Cons(_) => value
                     .car()
                     .ok()
@@ -12625,7 +12644,7 @@ impl ByteCompileDiagnostics {
 
 fn format_string_literal(value: &Value) -> Option<String> {
     match value {
-        Value::String(text) => Some(text.clone()),
+        Value::String(text) => Some(text.to_string()),
         Value::StringObject(state) => Some(state.borrow().text.clone()),
         _ => None,
     }
@@ -12878,7 +12897,9 @@ fn feature_condition_value(interp: &Interpreter, value: &Value) -> Option<bool> 
 fn quoted_symbol_name(value: &Value) -> Option<String> {
     let items = value.to_vec().ok()?;
     match items.as_slice() {
-        [Value::Symbol(quote), Value::Symbol(symbol)] if quote == "quote" => Some(symbol.clone()),
+        [Value::Symbol(quote), Value::Symbol(symbol)] if quote == "quote" => {
+            Some(symbol.to_string())
+        }
         _ => None,
     }
 }
@@ -12911,14 +12932,14 @@ fn constant_variable_name(name: &str) -> bool {
 
 fn symbol_designator_name(value: &Value) -> Option<String> {
     match value {
-        Value::Symbol(symbol) => Some(symbol.clone()),
+        Value::Symbol(symbol) => Some(symbol.to_string()),
         _ => {
             let items = value.to_vec().ok()?;
             match items.as_slice() {
                 [Value::Symbol(head), Value::Symbol(symbol)]
                     if matches!(head.as_str(), "quote" | "function") =>
                 {
-                    Some(symbol.clone())
+                    Some(symbol.to_string())
                 }
                 _ => None,
             }
@@ -12988,7 +13009,7 @@ fn custom_type_render(value: &Value) -> String {
     match value {
         Value::Nil => "nil".into(),
         Value::T => "t".into(),
-        Value::Symbol(symbol) => symbol.clone(),
+        Value::Symbol(symbol) => symbol.to_string(),
         Value::String(_) | Value::StringObject(_) => string_like(value)
             .map(|string| format!("{:?}", string.text))
             .unwrap_or_default(),
@@ -13070,18 +13091,18 @@ fn byte_code_literal_key(value: &Value) -> Value {
 fn byte_code_docstring(doc: Value, callable: &Value) -> Option<Value> {
     let text = match doc {
         Value::String(text) => text,
-        Value::StringObject(state) => state.borrow().text.clone(),
+        Value::StringObject(state) => state.borrow().text.clone().into(),
         _ => return None,
     };
     let Some(usage) = byte_code_usage(callable) else {
         return Some(Value::String(text));
     };
-    Some(Value::String(format!("{text}\n\n{usage}")))
+    Some(Value::String(format!("{text}\n\n{usage}").into()))
 }
 
 fn byte_code_usage(callable: &Value) -> Option<String> {
     match callable {
-        Value::Lambda(params, _, _) => Some(format!("(fn{})", byte_code_usage_params(params))),
+        Value::Lambda(lambda) => Some(format!("(fn{})", byte_code_usage_params(&lambda.params))),
         value if is_lambda_value(value) => {
             let items = value.to_vec().ok()?;
             let params = items.get(1)?.to_vec().ok()?;

@@ -59,7 +59,7 @@ fn cl_defmethod_runtime_variables(
             (
                 param.clone(),
                 cl_defmethod_argument_key(param).to_string(),
-                Value::Symbol(param.clone()),
+                Value::Symbol(param.clone().into()),
             )
         })
         .collect::<Vec<_>>();
@@ -67,17 +67,17 @@ fn cl_defmethod_runtime_variables(
         runtime_variables.push((
             rest_param.clone(),
             cl_defmethod_argument_key(rest_param).to_string(),
-            Value::Symbol(rest_param.clone()),
+            Value::Symbol(rest_param.clone().into()),
         ));
     }
     for (index, param) in method_fixed_params.iter().enumerate() {
         let source = if let Some(generic) = generic_fixed_params.get(index) {
-            Value::Symbol(generic.clone())
+            Value::Symbol(generic.clone().into())
         } else if let Some(generic_rest_param) = &generic_rest_param {
             Value::list([
                 Value::Symbol("nth".into()),
                 Value::Integer((index - generic_fixed_params.len()) as i64),
-                Value::Symbol(generic_rest_param.clone()),
+                Value::Symbol(generic_rest_param.clone().into()),
             ])
         } else {
             continue;
@@ -95,12 +95,12 @@ fn cl_defmethod_runtime_variables(
             .len()
             .saturating_sub(generic_fixed_params.len());
         let source = if rest_offset == 0 {
-            Value::Symbol(generic_rest_param.clone())
+            Value::Symbol(generic_rest_param.clone().into())
         } else {
             Value::list([
                 Value::Symbol("nthcdr".into()),
                 Value::Integer(rest_offset as i64),
-                Value::Symbol(generic_rest_param.clone()),
+                Value::Symbol(generic_rest_param.clone().into()),
             ])
         };
         runtime_variables.push((
@@ -116,7 +116,7 @@ fn cl_defmethod_runtime_variables(
             let source = specializer
                 .context_expr
                 .clone()
-                .unwrap_or_else(|| Value::Symbol(specializer.variable.clone()));
+                .unwrap_or_else(|| Value::Symbol(specializer.variable.clone().into()));
             runtime_variables.push((
                 specializer.variable.clone(),
                 cl_defmethod_argument_key(&specializer.variable).to_string(),
@@ -137,18 +137,18 @@ fn cl_defmethod_alias_method_body(
     let mut alias_bindings = Vec::new();
     for (index, param) in method_fixed_params.iter().enumerate() {
         let source = if let Some(generic) = generic_fixed_params.get(index) {
-            Value::Symbol(generic.clone())
+            Value::Symbol(generic.clone().into())
         } else if let Some(rest_param) = generic_rest_param {
             Value::list([
                 Value::Symbol("nth".into()),
                 Value::Integer((index - generic_fixed_params.len()) as i64),
-                Value::Symbol(rest_param.to_string()),
+                Value::Symbol(rest_param.to_string().into()),
             ])
         } else {
             continue;
         };
         if !matches!(&source, Value::Symbol(name) if name == param) {
-            alias_bindings.push(Value::list([Value::Symbol(param.clone()), source]));
+            alias_bindings.push(Value::list([Value::Symbol(param.clone().into()), source]));
         }
     }
     if let (Some(method_rest_param), Some(generic_rest_param)) =
@@ -158,17 +158,17 @@ fn cl_defmethod_alias_method_body(
             .len()
             .saturating_sub(generic_fixed_params.len());
         let source = if rest_offset == 0 {
-            Value::Symbol(generic_rest_param.to_string())
+            Value::Symbol(generic_rest_param.to_string().into())
         } else {
             Value::list([
                 Value::Symbol("nthcdr".into()),
                 Value::Integer(rest_offset as i64),
-                Value::Symbol(generic_rest_param.to_string()),
+                Value::Symbol(generic_rest_param.to_string().into()),
             ])
         };
         if !matches!(&source, Value::Symbol(name) if name == method_rest_param) {
             alias_bindings.push(Value::list([
-                Value::Symbol(method_rest_param.to_string()),
+                Value::Symbol(method_rest_param.to_string().into()),
                 source,
             ]));
         }
@@ -193,10 +193,10 @@ impl ClDefmethodStoredSpecializer {
         if let Ok(items) = value.to_vec() {
             match items.as_slice() {
                 [Value::Symbol(kind), Value::Symbol(class_name)] if kind == "class" => {
-                    return Some(Self::Class(class_name.clone()));
+                    return Some(Self::Class(class_name.to_string()));
                 }
                 [Value::Symbol(kind), Value::Symbol(class_name)] if kind == "subclass" => {
-                    return Some(Self::Subclass(class_name.clone()));
+                    return Some(Self::Subclass(class_name.to_string()));
                 }
                 [Value::Symbol(kind), eql_value] if kind == "eql" => {
                     return Some(Self::Eql(eql_value.clone()));
@@ -230,11 +230,11 @@ impl ClDefmethodStoredSpecializer {
         match self {
             Self::Class(class_name) => Value::list([
                 Value::Symbol("class".into()),
-                Value::Symbol(class_name.clone()),
+                Value::Symbol(class_name.clone().into()),
             ]),
             Self::Subclass(class_name) => Value::list([
                 Value::Symbol("subclass".into()),
-                Value::Symbol(class_name.clone()),
+                Value::Symbol(class_name.clone().into()),
             ]),
             Self::Eql(value) => Value::list([Value::Symbol("eql".into()), value.clone()]),
             Self::Head(value) => Value::list([Value::Symbol("head".into()), value.clone()]),
@@ -257,7 +257,7 @@ impl ClDefmethodStoredSpecializer {
                 runtime_value,
                 Value::list([
                     Value::Symbol("quote".into()),
-                    Value::Symbol(class_name.clone()),
+                    Value::Symbol(class_name.clone().into()),
                 ]),
             ]),
             Self::Subclass(class_name) => Value::list([
@@ -267,7 +267,7 @@ impl ClDefmethodStoredSpecializer {
                     Value::Symbol("quote".into()),
                     Value::list([
                         Value::Symbol("subclass".into()),
-                        Value::Symbol(class_name.clone()),
+                        Value::Symbol(class_name.clone().into()),
                     ]),
                 ]),
             ]),
@@ -357,7 +357,7 @@ impl ClDefmethodStoredMethod {
             .filter_map(|specializer| {
                 ClDefmethodStoredSpecializer::parse(&specializer.metadata_value()).map(|stored| {
                     (
-                        specializer.variable.clone(),
+                        specializer.variable.to_string(),
                         stored,
                         specializer.context_expr.clone(),
                     )
@@ -382,12 +382,12 @@ impl ClDefmethodStoredMethod {
             let parts = item.to_vec().ok()?;
             match parts.as_slice() {
                 [Value::Symbol(variable), specializer] => specializers.push((
-                    variable.clone(),
+                    variable.to_string(),
                     ClDefmethodStoredSpecializer::parse(specializer)?,
                     None,
                 )),
                 [Value::Symbol(variable), specializer, context_expr] => specializers.push((
-                    variable.clone(),
+                    variable.to_string(),
                     ClDefmethodStoredSpecializer::parse(specializer)?,
                     Some(context_expr.clone()),
                 )),
@@ -405,7 +405,7 @@ impl ClDefmethodStoredMethod {
                 .iter()
                 .map(|(variable, specializer, context_expr)| {
                     let mut parts = vec![
-                        Value::Symbol(variable.clone()),
+                        Value::Symbol(variable.clone().into()),
                         specializer.metadata_value(),
                     ];
                     if let Some(expr) = context_expr {
@@ -591,7 +591,7 @@ impl Interpreter {
         let mut explicit_documentation = false;
         let documentation = match first {
             Value::String(text) => Some(Value::String(text.clone())),
-            Value::StringObject(state) => Some(Value::String(state.borrow().text.clone())),
+            Value::StringObject(state) => Some(Value::String(state.borrow().text.clone().into())),
             Value::Cons(_) => {
                 let items = first.to_vec()?;
                 match items.as_slice() {
@@ -603,7 +603,7 @@ impl Interpreter {
                             .ok_or_else(|| {
                                 LispError::TypeError("string".into(), value.type_name())
                             })?;
-                        Some(Value::String(text))
+                        Some(Value::String(text.into()))
                     }
                     _ => None,
                 }
@@ -675,14 +675,14 @@ impl Interpreter {
             self.call_function_value(
                 setter,
                 None,
-                &[Value::Symbol(resolved.clone()), value.clone()],
+                &[Value::Symbol(resolved.clone().into()), value.clone()],
                 env,
             )?;
         } else {
             self.call_function_value(
                 Value::BuiltinFunc("set-default".into()),
                 Some("set-default"),
-                &[Value::Symbol(resolved), value.clone()],
+                &[Value::Symbol(resolved.into()), value.clone()],
                 env,
             )?;
         }
@@ -934,7 +934,10 @@ impl Interpreter {
                 let inner_expr = if rest.is_empty() {
                     target_expr.clone()
                 } else {
-                    Value::list([Value::Symbol(format!("c{rest}r")), target_expr.clone()])
+                    Value::list([
+                        Value::Symbol(format!("c{rest}r").into()),
+                        target_expr.clone(),
+                    ])
                 };
                 let cell = self.eval(&inner_expr, env)?;
                 let value = self.eval(&items[2], env)?;
@@ -1858,7 +1861,7 @@ impl Interpreter {
                         crate::lisp::primitives::custom_add_to_group(
                             self,
                             group,
-                            Value::Symbol(symbol.to_string()),
+                            Value::Symbol(symbol.to_string().into()),
                             Value::Symbol("custom-variable".into()),
                         );
                     }
@@ -1887,7 +1890,7 @@ impl Interpreter {
             match self.call_function_value(
                 function,
                 None,
-                &[Value::Symbol(symbol.to_string()), default_expr],
+                &[Value::Symbol(symbol.to_string().into()), default_expr],
                 env,
             ) {
                 Ok(_) => {}
@@ -1940,7 +1943,7 @@ impl Interpreter {
         if let Some(doc) = items.get(3)
             && let Some(text) = match doc {
                 Value::String(text) => Some(text.clone()),
-                Value::StringObject(shared) => Some(shared.borrow().text.clone()),
+                Value::StringObject(shared) => Some(shared.borrow().text.clone().into()),
                 _ => None,
             }
         {
@@ -2019,7 +2022,7 @@ impl Interpreter {
             }
             self.record_defface_runtime_attributes(name, spec)?;
         }
-        Ok(Value::Symbol(name.to_string()))
+        Ok(Value::Symbol(name.to_string().into()))
     }
 
     pub(crate) fn record_defface_runtime_attributes(
@@ -2039,7 +2042,7 @@ impl Interpreter {
                 match &value {
                     Value::Nil => self.set_face_inherit_target(face, None)?,
                     Value::Symbol(symbol) => {
-                        self.set_face_inherit_target(face, Some(symbol.clone()))?
+                        self.set_face_inherit_target(face, Some(symbol.to_string()))?
                     }
                     _ => {}
                 }
@@ -2093,7 +2096,7 @@ impl Interpreter {
 
             let key = match self.eval(&items[index], env)? {
                 Value::String(text) => text,
-                Value::StringObject(state) => state.borrow().text.clone(),
+                Value::StringObject(state) => state.borrow().text.clone().into(),
                 other => {
                     return Err(LispError::TypeError("string".into(), other.type_name()));
                 }
@@ -2155,7 +2158,7 @@ impl Interpreter {
                         ":lighter" => lighter = items[index + 1].clone(),
                         ":keymap" => keymap_spec = Some(items[index + 1].clone()),
                         ":variable" => match &items[index + 1] {
-                            Value::Symbol(variable) => variable_name = variable.clone(),
+                            Value::Symbol(variable) => variable_name = variable.to_string(),
                             variable => {
                                 if let Some((variable, setter)) = variable.cons_values()
                                     && let Ok(variable) = variable.as_symbol()
@@ -2196,7 +2199,7 @@ impl Interpreter {
                 if self.lookup_var(&variable_name, &Vec::new()).is_none() {
                     self.set_global_binding(&variable_name, init_value);
                 }
-                let toggle = Value::Symbol(variable_name.clone());
+                let toggle = Value::Symbol(variable_name.clone().into());
                 let mut minor_modes = self
                     .lookup_var("minor-mode-list", &Vec::new())
                     .unwrap_or(Value::Nil)
@@ -2256,11 +2259,11 @@ impl Interpreter {
                         Value::Symbol("default-value".into()),
                         Value::list([
                             Value::Symbol("quote".into()),
-                            Value::Symbol(variable_name.clone()),
+                            Value::Symbol(variable_name.clone().into()),
                         ]),
                     ])
                 } else {
-                    Value::Symbol(variable_name.clone())
+                    Value::Symbol(variable_name.clone().into())
                 };
                 let toggle_form = Value::list([
                     Value::Symbol("if".into()),
@@ -2298,7 +2301,7 @@ impl Interpreter {
                 } else {
                     Value::list([
                         Value::Symbol(if global { "setq-default" } else { "setq" }.into()),
-                        Value::Symbol(variable_name.clone()),
+                        Value::Symbol(variable_name.clone().into()),
                         toggle_form,
                     ])
                 };
@@ -2308,11 +2311,11 @@ impl Interpreter {
                     // the C variable `local-minor-modes'.
                     let mode_symbol = Value::list([
                         Value::Symbol("quote".into()),
-                        Value::Symbol(name.to_string()),
+                        Value::Symbol(name.to_string().into()),
                     ]);
                     body.push(Value::list([
                         Value::Symbol("if".into()),
-                        Value::Symbol(variable_name.clone()),
+                        Value::Symbol(variable_name.clone().into()),
                         Value::list([
                             Value::Symbol("unless".into()),
                             Value::list([
@@ -2341,7 +2344,7 @@ impl Interpreter {
                 // GNU runs MODE-hook (and the on/off variant) on every
                 // toggle, in both directions.
                 let quoted_symbol = |symbol: String| {
-                    Value::list([Value::Symbol("quote".into()), Value::Symbol(symbol)])
+                    Value::list([Value::Symbol("quote".into()), Value::Symbol(symbol.into())])
                 };
                 body.push(Value::list([
                     Value::Symbol("run-hooks".into()),
@@ -2353,11 +2356,11 @@ impl Interpreter {
                         quoted_symbol(format!("{name}-off-hook")),
                     ]),
                 ]));
-                body.push(Value::Symbol(variable_name));
+                body.push(Value::Symbol(variable_name.into()));
 
                 self.set_function_binding(
                     name,
-                    Some(Value::Lambda(
+                    Some(Value::lambda(
                         vec!["&optional".into(), "arg".into()].into(),
                         body.into(),
                         shared_env(Vec::new()),
@@ -2365,13 +2368,13 @@ impl Interpreter {
                 );
                 if global && init_value_truthy && name == "electric-indent-mode" {
                     self.call_function_value(
-                        Value::Symbol(name.to_string()),
+                        Value::Symbol(name.to_string().into()),
                         Some(name),
                         &[Value::Integer(1)],
                         &mut Vec::new(),
                     )?;
                 }
-                return Ok(Value::Symbol(name.to_string()));
+                return Ok(Value::Symbol(name.to_string().into()));
             }
 
             if kind == "define-globalized-minor-mode" {
@@ -2406,8 +2409,8 @@ impl Interpreter {
                 }
                 let mut after_hook = None;
                 let mut interactive = true;
-                let mut syntax_table = Value::Symbol(default_syntax_table_name.clone());
-                let mut abbrev_table = Value::Symbol(default_abbrev_table_name.clone());
+                let mut syntax_table = Value::Symbol(default_syntax_table_name.clone().into());
+                let mut abbrev_table = Value::Symbol(default_abbrev_table_name.clone().into());
                 let mut declare_syntax_table = true;
                 let mut declare_abbrev_table = true;
                 while let Some(Value::Symbol(keyword)) = items.get(index)
@@ -2481,7 +2484,7 @@ impl Interpreter {
                 // 'kill-all-local-variables)) ...): the parent chain ends
                 // in a mode that resets buffer locals.
                 if let Some(parent) = parent {
-                    delayed_body.push(Value::list([Value::Symbol(parent.to_string())]));
+                    delayed_body.push(Value::list([Value::Symbol(parent.to_string().into())]));
                 } else {
                     delayed_body.push(Value::list([Value::Symbol(
                         "kill-all-local-variables".into(),
@@ -2489,7 +2492,7 @@ impl Interpreter {
                 }
                 delayed_body.push(Value::list([
                     Value::Symbol("use-local-map".into()),
-                    Value::Symbol(map_name.clone()),
+                    Value::Symbol(map_name.clone().into()),
                 ]));
                 if !syntax_table.is_nil() {
                     delayed_body.push(Value::list([
@@ -2509,7 +2512,7 @@ impl Interpreter {
                     Value::Symbol("major-mode".into()),
                     Value::list([
                         Value::Symbol("quote".into()),
-                        Value::Symbol(name.to_string()),
+                        Value::Symbol(name.to_string().into()),
                     ]),
                 ]));
                 if !matches!(items.get(3), None | Some(Value::Nil)) {
@@ -2545,29 +2548,29 @@ impl Interpreter {
                     Value::Symbol("run-mode-hooks".into()),
                     Value::list([
                         Value::Symbol("quote".into()),
-                        Value::Symbol(format!("{name}-hook")),
+                        Value::Symbol(format!("{name}-hook").into()),
                     ]),
                 ]));
                 body.push(Value::list([
                     Value::Symbol("quote".into()),
-                    Value::Symbol(name.to_string()),
+                    Value::Symbol(name.to_string().into()),
                 ]));
                 self.set_function_binding(
                     name,
-                    Some(Value::Lambda(
+                    Some(Value::lambda(
                         Vec::new().into(),
                         body.into(),
                         shared_env(Vec::new()),
                     )),
                 );
                 crate::lisp::primitives::derived_mode_set_parent(self, name, parent);
-                return Ok(Value::Symbol(name.to_string()));
+                return Ok(Value::Symbol(name.to_string().into()));
             }
         }
         if self.lookup_function(name, &Vec::new()).is_err() {
             self.set_function_binding(name, Some(Value::BuiltinFunc("ignore".into())));
         }
-        Ok(Value::Symbol(name.to_string()))
+        Ok(Value::Symbol(name.to_string().into()))
     }
 
     pub(super) fn sf_cl_defstruct(&mut self, items: &[Value]) -> Result<Value, LispError> {
@@ -2575,7 +2578,7 @@ impl Interpreter {
             return Ok(Value::Nil);
         };
         let (name, options) = match struct_spec {
-            Value::Symbol(name) => (name.clone(), Vec::new()),
+            Value::Symbol(name) => (name.to_string(), Vec::new()),
             Value::Cons(_) => {
                 let Some(parts) = struct_spec.to_vec().ok() else {
                     return Ok(Value::Nil);
@@ -2601,7 +2604,7 @@ impl Interpreter {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("wrong-type-argument".into()),
                 Value::Symbol("cl-struct-name-p".into()),
-                Value::Symbol(name),
+                Value::Symbol(name.into()),
                 Value::Symbol("name".into()),
             ])));
         }
@@ -2613,17 +2616,18 @@ impl Interpreter {
             if let Ok(parts) = option.to_vec()
                 && matches!(parts.first(), Some(Value::Symbol(keyword)) if keyword == ":include")
                 && let Some(Value::Symbol(parent)) = parts.get(1)
-                && let Some(parent_slots) = self.get_symbol_property(parent, "emaxx-struct-slots")
+                && let Some(parent_slots) =
+                    self.get_symbol_property(parent.as_str(), "emaxx-struct-slots")
                 && let Ok(parent_names) = parent_slots.to_vec()
             {
                 let parent_defaults = self
-                    .get_symbol_property(parent, "emaxx-struct-defaults")
+                    .get_symbol_property(parent.as_str(), "emaxx-struct-defaults")
                     .and_then(|value| value.to_vec().ok())
                     .unwrap_or_default();
                 for (index, slot) in parent_names.into_iter().enumerate() {
                     if let Value::Symbol(slot_name) = slot {
                         slot_specs.push((
-                            slot_name,
+                            slot_name.to_string(),
                             parent_defaults.get(index).cloned().unwrap_or(Value::Nil),
                         ));
                     }
@@ -2641,7 +2645,7 @@ impl Interpreter {
                     };
                     if let Some((_, default)) = slot_specs
                         .iter_mut()
-                        .find(|(existing, _)| existing == slot_name)
+                        .find(|(existing, _)| existing == slot_name.as_str())
                     {
                         *default = override_parts.get(1).cloned().unwrap_or(Value::Nil);
                     }
@@ -2649,7 +2653,7 @@ impl Interpreter {
             }
         }
         slot_specs.extend(items[2..].iter().filter_map(|slot| match slot {
-            Value::Symbol(name) => Some((name.clone(), Value::Nil)),
+            Value::Symbol(name) => Some((name.to_string(), Value::Nil)),
             Value::Cons(_) => slot.to_vec().ok().and_then(|parts| {
                 let name = parts
                     .first()
@@ -2687,7 +2691,7 @@ impl Interpreter {
             match parts.first() {
                 Some(Value::Symbol(keyword)) if keyword == ":include" => {
                     if let Some(Value::Symbol(parent_name)) = parts.get(1) {
-                        parent_names.push(parent_name.clone());
+                        parent_names.push(parent_name.to_string());
                     }
                 }
                 Some(Value::Symbol(keyword)) if keyword == ":constructor" => match parts.get(1) {
@@ -2708,11 +2712,11 @@ impl Interpreter {
                             });
                         let docstring = parts.get(3).and_then(|value| match value {
                             Value::String(text) => Some(text.clone()),
-                            Value::StringObject(state) => Some(state.borrow().text.clone()),
+                            Value::StringObject(state) => Some(state.borrow().text.clone().into()),
                             _ => None,
                         });
                         constructors.push((
-                            constructor_name.clone(),
+                            constructor_name.to_string(),
                             params,
                             aux_bindings,
                             docstring,
@@ -2723,7 +2727,7 @@ impl Interpreter {
                 },
                 Some(Value::Symbol(keyword)) if keyword == ":predicate" => match parts.get(1) {
                     Some(Value::Nil) => predicate_name.clear(),
-                    Some(Value::Symbol(predicate)) => predicate_name = predicate.clone(),
+                    Some(Value::Symbol(predicate)) => predicate_name = predicate.to_string(),
                     _ => {}
                 },
                 Some(Value::Symbol(keyword)) if keyword == ":type" => {
@@ -2740,8 +2744,8 @@ impl Interpreter {
                 }
                 Some(Value::Symbol(keyword)) if keyword == ":conc-name" => match parts.get(1) {
                     Some(Value::Nil) => conc_name.clear(),
-                    Some(Value::Symbol(prefix)) => conc_name = prefix.clone(),
-                    Some(Value::String(prefix)) => conc_name = prefix.clone(),
+                    Some(Value::Symbol(prefix)) => conc_name = prefix.to_string(),
+                    Some(Value::String(prefix)) => conc_name = prefix.to_string(),
                     Some(Value::StringObject(prefix)) => conc_name = prefix.borrow().text.clone(),
                     _ => {}
                 },
@@ -2765,12 +2769,15 @@ impl Interpreter {
             ));
         }
 
-        let struct_name = Value::list([Value::Symbol("quote".into()), Value::Symbol(name.clone())]);
+        let struct_name = Value::list([
+            Value::Symbol("quote".into()),
+            Value::Symbol(name.clone().into()),
+        ]);
         let slot_names_list = Value::list(
             slot_names
                 .iter()
                 .cloned()
-                .map(Value::Symbol)
+                .map(|value| Value::Symbol(value.into()))
                 .collect::<Vec<_>>(),
         );
         let slot_names_value =
@@ -2825,14 +2832,18 @@ impl Interpreter {
         self.register_class(
             &name,
             parent_names,
-            slot_names.iter().cloned().map(Value::Symbol).collect(),
+            slot_names
+                .iter()
+                .cloned()
+                .map(|value| Value::Symbol(value.into()))
+                .collect(),
             Vec::new(),
         );
 
         if !predicate_name.is_empty() {
             self.set_function_binding(
                 &predicate_name,
-                Some(Value::Lambda(
+                Some(Value::lambda(
                     vec!["object".into()].into(),
                     vec![Value::list([
                         Value::Symbol("emaxx-struct-p".into()),
@@ -2847,7 +2858,7 @@ impl Interpreter {
 
         self.set_function_binding(
             &format!("copy-{name}"),
-            Some(Value::Lambda(
+            Some(Value::lambda(
                 vec!["object".into()].into(),
                 vec![Value::list([
                     Value::Symbol("copy-sequence".into()),
@@ -2863,8 +2874,8 @@ impl Interpreter {
                 .iter()
                 .map(|slot_name| {
                     Value::cons(
-                        Value::Symbol(slot_name.clone()),
-                        Value::Symbol(format!("{conc_name}{slot_name}")),
+                        Value::Symbol(slot_name.clone().into()),
+                        Value::Symbol(format!("{conc_name}{slot_name}").into()),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -2875,7 +2886,7 @@ impl Interpreter {
             self.put_symbol_property(
                 &accessor_name,
                 "emaxx-struct-type",
-                Value::Symbol(name.clone()),
+                Value::Symbol(name.clone().into()),
             );
             self.put_symbol_property(
                 &accessor_name,
@@ -2884,7 +2895,7 @@ impl Interpreter {
             );
             self.set_function_binding(
                 &accessor_name,
-                Some(Value::Lambda(
+                Some(Value::lambda(
                     vec!["object".into()].into(),
                     vec![Value::list([
                         Value::Symbol("emaxx-struct-ref".into()),
@@ -2924,12 +2935,12 @@ impl Interpreter {
             // works for struct slots.
             self.set_function_binding(
                 &format!("(setf {accessor_name})"),
-                Some(Value::Lambda(
+                Some(Value::lambda(
                     vec!["val".into(), "cl-x".into()].into(),
                     vec![Value::list([
                         Value::Symbol("setf".into()),
                         Value::list([
-                            Value::Symbol(accessor_name.clone()),
+                            Value::Symbol(accessor_name.clone().into()),
                             Value::Symbol("cl-x".into()),
                         ]),
                         Value::Symbol("val".into()),
@@ -2944,7 +2955,12 @@ impl Interpreter {
             self.put_symbol_property(
                 &constructor_name,
                 "emaxx-function-arglist",
-                Value::list(params.iter().cloned().map(Value::Symbol)),
+                Value::list(
+                    params
+                        .iter()
+                        .cloned()
+                        .map(|value| Value::Symbol(value.into())),
+                ),
             );
             let params_for_make = if aux_bindings.is_empty() {
                 params.clone()
@@ -2953,7 +2969,11 @@ impl Interpreter {
                     .chain(slot_names.iter().cloned())
                     .collect::<Vec<_>>()
             };
-            let params_list = Value::list(params_for_make.into_iter().map(Value::Symbol));
+            let params_list = Value::list(
+                params_for_make
+                    .into_iter()
+                    .map(|value| Value::Symbol(value.into())),
+            );
             let params_value = Value::list([Value::Symbol("quote".into()), params_list]);
             let call_args = if aux_bindings.is_empty() && direct_lambda {
                 Value::list(
@@ -2962,7 +2982,7 @@ impl Interpreter {
                             .iter()
                             .filter(|param| !param.starts_with('&'))
                             .cloned()
-                            .map(Value::Symbol),
+                            .map(|value| Value::Symbol(value.into())),
                     ),
                 )
             } else if aux_bindings.is_empty() {
@@ -2986,7 +3006,10 @@ impl Interpreter {
                     .into_iter()
                     .filter(|binding| slot_names.contains(binding))
                     .flat_map(|binding| {
-                        [Value::Symbol(format!(":{binding}")), Value::Symbol(binding)]
+                        [
+                            Value::Symbol(format!(":{binding}").into()),
+                            Value::Symbol(binding.into()),
+                        ]
                     })
                     .collect::<Vec<_>>();
                 Value::list(
@@ -3024,7 +3047,7 @@ impl Interpreter {
                     Value::list(
                         aux_bindings
                             .into_iter()
-                            .map(|(name, form)| Value::list([Value::Symbol(name), form])),
+                            .map(|(name, form)| Value::list([Value::Symbol(name.into()), form])),
                     )
                 } else {
                     Value::list(cl_defstruct_constructor_aux_let_bindings(
@@ -3040,7 +3063,7 @@ impl Interpreter {
             };
             self.set_function_binding(
                 &constructor_name,
-                Some(Value::Lambda(
+                Some(Value::lambda(
                     (if direct_lambda {
                         params
                     } else {
@@ -3053,7 +3076,7 @@ impl Interpreter {
             );
         }
 
-        Ok(Value::Symbol(name))
+        Ok(Value::Symbol(name.into()))
     }
 
     pub(super) fn install_struct_accessor_compiler_macro(
@@ -3080,7 +3103,7 @@ impl Interpreter {
         };
         self.set_function_binding(
             &compiler_macro_name,
-            Some(Value::Lambda(
+            Some(Value::lambda(
                 vec!["_form".into(), "object".into()].into(),
                 vec![expanded_form].into(),
                 shared_env(Vec::new()),
@@ -3089,7 +3112,7 @@ impl Interpreter {
         self.put_symbol_property(
             accessor,
             "compiler-macro",
-            Value::Symbol(compiler_macro_name),
+            Value::Symbol(compiler_macro_name.into()),
         );
     }
 
@@ -3320,7 +3343,11 @@ impl Interpreter {
         if body_start < normalized_forms.len()
             && let Some(setter) = function_declare_gv_setter(&normalized_forms[body_start])
         {
-            self.put_symbol_property(&name, "emaxx-gv-setter", Value::Symbol(setter.clone()));
+            self.put_symbol_property(
+                &name,
+                "emaxx-gv-setter",
+                Value::Symbol(setter.clone().into()),
+            );
             // GNU's defun-declarations-alist also registers the gv-expander
             // through gv.el, so GNU elisp places (gv-letplace in nadvice's
             // advice--add-function) find it instead of the void
@@ -3345,7 +3372,12 @@ impl Interpreter {
             // generator: VALUE and the accessor's arguments are unevaluated
             // forms, and its result is the store expression.
             let mut setter_params = handler_params;
-            setter_params.extend(params.iter().cloned().map(Value::Symbol));
+            setter_params.extend(
+                params
+                    .iter()
+                    .cloned()
+                    .map(|value| Value::Symbol(value.into())),
+            );
             let setter_form = Value::list(
                 std::iter::once(Value::Symbol("lambda".into()))
                     .chain(std::iter::once(Value::list(setter_params)))
@@ -3375,7 +3407,10 @@ impl Interpreter {
                 ]),
                 Value::list([
                     Value::Symbol("gv--defsetter".into()),
-                    Value::list([Value::Symbol("quote".into()), Value::Symbol(name.clone())]),
+                    Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::Symbol(name.clone().into()),
+                    ]),
                     setter_form,
                     Value::Symbol("do".into()),
                     Value::Symbol("args".into()),
@@ -3402,7 +3437,7 @@ impl Interpreter {
                     }
                     let mut expander_params = handler_items[1].to_vec()?;
                     for param in &params {
-                        expander_params.push(Value::Symbol(param.clone()));
+                        expander_params.push(Value::Symbol(param.clone().into()));
                     }
                     let expander_form = Value::list(
                         std::iter::once(Value::Symbol("lambda".into()))
@@ -3423,8 +3458,8 @@ impl Interpreter {
             if let Some(old_definition) = old_definition {
                 self.record_function_redefinition(&name, old_definition);
             }
-            self.set_function_binding(&name, Some(Value::BuiltinFunc(name.clone())));
-            return Ok(Value::Symbol(name));
+            self.set_function_binding(&name, Some(Value::BuiltinFunc(name.clone().into())));
+            return Ok(Value::Symbol(name.into()));
         }
         // GNU eagerly macroexpands top-level forms when they are loaded or
         // eval-defun'ed, so an edebug-instrumented `cl-macrolet' runs its
@@ -3450,7 +3485,7 @@ impl Interpreter {
         {
             self.mark_lexical_closure_env(&closure_env);
         }
-        let lambda = Value::Lambda(params.into(), body.into(), closure_env);
+        let lambda = Value::lambda(params.into(), body.into(), closure_env);
         let old_definition = self.logical_function_binding(&name, &Env::new());
         self.record_definition_in_load_history("defun", &name);
         if let Some(old_definition) = old_definition {
@@ -3461,13 +3496,13 @@ impl Interpreter {
         // re-applies pending or existing advice around the new definition.
         if self.defalias_fset_function_handles(&name, &lambda, env) {
             self.advice_note_new_definition(&name);
-            return Ok(Value::Symbol(name));
+            return Ok(Value::Symbol(name.into()));
         }
         // A defun over a macro name erases the macro (GNU function cell).
         self.shadow_macro_binding(&name);
         self.set_function_binding(&name, Some(lambda));
         self.advice_note_new_definition(&name);
-        Ok(Value::Symbol(name))
+        Ok(Value::Symbol(name.into()))
     }
 
     fn eagerly_expand_cl_macrolet(
@@ -3526,9 +3561,9 @@ impl Interpreter {
         let name = items[1].as_symbol()?.to_string();
         let params = self.parse_params(&items[2])?;
         let body = items[3..].to_vec();
-        let lambda = Value::Lambda(params.into(), body.into(), shared_env(env.clone()));
+        let lambda = Value::lambda(params.into(), body.into(), shared_env(env.clone()));
         self.put_symbol_property(&name, "cl-deftype-handler", lambda);
-        Ok(Value::Symbol(name))
+        Ok(Value::Symbol(name.into()))
     }
 
     pub(super) fn sf_defclass(&mut self, items: &[Value]) -> Result<Value, LispError> {
@@ -3622,11 +3657,11 @@ impl Interpreter {
         if abstract_class {
             self.set_function_binding(
                 name,
-                Some(Value::Lambda(
+                Some(Value::lambda(
                     vec!["&rest".into(), "_ignore".into()].into(),
                     vec![Value::list([
                         Value::Symbol("error".into()),
-                        Value::String(format!("Class {name} is abstract")),
+                        Value::String(format!("Class {name} is abstract").into()),
                     ])]
                     .into(),
                     shared_env(Vec::new()),
@@ -3635,7 +3670,7 @@ impl Interpreter {
         } else {
             self.set_function_binding(
                 name,
-                Some(Value::Lambda(
+                Some(Value::lambda(
                     vec!["&rest".into(), "initargs".into()].into(),
                     vec![Value::list([
                         Value::Symbol("apply".into()),
@@ -3645,7 +3680,7 @@ impl Interpreter {
                         ]),
                         Value::list([
                             Value::Symbol("quote".into()),
-                            Value::Symbol(name.to_string()),
+                            Value::Symbol(name.to_string().into()),
                         ]),
                         Value::Symbol("initargs".into()),
                     ])]
@@ -3659,7 +3694,7 @@ impl Interpreter {
         // subclasses (`eieio-make-child-predicate').
         self.set_function_binding(
             &format!("{name}-p"),
-            Some(Value::Lambda(
+            Some(Value::lambda(
                 vec!["object".into()].into(),
                 vec![Value::list([
                     Value::Symbol("and".into()),
@@ -3672,7 +3707,7 @@ impl Interpreter {
                         Value::Symbol("object".into()),
                         Value::list([
                             Value::Symbol("quote".into()),
-                            Value::Symbol(name.to_string()),
+                            Value::Symbol(name.to_string().into()),
                         ]),
                     ]),
                 ])]
@@ -3682,13 +3717,13 @@ impl Interpreter {
         );
         self.set_function_binding(
             &format!("{name}--eieio-childp"),
-            Some(Value::Lambda(
+            Some(Value::lambda(
                 vec!["object".into()].into(),
                 vec![Value::list([
                     Value::Symbol("emaxx-class-p".into()),
                     Value::list([
                         Value::Symbol("quote".into()),
-                        Value::Symbol(name.to_string()),
+                        Value::Symbol(name.to_string().into()),
                     ]),
                     Value::Symbol("object".into()),
                 ])]
@@ -3696,7 +3731,7 @@ impl Interpreter {
                 shared_env(Vec::new()),
             )),
         );
-        Ok(Value::Symbol(name.to_string()))
+        Ok(Value::Symbol(name.to_string().into()))
     }
 
     pub(super) fn sf_cl_defun(
@@ -3734,7 +3769,7 @@ impl Interpreter {
             let doc = self.eval(&parts[1], env)?;
             let doc_text = match doc {
                 Value::String(text) => Some(text),
-                Value::StringObject(state) => Some(state.borrow().text.clone()),
+                Value::StringObject(state) => Some(state.borrow().text.clone().into()),
                 _ => None,
             };
             if let Some(text) = doc_text {
@@ -3781,11 +3816,11 @@ impl Interpreter {
                 // variables; quoting regular :keywords is equivalent.
                 let keyword_symbol = Value::list([
                     Value::Symbol("quote".into()),
-                    Value::Symbol(binding.keyword_name.clone()),
+                    Value::Symbol(binding.keyword_name.clone().into()),
                 ]);
-                let keyword_source = Value::Symbol(remaining_args_name);
+                let keyword_source = Value::Symbol(remaining_args_name.into());
                 let_bindings.push(Value::list([
-                    Value::Symbol(present_name.clone()),
+                    Value::Symbol(present_name.clone().into()),
                     Value::list([
                         Value::Symbol("plist-member".into()),
                         keyword_source.clone(),
@@ -3793,10 +3828,10 @@ impl Interpreter {
                     ]),
                 ]));
                 let_bindings.push(Value::list([
-                    Value::Symbol(binding.variable_name.clone()),
+                    Value::Symbol(binding.variable_name.clone().into()),
                     Value::list([
                         Value::Symbol("if".into()),
-                        Value::Symbol(present_name.clone()),
+                        Value::Symbol(present_name.clone().into()),
                         Value::list([
                             Value::Symbol("plist-get".into()),
                             keyword_source.clone(),
@@ -3807,10 +3842,10 @@ impl Interpreter {
                 ]));
                 if let Some(supplied_name) = &binding.supplied_name {
                     let_bindings.push(Value::list([
-                        Value::Symbol(supplied_name.clone()),
+                        Value::Symbol(supplied_name.clone().into()),
                         Value::list([
                             Value::Symbol("if".into()),
-                            Value::Symbol(present_name),
+                            Value::Symbol(present_name.into()),
                             Value::T,
                             Value::Nil,
                         ]),
@@ -3840,13 +3875,16 @@ impl Interpreter {
             let mut wrapped = if matches!(pattern, Value::Symbol(_)) {
                 vec![
                     Value::Symbol("--emaxx-lexical-let*".into()),
-                    Value::list([Value::list([pattern, Value::Symbol(remaining_args_name)])]),
+                    Value::list([Value::list([
+                        pattern,
+                        Value::Symbol(remaining_args_name.into()),
+                    ])]),
                 ]
             } else {
                 vec![
                     Value::Symbol("cl-destructuring-bind".into()),
                     pattern,
-                    Value::Symbol(remaining_args_name),
+                    Value::Symbol(remaining_args_name.into()),
                 ]
             };
             wrapped.append(&mut executable_body);
@@ -3868,19 +3906,19 @@ impl Interpreter {
                 0,
                 Value::list([
                     Value::Symbol("if".into()),
-                    Value::Symbol(remaining_args_name),
+                    Value::Symbol(remaining_args_name.into()),
                     Value::list([
                         Value::Symbol("signal".into()),
                         quoted_literal(&Value::Symbol("wrong-number-of-arguments".into())),
                         Value::list([
                             Value::Symbol("list".into()),
-                            quoted_literal(&Value::Symbol(name.clone())),
+                            quoted_literal(&Value::Symbol(name.clone().into())),
                             Value::list([
                                 Value::Symbol("+".into()),
                                 Value::Integer(lowered_cl_defun.required_count as i64),
                                 Value::list([
                                     Value::Symbol("length".into()),
-                                    Value::Symbol(raw_rest_param),
+                                    Value::Symbol(raw_rest_param.into()),
                                 ]),
                             ]),
                         ]),
@@ -3905,21 +3943,24 @@ impl Interpreter {
                     })?;
             let supplied_form = Value::list([
                 Value::Symbol("and".into()),
-                Value::Symbol(remaining_args_name.clone()),
+                Value::Symbol(remaining_args_name.clone().into()),
                 Value::T,
             ]);
             let value_form = Value::list([
                 Value::Symbol("if".into()),
-                Value::Symbol(remaining_args_name.clone()),
+                Value::Symbol(remaining_args_name.clone().into()),
                 Value::list([
                     Value::Symbol("pop".into()),
-                    Value::Symbol(remaining_args_name),
+                    Value::Symbol(remaining_args_name.into()),
                 ]),
                 binding.default_value,
             ]);
             let mut let_bindings = Vec::new();
             if let Some(supplied_name) = binding.supplied_name {
-                let_bindings.push(Value::list([Value::Symbol(supplied_name), supplied_form]));
+                let_bindings.push(Value::list([
+                    Value::Symbol(supplied_name.into()),
+                    supplied_form,
+                ]));
             }
 
             let mut wrapped = if matches!(binding.pattern, Value::Symbol(_)) {
@@ -3930,11 +3971,14 @@ impl Interpreter {
                 ]
             } else {
                 let temp_name = format!("emaxx--cl-defun-{name}-optional-{index}");
-                let_bindings.push(Value::list([Value::Symbol(temp_name.clone()), value_form]));
+                let_bindings.push(Value::list([
+                    Value::Symbol(temp_name.clone().into()),
+                    value_form,
+                ]));
                 let mut destructured = vec![
                     Value::Symbol("cl-destructuring-bind".into()),
                     binding.pattern,
-                    Value::Symbol(temp_name),
+                    Value::Symbol(temp_name.into()),
                 ];
                 destructured.append(&mut executable_body);
                 executable_body = vec![Value::list(destructured)];
@@ -3954,8 +3998,8 @@ impl Interpreter {
             let mut wrapped = vec![
                 Value::Symbol("--emaxx-lexical-let*".into()),
                 Value::list([Value::list([
-                    Value::Symbol(remaining_args_name),
-                    Value::Symbol(raw_rest_param),
+                    Value::Symbol(remaining_args_name.into()),
+                    Value::Symbol(raw_rest_param.into()),
                 ])]),
             ];
             wrapped.append(&mut executable_body);
@@ -3966,21 +4010,21 @@ impl Interpreter {
             let mut wrapped = vec![
                 Value::Symbol("cl-destructuring-bind".into()),
                 pattern,
-                Value::Symbol(temp_name),
+                Value::Symbol(temp_name.into()),
             ];
             wrapped.append(&mut executable_body);
             executable_body = vec![Value::list(wrapped)];
         }
         let mut block_body = vec![
             Value::Symbol("catch".into()),
-            quoted_literal(&Value::Symbol(format!("--cl-block-{name}--"))),
+            quoted_literal(&Value::Symbol(format!("--cl-block-{name}--").into())),
         ];
         block_body.append(&mut executable_body);
         lowered_body.push(Value::list(block_body));
 
         let mut lowered = Vec::with_capacity(3 + lowered_body.len());
         lowered.push(Value::Symbol("defun".into()));
-        lowered.push(Value::Symbol(name));
+        lowered.push(Value::Symbol(name.into()));
         lowered.push(Value::list(lowered_cl_defun.params));
         lowered.extend(lowered_body);
         self.sf_defun(&lowered, env)
@@ -4009,12 +4053,12 @@ impl Interpreter {
         let transformed = self.call_function_value(
             transformer,
             Some("cl--transform-lambda"),
-            &[lambda_form, Value::Symbol(name.clone())],
+            &[lambda_form, Value::Symbol(name.clone().into())],
             env,
         )?;
         let mut lowered = Vec::with_capacity(2);
         lowered.push(Value::Symbol("defmacro".into()));
-        lowered.push(Value::Symbol(name));
+        lowered.push(Value::Symbol(name.into()));
         lowered.extend(transformed.to_vec()?);
         self.sf_defmacro(&lowered, env)
     }
@@ -4044,7 +4088,7 @@ impl Interpreter {
         ) {
             let doc = match &items[3] {
                 Value::String(text) => Value::String(text.clone()),
-                Value::StringObject(state) => Value::String(state.borrow().text.clone()),
+                Value::StringObject(state) => Value::String(state.borrow().text.clone().into()),
                 _ => Value::Nil,
             };
             self.put_symbol_property(&name, "emaxx-cl-defgeneric-documentation", doc.clone());
@@ -4114,7 +4158,7 @@ impl Interpreter {
                             .ok_or_else(|| {
                                 LispError::TypeError("string".into(), value.type_name())
                             })?;
-                        let doc = Value::String(text);
+                        let doc = Value::String(text.into());
                         self.put_symbol_property(
                             &name,
                             "emaxx-cl-defgeneric-documentation",
@@ -4128,7 +4172,7 @@ impl Interpreter {
                     let precedence = parts[1..]
                         .iter()
                         .filter_map(|value| value.as_symbol().ok())
-                        .map(|name| Value::Symbol(name.to_string()))
+                        .map(|name| Value::Symbol(name.to_string().into()))
                         .collect::<Vec<_>>();
                     self.put_symbol_property(
                         &name,
@@ -4140,7 +4184,7 @@ impl Interpreter {
                 ":method" => {
                     let mut lowered_method = Vec::with_capacity(parts.len() + 1);
                     lowered_method.push(Value::Symbol("cl-defmethod".into()));
-                    lowered_method.push(Value::Symbol(name.clone()));
+                    lowered_method.push(Value::Symbol(name.clone().into()));
                     lowered_method.extend(parts[1..].iter().cloned());
                     self.sf_cl_defmethod(&lowered_method, env)?;
                     body_start += 1;
@@ -4154,7 +4198,7 @@ impl Interpreter {
                 .and_then(|_| self.lookup_function(&name, env).ok());
             let mut lowered = Vec::with_capacity(items.len() - body_start + 4);
             lowered.push(Value::Symbol("cl-defun".into()));
-            lowered.push(Value::Symbol(name.clone()));
+            lowered.push(Value::Symbol(name.clone().into()));
             lowered.push(items[2].clone());
             if matches!(
                 items.get(3),
@@ -4182,7 +4226,7 @@ impl Interpreter {
             self.sf_cl_defmethod(
                 &[
                     Value::Symbol("cl-defmethod".into()),
-                    Value::Symbol(name.clone()),
+                    Value::Symbol(name.clone().into()),
                     Value::list([Value::list([
                         Value::Symbol("element".into()),
                         Value::list([
@@ -4198,7 +4242,7 @@ impl Interpreter {
                 env,
             )?;
         }
-        Ok(Value::Symbol(name))
+        Ok(Value::Symbol(name.into()))
     }
 
     pub(super) fn sf_def_edebug_elem_spec(
@@ -4244,7 +4288,7 @@ impl Interpreter {
         let tagcode_function = self.eval(&items[3], &mut Vec::new())?;
         let specializers_function = self.eval(&items[4], &mut Vec::new())?;
         self.register_generic_generalizer(&name, priority, tagcode_function, specializers_function);
-        Ok(Value::Symbol(name))
+        Ok(Value::Symbol(name.into()))
     }
 
     // Expand registered `cl-generic-define-context-rewriter' heads inside a
@@ -4280,7 +4324,7 @@ impl Interpreter {
                     let rewriter = format!("cl-generic--context-rewriter--{head}");
                     if self.has_macro_binding(&rewriter) {
                         let mut call = entry.to_vec()?;
-                        call[0] = Value::Symbol(rewriter);
+                        call[0] = Value::Symbol(rewriter.into());
                         let call_form = Value::list(call);
                         expanded
                             .push(self.macroexpand_1_form_with_environment(&call_form, None, env)?);
@@ -4339,7 +4383,7 @@ impl Interpreter {
         };
         let mut lowered = Vec::with_capacity(items.len());
         lowered.push(Value::Symbol("cl-defun".into()));
-        lowered.push(Value::Symbol(name));
+        lowered.push(Value::Symbol(name.into()));
         let lowered_method_lambda_list = lower_cl_defmethod_lambda_list(&items[lambda_list_index])?;
         let lowered_lambda_list = lowered_method_lambda_list.value;
         lowered.push(lowered_lambda_list.clone());
@@ -4368,7 +4412,7 @@ impl Interpreter {
             let mut destructured = vec![
                 Value::Symbol("cl-destructuring-bind".into()),
                 pattern,
-                Value::Symbol(parameter),
+                Value::Symbol(parameter.into()),
             ];
             destructured.append(&mut executable_method_forms);
             executable_method_forms = vec![Value::list(destructured)];
@@ -4472,7 +4516,7 @@ impl Interpreter {
             );
             let fixed_call_args = generic_fixed_params
                 .iter()
-                .map(|param| Value::Symbol(param.clone()))
+                .map(|param| Value::Symbol(param.clone().into()))
                 .collect::<Vec<_>>();
             let forwarded_args = if let Some(rest_param) = &generic_rest_param {
                 let mut list_args = Vec::with_capacity(fixed_call_args.len() + 1);
@@ -4481,7 +4525,7 @@ impl Interpreter {
                 Value::list([
                     Value::Symbol("append".into()),
                     Value::list(list_args),
-                    Value::Symbol(rest_param.clone()),
+                    Value::Symbol(rest_param.clone().into()),
                 ])
             } else {
                 let mut list_args = Vec::with_capacity(fixed_call_args.len() + 1);
@@ -4502,7 +4546,7 @@ impl Interpreter {
             let result_symbol = "__emaxx-cl-defmethod-result".to_string();
             let call_previous = Value::list([
                 Value::Symbol("apply".into()),
-                Value::Symbol(previous_symbol.clone()),
+                Value::Symbol(previous_symbol.clone().into()),
                 forwarded_args.clone(),
             ]);
             let method_effect_form = Value::list(
@@ -4520,11 +4564,11 @@ impl Interpreter {
                 Value::list([
                     Value::Symbol("let".into()),
                     Value::list([Value::list([
-                        Value::Symbol(result_symbol.clone()),
+                        Value::Symbol(result_symbol.clone().into()),
                         call_previous.clone(),
                     ])]),
                     method_effect_form,
-                    Value::Symbol(result_symbol),
+                    Value::Symbol(result_symbol.into()),
                 ])
             };
             let wrapper_body = vec![Value::list([
@@ -4541,7 +4585,7 @@ impl Interpreter {
             if let Some((existing_env, _, existing_previous)) =
                 cl_defmethod_previous_binding(&previous, &previous_symbol)
             {
-                let replacement = Value::Lambda(
+                let replacement = Value::lambda(
                     generic_params.clone().into(),
                     wrapper_body.clone().into(),
                     shared_env(
@@ -4560,7 +4604,7 @@ impl Interpreter {
                     ),
                 );
                 let target_id = existing_env.as_ptr() as usize;
-                if matches!(&previous, Value::Lambda(_, _, root_env) if root_env.as_ptr() as usize == target_id)
+                if matches!(&previous, Value::Lambda(lambda) if lambda.env.as_ptr() as usize == target_id)
                 {
                     self.set_function_binding(&method_name, Some(replacement));
                 } else {
@@ -4606,7 +4650,7 @@ impl Interpreter {
                 ),
             ]);
             closure_env.extend(env.iter().cloned());
-            let wrapper = Value::Lambda(
+            let wrapper = Value::lambda(
                 generic_params.into(),
                 wrapper_body.into(),
                 shared_env(closure_env),
@@ -4766,7 +4810,7 @@ impl Interpreter {
             let generic_fixed_params = lambda_list_fixed_params(&generic_params);
             let fixed_call_args = generic_fixed_params
                 .iter()
-                .map(|param| Value::Symbol(param.clone()))
+                .map(|param| Value::Symbol(param.clone().into()))
                 .collect::<Vec<_>>();
             let mut next_default_args = Vec::with_capacity(fixed_call_args.len() + 1);
             next_default_args.push(Value::Symbol("list".into()));
@@ -4775,7 +4819,7 @@ impl Interpreter {
                 Value::list([
                     Value::Symbol("append".into()),
                     Value::list(next_default_args),
-                    Value::Symbol(rest_param.clone()),
+                    Value::Symbol(rest_param.clone().into()),
                 ])
             } else {
                 Value::list(next_default_args)
@@ -4816,7 +4860,8 @@ impl Interpreter {
                     cl_defmethod_find_named_binding(&existing_generic, &current_method_symbol)
                         .unwrap_or(Value::Nil);
                 let old_next = match &old_current {
-                    Value::Lambda(_, _, old_env) => old_env
+                    Value::Lambda(lambda) => lambda
+                        .env
                         .borrow()
                         .first()
                         .and_then(|frame| {
@@ -4834,7 +4879,7 @@ impl Interpreter {
                 )])
                 .chain(env.iter().cloned())
                 .collect::<Vec<_>>();
-                let replacement = Value::Lambda(
+                let replacement = Value::lambda(
                     generic_params.clone().into(),
                     method_body.clone().into(),
                     shared_env(replacement_env),
@@ -4875,7 +4920,7 @@ impl Interpreter {
             let wrapper_fixed_args = wrapper_params
                 .iter()
                 .take_while(|param| param.as_str() != "&rest")
-                .map(|param| Value::Symbol(param.clone()))
+                .map(|param| Value::Symbol(param.clone().into()))
                 .collect::<Vec<_>>();
             let mut wrapper_arg_list = Vec::with_capacity(wrapper_fixed_args.len() + 1);
             wrapper_arg_list.push(Value::Symbol("list".into()));
@@ -4884,7 +4929,7 @@ impl Interpreter {
                 Value::list([
                     Value::Symbol("append".into()),
                     Value::list(wrapper_arg_list),
-                    Value::Symbol(wrapper_forward_rest_param),
+                    Value::Symbol(wrapper_forward_rest_param.into()),
                 ])
             } else {
                 Value::list(wrapper_arg_list)
@@ -4896,7 +4941,7 @@ impl Interpreter {
             )])
             .chain(env.iter().cloned())
             .collect::<Vec<_>>();
-            let current_method = Value::Lambda(
+            let current_method = Value::lambda(
                 generic_params.clone().into(),
                 method_body.into(),
                 shared_env(current_method_env),
@@ -4922,15 +4967,15 @@ impl Interpreter {
                     condition,
                     Value::list([
                         Value::Symbol("apply".into()),
-                        Value::Symbol(current_method_symbol.clone()),
+                        Value::Symbol(current_method_symbol.clone().into()),
                         forwarded_args.clone(),
                     ]),
                     Value::list([
                         Value::Symbol("emaxx--cl-generic-apply-next".into()),
-                        Value::Symbol(previous_method_symbol.clone()),
+                        Value::Symbol(previous_method_symbol.clone().into()),
                         Value::list([
                             Value::Symbol("quote".into()),
-                            Value::Symbol(method_name.clone()),
+                            Value::Symbol(method_name.clone().into()),
                         ]),
                         Value::list([
                             Value::Symbol("quote".into()),
@@ -4958,12 +5003,12 @@ impl Interpreter {
                     .collect::<Vec<_>>(),
                 )
             };
-            let top_wrapper = Value::Lambda(
+            let top_wrapper = Value::lambda(
                 wrapper_params.clone().into(),
                 dispatch_body(top_condition).into(),
                 wrapper_closure(previous.clone()),
             );
-            let next_wrapper = Value::Lambda(
+            let next_wrapper = Value::lambda(
                 wrapper_params.into(),
                 dispatch_body(next_condition).into(),
                 wrapper_closure(dispatch_previous),
@@ -5045,7 +5090,7 @@ impl Interpreter {
                 .cl_defgeneric_lambda_list(&method_name)
                 .unwrap_or_else(|| lowered_lambda_list.clone());
             let generic_params = self.parse_params(&generic_lambda_list)?;
-            let base_method = Value::Lambda(
+            let base_method = Value::lambda(
                 generic_params.into(),
                 executable_method_forms.clone().into(),
                 shared_env(env.clone()),
@@ -5059,147 +5104,147 @@ impl Interpreter {
         let is_around_qualifier = items[2..lambda_list_index]
             .iter()
             .any(|value| matches!(value, Value::Symbol(name) if name == ":around"));
-        let result = if method_specializers.is_empty()
-            && is_around_qualifier
-            && let Ok(previous) = self.lookup_function(&method_name, env)
-            && !self.callable_is_ignore(&previous)
-        {
-            // A specializer-less :around wraps whatever the generic
-            // currently runs (often the cl-defgeneric default body), with
-            // `cl-call-next-method' chaining to it (erc-stamp--current-time).
-            let params = self.parse_params(&lowered_lambda_list)?;
-            let fixed_params = lambda_list_fixed_params(&params);
-            let rest_param = lambda_list_rest_param_from_params(&params);
-            let mut default_args = vec![Value::Symbol("list".into())];
-            default_args.extend(
-                fixed_params
-                    .iter()
-                    .map(|param| Value::Symbol(param.clone())),
-            );
-            let default_form = if let Some(rest_param) = &rest_param {
-                Value::list([
-                    Value::Symbol("append".into()),
-                    Value::list(default_args),
-                    Value::Symbol(rest_param.clone()),
-                ])
-            } else {
-                Value::list(default_args)
-            };
-            let previous_symbol = format!(
-                "__emaxx_previous_method_{}_around_class_t_method",
-                method_name.replace('-', "_")
-            );
-            let body = rewrite_cl_call_next_method_forms(
-                &executable_method_forms,
-                &method_name,
-                &previous_symbol,
-                &default_form,
-                Value::T,
-            )?;
-            let mut closure_env = env.clone();
-            closure_env.push(vec![(previous_symbol, Self::stored_value(previous))]);
-            let wrapper = Value::Lambda(params.into(), body.into(), shared_env(closure_env));
-            self.set_function_binding(&method_name, Some(wrapper));
-            Ok(items[1].clone())
-        } else if method_specializers.is_empty() {
-            // If a specializer-less :around wrapper is already installed,
-            // this primary must become the around's next method instead of
-            // clobbering the wrapper (e.g. erc-stamp--current-time).
-            let previous_symbol = format!(
-                "__emaxx_previous_method_{}_around_class_t_method",
-                method_name.replace('-', "_")
-            );
-            let existing_around = self
-                .lookup_function(&method_name, env)
-                .ok()
-                .filter(|previous| match previous {
-                    Value::Lambda(_, _, closure) => closure
-                        .borrow()
-                        .iter()
-                        .any(|frame| frame.iter().any(|(name, _)| name == &previous_symbol)),
-                    _ => false,
-                });
-            let result = self.sf_cl_defun(&lowered, env);
-            if let Some(around) = existing_around
-                && result.is_ok()
-                && let Ok(new_primary) = self.lookup_function(&method_name, env)
+        let result =
+            if method_specializers.is_empty()
+                && is_around_qualifier
+                && let Ok(previous) = self.lookup_function(&method_name, env)
+                && !self.callable_is_ignore(&previous)
             {
-                if let Value::Lambda(_, _, closure) = &around {
-                    for frame in closure.borrow_mut().iter_mut() {
-                        if let Some(slot) =
-                            frame.iter_mut().find(|(name, _)| name == &previous_symbol)
-                        {
-                            slot.1 = Self::stored_value(new_primary.clone());
+                // A specializer-less :around wraps whatever the generic
+                // currently runs (often the cl-defgeneric default body), with
+                // `cl-call-next-method' chaining to it (erc-stamp--current-time).
+                let params = self.parse_params(&lowered_lambda_list)?;
+                let fixed_params = lambda_list_fixed_params(&params);
+                let rest_param = lambda_list_rest_param_from_params(&params);
+                let mut default_args = vec![Value::Symbol("list".into())];
+                default_args.extend(
+                    fixed_params
+                        .iter()
+                        .map(|param| Value::Symbol(param.clone().into())),
+                );
+                let default_form = if let Some(rest_param) = &rest_param {
+                    Value::list([
+                        Value::Symbol("append".into()),
+                        Value::list(default_args),
+                        Value::Symbol(rest_param.clone().into()),
+                    ])
+                } else {
+                    Value::list(default_args)
+                };
+                let previous_symbol = format!(
+                    "__emaxx_previous_method_{}_around_class_t_method",
+                    method_name.replace('-', "_")
+                );
+                let body = rewrite_cl_call_next_method_forms(
+                    &executable_method_forms,
+                    &method_name,
+                    &previous_symbol,
+                    &default_form,
+                    Value::T,
+                )?;
+                let mut closure_env = env.clone();
+                closure_env.push(vec![(previous_symbol, Self::stored_value(previous))]);
+                let wrapper = Value::lambda(params.into(), body.into(), shared_env(closure_env));
+                self.set_function_binding(&method_name, Some(wrapper));
+                Ok(items[1].clone())
+            } else if method_specializers.is_empty() {
+                // If a specializer-less :around wrapper is already installed,
+                // this primary must become the around's next method instead of
+                // clobbering the wrapper (e.g. erc-stamp--current-time).
+                let previous_symbol = format!(
+                    "__emaxx_previous_method_{}_around_class_t_method",
+                    method_name.replace('-', "_")
+                );
+                let existing_around =
+                    self.lookup_function(&method_name, env).ok().filter(
+                        |previous| match previous {
+                            Value::Lambda(lambda) => lambda.env.borrow().iter().any(|frame| {
+                                frame.iter().any(|(name, _)| name == &previous_symbol)
+                            }),
+                            _ => false,
+                        },
+                    );
+                let result = self.sf_cl_defun(&lowered, env);
+                if let Some(around) = existing_around
+                    && result.is_ok()
+                    && let Ok(new_primary) = self.lookup_function(&method_name, env)
+                {
+                    if let Value::Lambda(lambda) = &around {
+                        for frame in lambda.env.borrow_mut().iter_mut() {
+                            if let Some(slot) =
+                                frame.iter_mut().find(|(name, _)| name == &previous_symbol)
+                            {
+                                slot.1 = Self::stored_value(new_primary.clone());
+                            }
                         }
                     }
+                    self.set_function_binding(&method_name, Some(around));
                 }
-                self.set_function_binding(&method_name, Some(around));
-            }
-            result
-        } else {
-            let mut direct_lowered = lowered[..3].to_vec();
-            let direct_params = self.parse_params(&lowered_lambda_list)?;
-            let mut direct_default_args = vec![Value::Symbol("list".into())];
-            direct_default_args.extend(
-                direct_params
-                    .iter()
-                    .take_while(|param| !param.starts_with('&'))
-                    .map(|param| Value::Symbol(param.clone())),
-            );
-            let direct_rest_param = lambda_list_rest_param_from_params(&direct_params);
-            let direct_default_form = if let Some(rest_param) = &direct_rest_param {
-                Value::list([
-                    Value::Symbol("append".into()),
-                    Value::list(direct_default_args),
-                    Value::Symbol(rest_param.clone()),
-                ])
+                result
             } else {
-                Value::list(direct_default_args)
-            };
-            let direct_body = rewrite_cl_next_method_p_forms(
-                &executable_method_forms,
-                &method_name,
-                &direct_default_form,
-                Value::Nil,
-            )?;
-            // GNU checks the specializers even when the generic has a
-            // single method; a non-matching call goes through
-            // `cl-no-applicable-method'.
-            let direct_dispatch_specializers = cl_defmethod_dispatch_specializers(
-                &method_specializers,
-                &direct_params,
-                &direct_params,
-            );
-            let direct_condition =
-                ClDefmethodStoredMethod::from_specializers(&direct_dispatch_specializers)
-                    .condition(&cl_defmethod_runtime_variables(
-                        &direct_params,
-                        &direct_params,
-                        &method_specializers,
-                    ));
-            let mut guarded_body = Vec::with_capacity(direct_body.len() + 1);
-            guarded_body.push(Value::Symbol("progn".into()));
-            guarded_body.extend(direct_body);
-            direct_lowered.push(Value::list([
-                Value::Symbol("if".into()),
-                direct_condition,
-                Value::list(guarded_body),
-                Value::list([
-                    Value::Symbol("emaxx--cl-generic-apply-next".into()),
+                let mut direct_lowered = lowered[..3].to_vec();
+                let direct_params = self.parse_params(&lowered_lambda_list)?;
+                let mut direct_default_args = vec![Value::Symbol("list".into())];
+                direct_default_args.extend(
+                    direct_params
+                        .iter()
+                        .take_while(|param| !param.starts_with('&'))
+                        .map(|param| Value::Symbol(param.clone().into())),
+                );
+                let direct_rest_param = lambda_list_rest_param_from_params(&direct_params);
+                let direct_default_form = if let Some(rest_param) = &direct_rest_param {
+                    Value::list([
+                        Value::Symbol("append".into()),
+                        Value::list(direct_default_args),
+                        Value::Symbol(rest_param.clone().into()),
+                    ])
+                } else {
+                    Value::list(direct_default_args)
+                };
+                let direct_body = rewrite_cl_next_method_p_forms(
+                    &executable_method_forms,
+                    &method_name,
+                    &direct_default_form,
                     Value::Nil,
+                )?;
+                // GNU checks the specializers even when the generic has a
+                // single method; a non-matching call goes through
+                // `cl-no-applicable-method'.
+                let direct_dispatch_specializers = cl_defmethod_dispatch_specializers(
+                    &method_specializers,
+                    &direct_params,
+                    &direct_params,
+                );
+                let direct_condition =
+                    ClDefmethodStoredMethod::from_specializers(&direct_dispatch_specializers)
+                        .condition(&cl_defmethod_runtime_variables(
+                            &direct_params,
+                            &direct_params,
+                            &method_specializers,
+                        ));
+                let mut guarded_body = Vec::with_capacity(direct_body.len() + 1);
+                guarded_body.push(Value::Symbol("progn".into()));
+                guarded_body.extend(direct_body);
+                direct_lowered.push(Value::list([
+                    Value::Symbol("if".into()),
+                    direct_condition,
+                    Value::list(guarded_body),
                     Value::list([
-                        Value::Symbol("quote".into()),
-                        Value::Symbol(method_name.clone()),
+                        Value::Symbol("emaxx--cl-generic-apply-next".into()),
+                        Value::Nil,
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol(method_name.clone().into()),
+                        ]),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol("no-applicable".into()),
+                        ]),
+                        direct_default_form.clone(),
                     ]),
-                    Value::list([
-                        Value::Symbol("quote".into()),
-                        Value::Symbol("no-applicable".into()),
-                    ]),
-                    direct_default_form.clone(),
-                ]),
-            ]));
-            self.sf_cl_defun(&direct_lowered, env)
-        };
+                ]));
+                self.sf_cl_defun(&direct_lowered, env)
+            };
         if !method_specializers.is_empty() {
             let params = self.parse_params(&lowered_lambda_list)?;
             let generic_lambda_list = self
@@ -5233,7 +5278,7 @@ impl Interpreter {
         let mut seen = HashSet::new();
         while seen.insert(current.clone()) {
             match self.raw_function_binding(&current, env) {
-                Some(Value::Symbol(next)) => current = next,
+                Some(Value::Symbol(next)) => current = next.to_string(),
                 _ => return current,
             }
         }
@@ -5313,7 +5358,7 @@ impl Interpreter {
         let previous_is_ignore = self.callable_is_ignore(&previous);
         let target_id = target_env.as_ptr() as usize;
         let mut replacement = match &root {
-            Value::Lambda(_, _, root_env) if root_env.as_ptr() as usize == target_id => previous,
+            Value::Lambda(lambda) if lambda.env.as_ptr() as usize == target_id => previous,
             _ => {
                 cl_defmethod_replace_child_environment(&root, target_id, &previous);
                 root
@@ -5401,7 +5446,7 @@ impl Interpreter {
             return;
         }
         let mut method = Vec::with_capacity(2 + qualifiers.len());
-        method.push(Value::Symbol(method_name.to_string()));
+        method.push(Value::Symbol(method_name.to_string().into()));
         method.push(Value::list(qualifiers.to_vec()));
         method.extend(cl_defmethod_load_history_specializers(spec));
         let entry = Value::cons(Value::Symbol("cl-defmethod".into()), Value::list(method));
@@ -5429,7 +5474,7 @@ impl Interpreter {
             return Err(LispError::Signal("oclosure-define needs a name".into()));
         };
         let (type_name, options) = match name_form {
-            Value::Symbol(name) => (name.clone(), Vec::new()),
+            Value::Symbol(name) => (name.to_string(), Vec::new()),
             other => {
                 let parts = other.to_vec()?;
                 let name = parts
@@ -5503,19 +5548,19 @@ impl Interpreter {
             .collect();
         for slot in &items[2..] {
             match slot {
-                Value::Symbol(slot_name) => slots.push(slot_name.clone()),
+                Value::Symbol(slot_name) => slots.push(slot_name.to_string()),
                 Value::Cons(_) => {
                     if let Ok(parts) = slot.to_vec()
                         && let Some(Value::Symbol(slot_name)) = parts.first()
                     {
-                        slots.push(slot_name.clone());
+                        slots.push(slot_name.to_string());
                         // (SLOT :mutable t) marks the slot settable.
                         let mutable = parts.windows(2).any(|window| {
                             matches!(&window[0], Value::Symbol(key) if key == ":mutable")
                                 && window[1].is_truthy()
                         });
                         if mutable {
-                            mutable_slots.push(slot_name.clone());
+                            mutable_slots.push(slot_name.to_string());
                         }
                     }
                 }
@@ -5525,18 +5570,22 @@ impl Interpreter {
         self.put_symbol_property(
             &type_name,
             "emaxx-oclosure-slots",
-            Value::list(slots.iter().map(|slot| Value::Symbol(slot.clone()))),
+            Value::list(slots.iter().map(|slot| Value::Symbol(slot.clone().into()))),
         );
         self.put_symbol_property(
             &type_name,
             "emaxx-oclosure-mutable-slots",
-            Value::list(mutable_slots.iter().map(|slot| Value::Symbol(slot.clone()))),
+            Value::list(
+                mutable_slots
+                    .iter()
+                    .map(|slot| Value::Symbol(slot.clone().into())),
+            ),
         );
         if let Some(parent) = &parent {
             self.put_symbol_property(
                 &type_name,
                 "emaxx-oclosure-parent",
-                Value::Symbol(parent.clone()),
+                Value::Symbol(parent.clone().into()),
             );
         }
         // Generated helpers: predicate, per-slot accessors, copiers.
@@ -5560,12 +5609,12 @@ impl Interpreter {
             // function with VALUE before the accessor's ordinary arguments.
             self.set_function_binding(
                 &format!("(setf {type_name}--{slot})"),
-                Some(Value::Lambda(
+                Some(Value::lambda(
                     vec!["value".into(), "obj".into()].into(),
                     vec![Value::list([
                         Value::Symbol("emaxx--oclosure-set-slot".into()),
                         Value::Symbol("obj".into()),
-                        quoted_literal(&Value::Symbol(slot.clone())),
+                        quoted_literal(&Value::Symbol(slot.clone().into())),
                         Value::Symbol("value".into()),
                     ])]
                     .into(),
@@ -5609,7 +5658,7 @@ impl Interpreter {
         for form in crate::lisp::reader::Reader::new(&defs).read_all()? {
             self.eval(&form, env)?;
         }
-        Ok(Value::Symbol(type_name))
+        Ok(Value::Symbol(type_name.into()))
     }
 
     pub(super) fn sf_oclosure_lambda(
@@ -5637,7 +5686,7 @@ impl Interpreter {
             .collect();
         let mut frame: Vec<(String, Value)> = vec![(
             crate::lisp::eval::OCLOSURE_TYPE_MARKER.to_string(),
-            Value::Symbol(type_name),
+            Value::Symbol(type_name.into()),
         )];
         let mut initialized: Vec<(String, Value)> = Vec::new();
         for binding in &spec[1..] {
@@ -5670,10 +5719,13 @@ impl Interpreter {
         lowered.push(Value::Symbol(":closure-oclosure".into()));
         lowered.extend(items[3..].iter().cloned());
         let lambda = self.sf_lambda(&lowered, env)?;
-        let Value::Lambda(params, body, closure_env) = lambda else {
+        let Value::Lambda(lambda) = lambda else {
             return Err(LispError::Signal("oclosure-lambda lowering failed".into()));
         };
-        let lexical_closure = self.closure_env_is_lexical(&closure_env);
+        let params = lambda.params.clone();
+        let body = lambda.body.clone();
+        let closure_env = &lambda.env;
+        let lexical_closure = self.closure_env_is_lexical(closure_env);
         // Nested advice objects share slot names (car/cdr/...); the identity
         // stamp keeps the frame-merge machinery from unifying two DIFFERENT
         // objects' identically-shaped slot frames (which would self-recurse),
@@ -5688,7 +5740,7 @@ impl Interpreter {
         if lexical_closure {
             self.mark_lexical_closure_env(&closure_env);
         }
-        Ok(Value::Lambda(params, body, closure_env))
+        Ok(Value::lambda(params, body, closure_env))
     }
 
     pub(super) fn sf_define_inline(
@@ -5780,7 +5832,7 @@ impl Interpreter {
             }
             None => Rc::new(body),
         };
-        Ok(Value::Lambda(params.into(), body, closure_env))
+        Ok(Value::lambda(params.into(), body, closure_env))
     }
 }
 
@@ -5832,7 +5884,7 @@ fn value_tree_contains_symbol(value: &Value, target: &str) -> bool {
 fn collect_referenced_symbols(value: &Value, referenced: &mut HashSet<String>) {
     match value {
         Value::Symbol(symbol) => {
-            referenced.insert(symbol.clone());
+            referenced.insert(symbol.to_string());
         }
         Value::Cons(_) => {
             let Ok(items) = value.to_vec() else {
@@ -5889,12 +5941,12 @@ fn uniquify_ignored_lambda_list_params(lambda_list: &Value) -> Option<Value> {
         .map(|entry| match entry {
             Value::Symbol(name) if name == "_" => {
                 changed = true;
-                Value::Symbol(fresh())
+                Value::Symbol(fresh().into())
             }
             Value::Cons(_) => match entry.cons_values() {
                 Some((Value::Symbol(name), rest)) if name == "_" => {
                     changed = true;
-                    Value::cons(Value::Symbol(fresh()), rest)
+                    Value::cons(Value::Symbol(fresh().into()), rest)
                 }
                 _ => entry.clone(),
             },

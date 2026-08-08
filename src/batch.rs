@@ -160,7 +160,7 @@ pub fn run_batch_with_actions(
                 }
             }
             BatchAction::Funcall(function) => {
-                let form = Value::list([Value::Symbol(function.clone())]);
+                let form = Value::list([Value::Symbol(function.clone().into())]);
                 match interpreter.eval(&form, &mut eval_env) {
                     Ok(_) => {}
                     Err(LispError::Terminate(termination)) => return Ok(termination.into()),
@@ -277,7 +277,13 @@ pub(crate) fn initialize_batch_interpreter(
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
     interpreter.set_variable(
         "command-line-args-left",
-        Value::list(options.args_left.iter().cloned().map(Value::String)),
+        Value::list(
+            options
+                .args_left
+                .iter()
+                .cloned()
+                .map(|value| Value::String(value.into())),
+        ),
         &mut Vec::new(),
     );
     // Loading the dumped Lisp owners below corresponds to GNU's pre-dump
@@ -743,9 +749,9 @@ fn extract_perf_request_from_form(form: &Value) -> Option<PerfRequest> {
         return None;
     }
     let scenario_id = match items.get(1)? {
-        Value::String(value) => value.clone(),
+        Value::String(value) => value.to_string(),
         Value::StringObject(state) => state.borrow().text.clone(),
-        Value::Symbol(value) => value.clone(),
+        Value::Symbol(value) => value.to_string(),
         _ => return None,
     };
     let n = value_to_usize(items.get(2)).unwrap_or(4096);
@@ -1370,7 +1376,7 @@ mod tests {
                         Value::Integer(1),
                         Value::String("Prompt: ".into()),
                         Value::Integer(9),
-                        Value::String(String::new()),
+                        Value::String(String::new().into()),
                         Value::T,
                         Value::T,
                         Value::T,
@@ -1713,9 +1719,9 @@ mod tests {
                 initialize_batch_interpreter(&options).expect("init batch interpreter");
             interpreter.set_variable(
                 "data-directory",
-                Value::String(lisp::primitives::path_to_directory_string(
-                    &emacs_repo.join("etc"),
-                )),
+                Value::String(
+                    lisp::primitives::path_to_directory_string(&emacs_repo.join("etc")).into(),
+                ),
                 &mut Vec::new(),
             );
             let utf16_fixture = emacs_repo

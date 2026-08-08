@@ -13,7 +13,7 @@ impl Interpreter {
 }
 
 pub(crate) fn preloaded_command_line_1() -> Value {
-    Value::Lambda(
+    Value::lambda(
         vec!["args-left".into()].into(),
         vec![Value::list([
             Value::Symbol("let".into()),
@@ -86,7 +86,7 @@ fn eval_defun_print_form() -> Value {
 }
 
 pub(crate) fn preloaded_eval_defun() -> Value {
-    Value::Lambda(
+    Value::lambda(
         vec!["edebug-it".into()].into(),
         vec![
             Value::list([
@@ -294,7 +294,7 @@ pub(crate) fn preloaded_vc_directory_exclusion_list() -> Value {
 }
 
 pub(crate) fn preloaded_completion_table_dynamic() -> Value {
-    Value::Lambda(
+    Value::lambda(
         vec!["fun".into(), "&optional".into(), "switch-buffer".into()].into(),
         vec![Value::list([
             Value::Symbol("lambda".into()),
@@ -613,7 +613,7 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "with-connection-local-application-variables" => Some(builtin_macro_autoload("files-x")),
         "with-connection-local-variables" => Some(builtin_macro_autoload("files-x")),
         "with-connection-local-variables-1" => Some(builtin_file_autoload("files-x", Value::Nil)),
-        "point-to-register" => Some(Value::Lambda(
+        "point-to-register" => Some(Value::lambda(
             vec!["register".into(), "&optional".into(), "arg".into()].into(),
             vec![
                 Value::list([

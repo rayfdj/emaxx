@@ -57,7 +57,7 @@ define_dispatch!(
                 let buffer_id = if let Some(buffer_arg) = args.get(2) {
                     if buffer_arg.is_nil() {
                         interp.current_buffer_id()
-                    } else if matches!(buffer_arg, Value::Buffer(_, _)) {
+                    } else if matches!(buffer_arg, Value::Buffer(_)) {
                         interp.resolve_buffer_id(buffer_arg)?
                     } else {
                         return Err(LispError::TypeError(
@@ -139,7 +139,7 @@ define_dispatch!(
                             .iter()
                             .find(|(id, _)| *id == buf_id)
                             .map_or("*unknown*".to_string(), |(_, n)| n.clone());
-                        Ok(Value::Buffer(buf_id, buf_name))
+                        Ok(Value::buffer(buf_id, buf_name))
                     }
                     _ => Ok(Value::Nil),
                 }
@@ -209,7 +209,7 @@ define_dispatch!(
                 let target_buffer_id = if let Some(buffer_arg) = args.get(3) {
                     if buffer_arg.is_nil() {
                         interp.current_buffer_id()
-                    } else if matches!(buffer_arg, Value::Buffer(_, _)) {
+                    } else if matches!(buffer_arg, Value::Buffer(_)) {
                         interp.resolve_buffer_id(buffer_arg)?
                     } else {
                         return Err(LispError::TypeError(
@@ -305,7 +305,7 @@ define_dispatch!(
                     Some(ov) => {
                         let mut items = Vec::new();
                         for (k, v) in &ov.plist {
-                            items.push(Value::Symbol(k.clone()));
+                            items.push(Value::Symbol(k.clone().into()));
                             items.push(v.clone());
                         }
                         Ok(Value::list(items))

@@ -90,7 +90,7 @@ fn file_modes_reads_permissions_and_reports_arity() {
         &mut interp,
         "set-file-modes",
         &[
-            Value::String(path.display().to_string()),
+            Value::String(path.display().to_string().into()),
             Value::Integer(0o600),
         ],
         &mut env,
@@ -100,7 +100,7 @@ fn file_modes_reads_permissions_and_reports_arity() {
         call(
             &mut interp,
             "file-modes",
-            &[Value::String(path.display().to_string())],
+            &[Value::String(path.display().to_string().into())],
             &mut env,
         )
         .expect("read file modes"),
@@ -140,7 +140,7 @@ fn file_modes_reads_permissions_and_reports_arity() {
         &mut interp,
         "set-file-times",
         &[
-            Value::String(path.display().to_string()),
+            Value::String(path.display().to_string().into()),
             Value::Integer(1_700_000_000),
         ],
         &mut env,
@@ -196,7 +196,7 @@ fn directory_files_and_attributes_reports_entries_and_arity() {
         &mut interp,
         "directory-files-and-attributes",
         &[
-            Value::String(directory.display().to_string()),
+            Value::String(directory.display().to_string().into()),
             Value::Nil,
             Value::String("sample".into()),
         ],
@@ -561,7 +561,7 @@ fn nthcdr_value_reduces_large_counts_on_cycles() {
     let huge_fixnum = nthcdr_value(&Value::Integer(2_305_843_009_213_693_951), &cycle)
         .expect("large fixnum nthcdr should reduce by cycle length");
     let huge_bignum_value = BigInt::from(1u8) << 12345usize;
-    let huge_bignum = nthcdr_value(&Value::BigInteger(huge_bignum_value), &cycle)
+    let huge_bignum = nthcdr_value(&Value::big_integer(huge_bignum_value), &cycle)
         .expect("large bignum nthcdr should reduce by cycle length");
     let two_steps = nthcdr_value(&Value::Integer(2), &cycle).expect("small nthcdr should work");
 
@@ -575,7 +575,7 @@ fn nthcdr_value_reduces_large_counts_on_cycles() {
     assert_eq!(
         cell_id(
             &nthcdr_value(
-                &Value::BigInteger(BigInt::from(-1_000_000_000_000_i64)),
+                &Value::big_integer(BigInt::from(-1_000_000_000_000_i64)),
                 &cycle,
             )
             .expect("negative nthcdr should return the original list"),
@@ -720,7 +720,7 @@ fn random_accepts_bignum_limits() {
     let value = call(
         &mut interp,
         "random",
-        &[Value::BigInteger(limit.clone())],
+        &[Value::BigInteger(limit.clone().into())],
         &mut env,
     )
     .expect("random should accept bignum limits");
@@ -1311,7 +1311,7 @@ fn normal_mode_selects_archive_mode_for_zip_buffers() {
     let mut env = Vec::new();
     interp.set_function_binding(
         "archive-mode",
-        Some(Value::Lambda(
+        Some(Value::lambda(
             Vec::new().into(),
             vec![
                 Value::list([
@@ -1451,7 +1451,7 @@ fn normal_mode_consults_auto_mode_alist_before_dispatching() {
     let mut env = Vec::new();
     interp.set_function_binding(
         "sample-custom-mode",
-        Some(Value::Lambda(
+        Some(Value::lambda(
             Vec::new().into(),
             vec![
                 Value::list([
@@ -1636,7 +1636,7 @@ fn file_writable_p_is_true_for_creatable_missing_files() {
         call(
             &mut interp,
             "file-writable-p",
-            &[Value::String(path.display().to_string())],
+            &[Value::String(path.display().to_string().into())],
             &mut env,
         )
         .expect("file-writable-p for missing path"),
@@ -1665,7 +1665,7 @@ fn file_writable_p_is_nil_for_missing_files_in_unwritable_directories() {
         call(
             &mut interp,
             "file-writable-p",
-            &[Value::String(path.display().to_string())],
+            &[Value::String(path.display().to_string().into())],
             &mut env,
         )
         .expect("file-writable-p for missing path"),
@@ -1694,7 +1694,7 @@ fn find_file_marks_unwritable_files_read_only() {
     let buffer = call(
         &mut interp,
         "find-file-noselect",
-        &[Value::String(path.display().to_string())],
+        &[Value::String(path.display().to_string().into())],
         &mut env,
     )
     .expect("find-file-noselect");
@@ -1727,7 +1727,7 @@ fn file_visiting_apis_reuse_the_live_buffer_and_preserve_unsaved_text() {
     let first = call(
         &mut interp,
         "find-file-noselect",
-        &[Value::String(path_text.clone())],
+        &[Value::String(path_text.clone().into())],
         &mut env,
     )
     .expect("first file visit");
@@ -1747,7 +1747,7 @@ fn file_visiting_apis_reuse_the_live_buffer_and_preserve_unsaved_text() {
     let exact = call(
         &mut interp,
         "get-file-buffer",
-        &[Value::String(path_text.clone())],
+        &[Value::String(path_text.clone().into())],
         &mut env,
     )
     .expect("look up exact visited name");
@@ -1760,7 +1760,7 @@ fn file_visiting_apis_reuse_the_live_buffer_and_preserve_unsaved_text() {
     let aliased = call(
         &mut interp,
         "find-buffer-visiting",
-        &[Value::String(canonical)],
+        &[Value::String(canonical.into())],
         &mut env,
     )
     .expect("look up canonical visited name");
@@ -1769,7 +1769,7 @@ fn file_visiting_apis_reuse_the_live_buffer_and_preserve_unsaved_text() {
     let reopened = call(
         &mut interp,
         "find-file-noselect",
-        &[Value::String(path_text)],
+        &[Value::String(path_text.into())],
         &mut env,
     )
     .expect("reopen visited file");
@@ -1824,7 +1824,7 @@ fn get_buffer_window_only_reports_selected_buffer() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*not-visible*");
-    let other_buffer = Value::Buffer(buffer_id, buffer_name);
+    let other_buffer = Value::buffer(buffer_id, buffer_name);
 
     assert_eq!(
         call(&mut interp, "get-buffer-window", &[other_buffer], &mut env)
@@ -1853,7 +1853,7 @@ fn display_buffer_honors_inhibit_same_window() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*display-buffer-inhibit*");
-    let buffer = Value::Buffer(buffer_id, buffer_name);
+    let buffer = Value::buffer(buffer_id, buffer_name);
 
     assert_eq!(
         call(
@@ -1884,7 +1884,7 @@ fn display_buffer_calls_action_function_via_primitive_entrypoint() {
     interp.set_variable("display-buffer-action-called", Value::Nil, &mut env);
     interp.set_function_binding(
         "demo-display",
-        Some(Value::Lambda(
+        Some(Value::lambda(
             vec!["buffer".into(), "alist".into()].into(),
             vec![
                 Value::list([
@@ -1899,7 +1899,7 @@ fn display_buffer_calls_action_function_via_primitive_entrypoint() {
         )),
     );
     let (buffer_id, buffer_name) = interp.create_buffer("*display-buffer-action*");
-    let buffer = Value::Buffer(buffer_id, buffer_name);
+    let buffer = Value::buffer(buffer_id, buffer_name);
     assert!(matches!(
         call(
             &mut interp,
@@ -1925,7 +1925,7 @@ fn display_buffer_action_function_can_return_nil() {
     interp.set_variable("display-buffer-action-called", Value::Nil, &mut env);
     interp.set_function_binding(
         "demo-display",
-        Some(Value::Lambda(
+        Some(Value::lambda(
             vec!["buffer".into(), "alist".into()].into(),
             vec![
                 Value::list([
@@ -1940,7 +1940,7 @@ fn display_buffer_action_function_can_return_nil() {
         )),
     );
     let (buffer_id, buffer_name) = interp.create_buffer("*display-buffer-action-nil*");
-    let buffer = Value::Buffer(buffer_id, buffer_name);
+    let buffer = Value::buffer(buffer_id, buffer_name);
     assert!(matches!(
         call(
             &mut interp,
@@ -1974,7 +1974,7 @@ fn find_operation_coding_system_accepts_file_buffer_cons() {
 
     let file_arg = Value::cons(
         Value::String("/tmp/demo.txt".into()),
-        Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
+        Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
     );
     assert_eq!(
         call(
@@ -2014,7 +2014,7 @@ fn insert_file_contents_respects_auto_compression_mode_toggle() {
     call(
         &mut compressed_interp,
         "insert-file-contents",
-        &[Value::String(path_string.clone())],
+        &[Value::String(path_string.clone().into())],
         &mut compressed_env,
     )
     .expect("insert compressed contents literally when auto compression is disabled");
@@ -2042,7 +2042,7 @@ fn insert_file_contents_respects_auto_compression_mode_toggle() {
     call(
         &mut decompressed_interp,
         "insert-file-contents",
-        &[Value::String(path_string.clone())],
+        &[Value::String(path_string.clone().into())],
         &mut decompressed_env,
     )
     .expect("insert decompressed contents when auto compression is enabled");
@@ -2051,7 +2051,7 @@ fn insert_file_contents_respects_auto_compression_mode_toggle() {
         decompressed_interp
             .lookup_var("emaxx-test-auto-coding-file", &decompressed_env)
             .expect("auto-coding helper should record its filename"),
-        Value::String(path_string.trim_end_matches(".gz").to_string())
+        Value::String(path_string.trim_end_matches(".gz").to_string().into())
     );
 
     std::fs::remove_file(path).expect("cleanup gzip file");
@@ -2064,7 +2064,9 @@ fn file_system_info_reports_host_capacity_and_missing_paths() {
     let info = call(
         &mut interp,
         "file-system-info",
-        &[Value::String(std::env::temp_dir().display().to_string())],
+        &[Value::String(
+            std::env::temp_dir().display().to_string().into(),
+        )],
         &mut env,
     )
     .expect("file-system-info should query the host filesystem");
@@ -2142,7 +2144,7 @@ fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
     call(
         &mut interp,
         "insert-file-contents",
-        &[Value::String(path.display().to_string())],
+        &[Value::String(path.display().to_string().into())],
         &mut env,
     )
     .expect("insert file contents should preserve embedded carriage returns");

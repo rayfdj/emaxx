@@ -7,14 +7,14 @@ fn coding_plist(mnemonic: char, extras: impl IntoIterator<Item = (String, Value)
         Value::Integer(mnemonic as i64),
     ];
     for (key, value) in extras {
-        items.push(Value::Symbol(key));
+        items.push(Value::Symbol(key.into()));
         items.push(value);
     }
     Value::list(items)
 }
 
 fn syntax_spec_value(spec: &str) -> Value {
-    Value::String(spec.to_string())
+    Value::String(spec.to_string().into())
 }
 
 pub(super) fn default_mode_line_format() -> Value {
@@ -25,7 +25,7 @@ pub(super) fn default_mode_line_format() -> Value {
         Value::list([
             symbol(":propertize"),
             Value::list([
-                Value::String(String::new()),
+                Value::String(String::new().into()),
                 symbol("mode-line-mule-info"),
                 symbol("mode-line-client"),
                 symbol("mode-line-modified"),
@@ -178,7 +178,8 @@ pub(super) fn lisp_data_syntax_table_entries() -> Vec<CharTableEntry> {
 pub(super) fn current_exec_path() -> Value {
     match std::env::var_os("PATH") {
         Some(path) => Value::list(
-            std::env::split_paths(&path).map(|entry| Value::String(entry.display().to_string())),
+            std::env::split_paths(&path)
+                .map(|entry| Value::String(entry.display().to_string().into())),
         ),
         None => Value::Nil,
     }
@@ -671,7 +672,7 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
         }
         plist.extend([
             Value::Symbol(":name".into()),
-            Value::Symbol(coding.name.clone()),
+            Value::Symbol(coding.name.clone().into()),
             Value::Symbol(":coding-type".into()),
             Value::Symbol(public_type.into()),
         ]);

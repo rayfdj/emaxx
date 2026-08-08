@@ -608,7 +608,7 @@ fn cipher_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, Li
 }
 
 fn require_crypto_input(value: &Value) -> Result<(), LispError> {
-    if value.is_string() || matches!(value, Value::Buffer(..)) || value.is_cons() {
+    if value.is_string() || matches!(value, Value::Buffer(_)) || value.is_cons() {
         Ok(())
     } else {
         Err(wrong_type_argument("consp", value.clone()))
@@ -699,7 +699,7 @@ fn gnutls_format_certificate(cert: &Value) -> Result<Value, LispError> {
         (library.api.free)(output.data.cast());
         (library.api.x509_crt_deinit)(certificate);
     }
-    Ok(Value::String(text))
+    Ok(Value::String(text.into()))
 }
 
 fn gnutls_symmetric(
@@ -921,7 +921,7 @@ fn safe_cdr(value: &Value) -> Value {
 }
 
 fn digest_input_bytes(interp: &mut Interpreter, input: &Value) -> Result<Vec<u8>, LispError> {
-    if input.is_string() || matches!(input, Value::Buffer(..)) {
+    if input.is_string() || matches!(input, Value::Buffer(_)) {
         return secure_hash_source_bytes(interp, input, None, None);
     }
     if !input.is_cons() {
@@ -1120,7 +1120,7 @@ fn negotiated_peer_status(api: &GnuTlsApi, state: *mut c_void, verification: c_u
         // algorithm-name functions return static strings.
         let value = unsafe { c_string(name(get(state))) };
         if let Some(value) = value {
-            result.extend([Value::symbol(key), Value::String(value)]);
+            result.extend([Value::symbol(key), Value::String(value.into())]);
         }
     }
     Value::list(result)

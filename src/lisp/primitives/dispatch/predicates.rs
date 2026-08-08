@@ -284,7 +284,7 @@ define_dispatch!(
                 let autoloaded_function = symbol.is_some()
                     && autoload_parts(&value).is_some_and(|(_, _, kind)| kind.is_nil());
                 Ok(
-                    if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _))
+                    if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
                         || is_lambda_expression(&value)
                         || record_type_name(interp, &value) == Some("byte-code-function")
                         || autoloaded_function
@@ -310,8 +310,8 @@ define_dispatch!(
                     if record_type_name(interp, &args[0]) == Some("byte-code-function")
                         || matches!(
                             &args[0],
-                            Value::Lambda(params, _, _)
-                                if params.as_slice() == ["vals", "start", "end"]
+                            Value::Lambda(lambda)
+                                if lambda.params.as_slice() == ["vals", "start", "end"]
                         )
                     {
                         Value::T
@@ -410,8 +410,8 @@ define_dispatch!(
                     | Value::Symbol(_)
                     | Value::Cons(_)
                     | Value::BuiltinFunc(_)
-                    | Value::Lambda(_, _, _)
-                    | Value::Buffer(_, _)
+                    | Value::Lambda(_)
+                    | Value::Buffer(_)
                     | Value::Marker(_)
                     | Value::Overlay(_)
                     | Value::CharTable(_)
@@ -426,7 +426,7 @@ define_dispatch!(
             "closurep" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Lambda(_, _, _))
+                    if matches!(args[0], Value::Lambda(_))
                         || record_type_name(interp, &args[0]) == Some("byte-code-function")
                     {
                         Value::T
@@ -437,7 +437,7 @@ define_dispatch!(
             }
             "interpreted-function-p" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0], Value::Lambda(_, _, _)) {
+                Ok(if matches!(args[0], Value::Lambda(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -615,7 +615,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
                 interp.mark_auto_buffer_local(&symbol);
-                Ok(Value::Symbol(symbol))
+                Ok(Value::Symbol(symbol.into()))
             }
             "local-variable-p" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -696,7 +696,7 @@ define_dispatch!(
             "facep" => {
                 need_args(name, args, 1)?;
                 let face = match &args[0] {
-                    Value::Symbol(symbol) => symbol.clone(),
+                    Value::Symbol(symbol) => symbol.to_string(),
                     Value::String(_) | Value::StringObject(_) => string_text(&args[0])?,
                     _ => return Ok(Value::Nil),
                 };
@@ -711,12 +711,12 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let left = match &args[0] {
-                    Value::Symbol(symbol) => symbol.clone(),
+                    Value::Symbol(symbol) => symbol.to_string(),
                     Value::String(_) | Value::StringObject(_) => string_text(&args[0])?,
                     _ => return Ok(Value::Nil),
                 };
                 let right = match &args[1] {
-                    Value::Symbol(symbol) => symbol.clone(),
+                    Value::Symbol(symbol) => symbol.to_string(),
                     Value::String(_) | Value::StringObject(_) => string_text(&args[1])?,
                     _ => return Ok(Value::Nil),
                 };
@@ -727,7 +727,7 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let face = match &args[0] {
-                    Value::Symbol(symbol) => symbol.clone(),
+                    Value::Symbol(symbol) => symbol.to_string(),
                     Value::String(_) | Value::StringObject(_) => string_text(&args[0])?,
                     _ => return Ok(Value::Nil),
                 };
@@ -743,7 +743,7 @@ define_dispatch!(
                     .known_symbol_names()
                     .into_iter()
                     .filter(|symbol| face_exists(interp, symbol))
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .collect::<Vec<_>>();
                 if !faces
                     .iter()
@@ -856,7 +856,7 @@ define_dispatch!(
             }
             "bufferp" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0], Value::Buffer(_, _)) {
+                Ok(if matches!(args[0], Value::Buffer(_)) {
                     Value::T
                 } else {
                     Value::Nil
@@ -865,7 +865,8 @@ define_dispatch!(
             "buffer-live-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(&args[0], Value::Buffer(id, _) if interp.has_buffer_id(*id)) {
+                    if matches!(&args[0], Value::Buffer(buffer) if interp.has_buffer_id(buffer.id))
+                    {
                         Value::T
                     } else {
                         Value::Nil
@@ -1033,7 +1034,7 @@ define_dispatch!(
                 Ok(match &args[0] {
                     Value::Integer(n) if *n >= 0 && *n <= 0x3F_FFFF => Value::T,
                     Value::BigInteger(n)
-                        if n.sign() != Sign::Minus && n <= &BigInt::from(0x3F_FFFFu32) =>
+                        if n.sign() != Sign::Minus && **n <= BigInt::from(0x3F_FFFFu32) =>
                     {
                         Value::T
                     }

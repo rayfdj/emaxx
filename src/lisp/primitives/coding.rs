@@ -5,7 +5,7 @@ pub(crate) fn coding_system_error(name: impl Into<String>) -> LispError {
     let name = name.into();
     LispError::SignalValue(Value::list([
         Value::Symbol("coding-system-error".into()),
-        Value::String(format!("Invalid coding system: {name}")),
+        Value::String(format!("Invalid coding system: {name}").into()),
     ]))
 }
 
@@ -376,7 +376,7 @@ pub(crate) fn coding_variant_name(
 pub(crate) fn set_last_coding_system_used(interp: &mut Interpreter, coding: &str, env: &mut Env) {
     interp.set_variable(
         "last-coding-system-used",
-        Value::Symbol(coding.to_string()),
+        Value::Symbol(coding.to_string().into()),
         env,
     );
 }
@@ -405,7 +405,7 @@ pub(crate) fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
     if has_raw_bytes {
         make_shared_string_value_with_multibyte(text, Vec::new(), false)
     } else {
-        Value::String(text)
+        Value::String(text.into())
     }
 }
 
@@ -589,9 +589,9 @@ pub(crate) fn base64_encode_string_value(
     let string = string_like(value)
         .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
     let bytes = encode_base64_source_bytes(&string.text, string.multibyte)?;
-    Ok(Value::String(encode_base64_bytes(
-        &bytes, line_break, pad, base64url,
-    )))
+    Ok(Value::String(
+        encode_base64_bytes(&bytes, line_break, pad, base64url).into(),
+    ))
 }
 
 pub(crate) fn base64_encode_region_value(
@@ -723,7 +723,8 @@ pub(crate) fn base64_decode_region_value(
         .buffer
         .buffer_substring(lo, hi)
         .map_err(|error| LispError::Signal(error.to_string()))?;
-    let decoded = decode_base64_string_value(&Value::String(text), base64url, ignore_invalid)?;
+    let decoded =
+        decode_base64_string_value(&Value::String(text.into()), base64url, ignore_invalid)?;
     let decoded_text = string_text(&decoded)?;
     let new_end = replace_buffer_region_with_text(interp, lo, hi, &decoded_text)?;
     Ok(Value::Integer((new_end - lo) as i64))
@@ -1423,11 +1424,14 @@ pub(crate) fn detect_coding_string_value(
         Ok(codings
             .first()
             .cloned()
-            .map(Value::Symbol)
+            .map(|value| Value::Symbol(value.into()))
             .unwrap_or(Value::Nil))
     } else {
         Ok(Value::list(
-            codings.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
+            codings
+                .into_iter()
+                .map(|value| Value::Symbol(value.into()))
+                .collect::<Vec<_>>(),
         ))
     }
 }
@@ -1445,11 +1449,14 @@ pub(crate) fn detect_coding_region_value(
         Ok(codings
             .first()
             .cloned()
-            .map(Value::Symbol)
+            .map(|value| Value::Symbol(value.into()))
             .unwrap_or(Value::Nil))
     } else {
         Ok(Value::list(
-            codings.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
+            codings
+                .into_iter()
+                .map(|value| Value::Symbol(value.into()))
+                .collect::<Vec<_>>(),
         ))
     }
 }
@@ -1509,7 +1516,10 @@ pub(crate) fn find_coding_systems_region_internal_value(
         }
     }
     Ok(Value::list(
-        codings.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
+        codings
+            .into_iter()
+            .map(|value| Value::Symbol(value.into()))
+            .collect::<Vec<_>>(),
     ))
 }
 
@@ -1528,7 +1538,7 @@ pub(crate) fn check_coding_systems_region_value(
             .ok_or_else(|| coding_system_error(symbol.clone()))?;
         let positions = string_unencodable_positions(&text, &canonical, interp)?;
         if !positions.is_empty() {
-            let mut items = vec![Value::Symbol(canonical)];
+            let mut items = vec![Value::Symbol(canonical.into())];
             items.extend(positions.into_iter().map(Value::Integer));
             failures.push(Value::list(items));
         }
@@ -1600,7 +1610,7 @@ pub(crate) fn find_operation_coding_system_value(
         let coding = match target {
             Value::Symbol(symbol) if interp.has_coding_system(&symbol) => interp
                 .coding_system_canonical_name(&symbol)
-                .unwrap_or(symbol),
+                .unwrap_or_else(|| symbol.to_string()),
             Value::Symbol(symbol) => {
                 let result =
                     call_named_function(interp, &symbol, &[Value::list(args.to_vec())], env)?;
@@ -1619,8 +1629,8 @@ pub(crate) fn find_operation_coding_system_value(
             }
         };
         return Ok(Value::cons(
-            Value::Symbol(coding.clone()),
-            Value::Symbol(coding),
+            Value::Symbol(coding.clone().into()),
+            Value::Symbol(coding.into()),
         ));
     }
     Ok(Value::Nil)

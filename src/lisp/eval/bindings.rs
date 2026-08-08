@@ -250,14 +250,14 @@ impl Interpreter {
                 self.buffer
                     .file
                     .clone()
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil),
             ),
             "buffer-file-truename" => Some(
                 self.buffer
                     .file_truename
                     .clone()
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil),
             ),
             "buffer-file-coding-system" => Some(
@@ -284,13 +284,13 @@ impl Interpreter {
             "coding-system-list" => Some(Value::list(
                 self.coding_system_list(false)
                     .into_iter()
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .collect::<Vec<_>>(),
             )),
             "coding-system-alist" => Some(Value::list(
                 self.coding_system_list(false)
                     .into_iter()
-                    .map(|name| Value::list([Value::String(name)]))
+                    .map(|name| Value::list([Value::String(name.into())]))
                     .collect::<Vec<_>>(),
             )),
             "char-code-property-alist" => Some(Value::Nil),
@@ -388,14 +388,14 @@ impl Interpreter {
             // GNU's dumped image has jka-compr's representation suffix
             // installed; the native loader likewise understands gzip.
             "load-file-rep-suffixes" => Some(Value::list([
-                Value::String(String::new()),
+                Value::String(String::new().into()),
                 Value::String(".gz".into()),
             ])),
             "after-load-alist" => Some(Value::Nil),
             "load-true-file-name" => Some(
                 self.current_load_file
                     .clone()
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil),
             ),
             "load-source-file-function" => Some(Value::Symbol("load-with-code-conversion".into())),
@@ -421,7 +421,7 @@ impl Interpreter {
             "signal-hook-function" => Some(Value::Nil),
             "minor-mode-overriding-map-alist" => Some(Value::Nil),
             "standard-input" => Some(Value::T),
-            "temporary-file-directory" => Some(Value::String(temp_directory_name())),
+            "temporary-file-directory" => Some(Value::String(temp_directory_name().into())),
             "auto-mode-alist" => Some(builtin_auto_mode_alist()),
             "auto-compression-mode" => Some(Value::T),
             "command-switch-alist" => Some(Value::Nil),
@@ -431,7 +431,7 @@ impl Interpreter {
             "sentence-end" => Some(Value::Nil),
             "sentence-end-double-space" => Some(Value::T),
             "null-device" => Some(Value::String("/dev/null".into())),
-            "exec-suffixes" => Some(Value::list([Value::String(String::new())])),
+            "exec-suffixes" => Some(Value::list([Value::String(String::new().into())])),
             "debug-on-error" => Some(Value::Nil),
             "eval-expression-debug-on-error" => Some(Value::T),
             "debugger-stack-frame-as-list" => Some(Value::Nil),
@@ -607,28 +607,37 @@ impl Interpreter {
                             .parent()
                             .map(|path| path.display().to_string())
                     })
-                    .unwrap_or_else(primitives::default_directory),
+                    .unwrap_or_else(primitives::default_directory)
+                    .into(),
             )),
             "data-directory" | "doc-directory" => Some(Value::String(
-                primitives::compat_data_directory().unwrap_or_else(primitives::default_directory),
+                primitives::compat_data_directory()
+                    .unwrap_or_else(primitives::default_directory)
+                    .into(),
             )),
             "user-login-name" => Some(Value::String(
-                primitives::current_user_login_name().unwrap_or_else(|| "user".into()),
+                primitives::current_user_login_name()
+                    .unwrap_or_else(|| "user".into())
+                    .into(),
             )),
             // sysdep.c initializes this dumped variable from the same host
             // identity returned by the `system-name' primitive.
-            "system-name" => Some(Value::String(primitives::system_name_value())),
+            "system-name" => Some(Value::String(primitives::system_name_value().into())),
             "user-full-name" => Some(Value::String(
                 primitives::current_user_full_name()
                     .or_else(primitives::current_user_login_name)
-                    .unwrap_or_else(|| "user".into()),
+                    .unwrap_or_else(|| "user".into())
+                    .into(),
             )),
-            "user-mail-address" => Some(Value::String(format!(
-                "{}@{}",
-                primitives::current_user_login_name().unwrap_or_else(|| "user".into()),
-                primitives::system_name_value()
-            ))),
-            "default-directory" => Some(Value::String(primitives::default_directory())),
+            "user-mail-address" => Some(Value::String(
+                format!(
+                    "{}@{}",
+                    primitives::current_user_login_name().unwrap_or_else(|| "user".into()),
+                    primitives::system_name_value()
+                )
+                .into(),
+            )),
+            "default-directory" => Some(Value::String(primitives::default_directory().into())),
             "current-language-environment" => Some(Value::String("English".into())),
             "window-system" => Some(Value::Nil),
             "initial-window-system" => Some(Value::Nil),
@@ -650,7 +659,7 @@ impl Interpreter {
             "load-path" => Some(Value::list(
                 self.load_path
                     .iter()
-                    .map(|path| Value::String(primitives::path_to_directory_string(path)))
+                    .map(|path| Value::String(primitives::path_to_directory_string(path).into()))
                     .collect::<Vec<_>>(),
             )),
             "image-load-path" => Some(Value::list([
@@ -661,14 +670,15 @@ impl Interpreter {
                             path.push("images");
                             primitives::path_to_directory_string(&path)
                         })
-                        .unwrap_or_else(primitives::default_directory),
+                        .unwrap_or_else(primitives::default_directory)
+                        .into(),
                 ),
                 Value::Symbol("data-directory".into()),
                 Value::Symbol("load-path".into()),
             ])),
             "installation-directory" => Some(
                 primitives::compat_installation_directory()
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil),
             ),
             "tab-width" => Some(Value::Integer(8)),
@@ -689,30 +699,36 @@ impl Interpreter {
                 r"^\(?:/\(?:afs/\|m\(?:edia/\|nt\)\|\(?:ne\|tmp_mn\)t/\)\)".into(),
             )),
             "system-type" => Some(Value::Symbol(
-                std::env::consts::OS.replace("macos", "darwin"),
+                std::env::consts::OS.replace("macos", "darwin").into(),
             )),
-            "system-configuration" => Some(Value::String(primitives::system_configuration())),
+            "system-configuration" => {
+                Some(Value::String(primitives::system_configuration().into()))
+            }
             "system-configuration-features" => Some(Value::String(
-                std::env::var("EMAXX_SYSTEM_CONFIGURATION_FEATURES").unwrap_or_default(),
+                std::env::var("EMAXX_SYSTEM_CONFIGURATION_FEATURES")
+                    .unwrap_or_default()
+                    .into(),
             )),
             "system-configuration-options" => Some(Value::String(
-                std::env::var("EMAXX_SYSTEM_CONFIGURATION_OPTIONS").unwrap_or_default(),
+                std::env::var("EMAXX_SYSTEM_CONFIGURATION_OPTIONS")
+                    .unwrap_or_default()
+                    .into(),
             )),
             "charset-list" => Some(Value::list(
                 self.charset_priority_list()
                     .into_iter()
-                    .map(Value::Symbol)
+                    .map(|value| Value::Symbol(value.into()))
                     .collect::<Vec<_>>(),
             )),
             "ert-resource-directory-format" => Some(Value::String("%s-resources/".into())),
-            "ert-resource-directory-trim-left-regexp" => Some(Value::String(String::new())),
+            "ert-resource-directory-trim-left-regexp" => Some(Value::String(String::new().into())),
             "ert-resource-directory-trim-right-regexp" => {
                 Some(Value::String("\\(-tests?\\)?\\.el".into()))
             }
             "load-file-name" => Some(
                 self.current_load_file
                     .clone()
-                    .map(Value::String)
+                    .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil),
             ),
             "read-buffer-function" | "read-file-name-function" => Some(Value::Nil),
@@ -729,17 +745,22 @@ impl Interpreter {
             "url-retrieve-number-of-calls" => Some(Value::Integer(0)),
             "url-asynchronous" => Some(Value::T),
             "invocation-name" => Some(Value::String(
-                primitives::current_invocation_name().unwrap_or_else(|| "emaxx".into()),
+                primitives::current_invocation_name()
+                    .unwrap_or_else(|| "emaxx".into())
+                    .into(),
             )),
             "invocation-directory" => Some(Value::String(
                 primitives::current_invocation_directory()
-                    .unwrap_or_else(primitives::default_directory),
+                    .unwrap_or_else(primitives::default_directory)
+                    .into(),
             )),
             "shell-file-name" => Some(Value::String(
-                primitives::find_executable("sh").unwrap_or_else(|| "/bin/sh".into()),
+                primitives::find_executable("sh")
+                    .unwrap_or_else(|| "/bin/sh".into())
+                    .into(),
             )),
             "shell-command-switch" => Some(Value::String("-c".into())),
-            "emacs-version" => Some(Value::String(primitives::emacs_version_value())),
+            "emacs-version" => Some(Value::String(primitives::emacs_version_value().into())),
             "emacs-major-version" => Some(Value::Integer(primitives::emacs_major_version_value())),
             "emacs-minor-version" => Some(Value::Integer(primitives::emacs_minor_version_value())),
             // GNU records the dump time; erc's version stamp reads it.  A
@@ -751,20 +772,21 @@ impl Interpreter {
             "hexl-program-name" => Some(Value::String("hexl".into())),
             "emacsclient-program-name" => Some(Value::String(
                 primitives::compat_emacsclient_program_name()
-                    .unwrap_or_else(|| "emacsclient".into()),
+                    .unwrap_or_else(|| "emacsclient".into())
+                    .into(),
             )),
             "movemail-program-name" => Some(Value::String("movemail".into())),
             "ebrowse-program-name" => Some(Value::String("ebrowse".into())),
             "rcs2log-program-name" => Some(Value::String("rcs2log".into())),
             "process-environment" | "initial-environment" => Some(Value::list(
                 std::env::vars()
-                    .map(|(name, value)| Value::String(format!("{name}={value}")))
+                    .map(|(name, value)| Value::String(format!("{name}={value}").into()))
                     .collect::<Vec<_>>(),
             )),
             "find-program" => Some(Value::String("find".into())),
             "grep-program" => Some(Value::String("grep".into())),
             _ if name.starts_with('.') => Some(Value::Nil),
-            _ if name.starts_with(':') => Some(Value::Symbol(name.to_string())),
+            _ if name.starts_with(':') => Some(Value::Symbol(name.to_string().into())),
             _ => generated_autoloads::generated_dumped_variable(name).and_then(|source| {
                 crate::lisp::reader::Reader::new(source)
                     .read()
@@ -799,7 +821,7 @@ impl Interpreter {
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
         let facts = primitives::name_facts(name);
         if facts.prefer_override {
-            return Some(Value::BuiltinFunc(name.to_string()));
+            return Some(Value::BuiltinFunc(name.to_string().into()));
         }
         let name_is_builtin = facts.builtin || facts.special_form;
         for frame in env.iter().rev() {
@@ -819,7 +841,7 @@ impl Interpreter {
                 continue;
             }
             for (k, v) in frame.iter().rev() {
-                if k == name && matches!(v, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
+                if k == name && matches!(v, Value::BuiltinFunc(_) | Value::Lambda(_)) {
                     return Some(v.clone());
                 }
             }
@@ -833,13 +855,13 @@ impl Interpreter {
             return Some(value);
         }
         if matches!(name, "incf" | "decf") {
-            return Some(Value::BuiltinFunc(name.to_string()));
+            return Some(Value::BuiltinFunc(name.to_string().into()));
         }
         // Special forms live in function cells in GNU Emacs, so symbol
         // indirection (indirect-function, fboundp, macrop) must resolve them
         // instead of signaling a void-function error.
         if name_is_builtin {
-            return Some(Value::BuiltinFunc(name.to_string()));
+            return Some(Value::BuiltinFunc(name.to_string().into()));
         }
         None
     }
@@ -868,7 +890,7 @@ impl Interpreter {
     fn macro_position_binding(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
         let facts = primitives::name_facts(name);
         if facts.prefer_override {
-            return Some((Value::BuiltinFunc(name.to_string()), false));
+            return Some((Value::BuiltinFunc(name.to_string().into()), false));
         }
         for frame in env.iter().rev() {
             if frame
@@ -878,7 +900,7 @@ impl Interpreter {
                 continue;
             }
             for (key, value) in frame.iter().rev() {
-                if key == name && matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
+                if key == name && matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_)) {
                     return Some((value.clone(), true));
                 }
             }
@@ -892,7 +914,7 @@ impl Interpreter {
             return Some((value, false));
         }
         if matches!(name, "incf" | "decf") || facts.builtin || facts.special_form {
-            return Some((Value::BuiltinFunc(name.to_string()), false));
+            return Some((Value::BuiltinFunc(name.to_string().into()), false));
         }
         None
     }
@@ -911,7 +933,7 @@ impl Interpreter {
             let (binding, frame_hit) = self.macro_position_binding(&current, env)?;
             from_frame |= frame_hit;
             match binding {
-                Value::Symbol(next) => current = next,
+                Value::Symbol(next) => current = next.to_string(),
                 other => return Some((other, from_frame)),
             }
         }
@@ -928,14 +950,14 @@ impl Interpreter {
             return Ok(binding);
         };
 
-        let mut current = next;
+        let mut current = next.to_string();
         let mut seen = HashSet::new();
         seen.insert(name.to_string());
         loop {
             if !seen.insert(current.clone()) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-function-indirection".into()),
-                    Value::Symbol(name.to_string()),
+                    Value::Symbol(name.to_string().into()),
                 ])));
             }
 
@@ -943,7 +965,7 @@ impl Interpreter {
                 return Err(LispError::VoidFunction(current));
             };
             match binding {
-                Value::Symbol(next) => current = next,
+                Value::Symbol(next) => current = next.to_string(),
                 other => return Ok(other),
             }
         }
@@ -1108,7 +1130,7 @@ impl Interpreter {
             if seen.iter().any(|existing| existing == &current) {
                 return None;
             }
-            seen.push(current.clone());
+            seen.push(current.to_string());
             if self.macros_name_counts.contains_key(&current)
                 && let Some(binding) = self
                     .macros
@@ -1122,7 +1144,7 @@ impl Interpreter {
             let Value::Symbol(next) = value else {
                 return None;
             };
-            current = next.clone();
+            current = next.to_string();
         }
     }
 
@@ -1157,7 +1179,7 @@ impl Interpreter {
         if resolved == "buffer-file-name" {
             let file = match value {
                 Value::Nil => None,
-                Value::String(path) => Some(path),
+                Value::String(path) => Some(path.to_string()),
                 Value::StringObject(state) => Some(state.borrow().text.clone()),
                 other => Some(other.to_string()),
             };
@@ -1167,7 +1189,7 @@ impl Interpreter {
         if resolved == "buffer-file-truename" {
             self.buffer.file_truename = match value {
                 Value::Nil => None,
-                Value::String(path) => Some(path),
+                Value::String(path) => Some(path.to_string()),
                 Value::StringObject(state) => Some(state.borrow().text.clone()),
                 other => Some(other.to_string()),
             };
@@ -1241,8 +1263,8 @@ impl Interpreter {
     // for separately evaluated lambdas, when their code is identical
     // (captured environments are not compared).
     pub(crate) fn advice_functions_match(&mut self, a: &Value, b: &Value) -> bool {
-        if let (Value::Lambda(params_a, body_a, _), Value::Lambda(params_b, body_b, _)) = (a, b) {
-            return params_a == params_b && body_a == body_b;
+        if let (Value::Lambda(a), Value::Lambda(b)) = (a, b) {
+            return a.params == b.params && a.body == b.body;
         }
         crate::lisp::primitives::values_equal(self, a, b)
     }
@@ -1274,7 +1296,7 @@ impl Interpreter {
         // wrapper, so the stored snapshot can go stale.
         if let Ok(current) = self.lookup_function(name, &Env::new()) {
             let stripped = crate::lisp::primitives::strip_advice_wrappers(&current);
-            if !matches!(stripped, Value::Lambda(_, _, _)) || stripped != current {
+            if !matches!(stripped, Value::Lambda(_)) || stripped != current {
                 if let Some(state) = self.advice_registry.get_mut(name)
                     && state.base.is_some()
                 {
@@ -1355,7 +1377,7 @@ impl Interpreter {
         for _ in 0..10 {
             let (binding, _) = self.macro_position_binding(&current, env)?;
             match binding {
-                Value::Symbol(next) => current = next,
+                Value::Symbol(next) => current = next.to_string(),
                 Value::Cons(cons_cell) => {
                     let car = &cons_cell.car;
                     let cdr = &cons_cell.cdr;
@@ -1388,7 +1410,7 @@ impl Interpreter {
         let handled = self.call_function_value(
             fsetfun,
             None,
-            &[Value::Symbol(name.to_string()), definition.clone()],
+            &[Value::Symbol(name.to_string().into()), definition.clone()],
             env,
         );
         handled.is_ok()
@@ -1436,7 +1458,7 @@ impl Interpreter {
 
     pub fn function_binding_name(&self, function: &Value) -> Option<String> {
         match function {
-            Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.clone()),
+            Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.to_string()),
             other => self
                 .functions
                 .iter()
@@ -1514,13 +1536,13 @@ impl Interpreter {
         let Value::Symbol(current) = function else {
             return Ok(());
         };
-        let mut current = current.clone();
+        let mut current = current.to_string();
         let mut seen = vec![name.to_string()];
         loop {
             if seen.iter().any(|existing| existing == &current) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-function-indirection".into()),
-                    Value::Symbol(name.to_string()),
+                    Value::Symbol(name.to_string().into()),
                 ])));
             }
             seen.push(current.clone());
@@ -1535,7 +1557,7 @@ impl Interpreter {
             let Value::Symbol(next) = value else {
                 return Ok(());
             };
-            current = next.clone();
+            current = next.to_string();
         }
     }
 }

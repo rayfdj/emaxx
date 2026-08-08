@@ -68,12 +68,12 @@ pub(crate) fn function_documentation(
     {
         return record.slots.get(4).filter(|doc| !doc.is_nil()).cloned();
     }
-    let Value::Lambda(_, body, _) = value else {
+    let Value::Lambda(lambda) = value else {
         return None;
     };
-    body.iter().find_map(|form| match form {
+    lambda.body.iter().find_map(|form| match form {
         Value::String(text) => Some(Value::String(text.clone())),
-        Value::StringObject(state) => Some(Value::String(state.borrow().text.clone())),
+        Value::StringObject(state) => Some(Value::String(state.borrow().text.clone().into())),
         _ => None,
     })
 }
@@ -285,8 +285,8 @@ pub(crate) fn eval_callable_metadata_form(
     form: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if let Value::Lambda(_, _, closure_env) = func {
-        interp.eval_with_closure_env(closure_env, env, |interp, call_env| {
+    if let Value::Lambda(lambda) = func {
+        interp.eval_with_closure_env(&lambda.env, env, |interp, call_env| {
             interp.eval(form, call_env)
         })
     } else {
@@ -311,7 +311,7 @@ pub(crate) fn parse_interactive_string(
         match code {
             'k' => {
                 let ch = unread_command_event_char(&pop_unread_command_event_value(interp, env)?)?;
-                values.push(Value::String(ch.to_string()));
+                values.push(Value::String(ch.to_string().into()));
             }
             'p' => {
                 let prefix = interp
@@ -337,7 +337,7 @@ pub(crate) fn parse_interactive_string(
                     values.push(interp.call_function_value(
                         Value::Symbol("read-number".into()),
                         Some("read-number"),
-                        &[Value::String(prompt)],
+                        &[Value::String(prompt.into())],
                         env,
                     )?);
                 }
@@ -560,7 +560,7 @@ pub(crate) fn read_decoded_input_event(
 
 pub(crate) fn input_event_symbol(value: &Value) -> Option<String> {
     match value {
-        Value::Symbol(symbol) => Some(symbol.clone()),
+        Value::Symbol(symbol) => Some(symbol.to_string()),
         Value::Cons(_) => value
             .to_vec()
             .ok()
@@ -656,7 +656,7 @@ pub(crate) fn record_command_history(
         .unwrap_or(Value::Nil)
         .to_vec()
         .unwrap_or_default();
-    let mut entry = vec![Value::Symbol(function_name.to_string())];
+    let mut entry = vec![Value::Symbol(function_name.to_string().into())];
     entry.extend(args);
     history.insert(0, Value::list(entry));
     if let Some(Value::Integer(length)) = interp.lookup_var("history-length", env) {

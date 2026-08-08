@@ -4,7 +4,7 @@ use crate::lisp::reader::Reader;
 
 fn resolve_face_name(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
     let mut name = match value {
-        Value::Symbol(name) => name.clone(),
+        Value::Symbol(name) => name.to_string(),
         Value::String(_) | Value::StringObject(_) => string_text(value)?,
         _ => return Err(wrong_type_argument("symbolp", value.clone())),
     };
@@ -103,7 +103,7 @@ fn normalize_face_attribute_value(
         ":height" => match value {
             Value::Integer(height) if *height > 0 => value.clone(),
             Value::Float(scale) if scale.is_finite() && *scale > 0.0 => value.clone(),
-            Value::Lambda(..) | Value::BuiltinFunc(_) | Value::Symbol(_) => value.clone(),
+            Value::Lambda(_) | Value::BuiltinFunc(_) | Value::Symbol(_) => value.clone(),
             _ => return Err(LispError::Signal("Invalid face height".into())),
         },
         ":weight" => {
@@ -243,7 +243,7 @@ fn merge_face_height(
             Value::Symbol(symbol) if symbol == "unspecified" => Ok(from.clone()),
             _ => Ok(from.clone()),
         },
-        Value::Lambda(..) | Value::BuiltinFunc(_) | Value::Symbol(_) => {
+        Value::Lambda(_) | Value::BuiltinFunc(_) | Value::Symbol(_) => {
             interp.call_function_value(from.clone(), None, std::slice::from_ref(to), env)
         }
         _ => Ok(from.clone()),
@@ -308,9 +308,9 @@ fn transform_font_alist(value: &Value, registry: bool) -> Result<Value, LispErro
         for value in values {
             let text = string_text(&value)?;
             transformed.push(if registry {
-                Value::String(text.to_lowercase())
+                Value::String(text.to_lowercase().into())
             } else {
-                Value::Symbol(text)
+                Value::Symbol(text.into())
             });
         }
         result.push(Value::list(transformed));

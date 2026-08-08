@@ -32,7 +32,7 @@ fn event_array(events: &[Value], force_vector: bool) -> Value {
             })
             .collect::<Option<String>>();
         if let Some(characters) = characters {
-            return Value::String(characters);
+            return Value::String(characters.into());
         }
     }
     event_vector(events.iter().cloned())
@@ -844,7 +844,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
                 let search_result = super::call(
                     interp,
                     "search-forward",
-                    &[Value::String(search_text), Value::Nil, Value::T],
+                    &[Value::String(search_text.into()), Value::Nil, Value::T],
                     env,
                 );
                 interp.restore_special_binding(restore, env)?;
@@ -994,7 +994,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         call_function_value(
             interp,
             &Value::Symbol("message".into()),
-            &[Value::String(format!("{binding_key} is undefined"))],
+            &[Value::String(format!("{binding_key} is undefined").into())],
             env,
         )?;
         return Ok(());
@@ -1181,7 +1181,7 @@ fn report_kbd_command_error(
             None,
             &[
                 crate::lisp::eval::error_condition_value(error),
-                Value::String(String::new()),
+                Value::String(String::new().into()),
                 Value::Nil,
             ],
             env,
@@ -2418,7 +2418,7 @@ define_dispatch!(
                 let separator = args
                     .get(1)
                     .cloned()
-                    .unwrap_or_else(|| Value::String(String::new()));
+                    .unwrap_or_else(|| Value::String(String::new().into()));
                 super::call(
                     interp,
                     "mapconcat",
@@ -2613,7 +2613,7 @@ define_dispatch!(
                             })?;
                             text.push(ch);
                         }
-                        Ok(Value::String(text))
+                        Ok(Value::String(text.into()))
                     }
                     kind => Err(LispError::Signal(format!(
                         "cl-coerce unsupported type: {kind}"
@@ -2688,8 +2688,8 @@ define_dispatch!(
                 let rest_name = "__emaxx-apply-partially-rest".to_string();
                 let mut body = vec![Value::Symbol("apply".into()), literal_form(&args[0])];
                 body.extend(args[1..].iter().map(literal_form));
-                body.push(Value::Symbol(rest_name.clone()));
-                Ok(Value::Lambda(
+                body.push(Value::Symbol(rest_name.clone().into()));
+                Ok(Value::lambda(
                     vec!["&rest".into(), rest_name].into(),
                     vec![Value::list(body)].into(),
                     shared_env(env.clone()),
@@ -2737,7 +2737,7 @@ define_dispatch!(
                 // function binding; a fresh generic must not rank its methods
                 // against specializers of the destroyed chain.
                 interp.put_symbol_property(symbol, "emaxx-cl-defmethod-specializers", Value::Nil);
-                Ok(Value::Symbol(symbol.to_string()))
+                Ok(Value::Symbol(symbol.to_string().into()))
             }
             "funcall-interactively" => {
                 if args.is_empty() {
@@ -2996,7 +2996,7 @@ define_dispatch!(
                 if read_only && !inhibited {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("buffer-read-only".into()),
-                        Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
+                        Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
                     ])));
                 }
                 Ok(Value::Nil)
@@ -3260,7 +3260,7 @@ define_dispatch!(
                         let parsed = super::call(
                             interp,
                             "read-from-string",
-                            &[Value::String(contents)],
+                            &[Value::String(contents.into())],
                             env,
                         )?;
                         return Ok(parsed.cons_values().map(|(car, _)| car).unwrap_or(parsed));
@@ -3281,9 +3281,9 @@ define_dispatch!(
                             return Ok(default);
                         }
                     }
-                    return Ok(Value::String(contents));
+                    return Ok(Value::String(contents.into()));
                 }
-                Ok(Value::String(String::new()))
+                Ok(Value::String(String::new().into()))
             }
             "completing-read" => completing_read(interp, args, env),
             "read-buffer" => {
@@ -3293,7 +3293,7 @@ define_dispatch!(
                     .unwrap_or_default()
                     .into_iter()
                     .filter_map(|buffer| match buffer {
-                        Value::Buffer(_, buffer_name) => Some(Value::String(buffer_name)),
+                        Value::Buffer(buffer) => Some(Value::String(buffer.name.clone())),
                         _ => None,
                     })
                     .collect::<Vec<_>>();
@@ -3315,9 +3315,11 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 2)?;
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
                 let default = match default {
-                    Value::Symbol(symbol) => {
-                        Value::String(crate::lisp::types::visible_symbol_name(&symbol).to_string())
-                    }
+                    Value::Symbol(symbol) => Value::String(
+                        crate::lisp::types::visible_symbol_name(&symbol)
+                            .to_string()
+                            .into(),
+                    ),
                     other => other,
                 };
                 let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
@@ -3388,17 +3390,17 @@ define_dispatch!(
                 if let Some(text) = string_like(&completion)
                     && !text.text.is_empty()
                 {
-                    return Ok(Value::String(text.text));
+                    return Ok(Value::String(text.text.into()));
                 }
                 if let Some(text) = string_like(&default)
                     && !text.text.is_empty()
                 {
-                    return Ok(Value::String(text.text));
+                    return Ok(Value::String(text.text.into()));
                 }
                 if let Some(text) = string_like(&dir) {
-                    return Ok(Value::String(text.text));
+                    return Ok(Value::String(text.text.into()));
                 }
-                Ok(Value::String(String::new()))
+                Ok(Value::String(String::new().into()))
             }
             "format-prompt" => format_prompt(interp, args, env),
         }
@@ -3527,7 +3529,7 @@ fn cl_seq_rebuild(original: &Value, items: Vec<Value>) -> Result<Value, LispErro
                 let (ch, _multibyte) = concat_character_value(item)?;
                 text.push(ch);
             }
-            Ok(Value::String(text))
+            Ok(Value::String(text.into()))
         }
         value if is_vector_value(value) => {
             let mut vector = vec![Value::symbol("vector-literal")];

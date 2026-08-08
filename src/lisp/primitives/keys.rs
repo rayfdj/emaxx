@@ -123,7 +123,7 @@ pub(crate) fn event_convert_list_value(
             if let Some(kind) = interp.get_symbol_property(&base, "event-kind") {
                 interp.put_symbol_property(&modified, "event-kind", kind);
             }
-            Ok(Value::Symbol(modified))
+            Ok(Value::Symbol(modified.into()))
         }
         _ => Err(LispError::Signal("Invalid base event".into())),
     }
@@ -224,13 +224,14 @@ pub(crate) fn parse_kbd_token(token: &str) -> Vec<Value> {
     let (modifiers, rest, saw_prefix) = parse_kbd_prefixes(token);
     if saw_prefix {
         if rest.starts_with('<') && rest.ends_with('>') && rest.len() >= 2 {
-            return vec![Value::Symbol(symbolic_kbd_event(
-                modifiers,
-                &rest[1..rest.len() - 1],
-            ))];
+            return vec![Value::Symbol(
+                symbolic_kbd_event(modifiers, &rest[1..rest.len() - 1]).into(),
+            )];
         }
         if rest == "ESC" {
-            return vec![Value::Symbol(symbolic_kbd_event(modifiers, "escape"))];
+            return vec![Value::Symbol(
+                symbolic_kbd_event(modifiers, "escape").into(),
+            )];
         }
         if let Some(code) = named_kbd_key_code(rest) {
             return vec![Value::Integer(code | modifiers)];
@@ -241,10 +242,10 @@ pub(crate) fn parse_kbd_token(token: &str) -> Vec<Value> {
                 .map(|ch| Value::Integer(ch as i64 | modifiers))
                 .collect();
         }
-        return vec![Value::Symbol(symbolic_kbd_event(modifiers, rest))];
+        return vec![Value::Symbol(symbolic_kbd_event(modifiers, rest).into())];
     }
     if token.starts_with('<') && token.ends_with('>') && token.len() >= 2 {
-        return vec![Value::Symbol(token[1..token.len() - 1].to_string())];
+        return vec![Value::Symbol(token[1..token.len() - 1].to_string().into())];
     }
     if token == "ESC" {
         return vec![Value::Integer(KEY_DESCRIPTION_META_PREFIX)];
@@ -340,7 +341,7 @@ pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, L
         && let [event] = events.as_slice()
     {
         match event {
-            Value::Symbol(symbol) => return Ok(vec![symbol.clone()]),
+            Value::Symbol(symbol) => return Ok(vec![symbol.to_string()]),
             // GNU renders the [t] default binding as "<t>", which also keeps
             // it distinct from a binding on the letter t.
             Value::T => return Ok(vec!["<t>".into()]),
@@ -603,7 +604,7 @@ pub(crate) fn single_key_description_text(
         Value::Integer(code) => Ok(describe_key_code(*code)),
         Value::Symbol(symbol) => Ok(describe_symbolic_key(symbol, no_angles)),
         Value::T => Ok(describe_symbolic_key("t", no_angles)),
-        Value::String(text) => Ok(text.clone()),
+        Value::String(text) => Ok(text.to_string()),
         Value::StringObject(state) => Ok(state.borrow().text.clone()),
         Value::Cons(_) => list_event_key_description_text(key, no_angles),
         _ => Err(LispError::TypeError(
@@ -659,7 +660,7 @@ pub(crate) fn list_event_key_description_text(
             if let Some(ch) = event_name_character(text) {
                 Ok(describe_key_code(ch as i64 | bits))
             } else if bits == 0 {
-                Ok(text.clone())
+                Ok(text.to_string())
             } else {
                 Ok(describe_symbolic_key(
                     &symbolic_kbd_event(bits, text),

@@ -237,7 +237,7 @@ impl Interpreter {
             return Err(LispError::Void(name.to_string()));
         };
         let mut items = coding.plist.to_vec()?;
-        let key_value = Value::Symbol(key.to_string());
+        let key_value = Value::Symbol(key.to_string().into());
         if let Some(index) = items.iter().position(|item| item == &key_value) {
             if index + 1 < items.len() {
                 items[index + 1] = value;
@@ -441,9 +441,10 @@ impl Interpreter {
         if let Some(id) = self.standard_category_table_id {
             return id;
         }
-        let Value::CharTable(id) =
-            self.make_char_table(Some("category-table".into()), Value::String(String::new()))
-        else {
+        let Value::CharTable(id) = self.make_char_table(
+            Some("category-table".into()),
+            Value::String(String::new().into()),
+        ) else {
             unreachable!("make_char_table returns a char-table");
         };
         self.standard_category_table_id = Some(id);

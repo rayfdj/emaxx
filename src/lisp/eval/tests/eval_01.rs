@@ -2881,7 +2881,11 @@ fn expand_file_name_dispatches_a_relative_name_through_its_remote_base() {
             Value::String("/mock::/tmp/work/sh".into()),
             Value::String("/mock::/tmp/bin/sh".into()),
             Value::String("/mock:host:/:/tmp/quoted-base/child".into()),
-            Value::String(std::env::var("HOME").expect("test host has a home directory")),
+            Value::String(
+                std::env::var("HOME")
+                    .expect("test host has a home directory")
+                    .into(),
+            ),
             Value::String("/bin/sh".into()),
         ])
     );
@@ -3266,7 +3270,10 @@ fn files_facade_recognizes_a_bare_mock_connection_prefix() {
                         (sample-files-file-remote-p
                          default-directory)))))"#
         ),
-        Value::list([Value::String(prefix.clone()), Value::String(prefix),])
+        Value::list([
+            Value::String(prefix.clone().into()),
+            Value::String(prefix.into()),
+        ])
     );
 }
 
@@ -3414,7 +3421,10 @@ fn format_mode_line_is_a_batch_no_op_before_inspecting_the_format() {
                    (format-mode-line '(\"ignored\" (:eval (error \"unreachable\")))
                                      t nil nil))"
         ),
-        Value::list([Value::String(String::new()), Value::String(String::new())])
+        Value::list([
+            Value::String(String::new().into()),
+            Value::String(String::new().into())
+        ])
     );
 }
 
@@ -4308,7 +4318,10 @@ fn dumped_lread_loader_policy_defaults_are_complete() {
         Value::list([
             Value::list(suffix_vector),
             dynamic_suffixes,
-            Value::list([Value::String(String::new()), Value::String(".gz".into()),]),
+            Value::list([
+                Value::String(String::new().into()),
+                Value::String(".gz".into()),
+            ]),
             Value::Symbol("load-with-code-conversion".into()),
             Value::Nil,
             Value::Nil,

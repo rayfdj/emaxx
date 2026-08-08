@@ -910,6 +910,7 @@ pub(super) fn regexp_quote_elisp(pattern: &str) -> String {
 }
 
 fn invalid_regexp_error(message: impl Into<String>) -> LispError {
+    let message: String = message.into();
     LispError::SignalValue(Value::list([
         Value::Symbol("invalid-regexp".into()),
         Value::String(message.into()),
@@ -1687,17 +1688,15 @@ pub(super) fn string_trim_left_value(
         .captures(&text)
         .map_err(|error| LispError::Signal(error.to_string()))?;
     let Some(captures) = captures else {
-        return Ok(Value::String(text));
+        return Ok(Value::String(text.into()));
     };
     let Some(matched) = captures.get(0) else {
-        return Ok(Value::String(text));
+        return Ok(Value::String(text.into()));
     };
     let start = text[..matched.end()].chars().count();
-    Ok(Value::String(slice_string_chars(
-        &text,
-        start,
-        text.chars().count(),
-    )))
+    Ok(Value::String(
+        slice_string_chars(&text, start, text.chars().count()).into(),
+    ))
 }
 
 pub(super) fn string_trim_right_value(
@@ -1717,13 +1716,13 @@ pub(super) fn string_trim_right_value(
         .captures(&text)
         .map_err(|error| LispError::Signal(error.to_string()))?;
     let Some(captures) = captures else {
-        return Ok(Value::String(text));
+        return Ok(Value::String(text.into()));
     };
     let Some(matched) = captures.get(0) else {
-        return Ok(Value::String(text));
+        return Ok(Value::String(text.into()));
     };
     let end = text[..matched.start()].chars().count();
-    Ok(Value::String(slice_string_chars(&text, 0, end)))
+    Ok(Value::String(slice_string_chars(&text, 0, end).into()))
 }
 
 pub(super) fn isearch_no_upper_case_p(text: &str, regexp_flag: bool) -> bool {
@@ -1756,7 +1755,7 @@ pub(super) fn split_string_impl(
     let part_value = |text: String, start: usize, end: usize| {
         let sliced_props = slice_string_props(&props, start, end);
         if sliced_props.is_empty() {
-            Value::String(text)
+            Value::String(text.into())
         } else {
             string_like_value_with_multibyte(text, sliced_props, multibyte)
         }
@@ -2261,7 +2260,7 @@ pub(super) fn buffer_regex_search(
                     } else {
                         Err(LispError::SignalValue(Value::list([
                             Value::Symbol("search-failed".into()),
-                            Value::String(pattern.text.clone()),
+                            Value::String(pattern.text.clone().into()),
                         ])))
                     };
                 };
@@ -2281,7 +2280,7 @@ pub(super) fn buffer_regex_search(
             } else {
                 Err(LispError::SignalValue(Value::list([
                     Value::Symbol("search-failed".into()),
-                    Value::String(pattern.text.clone()),
+                    Value::String(pattern.text.clone().into()),
                 ])))
             };
         }
@@ -2331,7 +2330,7 @@ pub(super) fn buffer_regex_search(
                     } else {
                         Err(LispError::SignalValue(Value::list([
                             Value::Symbol("search-failed".into()),
-                            Value::String(pattern.text.clone()),
+                            Value::String(pattern.text.clone().into()),
                         ])))
                     };
                 };
@@ -2361,7 +2360,7 @@ pub(super) fn buffer_regex_search(
                 } else {
                     Err(LispError::SignalValue(Value::list([
                         Value::Symbol("search-failed".into()),
-                        Value::String(pattern.text.clone()),
+                        Value::String(pattern.text.clone().into()),
                     ])))
                 };
             };
@@ -2427,7 +2426,7 @@ pub(super) fn buffer_regex_search(
             } else {
                 Err(LispError::SignalValue(Value::list([
                     Value::Symbol("search-failed".into()),
-                    Value::String(pattern.text.clone()),
+                    Value::String(pattern.text.clone().into()),
                 ])))
             };
         }
@@ -2452,7 +2451,7 @@ pub(super) fn buffer_regex_search(
                     } else {
                         Err(LispError::SignalValue(Value::list([
                             Value::Symbol("search-failed".into()),
-                            Value::String(pattern.text.clone()),
+                            Value::String(pattern.text.clone().into()),
                         ])))
                     };
                 };
@@ -2525,7 +2524,7 @@ pub(super) fn buffer_regex_search(
                 } else {
                     Err(LispError::SignalValue(Value::list([
                         Value::Symbol("search-failed".into()),
-                        Value::String(pattern.text.clone()),
+                        Value::String(pattern.text.clone().into()),
                     ])))
                 };
             }
@@ -2604,7 +2603,7 @@ pub(super) fn buffer_regex_search(
             } else {
                 Err(LispError::SignalValue(Value::list([
                     Value::Symbol("search-failed".into()),
-                    Value::String(pattern.text.clone()),
+                    Value::String(pattern.text.clone().into()),
                 ])))
             };
         }

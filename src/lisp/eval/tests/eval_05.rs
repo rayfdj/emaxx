@@ -829,7 +829,7 @@ fn mock_tramp_file_operations_use_localname() {
         Value::list([
             Value::T,
             Value::T,
-            Value::String(prefix),
+            Value::String(prefix.into()),
             Value::T,
             Value::T,
             Value::T,
@@ -5239,7 +5239,7 @@ fn ert_x_remote_temp_directory_loads_after_tramp() {
             Value::Nil,
             Value::T,
             Value::T,
-            Value::String(format!("/mock:{}:", primitives::system_name_value())),
+            Value::String(format!("/mock:{}:", primitives::system_name_value()).into()),
             Value::T,
             Value::T
         ])
@@ -5898,18 +5898,20 @@ fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
     let mut env = Vec::new();
     interp.set_variable(
         "source-directory",
-        Value::String(crate::lisp::primitives::path_to_directory_string(
-            &emacs_repo,
-        )),
+        Value::String(crate::lisp::primitives::path_to_directory_string(&emacs_repo).into()),
         &mut env,
     );
     let data_directory = crate::lisp::primitives::path_to_directory_string(&emacs_repo.join("etc"));
     interp.set_variable(
         "data-directory",
-        Value::String(data_directory.clone()),
+        Value::String(data_directory.clone().into()),
         &mut env,
     );
-    interp.set_variable("doc-directory", Value::String(data_directory), &mut env);
+    interp.set_variable(
+        "doc-directory",
+        Value::String(data_directory.into()),
+        &mut env,
+    );
     // The compatibility harness passes `-l ert' before loading every test
     // file.  Emaxx also has native bootstrap ERT forms, so relying on the
     // test file's `(require 'ert)' would leave that already-provided feature
@@ -6763,18 +6765,22 @@ fn gv_child_process_diagnostics_decode_as_multibyte_text() {
                     .file_name()
                     .expect("oracle executable name")
                     .to_string_lossy()
-                    .into_owned(),
+                    .into_owned()
+                    .into(),
             ),
         );
         interp.set_global_binding(
             "invocation-directory",
-            Value::String(format!(
-                "{}/",
-                oracle
-                    .parent()
-                    .expect("oracle executable directory")
-                    .display()
-            )),
+            Value::String(
+                format!(
+                    "{}/",
+                    oracle
+                        .parent()
+                        .expect("oracle executable directory")
+                        .display()
+                )
+                .into(),
+            ),
         );
         let summary = interp.run_ert_tests_with_selector(Some(&Value::Symbol(
             "gv-dont-define-expander-other-file".into(),
@@ -7082,7 +7088,7 @@ fn todo_month_edits_observe_dynamic_prefix_argument() {
     // same macro-expansion context as the loaded upstream test body.
     interp.set_variable(
         "current-load-list",
-        Value::list([Value::String(test_file)]),
+        Value::list([Value::String(test_file.into())]),
         &mut Vec::new(),
     );
     let value = eval_str_with(
@@ -7311,7 +7317,10 @@ fn eshell_external_pipeline_finishes_redirected_output_before_returning() {
                                (insert-file-contents temp)
                                (buffer-string)))))"#,
             ),
-            Value::list([Value::String(String::new()), Value::String("rab\n".into()),])
+            Value::list([
+                Value::String(String::new().into()),
+                Value::String("rab\n".into()),
+            ])
         );
     });
 }
@@ -7358,7 +7367,10 @@ fn eshell_internal_command_feeds_external_pipeline_before_returning() {
                                (insert-file-contents temp)
                                (buffer-string)))))"#,
             ),
-            Value::list([Value::String(String::new()), Value::String("rab\n".into()),])
+            Value::list([
+                Value::String(String::new().into()),
+                Value::String("rab\n".into()),
+            ])
         );
     });
 }
@@ -7546,7 +7558,8 @@ fn dabbrev_cross_buffer_cases_remain_order_independent_in_native_runner() {
 
         assert_eq!(test_names.len(), 16);
         for name in test_names {
-            let summary = interp.run_ert_tests_with_selector(Some(&Value::Symbol(name.clone())));
+            let summary =
+                interp.run_ert_tests_with_selector(Some(&Value::Symbol(name.clone().into())));
             assert_eq!(summary.total, 1, "{name}: {:#?}", interp.test_results);
             assert_eq!(
                 eval_str_with(

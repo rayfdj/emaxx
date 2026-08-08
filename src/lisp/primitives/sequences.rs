@@ -260,9 +260,9 @@ pub(crate) fn direct_sort_comparator(
                 right: DirectSortOperand::Right,
             })
         }
-        Value::Lambda(params, body, closure_env) if params.len() == 2 && !body.is_empty() => {
-            let closure_env = closure_env.borrow().clone();
-            let compare_form = body.last()?;
+        Value::Lambda(lambda) if lambda.params.len() == 2 && !lambda.body.is_empty() => {
+            let closure_env = lambda.env.borrow().clone();
+            let compare_form = lambda.body.last()?;
             let items = compare_form.to_vec().ok()?;
             let (kind, left, right) = match items.as_slice() {
                 [Value::Symbol(op), left, right] => {
@@ -270,22 +270,22 @@ pub(crate) fn direct_sort_comparator(
                         resolve_direct_sort_kind(interp, &Value::Symbol(op.clone()), &closure_env)?;
                     (
                         kind,
-                        parse_direct_sort_operand(interp, left, params, &closure_env)?,
-                        parse_direct_sort_operand(interp, right, params, &closure_env)?,
+                        parse_direct_sort_operand(interp, left, &lambda.params, &closure_env)?,
+                        parse_direct_sort_operand(interp, right, &lambda.params, &closure_env)?,
                     )
                 }
                 [Value::Symbol(name), function, left, right] if name == "funcall" => {
                     let kind = resolve_direct_sort_kind(interp, function, &closure_env)?;
                     (
                         kind,
-                        parse_direct_sort_operand(interp, left, params, &closure_env)?,
-                        parse_direct_sort_operand(interp, right, params, &closure_env)?,
+                        parse_direct_sort_operand(interp, left, &lambda.params, &closure_env)?,
+                        parse_direct_sort_operand(interp, right, &lambda.params, &closure_env)?,
                     )
                 }
                 _ => return None,
             };
             Some(DirectSortComparator {
-                prelude: body[..body.len() - 1].to_vec(),
+                prelude: lambda.body[..lambda.body.len() - 1].to_vec(),
                 kind,
                 left,
                 right,
@@ -456,7 +456,7 @@ pub(crate) fn build_sorted_sequence(kind: &SortSequenceKind, items: Vec<Value>) 
     match kind {
         SortSequenceKind::List => Value::list(items),
         SortSequenceKind::Vector(tag) => {
-            Value::list(std::iter::once(Value::Symbol(tag.clone())).chain(items))
+            Value::list(std::iter::once(Value::Symbol(tag.clone().into())).chain(items))
         }
     }
 }

@@ -20,7 +20,7 @@ fn prin1_to_string_roundtrips_upstream_symbol_cases() {
         let rendered = primitives::call(
             interp,
             "prin1-to-string",
-            &[Value::Symbol(name.to_string())],
+            &[Value::Symbol(name.to_string().into())],
             env,
         )
         .expect("symbol should print");
@@ -31,7 +31,7 @@ fn prin1_to_string_roundtrips_upstream_symbol_cases() {
             .expect("printed symbol should yield one form");
         assert_eq!(
             parsed,
-            Value::Symbol(name.to_string()),
+            Value::Symbol(name.to_string().into()),
             "symbol {:?} printed as {:?}",
             name,
             rendered
@@ -5845,7 +5845,10 @@ fn expand_file_name_uses_lisp_home_environment() {
                            (expand-file-name "child" "~/base/")))"#
             )
         ),
-        Value::list([Value::String(home), Value::String(expected_child)])
+        Value::list([
+            Value::String(home.into()),
+            Value::String(expected_child.into()),
+        ])
     );
 }
 
@@ -6108,12 +6111,11 @@ fn named_lisp_calls_share_immutable_function_code() {
     let second = interp
         .lookup_function("emaxx-test-shared-function-code", &env)
         .expect("second function lookup");
-    let (Value::Lambda(_, first_body, _), Value::Lambda(_, second_body, _)) = (&first, &second)
-    else {
+    let (Value::Lambda(first_lambda), Value::Lambda(second_lambda)) = (&first, &second) else {
         panic!("named definition should remain a Lisp lambda");
     };
     assert!(
-        std::rc::Rc::ptr_eq(first_body, second_body),
+        std::rc::Rc::ptr_eq(&first_lambda.body, &second_lambda.body),
         "function lookup must share immutable code rather than cloning its AST"
     );
 
