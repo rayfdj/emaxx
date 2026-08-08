@@ -17,18 +17,53 @@ The canonical ordered manifest is:
 The denominator is 7080 selected tests. Do not use source-tree `ert-deftest`
 counts as the progress denominator.
 
+Record GNU Emacs and `emaxx` timing throughout compatibility work.  Apply the
+2× performance gate to comparable post-bootstrap work, not to the fixed cost
+of `emaxx` reconstructing startup state while GNU begins from a dumped image.
+Continue reporting that startup cost separately; its architectural remedy is
+tracked in [GitHub issue #11](https://github.com/rayfdj/emaxx/issues/11) and in
+[`preloaded-startup-image-issue.md`](preloaded-startup-image-issue.md).
+
 Post-7080 performance follow-up: track **"Optimize Dired listings for large
 directories after 7080 compatibility"**.  Two Dired tests exceeded 20 seconds
 only when enumerating the host temp directory with roughly 1,000 entries and
 passed against an isolated empty temp directory, demonstrating a real Emaxx
 large-directory performance gap rather than a Dired correctness or process-I/O
-failure.  GitHub issue creation is currently blocked by missing issue-write
-authentication (integration HTTP 403 and invalid local `gh` token); the full
-handoff and retry instruction are in
-`docs/!!!AI_CONTINUATION_INSTRUCTIONS_DO_NOT_SKIP.md`.
+failure.  Keep this distinct from the fixed dumped-image startup cost and from
+the compact-value interpreter work.
 
 ## Current State
 
+- The 2026-08-08 pre-compact-value checkpoint keeps the ordered frontier at
+  4,582/7,080 (2,498 remaining) and freezes the accumulated compiled-library,
+  VM cleanup, runtime-index, loading, and performance-harness work before the
+  Lisp value representation changes.  On the exact checkpoint source,
+  Electric matches GNU 874/874 in
+  `target/compat/run-1786208178364460000-86585`.  The first 29 canonical TRAMP
+  selections match as 28 passes and one shared skip in
+  `target/compat/run-1786208301914103000-86729`.
+  `tramp-test18-file-attributes` remains a real pre-existing incomplete
+  boundary: GNU completed in 8.029 seconds while Emaxx timed out during load at
+  600.027 seconds in `target/compat/run-1786202518812459000-79490`.  Do not
+  claim the remaining canonical TRAMP selections or the complete ordered
+  1..4,582 prefix as recertified.
+
+  The paired source-interpreter baseline in
+  `target/perf/run-1786203529/interpreter/source-eval-suite.perf/comparison.json`
+  reports Emaxx/GNU ratios of 9.23x for list walking, 15.99x for cons
+  allocation, and 18.00x for interpreted calls, with semantic checks passing.
+  The 64.9-minute all-target Rust audit ran 1,839 library tests: 1,832 passed;
+  six localhost/UDP/GnuTLS cases were denied by the restricted sandbox, and
+  one known process-output scheduling test failed in the loaded suite.  The
+  process-output case and all six network cases passed in exact isolated
+  replays with the required localhost permission; each GnuTLS helper also had
+  one isolated server-start timeout before passing on its clean retry.
+  Compatibility-harness 29/29, performance-harness 1/1, CLI 10/10, and ERT
+  runner 3/3 pass.  Formatting, diff check, regenerated/rustfmt-normalized
+  autoload validation, all-target/all-feature check, and strict Clippy pass.
+  Native remains 1,420/1,420.  The checkpoint commit is tagged
+  `pre-compact-lisp-value-2026-08-08`; use it for rollback and `git bisect`
+  during the representation migration.
 - The 2026-08-07 cumulative runtime/file-contract checkpoint keeps the ordered
   frontier at 4,582/7,080 (2,498 remaining) while making startup globals,
   special/per-buffer metadata, startup features, ERT registration, and the

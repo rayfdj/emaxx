@@ -31,6 +31,10 @@ flate2 = "1.1"
 encoding_rs = "=0.8.35"
 libxml = "0.3.16"
 rusqlite = { version = "0.34", features = ["bundled"] }
+# Global Lisp value cells need stable enumeration plus constant-time lookup,
+# update, and removal.  Use the established linked hash map already present in
+# the dependency graph instead of synchronizing a vector with a shadow index.
+hashlink = "=0.10.0"
 lcms2 = "6.1.1"
 lcms2-sys = "4.0.6"
 md5 = "0.8.0"

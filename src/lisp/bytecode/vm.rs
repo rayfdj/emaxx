@@ -138,19 +138,29 @@ struct Handler {
     unwind_len: usize,
 }
 
-/// Materialize a constant still in reader form: record literals
-/// (`#[...]` nested closures, `#s(hash-table ...)` jump tables) become
-/// live objects; vectors materialize elementwise.  Everything else is
-/// already a value.
+/// Materialize a constant still in reader form.  GNU's reader constructs
+/// `#[...]` functions and `#s(hash-table ...)` objects before bytecode sees
+/// them, including when they are nested inside an arbitrary list-valued
+/// constant.  Emaxx's parser leaves explicit marker forms, so walk the
+/// constant graph once and replace those markers in place.  Mutating the
+/// freshly-read graph preserves sharing (and cycles) without rebuilding
+/// every surrounding list.
 fn materialize_constant(
     interp: &mut Interpreter,
     constant: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let Ok(items) = constant.to_vec() else {
-        return Ok(constant.clone());
-    };
-    match items.first() {
+    materialize_constant_inner(interp, constant, env, &mut std::collections::HashSet::new())
+}
+
+fn materialize_constant_inner(
+    interp: &mut Interpreter,
+    constant: &Value,
+    env: &mut Env,
+    seen: &mut std::collections::HashSet<usize>,
+) -> Result<Value, LispError> {
+    let head = constant.car().ok();
+    match head.as_ref() {
         Some(Value::Symbol(marker)) if marker == "emaxx--record-literal" => {
             interp.eval(constant, env)
         }
@@ -160,28 +170,46 @@ fn materialize_constant(
         }
         // The reader wraps `#s(hash-table ...)' in a quote; GNU constants
         // hold the table itself, so unwrap exactly that artifact.
-        Some(Value::Symbol(quote))
-            if quote == "quote"
-                && items.len() == 2
+        Some(Value::Symbol(quote)) if quote == "quote" => {
+            let Ok(items) = constant.to_vec() else {
+                return Ok(constant.clone());
+            };
+            if items.len() == 2
                 && items[1].to_vec().ok().is_some_and(|inner| {
                     matches!(
                         inner.first(),
                         Some(Value::Symbol(marker)) if marker == "emaxx--hash-table-literal"
                     )
-                }) =>
-        {
-            primitives::materialize_read_hash_table_literals(interp, &items[1])
-        }
-        Some(Value::Symbol(marker)) if marker == "vector-literal" => {
-            let mut rebuilt = Vec::with_capacity(items.len());
-            rebuilt.push(Value::symbol("vector-literal"));
-            for item in &items[1..] {
-                rebuilt.push(materialize_constant(interp, item, env)?);
+                })
+            {
+                primitives::materialize_read_hash_table_literals(interp, &items[1])
+            } else {
+                materialize_constant_cons(interp, constant, env, seen)
             }
-            Ok(Value::list(rebuilt))
         }
-        _ => Ok(constant.clone()),
+        Some(_) => materialize_constant_cons(interp, constant, env, seen),
+        None => Ok(constant.clone()),
     }
+}
+
+fn materialize_constant_cons(
+    interp: &mut Interpreter,
+    constant: &Value,
+    env: &mut Env,
+    seen: &mut std::collections::HashSet<usize>,
+) -> Result<Value, LispError> {
+    let Some((car, cdr)) = constant.cons_cells() else {
+        return Ok(constant.clone());
+    };
+    let identity = std::rc::Rc::as_ptr(&car) as usize;
+    if !seen.insert(identity) {
+        return Ok(constant.clone());
+    }
+    let materialized_car = materialize_constant_inner(interp, &car.borrow().clone(), env, seen)?;
+    let materialized_cdr = materialize_constant_inner(interp, &cdr.borrow().clone(), env, seen)?;
+    *car.borrow_mut() = materialized_car;
+    *cdr.borrow_mut() = materialized_cdr;
+    Ok(constant.clone())
 }
 
 /// Call a named Emaxx primitive with stack values (the Bcar/Bplus-style
@@ -226,9 +254,48 @@ fn build_cached(
     for (index, instr) in instrs.iter().enumerate() {
         offset_index[instr.offset] = index as u32;
     }
-    let mut constants = Vec::with_capacity(object.constants.len());
-    for constant in &object.constants {
-        constants.push(materialize_constant(interp, constant, env)?);
+    // GNU's reader labels are scoped to the entire object being read.  ELC
+    // constants commonly share `#N=' / `#N#' labels across distinct nested
+    // `#[...]' closures, so resolving each closure independently loses the
+    // label table before a later reference is reached.
+    let resolved_constants = if object
+        .constants
+        .iter()
+        .any(super::super::reader::contains_circular_read_syntax)
+    {
+        let vector = Value::list(
+            std::iter::once(Value::symbol("vector-literal"))
+                .chain(object.constants.iter().cloned()),
+        );
+        let resolved = super::super::reader::resolve_circular_read_syntax(vector)?;
+        let mut items = resolved.to_vec()?;
+        if !matches!(items.first(), Some(Value::Symbol(marker)) if marker == "vector-literal") {
+            return Err(LispError::Signal(
+                "byte-code constants did not resolve to a vector".into(),
+            ));
+        }
+        items.remove(0);
+        Some(items)
+    } else {
+        None
+    };
+    let source_constants = resolved_constants
+        .as_deref()
+        .unwrap_or(object.constants.as_slice());
+    let mut constants = Vec::with_capacity(source_constants.len());
+    for (index, constant) in source_constants.iter().enumerate() {
+        match materialize_constant(interp, constant, env) {
+            Ok(constant) => constants.push(constant),
+            Err(error) => {
+                if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+                    eprintln!(
+                        "bytecode constant {index} failed to materialize ({}): {error:?}",
+                        constant.type_name()
+                    );
+                }
+                return Err(error);
+            }
+        }
     }
     Ok(CachedProgram {
         argspec: object.argspec.clone(),
@@ -412,6 +479,7 @@ fn run_with_stack(
     }
     let mut handlers: Vec<Handler> = Vec::new();
     let mut pc = 0usize;
+    let trace_errors = std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some();
 
     macro_rules! pop {
         () => {
@@ -425,7 +493,7 @@ fn run_with_stack(
                 "byte code ran off the end of its program".into(),
             ));
         };
-        let Instr { op, .. } = *instr;
+        let Instr { op, offset, .. } = *instr;
         pc += 1;
 
         // Hot pre-dispatch: the ops below either cannot fail or only take
@@ -735,14 +803,6 @@ fn run_with_stack(
                         let _ = interp.set_marker(beg_id, Some(saved_begv), Some(buffer_id));
                         let _ = interp.set_marker(end_id, Some(saved_zv), Some(buffer_id));
                         interp.set_marker_insertion_type(end_id, true);
-                        interp.buffer.push_undo_meta(Value::cons(
-                            Value::Marker(beg_id),
-                            Value::Integer(-(saved_begv as i64)),
-                        ));
-                        interp.buffer.push_undo_meta(Value::cons(
-                            Value::Marker(end_id),
-                            Value::Integer(saved_zv as i64),
-                        ));
                         unwinds.push(UnwindEntry::Restriction {
                             buffer_id,
                             beg_id,
@@ -957,8 +1017,29 @@ fn run_with_stack(
                     // exec_byte_code does the same); an error unwind
                     // truncates to the handler's recorded depth anyway.
                     let func = std::mem::replace(&mut stack[args_start - 1], Value::Nil);
-                    let value =
-                        interp.call_function_value(func, None, &stack[args_start..], env)?;
+                    let trace_call = trace_errors.then(|| func.to_string());
+                    let value = match interp.call_function_value(
+                        func,
+                        None,
+                        &stack[args_start..],
+                        env,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            // Expected conditions such as `scan-error' are
+                            // routinely caught by compiled Lisp.  Logging
+                            // every one makes a real VM dispatch failure
+                            // disappear in megabytes of noise.
+                            if matches!(&error, LispError::WrongNumberOfArgs(_, _))
+                                && let Some(func) = trace_call
+                            {
+                                eprintln!(
+                                    "bytecode call {func} failed at byte offset {offset}: {error:?}"
+                                );
+                            }
+                            return Err(error);
+                        }
+                    };
                     stack.truncate(args_start - 1);
                     stack.push(value);
                 }
@@ -1331,6 +1412,11 @@ fn run_with_stack(
                     }
                 }
                 if !handled {
+                    if trace_errors {
+                        eprintln!(
+                            "bytecode operation {op:?} failed at byte offset {offset}: {error:?}"
+                        );
+                    }
                     break 'run Err(error);
                 }
             }
@@ -1372,6 +1458,46 @@ mod tests {
         // (defun emaxx-fx-add (a b) (+ a b 1))
         let value = run("emaxx-fx-add", &[Value::Integer(2), Value::Integer(3)]).unwrap();
         assert_eq!(value, Value::Integer(6));
+    }
+
+    #[test]
+    fn materializes_reader_labels_shared_across_nested_closures() {
+        let form = super::super::super::reader::Reader::new(
+            r##"#[0 "\301\207"
+                   [nil
+                    #[0 "\300\207" [nil] 1 #1=""]
+                    #[0 "\300\207" [nil] 1 #1#]]
+                   1]"##,
+        )
+        .read()
+        .expect("read byte-code object with shared reader label")
+        .expect("byte-code object form");
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let closure = interp
+            .eval(&form, &mut env)
+            .expect("materialize outer byte-code closure");
+
+        assert!(matches!(
+            interp.call_function_value(closure, None, &[], &mut env),
+            Ok(Value::Record(_))
+        ));
+    }
+
+    #[test]
+    fn materializes_bytecode_records_nested_in_list_constants() {
+        let constant =
+            super::super::super::reader::Reader::new(r##"(wrapper #[0 "\300\207" [nil] 1])"##)
+                .read()
+                .expect("read list-valued bytecode constant")
+                .expect("constant form");
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let materialized = materialize_constant(&mut interp, &constant, &mut env)
+            .expect("materialize nested byte-code function");
+        let items = materialized.to_vec().expect("proper list constant");
+
+        assert!(matches!(items.get(1), Some(Value::Record(_))));
     }
 
     #[test]
@@ -1430,7 +1556,7 @@ mod tests {
             &mut interp,
             &object,
             &[Value::Lambda(
-                Vec::new(),
+                Vec::new().into(),
                 std::rc::Rc::new(vec![Value::Integer(42)]),
                 std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             )],
@@ -1444,7 +1570,7 @@ mod tests {
             &mut interp,
             &object,
             &[Value::Lambda(
-                Vec::new(),
+                Vec::new().into(),
                 std::rc::Rc::new(vec![Value::list([Value::symbol("car"), Value::Integer(9)])]),
                 std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             )],

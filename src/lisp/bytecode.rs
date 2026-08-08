@@ -1038,7 +1038,7 @@ pub(crate) mod tests {
         // Emaxx facade: slot 0 is an executable lambda, not an argspec.
         let slots = [
             Value::Lambda(
-                Vec::new(),
+                Vec::new().into(),
                 std::rc::Rc::new(Vec::new()),
                 std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             ),

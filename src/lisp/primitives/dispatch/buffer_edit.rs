@@ -2067,10 +2067,20 @@ define_dispatch!(
             }
             "char-after" => {
                 let pos = match args.first() {
-                    None | Some(Value::Nil) => interp.buffer.point(),
-                    Some(value) => position_from_value(interp, value)?,
+                    None | Some(Value::Nil) => Some(interp.buffer.point()),
+                    Some(Value::Integer(position)) if *position >= 0 => {
+                        usize::try_from(*position).ok()
+                    }
+                    Some(Value::Integer(_)) => None,
+                    Some(Value::Marker(id)) => interp.marker_position(*id),
+                    Some(value) => {
+                        return Err(LispError::TypeError(
+                            "integer-or-marker-p".into(),
+                            value.type_name(),
+                        ));
+                    }
                 };
-                match interp.buffer.char_at(pos) {
+                match pos.and_then(|position| interp.buffer.char_at(position)) {
                     Some(c) => Ok(Value::Integer(public_buffer_char_code(
                         c,
                         interp.buffer.is_multibyte(),
@@ -2080,8 +2090,21 @@ define_dispatch!(
             }
             "char-before" => {
                 let pos = match args.first() {
-                    None | Some(Value::Nil) => interp.buffer.point(),
-                    Some(value) => position_from_value(interp, value)?,
+                    None | Some(Value::Nil) => Some(interp.buffer.point()),
+                    Some(Value::Integer(position)) if *position >= 0 => {
+                        usize::try_from(*position).ok()
+                    }
+                    Some(Value::Integer(_)) => None,
+                    Some(Value::Marker(id)) => interp.marker_position(*id),
+                    Some(value) => {
+                        return Err(LispError::TypeError(
+                            "integer-or-marker-p".into(),
+                            value.type_name(),
+                        ));
+                    }
+                };
+                let Some(pos) = pos else {
+                    return Ok(Value::Nil);
                 };
                 if pos <= interp.buffer.point_min() {
                     Ok(Value::Nil)

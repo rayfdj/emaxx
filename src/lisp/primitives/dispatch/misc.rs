@@ -1002,7 +1002,7 @@ define_dispatch!(
                 if super::misc_keymaps::oclosure_type_of(&value).is_some()
                     && interp.has_lisp_function("oclosure-interactive-form")
                 {
-                    if let Some(items) = interactive_form_items(&value) {
+                    if let Some(items) = callable_interactive_form_items(interp, &value) {
                         return Ok(Value::list(items));
                     }
                     return interp.call_function_value(
@@ -1023,7 +1023,7 @@ define_dispatch!(
                     interp.load_target_with_env(&file, env)?;
                     value = interp.lookup_function(symbol, env)?;
                 }
-                Ok(interactive_form_items(&value)
+                Ok(callable_interactive_form_items(interp, &value)
                     .map(Value::list)
                     .unwrap_or(Value::Nil))
             }
@@ -1429,33 +1429,18 @@ define_dispatch!(
             }
             "make-interpreted-closure" => {
                 need_arg_range(name, args, 3, 5)?;
-                let params = parse_lambda_params_value(&args[0])?;
-                let body = args[1].to_vec()?;
-                let captured_env = closure_env_from_alist(&args[2])?;
-                let mut lambda_body = Vec::new();
-                if let Some(doc) = args.get(3).filter(|value| !value.is_nil()) {
-                    lambda_body.push(doc.clone());
+                let mut slots = vec![args[0].clone(), args[1].clone(), args[2].clone()];
+                // Slot 3 is the bytecode stack-depth position and is unused
+                // by interpreted closures.  Preserve GNU's slot layout so
+                // the primitive and `#[...]' reader share one implementation.
+                if args.len() > 3 {
+                    slots.push(Value::Nil);
+                    slots.push(args[3].clone());
                 }
-                if let Some(spec) = args.get(4).filter(|value| !value.is_nil()) {
-                    if spec
-                    .to_vec()
-                    .ok()
-                    .is_some_and(|items| matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "interactive"))
-                {
-                    lambda_body.push(spec.clone());
-                } else {
-                    lambda_body.push(Value::list([
-                        Value::Symbol("interactive".into()),
-                        spec.clone(),
-                    ]));
+                if args.len() > 4 {
+                    slots.push(args[4].clone());
                 }
-                }
-                lambda_body.extend(body);
-                Ok(Value::Lambda(
-                    params,
-                    lambda_body.into(),
-                    shared_env(captured_env),
-                ))
+                interp.make_interpreted_closure_value(&slots)
             }
             "getenv" | "getenv-internal" => {
                 need_args(name, args, 1)?;

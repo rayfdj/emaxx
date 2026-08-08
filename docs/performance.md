@@ -70,6 +70,30 @@ For `comparable` cases, the harness classifies medians as:
 
 The command does not fail just because `emaxx` is slower. It only fails on harness/config/process problems.
 
+Every comparable case also records `emaxx_over_oracle` and
+`exceeds_two_x`.  The latter is inclusive (`ratio >= 2.0`) and is counted as
+`over_two_x` in both the scenario and run summaries.  This makes the active
+investigation threshold machine-readable instead of relying on a manual
+calculation from rounded display values.
+
+## Compatibility-Frontier Timing Policy
+
+Compatibility runs should record both GNU Emacs and `emaxx` wall time and,
+where practical, split each result into startup/image construction, library or
+test-file loading, and selected test-body execution.
+
+The active “investigate and fix `emaxx` when it is at least 2× slower” rule
+applies to comparable **post-bootstrap** work: test bodies, library work after
+the initial image is available, and other steady-state phases.  It excludes
+the fixed startup difference caused by GNU Emacs beginning from a dumped image
+while `emaxx` currently reconstructs its bootstrap state.  Continue reporting
+that fixed cost, but track its remedy separately in
+[`preloaded-startup-image-issue.md`](preloaded-startup-image-issue.md).
+
+If a measurement cannot separate startup-image construction honestly, report
+the full timing and mark it as unsegmented; do not use that number alone to
+trigger the 2× compatibility-frontier gate.
+
 ## Execution Model
 
 `perf-harness` reuses the pinned oracle from the compatibility harness:
@@ -109,11 +133,98 @@ The initial scenario catalog lives in [`compat/perf_scenarios.json`](../compat/p
 
 It currently includes:
 
+- a shared, source-loaded interpreter suite covering list traversal, cons
+  allocation/drop, and lexical function dispatch; every timed invocation
+  verifies a semantic checksum
 - noverlay marker microbenchmarks
 - noverlay insert/delete microbenchmarks
 - provisional real-world noverlay suites
 - oracle-only redisplay and next-overlay-change suites
 - the coding decoder benchmark
+
+## Current Source-Interpreter Baseline
+
+The pre-compact-value checkpoint run of `interpreter/source-eval-suite` on the
+pinned GNU Emacs 30.2 oracle and a fat-LTO release `emaxx` is recorded in
+`target/perf/run-1786203529/interpreter/source-eval-suite.perf/comparison.json`:
+
+| Case | GNU Emacs | `emaxx` | Ratio |
+|---|---:|---:|---:|
+| list walk | 0.014421 s | 0.133063 s | 9.23× |
+| cons allocation | 0.001323 s | 0.021152 s | 15.99× |
+| interpreted function calls | 0.001321 s | 0.023775 s | 18.00× |
+
+Both runners load the same benchmark definitions from `.el`, and setup is
+outside the timed calls.  These are post-bootstrap source-interpreter ratios,
+so all three trigger the 2× investigation rule.
+
+An allocation-counting release probe found that one list-walk invocation made
+about 5.26 million allocation calls and requested about 226 MB while traversing
+prebuilt Lisp data.  It performed about 1.57 million symbol clones, 3.42
+million cons-value clones, and 709,000 list-to-vector conversions.  The other
+two cases made about 805,000 and 1.08 million allocation calls per invocation.
+
+The representation explains the scale:
+
+- `emaxx::lisp::types::Value` is 40 bytes on the measured 64-bit target.
+- GNU's `Lisp_Object` is one tagged machine word (8 bytes on the same class of
+  target).
+- An `emaxx` cons currently owns two separate `Rc<RefCell<Value>>` allocations;
+  GNU represents a cons as one object containing two tagged words.
+- Source evaluation flattens each list form into a fresh owned `Vec<Value>`
+  before dispatch, multiplying the large-value and owned-symbol costs.
+
+This is a runtime representation/execution-model gap, not an inherent C versus
+Rust result and not a bytecode-VM regression.  The optimized VM does not run
+source-defined closures.
+
+Small isolated experiments are not performance claims:
+
+- borrowing the common non-alias variable name moved cases by roughly
+  0.5–3%, too close to machine variation to retain as a standalone win;
+- disabling all backtrace recording improved the three cases by about 9–10%,
+  but is not a valid implementation because it breaks debugger and backtrace
+  semantics;
+- caching repeated flattened source forms improved the synthetic cases by
+  about 10–12% and preserved Electric's 874/874 result, but full Electric
+  timing did not reproduce a stable win, so the prototype was not retained.
+
+The thematic work is therefore a compact Lisp value/object representation,
+including shared/interned symbol identities, one-object cons cells, and source
+dispatch that does not repeatedly materialize owned syntax vectors.  Treat
+lazy backtrace materialization as a related follow-up, not as the main fix.
+
+Before a representation change is retained it must pass all of these gates:
+
+- the paired source-interpreter suite with semantic checks and interleaved
+  release A/B measurements;
+- mutation tests proving cached or lowered forms observe `setcar` and `setcdr`;
+- the native Rust suite and strict formatting/lint gates;
+- Electric 874/874 and the current ordered compatibility prefix;
+- a representative compatibility-workload improvement clearly outside
+  machine noise, with no source-loading regression.
+
+## Pre-Migration Safety Boundary
+
+The commit immediately before the compact-value migration is tagged
+`pre-compact-lisp-value-2026-08-08`.  The tag is the stable rollback and
+`git bisect` boundary; ignored files under `target/` are evidence, not the
+source of truth.
+
+The checkpoint protects the migration with independent layers:
+
+- Rust identity, mutation, cycle, dynamic-binding, bytecode, reader, marker,
+  buffer/window, and cleanup regressions;
+- strict rustfmt, Clippy, generated-manifest, all-target compilation, CLI, and
+  ERT-runner publication gates;
+- exact GNU/Emaxx compatibility evidence, including Electric 874/874 and the
+  current ordered-prefix policy;
+- the paired source-interpreter workload with semantic checks and explicit
+  per-case Emaxx/GNU ratios.
+
+Add focused tests for each newly exposed object-table or invalidation contract.
+Do not postpone identity and mutation coverage until the final representation
+flip, and do not accept a benchmark improvement that weakens Lisp semantics.
 
 ## How To Read Results
 

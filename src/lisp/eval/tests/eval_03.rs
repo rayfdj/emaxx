@@ -619,6 +619,22 @@ fn sibling_closure_called_during_writer_sees_the_immediate_update() {
 }
 
 #[test]
+fn captured_frame_index_updates_live_closures_outside_the_dedup_cache() {
+    let mut interp = Interpreter::new();
+    let identity = Interpreter::fresh_frame_identity();
+    let captured = shared_env(vec![vec![
+        ("cell".into(), Value::Integer(1)),
+        identity.clone(),
+    ]]);
+    interp.register_captured_lexical_frames(&captured);
+    assert!(interp.closure_capture_cache.is_empty());
+
+    interp.sync_cached_closure_frames(&[vec![("cell".into(), Value::Integer(23)), identity]]);
+
+    assert_eq!(captured.borrow()[0][0].1, Value::Integer(23));
+}
+
+#[test]
 fn same_named_lexical_cells_from_distinct_frames_never_alias() {
     assert_eq!(
         eval_str(

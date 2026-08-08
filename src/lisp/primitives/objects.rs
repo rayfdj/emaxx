@@ -12,7 +12,7 @@ pub(crate) fn make_advice_wrapper_after(original: Value, advice: Value) -> Value
     let original_name = format!("__emaxx-advice-after-original-{unique}");
     let advice_name = format!("__emaxx-advice-after-function-{unique}");
     Value::Lambda(
-        vec!["&rest".into(), args_name.clone()],
+        vec!["&rest".into(), args_name.clone()].into(),
         vec![
             Value::Symbol(":closure-transparent-env".into()),
             Value::list([
@@ -33,7 +33,7 @@ pub(crate) fn make_advice_wrapper_around(original: Value, advice: Value) -> Valu
     let original_name = format!("__emaxx-advice-around-original-{unique}");
     let advice_name = format!("__emaxx-advice-around-function-{unique}");
     Value::Lambda(
-        vec!["&rest".into(), args_name.clone()],
+        vec!["&rest".into(), args_name.clone()].into(),
         vec![
             Value::Symbol(":closure-transparent-env".into()),
             Value::list([

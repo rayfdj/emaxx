@@ -2675,7 +2675,7 @@ define_dispatch!(
                 body.extend(args[1..].iter().map(literal_form));
                 body.push(Value::Symbol(rest_name.clone()));
                 Ok(Value::Lambda(
-                    vec!["&rest".into(), rest_name],
+                    vec!["&rest".into(), rest_name].into(),
                     vec![Value::list(body)].into(),
                     shared_env(env.clone()),
                 ))

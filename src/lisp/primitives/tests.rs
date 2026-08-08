@@ -3693,7 +3693,7 @@ fn dynamic_buffer_undo_list_binding_restores_native_history() {
                       (undo-in-progress t))
                   (setq pending (primitive-undo 1 pending))
                   (setq temporary-result (list (buffer-string) pending))))
-              (list temporary-result (equal buffer-undo-list original))))
+              (list temporary-result (eq buffer-undo-list original))))
         "#;
     let form = Reader::new(program)
         .read()
@@ -3713,6 +3713,64 @@ fn dynamic_buffer_undo_list_binding_restores_native_history() {
         .eval(&form, &mut Vec::new())
         .expect("evaluate dynamic undo binding contract");
     assert_eq!(result, expected);
+}
+
+#[test]
+fn buffer_undo_list_assignment_preserves_cons_identity() {
+    let program = r#"
+          (with-temp-buffer
+            (buffer-enable-undo)
+            (insert "before")
+            (let* ((original buffer-undo-list)
+                   (extended (cons nil original)))
+              (setq buffer-undo-list extended)
+              (let ((extended-is-visible (eq buffer-undo-list extended)))
+                (setq buffer-undo-list original)
+                (list extended-is-visible
+                      (eq buffer-undo-list original)))))
+        "#;
+    let form = Reader::new(program)
+        .read()
+        .expect("read undo-list identity contract")
+        .expect("undo-list identity form");
+    let mut interp = Interpreter::new();
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate undo-list identity contract");
+    assert_eq!(result, Value::list([Value::T, Value::T]));
+}
+
+#[test]
+fn primitive_undo_consumes_marker_adjustments_with_their_deletion() {
+    let program = r#"
+          (with-temp-buffer
+            (buffer-enable-undo)
+            (insert "abc")
+            (setq buffer-undo-list nil)
+            (let ((marker (copy-marker 2)))
+              (delete-region 1 4)
+              (let ((pending buffer-undo-list)
+                    (undo-in-progress t))
+                (setq pending (primitive-undo 1 pending))
+                (list (buffer-string) (marker-position marker) pending))))
+        "#;
+    let form = Reader::new(program)
+        .read()
+        .expect("read marker-adjustment undo contract")
+        .expect("marker-adjustment undo form");
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load the Emaxx preload compatibility layer");
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate marker-adjustment undo contract");
+    assert_eq!(
+        result,
+        Value::list([Value::String("abc".into()), Value::Integer(2), Value::Nil])
+    );
 }
 
 #[test]
@@ -4457,7 +4515,7 @@ fn run_at_time_callbacks_fire_on_accept_process_output() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let callback = Value::Lambda(
-        Vec::new(),
+        Vec::new().into(),
         vec![
             Value::list([
                 Value::Symbol("setq".into()),
@@ -4490,7 +4548,7 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let callback = Value::Lambda(
-        Vec::new(),
+        Vec::new().into(),
         vec![
             Value::list([
                 Value::Symbol("setq".into()),
@@ -4753,7 +4811,7 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
     )
     .expect("server should expose its port");
     let sentinel = Value::Lambda(
-        vec!["process".into(), "event".into()],
+        vec!["process".into(), "event".into()].into(),
         vec![Value::list([
             Value::Symbol("setq".into()),
             Value::Symbol("nowait-event".into()),

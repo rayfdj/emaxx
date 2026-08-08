@@ -282,10 +282,47 @@ fn rewrite_lazy_doc_refs(
 ) -> String {
     let path_literal = lisp_string_literal(&path.display().to_string());
     let bytes = text.as_bytes();
-    let mut out = String::new();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut in_comment = false;
 
     while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            out.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if in_comment {
+            out.push(byte);
+            if byte == b'\n' {
+                in_comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            out.push(byte);
+            index += 1;
+            continue;
+        }
+        if byte == b';' {
+            in_comment = true;
+            out.push(byte);
+            index += 1;
+            continue;
+        }
+
         if bytes[index..].starts_with(b"(#$ . ") {
             let digits_start = index + 6;
             let mut cursor = digits_start;
@@ -298,13 +335,13 @@ fn rewrite_lazy_doc_refs(
                     && let Some(offset) = offset
                     && let Some(doc) = docs.get(&offset)
                 {
-                    out.push_str(&lisp_string_literal(doc));
+                    out.extend_from_slice(lisp_string_literal(doc).as_bytes());
                 } else {
-                    out.push('(');
-                    out.push_str(&path_literal);
-                    out.push_str(" . ");
-                    out.push_str(&text[digits_start..cursor]);
-                    out.push(')');
+                    out.push(b'(');
+                    out.extend_from_slice(path_literal.as_bytes());
+                    out.extend_from_slice(b" . ");
+                    out.extend_from_slice(&bytes[digits_start..cursor]);
+                    out.push(b')');
                 }
                 index = cursor + 1;
                 continue;
@@ -312,16 +349,16 @@ fn rewrite_lazy_doc_refs(
         }
 
         if bytes[index..].starts_with(b"#$") {
-            out.push_str(&path_literal);
+            out.extend_from_slice(path_literal.as_bytes());
             index += 2;
             continue;
         }
 
-        out.push(bytes[index] as char);
+        out.push(byte);
         index += 1;
     }
 
-    out
+    String::from_utf8(out).expect("rewriting valid UTF-8 preserves UTF-8")
 }
 
 pub(crate) fn preprocess_lazy_doc_source(
@@ -331,10 +368,47 @@ pub(crate) fn preprocess_lazy_doc_source(
 ) -> String {
     let bytes = source.as_bytes();
     let mut docs = HashMap::new();
-    let mut out = String::new();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut in_comment = false;
 
     while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            out.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if in_comment {
+            out.push(byte);
+            if byte == b'\n' {
+                in_comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            out.push(byte);
+            index += 1;
+            continue;
+        }
+        if byte == b';' {
+            in_comment = true;
+            out.push(byte);
+            index += 1;
+            continue;
+        }
+
         if bytes[index..].starts_with(b"#@") {
             let digits_start = index + 2;
             let mut cursor = digits_start;
@@ -344,7 +418,7 @@ pub(crate) fn preprocess_lazy_doc_source(
             if cursor > digits_start {
                 let count = source[digits_start..cursor].parse::<usize>().unwrap_or(0);
                 if count == 0 {
-                    out.push_str("nil");
+                    out.extend_from_slice(b"nil");
                     break;
                 }
                 if cursor < bytes.len() {
@@ -374,10 +448,11 @@ pub(crate) fn preprocess_lazy_doc_source(
             }
         }
 
-        out.push(bytes[index] as char);
+        out.push(byte);
         index += 1;
     }
 
+    let out = String::from_utf8(out).expect("removing byte ranges preserves valid UTF-8");
     rewrite_lazy_doc_refs(&out, path, &docs, force_load_doc_strings)
 }
 
@@ -552,7 +627,7 @@ pub fn load_file_strict(
     let compiled_source_path = path.with_extension("el");
     let versioned_elc = requested_source.starts_with(b";ELC\x1e");
     let source = if versioned_elc && compiled_source_path.is_file() {
-        let vm_enabled = std::env::var_os("EMAXX_BYTECODE_VM").is_some_and(|flag| flag == "1");
+        let vm_enabled = bytecode_vm_enabled();
         match String::from_utf8(requested_source) {
             Ok(source) if vm_enabled || headered_elc_is_interpretable_lisp(path, &source) => source,
             Ok(_) | Err(_) => read_source(&compiled_source_path)?,
@@ -649,6 +724,26 @@ pub fn load_file_strict(
             return Err(error);
         }
     };
+    // Reader labels are scoped to one object returned by `read'.  Source
+    // evaluation normally resolves them at `quote', but compiled top-level
+    // forms also contain labels inside raw bytecode constants and defconst
+    // payloads.  Resolve each complete `.elc' form once so every nested
+    // `#N#' shares the same label table, exactly as it did in GNU's reader.
+    let forms = if versioned_elc {
+        forms
+            .into_iter()
+            .map(|form| {
+                let form = if reader::contains_circular_read_syntax(&form) {
+                    reader::resolve_circular_read_syntax(form)
+                } else {
+                    Ok(form)
+                }?;
+                interp.materialize_read_record_literals(&form)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        forms
+    };
     // GNU's reader interns ordinary symbols as it constructs each form.
     // Emaxx deliberately keeps parsing independent from an Interpreter, so
     // reproduce that reader side effect at the common file-load boundary
@@ -696,6 +791,10 @@ pub fn load_file_strict(
     restore_load_dynamic_bindings(interp, previous_read_symbol_shorthands, previous_load_list);
     interp.set_current_load_file(previous);
     Ok(())
+}
+
+pub(crate) fn bytecode_vm_enabled() -> bool {
+    std::env::var_os("EMAXX_BYTECODE_VM").is_some_and(|flag| flag == "1")
 }
 
 fn restore_special_dynamic_bindings(
@@ -805,7 +904,11 @@ fn restore_load_dynamic_bindings(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_file_local_variable, parse_symbol_shorthands, source_settings};
+    use super::{
+        extract_file_local_variable, parse_symbol_shorthands, preprocess_lazy_doc_source,
+        source_settings,
+    };
+    use std::path::Path;
 
     #[test]
     fn parses_compact_lexical_binding_modelines() {
@@ -857,6 +960,40 @@ mod tests {
                 .expect("source settings should parse file-local symbol shorthands")
                 .read_symbol_shorthands,
             vec![("ft-".into(), "fns-tests-".into())]
+        );
+    }
+
+    #[test]
+    fn lazy_doc_preprocessing_ignores_markers_inside_strings_and_comments() {
+        let source = ";ELC\x1e\n(#[0 \"raw #@12 bytes #$ (#$ . 9) \\\"tail\" [nil] 1])\n\
+                      ; #@7 and #$ are comment text\n";
+
+        assert_eq!(
+            preprocess_lazy_doc_source(Path::new("/tmp/sample.elc"), source, false),
+            source
+        );
+    }
+
+    #[test]
+    fn lazy_doc_preprocessing_rewrites_only_top_level_references() {
+        let prefix = ";ELC\x1e\n#@7 ";
+        let content_offset = prefix.len();
+        let source = format!(
+            "{prefix}hello\x1f(list #$ (#$ . {content_offset}) \"#$ (#$ . {content_offset})\")"
+        );
+        let path = Path::new("/tmp/sample.elc");
+
+        assert_eq!(
+            preprocess_lazy_doc_source(path, &source, false),
+            format!(
+                ";ELC\x1e\n(list \"/tmp/sample.elc\" (\"/tmp/sample.elc\" . {content_offset}) \"#$ (#$ . {content_offset})\")"
+            )
+        );
+        assert_eq!(
+            preprocess_lazy_doc_source(path, &source, true),
+            format!(
+                ";ELC\x1e\n(list \"/tmp/sample.elc\" \"hello\" \"#$ (#$ . {content_offset})\")"
+            )
         );
     }
 }

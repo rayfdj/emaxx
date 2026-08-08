@@ -88,7 +88,11 @@ pub fn run_batch_with_actions(
     for action in &actions {
         match action {
             BatchAction::Load(target) => {
-                let resolved = resolve_load_target(target, &options.load_path)?;
+                let resolved = resolve_load_target(
+                    target,
+                    &options.load_path,
+                    interpreter.prefers_compiled_loads(),
+                )?;
                 if target != "ert" && loaded_test_file.is_none() {
                     loaded_test_file = Some(resolved.clone());
                 }
@@ -280,6 +284,10 @@ pub(crate) fn initialize_batch_interpreter(
     // phase, where delayed Custom initializers accumulate until startup.
     interpreter.set_variable("custom-delayed-init-variables", Value::Nil, &mut Vec::new());
     preload_batch_compat_libraries(&mut interpreter)?;
+    // The reconstructed dumped image still comes from source.  Compiled
+    // resolution is enabled only afterward; making the preload itself use
+    // `.elc' requires a coherent dumped-image/runtime project of its own.
+    interpreter.set_prefer_compiled_loads(lisp::bytecode_vm_enabled());
     complete_delayed_custom_initialization(&mut interpreter)?;
     initialize_batch_locale_environment(&mut interpreter)?;
     Ok(interpreter)
@@ -678,24 +686,38 @@ fn parse_perf_request(expressions: &[String]) -> Result<Option<PerfRequest>, Str
     Ok(request)
 }
 
-fn resolve_load_target(target: &str, load_path: &[PathBuf]) -> Result<PathBuf, String> {
+fn resolve_load_target(
+    target: &str,
+    load_path: &[PathBuf],
+    prefer_compiled: bool,
+) -> Result<PathBuf, String> {
     let direct = PathBuf::from(target);
     if direct.is_file() {
         return compat::canonicalize_path(&direct);
     }
 
-    let with_el = if target.ends_with(".el") {
-        None
-    } else {
-        Some(format!("{target}.el"))
-    };
+    let bare_target = !target.ends_with(".el") && !target.ends_with(".elc");
+    let with_el = bare_target.then(|| format!("{target}.el"));
+    let with_elc = bare_target.then(|| format!("{target}.elc"));
     for root in load_path {
         let candidate = root.join(target);
         if candidate.is_file() {
             return compat::canonicalize_path(&candidate);
         }
+        if prefer_compiled && let Some(with_elc) = &with_elc {
+            let candidate = root.join(with_elc);
+            if candidate.is_file() {
+                return compat::canonicalize_path(&candidate);
+            }
+        }
         if let Some(with_el) = &with_el {
             let candidate = root.join(with_el);
+            if candidate.is_file() {
+                return compat::canonicalize_path(&candidate);
+            }
+        }
+        if let Some(with_elc) = &with_elc {
+            let candidate = root.join(with_elc);
             if candidate.is_file() {
                 return compat::canonicalize_path(&candidate);
             }
@@ -963,6 +985,35 @@ mod tests {
         let selector = extract_ert_batch_selector(&form).expect("selector");
         // The printer renders (quote X) with reader shorthand, like GNU.
         assert_eq!(selector.to_string(), "'(not (tag :unstable))");
+    }
+
+    #[test]
+    fn batch_load_resolution_prefers_elc_only_when_requested() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = env::temp_dir().join(format!("emaxx-batch-load-resolution-{unique}"));
+        fs::create_dir_all(&root).expect("create load directory");
+        fs::write(root.join("sample.el"), "source").expect("write source");
+        fs::write(root.join("sample.elc"), "compiled").expect("write compiled file");
+
+        assert_eq!(
+            resolve_load_target("sample", std::slice::from_ref(&root), false)
+                .expect("resolve source"),
+            root.join("sample.el")
+                .canonicalize()
+                .expect("canonical source path")
+        );
+        assert_eq!(
+            resolve_load_target("sample", std::slice::from_ref(&root), true)
+                .expect("resolve compiled file"),
+            root.join("sample.elc")
+                .canonicalize()
+                .expect("canonical compiled path")
+        );
+
+        fs::remove_dir_all(root).expect("remove load directory");
     }
 
     #[test]
@@ -2017,7 +2068,7 @@ mod tests {
             };
             let mut interpreter =
                 initialize_batch_interpreter(&options).expect("init batch interpreter");
-            let ert = resolve_load_target("ert", &options.load_path).expect("resolve ert");
+            let ert = resolve_load_target("ert", &options.load_path, false).expect("resolve ert");
             lisp::load_file_strict(&mut interpreter, &ert).expect("load ert");
 
             assert!(
@@ -2043,7 +2094,7 @@ mod tests {
                 initialize_batch_interpreter(&options).expect("init batch interpreter");
 
             for target in ["ert", "ert-x", "align", "test/lisp/align-tests.el"] {
-                let resolved = resolve_load_target(target, &options.load_path)
+                let resolved = resolve_load_target(target, &options.load_path, false)
                     .unwrap_or_else(|error| panic!("resolve {target}: {error}"));
                 lisp::load_file_strict(&mut interpreter, &resolved).unwrap_or_else(|error| {
                     panic!("load {target} ({}): {error}", resolved.display())

@@ -1780,6 +1780,7 @@ pub(crate) fn read_from_lisp_source(
 ) -> Result<Value, LispError> {
     let value = read_from_lisp_source_raw(interp, source, env)?;
     interp.intern_symbols_in_value(&value);
+    let value = interp.materialize_read_record_literals(&value)?;
     let value = materialize_read_hash_table_literals(interp, &value)?;
     materialize_read_char_table_literals(interp, &value)
 }

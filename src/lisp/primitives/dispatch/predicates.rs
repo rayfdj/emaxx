@@ -309,7 +309,7 @@ define_dispatch!(
                         || matches!(
                             &args[0],
                             Value::Lambda(params, _, _)
-                                if params == &["vals", "start", "end"]
+                                if params.as_slice() == ["vals", "start", "end"]
                         )
                     {
                         Value::T
@@ -532,7 +532,9 @@ define_dispatch!(
                 {
                     return Ok(Value::T);
                 }
-                if autoload_command_p(&value) || interactive_form_items(&value).is_some() {
+                if autoload_command_p(&value)
+                    || callable_interactive_form_items(interp, &value).is_some()
+                {
                     return Ok(Value::T);
                 }
                 // OClosures may get their interactive form from the

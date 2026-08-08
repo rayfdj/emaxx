@@ -2354,7 +2354,7 @@ impl Interpreter {
                 self.set_function_binding(
                     name,
                     Some(Value::Lambda(
-                        vec!["&optional".into(), "arg".into()],
+                        vec!["&optional".into(), "arg".into()].into(),
                         body.into(),
                         shared_env(Vec::new()),
                     )),
@@ -2551,7 +2551,7 @@ impl Interpreter {
                 self.set_function_binding(
                     name,
                     Some(Value::Lambda(
-                        Vec::new(),
+                        Vec::new().into(),
                         body.into(),
                         shared_env(Vec::new()),
                     )),
@@ -2829,7 +2829,7 @@ impl Interpreter {
             self.set_function_binding(
                 &predicate_name,
                 Some(Value::Lambda(
-                    vec!["object".into()],
+                    vec!["object".into()].into(),
                     vec![Value::list([
                         Value::Symbol("emaxx-struct-p".into()),
                         struct_name.clone(),
@@ -2844,7 +2844,7 @@ impl Interpreter {
         self.set_function_binding(
             &format!("copy-{name}"),
             Some(Value::Lambda(
-                vec!["object".into()],
+                vec!["object".into()].into(),
                 vec![Value::list([
                     Value::Symbol("copy-sequence".into()),
                     Value::Symbol("object".into()),
@@ -2881,7 +2881,7 @@ impl Interpreter {
             self.set_function_binding(
                 &accessor_name,
                 Some(Value::Lambda(
-                    vec!["object".into()],
+                    vec!["object".into()].into(),
                     vec![Value::list([
                         Value::Symbol("emaxx-struct-ref".into()),
                         struct_name.clone(),
@@ -2921,7 +2921,7 @@ impl Interpreter {
             self.set_function_binding(
                 &format!("(setf {accessor_name})"),
                 Some(Value::Lambda(
-                    vec!["val".into(), "cl-x".into()],
+                    vec!["val".into(), "cl-x".into()].into(),
                     vec![Value::list([
                         Value::Symbol("setf".into()),
                         Value::list([
@@ -3037,11 +3037,12 @@ impl Interpreter {
             self.set_function_binding(
                 &constructor_name,
                 Some(Value::Lambda(
-                    if direct_lambda {
+                    (if direct_lambda {
                         params
                     } else {
                         vec!["&rest".into(), "args".into()]
-                    },
+                    })
+                    .into(),
                     lambda_body.into(),
                     shared_env(Vec::new()),
                 )),
@@ -3076,7 +3077,7 @@ impl Interpreter {
         self.set_function_binding(
             &compiler_macro_name,
             Some(Value::Lambda(
-                vec!["_form".into(), "object".into()],
+                vec!["_form".into(), "object".into()].into(),
                 vec![expanded_form].into(),
                 shared_env(Vec::new()),
             )),
@@ -3445,7 +3446,7 @@ impl Interpreter {
         {
             self.mark_lexical_closure_env(&closure_env);
         }
-        let lambda = Value::Lambda(params, body.into(), closure_env);
+        let lambda = Value::Lambda(params.into(), body.into(), closure_env);
         let old_definition = self.logical_function_binding(&name, &Env::new());
         self.record_definition_in_load_history("defun", &name);
         if let Some(old_definition) = old_definition {
@@ -3521,7 +3522,7 @@ impl Interpreter {
         let name = items[1].as_symbol()?.to_string();
         let params = self.parse_params(&items[2])?;
         let body = items[3..].to_vec();
-        let lambda = Value::Lambda(params, body.into(), shared_env(env.clone()));
+        let lambda = Value::Lambda(params.into(), body.into(), shared_env(env.clone()));
         self.put_symbol_property(&name, "cl-deftype-handler", lambda);
         Ok(Value::Symbol(name))
     }
@@ -3618,7 +3619,7 @@ impl Interpreter {
             self.set_function_binding(
                 name,
                 Some(Value::Lambda(
-                    vec!["&rest".into(), "_ignore".into()],
+                    vec!["&rest".into(), "_ignore".into()].into(),
                     vec![Value::list([
                         Value::Symbol("error".into()),
                         Value::String(format!("Class {name} is abstract")),
@@ -3631,7 +3632,7 @@ impl Interpreter {
             self.set_function_binding(
                 name,
                 Some(Value::Lambda(
-                    vec!["&rest".into(), "initargs".into()],
+                    vec!["&rest".into(), "initargs".into()].into(),
                     vec![Value::list([
                         Value::Symbol("apply".into()),
                         Value::list([
@@ -3655,7 +3656,7 @@ impl Interpreter {
         self.set_function_binding(
             &format!("{name}-p"),
             Some(Value::Lambda(
-                vec!["object".into()],
+                vec!["object".into()].into(),
                 vec![Value::list([
                     Value::Symbol("and".into()),
                     Value::list([
@@ -3678,7 +3679,7 @@ impl Interpreter {
         self.set_function_binding(
             &format!("{name}--eieio-childp"),
             Some(Value::Lambda(
-                vec!["object".into()],
+                vec!["object".into()].into(),
                 vec![Value::list([
                     Value::Symbol("emaxx-class-p".into()),
                     Value::list([
@@ -4537,7 +4538,7 @@ impl Interpreter {
                 cl_defmethod_previous_binding(&previous, &previous_symbol)
             {
                 let replacement = Value::Lambda(
-                    generic_params.clone(),
+                    generic_params.clone().into(),
                     wrapper_body.clone().into(),
                     shared_env(
                         std::iter::once(vec![
@@ -4601,8 +4602,11 @@ impl Interpreter {
                 ),
             ]);
             closure_env.extend(env.iter().cloned());
-            let wrapper =
-                Value::Lambda(generic_params, wrapper_body.into(), shared_env(closure_env));
+            let wrapper = Value::Lambda(
+                generic_params.into(),
+                wrapper_body.into(),
+                shared_env(closure_env),
+            );
             if let Some((previous_env, previous_name)) = insertion_parent {
                 let mut previous_env = previous_env.borrow_mut();
                 for frame in previous_env.iter_mut() {
@@ -4827,7 +4831,7 @@ impl Interpreter {
                 .chain(env.iter().cloned())
                 .collect::<Vec<_>>();
                 let replacement = Value::Lambda(
-                    generic_params.clone(),
+                    generic_params.clone().into(),
                     method_body.clone().into(),
                     shared_env(replacement_env),
                 );
@@ -4889,7 +4893,7 @@ impl Interpreter {
             .chain(env.iter().cloned())
             .collect::<Vec<_>>();
             let current_method = Value::Lambda(
-                generic_params.clone(),
+                generic_params.clone().into(),
                 method_body.into(),
                 shared_env(current_method_env),
             );
@@ -4951,12 +4955,12 @@ impl Interpreter {
                 )
             };
             let top_wrapper = Value::Lambda(
-                wrapper_params.clone(),
+                wrapper_params.clone().into(),
                 dispatch_body(top_condition).into(),
                 wrapper_closure(previous.clone()),
             );
             let next_wrapper = Value::Lambda(
-                wrapper_params,
+                wrapper_params.into(),
                 dispatch_body(next_condition).into(),
                 wrapper_closure(dispatch_previous),
             );
@@ -5038,7 +5042,7 @@ impl Interpreter {
                 .unwrap_or_else(|| lowered_lambda_list.clone());
             let generic_params = self.parse_params(&generic_lambda_list)?;
             let base_method = Value::Lambda(
-                generic_params,
+                generic_params.into(),
                 executable_method_forms.clone().into(),
                 shared_env(env.clone()),
             );
@@ -5090,7 +5094,7 @@ impl Interpreter {
             )?;
             let mut closure_env = env.clone();
             closure_env.push(vec![(previous_symbol, Self::stored_value(previous))]);
-            let wrapper = Value::Lambda(params, body.into(), shared_env(closure_env));
+            let wrapper = Value::Lambda(params.into(), body.into(), shared_env(closure_env));
             self.set_function_binding(&method_name, Some(wrapper));
             Ok(items[1].clone())
         } else if method_specializers.is_empty() {
@@ -5553,7 +5557,7 @@ impl Interpreter {
             self.set_function_binding(
                 &format!("(setf {type_name}--{slot})"),
                 Some(Value::Lambda(
-                    vec!["value".into(), "obj".into()],
+                    vec!["value".into(), "obj".into()].into(),
                     vec![Value::list([
                         Value::Symbol("emaxx--oclosure-set-slot".into()),
                         Value::Symbol("obj".into()),
@@ -5774,7 +5778,7 @@ impl Interpreter {
             }
             None => Rc::new(body),
         };
-        Ok(Value::Lambda(params, body, closure_env))
+        Ok(Value::Lambda(params.into(), body, closure_env))
     }
 }
 

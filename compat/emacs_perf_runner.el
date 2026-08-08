@@ -125,6 +125,19 @@
            cases))))
     (nreverse cases)))
 
+(defun emaxx-perf--interpreter-cases (n warmup samples)
+  (mapcar
+   (lambda (case)
+     (emaxx-perf--benchmark-case
+      (symbol-name case)
+      warmup
+      samples
+      (lambda ()
+        (benchmark-run 1 (funcall case n)))))
+   '(emaxx-perf-interpreted-list-walk
+     emaxx-perf-interpreted-cons-allocation
+     emaxx-perf-interpreted-function-calls)))
+
 (defun emaxx-perf--benchmark-case (case-id warmup samples thunk)
   (let ((sample-values nil)
         (gc-count 0)
@@ -158,7 +171,8 @@
 
 (defun emaxx-perf--scenario-tier (scenario-id)
   (pcase scenario-id
-    ((or "noverlay/perf-marker-suite"
+    ((or "interpreter/source-eval-suite"
+         "noverlay/perf-marker-suite"
          "noverlay/perf-insert-delete-suite")
      "comparable")
     ("noverlay/perf-realworld-suite" "provisional")
@@ -170,6 +184,8 @@
 (defun emaxx-perf-run-scenario (scenario-id n warmup samples)
   (let* ((cases
           (pcase scenario-id
+            ("interpreter/source-eval-suite"
+             (emaxx-perf--interpreter-cases n warmup samples))
             ("noverlay/perf-marker-suite"
              (emaxx-perf--suite-cases 'perf-marker-suite n warmup samples))
             ("noverlay/perf-insert-delete-suite"

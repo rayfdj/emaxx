@@ -906,11 +906,19 @@ impl Interpreter {
         };
         let advice = if let Some(name) = advice_name {
             let function_name = format!("{target}@{name}");
-            let lambda = Value::Lambda(params, items[3..].to_vec().into(), shared_env(env.clone()));
+            let lambda = Value::Lambda(
+                params.into(),
+                items[3..].to_vec().into(),
+                shared_env(env.clone()),
+            );
             self.push_function_binding(&function_name, lambda);
             Value::Symbol(function_name)
         } else {
-            Value::Lambda(params, items[3..].to_vec().into(), shared_env(env.clone()))
+            Value::Lambda(
+                params.into(),
+                items[3..].to_vec().into(),
+                shared_env(env.clone()),
+            )
         };
         primitives::call(
             self,
@@ -1279,14 +1287,6 @@ impl Interpreter {
         let _ = self.set_marker(beg_id, Some(saved_begv), Some(saved_buffer_id));
         let _ = self.set_marker(end_id, Some(saved_zv), Some(saved_buffer_id));
         self.set_marker_insertion_type(end_id, true);
-        self.buffer.push_undo_meta(Value::cons(
-            Value::Marker(beg_id),
-            Value::Integer(-(saved_begv as i64)),
-        ));
-        self.buffer.push_undo_meta(Value::cons(
-            Value::Marker(end_id),
-            Value::Integer(saved_zv as i64),
-        ));
         let result = self.sf_progn(&items[1..], env);
         let final_buffer_id = self.current_buffer_id();
         let restore_begv = self.marker_position(beg_id).unwrap_or(saved_begv);
@@ -1599,7 +1599,7 @@ impl Interpreter {
                 params.push(p.as_symbol()?.to_string());
             }
             let body: Vec<Value> = parts[2..].to_vec();
-            let lambda = Value::Lambda(params, body.into(), shared_env(env.clone()));
+            let lambda = Value::Lambda(params.into(), body.into(), shared_env(env.clone()));
             frame.push((fname, lambda));
         }
         frame.insert(
@@ -1645,7 +1645,7 @@ impl Interpreter {
             let body: Vec<Value> = parts[2..].to_vec();
             frame.push((
                 fname,
-                Value::Lambda(params, body.into(), closure_env.clone()),
+                Value::Lambda(params.into(), body.into(), closure_env.clone()),
             ));
         }
 

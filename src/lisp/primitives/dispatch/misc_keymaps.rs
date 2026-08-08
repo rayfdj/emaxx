@@ -1653,7 +1653,7 @@ define_dispatch!(
                     ]),
                 ]);
                 Ok(Value::Lambda(
-                    vec!["string".into(), "pred".into(), "action".into()],
+                    vec!["string".into(), "pred".into(), "action".into()].into(),
                     vec![body].into(),
                     crate::lisp::types::shared_env(Vec::new()),
                 ))

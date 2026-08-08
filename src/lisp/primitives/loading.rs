@@ -60,7 +60,7 @@ pub(crate) fn collect_interactive_args(
     // body and instead COMPOSE the advised function's spec.
     let oclosure_spec = if crate::lisp::primitives::dispatch::oclosure_type_of(&func).is_some()
         && interp.has_lisp_function("oclosure-interactive-form")
-        && interactive_spec_form(&func).is_none()
+        && interactive_spec_form(interp, &func).is_none()
     {
         interp
             .call_function_value(
@@ -75,7 +75,7 @@ pub(crate) fn collect_interactive_args(
     } else {
         None
     };
-    let Some(spec) = oclosure_spec.or_else(|| interactive_spec_form(&func)) else {
+    let Some(spec) = oclosure_spec.or_else(|| interactive_spec_form(interp, &func)) else {
         return Ok(Vec::new());
     };
     match spec {
@@ -627,7 +627,7 @@ pub(crate) fn resolve_load_target_in_env(
         if let Some(with_el) = &with_el {
             let candidate = root.join(with_el);
             if candidate.is_file() {
-                if crate::lisp::eval::runtime::load_source_stub_prefers_elc(&candidate)
+                if interp.load_source_prefers_elc(&candidate)
                     && let Some(with_elc) = &with_elc
                 {
                     let elc = root.join(with_elc);
