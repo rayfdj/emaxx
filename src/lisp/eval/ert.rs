@@ -141,7 +141,7 @@ impl Interpreter {
         {
             self.mark_lexical_closure_env(&closure_env);
         }
-        let body = Value::Lambda(Vec::new(), body.into(), closure_env);
+        let body = Value::Lambda(Vec::new().into(), body.into(), closure_env);
         // Mirror `ert-set-test': tests are also reachable through the
         // `ert--test' symbol property as an `ert-test' struct, which
         // `ert-get-test' and the struct accessors read.

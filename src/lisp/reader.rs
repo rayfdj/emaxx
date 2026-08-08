@@ -83,11 +83,24 @@ fn circular_read_ref_form(value: &Value) -> Option<u32> {
     }
 }
 
+fn interpreted_closure_code_syntax(value: &Value) -> bool {
+    if let Some((_id, payload)) = circular_read_label_form(value) {
+        return interpreted_closure_code_syntax(&payload);
+    }
+    let Value::Cons(_, cdr) = value else {
+        return false;
+    };
+    // Before Emacs 30, lazily loaded BYTECODE could occupy this slot as a
+    // (FILE . OFFSET) pair.  It is still bytecode, whereas an interpreted
+    // closure's code slot is a (proper) list of body forms.
+    !matches!(&*cdr.borrow(), Value::Integer(_))
+}
+
 fn invalid_circular_read_syntax() -> LispError {
     LispError::ReadError("invalid-read-syntax".into())
 }
 
-fn contains_circular_read_syntax(value: &Value) -> bool {
+pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
     if circular_read_ref_form(value).is_some() || circular_read_label_form(value).is_some() {
         return true;
     }
@@ -251,7 +264,7 @@ pub(crate) fn resolve_circular_read_syntax(value: Value) -> Result<Value, LispEr
 }
 
 /// True when a quoted template contains reader marker forms (`#N='/`#N#'
-/// circular labels or `#s(hash-table ...)' literals) that `quote' must
+/// circular labels, hash/character tables, or record literals) that `quote' must
 /// resolve.  Marker-free templates — the common case — can be returned
 /// as-is, sharing structure exactly like GNU's quote.
 pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
@@ -269,7 +282,8 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                     if let Value::Symbol(symbol) = &*car
                         && (symbol == CIRCULAR_READ_SYNTAX_SYMBOL
                             || symbol == HASH_TABLE_LITERAL_SYMBOL
-                            || symbol == CHAR_TABLE_LITERAL_SYMBOL)
+                            || symbol == CHAR_TABLE_LITERAL_SYMBOL
+                            || symbol == RECORD_LITERAL_SYMBOL)
                     {
                         return true;
                     }
@@ -1254,7 +1268,21 @@ impl<'a> Reader<'a> {
                         }
                     }
                 }
-                if fields.len() < 4 {
+                // GNU uses the same `#[...]' syntax for both kinds of
+                // closure pseudovector.  Byte-compiled functions have a
+                // string in the code slot and at least four fields, while an
+                // interpreted lexical closure has a cons-list body and can
+                // contain only ARGS, BODY, and ENV.  The latter occurs in
+                // ordinary `.elc' constants (notably cl-generic.elc), so it
+                // must not be rejected as malformed bytecode.
+                let interpreted =
+                    fields.len() == 3 || fields.get(1).is_some_and(interpreted_closure_code_syntax);
+                let valid_len = if interpreted {
+                    (3..=6).contains(&fields.len())
+                } else {
+                    (4..=6).contains(&fields.len())
+                };
+                if !valid_len {
                     return Err(LispError::ReadError(
                         "invalid byte-code object syntax".into(),
                     ));
@@ -1262,7 +1290,11 @@ impl<'a> Reader<'a> {
                 Ok(Some(Value::list(
                     std::iter::once(Value::symbol(RECORD_LITERAL_SYMBOL))
                         .chain(std::iter::once(structure_slot_eval_form(Value::symbol(
-                            "byte-code-function",
+                            if interpreted {
+                                "interpreted-function"
+                            } else {
+                                "byte-code-function"
+                            },
                         ))))
                         .chain(fields.into_iter().map(structure_slot_eval_form)),
                 )))
@@ -1927,6 +1959,22 @@ mod tests {
         assert_eq!(read_one("#_"), Value::Symbol(String::new()));
         assert_eq!(read_one("#@00 ignored"), Value::Nil);
         assert!(Reader::new("#[0 \"\"]").read().is_err());
+    }
+
+    #[test]
+    fn reads_three_field_interpreted_closure_syntax() {
+        let value = read_one("#[(_tag &rest _) ('(t)) (dynamic-name t)]");
+        let items = value.to_vec().expect("closure reader form");
+        assert!(matches!(
+            items.as_slice(),
+            [Value::Symbol(marker), kind, ..]
+                if marker == RECORD_LITERAL_SYMBOL
+                    && kind.to_vec().ok().is_some_and(|quoted| matches!(
+                        quoted.as_slice(),
+                        [Value::Symbol(quote), Value::Symbol(name)]
+                            if quote == "quote" && name == "interpreted-function"
+                    ))
+        ));
     }
 
     #[test]

@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn reader_interpreted_closures_restore_bindings_and_special_declarations() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (setq x 9)
+               (list
+                (funcall #[() (captured) ((captured . 7))])
+                (let ((x 3)) (funcall #[() (x) (x t)]))))"
+        ),
+        Value::list([Value::Integer(7), Value::Integer(9)])
+    );
+}
+
+#[test]
 fn nconc_rejects_non_lists_before_last_arg() {
     assert_eq!(
         eval_str("(condition-case err (nconc 'a '(c)) (wrong-type-argument (car err)))"),
@@ -1538,6 +1552,54 @@ fn upstream_electric_layout_uses_the_c_mode_indent_contract() {
 }
 
 #[test]
+fn upstream_electric_layout_accepts_a_c_mode_style_callback() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize interpreter");
+    interp
+        .load_target("elec-pair")
+        .expect("load GNU Electric Pair");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (define-derived-mode plainer-c-mode c-mode \"pC\"
+                 (c-toggle-electric-state -1)
+                 (setq-local electric-indent-local-mode-hook nil)
+                 (setq-local electric-indent-mode-hook nil)
+                 (electric-indent-local-mode 1)
+                 (dolist (key '(?\\\" ?' ?{ ?} ?\\( ?\\) ?[ ?]))
+                   (local-set-key (vector key) 'self-insert-command)))
+               (defun electric-layout-for-c-style-du-jour (inserted)
+                 (when (memq inserted '(?{ ?}))
+                   (save-excursion
+                     (backward-char 2)
+                     (c-point-syntax)
+                     (forward-char)
+                     (c-brace-newlines (c-point-syntax)))))
+               (with-temp-buffer
+                 (plainer-c-mode)
+                 (electric-layout-local-mode 1)
+                 (electric-pair-local-mode 1)
+                 (electric-indent-local-mode 1)
+                 (setq-local electric-layout-rules
+                             '(electric-layout-for-c-style-du-jour))
+                 (insert \"int main () \")
+                 (let ((last-command-event ?{))
+                   (call-interactively
+                    (key-binding (vector last-command-event))))
+                 (buffer-string)))",
+        ),
+        Value::String("int main ()\n{\n  \n}\n".into())
+    );
+}
+
+#[test]
 fn upstream_files_lisp_owns_remote_file_policy() {
     let options = crate::batch::BatchRunOptions {
         load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
@@ -2777,6 +2839,26 @@ fn kmacro_frontier_num_input_keys_counts_prefix_events_and_macro_eof() {
 }
 
 #[test]
+fn keyboard_macro_prefix_transient_map_falls_through_to_local_binding() {
+    assert_eq!(
+        eval_str(
+            r#"(save-window-excursion
+                 (with-temp-buffer
+                   (set-window-buffer (selected-window) (current-buffer))
+                   (let ((map (make-sparse-keymap)))
+                     (define-key map "b"
+                       (lambda (arg)
+                         (interactive "P")
+                         (insert (format "%S" arg))))
+                     (use-local-map map)
+                     (execute-kbd-macro (kbd "C-u b"))
+                     (buffer-string))))"#
+        ),
+        Value::String("(4)".into())
+    );
+}
+
+#[test]
 fn execute_kbd_macro_reports_an_undefined_key_sequence() {
     assert_eq!(
         eval_str(
@@ -3347,6 +3429,40 @@ fn gnu_simple_set_mark_updates_the_persistent_buffer_mark_marker() {
             Value::list([Value::Nil, Value::Nil, Value::Nil]),
         ])
     );
+}
+
+#[test]
+fn killing_a_buffer_retires_its_persistent_mark_mapping() {
+    let mut interp = Interpreter::new();
+    interp.buffer.set_mark(1);
+    let buffer_id = interp.current_buffer_id();
+    let Value::Marker(marker_id) = interp.buffer_mark_marker_value() else {
+        unreachable!("mark-marker always returns a marker")
+    };
+
+    assert_eq!(
+        interp.buffer_mark_marker_ids.get(&buffer_id),
+        Some(&marker_id)
+    );
+    assert_eq!(
+        interp.find_marker(marker_id).unwrap().mark_buffer_id,
+        Some(buffer_id)
+    );
+    assert!(
+        interp
+            .markers_by_buffer
+            .get(&buffer_id)
+            .is_some_and(|marker_ids| marker_ids.contains(&marker_id))
+    );
+
+    interp.kill_buffer_id(buffer_id);
+
+    assert!(!interp.buffer_mark_marker_ids.contains_key(&buffer_id));
+    assert!(!interp.markers_by_buffer.contains_key(&buffer_id));
+    let marker = interp.find_marker(marker_id).unwrap();
+    assert_eq!(marker.mark_buffer_id, None);
+    assert_eq!(marker.buffer_id, None);
+    assert_eq!(marker.position, None);
 }
 
 #[test]
@@ -4015,6 +4131,118 @@ fn defcustom_records_version_and_group_membership() {
                 Value::symbol("custom-variable"),
             ])]),
             Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn custom_declare_variable_keeps_compiled_custom_policy_in_elisp() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(progn
+               (custom-declare-group
+                 'sample-compiled-group nil \"Group.\" :prefix \"sample-\")
+               (custom-declare-variable
+                 'sample-compiled-option '(+ 1 2) \"Doc.\"
+                 :type 'integer :group 'sample-compiled-group)
+               (list sample-compiled-option
+                     (get 'sample-compiled-option 'custom-type)
+                     (special-variable-p 'sample-compiled-option)
+                     (get 'sample-compiled-group 'custom-prefix)
+                     (get 'sample-compiled-group 'custom-group)))",
+        ),
+        Value::list([
+            Value::Integer(3),
+            Value::symbol("integer"),
+            Value::T,
+            Value::String("sample-".into()),
+            Value::list([Value::list([
+                Value::symbol("sample-compiled-option"),
+                Value::symbol("custom-variable"),
+            ])]),
+        ])
+    );
+}
+
+#[test]
+fn compiled_subr_and_generic_entry_points_keep_elisp_owners() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(progn
+               (setq sample-compiled-list '(a))
+               (funcall #'add-to-list 'sample-compiled-list 'b)
+               (setq sample-combined-result
+                     (with-temp-buffer
+                       (buffer-enable-undo)
+                       (insert \"ab\")
+                       (funcall #'combine-change-calls-1 1 3
+                                (lambda ()
+                                  (delete-region 1 3)
+                                  (insert \"xy\")))
+                       (buffer-string)))
+               (cl-generic-define 'sample-runtime-generic '(x) nil)
+               (cl-defmethod sample-runtime-generic ((x integer)) (1+ x))
+               (list sample-compiled-list
+                     sample-combined-result
+                     (sample-runtime-generic 4)))",
+        ),
+        Value::list([
+            Value::list([Value::symbol("b"), Value::symbol("a")]),
+            Value::String("xy".into()),
+            Value::Integer(5),
+        ])
+    );
+}
+
+#[test]
+fn compiled_generic_method_entry_point_preserves_arguments_and_next_method() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(progn
+               (cl-generic-define 'sample-compiled-method '(x &optional y) nil)
+               (cl-generic-define-method
+                 'sample-compiled-method nil '((x t) &optional y) nil
+                 (lambda (x &optional y) (list 'base x y)))
+               (cl-generic-define-method
+                 'sample-compiled-method nil '((x integer) &optional y) 'curried
+                 (lambda (next)
+                   (lambda (x &optional y)
+                     (list 'integer x y (funcall next x y)))))
+               (list (sample-compiled-method 'symbol)
+                     (sample-compiled-method 'symbol 8)
+                     (sample-compiled-method 3 9)))",
+        ),
+        Value::list([
+            Value::list([Value::symbol("base"), Value::symbol("symbol"), Value::Nil,]),
+            Value::list([
+                Value::symbol("base"),
+                Value::symbol("symbol"),
+                Value::Integer(8),
+            ]),
+            Value::list([
+                Value::symbol("integer"),
+                Value::Integer(3),
+                Value::Integer(9),
+                Value::list([Value::symbol("base"), Value::Integer(3), Value::Integer(9),]),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn char_access_accepts_out_of_range_negative_integer_positions() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"x\")
+               (list (char-after -1) (char-before -1)
+                     (char-after 1) (char-before 2)))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Integer('x' as i64),
+            Value::Integer('x' as i64),
         ])
     );
 }
@@ -4947,6 +5175,27 @@ fn backtrace_frames_from_current_thread_returns_live_frames() {
             false,
         )]
     );
+}
+
+#[test]
+fn unevaluated_backtrace_frame_retains_the_live_source_form() {
+    let mut interp = Interpreter::new();
+    let form = Value::list([Value::Symbol("before".into()), Value::Integer(1)]);
+    interp.push_unevaluated_backtrace_frame(&form);
+
+    form.set_car(Value::Symbol("after".into()))
+        .expect("source form is a cons");
+    form.cdr()
+        .expect("source form has a tail")
+        .set_car(Value::Integer(2))
+        .expect("source form has an argument cell");
+
+    let (evald, function, args, _) = interp
+        .current_backtrace_frame()
+        .expect("unevaluated frame should be visible");
+    assert!(!evald);
+    assert_eq!(function, Value::Symbol("after".into()));
+    assert_eq!(args, vec![Value::Integer(2)]);
 }
 
 #[test]

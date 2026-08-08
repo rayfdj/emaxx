@@ -4823,6 +4823,70 @@ fn symbol_plist_is_the_live_mutable_property_list() {
 }
 
 #[test]
+fn ordered_global_and_property_indexes_survive_middle_removal() {
+    let mut interp = Interpreter::new();
+    for (name, value) in [
+        ("emaxx-index-a", Value::Integer(1)),
+        ("emaxx-index-b", Value::Integer(2)),
+        ("emaxx-index-c", Value::Integer(3)),
+    ] {
+        interp.set_global_binding(name, value);
+        interp.put_symbol_property(name, "sample", Value::T);
+    }
+
+    interp.remove_global_binding("emaxx-index-b");
+    interp
+        .set_symbol_plist("emaxx-index-b", Value::Nil)
+        .unwrap();
+
+    assert_eq!(
+        interp.global_binding_value("emaxx-index-a"),
+        Some(Value::Integer(1))
+    );
+    assert_eq!(interp.global_binding_value("emaxx-index-b"), None);
+    assert_eq!(
+        interp.global_binding_value("emaxx-index-c"),
+        Some(Value::Integer(3))
+    );
+    assert_eq!(
+        interp.get_symbol_property("emaxx-index-a", "sample"),
+        Some(Value::T)
+    );
+    assert_eq!(interp.get_symbol_property("emaxx-index-b", "sample"), None);
+    assert_eq!(
+        interp.get_symbol_property("emaxx-index-c", "sample"),
+        Some(Value::T)
+    );
+
+    interp.set_global_binding("emaxx-index-c", Value::Integer(30));
+    interp.put_symbol_property("emaxx-index-c", "sample", Value::Integer(30));
+    assert_eq!(
+        interp.global_binding_value("emaxx-index-c"),
+        Some(Value::Integer(30))
+    );
+    assert_eq!(
+        interp.get_symbol_property("emaxx-index-c", "sample"),
+        Some(Value::Integer(30))
+    );
+    assert_eq!(
+        interp
+            .globals
+            .iter()
+            .filter(|(name, _)| name.as_str() == "emaxx-index-c")
+            .count(),
+        1
+    );
+    assert_eq!(
+        interp
+            .symbol_properties
+            .iter()
+            .filter(|(name, _)| name == "emaxx-index-c")
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn loaded_gnu_cl_remprop_mutates_non_head_live_plist_cells() {
     run_with_large_stack(|| {
         let options = crate::batch::BatchRunOptions {
@@ -6198,6 +6262,81 @@ fn generic_record_reader_forms_evaluate_to_literal_records() {
     assert_eq!(record.slots.len(), 2);
     assert!(matches!(record.slots[0], Value::Record(_)));
     assert_eq!(record.slots[1], Value::Symbol("c".into()));
+}
+
+#[test]
+fn quoted_bytecode_reader_forms_are_materialized_as_records() {
+    let mut interp = Interpreter::new();
+    let value = eval_str_with(&mut interp, r#"'(macro #[0 "\300\207" [nil] 1])"#);
+    let items = value.to_vec().expect("quoted macro list");
+
+    assert_eq!(items.first(), Some(&Value::Symbol("macro".into())));
+    assert!(matches!(items.get(1), Some(Value::Record(_))));
+}
+
+#[test]
+fn compiled_interactive_metadata_is_shared_by_command_queries() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((fn #[257 "\300\207" [nil] 1 nil "P"]))
+                  (list (commandp fn) (interactive-form fn)))"#
+        ),
+        Value::list([
+            Value::T,
+            Value::list([Value::symbol("interactive"), Value::String("P".into())]),
+        ])
+    );
+}
+
+#[test]
+fn native_face_variables_exist_before_lisp_libraries_load() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (hash-table-p face--new-frame-defaults)\n\
+                   (gethash 'default face--new-frame-defaults)\n\
+                   face-filters-always-match face-default-stipple\n\
+                   scalable-fonts-allowed face-ignored-fonts\n\
+                   face-remapping-alist face-font-rescale-alist\n\
+                   face-near-same-color-threshold\n\
+                   face-font-lax-matched-attributes)"
+        )
+        .to_vec()
+        .expect("face variable result list")[0],
+        Value::T
+    );
+    let values = eval_str_with(
+        &mut interp,
+        "(list (car (gethash 'default face--new-frame-defaults))\n\
+               face-filters-always-match face-default-stipple\n\
+               scalable-fonts-allowed face-ignored-fonts\n\
+               face-remapping-alist face-font-rescale-alist\n\
+               face-near-same-color-threshold\n\
+               face-font-lax-matched-attributes)",
+    );
+    assert_eq!(
+        values,
+        Value::list([
+            Value::Integer(0),
+            Value::Nil,
+            Value::String("gray3".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Integer(30_000),
+            Value::T,
+        ])
+    );
+    let entry = eval_str_with(
+        &mut interp,
+        "(progn (internal-make-lisp-face 'emaxx-test-face nil)\n\
+                (gethash 'emaxx-test-face face--new-frame-defaults))",
+    );
+    let (id, vector) = entry.cons_values().expect("new face defaults entry");
+    assert_eq!(id, Value::Integer(1));
+    assert!(crate::lisp::primitives::vector_items(&vector).is_ok());
 }
 
 #[test]

@@ -542,36 +542,40 @@ pub(crate) fn delete_region_with_hooks(
                 .map(|hooks| !hooks.is_empty())
         })
         .unwrap_or(false);
-    if has_before_hooks {
-        let start_marker = interp.make_marker();
-        let end_marker = interp.make_marker();
-        let dead_marker = interp.make_marker();
-        if let (Value::Marker(start_id), Value::Marker(end_id), Value::Marker(dead_id)) =
-            (start_marker, end_marker, dead_marker)
-        {
-            let buffer_id = interp.current_buffer_id();
-            let _ = interp.set_marker(start_id, Some(from), Some(buffer_id));
-            let _ = interp.set_marker(end_id, Some(to), Some(buffer_id));
-            let _ = interp.set_marker(dead_id, None, None);
-            interp.buffer.push_undo_meta(Value::cons(
-                Value::Marker(start_id),
-                Value::Integer(-(from as i64)),
-            ));
-            interp.buffer.push_undo_meta(Value::cons(
-                Value::Marker(end_id),
-                Value::Integer(-(to as i64)),
-            ));
-            interp
-                .buffer
-                .push_undo_meta(Value::cons(Value::Marker(dead_id), Value::Integer(-1)));
-        }
-    }
-    run_change_hooks(
+    let preserved_bounds = if has_before_hooks {
+        let Value::Marker(start_id) = interp.make_marker() else {
+            unreachable!("make_marker returns a marker")
+        };
+        let Value::Marker(end_id) = interp.make_marker() else {
+            unreachable!("make_marker returns a marker")
+        };
+        let buffer_id = interp.current_buffer_id();
+        let _ = interp.set_marker(start_id, Some(from), Some(buffer_id));
+        let _ = interp.set_marker(end_id, Some(to), Some(buffer_id));
+        Some((start_id, end_id))
+    } else {
+        None
+    };
+    let hook_result = run_change_hooks(
         interp,
         "before-change-functions",
         &[Value::Integer(from as i64), Value::Integer(to as i64)],
         env,
-    )?;
+    );
+    let (from, to) = if let Some((start_id, end_id)) = preserved_bounds {
+        let start = interp.marker_position(start_id).unwrap_or(from);
+        let end = interp.marker_position(end_id).unwrap_or(to);
+        let _ = interp.set_marker(start_id, None, None);
+        let _ = interp.set_marker(end_id, None, None);
+        if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        }
+    } else {
+        (from, to)
+    };
+    hook_result?;
     let deleted = interp
         .delete_region_current_buffer(from, to)
         .map_err(|e| LispError::Signal(e.to_string()))?;

@@ -105,7 +105,7 @@ impl Interpreter {
         if let Some(with_el) = &with_el {
             let candidate = PathBuf::from(with_el);
             if candidate.is_file() {
-                if load_source_stub_prefers_elc(&candidate)
+                if self.load_source_prefers_elc(&candidate)
                     && let Some(with_elc) = if target.ends_with(".el") || target.ends_with(".elc") {
                         None
                     } else {
@@ -137,7 +137,7 @@ impl Interpreter {
             if let Some(with_el) = &with_el {
                 let candidate = root.join(with_el);
                 if candidate.is_file() {
-                    if load_source_stub_prefers_elc(&candidate)
+                    if self.load_source_prefers_elc(&candidate)
                         && let Some(with_elc) = &with_elc
                     {
                         let elc_candidate = root.join(with_elc);
@@ -174,7 +174,7 @@ impl Interpreter {
                 if let Some(alias_with_el) = &alias_with_el {
                     let candidate = root.join(alias_with_el);
                     if candidate.is_file() {
-                        if load_source_stub_prefers_elc(&candidate)
+                        if self.load_source_prefers_elc(&candidate)
                             && let Some(alias_with_elc) = &alias_with_elc
                         {
                             let elc_candidate = root.join(alias_with_elc);
@@ -1675,8 +1675,13 @@ impl Interpreter {
     pub fn kill_buffer_id(&mut self, id: u64) {
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
-        self.buffer_locals
-            .retain(|(buffer_id, _, _)| *buffer_id != id);
+        if let Some(marker_id) = self.buffer_mark_marker_ids.remove(&id)
+            && let Some(marker) = self.find_marker_mut(marker_id)
+        {
+            marker.mark_buffer_id = None;
+        }
+        self.buffer_locals.remove(&id);
+        self.buffer_local_hooks.remove(&id);
         self.indirect_buffers
             .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if id == self.current_buffer_id {
@@ -1755,6 +1760,7 @@ impl Interpreter {
             position: None,
             last_position: None,
             insertion_type: false,
+            mark_buffer_id: None,
         });
         Value::Marker(id)
     }
@@ -1773,21 +1779,54 @@ impl Interpreter {
             }
         };
         if let Some(marker) = self.find_marker_mut(marker_id) {
-            marker.position = mark;
-            marker.buffer_id = mark.map(|_| buffer_id);
-            if let Some(mark) = mark {
-                marker.last_position = Some(mark);
-            }
+            marker.mark_buffer_id = Some(buffer_id);
         }
+        self.set_marker(marker_id, mark, mark.map(|_| buffer_id))
+            .expect("the persistent buffer mark is a live marker");
         Value::Marker(marker_id)
     }
 
+    pub(super) fn marker_index(id: u64) -> Option<usize> {
+        usize::try_from(id.checked_sub(1)?).ok()
+    }
+
     pub fn find_marker(&self, id: u64) -> Option<&MarkerState> {
-        self.markers.iter().find(|marker| marker.id == id)
+        let index = Self::marker_index(id)?;
+        self.markers.get(index).filter(|marker| marker.id == id)
     }
 
     pub fn find_marker_mut(&mut self, id: u64) -> Option<&mut MarkerState> {
-        self.markers.iter_mut().find(|marker| marker.id == id)
+        let index = Self::marker_index(id)?;
+        self.markers.get_mut(index).filter(|marker| marker.id == id)
+    }
+
+    fn update_marker_buffer_index(
+        &mut self,
+        marker_id: u64,
+        previous_buffer_id: Option<u64>,
+        buffer_id: Option<u64>,
+    ) {
+        if previous_buffer_id == buffer_id {
+            return;
+        }
+        if let Some(previous_buffer_id) = previous_buffer_id {
+            let remove_empty_entry = self
+                .markers_by_buffer
+                .get_mut(&previous_buffer_id)
+                .is_some_and(|marker_ids| {
+                    marker_ids.remove(&marker_id);
+                    marker_ids.is_empty()
+                });
+            if remove_empty_entry {
+                self.markers_by_buffer.remove(&previous_buffer_id);
+            }
+        }
+        if let Some(buffer_id) = buffer_id {
+            self.markers_by_buffer
+                .entry(buffer_id)
+                .or_default()
+                .insert(marker_id);
+        }
     }
 
     pub fn marker_position(&self, id: u64) -> Option<usize> {
@@ -1819,17 +1858,21 @@ impl Interpreter {
         buffer_id: Option<u64>,
     ) -> Result<(), LispError> {
         let mark_buffer_id = self
-            .buffer_mark_marker_ids
-            .iter()
-            .find_map(|(buffer_id, marker_id)| (*marker_id == id).then_some(*buffer_id));
-        let marker = self
-            .find_marker_mut(id)
-            .ok_or_else(|| LispError::TypeError("marker".into(), format!("marker<{}>", id)))?;
-        marker.buffer_id = buffer_id;
-        marker.position = position;
-        if let Some(pos) = position {
-            marker.last_position = Some(pos);
+            .find_marker(id)
+            .and_then(|marker| marker.mark_buffer_id);
+        let previous_buffer_id;
+        {
+            let marker = self
+                .find_marker_mut(id)
+                .ok_or_else(|| LispError::TypeError("marker".into(), format!("marker<{}>", id)))?;
+            previous_buffer_id = marker.buffer_id;
+            marker.buffer_id = buffer_id;
+            marker.position = position;
+            if let Some(pos) = position {
+                marker.last_position = Some(pos);
+            }
         }
+        self.update_marker_buffer_index(id, previous_buffer_id, buffer_id);
         if let Some(mark_buffer_id) = mark_buffer_id
             && let Some(buffer) = self.get_buffer_by_id_mut(mark_buffer_id)
         {
@@ -2081,11 +2124,15 @@ impl Interpreter {
     }
 
     pub fn find_char_table(&self, id: u64) -> Option<&CharTableState> {
-        self.char_tables.iter().find(|table| table.id == id)
+        let index = usize::try_from(id.checked_sub(1)?).ok()?;
+        self.char_tables.get(index).filter(|table| table.id == id)
     }
 
     pub fn find_char_table_mut(&mut self, id: u64) -> Option<&mut CharTableState> {
-        self.char_tables.iter_mut().find(|table| table.id == id)
+        let index = usize::try_from(id.checked_sub(1)?).ok()?;
+        self.char_tables
+            .get_mut(index)
+            .filter(|table| table.id == id)
     }
 
     pub fn char_table_set(&mut self, id: u64, key: u32, value: Value) -> Result<(), LispError> {
@@ -2291,6 +2338,10 @@ impl Interpreter {
             type_name: type_name.to_string(),
             slots,
         });
+        self.record_ids_by_type_index
+            .entry(type_name.to_string())
+            .or_default()
+            .insert(id);
         Value::Record(id)
     }
 
@@ -2373,11 +2424,10 @@ impl Interpreter {
     }
 
     pub(crate) fn record_ids_by_type(&self, type_name: &str) -> Vec<u64> {
-        self.records
-            .iter()
-            .filter(|record| record.type_name == type_name)
-            .map(|record| record.id)
-            .collect()
+        self.record_ids_by_type_index
+            .get(type_name)
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     pub fn register_sqlite_handle(&mut self, id: u64, state: SqliteHandleState) {
@@ -2455,13 +2505,32 @@ impl Interpreter {
         type_name: &str,
         class_object_tagged: bool,
     ) -> Result<(), LispError> {
-        let Some(record) = self.find_record_mut(id) else {
+        let Some(previous_type_name) = self.find_record(id).map(|record| record.type_name.clone())
+        else {
             return Err(LispError::TypeError(
                 "record".into(),
                 format!("record<{id}>"),
             ));
         };
-        record.type_name = type_name.to_string();
+        if previous_type_name != type_name {
+            let remove_previous_type = self
+                .record_ids_by_type_index
+                .get_mut(&previous_type_name)
+                .is_some_and(|ids| {
+                    ids.remove(&id);
+                    ids.is_empty()
+                });
+            if remove_previous_type {
+                self.record_ids_by_type_index.remove(&previous_type_name);
+            }
+            self.record_ids_by_type_index
+                .entry(type_name.to_string())
+                .or_default()
+                .insert(id);
+        }
+        self.find_record_mut(id)
+            .expect("record identity was validated before retagging")
+            .type_name = type_name.to_string();
         if class_object_tagged {
             self.class_object_tagged_records.insert(id);
         } else {
@@ -2726,6 +2795,127 @@ fn repeated_directory_load_alias(target: &str) -> Option<String> {
     Some(format!("{directory}/{alias_file}"))
 }
 
-pub(crate) fn load_source_stub_prefers_elc(path: &std::path::Path) -> bool {
-    fs::metadata(path).is_ok_and(|metadata| metadata.len() == 0)
+impl Interpreter {
+    pub(crate) fn load_source_prefers_elc(&self, path: &std::path::Path) -> bool {
+        load_source_prefers_elc_for_vm(path, self.prefer_compiled_loads)
+    }
+}
+
+fn load_source_prefers_elc_for_vm(path: &std::path::Path, vm_enabled: bool) -> bool {
+    vm_enabled || fs::metadata(path).is_ok_and(|metadata| metadata.len() == 0)
+}
+
+#[cfg(test)]
+mod load_resolution_tests {
+    use super::load_source_prefers_elc_for_vm;
+
+    #[test]
+    fn bytecode_vm_selects_compiled_file_even_with_nonempty_source() {
+        let missing_source = std::path::Path::new("definitely-not-an-emaxx-source-file.el");
+        assert!(load_source_prefers_elc_for_vm(missing_source, true));
+        assert!(!load_source_prefers_elc_for_vm(missing_source, false));
+    }
+}
+
+#[cfg(test)]
+mod runtime_index_tests {
+    use super::{Interpreter, Value};
+
+    #[test]
+    fn dense_char_table_ids_resolve_their_own_slots() {
+        let mut interp = Interpreter::new();
+        let Value::CharTable(first_id) =
+            interp.make_char_table(Some("first".into()), Value::Integer(11))
+        else {
+            unreachable!("make_char_table must return a char table")
+        };
+        let Value::CharTable(second_id) =
+            interp.make_char_table(Some("second".into()), Value::Integer(22))
+        else {
+            unreachable!("make_char_table must return a char table")
+        };
+
+        assert_eq!(
+            interp.char_table_get(first_id, 'x' as u32),
+            Some(Value::Integer(11))
+        );
+        assert_eq!(
+            interp.char_table_get(second_id, 'x' as u32),
+            Some(Value::Integer(22))
+        );
+        assert!(interp.find_char_table(0).is_none());
+        assert!(interp.find_char_table(second_id + 1).is_none());
+    }
+
+    #[test]
+    fn record_type_index_tracks_creation_and_retagging() {
+        let mut interp = Interpreter::new();
+        let Value::Record(first_id) = interp.create_record("before", Vec::new()) else {
+            unreachable!("create_record must return a record")
+        };
+        let Value::Record(second_id) = interp.create_record("before", Vec::new()) else {
+            unreachable!("create_record must return a record")
+        };
+
+        assert_eq!(
+            interp.record_ids_by_type("before"),
+            vec![first_id, second_id]
+        );
+        interp
+            .retag_record(first_id, "after", false)
+            .expect("record must remain live");
+        assert_eq!(interp.record_ids_by_type("before"), vec![second_id]);
+        assert_eq!(interp.record_ids_by_type("after"), vec![first_id]);
+
+        interp
+            .retag_record(second_id, "after", false)
+            .expect("record must remain live");
+        assert!(interp.record_ids_by_type("before").is_empty());
+        assert_eq!(
+            interp.record_ids_by_type("after"),
+            vec![first_id, second_id]
+        );
+    }
+
+    #[test]
+    fn buffer_local_maps_preserve_per_buffer_order_and_lifecycle() {
+        let mut interp = Interpreter::new();
+        interp.set_buffer_local_value(41, "first", Value::Integer(1));
+        interp.set_buffer_local_value(42, "first", Value::Integer(20));
+        interp.set_buffer_local_value(41, "second", Value::Integer(2));
+        interp.set_buffer_local_value(41, "first", Value::Integer(10));
+        interp.set_buffer_local_hook(41, "first", vec![Value::symbol("local-hook")]);
+        interp.set_buffer_local_hook(42, "first", vec![Value::symbol("other-hook")]);
+
+        assert_eq!(
+            interp.buffer_local_variables(41),
+            vec![
+                ("first".into(), Value::Integer(10)),
+                ("second".into(), Value::Integer(2)),
+            ]
+        );
+        assert_eq!(
+            interp.buffer_local_hook(41, "first"),
+            Some(vec![Value::symbol("local-hook")])
+        );
+
+        interp.remove_buffer_local_value(41, "first");
+        assert_eq!(
+            interp.buffer_local_variables(41),
+            vec![("second".into(), Value::Integer(2))]
+        );
+        assert!(interp.buffer_local_hook(41, "first").is_none());
+        assert_eq!(
+            interp.buffer_local_value(42, "first"),
+            Some(Value::Integer(20))
+        );
+        assert_eq!(
+            interp.buffer_local_hook(42, "first"),
+            Some(vec![Value::symbol("other-hook")])
+        );
+
+        interp.clear_buffer_local_state(42);
+        assert!(interp.buffer_local_variables(42).is_empty());
+        assert!(interp.buffer_local_hook(42, "first").is_none());
+    }
 }

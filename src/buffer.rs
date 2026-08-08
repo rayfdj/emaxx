@@ -76,10 +76,6 @@ pub struct Buffer {
     /// Undo log. Each entry records enough to reverse one operation.
     undo_list: Vec<UndoEntry>,
 
-    /// Extra Lisp-visible undo entries we don't replay yet, but keep so
-    /// `buffer-undo-list` matches Emacs more closely.
-    undo_meta: Vec<Value>,
-
     /// Stable Lisp view of the undo log.  GNU change-group handles retain a
     /// tail of `buffer-undo-list' and later compare/mutate that exact cons
     /// structure, so rebuilding an equal-looking list on every read is not
@@ -125,11 +121,10 @@ pub enum UndoEntry {
     Boundary,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct UndoListView {
     value: Value,
     undo_len: usize,
-    meta_len: usize,
     file_present: bool,
     has_file_marker: bool,
 }
@@ -173,8 +168,8 @@ fn undo_file_marker() -> Value {
 #[derive(Clone, Debug)]
 pub struct UndoState {
     entries: Vec<UndoEntry>,
-    metadata: Vec<Value>,
     disabled: bool,
+    view: Option<UndoListView>,
 }
 
 #[derive(Clone, Debug)]
@@ -242,7 +237,6 @@ impl Buffer {
             file_truename: None,
             visited_file_modtime: None,
             undo_list: Vec::new(),
-            undo_meta: Vec::new(),
             undo_list_view: UndoListViewCache::default(),
             undo_disabled: false,
             overlays: Vec::new(),
@@ -275,7 +269,6 @@ impl Buffer {
             file_truename: None,
             visited_file_modtime: None,
             undo_list: Vec::new(),
-            undo_meta: Vec::new(),
             undo_list_view: UndoListViewCache::default(),
             undo_disabled: false,
             overlays: Vec::new(),
@@ -1094,10 +1087,13 @@ impl Buffer {
         self.undo_disabled = false;
     }
 
+    pub fn undo_enabled(&self) -> bool {
+        !self.undo_disabled
+    }
+
     pub fn disable_undo(&mut self) {
         self.undo_disabled = true;
         self.undo_list.clear();
-        self.undo_meta.clear();
         self.invalidate_undo_list_view();
     }
 
@@ -1121,7 +1117,6 @@ impl Buffer {
                 .any(|entry| matches!(entry, UndoEntry::Insert { .. } | UndoEntry::Delete { .. }));
         if let Some(view) = self.undo_list_view.0.borrow().as_ref()
             && view.undo_len == self.undo_list.len()
-            && view.meta_len == self.undo_meta.len()
             && view.file_present == self.file.is_some()
             && view.has_file_marker == has_file_marker
         {
@@ -1134,7 +1129,6 @@ impl Buffer {
             .rev()
             .map(undo_entry_lisp_value)
             .collect::<Vec<_>>();
-        entries.extend(self.undo_meta.iter().rev().cloned());
         if has_file_marker {
             entries.push(undo_file_marker());
         }
@@ -1142,7 +1136,6 @@ impl Buffer {
         *self.undo_list_view.0.borrow_mut() = Some(UndoListView {
             value: value.clone(),
             undo_len: self.undo_list.len(),
-            meta_len: self.undo_meta.len(),
             file_present: self.file.is_some(),
             has_file_marker,
         });
@@ -1153,11 +1146,25 @@ impl Buffer {
         *self.undo_list_view.0.borrow_mut() = None;
     }
 
-    pub fn push_undo_meta(&mut self, entry: Value) {
-        // Meta entries (marker adjustments, ...) live in the main undo list
-        // as opaque riders so the Lisp `buffer-undo-list' view keeps
-        // chronological order (change groups reason about it by position).
-        self.push_undo_entry(UndoEntry::Opaque(entry));
+    /// Preserve the exact Lisp object assigned to `buffer-undo-list` after
+    /// synchronizing its entries into the native undo representation.
+    ///
+    /// GNU exposes the actual undo-list conses: Lisp such as CC Mode retains
+    /// a tail and later uses `eq` to detect when cleanup has reached it.  An
+    /// equal-looking rebuilt list is therefore observably different and can
+    /// turn a bounded undo loop into an infinite one.
+    pub(crate) fn set_undo_list_view(&self, value: Value) {
+        let has_file_marker = self.file.is_some()
+            && self
+                .undo_list
+                .iter()
+                .any(|entry| matches!(entry, UndoEntry::Insert { .. } | UndoEntry::Delete { .. }));
+        *self.undo_list_view.0.borrow_mut() = Some(UndoListView {
+            value,
+            undo_len: self.undo_list.len(),
+            file_present: self.file.is_some(),
+            has_file_marker,
+        });
     }
 
     pub fn push_undo_entry(&mut self, entry: UndoEntry) {
@@ -1169,7 +1176,6 @@ impl Buffer {
         if let Some(view) = view.as_mut() {
             let has_file_marker = file_present && (view.has_file_marker || entry_is_text);
             if view.undo_len + 1 == self.undo_list.len()
-                && view.meta_len == self.undo_meta.len()
                 && view.file_present == file_present
                 && view.has_file_marker == has_file_marker
             {
@@ -1212,24 +1218,22 @@ impl Buffer {
 
     pub fn clear_undo_history(&mut self) {
         self.undo_list.clear();
-        self.undo_meta.clear();
         self.invalidate_undo_list_view();
     }
 
     pub fn take_undo_state(&mut self) -> UndoState {
-        self.invalidate_undo_list_view();
+        let view = self.undo_list_view.0.borrow_mut().take();
         UndoState {
             entries: std::mem::take(&mut self.undo_list),
-            metadata: std::mem::take(&mut self.undo_meta),
             disabled: std::mem::replace(&mut self.undo_disabled, false),
+            view,
         }
     }
 
     pub fn restore_undo_state(&mut self, state: UndoState) {
         self.undo_list = state.entries;
-        self.undo_meta = state.metadata;
         self.undo_disabled = state.disabled;
-        self.invalidate_undo_list_view();
+        *self.undo_list_view.0.borrow_mut() = state.view;
     }
 
     pub fn modified_tick(&self) -> ModCount {
@@ -1258,7 +1262,6 @@ impl Buffer {
         std::mem::swap(&mut self.begv, &mut other.begv);
         std::mem::swap(&mut self.zv, &mut other.zv);
         std::mem::swap(&mut self.undo_list, &mut other.undo_list);
-        std::mem::swap(&mut self.undo_meta, &mut other.undo_meta);
         std::mem::swap(&mut self.undo_disabled, &mut other.undo_disabled);
         std::mem::swap(&mut self.overlays, &mut other.overlays);
         std::mem::swap(&mut self.text_properties, &mut other.text_properties);

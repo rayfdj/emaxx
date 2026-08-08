@@ -279,44 +279,6 @@ pub(crate) fn validate_lambda_list_items(spec: &Value, items: &[Value]) -> Resul
     Ok(())
 }
 
-pub(crate) fn parse_lambda_params_value(value: &Value) -> Result<Vec<String>, LispError> {
-    let items = value.to_vec()?;
-    validate_lambda_list_items(value, &items)?;
-    items
-        .into_iter()
-        .map(|item| match item {
-            Value::Symbol(symbol) => Ok(symbol),
-            _ => Err(LispError::Signal("Invalid lambda parameter".into())),
-        })
-        .collect()
-}
-
-pub(crate) fn closure_env_from_alist(value: &Value) -> Result<Env, LispError> {
-    let entries = value.to_vec()?;
-    let mut frame = Vec::new();
-    for entry in entries {
-        match entry {
-            Value::Cons(car, cdr) => {
-                let name = car.borrow().as_symbol()?.to_string();
-                let cdr_value = cdr.borrow().clone();
-                let value = match cdr_value {
-                    Value::Cons(value, tail) if matches!(tail.borrow().clone(), Value::Nil) => {
-                        value.borrow().clone()
-                    }
-                    other => other,
-                };
-                frame.push((name, value));
-            }
-            _ => continue,
-        }
-    }
-    Ok(if frame.is_empty() {
-        Vec::new()
-    } else {
-        vec![frame]
-    })
-}
-
 pub(crate) fn eval_callable_metadata_form(
     interp: &mut Interpreter,
     func: &Value,

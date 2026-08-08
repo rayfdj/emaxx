@@ -27,6 +27,9 @@ impl Interpreter {
             return Ok(items[1].clone());
         }
         let value = reader::resolve_circular_read_syntax(items[1].clone())?;
+        // GNU's reader also constructs `#[...]' and `#s(...)' records before
+        // returning an object, including records nested below `quote'.
+        let value = self.materialize_read_record_literals(&value)?;
         // GNU's reader creates real hash tables for `#s(hash-table ...)'
         // literals at READ time; emaxx's reader leaves a marker form, so
         // quoted data materializes it here (in place, like a constant).
@@ -510,7 +513,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         };
         let body = items[body_start..].to_vec();
         let expander_name = format!("{name}--pcase-macroexpander");
-        let expander = Value::Lambda(params, body.into(), shared_env(env.clone()));
+        let expander = Value::Lambda(params.into(), body.into(), shared_env(env.clone()));
         self.validate_function_binding(&expander_name, &expander)?;
         self.set_function_binding(&expander_name, Some(expander));
         self.put_symbol_property(&name, "pcase-macroexpander", Value::Symbol(expander_name));

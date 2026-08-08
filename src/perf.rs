@@ -10,11 +10,13 @@ use serde_json::Value as JsonValue;
 use crate::buffer::Buffer;
 use crate::compat;
 use crate::lisp::eval::Interpreter;
-use crate::lisp::types::Value;
+use crate::lisp::reader::Reader;
+use crate::lisp::types::{Env, LispError, Value};
 use crate::overlay::Overlay;
 
 pub const PERF_SCENARIO_MANIFEST_PATH: &str = "compat/perf_scenarios.json";
 pub const PERF_RESULT_FILE_ENV: &str = "EMAXX_PERF_RESULT_FILE";
+pub const PERF_HARNESS_LOAD_PREFIX: &str = "harness:";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PerfScenarioManifest {
@@ -105,6 +107,11 @@ pub struct PerfCaseComparison {
     pub class: PerfComparisonClass,
     pub oracle_median: Option<f64>,
     pub emaxx_median: Option<f64>,
+    /// Comparable steady-state ratio.  Startup/image construction is never
+    /// represented by a `comparable` scenario, so this is eligible for the
+    /// compatibility-frontier 2x investigation rule.
+    pub emaxx_over_oracle: Option<f64>,
+    pub exceeds_two_x: bool,
     pub notes: Option<String>,
 }
 
@@ -114,6 +121,7 @@ pub struct PerfComparisonSummary {
     pub faster: usize,
     pub parity: usize,
     pub slower: usize,
+    pub over_two_x: usize,
     pub unsupported: usize,
     pub failed: usize,
 }
@@ -140,6 +148,7 @@ pub struct PerfRunSummary {
     pub faster: usize,
     pub parity: usize,
     pub slower: usize,
+    pub over_two_x: usize,
     pub unsupported: usize,
     pub failed: usize,
 }
@@ -480,6 +489,9 @@ pub fn compare_reports(
         let (class, notes) = classify_case(oracle_case, emaxx_case);
         let oracle_median = oracle_case.and_then(|case| case.median);
         let emaxx_median = emaxx_case.and_then(|case| case.median);
+        let emaxx_over_oracle = comparable_ratio(oracle_median, emaxx_median);
+        let exceeds_two_x = scenario.tier == PerfTier::Comparable
+            && emaxx_over_oracle.is_some_and(|ratio| ratio >= 2.0);
         match class {
             PerfComparisonClass::Faster => summary.faster += 1,
             PerfComparisonClass::Parity => summary.parity += 1,
@@ -489,12 +501,17 @@ pub fn compare_reports(
         }
         if scenario.tier == PerfTier::Comparable {
             summary.comparable_cases += 1;
+            if exceeds_two_x {
+                summary.over_two_x += 1;
+            }
         }
         case_results.push(PerfCaseComparison {
             case_id,
             class,
             oracle_median,
             emaxx_median,
+            emaxx_over_oracle,
+            exceeds_two_x,
             notes,
         });
     }
@@ -505,6 +522,12 @@ pub fn compare_reports(
         case_results,
         summary,
     }
+}
+
+fn comparable_ratio(oracle_median: Option<f64>, emaxx_median: Option<f64>) -> Option<f64> {
+    let oracle = oracle_median.filter(|median| median.is_finite() && *median > 0.0)?;
+    let emaxx = emaxx_median.filter(|median| median.is_finite() && *median >= 0.0)?;
+    Some(emaxx / oracle)
 }
 
 pub fn run_emaxx_batch_scenario(
@@ -518,6 +541,7 @@ pub fn run_emaxx_batch_scenario(
         .find(scenario_id)
         .ok_or_else(|| format!("unknown perf scenario `{scenario_id}`"))?;
     let report = match scenario.emaxx_adapter.as_deref() {
+        Some("interpreter_suite") => run_interpreter_suite(scenario, n, warmup, samples),
         Some("noverlay_marker_suite") => run_noverlay_marker_suite(scenario, n, warmup, samples),
         Some("noverlay_insert_delete_suite") => {
             run_noverlay_insert_delete_suite(scenario, n, warmup, samples)
@@ -537,6 +561,10 @@ pub fn run_emaxx_batch_scenario(
 
 pub fn expand_scenario_cases(scenario: &PerfScenario) -> Vec<String> {
     match scenario.oracle_adapter.as_str() {
+        "interpreter_suite" => interpreted_case_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
         "noverlay_suite" => match scenario.param_str("suite") {
             Some("perf-marker-suite") => vec![
                 "perf-insert-before-marker",
@@ -610,6 +638,160 @@ pub fn expand_scenario_cases(scenario: &PerfScenario) -> Vec<String> {
             .map(str::to_string)
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+pub fn resolve_scenario_load_file(emacs_repo: &Path, spec: &str) -> Result<PathBuf, String> {
+    if let Some(path) = resolve_harness_load_file(spec)? {
+        return Ok(path);
+    }
+    resolve_file_within(emacs_repo, Path::new(spec), "oracle repository")
+}
+
+fn resolve_harness_load_file(spec: &str) -> Result<Option<PathBuf>, String> {
+    let Some(relative) = spec.strip_prefix(PERF_HARNESS_LOAD_PREFIX) else {
+        return Ok(None);
+    };
+    resolve_file_within(
+        &compat::project_root(),
+        Path::new(relative),
+        "Emaxx performance harness",
+    )
+    .map(Some)
+}
+
+fn resolve_file_within(root: &Path, relative: &Path, owner: &str) -> Result<PathBuf, String> {
+    if relative.as_os_str().is_empty() || relative.is_absolute() {
+        return Err(format!(
+            "performance load path `{}` must be a non-empty relative path inside the {owner}",
+            relative.display()
+        ));
+    }
+    let canonical_root = compat::canonicalize_path(root)?;
+    let candidate = compat::canonicalize_path(&canonical_root.join(relative))?;
+    if !candidate.starts_with(&canonical_root) {
+        return Err(format!(
+            "performance load path `{}` escapes the {owner} root {}",
+            relative.display(),
+            canonical_root.display()
+        ));
+    }
+    if !candidate.is_file() {
+        return Err(format!(
+            "performance load path {} is not a file",
+            candidate.display()
+        ));
+    }
+    Ok(candidate)
+}
+
+fn interpreted_case_names() -> [&'static str; 3] {
+    [
+        "emaxx-perf-interpreted-list-walk",
+        "emaxx-perf-interpreted-cons-allocation",
+        "emaxx-perf-interpreted-function-calls",
+    ]
+}
+
+fn run_interpreter_suite(
+    scenario: &PerfScenario,
+    n: usize,
+    warmup: u32,
+    samples: u32,
+) -> PerfRunReport {
+    match try_run_interpreter_suite(scenario, n, warmup, samples) {
+        Ok(cases) => completed_run_report("emaxx", scenario, n, warmup, samples, cases),
+        Err(error) => PerfRunReport::failed("emaxx", scenario, error),
+    }
+}
+
+fn try_run_interpreter_suite(
+    scenario: &PerfScenario,
+    n: usize,
+    warmup: u32,
+    samples: u32,
+) -> Result<Vec<PerfCaseReport>, String> {
+    let workload_specs: Vec<_> = scenario
+        .load_files
+        .iter()
+        .filter(|spec| spec.starts_with(PERF_HARNESS_LOAD_PREFIX))
+        .collect();
+    if workload_specs.len() != 1 {
+        return Err(format!(
+            "interpreter scenario `{}` must declare exactly one `{PERF_HARNESS_LOAD_PREFIX}` workload; found {}",
+            scenario.id,
+            workload_specs.len()
+        ));
+    }
+    let workload_path = resolve_harness_load_file(workload_specs[0])?
+        .ok_or_else(|| "interpreter workload did not resolve as a harness file".to_string())?;
+    let workload = workload_path
+        .to_str()
+        .ok_or_else(|| format!("non-UTF-8 workload path {}", workload_path.display()))?;
+
+    let mut interpreter = Interpreter::new();
+    interpreter.load_target(workload).map_err(|error| {
+        format!(
+            "load interpreter workload {}: {error}",
+            workload_path.display()
+        )
+    })?;
+
+    Ok(interpreted_case_names()
+        .into_iter()
+        .map(|case_id| run_interpreted_case(&mut interpreter, case_id, n, warmup, samples))
+        .collect())
+}
+
+fn run_interpreted_case(
+    interpreter: &mut Interpreter,
+    case_id: &str,
+    n: usize,
+    warmup: u32,
+    samples: u32,
+) -> PerfCaseReport {
+    let source = format!("({case_id} {n})");
+    let form = match Reader::new(&source).read_all() {
+        Ok(mut forms) if forms.len() == 1 => forms.remove(0),
+        Ok(forms) => {
+            return PerfCaseReport::failed(
+                case_id,
+                format!("benchmark call parsed as {} forms", forms.len()),
+            );
+        }
+        Err(error) => {
+            return PerfCaseReport::failed(case_id, format!("parse benchmark call: {error}"));
+        }
+    };
+
+    let mut timings = Vec::with_capacity(samples as usize);
+    for sample in 0..warmup.saturating_add(samples) {
+        let mut env = Env::new();
+        let started = Instant::now();
+        let result = interpreter.eval(&form, &mut env);
+        let elapsed = started.elapsed().as_secs_f64();
+        match validate_interpreted_case_result(case_id, result) {
+            Ok(()) => {
+                if sample >= warmup {
+                    timings.push(elapsed);
+                }
+            }
+            Err(error) => return PerfCaseReport::failed(case_id, error),
+        }
+    }
+    PerfCaseReport::completed(case_id, "seconds", timings, 0, 0.0, None)
+}
+
+fn validate_interpreted_case_result(
+    case_id: &str,
+    result: Result<Value, LispError>,
+) -> Result<(), String> {
+    match result {
+        Ok(Value::T) => Ok(()),
+        Ok(value) => Err(format!(
+            "{case_id} did not validate its checksum; returned {value}"
+        )),
+        Err(error) => Err(format!("{case_id} failed checksum validation: {error}")),
     }
 }
 
@@ -1081,6 +1263,62 @@ mod tests {
     }
 
     #[test]
+    fn comparison_marks_the_inclusive_two_x_frontier_gate() {
+        let scenario = PerfScenario {
+            id: "interpreter/source-eval-suite".into(),
+            description: "Source evaluation".into(),
+            group: "interpreter".into(),
+            tier: PerfTier::Comparable,
+            oracle_adapter: "interpreter_suite".into(),
+            emaxx_adapter: Some("interpreter_suite".into()),
+            load_files: Vec::new(),
+            params: BTreeMap::new(),
+            warmup: 1,
+            samples: 3,
+            timeout_secs: 60,
+        };
+        let report = |runner: &str, median: f64| PerfRunReport {
+            runner: runner.into(),
+            scenario_id: scenario.id.clone(),
+            tier: PerfTier::Comparable,
+            status: PerfRunStatus::Completed,
+            cases: vec![PerfCaseReport::completed(
+                "case",
+                "seconds",
+                vec![median; 3],
+                0,
+                0.0,
+                None,
+            )],
+            metadata: BTreeMap::new(),
+        };
+
+        let below = compare_reports(
+            &scenario,
+            &report("oracle", 1.0),
+            Some(&report("emaxx", 1.999)),
+        );
+        assert!(!below.case_results[0].exceeds_two_x);
+        assert_eq!(below.summary.over_two_x, 0);
+
+        let at_gate = compare_reports(
+            &scenario,
+            &report("oracle", 1.0),
+            Some(&report("emaxx", 2.0)),
+        );
+        assert_eq!(at_gate.case_results[0].emaxx_over_oracle, Some(2.0));
+        assert!(at_gate.case_results[0].exceeds_two_x);
+        assert_eq!(at_gate.summary.over_two_x, 1);
+    }
+
+    #[test]
+    fn comparison_ratio_rejects_zero_or_non_finite_medians() {
+        assert_eq!(comparable_ratio(Some(0.0), Some(1.0)), None);
+        assert_eq!(comparable_ratio(Some(f64::NAN), Some(1.0)), None);
+        assert_eq!(comparable_ratio(Some(1.0), Some(f64::INFINITY)), None);
+    }
+
+    #[test]
     fn artifact_directory_preserves_scenario_shape() {
         let root = PathBuf::from("/tmp/perf");
         let dir = scenario_artifact_dir(&root, "noverlay/perf-marker-suite");
@@ -1136,6 +1374,55 @@ mod tests {
                 "perf-delete-after-marker",
                 "perf-delete-scatter-marker",
             ]
+        );
+    }
+
+    #[test]
+    fn shared_interpreter_workload_is_confined_to_the_harness_root() {
+        let resolved = resolve_harness_load_file("harness:compat/interpreter_perf.el")
+            .unwrap()
+            .expect("harness load path");
+        assert_eq!(
+            resolved,
+            compat::compat_path("compat/interpreter_perf.el")
+                .canonicalize()
+                .unwrap()
+        );
+        assert!(resolve_harness_load_file("harness:/tmp/outside.el").is_err());
+    }
+
+    #[test]
+    fn interpreter_workload_validates_all_cases_and_sample_counts() {
+        let scenario = PerfScenario {
+            id: "interpreter/source-eval-suite".into(),
+            description: "Source evaluation".into(),
+            group: "interpreter".into(),
+            tier: PerfTier::Comparable,
+            oracle_adapter: "interpreter_suite".into(),
+            emaxx_adapter: Some("interpreter_suite".into()),
+            load_files: vec!["harness:compat/interpreter_perf.el".into()],
+            params: BTreeMap::from([("n".into(), JsonValue::from(32))]),
+            warmup: 1,
+            samples: 2,
+            timeout_secs: 60,
+        };
+        let report = run_interpreter_suite(&scenario, 32, 1, 2);
+        assert_eq!(report.status, PerfRunStatus::Completed);
+        assert_eq!(report.cases.len(), interpreted_case_names().len());
+        for (case, expected_name) in report.cases.iter().zip(interpreted_case_names()) {
+            assert_eq!(case.case_id, expected_name);
+            assert_eq!(case.status, PerfCaseStatus::Completed, "{:?}", case.notes);
+            assert_eq!(case.samples.len(), 2);
+            assert!(case.samples.iter().all(|sample| *sample > 0.0));
+        }
+    }
+
+    #[test]
+    fn interpreter_sample_is_rejected_when_checksum_validation_does_not_return_t() {
+        assert!(validate_interpreted_case_result("case", Ok(Value::Nil)).is_err());
+        assert!(
+            validate_interpreted_case_result("case", Err(LispError::Signal("broken".into())))
+                .is_err()
         );
     }
 }

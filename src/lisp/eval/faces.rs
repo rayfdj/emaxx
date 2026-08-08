@@ -2,6 +2,33 @@ use super::*;
 use crate::lisp::primitives::{aset_vector_value, vector_slot_value};
 
 impl Interpreter {
+    /// Install the variables owned by GNU's xfaces.c at the same native
+    /// boundary.  Lisp libraries may subsequently customize these values,
+    /// but compiled libraries must never depend on source-loading order for
+    /// the underlying C-owned value cells to exist.
+    pub(crate) fn initialize_native_face_variables(&mut self) {
+        let entries = self
+            .lisp_face_states
+            .iter()
+            .filter_map(|face| {
+                Some((
+                    Value::symbol(&face.name),
+                    Value::cons(Value::Integer(face.id?), face.global.clone()?),
+                ))
+            })
+            .collect();
+        let defaults = crate::lisp::json::make_hash_table(self, "eq", entries);
+        self.define_special_variable("face--new-frame-defaults", defaults);
+        self.define_special_variable("face-filters-always-match", Value::Nil);
+        self.define_special_variable("face-default-stipple", Value::String("gray3".into()));
+        self.define_special_variable("scalable-fonts-allowed", Value::Nil);
+        self.define_special_variable("face-ignored-fonts", Value::Nil);
+        self.define_special_variable("face-remapping-alist", Value::Nil);
+        self.define_special_variable("face-font-rescale-alist", Value::Nil);
+        self.define_special_variable("face-near-same-color-threshold", Value::Integer(30_000));
+        self.define_special_variable("face-font-lax-matched-attributes", Value::T);
+    }
+
     fn lisp_face_state_index(&self, name: &str) -> Option<usize> {
         self.lisp_face_states
             .iter()
@@ -94,6 +121,34 @@ impl Interpreter {
         crate::lisp::primitives::set_hash_table_entries(self, &table, entries)
     }
 
+    fn sync_new_frame_face_hash_entry(&mut self, name: &str) -> Result<(), LispError> {
+        let Some(index) = self.lisp_face_state_index(name) else {
+            return Ok(());
+        };
+        let Some(id) = self.lisp_face_states[index].id else {
+            return Ok(());
+        };
+        let Some(vector) = self.lisp_face_states[index].global.clone() else {
+            return Ok(());
+        };
+        let Some(table) = self.global_binding_value("face--new-frame-defaults") else {
+            return Ok(());
+        };
+        let Some((_, mut entries)) = crate::lisp::json::hash_table_entries(self, &table) else {
+            return Ok(());
+        };
+        let spec = Value::cons(Value::Integer(id), vector);
+        if let Some((_, value)) = entries
+            .iter_mut()
+            .find(|(key, _)| matches!(key, Value::Symbol(symbol) if symbol == name))
+        {
+            *value = spec;
+        } else {
+            entries.push((Value::symbol(name), spec));
+        }
+        crate::lisp::primitives::set_hash_table_entries(self, &table, entries)
+    }
+
     pub(crate) fn selected_frame_face_hash_table(&mut self) -> Value {
         if let Some(table) = &self.selected_frame_face_hash_table {
             return table.clone();
@@ -123,6 +178,8 @@ impl Interpreter {
         self.next_lisp_face_id += 1;
         self.lisp_face_states[index].id = Some(id);
         self.put_symbol_property(name, "face", Value::Integer(id));
+        self.sync_new_frame_face_hash_entry(name)
+            .expect("the native face defaults table must remain a hash table");
         id
     }
 
@@ -145,6 +202,9 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let vector = self.ensure_lisp_face(name, !global, false)?;
         aset_vector_value(&vector, index, value.clone())?;
+        if global {
+            self.sync_new_frame_face_hash_entry(name)?;
+        }
         Ok(value)
     }
 

@@ -207,6 +207,7 @@ struct ProcessResult {
     stdout: String,
     stderr: String,
     timed_out: bool,
+    elapsed: Duration,
 }
 
 #[derive(Debug)]
@@ -435,7 +436,27 @@ struct AggregateReport {
     files: Vec<String>,
     mismatches: Vec<String>,
     name_filter: Option<String>,
+    #[serde(default)]
+    timings: Vec<FileTiming>,
+    #[serde(default)]
+    performance_regressions: Vec<String>,
     provenance: RunProvenance,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct FileTiming {
+    file: String,
+    gnu_emacs_duration_ms: u64,
+    emaxx_duration_ms: u64,
+    emaxx_over_gnu_milli: Option<u64>,
+    emaxx_at_least_twice_as_slow: bool,
+}
+
+#[derive(Serialize)]
+struct TimedComparison<'a> {
+    #[serde(flatten)]
+    comparison: &'a compat::ComparisonReport,
+    timing: &'a FileTiming,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1281,6 +1302,8 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
     } = plan;
     let mut matching_files = 0usize;
     let mut mismatches = Vec::new();
+    let mut timings = Vec::new();
+    let mut performance_regressions = Vec::new();
     let mut relative_files = Vec::new();
     let oracle_checkout = IsolatedTestCheckout::clone(
         &context.local.emacs_repo,
@@ -1326,9 +1349,14 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         let oracle_report = compat::filter_report_by_name(&oracle.report, name_filter);
         let emaxx_report = compat::filter_report_by_name(&emaxx.report, name_filter);
         let comparison = compat::compare_reports(&oracle_report, &emaxx_report);
+        let timing =
+            compare_runner_timings(&relative, oracle.process.elapsed, emaxx.process.elapsed);
         write_json(
             &per_file_dir.join("comparison.json"),
-            &comparison,
+            &TimedComparison {
+                comparison: &comparison,
+                timing: &timing,
+            },
             "comparison report",
         )?;
         write_raw_log(&per_file_dir.join("oracle.log"), &oracle.process)?;
@@ -1344,6 +1372,17 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
                 println!("  [{}] {}", issue.kind, issue.detail);
             }
         }
+        if timing.emaxx_at_least_twice_as_slow {
+            performance_regressions.push(relative.clone());
+            println!(
+                "SLOW {} gnu={}ms emaxx={}ms ratio={}",
+                relative,
+                timing.gnu_emacs_duration_ms,
+                timing.emaxx_duration_ms,
+                format_ratio(timing.emaxx_over_gnu_milli)
+            );
+        }
+        timings.push(timing);
     }
 
     let aggregate = AggregateReport {
@@ -1356,6 +1395,8 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         files: relative_files,
         mismatches,
         name_filter: name_filter_expression.map(ToOwned::to_owned),
+        timings,
+        performance_regressions,
         provenance: provenance.clone(),
     };
     verify_run_inputs_unchanged(provenance)?;
@@ -1365,10 +1406,47 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         "aggregate summary",
     )?;
 
-    if aggregate.mismatching_files == 0 {
+    if aggregate.mismatching_files == 0 && aggregate.performance_regressions.is_empty() {
         Ok(0)
     } else {
         Ok(1)
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u64::MAX as u128) as u64
+}
+
+fn compare_runner_timings(file: &str, gnu_emacs: Duration, emaxx: Duration) -> FileTiming {
+    let gnu_emacs_duration_ms = duration_millis(gnu_emacs);
+    let emaxx_duration_ms = duration_millis(emaxx);
+    let gnu_nanos = gnu_emacs.as_nanos();
+    let emaxx_nanos = emaxx.as_nanos();
+    let emaxx_over_gnu_milli = (gnu_nanos != 0).then(|| {
+        emaxx_nanos
+            .saturating_mul(1_000)
+            .checked_div(gnu_nanos)
+            .unwrap_or(u128::MAX)
+            .min(u64::MAX as u128) as u64
+    });
+    let emaxx_at_least_twice_as_slow = if gnu_nanos == 0 {
+        emaxx_nanos > 0
+    } else {
+        emaxx_nanos >= gnu_nanos.saturating_mul(2)
+    };
+    FileTiming {
+        file: file.to_string(),
+        gnu_emacs_duration_ms,
+        emaxx_duration_ms,
+        emaxx_over_gnu_milli,
+        emaxx_at_least_twice_as_slow,
+    }
+}
+
+fn format_ratio(ratio_milli: Option<u64>) -> String {
+    match ratio_milli {
+        Some(ratio) => format!("{}.{:03}x", ratio / 1_000, ratio % 1_000),
+        None => "infinite".to_string(),
     }
 }
 
@@ -2122,6 +2200,7 @@ fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<Proces
             stdout,
             stderr,
             timed_out,
+            elapsed: started.elapsed(),
         })
     };
 
@@ -2155,6 +2234,10 @@ fn write_raw_log(path: &Path, process: &ProcessResult) -> Result<(), String> {
     let mut content = String::new();
     content.push_str(&format!("exit_code={:?}\n", process.exit_code));
     content.push_str(&format!("timed_out={}\n", process.timed_out));
+    content.push_str(&format!(
+        "elapsed_ms={}\n",
+        duration_millis(process.elapsed)
+    ));
     content.push_str("\n[stdout]\n");
     content.push_str(&process.stdout);
     content.push_str("\n[stderr]\n");
@@ -2521,8 +2604,29 @@ mod tests {
             files: vec!["a.el".into()],
             mismatches: Vec::new(),
             name_filter: None,
+            timings: Vec::new(),
+            performance_regressions: Vec::new(),
             provenance: test_provenance(),
         }
+    }
+
+    #[test]
+    fn runner_timing_flags_the_two_x_boundary() {
+        let below = compare_runner_timings(
+            "below.el",
+            Duration::from_millis(100),
+            Duration::from_millis(199),
+        );
+        assert_eq!(below.emaxx_over_gnu_milli, Some(1_990));
+        assert!(!below.emaxx_at_least_twice_as_slow);
+
+        let boundary = compare_runner_timings(
+            "boundary.el",
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+        );
+        assert_eq!(boundary.emaxx_over_gnu_milli, Some(2_000));
+        assert!(boundary.emaxx_at_least_twice_as_slow);
     }
 
     #[test]
@@ -2582,6 +2686,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             timed_out: true,
+            elapsed: Duration::from_secs(120),
         };
 
         let report =

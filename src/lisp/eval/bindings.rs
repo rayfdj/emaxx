@@ -1001,7 +1001,7 @@ impl Interpreter {
     pub(crate) fn standard_obarray_contains_symbol(&self, name: &str) -> bool {
         matches!(name, "nil" | "t")
             || self.interned_symbol_names.contains(name)
-            || self.globals_index.contains_key(name)
+            || self.globals.contains_key(name)
             || self.variable_aliases_index.contains_key(name)
             || self.functions_index.contains_key(name)
             || (self.macros_name_counts.contains_key(name)
@@ -1188,11 +1188,15 @@ impl Interpreter {
                 self.undo_sequence = None;
                 self.buffer.disable_undo();
             } else if let Some((head, tail)) = value.cons_values()
-                && tail == crate::lisp::primitives::buffer_undo_list_value(&self.buffer)
+                && crate::lisp::primitives::values_eql(
+                    &tail,
+                    &crate::lisp::primitives::buffer_undo_list_value(&self.buffer),
+                )
             {
                 self.buffer.enable_undo();
                 let entry = buffer_undo_head_to_entry(&head);
                 self.buffer.push_undo_entry(entry);
+                self.buffer.set_undo_list_view(value);
             } else {
                 // A structural replacement (undo truncation after
                 // cancel-change-group, boundary removal by
@@ -1216,6 +1220,7 @@ impl Interpreter {
                         self.buffer
                             .push_undo_entry(buffer_undo_head_to_entry(&item));
                     }
+                    self.buffer.set_undo_list_view(value);
                 }
             }
             return;

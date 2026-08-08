@@ -2447,7 +2447,7 @@ impl Interpreter {
                     .get_symbol_property(name, "gv-expander")
                     .expect("checked above");
                 let getter_do = Value::Lambda(
-                    vec!["--emaxx-gv-getter--".into(), "--emaxx-gv-setter--".into()],
+                    vec!["--emaxx-gv-getter--".into(), "--emaxx-gv-setter--".into()].into(),
                     vec![Value::Symbol("--emaxx-gv-getter--".into())].into(),
                     shared_env(env.clone()),
                 );
@@ -2484,7 +2484,7 @@ impl Interpreter {
                     funcall.push(Value::list([Value::Symbol("quote".into()), arg.clone()]));
                 }
                 let setter = Value::Lambda(
-                    vec!["--emaxx-gv-value--".into()],
+                    vec!["--emaxx-gv-value--".into()].into(),
                     vec![Value::list(funcall)].into(),
                     shared_env(env.clone()),
                 );

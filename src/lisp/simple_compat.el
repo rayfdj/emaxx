@@ -856,6 +856,63 @@ MET-NAME is as recorded in `load-history' for the method."
                 edebug-lexical-macro-ctx)))
     (funcall pf specs)))
 
+;; GNU cl-generic.el keeps this compiled entry point in Lisp.  Emaxx's
+;; generic-function storage is host-backed, so lower the evaluated bytecode
+;; arguments back through the owning `cl-defgeneric' form instead of growing
+;; a second representation of generic functions.
+(defun cl-generic-define (name args options)
+  (eval (append (list 'cl-defgeneric name args) options) t)
+  (symbol-function name))
+
+;; Compiled cl-defmethod expansions enter through this GNU Lisp function.
+;; Keep that ownership in Lisp and translate its already-compiled method
+;; closure onto Emaxx's native generic dispatcher.  Collapsing the optional,
+;; rest, and key tail into one raw rest argument preserves the caller's exact
+;; argument list (including omitted optionals and keyword ordering); the
+;; compiled closure remains responsible for its original lambda-list checks.
+(defun cl-generic-define-method (name qualifiers args call-con function)
+  (let ((method-args nil)
+        (required-args nil)
+        (tail nil)
+        (context nil)
+        (raw-rest (make-symbol "emaxx--compiled-method-args")))
+    (dolist (arg args)
+      (cond
+       ((memq arg '(&optional &rest &body &key))
+        (setq tail t))
+       (tail nil)
+       ((eq arg '&context)
+        (setq context t)
+        (push arg method-args))
+       (context
+        (push arg method-args))
+       (t
+        (push arg method-args)
+        (push (if (consp arg) (car arg) arg) required-args))))
+    (setq method-args (nreverse method-args)
+          required-args (nreverse required-args))
+    (when tail
+      (setq method-args (append method-args (list '&rest raw-rest))))
+    (let* ((forwarded
+            (if tail
+                `(append (list ,@required-args) ,raw-rest)
+              `(list ,@required-args)))
+           (next `#'cl-call-next-method)
+           (body
+            (cond
+             ((null call-con) `(apply ',function ,forwarded))
+             ((eq call-con 'curried)
+              `(apply (funcall ',function ,next) ,forwarded))
+             ((eq call-con t)
+              `(apply ',function (cons ,next ,forwarded)))
+             (t (error "Unsupported generic method calling convention: %S"
+                       call-con)))))
+      (eval (append (list 'cl-defmethod name)
+                    qualifiers
+                    (list method-args body))
+            t))
+    (symbol-function name)))
+
 ;; cl-generic.el is part of GNU's dumped state, including this public
 ;; condition hierarchy.  Emaxx provides the feature from its native generic
 ;; runtime, so materialize the same signal properties during every preload.
@@ -8201,6 +8258,75 @@ Some change-hooks test this variable to do something different.")
 (defvar undo-in-region nil
   "Non-nil if `pending-undo-list' is not just a tail of `buffer-undo-list'.")
 
+;; GNU subr.el (verbatim): compiled Lisp calls the function owner produced by
+;; the `combine-change-calls' macro rather than the source-form fallback.
+(defvar undo--combining-change-calls nil
+  "Non-nil when `combine-change-calls-1' is running.")
+
+(defun combine-change-calls-1 (beg end body)
+  "Evaluate BODY, running the change hooks just once, for region (BEG END)."
+  (if (markerp beg) (setq beg (marker-position beg)))
+  (if (markerp end) (setq end (marker-position end)))
+  (let ((old-bul buffer-undo-list)
+	(end-marker (copy-marker end t))
+	result)
+    (if undo--combining-change-calls
+	(setq result (funcall body))
+      (let ((undo--combining-change-calls t))
+	(if (not inhibit-modification-hooks)
+	    (run-hook-with-args 'before-change-functions beg end))
+	(let ((bcf before-change-functions)
+	      (acf after-change-functions)
+	      (local-bcf (local-variable-p 'before-change-functions))
+	      (local-acf (local-variable-p 'after-change-functions)))
+	  (unwind-protect
+              (progn
+	        (setq-local before-change-functions
+                            (if (memq #'syntax-ppss-flush-cache bcf)
+                                '(syntax-ppss-flush-cache)))
+                (setq-local after-change-functions nil)
+	        (setq result (funcall body)))
+	    (if local-bcf (setq before-change-functions bcf)
+	      (kill-local-variable 'before-change-functions))
+	    (if local-acf (setq after-change-functions acf)
+	      (kill-local-variable 'after-change-functions))))
+	(unless (or (eq buffer-undo-list t)
+		    (eq buffer-undo-list old-bul))
+	  (let ((ptr buffer-undo-list) body-undo-list)
+	    (while (and ptr (not (eq ptr old-bul)))
+	      (push (car ptr) body-undo-list)
+	      (setq ptr (cdr ptr)))
+	    (setq body-undo-list (nreverse body-undo-list))
+	    (when (and old-bul (not ptr))
+	      (message
+               "combine-change-calls: buffer-undo-list has been truncated"))
+	    (push (list 'apply
+			(- end end-marker)
+			beg
+			(marker-position end-marker)
+			#'undo--wrap-and-run-primitive-undo
+			beg (marker-position end-marker)
+			body-undo-list)
+		  buffer-undo-list)
+	    (setcdr buffer-undo-list old-bul)))
+	(if (not inhibit-modification-hooks)
+	    (run-hook-with-args 'after-change-functions
+				beg (marker-position end-marker)
+				(- end beg)))))
+    (set-marker end-marker nil)
+    result))
+
+(defmacro combine-change-calls (beg end &rest body)
+  "Evaluate BODY, running the change hooks just once."
+  (declare (debug (form form def-body)) (indent 2))
+  `(combine-change-calls-1 ,beg ,end (lambda () ,@body)))
+
+(defun undo--wrap-and-run-primitive-undo (beg end list)
+  "Call `primitive-undo' on the undo elements in LIST."
+  (combine-change-calls beg end
+			(while list
+			  (setq list (primitive-undo 1 list)))))
+
 (defun primitive-undo (n list)
   "Undo N records from the front of the list LIST.
 Return what remains of the list."
@@ -11719,6 +11845,151 @@ is used.  If nil or omitted, use the selected frame."
   (face-attr-match-p face (face-spec-choose spec frame) frame))
 
 ;; GNU custom.el (verbatim).
+(defun add-to-list (list-var element &optional append compare-fn)
+  "Add ELEMENT to the value of LIST-VAR if it isn't there yet."
+  (if (cond
+       ((null compare-fn)
+	(member element (symbol-value list-var)))
+       ((eq compare-fn #'eq)
+	(memq element (symbol-value list-var)))
+       ((eq compare-fn #'eql)
+	(memql element (symbol-value list-var)))
+       (t
+	(let ((lst (symbol-value list-var)))
+	  (while (and lst
+		      (not (funcall compare-fn element (car lst))))
+	    (setq lst (cdr lst)))
+          lst)))
+      (symbol-value list-var)
+    (set list-var
+	 (if append
+	     (append (symbol-value list-var) (list element))
+	   (cons element (symbol-value list-var))))))
+
+(defvar custom-define-hook nil
+  "Hook called after defining each customize option.")
+
+(defvar custom-dont-initialize nil
+  "Non-nil means `defcustom' should not initialize the variable.")
+
+(defun custom-declare-variable (symbol default doc &rest args)
+  "Like `defcustom', but SYMBOL and DEFAULT are evaluated as normal arguments.
+DEFAULT should be an expression to evaluate to compute the default value,
+not the default value itself.
+
+DEFAULT is stored as SYMBOL's standard value, in SYMBOL's property
+`standard-value'.  At the same time, SYMBOL's property `force-value' is
+set to nil, as the value is no longer rogue."
+  (put symbol 'standard-value (purecopy (list default)))
+  ;; Maybe this option was rogue in an earlier version.  It no longer is.
+  (when (get symbol 'force-value)
+    (put symbol 'force-value nil))
+  (if (keywordp doc)
+      (error "Doc string is missing"))
+  (let ((initialize #'custom-initialize-reset)
+        (requests nil)
+        ;; Whether automatically buffer-local.
+        buffer-local)
+    (unless (memq :group args)
+      (let ((cg (custom-current-group)))
+        (when cg
+          (custom-add-to-group cg symbol 'custom-variable))))
+    (while args
+      (let ((keyword (pop args)))
+	(unless (symbolp keyword)
+	  (error "Junk in args %S" args))
+        (unless args
+          (error "Keyword %s is missing an argument" keyword))
+	(let ((value (pop args)))
+          ;; Can't use `pcase' because it is loaded after `custom.el'
+          ;; during bootstrap.  See `loadup.el'.
+	  (cond ((eq keyword :initialize)
+		 (setq initialize value))
+		((eq keyword :set)
+		 (put symbol 'custom-set value))
+		((eq keyword :get)
+		 (put symbol 'custom-get value))
+		((eq keyword :require)
+		 (push value requests))
+		((eq keyword :risky)
+		 (put symbol 'risky-local-variable value))
+		((eq keyword :safe)
+		 (put symbol 'safe-local-variable value))
+                ((eq keyword :local)
+                 (when (memq value '(t permanent))
+                   (setq buffer-local t))
+                 (when (eq value 'permanent)
+                   (put symbol 'permanent-local t)))
+		((eq keyword :type)
+		 (put symbol 'custom-type (purecopy value)))
+		((eq keyword :options)
+		 (if (get symbol 'custom-options)
+		     ;; Slow safe code to avoid duplicates.
+		     (mapc (lambda (option)
+			     (custom-add-option symbol option))
+			   value)
+		   ;; Fast code for the common case.
+		   (put symbol 'custom-options (copy-sequence value))))
+		(t
+		 (custom-handle-keyword symbol keyword value
+					'custom-variable))))))
+    ;; Set the docstring, record the var on load-history, as well
+    ;; as set the special-variable-p flag.
+    (internal--define-uninitialized-variable symbol doc)
+    (put symbol 'custom-requests requests)
+    ;; Do the actual initialization.
+    (unless custom-dont-initialize
+      (funcall initialize symbol default)
+      ;; If there is a value under saved-value that wasn't saved by the user,
+      ;; reset it: we used that property to stash the value, but we don't need
+      ;; it anymore.
+      ;; This can happen given the following:
+      ;; 1. The user loaded a theme that had a setting for an unbound
+      ;; variable, so we stashed the theme setting under the saved-value
+      ;; property in `custom-theme-recalc-variable'.
+      ;; 2. Then, Emacs evaluated the defcustom for the option
+      ;; (e.g., something required the file where the option is defined).
+      ;; If we don't reset it and the user later sets this variable via
+      ;; Customize, we might end up saving the theme setting in the custom-file.
+      ;; See the test `custom-test-no-saved-value-after-customizing-option'.
+      (let ((theme (caar (get symbol 'theme-value))))
+        (when (and theme (not (eq theme 'user)) (get symbol 'saved-value))
+          (put symbol 'saved-value nil))))
+    (when buffer-local
+      (make-variable-buffer-local symbol)))
+  (run-hooks 'custom-define-hook)
+  symbol)
+
+(defun custom-declare-group (symbol members doc &rest args)
+  "Like `defgroup', but SYMBOL is evaluated as a normal argument."
+  (while members
+    (apply #'custom-add-to-group symbol (car members))
+    (setq members (cdr members)))
+  (when doc
+    ;; This text doesn't get into DOC.
+    (put symbol 'group-documentation (purecopy doc)))
+  (while args
+    (let ((arg (car args)))
+      (setq args (cdr args))
+      (unless (symbolp arg)
+	(error "Junk in args %S" args))
+      (let ((keyword arg)
+	    (value (car args)))
+	(unless args
+	  (error "Keyword %s is missing an argument" keyword))
+	(setq args (cdr args))
+	(cond ((eq keyword :prefix)
+	       (put symbol 'custom-prefix (purecopy value)))
+	      (t
+	       (custom-handle-keyword symbol keyword value
+				      'custom-group))))))
+  ;; Record the group on the `current' list.
+  (let ((elt (assoc load-file-name custom-current-group-alist)))
+    (if elt (setcdr elt symbol)
+      (push (cons load-file-name symbol) custom-current-group-alist)))
+  (run-hooks 'custom-define-hook)
+  symbol)
+
 (defun custom-handle-all-keywords (symbol args type)
   "For customization option SYMBOL, handle keyword arguments ARGS.
 Third argument TYPE is the custom option type."

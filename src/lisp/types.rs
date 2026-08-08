@@ -12,6 +12,7 @@ const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 pub type ConsSlot = Rc<RefCell<Value>>;
 pub type ConsCells = (ConsSlot, ConsSlot);
 pub type SharedEnv = Rc<RefCell<Env>>;
+pub type SharedLambdaParams = Rc<Vec<String>>;
 pub type SharedLambdaBody = Rc<Vec<Value>>;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -85,7 +86,7 @@ pub enum Value {
     /// Function-cell lookup clones Lisp values on every call.  Sharing the
     /// immutable code keeps that clone O(1) while the captured environment
     /// retains its independent Lisp identity and mutability.
-    Lambda(Vec<String>, SharedLambdaBody, SharedEnv),
+    Lambda(SharedLambdaParams, SharedLambdaBody, SharedEnv),
     /// A buffer object: (id, name). The id is used for `eq` identity.
     Buffer(u64, String),
     /// A marker object, identified by unique id.
@@ -662,7 +663,8 @@ impl From<crate::buffer::BufferError> for LispError {
 
 #[cfg(test)]
 mod tests {
-    use super::{LispError, Value};
+    use super::{LispError, Value, shared_env};
+    use std::rc::Rc;
 
     #[test]
     fn nil_and_t_count_as_symbols() {
@@ -670,6 +672,22 @@ mod tests {
         assert!(Value::T.is_symbol());
         assert_eq!(Value::Nil.as_symbol().expect("nil is a symbol"), "nil");
         assert_eq!(Value::T.as_symbol().expect("t is a symbol"), "t");
+    }
+
+    #[test]
+    fn cloning_lambda_shares_immutable_parameters() {
+        let lambda = Value::Lambda(
+            vec!["value".into()].into(),
+            Vec::new().into(),
+            shared_env(Vec::new()),
+        );
+        let clone = lambda.clone();
+
+        let (Value::Lambda(params, _, _), Value::Lambda(cloned_params, _, _)) = (&lambda, &clone)
+        else {
+            unreachable!("constructed lambda values")
+        };
+        assert!(Rc::ptr_eq(params, cloned_params));
     }
 
     #[test]

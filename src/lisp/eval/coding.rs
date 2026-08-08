@@ -593,8 +593,14 @@ impl Interpreter {
     }
 
     pub fn detach_markers_for_buffer(&mut self, buffer_id: u64) {
-        for marker in &mut self.markers {
-            if marker.buffer_id == Some(buffer_id) {
+        if let Some(marker_ids) = self.markers_by_buffer.remove(&buffer_id) {
+            for marker_id in marker_ids {
+                let Some(index) = Self::marker_index(marker_id) else {
+                    continue;
+                };
+                let Some(marker) = self.markers.get_mut(index) else {
+                    continue;
+                };
                 marker.last_position = marker.position.or(marker.last_position);
                 marker.position = None;
                 marker.buffer_id = None;
@@ -612,10 +618,16 @@ impl Interpreter {
         if nchars == 0 {
             return;
         }
-        for marker in &mut self.markers {
-            if marker.buffer_id != Some(buffer_id) {
+        let Some(marker_ids) = self.markers_by_buffer.get(&buffer_id) else {
+            return;
+        };
+        for marker_id in marker_ids {
+            let Some(index) = Self::marker_index(*marker_id) else {
                 continue;
-            }
+            };
+            let Some(marker) = self.markers.get_mut(index) else {
+                continue;
+            };
             let Some(position) = marker.position else {
                 continue;
             };
@@ -632,10 +644,16 @@ impl Interpreter {
             return;
         }
         let nchars = to - from;
-        for marker in &mut self.markers {
-            if marker.buffer_id != Some(buffer_id) {
+        let Some(marker_ids) = self.markers_by_buffer.get(&buffer_id) else {
+            return;
+        };
+        for marker_id in marker_ids {
+            let Some(index) = Self::marker_index(*marker_id) else {
                 continue;
-            }
+            };
+            let Some(marker) = self.markers.get_mut(index) else {
+                continue;
+            };
             let Some(position) = marker.position else {
                 continue;
             };
@@ -652,10 +670,14 @@ impl Interpreter {
     }
 
     pub fn live_marker_positions_for_buffer(&self, buffer_id: u64) -> Vec<(u64, Option<usize>)> {
-        self.markers
-            .iter()
-            .filter(|marker| marker.buffer_id == Some(buffer_id))
-            .map(|marker| (marker.id, marker.position))
+        self.markers_by_buffer
+            .get(&buffer_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|marker_id| {
+                let marker = self.find_marker(*marker_id)?;
+                Some((marker.id, marker.position))
+            })
             .collect()
     }
 

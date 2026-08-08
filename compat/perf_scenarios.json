@@ -2,6 +2,23 @@
   "format_version": 1,
   "scenarios": [
     {
+      "id": "interpreter/source-eval-suite",
+      "description": "Source-defined Elisp evaluation covering list traversal, cons allocation, and lexical function dispatch",
+      "group": "interpreter",
+      "tier": "comparable",
+      "oracle_adapter": "interpreter_suite",
+      "emaxx_adapter": "interpreter_suite",
+      "load_files": [
+        "harness:compat/interpreter_perf.el"
+      ],
+      "params": {
+        "n": 4096
+      },
+      "warmup": 2,
+      "samples": 7,
+      "timeout_secs": 120
+    },
+    {
       "id": "noverlay/perf-marker-suite",
       "description": "Marker adjustment microbenchmarks from overlay-perf.el",
       "group": "noverlay",

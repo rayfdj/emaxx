@@ -366,7 +366,7 @@ pub(crate) fn values_equal_recursive(
             for form in right_body.iter() {
                 collect_free_symbol_candidates(form, &mut symbols);
             }
-            for param in right_params {
+            for param in right_params.iter() {
                 symbols.remove(param.as_str());
             }
             symbols.iter().all(|symbol| {
@@ -1816,7 +1816,7 @@ pub(crate) fn hash_value_equal(
         }
         Value::Lambda(params, body, _) => {
             hash_mix(state, 40);
-            for param in params {
+            for param in params.iter() {
                 hash_str(state, param);
             }
             for form in body.iter() {
@@ -3777,16 +3777,31 @@ pub(crate) fn active_command_keymaps(
     env: &Env,
 ) -> Result<Vec<Value>, LispError> {
     let mut maps = Vec::new();
-    let mut overriding = false;
-    for variable in ["overriding-terminal-local-map", "overriding-local-map"] {
-        if let Some(map) = interp.lookup_var(variable, env).filter(Value::is_truthy) {
-            if is_keymap_value(interp, &map) {
-                maps.push(map);
-            }
-            overriding = true;
+    if let Some(map) = interp
+        .lookup_var("overriding-terminal-local-map", env)
+        .filter(Value::is_truthy)
+    {
+        // `internal-push-keymap' marks transient compositions this way so an
+        // unbound key resumes the ordinary local-map search.
+        let add_active_maps = map.to_vec().ok().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| matches!(item, Value::Symbol(name) if name == "add-keymap-witness"))
+        });
+        if is_keymap_value(interp, &map) {
+            maps.push(map);
+        }
+        if !add_active_maps {
+            return Ok(maps);
         }
     }
-    if overriding {
+    if let Some(map) = interp
+        .lookup_var("overriding-local-map", env)
+        .filter(Value::is_truthy)
+    {
+        if is_keymap_value(interp, &map) {
+            maps.push(map);
+        }
         return Ok(maps);
     }
     maps.extend(

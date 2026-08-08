@@ -441,11 +441,7 @@ impl Interpreter {
                             NativeForm::Cond => {
                                 // Keep the in-progress form visible in
                                 // backtraces like GNU's eval frames.
-                                self.push_backtrace_frame_with_evald(
-                                    items[0].clone(),
-                                    items[1..].to_vec(),
-                                    false,
-                                );
+                                self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_cond(&items, env);
                                 self.pop_backtrace_frame();
                                 return result;
@@ -493,11 +489,7 @@ impl Interpreter {
                             NativeForm::Let => {
                                 // Keep the in-progress form visible in
                                 // backtraces like GNU's eval frames.
-                                self.push_backtrace_frame_with_evald(
-                                    items[0].clone(),
-                                    items[1..].to_vec(),
-                                    false,
-                                );
+                                self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_let(&items, env);
                                 self.pop_backtrace_frame();
                                 return result;
@@ -506,11 +498,7 @@ impl Interpreter {
                                 // GNU dlet `defvar's each binder before a `let',
                                 // so every binding is DYNAMIC (diary sexps read
                                 // `date'/`entry' from inside `eval').
-                                self.push_backtrace_frame_with_evald(
-                                    items[0].clone(),
-                                    items[1..].to_vec(),
-                                    false,
-                                );
+                                self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_dlet(&items, env);
                                 self.pop_backtrace_frame();
                                 return result;
@@ -522,11 +510,7 @@ impl Interpreter {
                             NativeForm::LetStar => {
                                 // Keep the in-progress form visible in
                                 // backtraces like GNU's eval frames.
-                                self.push_backtrace_frame_with_evald(
-                                    items[0].clone(),
-                                    items[1..].to_vec(),
-                                    false,
-                                );
+                                self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_letstar(&items, env);
                                 self.pop_backtrace_frame();
                                 return result;
@@ -555,11 +539,7 @@ impl Interpreter {
                                 }
                             }
                             NativeForm::Setq => {
-                                self.push_backtrace_frame_with_evald(
-                                    Value::Symbol("setq".into()),
-                                    items[1..].to_vec(),
-                                    false,
-                                );
+                                self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_setq(&items, env);
                                 self.pop_backtrace_frame();
                                 return result;
@@ -707,11 +687,7 @@ impl Interpreter {
                             NativeForm::While => {
                                 // Keep the in-progress form visible in
                                 // backtraces like GNU's eval frames.
-                                self.push_backtrace_frame_with_evald(
-                                    items[0].clone(),
-                                    items[1..].to_vec(),
-                                    false,
-                                );
+                                self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_while(&items, env);
                                 self.pop_backtrace_frame();
                                 return result;
@@ -720,11 +696,7 @@ impl Interpreter {
                                 if !self.has_macro_binding("dolist") {
                                     // Keep the in-progress form visible in
                                     // backtraces like GNU's eval frames.
-                                    self.push_backtrace_frame_with_evald(
-                                        items[0].clone(),
-                                        items[1..].to_vec(),
-                                        false,
-                                    );
+                                    self.push_unevaluated_backtrace_frame(expr);
                                     let result = self.sf_dolist(&items, env);
                                     self.pop_backtrace_frame();
                                     return result;
@@ -1100,12 +1072,17 @@ impl Interpreter {
                 }
 
                 // Regular function call
-                self.eval_call(&items, env)
+                self.eval_call(expr, &items, env)
             }
         }
     }
 
-    pub(super) fn eval_call(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+    pub(super) fn eval_call(
+        &mut self,
+        source_form: &Value,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         let func = if let Value::Symbol(name) = &items[0] {
             self.lookup_function(name, env)?
         } else {
@@ -1116,7 +1093,7 @@ impl Interpreter {
         // GNU records the eval of a list form.
         let unevald_frame = matches!(&items[0], Value::Symbol(_));
         if unevald_frame {
-            self.push_backtrace_frame_with_evald(items[0].clone(), items[1..].to_vec(), false);
+            self.push_unevaluated_backtrace_frame(source_form);
         }
         let mut args = Vec::new();
         let mut arg_error = None;
@@ -1426,7 +1403,7 @@ impl Interpreter {
                 let mut optional = false;
                 let mut rest = false;
 
-                for param in params {
+                for param in params.iter() {
                     if param == "&optional" {
                         optional = true;
                         continue;

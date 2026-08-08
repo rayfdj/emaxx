@@ -18,6 +18,43 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-08 PRE-COMPACT-VALUE CHECKPOINT: the published ordered frontier
+  remains 4,582/7,080 (2,498 selectors left).  The checkpoint immediately
+  before the Lisp value representation migration is tagged
+  `pre-compact-lisp-value-2026-08-08`; use that tag for rollback and `git
+  bisect`, not an untracked benchmark artifact.  Exact-source Electric is
+  874/874 against GNU in `target/compat/run-1786208178364460000-86585`.  The
+  first 29 canonical TRAMP selections match as 28 passes and one shared skip
+  in `target/compat/run-1786208301914103000-86729`.
+  `tramp-test18-file-attributes` is still an incomplete pre-existing boundary:
+  GNU finished in 8.029 seconds while Emaxx timed out during file load at
+  600.027 seconds in `target/compat/run-1786202518812459000-79490`.  Later
+  canonical TRAMP selections and the complete ordered 1..4,582 prefix are not
+  recertified; do not start selector 4,583 or claim a higher frontier.
+
+  The comparable source-interpreter artifact is
+  `target/perf/run-1786203529/interpreter/source-eval-suite.perf/comparison.json`:
+  list walking is 9.23x, cons allocation 15.99x, and interpreted calls 18.00x
+  GNU time, with matching semantic checks.  This is the pre-migration
+  performance baseline.  The 64.9-minute Rust audit ran 1,839 library tests:
+  1,832 passed, six localhost/UDP/GnuTLS cases were sandbox-denied, and the
+  known process-output timing case failed under full-suite scheduling.  All
+  seven passed in exact isolated replay with localhost permission where
+  required; both GnuTLS helpers also had one server-start timeout before a
+  clean retry passed.  Compatibility-harness 29/29, performance-harness 1/1,
+  CLI 10/10, and ERT runner 3/3 pass.  Rustfmt, diff check, regenerated and
+  formatted autoload comparison, all-target/all-feature check, and strict
+  Clippy pass.  Native remains 1,420/1,420.
+
+  During the migration preserve GNU's Lisp object identity, mutation, cycle,
+  uninterned-symbol, dynamic-binding, buffer/window/marker, and unwind
+  contracts.  Keep GNU C/runtime responsibilities in idiomatic Rust and GNU
+  Elisp ownership in Elisp.  Prefer one typed object table/interning authority
+  over shadow registries, and extend focused invariants whenever a migration
+  step exposes a new identity or invalidation boundary.  Every retained slice
+  must pass focused Rust tests, the paired source benchmark's semantic checks,
+  and a representative compatibility replay; grouped checkpoints must rerun
+  the full publication gates plus Electric and the current ordered prefix.
 - 2026-08-07 CUMULATIVE RUNTIME/FILE-CONTRACT CHECKPOINT: the frontier remains
   paused at 4,582/7,080 (2,498 selectors left).  Startup value/special/locality
   metadata, feature capability metadata, ERT registration, and `/mock:' file

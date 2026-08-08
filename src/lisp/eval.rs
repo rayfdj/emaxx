@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -14,6 +14,7 @@ use super::types::{
     EmacsTermination, Env, LispError, SharedEnv, Value, interned_symbol_value, shared_env,
 };
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
+use hashlink::LinkedHashMap;
 use regex::Regex;
 
 mod bindings;
@@ -963,6 +964,13 @@ pub struct MarkerState {
     pub position: Option<usize>,
     pub last_position: Option<usize>,
     pub insertion_type: bool,
+    /// Buffer whose persistent `mark-marker' identity this marker represents.
+    ///
+    /// This is independent of `buffer_id': clearing a buffer's mark detaches
+    /// the marker without changing its identity.  Keeping the relationship on
+    /// the marker also makes `set-marker' constant-time instead of reverse
+    /// scanning every live buffer-mark entry.
+    pub mark_buffer_id: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -1077,6 +1085,11 @@ pub(crate) struct SpecialBindingRestore {
 struct BacktraceFrame {
     function: Value,
     args: Vec<Value>,
+    /// Original list form for an unevaluated frame.  GNU backtraces retain
+    /// the live Lisp form; keeping it here avoids cloning its function symbol
+    /// and every argument on each interpreted call.  Debugger-facing APIs
+    /// materialize the two projections only when somebody inspects a frame.
+    source_form: Option<Value>,
     locals: Vec<(String, Value)>,
     /// Snapshot of the evaluator environment at this activation while a
     /// debugger is active.  Frames retain their identity stamps so
@@ -1715,14 +1728,47 @@ fn empty_lisp_face_vector() -> Value {
     )
 }
 
+type OrderedBindings = LinkedHashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>;
+
+fn ordered_bindings(entries: impl IntoIterator<Item = (String, Value)>) -> OrderedBindings {
+    let mut bindings = OrderedBindings::with_hasher(Default::default());
+    bindings.extend(entries);
+    bindings
+}
+
+type OrderedHooks = LinkedHashMap<String, Vec<Value>, crate::lisp::primitives::FnvBuildHasher>;
+
+fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> OrderedHooks {
+    let mut hooks = OrderedHooks::with_hasher(Default::default());
+    hooks.extend(entries);
+    hooks
+}
+
+type BufferLocalBindings = HashMap<u64, OrderedBindings, crate::lisp::primitives::FnvBuildHasher>;
+type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
+
+type OrderedNameIndex = HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>;
+
+/// Build a last-wins index over an ordered symbol/value registry.
+///
+/// The vector remains the canonical, deterministic representation used for
+/// enumeration.  Mutations use this index instead of duplicating each live
+/// Lisp value in a second container.
+fn ordered_name_index(entries: &[(String, Value)]) -> OrderedNameIndex {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, (name, _))| (name.clone(), index))
+        .collect()
+}
+
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
 pub struct Interpreter {
-    /// Global variable bindings (defvar, setq at top level).
-    globals: Vec<(String, Value)>,
-    /// Last-wins index over `globals` so global variable reads are O(1);
-    /// every mutation of `globals` keeps this in sync.
-    globals_index: HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
+    /// Global variable bindings (defvar, setq at top level).  GNU exposes
+    /// deterministic symbol enumeration while value-cell access and removal
+    /// are hash operations, so keep both properties in one canonical store.
+    globals: OrderedBindings,
     /// Variable aliases keyed by alias name.
     variable_aliases: Vec<(String, String)>,
     /// Alias → target index mirroring `variable_aliases` (at most one entry
@@ -1767,6 +1813,9 @@ pub struct Interpreter {
     /// Lisp plist, matching GNU symbols' plist cell rather than a Rust-side
     /// projection that loses `setcar'/`setcdr' mutations.
     symbol_properties: Vec<(String, Value)>,
+    /// Last-wins position index over `symbol_properties`.  The ordered vector
+    /// remains canonical for deterministic symbol enumeration.
+    symbol_properties_index: OrderedNameIndex,
     /// Symbols explicitly interned into the standard obarray.
     interned_symbols: Vec<String>,
     /// Membership index for `interned_symbols'.  Keeping insertion order in
@@ -1828,6 +1877,11 @@ pub struct Interpreter {
     next_marker_id: u64,
     /// All markers currently known to the interpreter.
     markers: Vec<MarkerState>,
+    /// Live marker IDs by buffer.  Marker objects remain allocated after they
+    /// detach, but edits and buffer teardown must touch only the small live
+    /// set belonging to that buffer.  The ordered set preserves marker-ID
+    /// iteration order for undo and match-data restoration.
+    markers_by_buffer: HashMap<u64, BTreeSet<u64>>,
     /// Stable GNU `mark-marker' identities, one for each live buffer.
     buffer_mark_marker_ids: HashMap<u64, u64>,
     /// Char tables allocated by the interpreter.
@@ -1877,6 +1931,12 @@ pub struct Interpreter {
     next_char_table_id: u64,
     /// Allocated record objects.
     records: Vec<RecordState>,
+    /// Live record IDs grouped by their current type tag.  Records remain in
+    /// dense ID order for identity lookup; this derived index avoids scanning
+    /// every byte-code function, hash table, and EIEIO object when a caller
+    /// needs one runtime class (notably windows during buffer teardown).
+    /// `create_record` and `retag_record` are the only mutation points.
+    record_ids_by_type_index: HashMap<String, BTreeSet<u64>>,
     /// Decoded byte-code programs indexed by record ID minus one — ids are
     /// dense and never freed, so the slot vector doubles as the cache map
     /// (see bytecode::vm).
@@ -1907,14 +1967,17 @@ pub struct Interpreter {
     next_finalizer_id: u64,
     /// Next generated symbol ID used by built-in macro expansion helpers.
     next_generated_symbol_id: u64,
-    /// Buffer-local hook lists keyed by (buffer id, hook name).
-    buffer_local_hooks: Vec<(u64, String, Vec<Value>)>,
-    /// Buffer-local variable values keyed by (buffer id, variable name).
-    buffer_locals: Vec<(u64, String, Value)>,
+    /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
+    /// order.  This is the sole backing store for local hook metadata.
+    buffer_local_hooks: BufferLocalHooks,
+    /// Buffer-local variable cells grouped by buffer, in per-buffer insertion
+    /// order.  GNU's buffer slot lookup is constant-time; mode-heavy code must
+    /// not scan every other live buffer's locals on each variable read.
+    buffer_locals: BufferLocalBindings,
     /// Buffer-local syntax tables keyed by buffer id.
     buffer_syntax_tables: Vec<(u64, u64)>,
     /// Variables that automatically become buffer-local when set.
-    auto_buffer_locals: Vec<String>,
+    auto_buffer_locals: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -2041,6 +2104,9 @@ pub struct Interpreter {
     standard_syntax_table_id: u64,
     undo_sequence: Option<UndoSequenceState>,
     load_path: Vec<PathBuf>,
+    /// Prefer GNU bytecode artifacts after the source-based bootstrap has
+    /// established the dumped Lisp runtime expected by compiled libraries.
+    prefer_compiled_loads: bool,
     loading_features: Vec<String>,
     lambda_capture_overrides: Vec<bool>,
     lambda_trim_overrides: Vec<bool>,
@@ -2223,7 +2289,7 @@ impl Interpreter {
             })
             .collect();
         let mut interp = Interpreter {
-            globals: vec![
+            globals: ordered_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("obarray".into(), Value::Record(standard_obarray_id)),
                 ("cl--proclaims-deferred".into(), Value::Nil),
@@ -2342,7 +2408,7 @@ impl Interpreter {
                 ("standard-translation-table-for-decode".into(), Value::Nil),
                 ("standard-translation-table-for-encode".into(), Value::Nil),
                 ("translation-table-for-input".into(), Value::Nil),
-            ],
+            ]),
             variable_aliases: Vec::new(),
             variable_aliases_index: HashMap::new(),
             special_variables_index: HashSet::default(),
@@ -2451,6 +2517,7 @@ impl Interpreter {
                 "vc-directory-exclusion-list".into(),
             ],
             symbol_properties: builtin_symbol_properties(),
+            symbol_properties_index: HashMap::default(),
             interned_symbols: Vec::new(),
             interned_symbol_names: HashSet::new(),
             standard_obarray_id,
@@ -2492,6 +2559,7 @@ impl Interpreter {
             next_overlay_id: 1,
             next_marker_id: 1,
             markers: Vec::new(),
+            markers_by_buffer: HashMap::new(),
             buffer_mark_marker_ids: HashMap::new(),
             char_tables: vec![
                 CharTableState {
@@ -2632,6 +2700,10 @@ impl Interpreter {
                     slots: vec![Value::Nil],
                 },
             ],
+            record_ids_by_type_index: HashMap::from([
+                ("thread".into(), BTreeSet::from([main_thread_id])),
+                ("obarray".into(), BTreeSet::from([standard_obarray_id])),
+            ]),
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
             vm_stack_pool: Vec::new(),
@@ -2644,8 +2716,8 @@ impl Interpreter {
             next_record_id: 3,
             next_finalizer_id: 1,
             next_generated_symbol_id: 1,
-            buffer_local_hooks: Vec::new(),
-            buffer_locals: Vec::new(),
+            buffer_local_hooks: HashMap::default(),
+            buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),
             auto_buffer_locals: DUMPED_AUTO_BUFFER_LOCALS
                 .iter()
@@ -2723,6 +2795,7 @@ impl Interpreter {
             standard_syntax_table_id,
             undo_sequence: None,
             load_path: Vec::new(),
+            prefer_compiled_loads: false,
             loading_features: Vec::new(),
             lambda_capture_overrides: Vec::new(),
             lambda_trim_overrides: Vec::new(),
@@ -2763,9 +2836,8 @@ impl Interpreter {
             handler_dispatch_depth: 0,
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
-            globals_index: HashMap::default(),
         };
-        interp.globals_index = interp.globals.iter().cloned().collect();
+        interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
         // Startup globals are dumped `defvar'/DEFVAR value cells, hence
         // intrinsically special.  Fold declarations and values through one
         // registration path so a new startup global cannot require a shadow
@@ -2779,6 +2851,7 @@ impl Interpreter {
         for name in declared_specials.into_iter().chain(startup_globals) {
             interp.mark_special_variable(&name);
         }
+        interp.initialize_native_face_variables();
         // GNU's dumped autoload variables originate in `defvar' / `defcustom'
         // forms: keep their defaults lazy, but install the special declaration.
         for name in generated_autoloads::generated_dumped_variable_names() {
@@ -3882,6 +3955,14 @@ impl Interpreter {
         self.load_path = load_path;
     }
 
+    pub(crate) fn set_prefer_compiled_loads(&mut self, prefer: bool) {
+        self.prefer_compiled_loads = prefer;
+    }
+
+    pub(crate) fn prefers_compiled_loads(&self) -> bool {
+        self.prefer_compiled_loads
+    }
+
     pub(crate) fn configured_load_path(&self) -> &[PathBuf] {
         &self.load_path
     }
@@ -4102,24 +4183,34 @@ impl Interpreter {
         if updates.is_empty() {
             return;
         }
-        self.closure_capture_cache
-            .retain(|(_, weak)| weak.strong_count() > 0);
-        for (_, weak) in &self.closure_capture_cache {
-            let Some(shared) = weak.upgrade() else {
+        let mut retired_frame_ids = Vec::new();
+        for update in updates {
+            let Some(frame_id) = Self::frame_identity(update) else {
                 continue;
             };
-            let mut captured = shared.borrow_mut();
-            for frame in captured.iter_mut() {
-                let Some(identity) = Self::frame_identity(frame) else {
+            let Some(owners) = self.captured_lexical_frames.get_mut(&frame_id) else {
+                continue;
+            };
+            owners.retain(|weak| weak.strong_count() > 0);
+            if owners.is_empty() {
+                retired_frame_ids.push(frame_id);
+                continue;
+            }
+            for weak in owners.iter() {
+                let Some(shared) = weak.upgrade() else {
                     continue;
                 };
-                if let Some(update) = updates
-                    .iter()
-                    .find(|candidate| Self::frame_identity(candidate) == Some(identity))
+                let mut captured = shared.borrow_mut();
+                if let Some(frame) = captured
+                    .iter_mut()
+                    .find(|frame| Self::frame_identity(frame) == Some(frame_id))
                 {
                     *frame = update.clone();
                 }
             }
+        }
+        for frame_id in retired_frame_ids {
+            self.captured_lexical_frames.remove(&frame_id);
         }
     }
 
@@ -5685,7 +5776,7 @@ fn cl_generic_no_applicable_function(method_name: &str, params: &[String]) -> Va
         Value::list(args)
     };
     Value::Lambda(
-        params.to_vec(),
+        params.to_vec().into(),
         vec![Value::list([
             Value::Symbol("emaxx--cl-generic-apply-next".into()),
             Value::Nil,

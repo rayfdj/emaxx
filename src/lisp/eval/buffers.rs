@@ -153,6 +153,26 @@ impl Interpreter {
         let from = from.max(self.buffer.point_min());
         let to = to.min(self.buffer.point_max());
         let affected_markers = self.affected_markers_for_delete(self.current_buffer_id(), from, to);
+        // undo.c records marker adjustments immediately before recording the
+        // deletion, so the Lisp undo list exposes the deletion followed by
+        // its marker riders.  `primitive-undo' relies on that adjacency.
+        if self.buffer.undo_enabled() {
+            for marker in &affected_markers {
+                let automatic_position = if self.marker_insertion_type(marker.id) == Some(true) {
+                    to
+                } else {
+                    from
+                };
+                let adjustment = automatic_position as i64 - marker.original_pos as i64;
+                if adjustment != 0 {
+                    self.buffer
+                        .push_undo_entry(crate::buffer::UndoEntry::Opaque(Value::cons(
+                            Value::Marker(marker.id),
+                            Value::Integer(adjustment),
+                        )));
+                }
+            }
+        }
         let related = self.related_buffer_ids(self.current_buffer_id());
         let deleted = self.buffer.delete_region(from, to)?;
         self.buffer.attach_markers_to_last_delete(affected_markers);
@@ -360,10 +380,12 @@ impl Interpreter {
         from: usize,
         to: usize,
     ) -> Vec<crate::buffer::UndoMarker> {
-        self.markers
-            .iter()
-            .filter(|marker| marker.buffer_id == Some(buffer_id))
-            .filter_map(|marker| {
+        self.markers_by_buffer
+            .get(&buffer_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|marker_id| {
+                let marker = self.find_marker(*marker_id)?;
                 let pos = marker.position?;
                 if pos >= from && pos <= to {
                     Some(crate::buffer::UndoMarker {

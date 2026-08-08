@@ -1353,6 +1353,29 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     interactive_form_in_body(body)
 }
 
+/// Return GNU's `(interactive SPEC)' metadata for every callable
+/// representation.  Genuine byte-code closures store SPEC in closure slot
+/// five rather than as a body form; keep that representation detail behind
+/// the same query used by `commandp', `interactive-form', and dispatch.
+pub(crate) fn callable_interactive_form_items(
+    interp: &Interpreter,
+    func: &Value,
+) -> Option<Vec<Value>> {
+    if let Some(original) = advice_wrapper_original(func) {
+        return callable_interactive_form_items(interp, &original);
+    }
+    if let Value::Record(id) = func
+        && let Some(record) = interp.find_record(*id)
+        && record.type_name == "byte-code-function"
+        && let Ok(Some(object)) = crate::lisp::bytecode::ByteCodeObject::from_slots(&record.slots)
+        && let Some(spec) = object.interactive
+        && !spec.is_nil()
+    {
+        return Some(vec![Value::symbol("interactive"), spec]);
+    }
+    interactive_form_items(func)
+}
+
 fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
     for form in body.iter() {
         if matches!(form, Value::String(_) | Value::StringObject(_)) {
@@ -1427,8 +1450,9 @@ fn builtin_interactive_string(name: &str) -> Option<&'static str> {
     })
 }
 
-pub(crate) fn interactive_spec_form(func: &Value) -> Option<Value> {
-    interactive_form_items(func).map(|items| items.get(1).cloned().unwrap_or(Value::Nil))
+pub(crate) fn interactive_spec_form(interp: &Interpreter, func: &Value) -> Option<Value> {
+    callable_interactive_form_items(interp, func)
+        .map(|items| items.get(1).cloned().unwrap_or(Value::Nil))
 }
 
 pub(crate) fn interactive_list_form_items(form: &Value) -> Option<Vec<Value>> {

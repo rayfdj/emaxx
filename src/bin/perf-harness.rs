@@ -270,7 +270,10 @@ fn run_oracle_scenario(
     command.arg(&helper_path);
     for load_file in &scenario.load_files {
         command.arg("-l");
-        command.arg(local.emacs_repo.join(load_file));
+        command.arg(perf::resolve_scenario_load_file(
+            &local.emacs_repo,
+            load_file,
+        )?);
     }
     command.arg("--eval");
     command.arg(format!(
@@ -455,6 +458,7 @@ fn update_summary(
         summary.faster += comparison.summary.faster;
         summary.parity += comparison.summary.parity;
         summary.slower += comparison.summary.slower;
+        summary.over_two_x += comparison.summary.over_two_x;
         summary.unsupported += comparison.summary.unsupported;
         summary.failed += comparison.summary.failed;
     }
@@ -502,6 +506,7 @@ mod tests {
                 faster: 0,
                 parity: 0,
                 slower: 0,
+                over_two_x: 0,
                 unsupported: 7,
                 failed: 9,
             },
@@ -512,5 +517,6 @@ mod tests {
         assert_eq!(summary.oracle_only.cases, 0);
         assert_eq!(summary.unsupported, 0);
         assert_eq!(summary.failed, 0);
+        assert_eq!(summary.over_two_x, 0);
     }
 }

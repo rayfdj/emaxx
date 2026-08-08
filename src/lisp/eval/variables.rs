@@ -1,5 +1,31 @@
 use super::*;
 
+impl BacktraceFrame {
+    fn function_snapshot(&self) -> Value {
+        self.source_form
+            .as_ref()
+            .and_then(|form| form.car().ok())
+            .unwrap_or_else(|| self.function.clone())
+    }
+
+    fn args_snapshot(&self) -> Vec<Value> {
+        let Some(form) = &self.source_form else {
+            return self.args.clone();
+        };
+        let Ok(tail) = form.cdr() else {
+            return Vec::new();
+        };
+        tail.to_vec().unwrap_or_else(|_| vec![tail])
+    }
+
+    fn first_arg_snapshot(&self) -> Option<Value> {
+        if let Some(form) = &self.source_form {
+            return form.cdr().ok()?.car().ok();
+        }
+        self.args.first().cloned()
+    }
+}
+
 impl Interpreter {
     /// Set the current buffer's visited name together with metadata derived
     /// from that name.  `buffer-file-name' is one logical state transition:
@@ -25,67 +51,75 @@ impl Interpreter {
 
     pub fn buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> Option<Vec<Value>> {
         self.buffer_local_hooks
-            .iter()
-            .find(|(id, name, _)| *id == buffer_id && name == hook_name)
-            .map(|(_, _, hooks)| hooks.clone())
+            .get(&buffer_id)
+            .and_then(|hooks| hooks.get(hook_name))
+            .cloned()
     }
 
     pub fn remove_buffer_local_hook(&mut self, buffer_id: u64, hook_name: &str) {
-        self.buffer_local_hooks
-            .retain(|(id, name, _)| !(*id == buffer_id && name == hook_name));
+        let remove_buffer = self
+            .buffer_local_hooks
+            .get_mut(&buffer_id)
+            .is_some_and(|hooks| {
+                hooks.remove(hook_name);
+                hooks.is_empty()
+            });
+        if remove_buffer {
+            self.buffer_local_hooks.remove(&buffer_id);
+        }
     }
 
     pub fn set_buffer_local_hook(&mut self, buffer_id: u64, hook_name: &str, hooks: Vec<Value>) {
-        if let Some((_, _, existing)) = self
+        let local_hooks = self
             .buffer_local_hooks
-            .iter_mut()
-            .find(|(id, name, _)| *id == buffer_id && name == hook_name)
-        {
+            .entry(buffer_id)
+            .or_insert_with(|| super::ordered_hooks([]));
+        if let Some(existing) = local_hooks.get_mut(hook_name) {
             *existing = hooks;
         } else {
-            self.buffer_local_hooks
-                .push((buffer_id, hook_name.to_string(), hooks));
+            local_hooks.insert(hook_name.to_string(), hooks);
         }
     }
 
     pub fn buffer_local_value(&self, buffer_id: u64, name: &str) -> Option<Value> {
         self.buffer_locals
-            .iter()
-            .rev()
-            .find(|(id, var, _)| *id == buffer_id && var == name)
-            .map(|(_, _, value)| value.clone())
+            .get(&buffer_id)
+            .and_then(|locals| locals.get(name))
+            .cloned()
     }
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
         let value = Self::stored_value(value);
-        for (id, var, existing) in self.buffer_locals.iter_mut().rev() {
-            if *id == buffer_id && var == name {
-                *existing = value;
-                return;
-            }
+        let locals = self
+            .buffer_locals
+            .entry(buffer_id)
+            .or_insert_with(|| super::ordered_bindings([]));
+        if let Some(existing) = locals.get_mut(name) {
+            *existing = value;
+        } else {
+            locals.insert(name.to_string(), value);
         }
-        self.buffer_locals
-            .push((buffer_id, name.to_string(), value));
     }
 
     pub fn remove_buffer_local_value(&mut self, buffer_id: u64, name: &str) {
-        if let Some(index) = self
+        let remove_buffer = self
             .buffer_locals
-            .iter()
-            .rposition(|(id, var, _)| *id == buffer_id && var == name)
-        {
-            self.buffer_locals.remove(index);
+            .get_mut(&buffer_id)
+            .is_some_and(|locals| {
+                locals.remove(name);
+                locals.is_empty()
+            });
+        if remove_buffer {
+            self.buffer_locals.remove(&buffer_id);
         }
         // Buffer-local hooks are part of the local binding: killing the
         // local variable discards them, as in GNU Emacs.
-        self.buffer_local_hooks
-            .retain(|(id, hook, _)| *id != buffer_id || hook != name);
+        self.remove_buffer_local_hook(buffer_id, name);
     }
 
     pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {
-        self.buffer_locals.retain(|(id, _, _)| *id != buffer_id);
-        self.buffer_local_hooks
-            .retain(|(id, _, _)| *id != buffer_id);
+        self.buffer_locals.remove(&buffer_id);
+        self.buffer_local_hooks.remove(&buffer_id);
         self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
     }
 
@@ -95,27 +129,32 @@ impl Interpreter {
     pub fn clear_buffer_local_state_for_mode_change(&mut self, buffer_id: u64) {
         let permanent_hooks = self
             .buffer_local_hooks
-            .iter()
-            .filter(|(id, name, _)| {
-                *id == buffer_id
-                    && self
-                        .get_symbol_property(name, "permanent-local")
-                        .is_some_and(|value| value.is_truthy())
+            .get(&buffer_id)
+            .into_iter()
+            .flat_map(|hooks| hooks.iter())
+            .filter(|(name, _)| {
+                self.get_symbol_property(name, "permanent-local")
+                    .is_some_and(|value| value.is_truthy())
             })
-            .map(|(_, name, _)| name.clone())
+            .map(|(name, values)| (name.clone(), values.clone()))
             .collect::<Vec<_>>();
-        self.buffer_locals.retain(|(id, _, _)| *id != buffer_id);
-        self.buffer_local_hooks
-            .retain(|(id, name, _)| *id != buffer_id || permanent_hooks.contains(name));
+        self.buffer_locals.remove(&buffer_id);
+        if permanent_hooks.is_empty() {
+            self.buffer_local_hooks.remove(&buffer_id);
+        } else {
+            self.buffer_local_hooks
+                .insert(buffer_id, super::ordered_hooks(permanent_hooks));
+        }
         self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
     }
 
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
         let locals = self
             .buffer_locals
-            .iter()
-            .filter(|(id, _, _)| *id == from_buffer_id)
-            .map(|(_, name, value)| (name.clone(), value.clone()))
+            .get(&from_buffer_id)
+            .into_iter()
+            .flat_map(|locals| locals.iter())
+            .map(|(name, value)| (name.clone(), value.clone()))
             .collect::<Vec<_>>();
         for (name, value) in locals {
             self.set_buffer_local_value(to_buffer_id, &name, value);
@@ -123,9 +162,10 @@ impl Interpreter {
 
         let hooks = self
             .buffer_local_hooks
-            .iter()
-            .filter(|(id, _, _)| *id == from_buffer_id)
-            .map(|(_, name, values)| (name.clone(), values.clone()))
+            .get(&from_buffer_id)
+            .into_iter()
+            .flat_map(|hooks| hooks.iter())
+            .map(|(name, values)| (name.clone(), values.clone()))
             .collect::<Vec<_>>();
         for (name, values) in hooks {
             self.set_buffer_local_hook(to_buffer_id, &name, values);
@@ -142,29 +182,23 @@ impl Interpreter {
     }
 
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
-        let mut vars = Vec::new();
-        for (id, name, value) in &self.buffer_locals {
-            if *id == buffer_id && !vars.iter().any(|(existing, _)| existing == name) {
-                vars.push((name.clone(), value.clone()));
-            }
-        }
-        vars
+        self.buffer_locals
+            .get(&buffer_id)
+            .map(|locals| {
+                locals
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn mark_auto_buffer_local(&mut self, name: &str) {
-        if !self
-            .auto_buffer_locals
-            .iter()
-            .any(|existing| existing == name)
-        {
-            self.auto_buffer_locals.push(name.to_string());
-        }
+        self.auto_buffer_locals.insert(name.to_string());
     }
 
     pub fn is_auto_buffer_local(&self, name: &str) -> bool {
-        self.auto_buffer_locals
-            .iter()
-            .any(|existing| existing == name)
+        self.auto_buffer_locals.contains(name)
     }
 
     /// Define a global value cell and its dynamic-binding contract together.
@@ -255,6 +289,18 @@ impl Interpreter {
                 Value::cons(Value::Symbol(name.to_string()), existing),
             );
         }
+    }
+
+    /// Reconstitute a bare-symbol entry from GNU's serialized lexical
+    /// environment.  Such an entry declares NAME dynamically scoped inside
+    /// this closure.  Unlike evaluating a local `defvar', deserialization
+    /// must not alter the surrounding macro-expansion environment.
+    pub(crate) fn captured_local_special_marker(&mut self, name: &str) -> (String, Value) {
+        self.local_special_names.insert(name.to_string());
+        (
+            format!("--emaxx-local-special--{name}"),
+            Value::Integer(self.current_activation_id as i64),
+        )
     }
 
     /// Whether NAME has ever been declared locally special (one-arg
@@ -354,9 +400,11 @@ impl Interpreter {
     }
 
     pub(super) fn symbol_property_index(&self, name: &str) -> Option<usize> {
-        self.symbol_properties
-            .iter()
-            .rposition(|(symbol, _)| symbol == name)
+        self.symbol_properties_index.get(name).copied()
+    }
+
+    fn rebuild_symbol_properties_index(&mut self) {
+        self.symbol_properties_index = super::ordered_name_index(&self.symbol_properties);
     }
 
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
@@ -434,10 +482,12 @@ impl Interpreter {
             }
             return;
         }
+        let index = self.symbol_properties.len();
         self.symbol_properties.push((
             name.to_string(),
             Value::list([Value::Symbol(property.to_string()), value]),
         ));
+        self.symbol_properties_index.insert(name.to_string(), index);
     }
 
     pub fn intern_symbol_name(&mut self, name: &str) {
@@ -509,6 +559,7 @@ impl Interpreter {
                         .expect("a tracked plist value cell is a cons");
                 } else if next.is_nil() {
                     self.symbol_properties.remove(index);
+                    self.rebuild_symbol_properties_index();
                 } else {
                     self.symbol_properties[index].1 = next;
                 }
@@ -532,12 +583,15 @@ impl Interpreter {
         if plist.is_nil() {
             if let Some(existing) = self.symbol_property_index(name) {
                 self.symbol_properties.remove(existing);
+                self.rebuild_symbol_properties_index();
             }
         } else if let Some(existing) = self.symbol_property_index(name) {
             self.symbol_properties[existing].1 = Self::stored_value(plist.clone());
         } else {
+            let index = self.symbol_properties.len();
             self.symbol_properties
                 .push((name.to_string(), Self::stored_value(plist.clone())));
+            self.symbol_properties_index.insert(name.to_string(), index);
         }
         Ok(plist)
     }
@@ -694,7 +748,7 @@ impl Interpreter {
     }
 
     pub(super) fn global_value(&self, name: &str) -> Option<Value> {
-        self.globals_index.get(name).cloned()
+        self.global_binding_value(name)
     }
 
     pub fn default_value(&self, name: &str) -> Option<Value> {
@@ -709,32 +763,15 @@ impl Interpreter {
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        self.globals_index.contains_key(&resolved)
-    }
-
-    /// Rebuild the last-wins index entry for NAME after an ad-hoc removal
-    /// or in-place mutation of `globals`.
-    pub(crate) fn reindex_global_binding(&mut self, name: &str) {
-        match self.globals.iter().rfind(|(symbol, _)| symbol == name) {
-            Some((_, value)) => {
-                let value = value.clone();
-                self.globals_index.insert(name.to_string(), value);
-            }
-            None => {
-                self.globals_index.remove(name);
-            }
-        }
+        self.globals.contains_key(&resolved)
     }
 
     pub fn remove_global_binding(&mut self, name: &str) {
-        if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == name) {
-            self.globals.remove(index);
-            self.reindex_global_binding(name);
-        }
+        self.globals.remove(name);
     }
 
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
-        self.globals_index.get(name).cloned()
+        self.globals.get(name).cloned()
     }
 
     pub fn set_global_binding(&mut self, name: &str, value: Value) {
@@ -755,11 +792,10 @@ impl Interpreter {
         {
             self.mark_ascii_case_table(*id);
         }
-        self.globals_index.insert(name.clone(), value.clone());
-        if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == &name) {
-            self.globals[index].1 = value;
+        if let Some(existing) = self.globals.get_mut(&name) {
+            *existing = value;
         } else {
-            self.globals.push((name, value));
+            self.globals.insert(name, value);
         }
     }
 
@@ -1159,6 +1195,18 @@ impl Interpreter {
         self.push_backtrace_frame_with_locals(function, args, Vec::new(), evald);
     }
 
+    pub(super) fn push_unevaluated_backtrace_frame(&mut self, source_form: &Value) {
+        self.backtrace_frames.push(BacktraceFrame {
+            function: Value::Nil,
+            args: Vec::new(),
+            source_form: Some(source_form.clone()),
+            locals: Vec::new(),
+            lexical_context: None,
+            evald: false,
+            debug_on_exit: false,
+        });
+    }
+
     pub fn push_backtrace_frame_with_locals(
         &mut self,
         function: Value,
@@ -1169,6 +1217,7 @@ impl Interpreter {
         self.backtrace_frames.push(BacktraceFrame {
             function,
             args,
+            source_form: None,
             locals,
             lexical_context: None,
             evald,
@@ -1261,10 +1310,11 @@ impl Interpreter {
         };
         if std::env::var_os("EMAXX_DBG_CIP").is_some() {
             for (index, frame) in self.backtrace_frames.iter().rev().enumerate().take(14) {
+                let function = frame.function_snapshot();
                 eprintln!(
                     "EMAXX-DBG cip frame[{index}] evald={} fn={:.60}",
                     frame.evald,
-                    format!("{:?}", frame.function)
+                    format!("{function:?}")
                 );
             }
         }
@@ -1272,7 +1322,7 @@ impl Interpreter {
         // Drop this call's own frames (the called-interactively-p builtin
         // plus the unevald list frame recording it).
         while frames.peek().is_some_and(|frame| {
-            frame_name(&frame.function).as_deref() == Some("called-interactively-p")
+            frame_name(&frame.function_snapshot()).as_deref() == Some("called-interactively-p")
         }) {
             frames.next();
         }
@@ -1286,9 +1336,10 @@ impl Interpreter {
         let Some(current) = frames.next() else {
             return true;
         };
+        let current_function = current.function_snapshot();
         if let Some(next) = frames.peek()
             && !next.evald
-            && next.function == current.function
+            && next.function_snapshot() == current_function
         {
             frames.next();
         }
@@ -1300,10 +1351,14 @@ impl Interpreter {
         // is nadvice's documented broken case.
         let mut descended_through_advice = false;
         for frame in frames {
-            let name = frame_name(&frame.function);
+            let function = frame.function_snapshot();
+            let name = frame_name(&function);
             match name.as_deref() {
                 Some("apply") | Some("funcall") => {
-                    descended_through_advice = frame.args.first().is_some_and(&frame_is_oclosure);
+                    descended_through_advice = frame
+                        .first_arg_snapshot()
+                        .as_ref()
+                        .is_some_and(&frame_is_oclosure);
                     continue;
                 }
                 Some("call-interactively")
@@ -1311,7 +1366,7 @@ impl Interpreter {
                 | Some("command-execute") => return true,
                 _ => {}
             }
-            if frame_is_oclosure(&frame.function) {
+            if frame_is_oclosure(&function) {
                 continue;
             }
             // An unevald list frame duplicates the evald application that
@@ -1340,8 +1395,8 @@ impl Interpreter {
         self.backtrace_frames.last().map(|frame| {
             (
                 frame.evald,
-                frame.function.clone(),
-                frame.args.clone(),
+                frame.function_snapshot(),
+                frame.args_snapshot(),
                 frame.debug_on_exit,
             )
         })
@@ -1354,8 +1409,8 @@ impl Interpreter {
             .map(|frame| {
                 (
                     frame.evald,
-                    frame.function.clone(),
-                    frame.args.clone(),
+                    frame.function_snapshot(),
+                    frame.args_snapshot(),
                     frame.debug_on_exit,
                 )
             })
@@ -1377,7 +1432,11 @@ impl Interpreter {
     ) -> Option<Vec<(String, Value)>> {
         let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
         let start = base
-            .and_then(|base| frames.iter().position(|frame| &frame.function == base))
+            .and_then(|base| {
+                frames
+                    .iter()
+                    .position(|frame| frame.function_snapshot() == *base)
+            })
             .unwrap_or(0);
         frames
             .into_iter()
@@ -1393,7 +1452,11 @@ impl Interpreter {
     pub fn backtrace_frame_context_env(&self, index: usize, base: Option<&Value>) -> Env {
         let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
         let start = base
-            .and_then(|base| frames.iter().position(|frame| &frame.function == base))
+            .and_then(|base| {
+                frames
+                    .iter()
+                    .position(|frame| frame.function_snapshot() == *base)
+            })
             .unwrap_or(0);
         if let Some(context) = frames
             .get(start + index)

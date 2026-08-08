@@ -16,6 +16,60 @@ fn backquote_splice_elements(interp: &Interpreter, value: Value) -> Result<Vec<V
 }
 
 impl Interpreter {
+    /// Materialize `#[...]' and ordinary `#s(...)' reader forms throughout a
+    /// freshly-read object.  GNU creates record objects in the reader, even
+    /// below `quote'.  Emaxx keeps parsing independent of an Interpreter, so
+    /// perform that object-allocation step at the read/evaluation boundary.
+    /// Mutating surrounding cons cells in place preserves reader sharing.
+    pub(crate) fn materialize_read_record_literals(
+        &mut self,
+        value: &Value,
+    ) -> Result<Value, LispError> {
+        self.materialize_read_record_literals_inner(
+            value,
+            &mut std::collections::HashSet::new(),
+            &mut std::collections::HashMap::new(),
+        )
+    }
+
+    fn materialize_read_record_literals_inner(
+        &mut self,
+        value: &Value,
+        seen: &mut std::collections::HashSet<usize>,
+        records: &mut std::collections::HashMap<usize, Value>,
+    ) -> Result<Value, LispError> {
+        let Value::Cons(car_cell, cdr_cell) = value else {
+            return Ok(value.clone());
+        };
+        let identity = std::rc::Rc::as_ptr(car_cell) as usize;
+        if is_record_literal_reader_form(value) {
+            if let Some(record) = records.get(&identity) {
+                return Ok(record.clone());
+            }
+            if !seen.insert(identity) {
+                return Err(LispError::ReadError("circular record literal".into()));
+            }
+            let items = value.to_vec()?;
+            let mut slots = Vec::with_capacity(items.len().saturating_sub(1));
+            for slot in &items[1..] {
+                slots.push(self.materialize_read_record_literals_inner(slot, seen, records)?);
+            }
+            let record = self.eval_record_literal_form(&slots, &mut Env::new())?;
+            records.insert(identity, record.clone());
+            return Ok(record);
+        }
+        if !seen.insert(identity) {
+            return Ok(value.clone());
+        }
+        let car = car_cell.borrow().clone();
+        *car_cell.borrow_mut() =
+            self.materialize_read_record_literals_inner(&car, seen, records)?;
+        let cdr = cdr_cell.borrow().clone();
+        *cdr_cell.borrow_mut() =
+            self.materialize_read_record_literals_inner(&cdr, seen, records)?;
+        Ok(value.clone())
+    }
+
     pub(super) fn eval_backquote(
         &mut self,
         expr: &Value,
@@ -36,9 +90,94 @@ impl Interpreter {
         if let Some(first) = values.first()
             && let Ok(type_name) = first.as_symbol()
         {
+            if type_name == "interpreted-function" {
+                return self.make_interpreted_closure_value(&values[1..]);
+            }
             return Ok(self.create_record(type_name, values[1..].to_vec()));
         }
         Ok(self.create_record("literal-record", values))
+    }
+
+    /// Construct GNU's interpreted `#[ARGS BODY ENV ...]' closure object.
+    ///
+    /// GNU serializes both compiled and interpreted closures with `#[...]'.
+    /// Emaxx stores interpreted closures directly as `Value::Lambda', so the
+    /// reader materialization boundary translates the pseudovector slots into
+    /// the native representation while retaining lexical bindings and local
+    /// special declarations from ENV.
+    pub(crate) fn make_interpreted_closure_value(
+        &mut self,
+        slots: &[Value],
+    ) -> Result<Value, LispError> {
+        if !(3..=6).contains(&slots.len()) {
+            return Err(LispError::Signal("Invalid interpreted closure".into()));
+        }
+        let params = self.parse_params(&slots[0])?;
+        let body = slots[1].to_vec()?;
+        if body.is_empty() {
+            return Err(LispError::Signal("Invalid interpreted closure body".into()));
+        }
+
+        let lexical = !slots[2].is_nil();
+        let mut frame = Vec::new();
+        for entry in slots[2].to_vec()? {
+            match entry {
+                Value::Cons(car, cdr) => {
+                    let name = car.borrow().as_symbol()?.to_string();
+                    let tail = cdr.borrow().clone();
+                    // Accept both GNU's usual (NAME . VALUE) lexical binding
+                    // and the equivalent one-element-list spelling already
+                    // accepted by `make-interpreted-closure'.
+                    let value = match tail {
+                        Value::Cons(value, rest) if rest.borrow().is_nil() => {
+                            value.borrow().clone()
+                        }
+                        other => other,
+                    };
+                    frame.push((name, Self::stored_value(value)));
+                }
+                Value::Symbol(name) => {
+                    frame.push(self.captured_local_special_marker(&name));
+                }
+                // `t' is GNU's empty-lexical-environment sentinel.  Other
+                // non-binding entries are ignored by GNU's assq lookup too.
+                Value::T | Value::Nil => {}
+                _ => {}
+            }
+        }
+        let closure_env = shared_env(if frame.is_empty() {
+            Vec::new()
+        } else {
+            vec![frame]
+        });
+        if lexical {
+            self.mark_lexical_closure_env(&closure_env);
+        } else {
+            self.mark_closure_eval_context(&closure_env, false);
+        }
+
+        let mut lambda_body = Vec::with_capacity(body.len() + 2);
+        if let Some(doc) = slots.get(4).filter(|value| !value.is_nil()) {
+            lambda_body.push(doc.clone());
+        }
+        if let Some(spec) = slots.get(5).filter(|value| !value.is_nil()) {
+            if spec.to_vec().ok().is_some_and(|items| {
+                matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "interactive")
+            }) {
+                lambda_body.push(spec.clone());
+            } else {
+                lambda_body.push(Value::list([
+                    Value::Symbol("interactive".into()),
+                    spec.clone(),
+                ]));
+            }
+        }
+        lambda_body.extend(body);
+        Ok(Value::Lambda(
+            params.into(),
+            lambda_body.into(),
+            closure_env,
+        ))
     }
 
     pub(super) fn eval_backquote_with_depth(

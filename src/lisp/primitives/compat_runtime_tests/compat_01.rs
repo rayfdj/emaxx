@@ -1312,7 +1312,7 @@ fn normal_mode_selects_archive_mode_for_zip_buffers() {
     interp.set_function_binding(
         "archive-mode",
         Some(Value::Lambda(
-            Vec::new(),
+            Vec::new().into(),
             vec![
                 Value::list([
                     Value::Symbol("setq-local".into()),
@@ -1452,7 +1452,7 @@ fn normal_mode_consults_auto_mode_alist_before_dispatching() {
     interp.set_function_binding(
         "sample-custom-mode",
         Some(Value::Lambda(
-            Vec::new(),
+            Vec::new().into(),
             vec![
                 Value::list([
                     Value::Symbol("setq-local".into()),
@@ -1885,7 +1885,7 @@ fn display_buffer_calls_action_function_via_primitive_entrypoint() {
     interp.set_function_binding(
         "demo-display",
         Some(Value::Lambda(
-            vec!["buffer".into(), "alist".into()],
+            vec!["buffer".into(), "alist".into()].into(),
             vec![
                 Value::list([
                     Value::Symbol("setq".into()),
@@ -1926,7 +1926,7 @@ fn display_buffer_action_function_can_return_nil() {
     interp.set_function_binding(
         "demo-display",
         Some(Value::Lambda(
-            vec!["buffer".into(), "alist".into()],
+            vec!["buffer".into(), "alist".into()].into(),
             vec![
                 Value::list([
                     Value::Symbol("setq".into()),
