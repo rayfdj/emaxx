@@ -38,10 +38,10 @@ impl Interpreter {
         seen: &mut std::collections::HashSet<usize>,
         records: &mut std::collections::HashMap<usize, Value>,
     ) -> Result<Value, LispError> {
-        let Value::Cons(car_cell, cdr_cell) = value else {
+        let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
             return Ok(value.clone());
         };
-        let identity = std::rc::Rc::as_ptr(car_cell) as usize;
+        let identity = car_cell.cell_id();
         if is_record_literal_reader_form(value) {
             if let Some(record) = records.get(&identity) {
                 return Ok(record.clone());
@@ -122,15 +122,17 @@ impl Interpreter {
         let mut frame = Vec::new();
         for entry in slots[2].to_vec()? {
             match entry {
-                Value::Cons(car, cdr) => {
+                Value::Cons(cons_cell) => {
+                    let car = &cons_cell.car;
+                    let cdr = &cons_cell.cdr;
                     let name = car.borrow().as_symbol()?.to_string();
                     let tail = cdr.borrow().clone();
                     // Accept both GNU's usual (NAME . VALUE) lexical binding
                     // and the equivalent one-element-list spelling already
                     // accepted by `make-interpreted-closure'.
                     let value = match tail {
-                        Value::Cons(value, rest) if rest.borrow().is_nil() => {
-                            value.borrow().clone()
+                        Value::Cons(cell) if cell.cdr.borrow().is_nil() => {
+                            cell.car.borrow().clone()
                         }
                         other => other,
                     };
@@ -209,7 +211,7 @@ impl Interpreter {
         }
 
         match expr {
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let mut result: Vec<Value> = Vec::new();
                 let mut current = expr.clone();
                 loop {
@@ -222,7 +224,9 @@ impl Interpreter {
                         return Ok(cons_list_with_tail(result, tail));
                     }
                     match current {
-                        Value::Cons(car, cdr) => {
+                        Value::Cons(cons_cell) => {
+                            let car = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
                             let car_value = car.borrow().clone();
                             let cdr_value = cdr.borrow().clone();
 
@@ -290,7 +294,7 @@ impl Interpreter {
         };
         // Process and skip (declare ...) forms.
         let body_start = if body_start < items.len() {
-            if let Value::Cons(_, _) = &items[body_start] {
+            if let Value::Cons(_) = &items[body_start] {
                 if let Ok(decl) = items[body_start].to_vec() {
                     if let Some(Value::Symbol(s)) = decl.first() {
                         if s == "declare" {
@@ -1021,7 +1025,7 @@ impl Interpreter {
                 "cl-defmethod" if items.len() >= 3 => {
                     let lambda_list_index =
                         items.iter().enumerate().skip(2).find_map(|(index, value)| {
-                            matches!(value, Value::Cons(_, _) | Value::Nil).then_some(index)
+                            matches!(value, Value::Cons(_) | Value::Nil).then_some(index)
                         });
                     if let Some(lambda_list_index) = lambda_list_index {
                         return self.macroexpand_all_definition_body(
@@ -1163,7 +1167,7 @@ impl Interpreter {
         for binding in bindings {
             match binding {
                 Value::Symbol(_) => expanded_bindings.push(binding),
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     let parts = binding.to_vec()?;
                     if parts.is_empty() {
                         expanded_bindings.push(Value::Nil);
@@ -1361,7 +1365,7 @@ impl Interpreter {
                 // fails cl--struct-name-p (nil, keyword, or built-in type).
                 let struct_name = args.first().and_then(|spec| match spec {
                     Value::Symbol(name) => Some(name.clone()),
-                    Value::Cons(_, _) => spec
+                    Value::Cons(_) => spec
                         .car()
                         .ok()
                         .and_then(|head| head.as_symbol().ok().map(str::to_string)),
@@ -1686,7 +1690,7 @@ impl Interpreter {
         for binding in bindings {
             match binding {
                 Value::Symbol(name) => lowered_bindings.push(Value::Symbol(name)),
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     let parts = binding.to_vec()?;
                     let Some(name_value) = parts.first() else {
                         return Err(LispError::ReadError("bad letrec binding".into()));
@@ -1731,7 +1735,7 @@ impl Interpreter {
                     params.push(Value::Symbol(symbol));
                     inits.push(Value::Nil);
                 }
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     let parts = binding.to_vec()?;
                     let Some(param) = parts.first() else {
                         return Err(LispError::ReadError("bad named-let binding".into()));
@@ -1966,7 +1970,7 @@ impl Interpreter {
             return Ok(Value::Nil);
         }
 
-        if let Value::Cons(_, _) = keys {
+        if let Value::Cons(_) = keys {
             let keys = keys.to_vec()?;
             let mut tests = Vec::with_capacity(keys.len());
             for key in keys {
@@ -2158,7 +2162,7 @@ impl Interpreter {
         for slot in args.get(1..).unwrap_or(&[]) {
             let slot_name = match slot {
                 Value::Symbol(name) => Some(name.clone()),
-                Value::Cons(_, _) => slot.to_vec().ok().and_then(|parts| {
+                Value::Cons(_) => slot.to_vec().ok().and_then(|parts| {
                     parts
                         .first()
                         .and_then(|v| v.as_symbol().ok().map(String::from))
@@ -2179,9 +2183,9 @@ impl Interpreter {
 
 fn macro_environment_expander(macro_environment: Option<&Value>, name: &str) -> Option<Value> {
     let mut entries = macro_environment?.clone();
-    while let Value::Cons(_, _) = &entries {
+    while let Value::Cons(_) = &entries {
         let entry = entries.car().ok()?;
-        if let Value::Cons(_, _) = entry {
+        if let Value::Cons(_) = entry {
             let symbol = entry.car().ok()?;
             if symbol.as_symbol().ok()? == name {
                 return entry.cdr().ok();
@@ -2200,7 +2204,7 @@ impl Interpreter {
     pub(super) fn cl_defstruct_expansion_with_stubs(args: &[Value]) -> Value {
         let (name, options) = match args.first() {
             Some(Value::Symbol(name)) => (name.clone(), Vec::new()),
-            Some(spec @ Value::Cons(_, _)) => {
+            Some(spec @ Value::Cons(_)) => {
                 let parts = spec.to_vec().unwrap_or_default();
                 let name = parts
                     .first()
@@ -2254,7 +2258,7 @@ impl Interpreter {
         for slot in args.iter().skip(1) {
             let slot_name = match slot {
                 Value::Symbol(slot_name) => Some(slot_name.clone()),
-                Value::Cons(_, _) => slot
+                Value::Cons(_) => slot
                     .car()
                     .ok()
                     .and_then(|head| head.as_symbol().ok().map(str::to_string)),
@@ -2298,7 +2302,7 @@ fn substitute_symbol_macros(form: &Value, substitutions: &[(String, Value)]) -> 
             .find(|(macro_name, _)| macro_name == name)
             .map(|(_, expansion)| expansion.clone())
             .unwrap_or_else(|| form.clone()),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Ok(items) = form.to_vec() else {
                 // Dotted pair: substitute both sides.
                 if let Some((car, cdr)) = form.cons_values() {
@@ -2340,7 +2344,7 @@ fn substitute_symbol_macros(form: &Value, substitutions: &[(String, Value)]) -> 
                                 bound.push(name.clone());
                                 new_bindings.push(binding.clone());
                             }
-                            Value::Cons(_, _) => {
+                            Value::Cons(_) => {
                                 let parts = binding.to_vec().unwrap_or_default();
                                 let name = parts
                                     .first()
@@ -2506,7 +2510,7 @@ fn backquote_template_code_at_depth(template: &Value, depth: usize) -> Value {
     if is_backquote_atomic_cons_tail(template) && !template_tree_unquotes(template) {
         return quote_literal(template);
     }
-    if !matches!(template, Value::Cons(_, _)) {
+    if !matches!(template, Value::Cons(_)) {
         return quote_literal(template);
     }
     // Walk the list spine, batching plain elements into (list ...) chunks

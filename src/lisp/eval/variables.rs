@@ -430,15 +430,13 @@ impl Interpreter {
         let index = self.symbol_property_index(name)?;
         let mut tail = self.symbol_properties[index].1.clone();
         let mut seen = HashSet::new();
-        while let Value::Cons(key_cell, rest_cell) = tail {
-            if !seen.insert(Rc::as_ptr(&key_cell) as usize) {
+        while let Value::Cons(cell) = tail {
+            if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
                 return None;
             }
-            let rest = rest_cell.borrow().clone();
-            let Value::Cons(value_cell, next_cell) = rest else {
-                return None;
-            };
-            if matches!(&*key_cell.borrow(), Value::Symbol(key) if key == property) {
+            let rest = cell.cdr.borrow().clone();
+            let (value_cell, next_cell) = rest.cons_cells()?;
+            if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
                 return Some(value_cell.borrow().clone());
             }
             tail = next_cell.borrow().clone();
@@ -456,15 +454,15 @@ impl Interpreter {
             let plist = self.symbol_properties[index].1.clone();
             let mut tail = plist.clone();
             let mut seen = HashSet::new();
-            while let Value::Cons(key_cell, rest_cell) = tail {
-                if !seen.insert(Rc::as_ptr(&key_cell) as usize) {
+            while let Value::Cons(cell) = tail {
+                if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
                     return;
                 }
-                let rest = rest_cell.borrow().clone();
-                let Value::Cons(value_cell, next_cell) = rest else {
+                let rest = cell.cdr.borrow().clone();
+                let Some((value_cell, next_cell)) = (rest).cons_cells() else {
                     return;
                 };
-                if matches!(&*key_cell.borrow(), Value::Symbol(key) if key == property) {
+                if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
                     *value_cell.borrow_mut() = value;
                     return;
                 }
@@ -512,8 +510,10 @@ impl Interpreter {
                         self.intern_symbol_name(&name);
                     }
                 }
-                Value::Cons(car, cdr) => {
-                    if seen_cons_cells.insert(Rc::as_ptr(&car) as usize) {
+                Value::Cons(cons_cell) => {
+                    let car = &cons_cell.car;
+                    let cdr = &cons_cell.cdr;
+                    if seen_cons_cells.insert(crate::lisp::types::ConsCell::identity(&cons_cell)) {
                         pending.push(cdr.borrow().clone());
                         pending.push(car.borrow().clone());
                     }
@@ -542,16 +542,16 @@ impl Interpreter {
         let mut tail = self.symbol_properties[index].1.clone();
         let mut previous_value_cell: Option<Value> = None;
         let mut seen = HashSet::new();
-        while let Value::Cons(key_cell, rest_cell) = tail {
-            if !seen.insert(Rc::as_ptr(&key_cell) as usize) {
+        while let Value::Cons(cell) = tail {
+            if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
                 return;
             }
-            let rest = rest_cell.borrow().clone();
-            let Value::Cons(_, next_cell) = &rest else {
+            let rest = cell.cdr.borrow().clone();
+            let Some((_, next_cell)) = rest.cons_cells() else {
                 return;
             };
             let next = next_cell.borrow().clone();
-            if matches!(&*key_cell.borrow(), Value::Symbol(key) if key == property) {
+            if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
                 self.note_definition_changed();
                 if let Some(previous) = previous_value_cell {
                     previous
@@ -1559,7 +1559,7 @@ impl Interpreter {
             Value::Symbol(symbol) => {
                 Self::condition_symbol_matches(symbol, error_type, condition_list)
             }
-            Value::Cons(_, _) => head.to_vec().ok().is_some_and(|items| {
+            Value::Cons(_) => head.to_vec().ok().is_some_and(|items| {
                 items.iter().any(|item| {
                     matches!(item, Value::T)
                         || symbol_name(item).is_some_and(|symbol| {

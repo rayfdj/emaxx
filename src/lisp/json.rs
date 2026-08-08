@@ -787,7 +787,7 @@ fn serialize_value(
         Value::Record(_) if is_hash_table(interp, value) => {
             serialize_hash_table(interp, value, options)
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             if let Some(rendered) = serialize_hash_table_literal(interp, value, options)? {
                 return Ok(rendered);
             }

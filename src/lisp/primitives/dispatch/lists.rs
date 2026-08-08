@@ -1316,8 +1316,8 @@ fn nth_list_element(list: &Value, n: usize) -> Result<Value, LispError> {
     for _ in 0..n {
         match tail {
             Value::Nil => return Ok(Value::Nil),
-            Value::Cons(_, ref cdr) => {
-                let next = cdr.borrow().clone();
+            Value::Cons(ref cell) => {
+                let next = cell.cdr.borrow().clone();
                 tail = next;
             }
             other => return Err(wrong_type_argument("listp", other)),
@@ -1325,7 +1325,7 @@ fn nth_list_element(list: &Value, n: usize) -> Result<Value, LispError> {
     }
     match tail {
         Value::Nil => Ok(Value::Nil),
-        Value::Cons(ref car, _) => Ok(car.borrow().clone()),
+        Value::Cons(ref cell) => Ok(cell.car.borrow().clone()),
         other => Err(wrong_type_argument("listp", other)),
     }
 }
@@ -1387,7 +1387,7 @@ define_dispatch!(
             "car-safe" => {
                 need_args(name, args, 1)?;
                 Ok(match &args[0] {
-                    Value::Cons(car, _) => car.borrow().clone(),
+                    Value::Cons(cell) => cell.car.borrow().clone(),
                     value => keymap_list_items(interp, value)?
                         .and_then(|items| items.into_iter().next())
                         .unwrap_or(Value::Nil),
@@ -1396,7 +1396,7 @@ define_dispatch!(
             "cdr-safe" => {
                 need_args(name, args, 1)?;
                 Ok(match &args[0] {
-                    Value::Cons(_, cdr) => cdr.borrow().clone(),
+                    Value::Cons(cell) => cell.cdr.borrow().clone(),
                     value => keymap_list_items(interp, value)?
                         .map(|items| Value::list(items.into_iter().skip(1)))
                         .unwrap_or(Value::Nil),
@@ -1461,14 +1461,14 @@ define_dispatch!(
             }
             "elt" => {
                 need_args(name, args, 2)?;
-                if matches!(args[0], Value::Cons(_, _))
+                if matches!(args[0], Value::Cons(_))
                     && matches!(
                         args[0].to_vec().ok().and_then(|items| items.first().cloned()),
                         Some(Value::Symbol(symbol)) if symbol == "vector-literal"
                     )
                 {
                     super::call(interp, "aref", args, env)
-                } else if matches!(args[0], Value::Nil | Value::Cons(_, _)) {
+                } else if matches!(args[0], Value::Nil | Value::Cons(_)) {
                     let n = args[1].as_integer()? as usize;
                     nth_list_element(&args[0], n)
                 } else {
@@ -1509,7 +1509,9 @@ define_dispatch!(
                 let mut current = args[0].clone();
                 loop {
                     match current.clone() {
-                        Value::Cons(_, cdr) => {
+                        Value::Cons(cons_cell) => {
+                            let _ = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
                             tails.push(current.clone());
                             current = cdr.borrow().clone();
                         }
@@ -1575,14 +1577,14 @@ define_dispatch!(
                         Ok(Value::Integer(string_text(value)?.chars().count() as i64))
                     }
                     Value::Nil => Ok(Value::Integer(0)),
-                    Value::Cons(_, _) if is_vector_value(&args[0]) => {
+                    Value::Cons(_) if is_vector_value(&args[0]) => {
                         Ok(Value::Integer(vector_items(&args[0])?.len() as i64))
                     }
                     Value::CharTable(_) => Ok(Value::Integer(0x40_0000)),
                     value if is_bool_vector_value(interp, value) => Ok(Value::Integer(
                         bool_vector_values(interp, value)?.len() as i64,
                     )),
-                    Value::Cons(_, _) => Ok(Value::Integer(args[0].to_vec()?.len() as i64)),
+                    Value::Cons(_) => Ok(Value::Integer(args[0].to_vec()?.len() as i64)),
                     Value::Record(id) => {
                         let record = interp.find_record(*id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{id}>"))
@@ -1664,8 +1666,10 @@ define_dispatch!(
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
                     let next = match &current {
-                        Value::Cons(car, cdr) => {
-                            if seen.step(Rc::as_ptr(car) as usize) {
+                        Value::Cons(cons_cell) => {
+                            let car = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
+                            if seen.step(crate::lisp::types::ConsCell::identity(cons_cell)) {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("circular-list".into()),
                                     Value::String("Circular list".into()),
@@ -1730,8 +1734,10 @@ define_dispatch!(
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {
                     match current.clone() {
-                        Value::Cons(car, cdr) => {
-                            let cell_id = Rc::as_ptr(&car) as usize;
+                        Value::Cons(cons_cell) => {
+                            let car = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
+                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                             if seen.step(cell_id) {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("circular-list".into()),
@@ -1795,9 +1801,9 @@ define_dispatch!(
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 // Walk by cons cells rather than by cloned Values: one Rc
                 // bump per step and no whole-Value churn.
-                let mut cells = match &args[1] {
+                let mut cell = match &args[1] {
                     Value::Nil => return Ok(Value::Nil),
-                    Value::Cons(car, cdr) => (Rc::clone(car), Rc::clone(cdr)),
+                    Value::Cons(cell) => Rc::clone(cell),
                     other => {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("wrong-type-argument".into()),
@@ -1807,17 +1813,18 @@ define_dispatch!(
                     }
                 };
                 loop {
-                    let (car, cdr) = cells;
-                    if seen.step(Rc::as_ptr(&car) as usize) {
+                    if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("circular-list".into()),
                             Value::String("Circular list".into()),
                         ])));
                     }
                     let matched = {
-                        let item = car.borrow();
+                        let item = cell.car.borrow();
                         match &*item {
-                            Value::Cons(item_car, item_cdr) => {
+                            Value::Cons(cons_cell) => {
+                                let item_car = &cons_cell.car;
+                                let item_cdr = &cons_cell.cdr;
                                 let slot = if want_car { item_car } else { item_cdr };
                                 let entry_key = slot.borrow();
                                 match (&*entry_key, key) {
@@ -1835,14 +1842,12 @@ define_dispatch!(
                         }
                     };
                     if matched {
-                        return Ok(car.borrow().clone());
+                        return Ok(cell.car.borrow().clone());
                     }
-                    let tail = cdr.borrow();
-                    cells = match &*tail {
+                    let tail = cell.cdr.borrow();
+                    let next = match &*tail {
                         Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(next_car, next_cdr) => {
-                            (Rc::clone(next_car), Rc::clone(next_cdr))
-                        }
+                        Value::Cons(next) => Rc::clone(next),
                         other => {
                             return Err(LispError::SignalValue(Value::list([
                                 Value::Symbol("wrong-type-argument".into()),
@@ -1851,6 +1856,8 @@ define_dispatch!(
                             ])));
                         }
                     };
+                    drop(tail);
+                    cell = next;
                 }
             }
             "rassoc" => {
@@ -1860,8 +1867,10 @@ define_dispatch!(
                 loop {
                     match current {
                         Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(car, cdr) => {
-                            let cell_id = Rc::as_ptr(&car) as usize;
+                        Value::Cons(cons_cell) => {
+                            let car = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
+                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                             if seen.step(cell_id) {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("circular-list".into()),
@@ -1869,7 +1878,7 @@ define_dispatch!(
                                 ])));
                             }
                             let item = car.borrow().clone();
-                            if matches!(item, Value::Cons(_, _))
+                            if matches!(item, Value::Cons(_))
                                 && values_equal(interp, &item.cdr()?, &args[0])
                             {
                                 return Ok(item);
@@ -1905,8 +1914,10 @@ define_dispatch!(
                 loop {
                     match current {
                         Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(car, cdr) => {
-                            let cell_id = Rc::as_ptr(&car) as usize;
+                        Value::Cons(cons_cell) => {
+                            let car = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
+                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                             if seen.step(cell_id) {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("circular-list".into()),
@@ -1914,7 +1925,7 @@ define_dispatch!(
                                 ])));
                             }
                             let item = car.borrow().clone();
-                            if matches!(item, Value::Cons(_, _))
+                            if matches!(item, Value::Cons(_))
                                 && if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
                                 {
                                     call_function_value(
@@ -1956,7 +1967,7 @@ define_dispatch!(
                 };
                 for item in &items {
                     let thiscar = match item {
-                        Value::Cons(_, _) => item.car()?,
+                        Value::Cons(_) => item.car()?,
                         _ => item.clone(),
                     };
                     let Some(candidate) = assoc_string_candidate_text(&thiscar) else {
@@ -2176,21 +2187,24 @@ define_dispatch!(
                     Some(end1) => end1.saturating_sub(keys.start1).min(source.len()),
                     None => source.len(),
                 };
-                if matches!(&args[0], Value::Cons(_, _) | Value::Nil) && !is_vector_value(&args[0])
-                {
+                if matches!(&args[0], Value::Cons(_) | Value::Nil) && !is_vector_value(&args[0]) {
                     let mut tail = args[0].clone();
                     for _ in 0..keys.start1 {
-                        let Value::Cons(_, cdr) = tail else { break };
+                        let Some((_, cdr)) = (tail).cons_cells() else {
+                            break;
+                        };
                         let next = cdr.borrow().clone();
                         tail = next;
                     }
                     let mut src = source.into_iter();
                     while budget > 0
-                        && matches!(&tail, Value::Cons(_, _))
+                        && matches!(&tail, Value::Cons(_))
                         && let Some(item) = src.next()
                     {
                         tail.set_car(item)?;
-                        let Value::Cons(_, cdr) = tail else { break };
+                        let Some((_, cdr)) = (tail).cons_cells() else {
+                            break;
+                        };
                         let next = cdr.borrow().clone();
                         tail = next;
                         budget -= 1;
@@ -2211,18 +2225,21 @@ define_dispatch!(
             "cl-fill" => {
                 need_args(name, args, 2)?;
                 let keys = parse_cl_seq_keys(&args[2..], &[":start", ":end"])?;
-                if matches!(&args[0], Value::Cons(_, _) | Value::Nil) && !is_vector_value(&args[0])
-                {
+                if matches!(&args[0], Value::Cons(_) | Value::Nil) && !is_vector_value(&args[0]) {
                     let mut tail = args[0].clone();
                     for _ in 0..keys.start {
-                        let Value::Cons(_, cdr) = tail else { break };
+                        let Some((_, cdr)) = (tail).cons_cells() else {
+                            break;
+                        };
                         let next = cdr.borrow().clone();
                         tail = next;
                     }
                     let mut budget = keys.end.map(|end| end.saturating_sub(keys.start));
-                    while budget != Some(0) && matches!(&tail, Value::Cons(_, _)) {
+                    while budget != Some(0) && matches!(&tail, Value::Cons(_)) {
                         tail.set_car(args[1].clone())?;
-                        let Value::Cons(_, cdr) = tail else { break };
+                        let Some((_, cdr)) = (tail).cons_cells() else {
+                            break;
+                        };
                         let next = cdr.borrow().clone();
                         tail = next;
                         budget = budget.map(|n| n - 1);
@@ -2411,13 +2428,11 @@ define_dispatch!(
             }
             "ensure-list" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if args[0].is_nil() || matches!(args[0], Value::Cons(_, _)) {
-                        args[0].clone()
-                    } else {
-                        Value::list([args[0].clone()])
-                    },
-                )
+                Ok(if args[0].is_nil() || matches!(args[0], Value::Cons(_)) {
+                    args[0].clone()
+                } else {
+                    Value::list([args[0].clone()])
+                })
             }
             "position-symbol" => {
                 need_args(name, args, 2)?;
@@ -3519,7 +3534,7 @@ fn cl_seq_rebuild(original: &Value, items: Vec<Value>) -> Result<Value, LispErro
             vector.extend(items);
             Ok(Value::list(vector))
         }
-        Value::Cons(_, _) | Value::Nil => Ok(Value::list(items)),
+        Value::Cons(_) | Value::Nil => Ok(Value::list(items)),
         _ => {
             let mut vector = vec![Value::symbol("vector-literal")];
             vector.extend(items);

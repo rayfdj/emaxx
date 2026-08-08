@@ -592,7 +592,7 @@ impl Interpreter {
         let documentation = match first {
             Value::String(text) => Some(Value::String(text.clone())),
             Value::StringObject(state) => Some(Value::String(state.borrow().text.clone())),
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let items = first.to_vec()?;
                 match items.as_slice() {
                     [Value::Symbol(head), expression] if head == ":documentation" => {
@@ -1049,7 +1049,7 @@ impl Interpreter {
         }
         // Unnamed `:type list' structs live in plain lists: replace the car of
         // the slot's cons cell in place.
-        if matches!(object, Value::Cons(_, _))
+        if matches!(object, Value::Cons(_))
             && self
                 .get_symbol_property(&expected_type, "emaxx-struct-sequence-type")
                 .and_then(|kind| kind.as_symbol().ok().map(str::to_string))
@@ -1058,7 +1058,7 @@ impl Interpreter {
         {
             let mut current = object.clone();
             for _ in 0..slot_index {
-                let Value::Cons(_, cdr) = current else {
+                let Some((_, cdr)) = (current).cons_cells() else {
                     return Err(LispError::Signal(format!(
                         "Struct slot out of range: {slot_index}"
                     )));
@@ -1066,7 +1066,7 @@ impl Interpreter {
                 let next = cdr.borrow().clone();
                 current = next;
             }
-            let Value::Cons(car, _) = &current else {
+            let Some((car, _)) = current.cons_cells() else {
                 return Err(LispError::Signal(format!(
                     "Struct slot out of range: {slot_index}"
                 )));
@@ -1240,8 +1240,10 @@ impl Interpreter {
                 Value::Nil => {
                     return Ok(Value::cons(key, Value::cons(value, plist)));
                 }
-                Value::Cons(car, cdr) => {
-                    let cell_id = std::rc::Rc::as_ptr(&car) as usize;
+                Value::Cons(cons_cell) => {
+                    let car = &cons_cell.car;
+                    let cdr = &cons_cell.cdr;
+                    let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                     if seen.step(cell_id) {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("circular-list".into()),
@@ -1257,7 +1259,9 @@ impl Interpreter {
                         env,
                     )? {
                         return match cdr.borrow().clone() {
-                            Value::Cons(value_cell, _) => {
+                            Value::Cons(cons_cell) => {
+                                let value_cell = &cons_cell.car;
+                                let _ = &cons_cell.cdr;
                                 *value_cell.borrow_mut() = value;
                                 Ok(plist)
                             }
@@ -1266,7 +1270,7 @@ impl Interpreter {
                         };
                     }
                     match cdr.borrow().clone() {
-                        Value::Cons(_, next_cdr) => current = next_cdr.borrow().clone(),
+                        Value::Cons(cell) => current = cell.cdr.borrow().clone(),
                         Value::Nil => return Ok(Value::cons(key, Value::cons(value, plist))),
                         _ => return Err(primitives::plist_type_error(&plist)),
                     }
@@ -1366,7 +1370,7 @@ impl Interpreter {
         let index = index_value.as_integer()? as usize;
         // `(setf (elt LIST i) v)` mutates the list structure itself (GNU
         // expands it to `setcar`), so aliases of the list see the change.
-        if matches!(current, Value::Cons(_, _))
+        if matches!(current, Value::Cons(_))
             && !matches!(
                 current.car(),
                 Ok(Value::Symbol(symbol)) if symbol == "vector-literal"
@@ -1376,7 +1380,7 @@ impl Interpreter {
             for _ in 0..index {
                 cell = cell.cdr()?;
             }
-            if !matches!(cell, Value::Cons(_, _)) {
+            if !matches!(cell, Value::Cons(_)) {
                 return Err(LispError::Signal("Args out of range".into()));
             }
             cell.set_car(value.clone())?;
@@ -1469,7 +1473,7 @@ impl Interpreter {
                 self.set_variable(name, value, env);
                 Ok(())
             }
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let items = place.to_vec()?;
                 if matches!(items.first(), Some(Value::Symbol(name)) if name == "--emaxx-setf-car-place" || name == "--emaxx-setf-cdr-place")
                 {
@@ -2572,7 +2576,7 @@ impl Interpreter {
         };
         let (name, options) = match struct_spec {
             Value::Symbol(name) => (name.clone(), Vec::new()),
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let Some(parts) = struct_spec.to_vec().ok() else {
                     return Ok(Value::Nil);
                 };
@@ -2646,7 +2650,7 @@ impl Interpreter {
         }
         slot_specs.extend(items[2..].iter().filter_map(|slot| match slot {
             Value::Symbol(name) => Some((name.clone(), Value::Nil)),
-            Value::Cons(_, _) => slot.to_vec().ok().and_then(|parts| {
+            Value::Cons(_) => slot.to_vec().ok().and_then(|parts| {
                 let name = parts
                     .first()
                     .and_then(|value| value.as_symbol().ok().map(str::to_string))?;
@@ -2812,7 +2816,7 @@ impl Interpreter {
                     Value::Symbol(slot_name) => {
                         descs.push(Value::list([Value::Symbol(slot_name.clone())]));
                     }
-                    Value::Cons(_, _) => descs.push(slot.clone()),
+                    Value::Cons(_) => descs.push(slot.clone()),
                     _ => {}
                 }
             }
@@ -3389,7 +3393,7 @@ impl Interpreter {
                 // ignoring this case makes GNU setf fall back to the bogus
                 // `(setf gv-synthetic-place)' function name.
                 Value::Symbol(handler_name) => self.lookup_function(&handler_name, env)?,
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     let handler_items = handler.to_vec()?;
                     if handler_items.len() < 3
                         || !matches!(handler_items.first(), Some(Value::Symbol(head)) if head == "lambda")
@@ -4216,7 +4220,7 @@ impl Interpreter {
                 "Edebug spec name cannot start with '&' or ':'".into(),
             ));
         }
-        if !matches!(spec, Value::Cons(_, _)) {
+        if !matches!(spec, Value::Cons(_)) {
             return Err(LispError::Signal(format!(
                 "Edebug spec has to be a list: {spec}"
             )));
@@ -4267,8 +4271,8 @@ impl Interpreter {
                 expanded.push(entry);
                 continue;
             }
-            if in_context && let Value::Cons(car, _) = &entry {
-                let head = match &*car.borrow() {
+            if in_context && let Value::Cons(cell) = &entry {
+                let head = match &*cell.car.borrow() {
                     Value::Symbol(head) => Some(head.clone()),
                     _ => None,
                 };
@@ -4306,7 +4310,7 @@ impl Interpreter {
             .enumerate()
             .skip(2)
             .find_map(|(index, value)| {
-                matches!(value, Value::Cons(_, _) | Value::Nil).then_some(index)
+                matches!(value, Value::Cons(_) | Value::Nil).then_some(index)
             })
             .ok_or_else(|| LispError::Signal("cl-defmethod needs a lambda list".into()))?;
         // Rewrite context-rewriter entries before any downstream parsing.
@@ -5500,7 +5504,7 @@ impl Interpreter {
         for slot in &items[2..] {
             match slot {
                 Value::Symbol(slot_name) => slots.push(slot_name.clone()),
-                Value::Cons(_, _) => {
+                Value::Cons(_) => {
                     if let Ok(parts) = slot.to_vec()
                         && let Some(Value::Symbol(slot_name)) = parts.first()
                     {
@@ -5758,21 +5762,19 @@ impl Interpreter {
         };
         let body = match source_anchor {
             Some(source_anchor) => {
-                let source_id = Rc::as_ptr(&source_anchor) as usize;
+                let source_id = source_anchor.cell_id();
                 if let Some((cached_source, cached_body)) =
                     self.lambda_source_bodies.get(&source_id)
                     && cached_source
                         .upgrade()
-                        .is_some_and(|cached| Rc::ptr_eq(&cached, &source_anchor))
+                        .is_some_and(|cached| cached.ptr_eq(&source_anchor))
                     && let Some(body) = cached_body.upgrade()
                 {
                     body
                 } else {
                     let body = Rc::new(body);
-                    self.lambda_source_bodies.insert(
-                        source_id,
-                        (Rc::downgrade(&source_anchor), Rc::downgrade(&body)),
-                    );
+                    self.lambda_source_bodies
+                        .insert(source_id, (source_anchor.downgrade(), Rc::downgrade(&body)));
                     body
                 }
             }
@@ -5817,7 +5819,9 @@ fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
 fn value_tree_contains_symbol(value: &Value, target: &str) -> bool {
     match value {
         Value::Symbol(symbol) => symbol == target,
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             value_tree_contains_symbol(&car.borrow(), target)
                 || value_tree_contains_symbol(&cdr.borrow(), target)
         }
@@ -5830,7 +5834,7 @@ fn collect_referenced_symbols(value: &Value, referenced: &mut HashSet<String>) {
         Value::Symbol(symbol) => {
             referenced.insert(symbol.clone());
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Ok(items) = value.to_vec() else {
                 collect_dotted_list_symbols(value, referenced);
                 return;
@@ -5887,7 +5891,7 @@ fn uniquify_ignored_lambda_list_params(lambda_list: &Value) -> Option<Value> {
                 changed = true;
                 Value::Symbol(fresh())
             }
-            Value::Cons(_, _) => match entry.cons_values() {
+            Value::Cons(_) => match entry.cons_values() {
                 Some((Value::Symbol(name), rest)) if name == "_" => {
                     changed = true;
                     Value::cons(Value::Symbol(fresh()), rest)

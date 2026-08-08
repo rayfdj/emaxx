@@ -38,7 +38,7 @@ fn structure_slot_eval_form(value: Value) -> Value {
         | Value::Lambda(_, _, _)
         | Value::Unbound => value,
         Value::Symbol(symbol) => Value::list([Value::symbol("quote"), Value::Symbol(symbol)]),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             if let Ok(items) = value.to_vec()
                 && matches!(
                     items.first(),
@@ -87,7 +87,7 @@ fn interpreted_closure_code_syntax(value: &Value) -> bool {
     if let Some((_id, payload)) = circular_read_label_form(value) {
         return interpreted_closure_code_syntax(&payload);
     }
-    let Value::Cons(_, cdr) = value else {
+    let Some((_, cdr)) = (value).cons_cells() else {
         return false;
     };
     // Before Emacs 30, lazily loaded BYTECODE could occupy this slot as a
@@ -105,7 +105,7 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
         return true;
     }
     match value {
-        Value::Cons(_, _) => value.cons_values().is_some_and(|(car, cdr)| {
+        Value::Cons(_) => value.cons_values().is_some_and(|(car, cdr)| {
             contains_circular_read_syntax(&car) || contains_circular_read_syntax(&cdr)
         }),
         _ => false,
@@ -224,7 +224,7 @@ fn resolve_circular_read_syntax_inner(
     }
 
     match value {
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Some((car, cdr)) = value.cons_values() else {
                 return Err(invalid_circular_read_syntax());
             };
@@ -272,8 +272,10 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
     let mut stack = vec![value.clone()];
     while let Some(current) = stack.pop() {
         match &current {
-            Value::Cons(car_cell, cdr_cell) => {
-                let ptr = Rc::as_ptr(car_cell) as usize;
+            Value::Cons(cons_cell) => {
+                let car_cell = &cons_cell.car;
+                let cdr_cell = &cons_cell.cdr;
+                let ptr = crate::lisp::types::ConsCell::identity(cons_cell);
                 if !seen.insert(ptr) {
                     continue;
                 }

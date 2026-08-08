@@ -1743,7 +1743,7 @@ fn is_stickiness_control(name: &str) -> bool {
 fn property_named_by_stickiness(setting: Option<&Value>, name: &str) -> bool {
     match setting {
         Some(Value::T) => true,
-        Some(value @ Value::Cons(_, _)) => value.to_vec().is_ok_and(|items| {
+        Some(value @ Value::Cons(_)) => value.to_vec().is_ok_and(|items| {
             items
                 .iter()
                 .any(|item| matches!(item, Value::Symbol(property) if property == name))
@@ -1757,7 +1757,7 @@ fn default_property_nonsticky(defaults: Option<&Value>, name: &str) -> bool {
         return false;
     };
     defaults.iter().any(|entry| {
-        let Value::Cons(property, nonsticky) = entry else {
+        let Some((property, nonsticky)) = (entry).cons_cells() else {
             return false;
         };
         matches!(&*property.borrow(), Value::Symbol(candidate) if candidate == name)
@@ -1784,9 +1784,7 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Value::Symbol(left), Value::Symbol(right))
         | (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
-        (Value::Cons(left_car, left_cdr), Value::Cons(right_car, right_cdr)) => {
-            Rc::ptr_eq(left_car, right_car) && Rc::ptr_eq(left_cdr, right_cdr)
-        }
+        (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
         (
             Value::Lambda(left_params, left_body, left_env),
             Value::Lambda(right_params, right_body, right_env),

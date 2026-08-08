@@ -187,9 +187,7 @@ pub(crate) fn parse_lcms_numeric_prefix<const N: usize>(value: &Value) -> Option
     let mut result = [0.0; N];
     let mut current = value.clone();
     for item in &mut result {
-        let Value::Cons(car, cdr) = current else {
-            return None;
-        };
+        let (car, cdr) = current.cons_cells()?;
         *item = car.borrow().as_float().ok()?;
         current = cdr.borrow().clone();
     }

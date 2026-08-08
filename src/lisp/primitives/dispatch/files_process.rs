@@ -2363,7 +2363,7 @@ define_dispatch!(
                     Value::Nil => {
                         return Err(LispError::TypeError("stringp".into(), args[0].type_name()));
                     }
-                    Value::Cons(_, _) => {
+                    Value::Cons(_) => {
                         let names = args[0]
                             .to_vec()?
                             .into_iter()
@@ -4221,7 +4221,7 @@ define_dispatch!(
                 let contact = interp
                     .process_contact_plist(process_id)
                     .unwrap_or(Value::Nil);
-                if !matches!(contact, Value::Cons(_, _)) {
+                if !matches!(contact, Value::Cons(_)) {
                     return Ok(contact);
                 }
                 match args.get(1) {

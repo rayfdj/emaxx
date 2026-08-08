@@ -1281,7 +1281,7 @@ define_dispatch!(
                 Ok(
                     if interp.treesit_query_state(&args[0]).is_some()
                         || args[0].is_string()
-                        || matches!(args[0], Value::Cons(_, _)) && !is_vector_value(&args[0])
+                        || matches!(args[0], Value::Cons(_)) && !is_vector_value(&args[0])
                     {
                         Value::T
                     } else {
@@ -1307,7 +1307,7 @@ define_dispatch!(
                     return Ok(args[1].clone());
                 }
                 if !(args[1].is_string()
-                    || matches!(args[1], Value::Cons(_, _)) && !is_vector_value(&args[1]))
+                    || matches!(args[1], Value::Cons(_)) && !is_vector_value(&args[1]))
                 {
                     return Err(LispError::TypeError(
                         "treesit-query-p".into(),
@@ -1324,7 +1324,7 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 5)?;
                 if !(interp.treesit_query_state(&args[1]).is_some()
                     || args[1].is_string()
-                    || matches!(args[1], Value::Cons(_, _)) && !is_vector_value(&args[1]))
+                    || matches!(args[1], Value::Cons(_)) && !is_vector_value(&args[1]))
                 {
                     return Err(LispError::TypeError(
                         "treesit-query-p".into(),

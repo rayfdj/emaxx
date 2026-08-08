@@ -250,7 +250,7 @@ pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {
     if matches!(value, Value::CharTable(_)) {
         return ("deeper char-table ...".into(), false);
     }
-    let Value::Cons(car, cdr) = value else {
+    let Some((car, cdr)) = (value).cons_cells() else {
         return ("invalid".into(), false);
     };
     let Value::Integer(raw_code) = *car.borrow() else {
@@ -495,7 +495,7 @@ fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
                 ..SyntaxEntry::default()
             })
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let code = value.car().ok()?.as_integer().ok()?;
             let matching = value
                 .cdr()
@@ -944,7 +944,7 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
         && let Ok(entries) = stack_value.to_vec()
     {
         for entry in entries {
-            let Value::Cons(open_pos, close_char) = entry else {
+            let Some((open_pos, close_char)) = (entry).cons_cells() else {
                 continue;
             };
             let Ok(open_pos) = open_pos.borrow().as_integer() else {

@@ -23,8 +23,10 @@ impl Interpreter {
         loop {
             match current {
                 Value::Nil => return Ok(items),
-                Value::Cons(car, cdr) => {
-                    let cell_id = std::rc::Rc::as_ptr(&car) as usize;
+                Value::Cons(cons_cell) => {
+                    let car = &cons_cell.car;
+                    let cdr = &cons_cell.cdr;
+                    let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                     if seen.step(cell_id) {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("circular-list".into()),
@@ -68,7 +70,7 @@ impl Interpreter {
     pub(super) fn parse_params(&self, spec: &Value) -> Result<Vec<String>, LispError> {
         match spec {
             Value::Nil => Ok(Vec::new()),
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let items = spec.to_vec()?;
                 validate_lambda_list(spec, &items)?;
                 items
@@ -2136,7 +2138,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         match &place {
             Value::Symbol(name) => self.lookup(name, env),
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let items = place.to_vec()?;
                 if matches!(items.first(), Some(Value::Symbol(name)) if name == "--emaxx-setf-car-place" || name == "--emaxx-setf-cdr-place")
                 {
@@ -2185,7 +2187,7 @@ impl Interpreter {
         place: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let Value::Cons(_, _) = place else {
+        let Value::Cons(_) = place else {
             return Ok(place.clone());
         };
         let items = place.to_vec()?;
@@ -2552,7 +2554,7 @@ impl Interpreter {
                 Self::upsert_frame_binding(frame, name.clone(), Self::stored_value(value));
                 Ok(())
             }
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 if let Ok(pattern_items) = pattern.to_vec() {
                     let values = value.to_vec()?;
                     let mut pi = 0usize;
@@ -2602,7 +2604,9 @@ impl Interpreter {
                     let mut current_value = value;
                     loop {
                         match current_pattern {
-                            Value::Cons(car, cdr) => {
+                            Value::Cons(cons_cell) => {
+                                let car = &cons_cell.car;
+                                let cdr = &cons_cell.cdr;
                                 let Some((head, tail)) = current_value.cons_values() else {
                                     return Err(LispError::WrongNumberOfArgs(
                                         "cl-destructuring-bind".into(),
@@ -2652,7 +2656,7 @@ impl Interpreter {
                 Self::upsert_frame_binding(frame, name.clone(), Self::stored_value(value));
                 Ok(())
             }
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let pattern_items = match pattern.to_vec() {
                     Ok(items) => items,
                     Err(_) => return self.bind_cl_dotted_pattern(pattern, value, env),
@@ -2877,7 +2881,9 @@ impl Interpreter {
         let mut current_value = value;
         loop {
             match current_pattern {
-                Value::Cons(car, cdr) => {
+                Value::Cons(cons_cell) => {
+                    let car = &cons_cell.car;
+                    let cdr = &cons_cell.cdr;
                     let Some((head, tail)) = current_value.cons_values() else {
                         return Err(LispError::WrongNumberOfArgs(
                             "cl-destructuring-bind".into(),
@@ -2916,7 +2922,7 @@ impl Interpreter {
                 }
                 Ok(())
             }
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 if let Ok(items) = pattern.to_vec() {
                     for item in items {
                         if matches!(&item, Value::Symbol(symbol) if symbol == "&optional" || symbol == "&rest")
@@ -2930,7 +2936,9 @@ impl Interpreter {
                     let mut current = pattern.clone();
                     loop {
                         match current {
-                            Value::Cons(car, cdr) => {
+                            Value::Cons(cons_cell) => {
+                                let car = &cons_cell.car;
+                                let cdr = &cons_cell.cdr;
                                 self.collect_cl_pattern_names(&car.borrow().clone(), bindings)?;
                                 current = cdr.borrow().clone();
                             }

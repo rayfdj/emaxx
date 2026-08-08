@@ -2283,9 +2283,9 @@ define_dispatch!(
                     ])));
                 }
                 let mut base = args[2].clone();
-                if let Value::Cons(offset, function) = &base {
-                    frame_offset += offset.borrow().as_integer()?;
-                    let function = function.borrow().clone();
+                if let Value::Cons(cell) = &base {
+                    frame_offset += cell.car.borrow().as_integer()?;
+                    let function = cell.cdr.borrow().clone();
                     base = function;
                 }
                 if frame_offset < 0 {
@@ -3001,8 +3001,8 @@ define_dispatch!(
                     Value::String(_) => "string",
                     Value::StringObject(_) => "string",
                     Value::Symbol(_) => "symbol",
-                    Value::Cons(_, _) if is_vector_value(&args[0]) => "vector",
-                    Value::Cons(_, _) => "cons",
+                    Value::Cons(_) if is_vector_value(&args[0]) => "vector",
+                    Value::Cons(_) => "cons",
                     Value::BuiltinFunc(_) => "subr",
                     Value::Lambda(_, _, _) => "cons", // Emacs closures are cons cells
                     Value::Buffer(_, _) => "buffer",
@@ -3115,7 +3115,7 @@ define_dispatch!(
                 for (index, slot) in slots.into_iter().enumerate() {
                     let slot_name = match slot {
                         Value::Symbol(name) => Value::Symbol(name),
-                        Value::Cons(_, _) => slot.car().unwrap_or(Value::Nil),
+                        Value::Cons(_) => slot.car().unwrap_or(Value::Nil),
                         _ => continue,
                     };
                     super::call(
@@ -7115,7 +7115,7 @@ fn parse_srecode_value_resolving(
     for part in &parts {
         match part {
             Value::String(text) => resolved.push_str(text),
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let (Value::Symbol(kind), Value::String(name)) = part.cons_values()? else {
                     return Some(parts);
                 };
@@ -7399,7 +7399,7 @@ fn cl_typep_matches(
                 match bound {
                     Value::Integer(n) => Some((*n as f64, false)),
                     Value::Float(f) => Some((*f, false)),
-                    Value::Cons(_, _) => match bound.to_vec().ok()?.first()? {
+                    Value::Cons(_) => match bound.to_vec().ok()?.first()? {
                         Value::Integer(n) => Some((*n as f64, true)),
                         Value::Float(f) => Some((*f, true)),
                         _ => None,
@@ -8183,9 +8183,9 @@ fn cached_semantic_cpp_tags(path: &Path) -> Vec<Value> {
 
 fn deep_copy_semantic_value(value: &Value) -> Value {
     match value {
-        Value::Cons(car, cdr) => Value::cons(
-            deep_copy_semantic_value(&car.borrow()),
-            deep_copy_semantic_value(&cdr.borrow()),
+        Value::Cons(cell) => Value::cons(
+            deep_copy_semantic_value(&cell.car.borrow()),
+            deep_copy_semantic_value(&cell.cdr.borrow()),
         ),
         _ => value.clone(),
     }
@@ -10050,7 +10050,9 @@ fn widget_get_inner(
     seen: &mut HashSet<String>,
 ) -> Result<Value, LispError> {
     match widget {
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             let widget_type = car.borrow().clone();
             if let Some(value) = plist_get_exact(&cdr.borrow().clone(), property)? {
                 return Ok(value);
@@ -10076,7 +10078,7 @@ fn widget_put(
     property: &Value,
     value: Value,
 ) -> Result<Value, LispError> {
-    let Value::Cons(_, cdr) = widget else {
+    let Some((_, cdr)) = (widget).cons_cells() else {
         return Err(LispError::TypeError("widget".into(), widget.type_name()));
     };
     let plist = cdr.borrow().clone();
@@ -10091,19 +10093,21 @@ fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, Lis
     loop {
         match current {
             Value::Nil => return Ok(None),
-            Value::Cons(car, cdr) => {
-                let cell_id = Rc::as_ptr(&car) as usize;
+            Value::Cons(cons_cell) => {
+                let car = &cons_cell.car;
+                let cdr = &cons_cell.cdr;
+                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if seen.step(cell_id) {
                     return Ok(None);
                 }
                 if car.borrow().clone() == *property {
                     return match cdr.borrow().clone() {
-                        Value::Cons(value, _) => Ok(Some(value.borrow().clone())),
+                        Value::Cons(cell) => Ok(Some(cell.car.borrow().clone())),
                         _ => Ok(Some(Value::Nil)),
                     };
                 }
                 match cdr.borrow().clone() {
-                    Value::Cons(_, next) => current = next.borrow().clone(),
+                    Value::Cons(cell) => current = cell.cdr.borrow().clone(),
                     _ => return Ok(None),
                 }
             }
@@ -10118,8 +10122,10 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
     loop {
         match current {
             Value::Nil => return Ok(Value::list([property, value])),
-            Value::Cons(car, cdr) => {
-                let cell_id = Rc::as_ptr(&car) as usize;
+            Value::Cons(cons_cell) => {
+                let car = &cons_cell.car;
+                let cdr = &cons_cell.cdr;
+                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if seen.step(cell_id) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("circular-list".into()),
@@ -10128,7 +10134,9 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
                 }
                 if car.borrow().clone() == property {
                     return match cdr.borrow().clone() {
-                        Value::Cons(existing, _) => {
+                        Value::Cons(cons_cell) => {
+                            let existing = &cons_cell.car;
+                            let _ = &cons_cell.cdr;
                             *existing.borrow_mut() = value;
                             Ok(plist)
                         }
@@ -10136,7 +10144,9 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
                     };
                 }
                 match cdr.borrow().clone() {
-                    Value::Cons(_, next) => {
+                    Value::Cons(cons_cell) => {
+                        let _ = &cons_cell.car;
+                        let next = &cons_cell.cdr;
                         let next_value = next.borrow().clone();
                         if next_value.is_nil() {
                             *next.borrow_mut() = Value::list([property, value]);
@@ -10955,7 +10965,7 @@ fn byte_compile_render_form(value: &Value) -> String {
         Value::String(text) => byte_compile_lisp_string_literal(text),
         Value::StringObject(state) => byte_compile_lisp_string_literal(&state.borrow().text),
         Value::Symbol(symbol) => symbol.clone(),
-        Value::Cons(_, _) => byte_compile_render_cons(value),
+        Value::Cons(_) => byte_compile_render_cons(value),
         Value::Lambda(_, _, _) => "nil".into(),
         Value::BuiltinFunc(name) => format!("#'{name}"),
         Value::Buffer(_, _)
@@ -10976,7 +10986,9 @@ fn byte_compile_render_cons(value: &Value) -> String {
     let mut first = true;
     loop {
         match current {
-            Value::Cons(car, cdr) => {
+            Value::Cons(cons_cell) => {
+                let car = &cons_cell.car;
+                let cdr = &cons_cell.cdr;
                 if !first {
                     output.push(' ');
                 }
@@ -11829,7 +11841,7 @@ impl ByteCompileDiagnostics {
     fn scan_cl_defmethod(&mut self, interp: &Interpreter, items: &[Value]) {
         let Some(lambda_list_index) =
             items.iter().enumerate().skip(2).find_map(|(index, value)| {
-                matches!(value, Value::Cons(_, _) | Value::Nil).then_some(index)
+                matches!(value, Value::Cons(_) | Value::Nil).then_some(index)
             })
         else {
             self.scan_body(interp, &items[1..]);
@@ -11899,7 +11911,7 @@ impl ByteCompileDiagnostics {
         for value in items.iter().skip(1) {
             let name = match value {
                 Value::Symbol(name) => Some(name.clone()),
-                Value::Cons(_, _) => value
+                Value::Cons(_) => value
                     .car()
                     .ok()
                     .and_then(|head| head.as_symbol().ok().map(str::to_string)),
@@ -12772,7 +12784,7 @@ fn dodgy_eq_literal_type(function: &str, value: &Value) -> Option<&'static str> 
         Value::String(_) | Value::StringObject(_) => Some("string"),
         Value::Float(_) if function == "eq" => Some("float"),
         Value::Integer(_) | Value::BigInteger(_) if function == "eq" => Some("integer"),
-        Value::Cons(_, _) => dodgy_eq_list_literal_type(function, value),
+        Value::Cons(_) => dodgy_eq_list_literal_type(function, value),
         _ => None,
     }
 }
@@ -12816,8 +12828,8 @@ fn dodgy_literal_data_type(function: &str, value: &Value) -> Option<&'static str
         Value::String(_) | Value::StringObject(_) => Some("string"),
         Value::Float(_) if function == "eq" => Some("float"),
         Value::Integer(_) | Value::BigInteger(_) if function == "eq" => Some("integer"),
-        Value::Cons(_, _) if is_vector_value(value) => Some("vector"),
-        Value::Cons(_, _) => Some("list"),
+        Value::Cons(_) if is_vector_value(value) => Some("vector"),
+        Value::Cons(_) => Some("list"),
         _ => None,
     }
 }
@@ -12829,7 +12841,7 @@ fn dodgy_identity_member_list_literal_types(
     let Some(list) = custom_type_unquote(list_arg) else {
         return Vec::new();
     };
-    if !matches!(list, Value::Cons(_, _)) {
+    if !matches!(list, Value::Cons(_)) {
         return Vec::new();
     }
     let Ok(elements) = list.to_vec() else {

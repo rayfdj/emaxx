@@ -567,7 +567,7 @@ fn nthcdr_value_reduces_large_counts_on_cycles() {
 
     let cell_id = |value: &Value| {
         let (car, _) = value.cons_cells().expect("value should be a cons cell");
-        Rc::as_ptr(&car) as usize
+        car.cell_id()
     };
 
     assert_eq!(cell_id(&huge_fixnum), cell_id(&one_step));

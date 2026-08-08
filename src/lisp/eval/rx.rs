@@ -195,7 +195,7 @@ fn parse_rx_char_class_items(
                     classes.push(name);
                 }
             }
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let (start, end) = item.cons_values().ok_or_else(|| {
                     LispError::Signal("Unsupported rx charset fragment: cons".into())
                 })?;
@@ -385,7 +385,7 @@ fn compile_rx_form(
                 }
             }
         },
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = expand_rx_splice_markers(interp, env, &value.to_vec()?)?;
             let head = match items.first() {
                 Some(Value::Symbol(head)) => Some(head.as_str()),
@@ -499,7 +499,7 @@ fn compile_rx_form(
                         return Err(LispError::Signal("rx `not' needs one argument".into()));
                     }
                     match &items[1] {
-                        Value::Cons(_, _) => {
+                        Value::Cons(_) => {
                             let charset = items[1].to_vec()?;
                             let Some(Value::Symbol(kind)) = charset.first() else {
                                 return Err(LispError::Signal("Unsupported rx `not' form".into()));
@@ -567,7 +567,7 @@ fn rx_or_char_class_fragments(
     let mut fragments = Vec::new();
     for item in items {
         match item {
-            Value::Cons(_, _) => {
+            Value::Cons(_) => {
                 let parts = item.to_vec()?;
                 let Some(Value::Symbol(head)) = parts.first() else {
                     return Err(LispError::Signal("Unsupported rx `not' form".into()));
@@ -724,7 +724,7 @@ fn expand_rx_template_value(
                 Ok(form.clone())
             }
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = form.to_vec()?;
             let mut expanded = Vec::new();
             for item in items {

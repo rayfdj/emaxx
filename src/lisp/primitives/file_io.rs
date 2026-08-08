@@ -839,7 +839,7 @@ pub(crate) fn printer_env_with_overrides(
             bindings.push(("print-length".into(), Value::Nil));
             bindings.push(("print-level".into(), Value::Nil));
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = overrides
                 .to_vec()
                 .map_err(|_| LispError::Signal("invalid print overrides".into()))?;
@@ -859,7 +859,7 @@ pub(crate) fn printer_env_with_overrides(
                     let Value::Symbol(name) = car else {
                         return Err(LispError::Signal("invalid print overrides".into()));
                     };
-                    if matches!(cdr, Value::Nil | Value::Cons(_, _)) {
+                    if matches!(cdr, Value::Nil | Value::Cons(_)) {
                         return Err(LispError::Signal("invalid print overrides".into()));
                     }
                     (name, cdr)
@@ -1031,7 +1031,7 @@ pub(crate) fn format_spec_replacement(
     specifier: char,
 ) -> Result<Option<(String, Vec<crate::lisp::types::StringPropertySpan>)>, LispError> {
     for entry in entries {
-        let Value::Cons(key, value) = entry else {
+        let Some((key, value)) = (entry).cons_cells() else {
             continue;
         };
         let key_value = key.borrow().clone();

@@ -382,7 +382,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Value::String(_), Value::String(_))
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
-        (Value::Cons(left_car, _), Value::Cons(right_car, _)) => Rc::ptr_eq(left_car, right_car),
+        (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
         (
             Value::Lambda(left_params, left_body, left_env),
             Value::Lambda(right_params, right_body, right_env),
@@ -403,7 +403,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
 
 pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
     match value {
-        Value::Cons(car, _) => Some((0, Rc::as_ptr(car) as usize)),
+        Value::Cons(cell) => Some((0, crate::lisp::types::ConsCell::identity(cell))),
         Value::StringObject(state) => Some((1, Rc::as_ptr(state) as usize)),
         Value::Record(id) => Some((2, *id as usize)),
         Value::CharTable(id) => Some((3, *id as usize)),
@@ -430,7 +430,7 @@ pub(crate) fn substitute_object_recurse(
     }
 
     match subtree {
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Some((car, cdr)) = subtree.cons_values() else {
                 return Ok(subtree.clone());
             };
@@ -557,9 +557,7 @@ pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError
     }
 }
 
-pub(crate) fn ensure_completion_list_item_identity(
-    item: &Rc<RefCell<Value>>,
-) -> Result<Value, LispError> {
+pub(crate) fn ensure_completion_list_item_identity(item: &ConsSlot) -> Result<Value, LispError> {
     let current = item.borrow().clone();
     match current {
         Value::String(text) => {
@@ -581,16 +579,17 @@ pub(crate) fn completion_list_candidates(
     loop {
         match current {
             Value::Nil => return Ok(candidates),
-            Value::Cons(car, cdr) => {
-                let id = Rc::as_ptr(&car) as usize;
+            Value::Cons(cons_cell) => {
+                let cdr = &cons_cell.cdr;
+                let id = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if !seen.insert(id) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("circular-list".into()),
                         Value::String("Circular list".into()),
                     ])));
                 }
-                let item = ensure_completion_list_item_identity(&car)?;
-                if matches!(item, Value::Cons(_, _)) {
+                let item = ensure_completion_list_item_identity(&ConsSlot::car(&cons_cell))?;
+                if matches!(item, Value::Cons(_)) {
                     let key = item.car()?;
                     candidates.push(CompletionCandidate {
                         name: completion_display_name(&key)?,
@@ -1239,7 +1238,7 @@ pub(crate) fn restore_active_minibuffer(interp: &mut Interpreter, state: ActiveM
 
 fn completing_read_initial_input(args: &[Value]) -> Option<String> {
     args.get(4).and_then(|value| {
-        let value = if matches!(value, Value::Cons(_, _)) {
+        let value = if matches!(value, Value::Cons(_)) {
             value.car().ok()?
         } else {
             value.clone()
@@ -1278,7 +1277,7 @@ fn completing_read_contents(
 
     let default = args.get(6).and_then(|value| match value {
         Value::Nil => None,
-        Value::Cons(_, _) => value.car().ok(),
+        Value::Cons(_) => value.car().ok(),
         other => Some(other.clone()),
     });
     if let Some(default) = default
@@ -1502,7 +1501,7 @@ pub(crate) fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
 pub(crate) fn completion_table_is_function(_interp: &Interpreter, collection: &Value) -> bool {
     match collection {
         Value::Symbol(_) | Value::Lambda(_, _, _) | Value::BuiltinFunc(_) => true,
-        Value::Cons(_, _) => matches!(
+        Value::Cons(_) => matches!(
             collection.car(),
             Ok(Value::Symbol(head)) if head == "lambda" || head == "closure"
         ),

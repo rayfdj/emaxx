@@ -134,7 +134,9 @@ define_dispatch!(
                         symbol_name != "nil" && !symbol_name.starts_with(':')
                     }
                     Value::T => true,
-                    Value::Cons(car, _) => matches!(&*car.borrow(), Value::Symbol(_) | Value::T),
+                    Value::Cons(cell) => {
+                        matches!(&*cell.car.borrow(), Value::Symbol(_) | Value::T)
+                    }
                     _ => false,
                 };
                 Ok(if truthy { Value::T } else { Value::Nil })
@@ -156,7 +158,7 @@ define_dispatch!(
             "sequencep" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Nil | Value::Cons(_, _))
+                    if matches!(args[0], Value::Nil | Value::Cons(_))
                         || string_like(&args[0]).is_some()
                         || is_vector_value(&args[0])
                         || is_bool_vector_value(interp, &args[0])
@@ -406,7 +408,7 @@ define_dispatch!(
                     | Value::String(_)
                     | Value::StringObject(_)
                     | Value::Symbol(_)
-                    | Value::Cons(_, _)
+                    | Value::Cons(_)
                     | Value::BuiltinFunc(_)
                     | Value::Lambda(_, _, _)
                     | Value::Buffer(_, _)
@@ -838,7 +840,7 @@ define_dispatch!(
                 }
                 match &args[0] {
                     Value::Nil => Ok(Value::T),
-                    Value::Cons(_, _) => Ok(Value::Nil),
+                    Value::Cons(_) => Ok(Value::Nil),
                     other => Err(wrong_type_argument("listp", other.clone())),
                 }
             }

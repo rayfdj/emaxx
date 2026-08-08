@@ -60,9 +60,9 @@ fn category_character_range(value: &Value) -> Result<(u32, u32), LispError> {
     };
     match value {
         Value::Integer(code) => checked(*code).map(|code| (code, code)),
-        Value::Cons(car, cdr) => Ok((
-            checked(car.borrow().as_integer()?)?,
-            checked(cdr.borrow().as_integer()?)?,
+        Value::Cons(cell) => Ok((
+            checked(cell.car.borrow().as_integer()?)?,
+            checked(cell.cdr.borrow().as_integer()?)?,
         )),
         other => Err(LispError::TypeError(
             "character-or-cons".into(),
@@ -123,20 +123,22 @@ define_dispatch!(
                 loop {
                     match current {
                         Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(car, cdr) => {
-                            let cell_id = Rc::as_ptr(&car) as usize;
+                        Value::Cons(cons_cell) => {
+                            let car = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
+                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                             if seen.step(cell_id) {
                                 return Ok(Value::Nil);
                             }
                             let property = car.borrow().clone();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
                                 return match cdr.borrow().clone() {
-                                    Value::Cons(value, _) => Ok(value.borrow().clone()),
+                                    Value::Cons(cell) => Ok(cell.car.borrow().clone()),
                                     _ => Ok(Value::Nil),
                                 };
                             }
                             match cdr.borrow().clone() {
-                                Value::Cons(_, next_cdr) => current = next_cdr.borrow().clone(),
+                                Value::Cons(cell) => current = cell.cdr.borrow().clone(),
                                 Value::Nil => return Ok(Value::Nil),
                                 _ => return Ok(Value::Nil),
                             }
@@ -162,8 +164,10 @@ define_dispatch!(
                             items.push(val.clone());
                             return Ok(Value::list(items));
                         }
-                        Value::Cons(car, cdr) => {
-                            let cell_id = Rc::as_ptr(&car) as usize;
+                        Value::Cons(cons_cell) => {
+                            let car = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
+                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                             if seen.step(cell_id) {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("circular-list".into()),
@@ -173,7 +177,9 @@ define_dispatch!(
                             let property = car.borrow().clone();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
                                 return match cdr.borrow().clone() {
-                                    Value::Cons(value, _) => {
+                                    Value::Cons(cons_cell) => {
+                                        let value = &cons_cell.car;
+                                        let _ = &cons_cell.cdr;
                                         *value.borrow_mut() = val.clone();
                                         Ok(plist)
                                     }
@@ -181,7 +187,9 @@ define_dispatch!(
                                 };
                             }
                             match cdr.borrow().clone() {
-                                Value::Cons(_, next_cdr) => {
+                                Value::Cons(cons_cell) => {
+                                    let _ = &cons_cell.car;
+                                    let next_cdr = &cons_cell.cdr;
                                     let next = next_cdr.borrow().clone();
                                     if next.is_nil() {
                                         *next_cdr.borrow_mut() =
@@ -208,8 +216,10 @@ define_dispatch!(
                 loop {
                     match current {
                         Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(car, cdr) => {
-                            let cell_id = Rc::as_ptr(&car) as usize;
+                        Value::Cons(cons_cell) => {
+                            let car = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
+                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                             if seen.step(cell_id) {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("circular-list".into()),
@@ -218,11 +228,11 @@ define_dispatch!(
                             }
                             let property = car.borrow().clone();
                             if value_matches_with_test(interp, &property, key, testfn, env)? {
-                                return Ok(Value::Cons(car, cdr));
+                                return Ok(Value::Cons(cons_cell));
                             }
                             // Skip the value
                             match cdr.borrow().clone() {
-                                Value::Cons(_, next_cdr) => current = next_cdr.borrow().clone(),
+                                Value::Cons(cell) => current = cell.cdr.borrow().clone(),
                                 Value::Nil => return Ok(Value::Nil),
                                 _ => return Err(plist_type_error(&plist)),
                             }
@@ -1088,7 +1098,7 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let (start, end) = match &args[0] {
-                    Value::Cons(_, _) => {
+                    Value::Cons(_) => {
                         let start = u32::try_from(args[0].car()?.as_integer()?)
                             .map_err(|_| LispError::Signal("Invalid character".into()))?;
                         let end = u32::try_from(args[0].cdr()?.as_integer()?)
@@ -1131,7 +1141,7 @@ define_dispatch!(
 
             "setcar" => {
                 need_args(name, args, 2)?;
-                let Value::Cons(_, _) = &args[0] else {
+                let Value::Cons(_) = &args[0] else {
                     return Err(wrong_type_argument("consp", args[0].clone()));
                 };
                 args[0].set_car(args[1].clone())?;
@@ -1144,7 +1154,7 @@ define_dispatch!(
 
             "setcdr" => {
                 need_args(name, args, 2)?;
-                let Value::Cons(_, _) = &args[0] else {
+                let Value::Cons(_) = &args[0] else {
                     return Err(wrong_type_argument("consp", args[0].clone()));
                 };
                 args[0].set_cdr(args[1].clone())?;
@@ -1397,7 +1407,9 @@ define_dispatch!(
                     while remaining > 0 {
                         match current {
                             Value::Nil => break,
-                            Value::Cons(car, cdr) => {
+                            Value::Cons(cons_cell) => {
+                                let car = &cons_cell.car;
+                                let cdr = &cons_cell.cdr;
                                 items.push(car.borrow().clone());
                                 current = cdr.borrow().clone();
                                 remaining -= 1;
@@ -1415,10 +1427,12 @@ define_dispatch!(
                     while remaining > 1 {
                         match current {
                             Value::Nil => return Ok(Value::Nil),
-                            Value::Cons(_, cdr) => {
+                            Value::Cons(cons_cell) => {
+                                let _ = &cons_cell.car;
+                                let cdr = &cons_cell.cdr;
                                 let next = cdr.borrow().clone();
                                 match next {
-                                    Value::Cons(_, _) => {
+                                    Value::Cons(_) => {
                                         current = next;
                                         remaining -= 1;
                                     }
@@ -1438,7 +1452,9 @@ define_dispatch!(
                     }
                     match current {
                         Value::Nil => Ok(Value::Nil),
-                        Value::Cons(_, cdr) => {
+                        Value::Cons(cons_cell) => {
+                            let _ = &cons_cell.car;
+                            let cdr = &cons_cell.cdr;
                             *cdr.borrow_mut() = Value::Nil;
                             Ok(head)
                         }
@@ -1451,22 +1467,24 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let elt = &args[0];
                 let mut head = args[1].clone();
-                while let Value::Cons(car, cdr) = head.clone() {
-                    if values_eq_in_env(interp, &car.borrow(), elt, env) {
-                        head = cdr.borrow().clone();
+                while let Value::Cons(cell) = head.clone() {
+                    if values_eq_in_env(interp, &cell.car.borrow(), elt, env) {
+                        head = cell.cdr.borrow().clone();
                     } else {
                         break;
                     }
                 }
                 let mut current = head.clone();
-                while let Value::Cons(_, cdr) = current.clone() {
-                    let next = cdr.borrow().clone();
+                while let Value::Cons(cell) = current.clone() {
+                    let next = cell.cdr.borrow().clone();
                     match next {
-                        Value::Cons(next_car, next_cdr) => {
+                        Value::Cons(cons_cell) => {
+                            let next_car = &cons_cell.car;
+                            let next_cdr = &cons_cell.cdr;
                             if values_eq_in_env(interp, &next_car.borrow(), elt, env) {
-                                *cdr.borrow_mut() = next_cdr.borrow().clone();
+                                *cell.cdr.borrow_mut() = next_cdr.borrow().clone();
                             } else {
-                                current = Value::Cons(next_car, next_cdr);
+                                current = Value::Cons(cons_cell);
                             }
                         }
                         _ => break,

@@ -328,7 +328,7 @@ pub(crate) fn first_valid_coding_candidate(
     value: &Value,
 ) -> Result<Option<String>, LispError> {
     match value {
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             for candidate in value.to_vec()? {
                 if candidate == Value::T || candidate.is_nil() {
                     continue;
@@ -449,7 +449,9 @@ pub(crate) fn aset_vector_value(
     let mut offset = 0usize;
     loop {
         match current {
-            Value::Cons(car, cdr) => {
+            Value::Cons(cons_cell) => {
+                let car = &cons_cell.car;
+                let cdr = &cons_cell.cdr;
                 if offset == index {
                     *car.borrow_mut() = new_value;
                     return Ok(());
@@ -1568,7 +1570,7 @@ pub(crate) fn find_operation_coding_system_value(
         )));
     };
     let operation_target = match target {
-        Value::Cons(car, _) if operation == "insert-file-contents" => car.borrow().clone(),
+        Value::Cons(cell) if operation == "insert-file-contents" => cell.car.borrow().clone(),
         other => other.clone(),
     };
     let Some(alist) = interp.lookup_var(alist_name, env) else {
@@ -1592,7 +1594,7 @@ pub(crate) fn find_operation_coding_system_value(
             continue;
         }
         // A cons is already the requested (DECODING . ENCODING) pair.
-        if matches!(target, Value::Cons(_, _)) {
+        if matches!(target, Value::Cons(_)) {
             return Ok(target);
         }
         let coding = match target {

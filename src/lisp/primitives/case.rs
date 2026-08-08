@@ -461,7 +461,9 @@ pub(crate) fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, 
     for _ in 0..1024 {
         match cursor {
             Value::Nil => return Ok(bounds),
-            Value::Cons(car, cdr) => {
+            Value::Cons(cons_cell) => {
+                let car = &cons_cell.car;
+                let cdr = &cons_cell.cdr;
                 bounds.push(parse_region_bound(&car.borrow())?);
                 cursor = cdr.borrow().clone();
             }

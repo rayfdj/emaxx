@@ -35,10 +35,10 @@ fn ensure_acyclic_cons_graph(value: &Value) -> Result<(), LispError> {
         visiting: &mut HashSet<usize>,
         visited: &mut HashSet<usize>,
     ) -> Result<(), LispError> {
-        let Value::Cons(car_cell, cdr_cell) = value else {
+        let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
             return Ok(());
         };
-        let ptr = Rc::as_ptr(car_cell) as usize;
+        let ptr = car_cell.cell_id();
         if visited.contains(&ptr) {
             return Ok(());
         }
@@ -182,7 +182,7 @@ pub(crate) fn record_equals_record_literal_form(
         return false;
     };
     if let Some((car, _)) = form.cons_cells() {
-        let pair = (record_id as usize, Rc::as_ptr(&car) as usize);
+        let pair = (record_id as usize, car.cell_id());
         if !seen.insert(pair) {
             return true;
         }
@@ -229,10 +229,7 @@ pub(crate) fn values_equal_recursive(
         else {
             return false;
         };
-        if !seen.insert((
-            Rc::as_ptr(&left_car) as usize,
-            Rc::as_ptr(&right_car) as usize,
-        )) {
+        if !seen.insert((left_car.cell_id(), right_car.cell_id())) {
             return true;
         }
         let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right)) else {
@@ -276,14 +273,14 @@ pub(crate) fn values_equal_recursive(
         {
             keymap_records_equal(interp, *left_id, *right_id, seen)
         }
-        (Value::Record(left_id), Value::Cons(_, _))
+        (Value::Record(left_id), Value::Cons(_))
             if interp
                 .find_record(*left_id)
                 .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
         {
             keymap_record_equals_list(interp, *left_id, right, seen)
         }
-        (Value::Cons(_, _), Value::Record(right_id))
+        (Value::Cons(_), Value::Record(right_id))
             if interp
                 .find_record(*right_id)
                 .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
@@ -318,17 +315,14 @@ pub(crate) fn values_equal_recursive(
         (_, Value::Record(right_id)) if record_literal_items(left).is_some() => {
             record_equals_record_literal_form(interp, *right_id, left, seen)
         }
-        (Value::Cons(_, _), Value::Cons(_, _)) => {
+        (Value::Cons(_), Value::Cons(_)) => {
             let Some((left_car, _)) = left.cons_cells() else {
                 return false;
             };
             let Some((right_car, _)) = right.cons_cells() else {
                 return false;
             };
-            let pair = (
-                Rc::as_ptr(&left_car) as usize,
-                Rc::as_ptr(&right_car) as usize,
-            );
+            let pair = (left_car.cell_id(), right_car.cell_id());
             if !seen.insert(pair) {
                 return true;
             }
@@ -394,7 +388,9 @@ fn collect_free_symbol_candidates(form: &Value, symbols: &mut HashSet<String>) {
         Value::Symbol(name) => {
             symbols.insert(name.clone());
         }
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             if matches!(&*car.borrow(), Value::Symbol(head) if head == "quote") {
                 return;
             }
@@ -414,9 +410,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
-        (Value::Cons(left_car, left_cdr), Value::Cons(right_car, right_cdr)) => {
-            Rc::ptr_eq(left_car, right_car) && Rc::ptr_eq(left_cdr, right_cdr)
-        }
+        (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
         (
             Value::Lambda(left_params, left_body, left_env),
             Value::Lambda(right_params, right_body, right_env),
@@ -458,9 +452,7 @@ pub(crate) fn values_eq_in_env(
         (Value::String(_), Value::String(_))
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
-        (Value::Cons(left_car, left_cdr), Value::Cons(right_car, right_cdr)) => {
-            Rc::ptr_eq(left_car, right_car) && Rc::ptr_eq(left_cdr, right_cdr)
-        }
+        (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
         (
             Value::Lambda(left_params, left_body, left_env),
             Value::Lambda(right_params, right_body, right_env),
@@ -495,8 +487,9 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         match current {
-            Value::Cons(car, cdr) => {
-                let cell_id = Rc::as_ptr(&car) as usize;
+            Value::Cons(cons_cell) => {
+                let cdr = &cons_cell.cdr;
+                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if seen.step(cell_id) {
                     return len;
                 }
@@ -531,8 +524,9 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
 
         match current.clone() {
             Value::Nil => return Ok(Value::Nil),
-            Value::Cons(car, cdr) => {
-                let cell_id = Rc::as_ptr(&car) as usize;
+            Value::Cons(cons_cell) => {
+                let cdr = &cons_cell.cdr;
+                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if let Some(&cycle_start) = visited.get(&cell_id) {
                     let cycle_len = steps.saturating_sub(cycle_start);
                     if cycle_len > 0 {
@@ -558,12 +552,12 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
     match value {
         item if string_like(item).is_some() => Ok(string_text(item)?.chars().count() as i64),
         Value::Nil => Ok(0),
-        Value::Cons(_, _) if is_vector_value(value) => Ok(vector_items(value)?.len() as i64),
+        Value::Cons(_) if is_vector_value(value) => Ok(vector_items(value)?.len() as i64),
         Value::CharTable(_) => Ok(0x40_0000),
         item if is_bool_vector_value(interp, item) => {
             Ok(bool_vector_values(interp, item)?.len() as i64)
         }
-        Value::Cons(_, _) => Ok(value.to_vec()?.len() as i64),
+        Value::Cons(_) => Ok(value.to_vec()?.len() as i64),
         Value::Record(id) => {
             let record = interp
                 .find_record(*id)
@@ -641,8 +635,8 @@ pub(crate) fn values_equal_including_properties_recursive(
         return true;
     }
     if let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right))
-        && matches!(left, Value::Cons(_, _))
-        && matches!(right, Value::Cons(_, _))
+        && matches!(left, Value::Cons(_))
+        && matches!(right, Value::Cons(_))
     {
         return left_items.len() == right_items.len()
             && left_items
@@ -661,17 +655,14 @@ pub(crate) fn values_equal_including_properties_recursive(
         }
         (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::Cons(_, _), Value::Cons(_, _)) => {
+        (Value::Cons(_), Value::Cons(_)) => {
             let Some((left_car, _)) = left.cons_cells() else {
                 return false;
             };
             let Some((right_car, _)) = right.cons_cells() else {
                 return false;
             };
-            let pair = (
-                Rc::as_ptr(&left_car) as usize,
-                Rc::as_ptr(&right_car) as usize,
-            );
+            let pair = (left_car.cell_id(), right_car.cell_id());
             if !seen.insert(pair) {
                 return true;
             }
@@ -1002,26 +993,24 @@ pub(crate) fn value_ordering(
         };
     }
 
-    if matches!(left, Value::Cons(_, _)) || matches!(right, Value::Cons(_, _)) {
+    if matches!(left, Value::Cons(_)) || matches!(right, Value::Cons(_)) {
         return match (left, right) {
             (Value::Nil, Value::Nil) => Ok(ValueOrder::Equal),
-            (Value::Nil, Value::Cons(_, _)) => Ok(ValueOrder::Less),
-            (Value::Cons(_, _), Value::Nil) => Ok(ValueOrder::Greater),
-            (Value::Cons(left_car, _), Value::Cons(right_car, _)) => {
+            (Value::Nil, Value::Cons(_)) => Ok(ValueOrder::Less),
+            (Value::Cons(_), Value::Nil) => Ok(ValueOrder::Greater),
+            (Value::Cons(left_cell), Value::Cons(right_cell)) => {
                 let key = (
-                    Rc::as_ptr(left_car) as usize,
-                    Rc::as_ptr(right_car) as usize,
+                    crate::lisp::types::ConsCell::identity(left_cell),
+                    crate::lisp::types::ConsCell::identity(right_cell),
                 );
                 if !seen_lists.insert(key) {
                     return Err(circular_signal(left));
                 }
                 let result = (|| {
-                    let Some((left_head, left_tail)) = left.cons_values() else {
-                        return Ok(ValueOrder::Unordered);
-                    };
-                    let Some((right_head, right_tail)) = right.cons_values() else {
-                        return Ok(ValueOrder::Unordered);
-                    };
+                    let left_head = left_cell.car.borrow().clone();
+                    let left_tail = left_cell.cdr.borrow().clone();
+                    let right_head = right_cell.car.borrow().clone();
+                    let right_tail = right_cell.cdr.borrow().clone();
                     let head_order =
                         value_ordering(interp, &left_head, &right_head, env, seen_lists)?;
                     if matches!(head_order, ValueOrder::Less | ValueOrder::Greater) {
@@ -1068,7 +1057,7 @@ pub(crate) fn proper_list_length(value: &Value) -> Option<usize> {
     if matches!(value, Value::Nil) {
         return Some(0);
     }
-    if !matches!(value, Value::Cons(_, _)) || is_vector_value(value) {
+    if !matches!(value, Value::Cons(_)) || is_vector_value(value) {
         return None;
     }
     match value.to_vec() {
@@ -1117,7 +1106,7 @@ pub(crate) fn remove_equal(
     }
 
     match sequence {
-        Value::Nil | Value::Cons(_, _) => Ok(Value::list(
+        Value::Nil | Value::Cons(_) => Ok(Value::list(
             sequence
                 .to_vec()?
                 .into_iter()
@@ -1136,7 +1125,7 @@ pub(crate) fn rassq_delete_all(key: &Value, alist: &Value) -> Result<Value, Lisp
         .to_vec()?
         .into_iter()
         .filter(|entry| match entry {
-            Value::Cons(_, _) => entry.cdr().is_ok_and(|value| value != *key),
+            Value::Cons(_) => entry.cdr().is_ok_and(|value| value != *key),
             _ => true,
         })
         .collect::<Vec<_>>();
@@ -1148,7 +1137,7 @@ pub(crate) fn assq_delete_all(key: &Value, alist: &Value) -> Result<Value, LispE
         .to_vec()?
         .into_iter()
         .filter(|entry| match entry {
-            Value::Cons(_, _) => entry.car().is_ok_and(|value| value != *key),
+            Value::Cons(_) => entry.car().is_ok_and(|value| value != *key),
             _ => true,
         })
         .collect::<Vec<_>>();
@@ -1164,7 +1153,7 @@ pub(crate) fn assoc_delete_all(
         .to_vec()?
         .into_iter()
         .filter(|entry| match entry {
-            Value::Cons(_, _) => entry
+            Value::Cons(_) => entry
                 .car()
                 .is_ok_and(|value| !values_equal(interp, &value, key)),
             _ => true,
@@ -1201,7 +1190,7 @@ pub(crate) fn format_prompt(
 
     let default = match &args[1] {
         Value::Nil => None,
-        Value::Cons(_, _) => args[1].car().ok(),
+        Value::Cons(_) => args[1].car().ok(),
         other => Some(other.clone()),
     }
     .filter(|value| {
@@ -1290,7 +1279,7 @@ pub(crate) fn copy_tree_value(
     }
 
     match value {
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Some((car, cdr)) = value.cons_values() else {
                 return Ok(value.clone());
             };
@@ -1317,7 +1306,9 @@ pub(crate) fn copy_tree_value(
 pub(crate) fn flatten_tree_value(value: &Value, leaves: &mut Vec<Value>) {
     match value {
         Value::Nil => {}
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
+            let car = &cons_cell.car;
+            let cdr = &cons_cell.cdr;
             flatten_tree_value(&car.borrow(), leaves);
             flatten_tree_value(&cdr.borrow(), leaves);
         }
@@ -1392,8 +1383,9 @@ pub(crate) fn collect_list_cells(value: &Value) -> Result<(Vec<Value>, Value), L
     loop {
         match current.clone() {
             Value::Nil => return Ok((cells, Value::Nil)),
-            Value::Cons(car, cdr) => {
-                let cell_id = Rc::as_ptr(&car) as usize;
+            Value::Cons(cons_cell) => {
+                let cdr = &cons_cell.cdr;
+                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
                 if seen.step(cell_id) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("circular-list"),
@@ -1496,10 +1488,10 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
     let mut current = value.clone();
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        let Value::Cons(car, cdr) = current.clone() else {
+        let Some((car, cdr)) = (current.clone()).cons_cells() else {
             return Err(LispError::TypeError("consp".into(), current.type_name()));
         };
-        let cell_id = Rc::as_ptr(&car) as usize;
+        let cell_id = car.cell_id();
         if seen.step(cell_id) {
             return Err(LispError::SignalValue(Value::list([
                 Value::symbol("circular-list"),
@@ -1507,7 +1499,7 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
             ])));
         }
         match cdr.borrow().clone() {
-            Value::Cons(_, _) => current = cdr.borrow().clone(),
+            Value::Cons(_) => current = cdr.borrow().clone(),
             _ => return Ok(current),
         }
     }
@@ -1539,8 +1531,10 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
             | Value::Overlay(_)
             | Value::CharTable(_)
             | Value::Lambda(_, _, _) => false,
-            Value::Cons(car, cdr) => {
-                let identity = Rc::as_ptr(car) as usize;
+            Value::Cons(cons_cell) => {
+                let car = &cons_cell.car;
+                let cdr = &cons_cell.cdr;
+                let identity = crate::lisp::types::ConsCell::identity(cons_cell);
                 if visited.contains(&identity) {
                     return true;
                 }
@@ -1597,10 +1591,12 @@ pub(crate) fn runtime_hash_bucket_key(
         return Some(state as i64);
     }
     match value {
-        Value::Cons(car, cdr) => {
+        Value::Cons(cons_cell) => {
             hash_mix(&mut state, 16);
-            hash_mix(&mut state, Rc::as_ptr(car) as usize as u64);
-            hash_mix(&mut state, Rc::as_ptr(cdr) as usize as u64);
+            hash_mix(
+                &mut state,
+                crate::lisp::types::ConsCell::identity(cons_cell) as u64,
+            );
         }
         Value::Float(number) => {
             hash_mix(&mut state, 15);
@@ -1733,7 +1729,7 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 15);
             hash_mix(state, number.to_bits());
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Some((car, cdr)) = value.cons_values() else {
                 return;
             };
@@ -1802,7 +1798,7 @@ pub(crate) fn hash_value_equal(
             hash_mix(state, 37);
             hash_str(state, symbol);
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let Some((car, cdr)) = value.cons_values() else {
                 return;
             };
@@ -1980,7 +1976,7 @@ pub(crate) fn custom_set_current_group(interp: &mut Interpreter, group: &str) {
         .unwrap_or(Value::Nil);
     let mut entries = existing.to_vec().unwrap_or_default();
     if let Some(index) = entries.iter().position(|value| match value {
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             value
                 .cons_values()
                 .and_then(|(car, _)| string_text(&car).ok())
@@ -2070,7 +2066,7 @@ pub(crate) fn is_lambda_expression(value: &Value) -> bool {
 
 pub(crate) fn literal_form(value: &Value) -> Value {
     match value {
-        Value::Cons(_, _) | Value::Symbol(_) => {
+        Value::Cons(_) | Value::Symbol(_) => {
             Value::list([Value::Symbol("quote".into()), value.clone()])
         }
         other => other.clone(),
@@ -2373,8 +2369,8 @@ pub(crate) fn keymap_value_identity(interp: &Interpreter, keymap: &Value) -> Opt
         return Some((true, id as usize));
     }
     match keymap {
-        Value::Cons(car, _) if is_keymap_placeholder(keymap) => {
-            Some((false, Rc::as_ptr(car) as usize))
+        Value::Cons(cell) if is_keymap_placeholder(keymap) => {
+            Some((false, crate::lisp::types::ConsCell::identity(cell)))
         }
         _ => None,
     }
@@ -2998,7 +2994,7 @@ pub(crate) fn keymap_get_keyelt(
 ) -> Result<Value, LispError> {
     let mut current = object.clone();
     loop {
-        let Value::Cons(_, _) = current else {
+        let Value::Cons(_) = current else {
             return Ok(current);
         };
 
@@ -3077,7 +3073,7 @@ pub(crate) fn keymap_binding_display_name(value: &Value) -> String {
         Value::Nil => "undefined".into(),
         Value::Symbol(name) | Value::BuiltinFunc(name) => name.clone(),
         Value::Record(_) => "Prefix Command".into(),
-        Value::Cons(_, _) => value
+        Value::Cons(_) => value
             .to_vec()
             .ok()
             .and_then(|items| match items.as_slice() {
@@ -3732,7 +3728,7 @@ pub(crate) fn remap_key_binding_text(command: &str) -> String {
 pub(crate) fn command_name_for_remapping(value: &Value) -> Option<String> {
     match value {
         Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.clone()),
-        Value::Cons(_, _) => value
+        Value::Cons(_) => value
             .to_vec()
             .ok()
             .and_then(|items| match items.as_slice() {
@@ -3955,7 +3951,7 @@ pub(crate) fn key_sequence_is_prefix(
 pub(crate) fn keymap_binding_matches_command(binding: &Value, command: &str) -> bool {
     match binding {
         Value::Symbol(name) | Value::BuiltinFunc(name) => name == command,
-        Value::Cons(_, _) => binding
+        Value::Cons(_) => binding
             .to_vec()
             .ok()
             .is_some_and(|items| match items.as_slice() {

@@ -646,7 +646,7 @@ fn font_pattern(
             let slots = make_font_spec(&[Value::symbol(":name"), value.clone()])?;
             Ok(Some(font_pattern_from_slots(&slots)))
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let (family, registry) = value
                 .cons_values()
                 .expect("a cons font pattern must have two cells");
@@ -671,7 +671,7 @@ fn parse_fontset_target(value: &Value) -> Result<FontsetTargetState, LispError> 
             Ok(FontsetTargetState::Character(*character))
         }
         Value::Symbol(script) => Ok(FontsetTargetState::Script(script.clone())),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let (from, to) = value
                 .cons_values()
                 .expect("a range cons must have endpoints");

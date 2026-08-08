@@ -595,7 +595,7 @@ impl ArgSpec {
                     rest: packed & 0x80 != 0,
                 })
             }
-            Value::Nil | Value::Cons(_, _) => Ok(ArgSpec::Legacy(value.clone())),
+            Value::Nil | Value::Cons(_) => Ok(ArgSpec::Legacy(value.clone())),
             other => Err(ByteCodeError::MalformedObject(format!(
                 "argument spec must be an integer or list, got {}",
                 other.type_name()
@@ -652,7 +652,7 @@ fn string_text(value: &Value) -> Option<String> {
 /// Emaxx's byte-compile facade (an executable lambda in slot 0).
 pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
     slots.len() >= 4
-        && matches!(slots[0], Value::Integer(_) | Value::Nil | Value::Cons(_, _))
+        && matches!(slots[0], Value::Integer(_) | Value::Nil | Value::Cons(_))
         && string_text(&slots[1]).is_some()
         && vector_items(&slots[2]).is_some()
         && matches!(slots[3], Value::Integer(_))

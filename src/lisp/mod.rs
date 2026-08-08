@@ -187,7 +187,6 @@ pub mod types;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::rc::Rc;
 
 use crate::compat::TestStatus;
 
@@ -468,18 +467,18 @@ fn contains_gnu_byte_code_literal(value: &types::Value) -> bool {
     }
 
     fn visit(value: &types::Value, seen: &mut HashSet<usize>) -> bool {
-        let types::Value::Cons(car, cdr) = value else {
+        let Some((car, cdr)) = (value).cons_cells() else {
             return false;
         };
-        let identity = Rc::as_ptr(car) as usize;
+        let identity = car.cell_id();
         if !seen.insert(identity) {
             return false;
         }
         let head = car.borrow().clone();
         let tail = cdr.borrow().clone();
         if matches!(&head, types::Value::Symbol(name) if name == reader::RECORD_LITERAL_SYMBOL)
-            && let types::Value::Cons(kind, _) = &tail
-            && quoted_byte_code_function(&kind.borrow())
+            && let types::Value::Cons(cell) = &tail
+            && quoted_byte_code_function(&cell.car.borrow())
         {
             return true;
         }

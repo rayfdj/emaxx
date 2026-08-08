@@ -1488,7 +1488,7 @@ pub(crate) fn find_file_name_handler(
     let mut result = None;
 
     for entry in entries {
-        let Value::Cons(pattern, handler) = entry else {
+        let Some((pattern, handler)) = (entry).cons_cells() else {
             continue;
         };
         let pattern = pattern.borrow().clone();

@@ -80,7 +80,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 multibyte: state.multibyte,
             })
         }
-        Value::Cons(car, _) if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") =>
+        Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") =>
         {
             let items = vector_items(value).ok()?;
             if items.len() < 4 {
@@ -111,7 +111,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 multibyte,
             })
         }
-        Value::Cons(_, _) => None,
+        Value::Cons(_) => None,
         _ => None,
     }
 }
@@ -422,12 +422,12 @@ pub(crate) fn reverse_sequence_value(
         return Ok(make_bool_vector_value(interp, bits));
     }
     match value {
-        Value::Cons(_, _) if is_vector_value(value) => {
+        Value::Cons(_) if is_vector_value(value) => {
             let mut items = value.to_vec()?;
             items[1..].reverse();
             Ok(Value::list(items))
         }
-        Value::Nil | Value::Cons(_, _) => {
+        Value::Nil | Value::Cons(_) => {
             let mut items = value.to_vec()?;
             items.reverse();
             Ok(Value::list(items))
@@ -453,7 +453,7 @@ pub(crate) fn nreverse_sequence_value(
         return Ok(value.clone());
     }
     match value {
-        Value::Cons(_, _) if is_vector_value(value) => {
+        Value::Cons(_) if is_vector_value(value) => {
             let mut items = vector_items(value)?;
             items.reverse();
             for (index, item) in items.into_iter().enumerate() {
@@ -461,7 +461,7 @@ pub(crate) fn nreverse_sequence_value(
             }
             Ok(value.clone())
         }
-        Value::Nil | Value::Cons(_, _) => nreverse_list_cells(value),
+        Value::Nil | Value::Cons(_) => nreverse_list_cells(value),
         _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
     }
 }
@@ -471,20 +471,20 @@ fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
     let mut reversed = Value::Nil;
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
-        let (car, cdr) = match &current {
+        let cell = match &current {
             Value::Nil => return Ok(reversed),
-            Value::Cons(car, cdr) => (Rc::clone(car), Rc::clone(cdr)),
+            Value::Cons(cell) => Rc::clone(cell),
             other => return Err(LispError::TypeError("list".into(), other.type_name())),
         };
-        if seen.step(Rc::as_ptr(&car) as usize) {
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("circular-list".into()),
                 Value::String("Circular list".into()),
             ])));
         }
-        let next = cdr.borrow().clone();
-        *cdr.borrow_mut() = reversed;
-        reversed = Value::Cons(car, cdr);
+        let next = cell.cdr.borrow().clone();
+        *cell.cdr.borrow_mut() = reversed;
+        reversed = Value::Cons(cell);
         current = next;
     }
 }

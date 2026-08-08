@@ -214,10 +214,10 @@ fn project_embedded_keymaps(
         ));
     }
 
-    let Value::Cons(car, cdr) = value else {
+    let Some((car, cdr)) = (value).cons_cells() else {
         return Ok(value.clone());
     };
-    let identity = Rc::as_ptr(car) as usize;
+    let identity = car.cell_id();
     if !seen_cons.insert(identity) {
         // Preserve a circular non-keymap cons graph.  The caller's list
         // primitive remains responsible for reporting or traversing it.
@@ -290,7 +290,7 @@ pub(crate) fn trim_redundant_separator_items(
             continue;
         }
 
-        if matches!(item, Value::Cons(_, _)) {
+        if matches!(item, Value::Cons(_)) {
             pending_separator_index = None;
         }
         cleaned.push(item);
@@ -644,7 +644,7 @@ pub(crate) fn skeleton_insert_value(
             Ok(())
         }
         Value::Symbol(_) => Ok(()),
-        Value::Cons(_, _) => {
+        Value::Cons(_) => {
             let items = value.to_vec()?;
             for item in items.iter().skip(1) {
                 skeleton_insert_value(interp, item, env, point)?;

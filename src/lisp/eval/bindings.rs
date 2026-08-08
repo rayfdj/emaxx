@@ -1055,20 +1055,18 @@ impl Interpreter {
     /// A still-current cached expansion for FORM (keyed by its car cell
     /// identity — the entry pins the form so the address can't be reused).
     pub(crate) fn cached_macro_expansion(&self, form: &Value, lexical: bool) -> Option<Value> {
-        let Value::Cons(car, _) = form else {
-            return None;
-        };
-        let key = (std::rc::Rc::as_ptr(car) as usize, lexical);
+        let (car, _) = form.cons_cells()?;
+        let key = (car.cell_id(), lexical);
         let (generation, expanded, _) = self.macro_expansion_cache.get(&key)?;
         (*generation == self.definition_generation).then(|| expanded.clone())
     }
 
     /// Cache FORM's macro expansion at the current definition generation.
     pub(crate) fn cache_macro_expansion(&mut self, form: &Value, lexical: bool, expanded: Value) {
-        let Value::Cons(car, _) = form else {
+        let Some((car, _)) = (form).cons_cells() else {
             return;
         };
-        let key = (std::rc::Rc::as_ptr(car) as usize, lexical);
+        let key = (car.cell_id(), lexical);
         // A runaway cache would pin unbounded transient forms; the cap is
         // far above any real load (function bodies are finite).
         if self.macro_expansion_cache.len() >= (1 << 20) {
@@ -1212,8 +1210,8 @@ impl Interpreter {
                         // The trailing (t . TIME) modtime marker is
                         // synthesized on read for file-visiting buffers;
                         // storing it back would duplicate it.
-                        if let Value::Cons(car, _) = &item
-                            && matches!(&*car.borrow(), Value::T)
+                        if let Value::Cons(cell) = &item
+                            && matches!(&*cell.car.borrow(), Value::T)
                         {
                             continue;
                         }
@@ -1358,7 +1356,9 @@ impl Interpreter {
             let (binding, _) = self.macro_position_binding(&current, env)?;
             match binding {
                 Value::Symbol(next) => current = next,
-                Value::Cons(car, cdr) => {
+                Value::Cons(cons_cell) => {
+                    let car = &cons_cell.car;
+                    let cdr = &cons_cell.cdr;
                     return match &*car.borrow() {
                         Value::Symbol(head) if head == "macro" => Some(cdr.borrow().clone()),
                         _ => None,

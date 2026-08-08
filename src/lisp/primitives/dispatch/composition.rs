@@ -70,11 +70,7 @@ fn compose_region(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lis
     let components = args.get(2).cloned().unwrap_or(Value::Nil);
     if !matches!(
         components,
-        Value::Nil
-            | Value::Integer(_)
-            | Value::Cons(_, _)
-            | Value::String(_)
-            | Value::StringObject(_)
+        Value::Nil | Value::Integer(_) | Value::Cons(_) | Value::String(_) | Value::StringObject(_)
     ) && !is_vector_value(&components)
     {
         return Err(wrong_type_argument("vectorp", components));
@@ -217,7 +213,7 @@ fn components_vector(components: &Value, chars: &[char]) -> Result<Value, LispEr
             .map(|character| Value::Integer(character as i64))
             .collect(),
         value if is_vector_value(value) => vector_items(value)?,
-        Value::Cons(_, _) => components.to_vec()?,
+        Value::Cons(_) => components.to_vec()?,
         _ => return Err(LispError::Signal("Invalid composition".into())),
     };
     Ok(vector_value(items))
@@ -295,11 +291,7 @@ fn register_composition(
     }
     if !matches!(
         components,
-        Value::Nil
-            | Value::Integer(_)
-            | Value::String(_)
-            | Value::StringObject(_)
-            | Value::Cons(_, _)
+        Value::Nil | Value::Integer(_) | Value::String(_) | Value::StringObject(_) | Value::Cons(_)
     ) && !is_vector_value(&components)
     {
         return Ok(None);
@@ -307,7 +299,7 @@ fn register_composition(
     let chars = composition_chars(interp, string, range.start, range.end)?;
     let key = components_vector(&components, &chars)?;
     let key_items = vector_items(&key)?;
-    let rule_based = matches!(components, Value::Cons(_, _)) || is_vector_value(&components);
+    let rule_based = matches!(components, Value::Cons(_)) || is_vector_value(&components);
     if rule_based {
         let glyph_string = key_items.first().is_some_and(is_vector_value);
         let valid = if glyph_string {

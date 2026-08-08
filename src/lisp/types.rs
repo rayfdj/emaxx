@@ -4,16 +4,121 @@ use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::collections::HashSet;
 use std::fmt;
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    rc::{Rc, Weak},
+};
 
 const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
 const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 
-pub type ConsSlot = Rc<RefCell<Value>>;
+pub type SharedCons = Rc<ConsCell>;
 pub type ConsCells = (ConsSlot, ConsSlot);
 pub type SharedEnv = Rc<RefCell<Env>>;
 pub type SharedLambdaParams = Rc<Vec<String>>;
 pub type SharedLambdaBody = Rc<Vec<Value>>;
+
+/// The mutable payload of one Lisp cons.
+///
+/// GNU allocates the car and cdr together as one `Lisp_Cons`.  Keeping the
+/// same ownership shape halves the allocation and reference-count traffic of
+/// Emaxx's former two-`Rc` representation while retaining independent field
+/// borrows for `setcar`, `setcdr`, reader fixups, and vector element slots.
+#[derive(Debug)]
+pub struct ConsCell {
+    pub(crate) car: RefCell<Value>,
+    pub(crate) cdr: RefCell<Value>,
+}
+
+impl ConsCell {
+    fn new(car: Value, cdr: Value) -> Self {
+        Self {
+            car: RefCell::new(car),
+            cdr: RefCell::new(cdr),
+        }
+    }
+
+    pub(crate) fn identity(cell: &SharedCons) -> usize {
+        Rc::as_ptr(cell) as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsField {
+    Car,
+    Cdr,
+}
+
+/// A retained reference to one mutable field of a cons.
+///
+/// This is deliberately the only field-address abstraction exported by the
+/// Lisp value layer.  Callers cannot depend on the physical layout of
+/// `ConsCell`, so future value-representation work stays localized here.
+#[derive(Clone, Debug)]
+pub struct ConsSlot {
+    cell: SharedCons,
+    field: ConsField,
+}
+
+impl ConsSlot {
+    pub(crate) fn car(cell: &SharedCons) -> Self {
+        Self {
+            cell: cell.clone(),
+            field: ConsField::Car,
+        }
+    }
+
+    pub(crate) fn cdr(cell: &SharedCons) -> Self {
+        Self {
+            cell: cell.clone(),
+            field: ConsField::Cdr,
+        }
+    }
+
+    pub fn borrow(&self) -> Ref<'_, Value> {
+        match self.field {
+            ConsField::Car => self.cell.car.borrow(),
+            ConsField::Cdr => self.cell.cdr.borrow(),
+        }
+    }
+
+    pub fn borrow_mut(&self) -> RefMut<'_, Value> {
+        match self.field {
+            ConsField::Car => self.cell.car.borrow_mut(),
+            ConsField::Cdr => self.cell.cdr.borrow_mut(),
+        }
+    }
+
+    pub fn cell_id(&self) -> usize {
+        ConsCell::identity(&self.cell)
+    }
+
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.field == other.field && Rc::ptr_eq(&self.cell, &other.cell)
+    }
+
+    pub fn downgrade(&self) -> WeakConsSlot {
+        WeakConsSlot {
+            cell: Rc::downgrade(&self.cell),
+            field: self.field,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WeakConsSlot {
+    cell: Weak<ConsCell>,
+    field: ConsField,
+}
+
+impl WeakConsSlot {
+    pub fn upgrade(&self) -> Option<ConsSlot> {
+        Some(ConsSlot {
+            cell: self.cell.upgrade()?,
+            field: self.field,
+        })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StringPropertySpan {
@@ -78,7 +183,7 @@ pub enum Value {
     String(String),
     StringObject(Rc<RefCell<SharedStringState>>),
     Symbol(String),
-    Cons(ConsSlot, ConsSlot),
+    Cons(SharedCons),
     /// Built-in function: name, arity (min, max), function pointer handled in eval
     BuiltinFunc(String),
     /// A lambda or closure: params, immutable shared body, captured env.
@@ -188,7 +293,7 @@ impl Value {
     }
 
     pub fn cons(car: Value, cdr: Value) -> Self {
-        Value::Cons(Rc::new(RefCell::new(car)), Rc::new(RefCell::new(cdr)))
+        Value::Cons(Rc::new(ConsCell::new(car, cdr)))
     }
 
     /// Build a proper list from an iterator of values.
@@ -224,11 +329,11 @@ impl Value {
     }
 
     pub fn is_cons(&self) -> bool {
-        matches!(self, Value::Cons(_, _))
+        matches!(self, Value::Cons(_))
     }
 
     pub fn is_list(&self) -> bool {
-        matches!(self, Value::Nil | Value::Cons(_, _))
+        matches!(self, Value::Nil | Value::Cons(_))
     }
 
     // Accessors
@@ -272,7 +377,7 @@ impl Value {
 
     pub fn car(&self) -> Result<Value, LispError> {
         match self {
-            Value::Cons(car, _) => Ok(car.borrow().clone()),
+            Value::Cons(cell) => Ok(cell.car.borrow().clone()),
             Value::Nil => Ok(Value::Nil),
             _ => Err(LispError::TypeError("list".into(), self.type_name())),
         }
@@ -280,7 +385,7 @@ impl Value {
 
     pub fn cdr(&self) -> Result<Value, LispError> {
         match self {
-            Value::Cons(_, cdr) => Ok(cdr.borrow().clone()),
+            Value::Cons(cell) => Ok(cell.cdr.borrow().clone()),
             Value::Nil => Ok(Value::Nil),
             _ => Err(LispError::TypeError("list".into(), self.type_name())),
         }
@@ -288,8 +393,8 @@ impl Value {
 
     pub fn set_car(&self, new_car: Value) -> Result<(), LispError> {
         match self {
-            Value::Cons(car, _) => {
-                *car.borrow_mut() = new_car;
+            Value::Cons(cell) => {
+                *cell.car.borrow_mut() = new_car;
                 Ok(())
             }
             _ => Err(LispError::TypeError("cons".into(), self.type_name())),
@@ -298,8 +403,8 @@ impl Value {
 
     pub fn set_cdr(&self, new_cdr: Value) -> Result<(), LispError> {
         match self {
-            Value::Cons(_, cdr) => {
-                *cdr.borrow_mut() = new_cdr;
+            Value::Cons(cell) => {
+                *cell.cdr.borrow_mut() = new_cdr;
                 Ok(())
             }
             _ => Err(LispError::TypeError("cons".into(), self.type_name())),
@@ -308,7 +413,14 @@ impl Value {
 
     pub fn cons_cells(&self) -> Option<ConsCells> {
         match self {
-            Value::Cons(car, cdr) => Some((car.clone(), cdr.clone())),
+            Value::Cons(cell) => Some((ConsSlot::car(cell), ConsSlot::cdr(cell))),
+            _ => None,
+        }
+    }
+
+    pub fn cons_id(&self) -> Option<usize> {
+        match self {
+            Value::Cons(cell) => Some(ConsCell::identity(cell)),
             _ => None,
         }
     }
@@ -326,12 +438,12 @@ impl Value {
         loop {
             match current {
                 Value::Nil => return Ok(result),
-                Value::Cons(car, cdr) => {
-                    if seen.step(Rc::as_ptr(&car) as usize) {
+                Value::Cons(cell) => {
+                    if seen.step(ConsCell::identity(&cell)) {
                         return Err(circular_list_error());
                     }
-                    result.push(car.borrow().clone());
-                    current = cdr.borrow().clone();
+                    result.push(cell.car.borrow().clone());
+                    current = cell.cdr.borrow().clone();
                 }
                 _ => return Err(LispError::TypeError("list".into(), current.type_name())),
             }
@@ -348,7 +460,7 @@ impl Value {
             Value::String(_) => "string".into(),
             Value::StringObject(_) => "string".into(),
             Value::Symbol(_) => "symbol".into(),
-            Value::Cons(_, _) => "cons".into(),
+            Value::Cons(_) => "cons".into(),
             Value::BuiltinFunc(name) => format!("builtin<{}>", name),
             Value::Lambda(_, _, _) => "lambda".into(),
             Value::Buffer(_, name) => format!("buffer<{}>", name),
@@ -383,10 +495,6 @@ fn circular_list_error() -> LispError {
     ]))
 }
 
-fn cons_identity(car: &Rc<RefCell<Value>>) -> usize {
-    Rc::as_ptr(car) as usize
-}
-
 fn values_equal_recursive(
     left: &Value,
     right: &Value,
@@ -406,16 +514,16 @@ fn values_equal_recursive(
         (Value::String(a), Value::StringObject(b)) => *a == b.borrow().text,
         (Value::StringObject(a), Value::String(b)) => a.borrow().text == *b,
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::Cons(a_car, a_cdr), Value::Cons(b_car, b_cdr)) => {
-            if Rc::ptr_eq(a_car, b_car) && Rc::ptr_eq(a_cdr, b_cdr) {
+        (Value::Cons(a), Value::Cons(b)) => {
+            if Rc::ptr_eq(a, b) {
                 return true;
             }
-            let ids = (cons_identity(a_car), cons_identity(b_car));
+            let ids = (ConsCell::identity(a), ConsCell::identity(b));
             if !seen.get_or_insert_with(HashSet::new).insert(ids) {
                 return true;
             }
-            values_equal_recursive(&a_car.borrow(), &b_car.borrow(), seen)
-                && values_equal_recursive(&a_cdr.borrow(), &b_cdr.borrow(), seen)
+            values_equal_recursive(&a.car.borrow(), &b.car.borrow(), seen)
+                && values_equal_recursive(&a.cdr.borrow(), &b.cdr.borrow(), seen)
         }
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Lambda(a_params, a_body, a_env), Value::Lambda(b_params, b_body, b_env)) => {
@@ -448,40 +556,40 @@ fn format_value(
         Value::String(s) => write!(f, "\"{}\"", s),
         Value::StringObject(state) => write!(f, "\"{}\"", state.borrow().text),
         Value::Symbol(s) => write!(f, "{}", visible_symbol_name(s)),
-        Value::Cons(car, cdr) if matches!(&*car.borrow(), Value::Symbol(head) if head == "vector-literal") =>
+        Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(head) if head == "vector-literal") =>
         {
             // Vector literals ride on conses internally but print as vectors.
             write!(f, "[")?;
-            let mut current = cdr.borrow().clone();
+            let mut current = cell.cdr.borrow().clone();
             let mut first = true;
-            while let Value::Cons(item, rest) = current {
+            while let Value::Cons(cell) = current {
                 if !first {
                     write!(f, " ")?;
                 }
-                format_value(&item.borrow(), f, seen)?;
+                format_value(&cell.car.borrow(), f, seen)?;
                 first = false;
-                current = rest.borrow().clone();
+                current = cell.cdr.borrow().clone();
             }
             write!(f, "]")
         }
-        Value::Cons(car, cdr) => {
+        Value::Cons(cell) => {
             // GNU prints reader shorthands: (quote X) as 'X and
             // (function X) as #'X.
-            if let Value::Symbol(head) = &*car.borrow()
+            if let Value::Symbol(head) = &*cell.car.borrow()
                 && (head == "quote" || head == "function")
-                && let Value::Cons(inner_car, inner_cdr) = &*cdr.borrow()
-                && matches!(&*inner_cdr.borrow(), Value::Nil)
+                && let Value::Cons(inner) = &*cell.cdr.borrow()
+                && matches!(&*inner.cdr.borrow(), Value::Nil)
             {
                 write!(f, "{}", if head == "quote" { "'" } else { "#'" })?;
-                return format_value(&inner_car.borrow(), f, seen);
+                return format_value(&inner.car.borrow(), f, seen);
             }
             write!(f, "(")?;
             let mut current = value.clone();
             let mut first = true;
             loop {
                 match current {
-                    Value::Cons(car, cdr) => {
-                        let id = cons_identity(&car);
+                    Value::Cons(cell) => {
+                        let id = ConsCell::identity(&cell);
                         if !seen.insert(id) {
                             if !first {
                                 write!(f, " ")?;
@@ -492,9 +600,9 @@ fn format_value(
                         if !first {
                             write!(f, " ")?;
                         }
-                        format_value(&car.borrow(), f, seen)?;
+                        format_value(&cell.car.borrow(), f, seen)?;
                         first = false;
-                        current = cdr.borrow().clone();
+                        current = cell.cdr.borrow().clone();
                     }
                     Value::Nil => break,
                     other => {
@@ -663,7 +771,7 @@ impl From<crate::buffer::BufferError> for LispError {
 
 #[cfg(test)]
 mod tests {
-    use super::{LispError, Value, shared_env};
+    use super::{LispError, SharedCons, Value, shared_env};
     use std::rc::Rc;
 
     #[test]
@@ -688,6 +796,45 @@ mod tests {
             unreachable!("constructed lambda values")
         };
         assert!(Rc::ptr_eq(params, cloned_params));
+    }
+
+    #[test]
+    fn cons_fields_share_one_cell_and_mutate_independently() {
+        assert_eq!(
+            std::mem::size_of::<SharedCons>(),
+            std::mem::size_of::<usize>(),
+            "a Value::Cons must retain exactly one shared pointer",
+        );
+
+        let pair = Value::cons(Value::Integer(1), Value::Integer(2));
+        let clone = pair.clone();
+        let (car, cdr) = pair.cons_cells().expect("constructed cons");
+        let (cloned_car, cloned_cdr) = clone.cons_cells().expect("cloned cons");
+
+        assert_eq!(car.cell_id(), cdr.cell_id());
+        assert!(!car.ptr_eq(&cdr), "car and cdr are distinct field handles");
+        assert!(car.ptr_eq(&cloned_car));
+        assert!(cdr.ptr_eq(&cloned_cdr));
+
+        let mut car_value = car.borrow_mut();
+        let mut cdr_value = cdr.borrow_mut();
+        *car_value = Value::Integer(3);
+        *cdr_value = Value::Integer(4);
+        drop((car_value, cdr_value));
+
+        assert_eq!(clone.car().expect("car"), Value::Integer(3));
+        assert_eq!(clone.cdr().expect("cdr"), Value::Integer(4));
+    }
+
+    #[test]
+    fn weak_cons_slot_does_not_keep_cell_alive() {
+        let weak = {
+            let pair = Value::cons(Value::T, Value::Nil);
+            let (car, _) = pair.cons_cells().expect("constructed cons");
+            car.downgrade()
+        };
+
+        assert!(weak.upgrade().is_none());
     }
 
     #[test]
