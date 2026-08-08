@@ -1947,7 +1947,11 @@ impl Interpreter {
                 return;
             }
         };
-        let mut key_index: HashMap<Option<i64>, Vec<usize>> = HashMap::new();
+        let mut key_index: HashMap<
+            Option<i64>,
+            Vec<usize>,
+            crate::lisp::primitives::FnvBuildHasher,
+        > = HashMap::default();
         for (index, (key, _)) in entries.iter().enumerate() {
             let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, test, key);
             key_index.entry(hash).or_default().push(index);
@@ -2053,7 +2057,11 @@ impl Interpreter {
             .entries
             .remove(existing_index);
 
-        let mut key_index: HashMap<Option<i64>, Vec<usize>> = HashMap::new();
+        let mut key_index: HashMap<
+            Option<i64>,
+            Vec<usize>,
+            crate::lisp::primitives::FnvBuildHasher,
+        > = HashMap::default();
         for (index, (entry_key, _)) in self
             .equal_hash_tables
             .get(&id)

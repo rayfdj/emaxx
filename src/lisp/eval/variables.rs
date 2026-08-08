@@ -1189,13 +1189,13 @@ impl Interpreter {
     /// tables are a measurable per-call cost); with edebug loaded, defer
     /// to the real lookup, buffer-local bindings included.
     fn edebug_entered_active(&self, env: &Env) -> bool {
-        if self.special_variables_index.contains("edebug-entered") {
-            return self
+        // `edebug-entered' can only carry a binding once edebug's defvar
+        // has marked it special, so this single set probe is the whole
+        // cost until edebug is actually loaded.
+        self.special_variables_index.contains("edebug-entered")
+            && self
                 .lookup_var("edebug-entered", env)
-                .is_some_and(|value| value.is_truthy());
-        }
-        self.global_binding_value("edebug-entered")
-            .is_some_and(|value| value.is_truthy())
+                .is_some_and(|value| value.is_truthy())
     }
 
     pub fn capture_current_backtrace_context(

@@ -1164,6 +1164,31 @@ impl Interpreter {
         self.call_function_value_inner(func, original_name, args, env)
     }
 
+    /// The BuiltinFunc arm of `call_function_value_inner' for a callee
+    /// still in name form: backtrace frame, native dispatch with the
+    /// already-fetched facts, handler mapping.
+    fn dispatch_named_builtin(
+        &mut self,
+        name: &str,
+        facts: crate::lisp::primitives::NameFacts,
+        original_name: Option<&str>,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let backtrace_function = original_name
+            .map(|name| Value::Symbol(name.to_string()))
+            .unwrap_or_else(|| Value::Symbol(name.to_string()));
+        self.push_backtrace_frame(backtrace_function, args);
+        self.capture_current_backtrace_context(original_name.or(Some(name)), env, None);
+        let result = match primitives::call_with_facts(self, name, facts, args, env) {
+            Ok(value) => Ok(value),
+            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
+            Err(error) => self.dispatch_handler_bindings(error, env),
+        };
+        self.pop_backtrace_frame();
+        result
+    }
+
     fn call_function_value_inner(
         &mut self,
         func: Value,
@@ -1185,45 +1210,76 @@ impl Interpreter {
         let mut owned_name: Option<String> = None;
         let func = match func {
             Value::Symbol(name) => {
-                // Direct builtin route: when function lookup would resolve
-                // NAME to Value::BuiltinFunc(NAME) — a native binding with
-                // no user redefinition, no autoload entry, and no
-                // cl-flet/cl-labels frame shadowing it — dispatch by name
-                // without materializing that value.  `selected-window' and
-                // pure special forms keep their dedicated arms below.
-                let facts = crate::lisp::primitives::name_facts(&name);
-                if name != "selected-window"
-                    && (facts.prefer_override
-                        || (facts.builtin
-                            && !facts.special_form
-                            && !facts.autoloadable
-                            && !self.function_index_has(&name)))
-                    && !Self::env_has_function_binding_frames(env)
+                // With no cl-flet/cl-labels frame in scope, a symbol's
+                // resolution depends only on global state, so a verdict
+                // stamped with the current definition generation replays
+                // without any facts probe or function-cell lookup.
+                let frames_present = Self::env_has_function_binding_frames(env);
+                if !frames_present
+                    && let Some((generation, resolution)) =
+                        self.function_resolution_cache.get(&name)
+                    && *generation == self.definition_generation
                 {
-                    let backtrace_function = original_name
-                        .map(|name| Value::Symbol(name.to_string()))
-                        .unwrap_or_else(|| Value::Symbol(name.clone()));
-                    self.push_backtrace_frame(backtrace_function, args);
-                    self.capture_current_backtrace_context(
-                        original_name.or(Some(&name)),
-                        env,
-                        None,
-                    );
-                    let result = match primitives::call_with_facts(self, &name, facts, args, env) {
-                        Ok(value) => Ok(value),
-                        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => {
-                            Err(error)
+                    match resolution {
+                        FunctionResolution::DirectBuiltin(facts) => {
+                            let facts = *facts;
+                            return self.dispatch_named_builtin(
+                                &name,
+                                facts,
+                                original_name,
+                                args,
+                                env,
+                            );
                         }
-                        Err(error) => self.dispatch_handler_bindings(error, env),
-                    };
-                    self.pop_backtrace_frame();
-                    return result;
+                        FunctionResolution::Resolved(value) => {
+                            let resolved = value.clone();
+                            if original_name.is_none() {
+                                owned_name = Some(name);
+                            }
+                            resolved
+                        }
+                    }
+                } else {
+                    // Direct builtin route: when function lookup would
+                    // resolve NAME to Value::BuiltinFunc(NAME) — a native
+                    // binding with no user redefinition, no autoload entry,
+                    // and no cl-flet/cl-labels frame shadowing it —
+                    // dispatch by name without materializing that value.
+                    // `selected-window' and pure special forms keep their
+                    // dedicated arms below.
+                    let facts = crate::lisp::primitives::name_facts(&name);
+                    if name != "selected-window"
+                        && (facts.prefer_override
+                            || (facts.builtin
+                                && !facts.special_form
+                                && !facts.autoloadable
+                                && !self.function_index_has(&name)))
+                        && !frames_present
+                    {
+                        self.function_resolution_cache.insert(
+                            name.clone(),
+                            (
+                                self.definition_generation,
+                                FunctionResolution::DirectBuiltin(facts),
+                            ),
+                        );
+                        return self.dispatch_named_builtin(&name, facts, original_name, args, env);
+                    }
+                    let resolved = self.lookup_function(&name, env)?;
+                    if !frames_present {
+                        self.function_resolution_cache.insert(
+                            name.clone(),
+                            (
+                                self.definition_generation,
+                                FunctionResolution::Resolved(resolved.clone()),
+                            ),
+                        );
+                    }
+                    if original_name.is_none() {
+                        owned_name = Some(name);
+                    }
+                    resolved
                 }
-                let resolved = self.lookup_function(&name, env)?;
-                if original_name.is_none() {
-                    owned_name = Some(name);
-                }
-                resolved
             }
             other => other,
         };
