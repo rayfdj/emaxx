@@ -467,7 +467,7 @@ fn regexp_matches(
     let pattern = primitives::string_like(pattern)
         .ok_or_else(|| LispError::TypeError("stringp".into(), pattern.type_name()))?;
     let mut case_sensitive = env.clone();
-    case_sensitive.push(vec![("case-fold-search".into(), Value::Nil)]);
+    case_sensitive.push(vec![("case-fold-search".into(), Value::Nil)].into());
     regexp::compile_elisp_regex(interp, &pattern, &case_sensitive, "", true)?
         .is_match(text)
         .map_err(|error| LispError::Signal(error.to_string()))

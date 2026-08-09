@@ -5225,6 +5225,41 @@ fn cached_source_forms_observe_mutation_and_recover_after_errors() {
 }
 
 #[test]
+fn cached_source_dispatch_analysis_observes_head_mutation() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+
+    let conditional = Reader::new("(if t 1 2)")
+        .read()
+        .expect("conditional should parse")
+        .expect("conditional should exist");
+    assert_eq!(
+        interp.eval(&conditional, &mut env).unwrap(),
+        Value::Integer(1)
+    );
+    conditional
+        .set_car(Value::symbol("progn"))
+        .expect("conditional head should be mutable");
+    assert_eq!(
+        interp.eval(&conditional, &mut env).unwrap(),
+        Value::Integer(2)
+    );
+
+    let literal = Reader::new("(vector-literal 23)")
+        .read()
+        .expect("literal should parse")
+        .expect("literal should exist");
+    assert_eq!(
+        literal.cons_id(),
+        interp.eval(&literal, &mut env).unwrap().cons_id()
+    );
+    literal
+        .set_car(Value::symbol("quote"))
+        .expect("literal head should be mutable");
+    assert_eq!(interp.eval(&literal, &mut env).unwrap(), Value::Integer(23));
+}
+
+#[test]
 fn cons_mutation_invalidates_all_source_derivations() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

@@ -24,7 +24,7 @@ const ADVANCE_COMPAT_PREFIX: &str = "Advance compatibility for ";
 const COMPAT_REGRESSION_MANIFEST_PATH: &str = "compat/compat_regressions.json";
 const TARGET_OWNER_FILE: &str = ".emaxx-source-root";
 const SUBJECT_LOCK_FILE: &str = ".emaxx-compat.lock";
-const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
+const DEFAULT_TIMEOUT_SECONDS: u64 = 180;
 
 struct CompatRunPlan<'a> {
     mode: &'a str,
@@ -110,7 +110,7 @@ struct ListArgs {
     file: Option<String>,
     #[arg(long)]
     name: Option<String>,
-    /// Per-runner timeout (default 120 seconds).
+    /// Per setup and test phase (default 180 seconds each).
     #[arg(long)]
     timeout_seconds: Option<u64>,
 }
@@ -131,7 +131,7 @@ struct RunArgs {
     /// Source checkout whose Emaxx binary should be built and tested.
     #[arg(long)]
     subject_root: Option<PathBuf>,
-    /// Per-runner timeout.  This is recorded in summary provenance.
+    /// Per setup and test phase.  This is recorded in summary provenance.
     #[arg(long)]
     timeout_seconds: Option<u64>,
 }
@@ -154,7 +154,7 @@ struct LandedArgs {
     file: Option<String>,
     #[arg(long)]
     name: Option<String>,
-    /// Per-runner timeout (default 120 seconds).
+    /// Per setup and test phase (default 180 seconds each).
     #[arg(long)]
     timeout_seconds: Option<u64>,
 }
@@ -179,7 +179,7 @@ struct RegressionRunArgs {
     file: Option<String>,
     #[arg(long)]
     name: Option<String>,
-    /// Per-runner timeout (default 120 seconds).
+    /// Per setup and test phase (default 180 seconds each).
     #[arg(long)]
     timeout_seconds: Option<u64>,
 }
@@ -190,7 +190,7 @@ struct RegressionAddArgs {
     file: String,
     #[arg(long, default_value = "check-all")]
     selector: String,
-    /// Per-runner timeout (default 120 seconds).
+    /// Per setup and test phase (default 180 seconds each).
     #[arg(long)]
     timeout_seconds: Option<u64>,
 }
@@ -207,7 +207,26 @@ struct ProcessResult {
     stdout: String,
     stderr: String,
     timed_out: bool,
+    timeout_phase: Option<TimeoutPhase>,
+    setup_elapsed: Duration,
+    test_started: bool,
+    test_elapsed: Duration,
     elapsed: Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimeoutPhase {
+    Setup,
+    Test,
+}
+
+impl TimeoutPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::Test => "test",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -448,6 +467,22 @@ struct FileTiming {
     file: String,
     gnu_emacs_duration_ms: u64,
     emaxx_duration_ms: u64,
+    #[serde(default)]
+    gnu_emacs_setup_duration_ms: u64,
+    #[serde(default)]
+    emaxx_setup_duration_ms: u64,
+    #[serde(default)]
+    gnu_emacs_test_duration_ms: u64,
+    #[serde(default)]
+    emaxx_test_duration_ms: u64,
+    #[serde(default)]
+    gnu_emacs_timed_out: bool,
+    #[serde(default)]
+    emaxx_timed_out: bool,
+    #[serde(default)]
+    gnu_emacs_timeout_phase: Option<String>,
+    #[serde(default)]
+    emaxx_timeout_phase: Option<String>,
     emaxx_over_gnu_milli: Option<u64>,
     emaxx_at_least_twice_as_slow: bool,
 }
@@ -1348,9 +1383,10 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
 
         let oracle_report = compat::filter_report_by_name(&oracle.report, name_filter);
         let emaxx_report = compat::filter_report_by_name(&emaxx.report, name_filter);
-        let comparison = compat::compare_reports(&oracle_report, &emaxx_report);
-        let timing =
-            compare_runner_timings(&relative, oracle.process.elapsed, emaxx.process.elapsed);
+        let mut comparison = compat::compare_reports(&oracle_report, &emaxx_report);
+        invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &oracle.process);
+        invalidate_timed_out_comparison(&mut comparison, "Emaxx", &emaxx.process);
+        let timing = compare_runner_timings(&relative, &oracle.process, &emaxx.process);
         write_json(
             &per_file_dir.join("comparison.json"),
             &TimedComparison {
@@ -1375,11 +1411,13 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         if timing.emaxx_at_least_twice_as_slow {
             performance_regressions.push(relative.clone());
             println!(
-                "SLOW {} gnu={}ms emaxx={}ms ratio={}",
+                "SLOW {} gnu_test={}ms emaxx_test={}ms ratio={} setup_gnu={}ms setup_emaxx={}ms",
                 relative,
-                timing.gnu_emacs_duration_ms,
-                timing.emaxx_duration_ms,
-                format_ratio(timing.emaxx_over_gnu_milli)
+                timing.gnu_emacs_test_duration_ms,
+                timing.emaxx_test_duration_ms,
+                format_ratio(timing.emaxx_over_gnu_milli),
+                timing.gnu_emacs_setup_duration_ms,
+                timing.emaxx_setup_duration_ms,
             );
         }
         timings.push(timing);
@@ -1417,27 +1455,74 @@ fn duration_millis(duration: Duration) -> u64 {
     duration.as_millis().min(u64::MAX as u128) as u64
 }
 
-fn compare_runner_timings(file: &str, gnu_emacs: Duration, emaxx: Duration) -> FileTiming {
-    let gnu_emacs_duration_ms = duration_millis(gnu_emacs);
-    let emaxx_duration_ms = duration_millis(emaxx);
-    let gnu_nanos = gnu_emacs.as_nanos();
-    let emaxx_nanos = emaxx.as_nanos();
-    let emaxx_over_gnu_milli = (gnu_nanos != 0).then(|| {
-        emaxx_nanos
-            .saturating_mul(1_000)
-            .checked_div(gnu_nanos)
-            .unwrap_or(u128::MAX)
-            .min(u64::MAX as u128) as u64
-    });
-    let emaxx_at_least_twice_as_slow = if gnu_nanos == 0 {
-        emaxx_nanos > 0
-    } else {
-        emaxx_nanos >= gnu_nanos.saturating_mul(2)
+fn invalidate_timed_out_comparison(
+    comparison: &mut compat::ComparisonReport,
+    runner: &str,
+    process: &ProcessResult,
+) {
+    let Some(phase) = process.timeout_phase else {
+        return;
     };
+    comparison.matches = false;
+    comparison.issues.push(compat::ComparisonIssue {
+        kind: "timeout".into(),
+        detail: format!(
+            "{runner} exceeded the {} timeout after {}ms in that phase; the result is incomplete",
+            phase.as_str(),
+            match phase {
+                TimeoutPhase::Setup => duration_millis(process.setup_elapsed),
+                TimeoutPhase::Test => duration_millis(process.test_elapsed),
+            }
+        ),
+    });
+}
+
+fn compare_runner_timings(
+    file: &str,
+    gnu_emacs: &ProcessResult,
+    emaxx: &ProcessResult,
+) -> FileTiming {
+    let gnu_nanos = gnu_emacs.test_elapsed.as_nanos();
+    let emaxx_nanos = emaxx.test_elapsed.as_nanos();
+    let timings_are_comparable =
+        gnu_emacs.test_started && emaxx.test_started && !gnu_emacs.timed_out && !emaxx.timed_out;
+    let emaxx_over_gnu_milli = timings_are_comparable.then(|| {
+        if gnu_nanos == 0 {
+            u64::MAX
+        } else {
+            emaxx_nanos
+                .saturating_mul(1_000)
+                .checked_div(gnu_nanos)
+                .unwrap_or(u128::MAX)
+                .min(u64::MAX as u128) as u64
+        }
+    });
+    // A killed process is a censored observation, not a performance sample.
+    // Its correctness comparison is marked incomplete above.
+    let emaxx_at_least_twice_as_slow = timings_are_comparable
+        && if gnu_nanos == 0 {
+            emaxx_nanos > 0
+        } else {
+            emaxx_nanos >= gnu_nanos.saturating_mul(2)
+        };
     FileTiming {
         file: file.to_string(),
-        gnu_emacs_duration_ms,
-        emaxx_duration_ms,
+        gnu_emacs_duration_ms: duration_millis(gnu_emacs.elapsed),
+        emaxx_duration_ms: duration_millis(emaxx.elapsed),
+        gnu_emacs_setup_duration_ms: duration_millis(gnu_emacs.setup_elapsed),
+        emaxx_setup_duration_ms: duration_millis(emaxx.setup_elapsed),
+        gnu_emacs_test_duration_ms: duration_millis(gnu_emacs.test_elapsed),
+        emaxx_test_duration_ms: duration_millis(emaxx.test_elapsed),
+        gnu_emacs_timed_out: gnu_emacs.timed_out,
+        emaxx_timed_out: emaxx.timed_out,
+        gnu_emacs_timeout_phase: gnu_emacs
+            .timeout_phase
+            .map(TimeoutPhase::as_str)
+            .map(str::to_string),
+        emaxx_timeout_phase: emaxx
+            .timeout_phase
+            .map(TimeoutPhase::as_str)
+            .map(str::to_string),
         emaxx_over_gnu_milli,
         emaxx_at_least_twice_as_slow,
     }
@@ -1996,6 +2081,14 @@ fn configure_isolated_source_directory(
     Ok(())
 }
 
+fn configure_loaded_marker(command: &mut Command, path: &Path) -> Result<(), String> {
+    let literal = serde_json::to_string(&path.display().to_string())
+        .map_err(|error| format!("encode loaded-marker path: {error}"))?;
+    command.arg("--eval");
+    command.arg(format!("(with-temp-file {literal} (insert \"loaded\\n\"))"));
+    Ok(())
+}
+
 fn run_oracle(
     local: &OracleLocalConfig,
     repo_root: &Path,
@@ -2029,10 +2122,12 @@ fn run_oracle(
     command.arg(&helper_path);
     command.arg("-l");
     command.arg(file);
+    let loaded_marker = per_file_dir.join("oracle.loaded");
+    configure_loaded_marker(&mut command, &loaded_marker)?;
     command.arg("--eval");
     command.arg(format!("(emaxx-compat-run (quote {selector}))"));
 
-    let process = run_command(command, timeout)?;
+    let process = run_command(command, timeout, &loaded_marker)?;
     let report =
         load_or_synthesize_report(&result_path, "oracle", relative_file, selector, &process)?;
     Ok(RunnerArtifacts { report, process })
@@ -2080,13 +2175,15 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     command.arg("ert");
     command.arg("-l");
     command.arg(request.file);
+    let loaded_marker = request.artifact_dir.join("emaxx.loaded");
+    configure_loaded_marker(&mut command, &loaded_marker)?;
     command.arg("--eval");
     command.arg(format!(
         "(ert-run-tests-batch-and-exit (quote {}))",
         request.selector
     ));
 
-    let process = run_command(command, request.timeout)?;
+    let process = run_command(command, request.timeout, &loaded_marker)?;
     let report = load_or_synthesize_report(
         &result_path,
         "emaxx",
@@ -2133,8 +2230,8 @@ fn load_or_synthesize_report(
         return BatchReport::read_json(result_path);
     }
 
-    let message = if process.timed_out {
-        "process timed out".to_string()
+    let message = if let Some(phase) = process.timeout_phase {
+        format!("process timed out during {}", phase.as_str())
     } else if let Some(exit_code) = process.exit_code {
         let detail = if process.stderr.trim().is_empty() {
             process.stdout.trim()
@@ -2162,7 +2259,11 @@ fn load_or_synthesize_report(
     Ok(report)
 }
 
-fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<ProcessResult, String> {
+fn run_command(
+    mut command: Command,
+    timeout: Option<Duration>,
+    loaded_marker: &Path,
+) -> Result<ProcessResult, String> {
     // Capture output through temporary files rather than pipes: a pipe fills
     // up while we poll `try_wait' (deadlocking a chatty child), and any
     // grandchild that outlives the child (Tramp's mock shells) would keep a
@@ -2189,8 +2290,15 @@ fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<Proces
         .spawn()
         .map_err(|error| format!("spawn command: {error}"))?;
     let started = Instant::now();
+    let mut test_started = None;
+    let mut setup_elapsed = None;
 
-    let collect = |timed_out: bool, exit_code: Option<i32>| -> Result<ProcessResult, String> {
+    let collect = |timeout_phase: Option<TimeoutPhase>,
+                   exit_code: Option<i32>,
+                   setup_elapsed: Option<Duration>,
+                   test_started: Option<Instant>|
+     -> Result<ProcessResult, String> {
+        let elapsed = started.elapsed();
         let stdout = fs::read_to_string(&stdout_path).unwrap_or_default();
         let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
         let _ = fs::remove_file(&stdout_path);
@@ -2199,27 +2307,49 @@ fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<Proces
             exit_code,
             stdout,
             stderr,
-            timed_out,
-            elapsed: started.elapsed(),
+            timed_out: timeout_phase.is_some(),
+            timeout_phase,
+            setup_elapsed: setup_elapsed.unwrap_or(elapsed),
+            test_started: test_started.is_some(),
+            test_elapsed: test_started
+                .map(|test_started| test_started.elapsed())
+                .unwrap_or_default(),
+            elapsed,
         })
     };
 
     loop {
+        if test_started.is_none() && loaded_marker.is_file() {
+            let now = Instant::now();
+            setup_elapsed = Some(now.duration_since(started));
+            test_started = Some(now);
+        }
+
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("wait for command: {error}"))?
         {
-            return collect(false, status.code());
+            return collect(None, status.code(), setup_elapsed, test_started);
         }
 
-        if timeout.is_some_and(|limit| started.elapsed() > limit) {
+        let timeout_phase = timeout.and_then(|limit| match test_started {
+            Some(test_started) if test_started.elapsed() > limit => Some(TimeoutPhase::Test),
+            None if started.elapsed() > limit => Some(TimeoutPhase::Setup),
+            _ => None,
+        });
+        if let Some(timeout_phase) = timeout_phase {
             child
                 .kill()
                 .map_err(|error| format!("kill timed out command: {error}"))?;
             let status = child
                 .wait()
                 .map_err(|error| format!("wait after kill: {error}"))?;
-            return collect(true, status.code());
+            return collect(
+                Some(timeout_phase),
+                status.code(),
+                setup_elapsed,
+                test_started,
+            );
         }
 
         thread::sleep(Duration::from_millis(50));
@@ -2235,8 +2365,23 @@ fn write_raw_log(path: &Path, process: &ProcessResult) -> Result<(), String> {
     content.push_str(&format!("exit_code={:?}\n", process.exit_code));
     content.push_str(&format!("timed_out={}\n", process.timed_out));
     content.push_str(&format!(
+        "timeout_phase={}\n",
+        process
+            .timeout_phase
+            .map(TimeoutPhase::as_str)
+            .unwrap_or("none")
+    ));
+    content.push_str(&format!(
         "elapsed_ms={}\n",
         duration_millis(process.elapsed)
+    ));
+    content.push_str(&format!(
+        "setup_elapsed_ms={}\n",
+        duration_millis(process.setup_elapsed)
+    ));
+    content.push_str(&format!(
+        "test_elapsed_ms={}\n",
+        duration_millis(process.test_elapsed)
     ));
     content.push_str("\n[stdout]\n");
     content.push_str(&process.stdout);
@@ -2566,6 +2711,25 @@ mod tests {
         );
     }
 
+    fn process_result(
+        setup: Duration,
+        test: Duration,
+        test_started: bool,
+        timeout_phase: Option<TimeoutPhase>,
+    ) -> ProcessResult {
+        ProcessResult {
+            exit_code: timeout_phase.is_none().then_some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: timeout_phase.is_some(),
+            timeout_phase,
+            setup_elapsed: setup,
+            test_started,
+            test_elapsed: test,
+            elapsed: setup + test,
+        }
+    }
+
     fn test_provenance() -> RunProvenance {
         RunProvenance {
             harness_source_root: "/harness".into(),
@@ -2612,21 +2776,103 @@ mod tests {
 
     #[test]
     fn runner_timing_flags_the_two_x_boundary() {
-        let below = compare_runner_timings(
-            "below.el",
+        let oracle = process_result(
+            Duration::from_secs(3),
             Duration::from_millis(100),
-            Duration::from_millis(199),
+            true,
+            None,
         );
+        let below_subject = process_result(
+            Duration::from_secs(30),
+            Duration::from_millis(199),
+            true,
+            None,
+        );
+        let below = compare_runner_timings("below.el", &oracle, &below_subject);
         assert_eq!(below.emaxx_over_gnu_milli, Some(1_990));
         assert!(!below.emaxx_at_least_twice_as_slow);
+        assert_eq!(below.gnu_emacs_setup_duration_ms, 3_000);
+        assert_eq!(below.emaxx_setup_duration_ms, 30_000);
 
-        let boundary = compare_runner_timings(
-            "boundary.el",
-            Duration::from_millis(100),
+        let boundary_subject = process_result(
+            Duration::from_secs(1),
             Duration::from_millis(200),
+            true,
+            None,
         );
+        let boundary = compare_runner_timings("boundary.el", &oracle, &boundary_subject);
         assert_eq!(boundary.emaxx_over_gnu_milli, Some(2_000));
         assert!(boundary.emaxx_at_least_twice_as_slow);
+    }
+
+    #[test]
+    fn paired_timeouts_are_incomplete_not_passing_or_slow() {
+        let mut comparison = compat::ComparisonReport {
+            file: "timeout.el".into(),
+            matches: true,
+            issues: Vec::new(),
+        };
+        let oracle = process_result(
+            Duration::from_secs(180),
+            Duration::ZERO,
+            false,
+            Some(TimeoutPhase::Setup),
+        );
+        let emaxx = process_result(
+            Duration::from_secs(2),
+            Duration::from_secs(180),
+            true,
+            Some(TimeoutPhase::Test),
+        );
+        invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &oracle);
+        invalidate_timed_out_comparison(&mut comparison, "Emaxx", &emaxx);
+        assert!(!comparison.matches);
+        assert_eq!(comparison.issues.len(), 2);
+        assert!(
+            comparison
+                .issues
+                .iter()
+                .all(|issue| issue.kind == "timeout")
+        );
+
+        let timing = compare_runner_timings("timeout.el", &oracle, &emaxx);
+        assert!(timing.gnu_emacs_timed_out);
+        assert!(timing.emaxx_timed_out);
+        assert_eq!(timing.gnu_emacs_timeout_phase.as_deref(), Some("setup"));
+        assert_eq!(timing.emaxx_timeout_phase.as_deref(), Some("test"));
+        assert_eq!(timing.emaxx_over_gnu_milli, None);
+        assert!(!timing.emaxx_at_least_twice_as_slow);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_timeout_resets_when_test_execution_starts() {
+        let marker = unique_temp_path("phase-marker").unwrap();
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "sleep 0.1; : > \"$EMAXX_TEST_PHASE_MARKER\"; sleep 0.8",
+            ])
+            .env("EMAXX_TEST_PHASE_MARKER", &marker);
+        let result = run_command(command, Some(Duration::from_millis(500)), &marker).unwrap();
+        assert_eq!(result.timeout_phase, Some(TimeoutPhase::Test));
+        assert!(result.setup_elapsed >= Duration::from_millis(75));
+        assert!(result.test_elapsed >= Duration::from_millis(500));
+        assert!(result.elapsed >= Duration::from_millis(575));
+        let _ = fs::remove_file(marker);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_reports_setup_timeout_before_the_loaded_marker() {
+        let marker = unique_temp_path("missing-phase-marker").unwrap();
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 1"]);
+        let result = run_command(command, Some(Duration::from_millis(75)), &marker).unwrap();
+        assert_eq!(result.timeout_phase, Some(TimeoutPhase::Setup));
+        assert!(!result.test_started);
+        assert_eq!(result.test_elapsed, Duration::ZERO);
     }
 
     #[test]
@@ -2686,7 +2932,11 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             timed_out: true,
-            elapsed: Duration::from_secs(120),
+            timeout_phase: Some(TimeoutPhase::Setup),
+            setup_elapsed: Duration::from_secs(180),
+            test_started: false,
+            test_elapsed: Duration::ZERO,
+            elapsed: Duration::from_secs(180),
         };
 
         let report =
@@ -2696,7 +2946,10 @@ mod tests {
         assert!(result_path.is_file());
         assert_eq!(BatchReport::read_json(&result_path).unwrap(), report);
         assert_eq!(report.file_status, FileStatus::LoadError);
-        assert_eq!(report.file_error.as_deref(), Some("process timed out"));
+        assert_eq!(
+            report.file_error.as_deref(),
+            Some("process timed out during setup")
+        );
 
         fs::remove_dir_all(&root).unwrap();
     }

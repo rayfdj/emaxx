@@ -150,7 +150,7 @@ impl Interpreter {
         let closure_env = shared_env(if frame.is_empty() {
             Vec::new()
         } else {
-            vec![frame]
+            vec![frame.into()]
         });
         if lexical {
             self.mark_lexical_closure_env(&closure_env);

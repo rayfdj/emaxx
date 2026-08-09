@@ -3595,7 +3595,7 @@ fn equal_structured_hash_tables_use_structural_buckets() {
 #[test]
 fn ordinary_memq_skips_symbol_with_position_mode_resolution() {
     let mut interp = Interpreter::new();
-    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)]];
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
     let symbols = Value::list(
         (0..2_048).map(|index| Value::Symbol(format!("ordinary-symbol-{index}").into())),
     );

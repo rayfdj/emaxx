@@ -34,6 +34,60 @@ the compact-value interpreter work.
 
 ## Current State
 
+- The 2026-08-09 shallow lexical-environment checkpoint keeps the published
+  ordered frontier at 4,582/7,080 (2,498 selectors left).  Lexical frames are
+  now one-pointer, copy-on-write snapshots, while the existing frame-identity
+  overlay remains the single authority for GNU shared lexical-cell semantics.
+  Immediately invoked closures use the authoritative live frames only after
+  an exact frame-for-frame identity check; escaped, trimmed, synthetic, and
+  merely same-shaped environments retain the general merge path.  Captured
+  environments are registered once through a bounded weak-witness index.
+  Source dispatch now reuses mutation-stamped native-form, literal-kind, and
+  `if` tail-alias analysis through the existing source-form cache rather than
+  adding another cache or invalidation authority.
+
+  On the same machine, Bindat improved from 20.461 seconds at base commit
+  `29d4323` to 4.951 seconds in
+  `target/compat/run-1786241990186148000-6088`, with all 29 tests matching GNU
+  (0.474 seconds).  Electric remains exact at 874/874 in
+  `target/compat/run-1786241865230074000-5935` (0.798 seconds GNU, 13.865
+  seconds Emaxx); its unchanged end-to-end time confirms that the retained
+  change does not regress that different workload.  The final comparable
+  source artifact is
+  `target/perf/run-1786242006/interpreter/source-eval-suite.perf/comparison.json`:
+  list walking is 6.687x GNU, cons allocation 12.136x, and interpreted calls
+  13.756x.  All three remain above the post-bootstrap 2x gate, so source
+  evaluation performance is improved but not finished.
+
+  The complete release suite passes: library 1,855/1,855,
+  compatibility-harness 29/29, performance-harness 1/1, CLI 10/10, and ERT
+  runner 3/3.  Rustfmt, diff check, generated-autoload comparison,
+  all-target/all-feature compilation, and strict Clippy also pass.  Native
+  remains 1,420/1,420.
+
+  The compatibility harness now gives setup/load and selected test execution
+  separate timeout budgets (180 seconds each by default).  A marker written
+  immediately after the target test file loads resets the clock, artifacts
+  record both phase durations and the timeout phase, the 2x ratio uses only
+  completed test-body time, and even identical paired timeouts are forced to
+  an incomplete mismatch rather than a false pass.  The focused harness suite
+  is 32/32 after adding phase-reset, setup-timeout, and paired-timeout
+  regressions.
+
+  Phase-aware Bindat evidence in
+  `target/compat/run-1786245510121736000-13871` is exact at 29/29: GNU setup
+  took 0.290 seconds and its test body 0.218 seconds; Emaxx setup took 2.062
+  seconds and its test body 3.180 seconds.  The comparable body ratio is
+  therefore 14.570x, independent of dumped-image/loading cost.  The exact
+  canonical TRAMP selector in
+  `target/compat/run-1786245633469361000-14051` corrects the previous load
+  diagnosis: `tramp-tests.el` loads in 2.753 seconds under Emaxx, then
+  `tramp-test18-file-attributes` exceeds the separate 180.032-second test
+  budget; GNU setup/body are 1.441/6.527 seconds.  Treat this as a selected
+  test-body stall, not a loading timeout.  The fresh 351-file replay used the
+  old combined 120-second budget and exposed additional sandbox-sensitive and
+  censored results, so the ordered prefix is not recertified.  Do not start
+  selector 4,583 until TRAMP and those exact replays are resolved.
 - The 2026-08-09 mutation-safe source-dispatch checkpoint keeps the published
   ordered frontier at 4,582/7,080.  Repeated source-form flattening now uses a
   bounded derived-snapshot cache, and evaluated argument vectors use a bounded

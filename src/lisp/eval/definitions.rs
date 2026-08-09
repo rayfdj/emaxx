@@ -4589,16 +4589,19 @@ impl Interpreter {
                     generic_params.clone().into(),
                     wrapper_body.clone().into(),
                     shared_env(
-                        std::iter::once(vec![
-                            (
-                                previous_symbol.clone(),
-                                Self::stored_value(existing_previous),
-                            ),
-                            (
-                                "__emaxx-qualifier-specializer".into(),
-                                current_stored_specializer.metadata_value(),
-                            ),
-                        ])
+                        std::iter::once(
+                            vec![
+                                (
+                                    previous_symbol.clone(),
+                                    Self::stored_value(existing_previous),
+                                ),
+                                (
+                                    "__emaxx-qualifier-specializer".into(),
+                                    current_stored_specializer.metadata_value(),
+                                ),
+                            ]
+                            .into(),
+                        )
                         .chain(env.iter().cloned())
                         .collect(),
                     ),
@@ -4642,13 +4645,16 @@ impl Interpreter {
                 captured_previous = previous_value;
             }
             let mut closure_env = Vec::with_capacity(env.len() + 1);
-            closure_env.push(vec![
-                (previous_symbol, Self::stored_value(captured_previous)),
-                (
-                    "__emaxx-qualifier-specializer".into(),
-                    current_stored_specializer.metadata_value(),
-                ),
-            ]);
+            closure_env.push(
+                vec![
+                    (previous_symbol, Self::stored_value(captured_previous)),
+                    (
+                        "__emaxx-qualifier-specializer".into(),
+                        current_stored_specializer.metadata_value(),
+                    ),
+                ]
+                .into(),
+            );
             closure_env.extend(env.iter().cloned());
             let wrapper = Value::lambda(
                 generic_params.into(),
@@ -4873,10 +4879,9 @@ impl Interpreter {
                         .unwrap_or(Value::BuiltinFunc("ignore".into())),
                     _ => Value::BuiltinFunc("ignore".into()),
                 };
-                let replacement_env = std::iter::once(vec![(
-                    method_previous_symbol.clone(),
-                    Self::stored_value(old_next),
-                )])
+                let replacement_env = std::iter::once(
+                    vec![(method_previous_symbol.clone(), Self::stored_value(old_next))].into(),
+                )
                 .chain(env.iter().cloned())
                 .collect::<Vec<_>>();
                 let replacement = Value::lambda(
@@ -4935,10 +4940,13 @@ impl Interpreter {
                 Value::list(wrapper_arg_list)
             };
             let method_next = dispatch_previous.clone();
-            let current_method_env = std::iter::once(vec![(
-                method_previous_symbol.clone(),
-                Self::stored_value(method_next),
-            )])
+            let current_method_env = std::iter::once(
+                vec![(
+                    method_previous_symbol.clone(),
+                    Self::stored_value(method_next),
+                )]
+                .into(),
+            )
             .chain(env.iter().cloned())
             .collect::<Vec<_>>();
             let current_method = Value::lambda(
@@ -4992,13 +5000,16 @@ impl Interpreter {
             };
             let wrapper_closure = |previous: Value| {
                 shared_env(
-                    std::iter::once(vec![
-                        (previous_method_symbol.clone(), Self::stored_value(previous)),
-                        (
-                            current_method_symbol.clone(),
-                            Self::stored_value(current_method.clone()),
-                        ),
-                    ])
+                    std::iter::once(
+                        vec![
+                            (previous_method_symbol.clone(), Self::stored_value(previous)),
+                            (
+                                current_method_symbol.clone(),
+                                Self::stored_value(current_method.clone()),
+                            ),
+                        ]
+                        .into(),
+                    )
                     .chain(env.iter().cloned())
                     .collect::<Vec<_>>(),
                 )
@@ -5143,7 +5154,7 @@ impl Interpreter {
                     Value::T,
                 )?;
                 let mut closure_env = env.clone();
-                closure_env.push(vec![(previous_symbol, Self::stored_value(previous))]);
+                closure_env.push(vec![(previous_symbol, Self::stored_value(previous))].into());
                 let wrapper = Value::lambda(params.into(), body.into(), shared_env(closure_env));
                 self.set_function_binding(&method_name, Some(wrapper));
                 Ok(items[1].clone())
@@ -5735,7 +5746,7 @@ impl Interpreter {
         // Each oclosure owns its slot frame (copiers replace slot values
         // per object), so never share the captured env Rc.
         let mut contents = closure_env.borrow().clone();
-        contents.push(frame);
+        contents.push(frame.into());
         let closure_env = shared_env(contents);
         if lexical_closure {
             self.mark_lexical_closure_env(&closure_env);
@@ -5871,7 +5882,7 @@ fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
             {
                 trimmed.push(identity.clone());
             }
-            Some(trimmed)
+            Some(trimmed.into())
         })
         .collect()
 }

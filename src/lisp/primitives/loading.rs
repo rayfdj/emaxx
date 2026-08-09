@@ -145,7 +145,7 @@ pub(crate) fn eval_impl(
             Value::T => (true, false, env.clone()),
             Value::Cons(_) => {
                 let frame = lexical_alist_frame(lexical)?;
-                (true, true, vec![frame])
+                (true, true, vec![frame.into()])
             }
             _ => (true, false, env.clone()),
         };

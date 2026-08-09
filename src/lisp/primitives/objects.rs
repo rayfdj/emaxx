@@ -23,7 +23,9 @@ pub(crate) fn make_advice_wrapper_after(original: Value, advice: Value) -> Value
             ]),
         ]
         .into(),
-        shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
+        shared_env(vec![
+            vec![(original_name, original), (advice_name, advice)].into(),
+        ]),
     )
 }
 
@@ -44,7 +46,9 @@ pub(crate) fn make_advice_wrapper_around(original: Value, advice: Value) -> Valu
             ]),
         ]
         .into(),
-        shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
+        shared_env(vec![
+            vec![(original_name, original), (advice_name, advice)].into(),
+        ]),
     )
 }
 

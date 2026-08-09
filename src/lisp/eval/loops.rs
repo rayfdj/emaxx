@@ -3004,7 +3004,7 @@ impl Interpreter {
     /// frames that happen to bind the same names.
     pub(crate) fn push_marked_frame(env: &mut Env, mut frame: Vec<(String, Value)>) {
         frame.push(Self::fresh_frame_identity());
-        env.push(frame);
+        env.push(frame.into());
     }
 
     // Give FRAME a brand-new identity stamp (replacing any existing one):
