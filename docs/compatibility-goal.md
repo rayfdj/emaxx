@@ -34,6 +34,35 @@ the compact-value interpreter work.
 
 ## Current State
 
+- The 2026-08-09 TRAMP connection-ownership repair keeps the published
+  ordered frontier at 4,582/7,080 while conclusively clearing its canonical
+  TRAMP boundary.  Emaxx's in-process `/mock:' metadata transport had created
+  a commandless pipe solely as a lifecycle token and marked it connected.
+  GNU-owned `tramp-sh.el' later reused that process for
+  `tramp-get-remote-gid', sent `echo are you awake', and waited forever for a
+  shell prompt that the fake endpoint could never produce.  Mock metadata
+  reads now delegate connection establishment to loaded GNU TRAMP, which owns
+  and opens the real interactive shell; the host no longer fabricates a
+  second, protocol-incomplete connection authority.  When TRAMP is not
+  loaded, the in-process metadata operation remains independent of connection
+  state.
+
+  The clean-source canonical run in
+  `target/compat/run-1786247326058943000-22698` is exact: both runners
+  discovered 110 tests, selected exactly 59 with
+  `(not (or (tag :expensive-test) (tag :unstable)))`, and returned all 59
+  outcomes as 52 passes and seven matching skips.  GNU setup/body took
+  1.395/97.018 seconds; Emaxx took 3.301/63.210 seconds, so the complete
+  selected body is 0.651x GNU time and does not trigger the 2x gate.  The
+  exact formerly stalled selector also passed during diagnosis at 1.713x GNU
+  body time.  Focused delegation coverage and the upstream two-case DnD
+  mock-file lifecycle regression pass; temporary process tracing was removed.
+  The complete release gate passes outside the restricted socket sandbox:
+  1,855 library tests, 32 compatibility-harness tests, one performance-harness
+  test, ten CLI tests, and three ERT-runner tests.
+  The prefix still needs exact replays for the previously censored Auto Revert
+  and File Notify files and the sandbox-sensitive ERC/Info Xref results before
+  selector 4,583 begins.
 - The 2026-08-09 shallow lexical-environment checkpoint keeps the published
   ordered frontier at 4,582/7,080 (2,498 selectors left).  Lexical frames are
   now one-pointer, copy-on-write snapshots, while the existing frame-identity
@@ -83,11 +112,12 @@ the compact-value interpreter work.
   `target/compat/run-1786245633469361000-14051` corrects the previous load
   diagnosis: `tramp-tests.el` loads in 2.753 seconds under Emaxx, then
   `tramp-test18-file-attributes` exceeds the separate 180.032-second test
-  budget; GNU setup/body are 1.441/6.527 seconds.  Treat this as a selected
-  test-body stall, not a loading timeout.  The fresh 351-file replay used the
-  old combined 120-second budget and exposed additional sandbox-sensitive and
-  censored results, so the ordered prefix is not recertified.  Do not start
-  selector 4,583 until TRAMP and those exact replays are resolved.
+  budget; GNU setup/body are 1.441/6.527 seconds.  This phase diagnosis led to
+  the connection-ownership repair recorded above.  The fresh 351-file replay
+  used the old combined 120-second budget and exposed additional
+  sandbox-sensitive and censored results, so the ordered prefix is not
+  recertified.  Do not start selector 4,583 until TRAMP and those exact replays
+  are resolved.
 - The 2026-08-09 mutation-safe source-dispatch checkpoint keeps the published
   ordered frontier at 4,582/7,080.  Repeated source-form flattening now uses a
   bounded derived-snapshot cache, and evaluated argument vectors use a bounded

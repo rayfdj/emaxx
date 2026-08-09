@@ -283,71 +283,19 @@ fn ensure_mock_connection(
     if matches!(vector, Value::Nil | Value::T) {
         return Ok(());
     }
-    let process = call_named_function(
-        interp,
-        "tramp-get-process",
-        std::slice::from_ref(vector),
-        env,
-    )?;
-    if call(interp, "process-live-p", &[process], env)?.is_truthy() {
-        return Ok(());
-    }
-
-    // The mock transport performs filesystem operations in-process, but
-    // Tramp still uses a process attached to its connection buffer as the
-    // connection's lifecycle token.  A commandless pipe process supplies
-    // exactly that contract without recursively invoking a real backend.
-    let buffer = call_named_function(
-        interp,
-        "tramp-get-connection-buffer",
-        std::slice::from_ref(vector),
-        env,
-    )?;
-    let mut name = call_named_function(
-        interp,
-        "tramp-get-connection-name",
-        std::slice::from_ref(vector),
-        env,
-    )?;
-    if string_like(&name).is_none() {
-        name = call_named_function(
-            interp,
-            "tramp-buffer-name",
+    // GNU Tramp owns connection setup.  Its mock method opens a real
+    // interactive shell that later GNU Elisp can use for arbitrary backend
+    // commands.  Never synthesize a lifecycle-only process and mark it
+    // connected: `tramp-get-remote-gid', for example, legitimately sends
+    // shell commands through the same endpoint.
+    if let Ok(open_connection) = interp.lookup_function("tramp-maybe-open-connection", env) {
+        interp.call_function_value(
+            open_connection,
+            Some("tramp-maybe-open-connection"),
             std::slice::from_ref(vector),
             env,
         )?;
     }
-    let process = call(
-        interp,
-        "make-pipe-process",
-        &[
-            Value::Symbol(":name".into()),
-            name,
-            Value::Symbol(":buffer".into()),
-            buffer,
-            Value::Symbol(":noquery".into()),
-            Value::T,
-        ],
-        env,
-    )?;
-    call_named_function(
-        interp,
-        "tramp-post-process-creation",
-        &[process.clone(), vector.clone()],
-        env,
-    )?;
-    call_named_function(
-        interp,
-        "tramp-set-connection-property",
-        &[process, Value::String("connected".into()), Value::T],
-        env,
-    )?;
-    call_named_function(
-        interp,
-        "tramp-set-connection-local-variables",
-        std::slice::from_ref(vector),
-        env,
-    )?;
     Ok(())
 }
 

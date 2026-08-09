@@ -3130,34 +3130,24 @@ fn mock_backup_policy_preserves_the_logical_connection_spelling() {
 }
 
 #[test]
-fn mock_remote_metadata_reads_establish_the_connection_lifecycle() {
+fn mock_remote_metadata_reads_delegate_connection_lifecycle_to_loaded_tramp() {
     assert_eq!(
         eval_str(
             r#"(progn
-                 (defvar observed-mock-connection nil)
+                 (defvar opened-mock-connections nil)
                  (defun tramp-dissect-file-name (file) file)
-                 (defun tramp-get-process (_vector)
-                   observed-mock-connection)
-                 (defun tramp-get-connection-buffer (_vector)
-                   (get-buffer-create " *emaxx-mock-connection*"))
-                 (defun tramp-get-connection-name (_vector)
-                   "emaxx-mock-connection")
-                 (defun tramp-post-process-creation (process _vector)
-                   (setq observed-mock-connection process))
-                 (defun tramp-set-connection-property (&rest _args) t)
-                 (defun tramp-set-connection-local-variables (_vector) t)
+                 (defun tramp-maybe-open-connection (vector)
+                   (push vector opened-mock-connections))
                  (let ((tramp-mode t))
                    (file-symlink-p
                     "/mock::/tmp/emaxx-missing-symlink-probe")
-                   (let ((first observed-mock-connection))
-                     (delete-process first)
-                     (file-symlink-p
-                      "/mock::/tmp/emaxx-missing-symlink-probe")
-                     (list (process-live-p first)
-                           (process-live-p observed-mock-connection)
-                           (not (eq first observed-mock-connection))))))"#,
+                   (list (length opened-mock-connections)
+                         (car opened-mock-connections))))"#,
         ),
-        Value::list([Value::Nil, Value::T, Value::T])
+        Value::list([
+            Value::Integer(1),
+            Value::String("/mock::/tmp/emaxx-missing-symlink-probe".into()),
+        ])
     );
 }
 
