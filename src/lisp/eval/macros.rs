@@ -1,5 +1,93 @@
 use super::*;
 
+/// Emaxx-owned bootstrap macro expanders, keyed by one typed registry.
+///
+/// Some of these names also have native evaluation forms. Keeping their
+/// expansion identity here lets the ordinary evaluator decide whether a
+/// cached non-macro call can bypass macro setup without duplicating a string
+/// whitelist beside the expansion implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BuiltinMacroForm {
+    ClCase,
+    ClWithGensyms,
+    Push,
+    Pop,
+    Incf,
+    Decf,
+    Setf,
+    Prog2,
+    ClSymbolMacrolet,
+    ClMacrolet,
+    ErtSimulateKeys,
+    CLangConst,
+    CLangDefconstEvalImmediately,
+    Letrec,
+    ClDefstruct,
+    DefineDerivedMode,
+    NamedLet,
+    WithWrapperHook,
+    SubrWithWrapperHookNoWarnings,
+    WithSelectedFrame,
+}
+
+impl BuiltinMacroForm {
+    fn for_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "cl-case" => Self::ClCase,
+            "cl-with-gensyms" => Self::ClWithGensyms,
+            "push" => Self::Push,
+            "pop" => Self::Pop,
+            "cl-incf" | "incf" => Self::Incf,
+            "cl-decf" | "decf" => Self::Decf,
+            "setf" => Self::Setf,
+            "prog2" => Self::Prog2,
+            "cl-symbol-macrolet" => Self::ClSymbolMacrolet,
+            "cl-macrolet" => Self::ClMacrolet,
+            "ert-simulate-keys" => Self::ErtSimulateKeys,
+            "c-lang-const" => Self::CLangConst,
+            "c-lang-defconst-eval-immediately" => Self::CLangDefconstEvalImmediately,
+            "letrec" => Self::Letrec,
+            "cl-defstruct" => Self::ClDefstruct,
+            "define-derived-mode" => Self::DefineDerivedMode,
+            "named-let" => Self::NamedLet,
+            "with-wrapper-hook" => Self::WithWrapperHook,
+            "subr--with-wrapper-hook-no-warnings" => Self::SubrWithWrapperHookNoWarnings,
+            "with-selected-frame" => Self::WithSelectedFrame,
+            _ => return None,
+        })
+    }
+}
+
+/// Native behavior that must still run even after global lookup has proved a
+/// name is not an ordinary Lisp macro. This is the sole name registry used by
+/// both the fast rejection path and the actual dispatch below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeMacroProbe {
+    Backquote,
+    Pcase,
+    OclosureDefine,
+    OclosureLambda,
+    NeverExpand,
+    Builtin(BuiltinMacroForm),
+}
+
+impl NativeMacroProbe {
+    fn for_name(name: &str) -> Option<Self> {
+        if is_backquote_head(name) {
+            return Some(Self::Backquote);
+        }
+        Some(match name {
+            "pcase" | "pcase-exhaustive" | "pcase-let" | "pcase-let*" | "pcase-dolist" => {
+                Self::Pcase
+            }
+            "oclosure-define" => Self::OclosureDefine,
+            "oclosure-lambda" => Self::OclosureLambda,
+            "cl-defgeneric" | "cl-defmethod" => Self::NeverExpand,
+            _ => Self::Builtin(BuiltinMacroForm::for_name(name)?),
+        })
+    }
+}
+
 fn backquote_splice_elements(interp: &Interpreter, value: Value) -> Result<Vec<Value>, LispError> {
     // Runtime keymaps have identity-bearing host storage but expose GNU's
     // public `(keymap ...)' list shape.  Backquote splicing is a list
@@ -482,6 +570,10 @@ impl Interpreter {
         self.try_macroexpand_with_environment(name, args, None, env)
     }
 
+    pub(super) fn macro_nonexpansion_is_callsite_cacheable(&self, name: &str) -> bool {
+        NativeMacroProbe::for_name(name).is_none()
+    }
+
     /// Invoke a macro-environment expander (from cl-flet/cl-labels/
     /// cl-macrolet and friends) in a fresh environment.  Expanders are
     /// closures over their own captured bindings; running them inside the
@@ -504,29 +596,50 @@ impl Interpreter {
         macro_environment: Option<&Value>,
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
-        let Some(lexical) = self.lambda_capture_override() else {
-            return self.try_macroexpand_with_environment_inner(name, args, macro_environment, env);
-        };
+        let native_probe = NativeMacroProbe::for_name(name);
+        // GNU resolves the function cell first and binds `lexical-binding'
+        // only after that resolution proves the form is a macro call. A
+        // generation-stamped global non-macro verdict gives us the same
+        // answer without buffer-local binding, watcher notification, and
+        // unwind setup on every ordinary interpreted call. An explicit
+        // macro environment and native bootstrap probes must still run.
+        if macro_environment.is_none() && native_probe.is_none() && self.known_not_macro(name) {
+            return Ok(None);
+        }
+        self.try_macroexpand_with_environment_inner(
+            name,
+            args,
+            macro_environment,
+            native_probe,
+            env,
+        )
+    }
 
-        // GNU's evaluator tells macro expanders whether the form being
-        // evaluated is lexical.  This is deliberately narrower than a
-        // binding around the whole form: `(eval FORM t)' does not change
-        // an ordinary reference to `lexical-binding' inside FORM, but a
-        // macro expanding in FORM sees it as non-nil.  Conversely, an
-        // explicit nil lexical environment makes the macro see nil even
-        // when the caller dynamically bound `lexical-binding' to t.
+    /// Run only the macro expander itself with GNU's temporary
+    /// `lexical-binding' value.
+    ///
+    /// GNU resolves and autoloads a function cell before establishing this
+    /// special binding. Restricting the scope likewise keeps ordinary
+    /// non-macro probes free of buffer-local writes and watcher events.
+    fn with_macro_lexical_binding<T>(
+        &mut self,
+        env: &mut Env,
+        operation: impl FnOnce(&mut Self, &mut Env) -> Result<T, LispError>,
+    ) -> Result<T, LispError> {
+        let Some(lexical) = self.lambda_capture_override() else {
+            return operation(self, env);
+        };
         let restore = self.bind_special_variable(
             "lexical-binding",
             if lexical { Value::T } else { Value::Nil },
             env,
         )?;
-        let result =
-            self.try_macroexpand_with_environment_inner(name, args, macro_environment, env);
+        let result = operation(self, env);
         let restore_result = self.restore_special_binding(restore, env);
         match (result, restore_result) {
             (Err(error), _) => Err(error),
             (Ok(_), Err(error)) => Err(error),
-            (Ok(expanded), Ok(())) => Ok(expanded),
+            (Ok(value), Ok(())) => Ok(value),
         }
     }
 
@@ -535,11 +648,14 @@ impl Interpreter {
         name: &str,
         args: &[Value],
         macro_environment: Option<&Value>,
+        native_probe: Option<NativeMacroProbe>,
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
         if let Some(expander) = macro_environment_expander(macro_environment, name) {
             return self
-                .call_macro_environment_expander(expander, name, args)
+                .with_macro_lexical_binding(env, |interp, _env| {
+                    interp.call_macro_environment_expander(expander, name, args)
+                })
                 .map(Some);
         }
 
@@ -548,47 +664,47 @@ impl Interpreter {
         // not recognize, so expanding through it would drop the unquotes).
         // Treat backquote as a special form here; `eval' and
         // `macroexpand-all' both handle it natively.
-        if is_backquote_head(name) {
-            // GNU's `\`' macro expands templates into list/append
-            // constructor code (generator.el's CPS transformer requires
-            // that shape).  Nested backquotes stay opaque.
-            if let Some(template) = args.first() {
-                return Ok(Some(backquote_template_code(template)));
-            }
-            return Ok(None);
-        }
-
-        // The pcase family is evaluated natively UNLESS GNU pcase.el has
-        // been loaded (its macros then own the family; the reader encodes
-        // patterns with the same `\`'/`\,' symbols pcase.el registers).
-        if matches!(
-            name,
-            "pcase" | "pcase-exhaustive" | "pcase-let" | "pcase-let*" | "pcase-dolist"
-        ) {
-            self.ensure_gnu_pcase_loaded();
-            if !self.has_macro_binding(name) {
+        match native_probe {
+            Some(NativeMacroProbe::Backquote) => {
+                // GNU's `\`' macro expands templates into list/append
+                // constructor code (generator.el's CPS transformer requires
+                // that shape). Nested backquotes stay opaque.
+                if let Some(template) = args.first() {
+                    return self.with_macro_lexical_binding(env, |_interp, _env| {
+                        Ok(Some(backquote_template_code(template)))
+                    });
+                }
                 return Ok(None);
             }
-        }
-
-        // GNU oclosure.el signals duplicate-slot errors at macroexpansion
-        // time (oclosure-tests macroexpands invalid forms and expects the
-        // error); the forms themselves stay native special forms.
-        if name == "oclosure-define" {
-            self.validate_oclosure_define_slots(args)?;
-            return Ok(None);
-        }
-        if name == "oclosure-lambda" {
-            validate_oclosure_lambda_slots(args)?;
-            return Ok(None);
-        }
-
-        // These definition forms are Rust-backed bootstrap facades.  If a
-        // client explicitly loads cl-generic.el for its higher-level helpers,
-        // its macro definitions must not lower later forms into a second,
-        // incompatible dispatch engine.
-        if matches!(name, "cl-defgeneric" | "cl-defmethod") {
-            return Ok(None);
+            // The pcase family is evaluated natively UNLESS GNU pcase.el has
+            // been loaded (its macros then own the family; the reader encodes
+            // patterns with the same `\`'/`\,' symbols pcase.el registers).
+            Some(NativeMacroProbe::Pcase) => {
+                self.ensure_gnu_pcase_loaded();
+                if !self.has_macro_binding(name) {
+                    return Ok(None);
+                }
+            }
+            // GNU oclosure.el signals duplicate-slot errors at macroexpansion
+            // time; the forms themselves stay native special forms.
+            Some(NativeMacroProbe::OclosureDefine) => {
+                return self.with_macro_lexical_binding(env, |interp, _env| {
+                    interp.validate_oclosure_define_slots(args)?;
+                    Ok(None)
+                });
+            }
+            Some(NativeMacroProbe::OclosureLambda) => {
+                return self.with_macro_lexical_binding(env, |_interp, _env| {
+                    validate_oclosure_lambda_slots(args)?;
+                    Ok(None)
+                });
+            }
+            // These definition forms are Rust-backed bootstrap facades. If a
+            // client explicitly loads cl-generic.el for its higher-level
+            // helpers, its macro definitions must not lower later forms into
+            // a second, incompatible dispatch engine.
+            Some(NativeMacroProbe::NeverExpand) => return Ok(None),
+            Some(NativeMacroProbe::Builtin(_)) | None => {}
         }
 
         // A cached (and still current) not-a-macro verdict skips the whole
@@ -596,7 +712,9 @@ impl Interpreter {
         // macro, so a global "not a macro" verdict stays correct under any
         // frames; verdicts influenced by frames are never cached.
         if self.known_not_macro(name) {
-            if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
+            if let Some(NativeMacroProbe::Builtin(form)) = native_probe
+                && let Some(expanded) = self.try_builtin_macroexpand_in_context(form, args, env)?
+            {
                 return Ok(Some(expanded));
             }
             return Ok(None);
@@ -604,7 +722,9 @@ impl Interpreter {
 
         let mut attempted_autoload = false;
         let expander = loop {
-            if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
+            if let Some(NativeMacroProbe::Builtin(form)) = native_probe
+                && let Some(expanded) = self.try_builtin_macroexpand_in_context(form, args, env)?
+            {
                 return Ok(Some(expanded));
             }
 
@@ -612,7 +732,9 @@ impl Interpreter {
             // nadvice fsets advised macros (and advised macro ALIASES) that
             // way, so the cell wins over the native macro table.
             if let Some(expander) = self.function_cell_macro_expander(name, env) {
-                let expanded = self.call_function_value(expander, Some(name), args, env)?;
+                let expanded = self.with_macro_lexical_binding(env, |interp, env| {
+                    interp.call_function_value(expander, Some(name), args, env)
+                })?;
                 return Ok(Some(expanded));
             }
 
@@ -671,7 +793,9 @@ impl Interpreter {
         } else {
             expander
         };
-        let expanded = self.call_function_value(expander, Some(name), args, env)?;
+        let expanded = self.with_macro_lexical_binding(env, |interp, env| {
+            interp.call_function_value(expander, Some(name), args, env)
+        })?;
         Ok(Some(expanded))
     }
 
@@ -1204,21 +1328,41 @@ impl Interpreter {
         Ok(Value::list(expanded))
     }
 
-    pub(super) fn try_builtin_macroexpand(
+    fn builtin_macroexpand_enabled(&self, form: BuiltinMacroForm) -> bool {
+        match form {
+            BuiltinMacroForm::ClCase => !self.has_lisp_macro("cl-case"),
+            BuiltinMacroForm::Letrec => !self.has_lisp_macro("letrec"),
+            _ => true,
+        }
+    }
+
+    pub(super) fn try_builtin_macroexpand_in_context(
         &mut self,
-        name: &str,
+        form: BuiltinMacroForm,
         args: &[Value],
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
-        match name {
-            "cl-case" if !self.has_lisp_macro("cl-case") => {
-                self.expand_cl_case(args, env).map(Some)
-            }
-            "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
+        if !self.builtin_macroexpand_enabled(form) {
+            return Ok(None);
+        }
+        self.with_macro_lexical_binding(env, |interp, env| {
+            interp.try_builtin_macroexpand(form, args, env)
+        })
+    }
+
+    fn try_builtin_macroexpand(
+        &mut self,
+        form: BuiltinMacroForm,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Option<Value>, LispError> {
+        match form {
+            BuiltinMacroForm::ClCase => self.expand_cl_case(args, env).map(Some),
+            BuiltinMacroForm::ClWithGensyms => self.expand_cl_with_gensyms(args, env).map(Some),
             // GNU push/pop/cl-incf/cl-decf are macros; expand them for
             // macroexpand-all consumers (generator.el's CPS transformer)
             // while normal evaluation keeps hitting the native forms.
-            "push" if args.len() == 2 => {
+            BuiltinMacroForm::Push if args.len() == 2 => {
                 let value = args[0].clone();
                 let place = args[1].clone();
                 let setter = if matches!(place, Value::Symbol(_)) {
@@ -1232,7 +1376,7 @@ impl Interpreter {
                     Value::list([Value::Symbol("cons".into()), value, place]),
                 ])))
             }
-            "pop" if args.len() == 1 => {
+            BuiltinMacroForm::Pop if args.len() == 1 => {
                 let place = args[0].clone();
                 let setter = if matches!(place, Value::Symbol(_)) {
                     "setq"
@@ -1249,10 +1393,16 @@ impl Interpreter {
                     ]),
                 ])))
             }
-            "cl-incf" | "incf" | "cl-decf" | "decf" if !args.is_empty() && args.len() <= 2 => {
+            BuiltinMacroForm::Incf | BuiltinMacroForm::Decf
+                if !args.is_empty() && args.len() <= 2 =>
+            {
                 let place = args[0].clone();
                 let delta = args.get(1).cloned().unwrap_or(Value::Integer(1));
-                let operator = if name.ends_with("incf") { "+" } else { "-" };
+                let operator = if form == BuiltinMacroForm::Incf {
+                    "+"
+                } else {
+                    "-"
+                };
                 let setter = if matches!(place, Value::Symbol(_)) {
                     "setq"
                 } else {
@@ -1266,7 +1416,7 @@ impl Interpreter {
             }
             // GNU setf is a macro; with plain symbol places it expands to
             // setq (the CPS transformer only understands the expansion).
-            "setf"
+            BuiltinMacroForm::Setf
                 if !args.is_empty()
                     && args.len().is_multiple_of(2)
                     && args
@@ -1280,7 +1430,7 @@ impl Interpreter {
             }
             // prog2 reaches generator.el's CPS transformer, which only
             // understands progn/prog1; give it the equivalent expansion.
-            "prog2" if args.len() >= 2 => {
+            BuiltinMacroForm::Prog2 if args.len() >= 2 => {
                 let mut prog1_form = vec![Value::Symbol("prog1".into())];
                 prog1_form.extend(args[1..].iter().cloned());
                 Ok(Some(Value::list([
@@ -1292,7 +1442,7 @@ impl Interpreter {
             // GNU cl-symbol-macrolet substitutes variable references in
             // the body during macroexpansion (generator.el's variable
             // renaming builds on it).
-            "cl-symbol-macrolet" if args.len() >= 2 => {
+            BuiltinMacroForm::ClSymbolMacrolet if args.len() >= 2 => {
                 let mut substitutions = Vec::new();
                 for binding in args[0].to_vec().unwrap_or_default() {
                     let parts = binding.to_vec().unwrap_or_default();
@@ -1337,7 +1487,7 @@ impl Interpreter {
             // GNU cl-macrolet is a macro: its expansion is the body,
             // macroexpanded with the local macros in effect (generator.el's
             // CPS transformer relies on `macroexpand' doing this).
-            "cl-macrolet" if args.len() >= 2 => {
+            BuiltinMacroForm::ClMacrolet if args.len() >= 2 => {
                 let local_macros = self.parse_cl_macrolet_bindings(&args[0], env)?;
                 let (local_start, local_count) = self.push_local_macros(&local_macros);
                 let mut forms = vec![Value::Symbol("progn".into())];
@@ -1357,13 +1507,13 @@ impl Interpreter {
                 }
                 Ok(Some(Value::list(forms)))
             }
-            "ert-simulate-keys" => self.expand_ert_simulate_keys(args).map(Some),
-            "c-lang-const" => self.expand_c_lang_const(args, env).map(Some),
-            "c-lang-defconst-eval-immediately" => self
+            BuiltinMacroForm::ErtSimulateKeys => self.expand_ert_simulate_keys(args).map(Some),
+            BuiltinMacroForm::CLangConst => self.expand_c_lang_const(args, env).map(Some),
+            BuiltinMacroForm::CLangDefconstEvalImmediately => self
                 .expand_c_lang_defconst_eval_immediately(args, env)
                 .map(Some),
-            "letrec" if !self.has_lisp_macro("letrec") => self.expand_letrec(args).map(Some),
-            "cl-defstruct" => {
+            BuiltinMacroForm::Letrec => self.expand_letrec(args).map(Some),
+            BuiltinMacroForm::ClDefstruct => {
                 // GNU cl-defstruct signals at expansion time when the name
                 // fails cl--struct-name-p (nil, keyword, or built-in type).
                 let struct_name = args.first().and_then(|spec| match spec {
@@ -1392,7 +1542,7 @@ impl Interpreter {
                 // GNU-shaped stubs ahead of the native definer.
                 Ok(Some(Self::cl_defstruct_expansion_with_stubs(args)))
             }
-            "define-derived-mode" => {
+            BuiltinMacroForm::DefineDerivedMode => {
                 // Same shape rationale as cl-defstruct: GNU's expansion
                 // carries the mode function `defalias' and the
                 // MODE-hook/-map/-syntax-table `defvar's that find-func's
@@ -1427,12 +1577,12 @@ impl Interpreter {
                 ));
                 Ok(Some(Value::list(forms)))
             }
-            "named-let" => self.expand_named_let(args).map(Some),
-            "with-wrapper-hook" => self.expand_with_wrapper_hook(args).map(Some),
-            "subr--with-wrapper-hook-no-warnings" => {
+            BuiltinMacroForm::NamedLet => self.expand_named_let(args).map(Some),
+            BuiltinMacroForm::WithWrapperHook => self.expand_with_wrapper_hook(args).map(Some),
+            BuiltinMacroForm::SubrWithWrapperHookNoWarnings => {
                 self.expand_subr_with_wrapper_hook(args).map(Some)
             }
-            "with-selected-frame" => {
+            BuiltinMacroForm::WithSelectedFrame => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(
                         "with-selected-frame".into(),

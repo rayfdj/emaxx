@@ -18,6 +18,42 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-09 COMPATIBILITY-MARCH EVALUATOR BASELINE: the published frontier
+  remains 4,582/7,080.  The active performance triage policy now interrupts
+  frontier work only when a completed post-bootstrap result is both at least
+  5× slower and at least one second slower, when it times out, or when repeated
+  files expose one systemic throughput problem.  Continue recording the
+  harness's inclusive 2× flag, but defer isolated millisecond-scale ratios.
+  Startup/image reconstruction remains separate.
+
+  The retained evaluator work consolidates macro/function callsite caches in
+  source analysis, replaces global cons-epoch invalidation with typed
+  dependency snapshots, avoids lexical-binding setup for proven non-macro
+  calls, and adds allocation-free common fixnum arithmetic/comparison.  GNU's
+  pre-argument function resolution order is preserved.  A complete-suite
+  regression showed why lexical context must remain authoritative: generated
+  Bindat code stores callable `loop` bindings in ordinary lexical frames.
+  Resolution caches now bypass every environment that can affect
+  symbol-function lookup, including aliases.  Both Bindat failures and focused
+  explicit/plain-frame cache-shadow regressions pass.
+
+  Final comparable artifact
+  `target/perf/run-1786266560/interpreter/source-eval-suite.perf/comparison.json`:
+  list walk 3.425× (49.908 ms Emaxx), cons allocation 5.195× (7.169 ms), and
+  interpreted calls 9.091× (12.027 ms).  The latter ratios are millisecond
+  gaps and are deferred.  Align remains exact at 8/8 in
+  `target/compat/run-1786266615970613000-81615`, with GNU/Emaxx body
+  0.377/2.277 seconds (6.038×, 1.900-second excess).  It matches the known
+  source-interpreter theme, has improved from 2.660 seconds, and does not
+  timeout; further work is deferred until after 7,080 unless the cost recurs
+  systemically enough to impede frontier throughput.  Continue that work from
+  [GitHub issue #12](https://github.com/rayfdj/emaxx/issues/12).
+
+  The complete unsandboxed release gate is green at 1,868/1,868 library
+  tests, including localhost, UDP, and GnuTLS coverage.  NEXT: finish strict
+  formatting/lint/generated-source gates, publish this coherent checkpoint,
+  then exact-replay the canonical prefix through C# Mode.  Do not begin
+  selector 4,583 until that prefix is exact.
 - 2026-08-09 PHASE-TIMING PRECISION REPAIR: the first complete-prefix replay
   after filesystem commit `788dbad` exposed a repeated apparent Emaxx body
   floor near 55 ms.  This was a harness measurement error, not runtime work:

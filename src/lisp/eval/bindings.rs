@@ -808,13 +808,20 @@ impl Interpreter {
         self.functions_index.contains_key(name)
     }
 
-    /// Whether ENV carries any cl-flet/cl-labels function-binding frame —
-    /// the only frames that can shadow a builtin's function cell.
-    pub(crate) fn env_has_function_binding_frames(env: &Env) -> bool {
+    /// Whether local state can change symbol-function resolution.
+    ///
+    /// cl-flet/cl-labels frames are explicit, but this interpreter also
+    /// represents some generated local functions as callable values in an
+    /// ordinary lexical frame.  Symbol aliases can reach either kind, so a
+    /// global resolution cache is safe only when neither is present.
+    pub(crate) fn env_may_affect_function_resolution(env: &Env) -> bool {
         env.iter().any(|frame| {
-            frame
-                .first()
-                .is_some_and(|(key, _)| key == FUNCTION_FRAME_MARKER)
+            let marker = frame.first().map(|(key, _)| key.as_str());
+            marker == Some(FUNCTION_FRAME_MARKER)
+                || (marker != Some(crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+                    && frame.iter().any(|(_, value)| {
+                        matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
+                    }))
         })
     }
 
@@ -1078,35 +1085,51 @@ impl Interpreter {
         self.not_macro_names.insert(name.to_string(), generation);
     }
 
-    /// A still-current cached expansion for FORM (keyed by its car cell
-    /// identity — the entry pins the form so the address can't be reused).
-    pub(crate) fn cached_macro_expansion(&self, form: &Value, lexical: bool) -> Option<Value> {
-        let (car, _) = form.cons_cells()?;
-        let key = (car.cell_id(), lexical);
-        let cached = self.macro_expansion_cache.get(&key)?.current()?;
-        (cached.definition_generation == self.definition_generation)
-            .then(|| cached.expansion.clone())
+    pub(super) fn source_call_known_not_macro(
+        &self,
+        cache: &Rc<RefCell<SourceMacroCallCache>>,
+    ) -> bool {
+        cache.borrow().not_macro_generation == Some(self.definition_generation)
     }
 
-    /// Cache FORM's macro expansion at the current definition generation.
-    pub(crate) fn cache_macro_expansion(&mut self, form: &Value, lexical: bool, expanded: Value) {
-        let Some((car, _)) = (form).cons_cells() else {
-            return;
-        };
-        let key = (car.cell_id(), lexical);
-        // A runaway cache would pin unbounded transient forms; the cap is
-        // far above any real load (function bodies are finite).
-        if self.macro_expansion_cache.len() >= (1 << 20) {
-            self.macro_expansion_cache.clear();
-        }
-        self.macro_expansion_cache.insert(
-            key,
-            ConsMutationStamped::new(MacroExpansionCacheEntry {
-                definition_generation: self.definition_generation,
-                expansion: expanded,
-                _source: form.clone(),
-            }),
-        );
+    pub(super) fn cached_source_macro_expansion(
+        &self,
+        cache: &Rc<RefCell<SourceMacroCallCache>>,
+        lexical: bool,
+    ) -> Option<Value> {
+        let cache = cache.borrow();
+        let cached = cache.expansions[usize::from(lexical)].as_ref()?;
+        (cached.definition_generation == self.definition_generation
+            && cached.mutations.is_current())
+        .then(|| cached.expansion.clone())
+    }
+
+    pub(super) fn cache_source_not_macro(&self, cache: &Rc<RefCell<SourceMacroCallCache>>) {
+        let mut cache = cache.borrow_mut();
+        cache.not_macro_generation = Some(self.definition_generation);
+        cache.expansions = [None, None];
+    }
+
+    pub(super) fn cache_source_macro_expansion(
+        &self,
+        cache: &Rc<RefCell<SourceMacroCallCache>>,
+        form: &Value,
+        lexical: bool,
+        expansion: Value,
+    ) {
+        // Both syntax graphs are authorities for this derived entry.  Macro
+        // execution may destructively rewrite a freshly produced expansion
+        // even when the original call form stays untouched; reusing that
+        // rewritten graph on the next evaluation would be stale.
+        let mut mutations = crate::lisp::types::ConsMutationSnapshot::tree(form);
+        mutations.include_tree(&expansion);
+        let mut cache = cache.borrow_mut();
+        cache.not_macro_generation = None;
+        cache.expansions[usize::from(lexical)] = Some(SourceMacroExpansionCacheEntry {
+            definition_generation: self.definition_generation,
+            expansion,
+            mutations,
+        });
     }
 
     /// Append cl-macrolet-style local macros to the positional table,

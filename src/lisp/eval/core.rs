@@ -1,5 +1,5 @@
 use super::*;
-use crate::lisp::types::SharedEnv;
+use crate::lisp::types::{SharedEnv, SymbolName};
 
 fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
     matches!(record.slots.get(2), Some(Value::Symbol(symbol)) if symbol == "dynamic-binding")
@@ -45,6 +45,44 @@ thread_local! {
 /// guarantees that every path clears the vector before recycling its storage,
 /// without making the evaluator's control flow responsible for pool hygiene.
 struct EvalValueBuffer(Vec<Value>);
+
+/// The Lisp identity of a named call when the caller still has it.
+///
+/// Source evaluation starts from an interned `SymbolName`; preserving that
+/// handle through dispatch avoids allocating and re-interning the same name
+/// merely to expose it in a backtrace.  Native callers that only have text
+/// can retain the existing API without manufacturing a symbol eagerly.
+#[derive(Clone, Copy, Debug)]
+enum CallName<'a> {
+    Symbol(&'a SymbolName),
+    Text(&'a str),
+}
+
+impl<'a> CallName<'a> {
+    fn as_str(self) -> &'a str {
+        match self {
+            Self::Symbol(name) => name.as_str(),
+            Self::Text(name) => name,
+        }
+    }
+
+    fn symbol_value(self, resolved_name: &SymbolName) -> Value {
+        match self {
+            Self::Symbol(name) => Value::Symbol(name.clone()),
+            Self::Text(name) if name == resolved_name.as_str() => {
+                Value::Symbol(resolved_name.clone())
+            }
+            Self::Text(name) => Value::Symbol(name.into()),
+        }
+    }
+
+    fn original_symbol_value(self) -> Value {
+        match self {
+            Self::Symbol(name) => Value::Symbol(name.clone()),
+            Self::Text(name) => Value::Symbol(name.into()),
+        }
+    }
+}
 
 impl EvalValueBuffer {
     fn take() -> Self {
@@ -379,6 +417,11 @@ impl Interpreter {
         }
 
         let items = Rc::new(source.to_vec()?);
+        // Flattening and head classification depend on this list's spine,
+        // not on every mutable cons in the process.  `if' additionally
+        // caches a bounded recursive property of its test form, so include
+        // that subtree in the same validity snapshot.
+        let mut mutations = crate::lisp::types::ConsMutationSnapshot::list_spine(source);
         let mut native_form = None;
         let mut literal_kind = SourceLiteralKind::None;
         let mut if_test_mentions_setcdr = false;
@@ -398,6 +441,9 @@ impl Interpreter {
                 if_test_mentions_setcdr = items
                     .get(1)
                     .is_some_and(|test| form_mentions_setcdr(test, &mut scan_budget));
+                if let Some(test) = items.get(1) {
+                    mutations.include_tree(test);
+                }
             }
         }
         let analysis = SourceFormAnalysis {
@@ -405,16 +451,21 @@ impl Interpreter {
             native_form,
             literal_kind,
             if_test_mentions_setcdr,
+            macro_calls: Rc::new(RefCell::new(SourceMacroCallCache::default())),
+            function_call: Rc::new(RefCell::new(None)),
         };
         if self.source_form_items_cache.len() >= SOURCE_FORM_ITEMS_CACHE_LIMIT {
             self.source_form_items_cache.clear();
         }
         self.source_form_items_cache.insert(
             source_id,
-            ConsMutationStamped::new(SourceFormCacheEntry {
-                source: source_anchor.downgrade(),
-                analysis: analysis.clone(),
-            }),
+            ConsMutationStamped::new(
+                mutations,
+                SourceFormCacheEntry {
+                    source: source_anchor.downgrade(),
+                    analysis: analysis.clone(),
+                },
+            ),
         );
         Ok(analysis)
     }
@@ -483,6 +534,8 @@ impl Interpreter {
                     native_form,
                     literal_kind,
                     if_test_mentions_setcdr,
+                    macro_calls,
+                    function_call,
                 } = self.source_form_analysis(expr)?;
                 if items.is_empty() {
                     return Ok(Value::Nil);
@@ -1180,22 +1233,34 @@ impl Interpreter {
                 // code expands each macro call exactly once, and per-eval
                 // re-expansion (pcase/rx/when-let machinery) dominated
                 // interpreted hot loops.
-                if let Value::Symbol(name) = &items[0] {
+                if let Value::Symbol(name) = &items[0]
+                    && !self.source_call_known_not_macro(&macro_calls)
+                {
                     let lexical = self.lambda_capture_override().unwrap_or_else(|| {
                         self.lookup_var("lexical-binding", env)
                             .is_some_and(|value| value.is_truthy())
                     });
-                    if let Some(expanded) = self.cached_macro_expansion(expr, lexical) {
+                    if let Some(expanded) =
+                        self.cached_source_macro_expansion(&macro_calls, lexical)
+                    {
                         return self.eval(&expanded, env);
                     }
                     if let Some(expanded) = self.try_macroexpand(name, &items[1..], env)? {
-                        self.cache_macro_expansion(expr, lexical, expanded.clone());
+                        self.cache_source_macro_expansion(
+                            &macro_calls,
+                            expr,
+                            lexical,
+                            expanded.clone(),
+                        );
                         return self.eval(&expanded, env);
+                    }
+                    if self.macro_nonexpansion_is_callsite_cacheable(name) {
+                        self.cache_source_not_macro(&macro_calls);
                     }
                 }
 
                 // Regular function call
-                self.eval_call(expr, &items, env)
+                self.eval_call(expr, &items, &function_call, env)
             }
         }
     }
@@ -1204,12 +1269,17 @@ impl Interpreter {
         &mut self,
         source_form: &Value,
         items: &[Value],
+        source_resolution: &Rc<RefCell<Option<SourceFunctionCallCacheEntry>>>,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let func = if let Value::Symbol(name) = &items[0] {
-            self.lookup_function(name, env)?
+        // GNU resolves the function cell before evaluating any argument.
+        // Keep that observable ordering while retaining a direct native
+        // verdict instead of materializing `BuiltinFunc' and throwing away
+        // the name-facts cache on every ordinary source call.
+        let prepared = if let Value::Symbol(name) = &items[0] {
+            self.resolve_source_symbol_call(name, env, source_resolution)?
         } else {
-            self.eval(&items[0], env)?
+            FunctionResolution::Resolved(self.eval(&items[0], env)?)
         };
         // While the arguments evaluate, the call is visible in backtraces as
         // an in-progress frame with its unevaluated argument forms, the way
@@ -1235,17 +1305,36 @@ impl Interpreter {
         if let Some(error) = arg_error {
             return Err(error);
         }
-        let original_name = match &items[0] {
-            Value::Symbol(name) => Some(name.as_str()),
-            _ => None,
-        };
-        self.call_function_value(func, original_name, &args, env)
+        match (&items[0], prepared) {
+            (Value::Symbol(name), FunctionResolution::DirectBuiltin(facts)) => {
+                self.dispatch_named_builtin(name, facts, Some(CallName::Symbol(name)), &args, env)
+            }
+            (Value::Symbol(name), FunctionResolution::Resolved(func)) => {
+                self.call_function_value_named(func, Some(CallName::Symbol(name)), &args, env)
+            }
+            (_, FunctionResolution::Resolved(func)) => {
+                self.call_function_value_named(func, None, &args, env)
+            }
+            (_, FunctionResolution::DirectBuiltin(_)) => {
+                unreachable!("only a symbol callee can have a direct native verdict")
+            }
+        }
     }
 
     pub fn call_function_value(
         &mut self,
         func: Value,
         original_name: Option<&str>,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.call_function_value_named(func, original_name.map(CallName::Text), args, env)
+    }
+
+    fn call_function_value_named(
+        &mut self,
+        func: Value,
+        original_name: Option<CallName<'_>>,
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
@@ -1258,10 +1347,87 @@ impl Interpreter {
             let started = std::time::Instant::now();
             profile_enter();
             let result = self.call_function_value_inner(func, original_name, args, env);
-            profile_leave(original_name, started.elapsed(), path);
+            profile_leave(original_name.map(CallName::as_str), started.elapsed(), path);
             return result;
         }
         self.call_function_value_inner(func, original_name, args, env)
+    }
+
+    /// Resolve a symbol function cell once, before argument evaluation.
+    ///
+    /// This is the single authority used by both ordinary source calls and
+    /// `funcall' of a symbol.  Global verdicts are generation-stamped; local
+    /// function-binding frames always take the uncached lookup path.
+    fn resolve_symbol_call(
+        &mut self,
+        name: &SymbolName,
+        env: &Env,
+    ) -> Result<FunctionResolution, LispError> {
+        let local_context = Self::env_may_affect_function_resolution(env);
+        self.resolve_symbol_call_with_frame_state(name, env, local_context)
+    }
+
+    /// Resolve an ordinary source call through its callsite-local verdict.
+    /// Symbolic `funcall' retains the global name cache above; both paths use
+    /// the same generation and uncached resolution authority below.
+    fn resolve_source_symbol_call(
+        &mut self,
+        name: &SymbolName,
+        env: &Env,
+        source_resolution: &Rc<RefCell<Option<SourceFunctionCallCacheEntry>>>,
+    ) -> Result<FunctionResolution, LispError> {
+        let local_context = Self::env_may_affect_function_resolution(env);
+        if !local_context
+            && let Some(cached) = source_resolution.borrow().as_ref()
+            && cached.definition_generation == self.definition_generation
+        {
+            return Ok(cached.resolution.clone());
+        }
+
+        let resolution = self.resolve_symbol_call_with_frame_state(name, env, local_context)?;
+        if !local_context {
+            *source_resolution.borrow_mut() = Some(SourceFunctionCallCacheEntry {
+                definition_generation: self.definition_generation,
+                resolution: resolution.clone(),
+            });
+        }
+        Ok(resolution)
+    }
+
+    fn resolve_symbol_call_with_frame_state(
+        &mut self,
+        name: &SymbolName,
+        env: &Env,
+        local_context: bool,
+    ) -> Result<FunctionResolution, LispError> {
+        if !local_context
+            && let Some((generation, resolution)) =
+                self.function_resolution_cache.get(name.as_str())
+            && *generation == self.definition_generation
+        {
+            return Ok(resolution.clone());
+        }
+
+        let facts = crate::lisp::primitives::name_facts(name);
+        let resolution = if name != "selected-window"
+            && (facts.prefer_override
+                || (facts.builtin
+                    && !facts.special_form
+                    && !facts.autoloadable
+                    && !self.function_index_has(name)))
+            && !local_context
+        {
+            FunctionResolution::DirectBuiltin(facts)
+        } else {
+            FunctionResolution::Resolved(self.lookup_function(name, env)?)
+        };
+        if !local_context {
+            self.function_resolution_cache.insert(
+                name.to_string(),
+                (self.definition_generation, resolution.clone()),
+            );
+        }
+        Ok(resolution)
     }
 
     /// The BuiltinFunc arm of `call_function_value_inner' for a callee
@@ -1269,17 +1435,21 @@ impl Interpreter {
     /// already-fetched facts, handler mapping.
     fn dispatch_named_builtin(
         &mut self,
-        name: &str,
+        name: &SymbolName,
         facts: crate::lisp::primitives::NameFacts,
-        original_name: Option<&str>,
+        original_name: Option<CallName<'_>>,
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let backtrace_function = original_name
-            .map(|name| Value::Symbol(name.to_string().into()))
-            .unwrap_or_else(|| Value::Symbol(name.to_string().into()));
+            .map(|original| original.symbol_value(name))
+            .unwrap_or_else(|| Value::Symbol(name.clone()));
         self.push_backtrace_frame(backtrace_function, args);
-        self.capture_current_backtrace_context(original_name.or(Some(name)), env, None);
+        self.capture_current_backtrace_context(
+            Some(original_name.map_or(name.as_str(), CallName::as_str)),
+            env,
+            None,
+        );
         let result = match primitives::call_with_facts(self, name, facts, args, env) {
             Ok(value) => Ok(value),
             Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
@@ -1292,7 +1462,7 @@ impl Interpreter {
     fn call_function_value_inner(
         &mut self,
         func: Value,
-        original_name: Option<&str>,
+        original_name: Option<CallName<'_>>,
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
@@ -1307,83 +1477,24 @@ impl Interpreter {
         {
             return crate::lisp::bytecode::vm::execute_record(self, *id, args, env);
         }
-        let mut owned_name: Option<String> = None;
+        let mut owned_name: Option<SymbolName> = None;
         let func = match func {
             Value::Symbol(name) => {
-                // With no cl-flet/cl-labels frame in scope, a symbol's
-                // resolution depends only on global state, so a verdict
-                // stamped with the current definition generation replays
-                // without any facts probe or function-cell lookup.
-                let frames_present = Self::env_has_function_binding_frames(env);
-                if !frames_present
-                    && let Some((generation, resolution)) =
-                        self.function_resolution_cache.get(name.as_str())
-                    && *generation == self.definition_generation
-                {
-                    match resolution {
-                        FunctionResolution::DirectBuiltin(facts) => {
-                            let facts = *facts;
-                            return self.dispatch_named_builtin(
-                                &name,
-                                facts,
-                                original_name,
-                                args,
-                                env,
-                            );
-                        }
-                        FunctionResolution::Resolved(value) => {
-                            let resolved = value.clone();
-                            if original_name.is_none() {
-                                owned_name = Some(name.to_string());
-                            }
-                            resolved
-                        }
+                let resolution = self.resolve_symbol_call(&name, env)?;
+                if original_name.is_none() {
+                    owned_name = Some(name.clone());
+                }
+                match resolution {
+                    FunctionResolution::DirectBuiltin(facts) => {
+                        let call_name = original_name.or(Some(CallName::Symbol(&name)));
+                        return self.dispatch_named_builtin(&name, facts, call_name, args, env);
                     }
-                } else {
-                    // Direct builtin route: when function lookup would
-                    // resolve NAME to Value::BuiltinFunc(NAME) — a native
-                    // binding with no user redefinition, no autoload entry,
-                    // and no cl-flet/cl-labels frame shadowing it —
-                    // dispatch by name without materializing that value.
-                    // `selected-window' and pure special forms keep their
-                    // dedicated arms below.
-                    let facts = crate::lisp::primitives::name_facts(&name);
-                    if name != "selected-window"
-                        && (facts.prefer_override
-                            || (facts.builtin
-                                && !facts.special_form
-                                && !facts.autoloadable
-                                && !self.function_index_has(&name)))
-                        && !frames_present
-                    {
-                        self.function_resolution_cache.insert(
-                            name.to_string(),
-                            (
-                                self.definition_generation,
-                                FunctionResolution::DirectBuiltin(facts),
-                            ),
-                        );
-                        return self.dispatch_named_builtin(&name, facts, original_name, args, env);
-                    }
-                    let resolved = self.lookup_function(&name, env)?;
-                    if !frames_present {
-                        self.function_resolution_cache.insert(
-                            name.to_string(),
-                            (
-                                self.definition_generation,
-                                FunctionResolution::Resolved(resolved.clone()),
-                            ),
-                        );
-                    }
-                    if original_name.is_none() {
-                        owned_name = Some(name.to_string());
-                    }
-                    resolved
+                    FunctionResolution::Resolved(value) => value,
                 }
             }
             other => other,
         };
-        let original_name = original_name.or(owned_name.as_deref());
+        let original_name = original_name.or_else(|| owned_name.as_ref().map(CallName::Symbol));
         let func = match func {
             Value::Cons(_) => {
                 let func = if is_lambda_form(&func) {
@@ -1392,7 +1503,7 @@ impl Interpreter {
                     func
                 };
                 if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
-                    let Some(name) = original_name else {
+                    let Some(name) = original_name.map(CallName::as_str) else {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("invalid-function".into()),
                             func,
@@ -1426,10 +1537,14 @@ impl Interpreter {
             }
             Value::BuiltinFunc(ref name) => {
                 let backtrace_function = original_name
-                    .map(|name| Value::Symbol(name.to_string().into()))
+                    .map(|original| original.symbol_value(name))
                     .unwrap_or_else(|| Value::Symbol(name.clone()));
                 self.push_backtrace_frame(backtrace_function, args);
-                self.capture_current_backtrace_context(original_name, env, None);
+                self.capture_current_backtrace_context(
+                    original_name.map(CallName::as_str),
+                    env,
+                    None,
+                );
                 let result = match primitives::call(self, name, args, env) {
                     Ok(value) => Ok(value),
                     Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
@@ -1470,11 +1585,11 @@ impl Interpreter {
                 };
                 if uses_dynamic_binding {
                     self.push_lambda_capture_override(false);
-                    let result = self.call_function_value(inner, original_name, args, env);
+                    let result = self.call_function_value_named(inner, original_name, args, env);
                     self.pop_lambda_capture_override();
                     result
                 } else {
-                    self.call_function_value(inner, original_name, args, env)
+                    self.call_function_value_named(inner, original_name, args, env)
                 }
             }
             Value::Lambda(ref lambda) => {
@@ -1560,7 +1675,7 @@ impl Interpreter {
                     }
                 }
                 let backtrace_function = original_name
-                    .map(|name| Value::Symbol(name.to_string().into()))
+                    .map(CallName::original_symbol_value)
                     .unwrap_or_else(|| func.clone());
                 self.push_backtrace_frame_with_locals(
                     backtrace_function,
@@ -1569,7 +1684,11 @@ impl Interpreter {
                     true,
                 );
                 frame.push(Self::fresh_frame_identity());
-                self.capture_current_backtrace_context(original_name, env, Some(&frame));
+                self.capture_current_backtrace_context(
+                    original_name.map(CallName::as_str),
+                    env,
+                    Some(&frame),
+                );
                 // An empty lexical capture is still a scope boundary.  Keep
                 // that fact as closure metadata instead of an artificial
                 // environment binding, since instrumentation and capture

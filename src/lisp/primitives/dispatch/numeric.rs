@@ -9,6 +9,31 @@ fn has_big_integer(args: &[Value]) -> bool {
         .any(|value| matches!(value, Value::BigInteger(_)))
 }
 
+/// Fold ordinary integers and markers without allocating a `BigInt`.
+///
+/// `None` means an operand is already a bignum or the checked operation
+/// overflowed, in which case the caller restarts through the exact bignum
+/// path. Type errors are reported immediately and identically on both paths.
+#[inline]
+fn checked_integer_fold(
+    interp: &Interpreter,
+    args: &[Value],
+    mut accumulator: i64,
+    mut operation: impl FnMut(i64, i64) -> Option<i64>,
+) -> Result<Option<i64>, LispError> {
+    for arg in args {
+        if matches!(arg, Value::BigInteger(_)) {
+            return Ok(None);
+        }
+        let operand = integer_like_i64(interp, arg)?;
+        let Some(result) = operation(accumulator, operand) else {
+            return Ok(None);
+        };
+        accumulator = result;
+    }
+    Ok(Some(accumulator))
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -25,6 +50,8 @@ define_dispatch!(
                         sum += numeric_to_f64(interp, a)?;
                     }
                     Ok(Value::Float(sum))
+                } else if let Some(sum) = checked_integer_fold(interp, args, 0, i64::checked_add)? {
+                    Ok(Value::Integer(sum))
                 } else {
                     let mut sum = BigInt::zero();
                     for a in args {
@@ -48,9 +75,23 @@ define_dispatch!(
                     Ok(Value::Float(result))
                 } else {
                     if args.len() == 1 {
+                        if !matches!(args[0], Value::BigInteger(_)) {
+                            let value = integer_like_i64(interp, &args[0])?;
+                            if let Some(result) = value.checked_neg() {
+                                return Ok(Value::Integer(result));
+                            }
+                        }
                         return Ok(normalize_bigint_value(-integer_like_bigint(
                             interp, &args[0],
                         )?));
+                    }
+                    if !matches!(args[0], Value::BigInteger(_)) {
+                        let first = integer_like_i64(interp, &args[0])?;
+                        if let Some(result) =
+                            checked_integer_fold(interp, &args[1..], first, i64::checked_sub)?
+                        {
+                            return Ok(Value::Integer(result));
+                        }
                     }
                     let mut result = integer_like_bigint(interp, &args[0])?;
                     for a in &args[1..] {
@@ -66,6 +107,10 @@ define_dispatch!(
                         product *= numeric_to_f64(interp, a)?;
                     }
                     Ok(Value::Float(product))
+                } else if let Some(product) =
+                    checked_integer_fold(interp, args, 1, i64::checked_mul)?
+                {
+                    Ok(Value::Integer(product))
                 } else {
                     let mut product = BigInt::from(1u8);
                     for a in args {
@@ -172,6 +217,10 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 if matches!(args[0], Value::Float(_)) {
                     Ok(Value::Float(numeric_to_f64(interp, &args[0])? + 1.0))
+                } else if !matches!(args[0], Value::BigInteger(_))
+                    && let Some(value) = integer_like_i64(interp, &args[0])?.checked_add(1)
+                {
+                    Ok(Value::Integer(value))
                 } else {
                     Ok(normalize_bigint_value(
                         integer_like_bigint(interp, &args[0])? + 1,
@@ -182,6 +231,10 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 if matches!(args[0], Value::Float(_)) {
                     Ok(Value::Float(numeric_to_f64(interp, &args[0])? - 1.0))
+                } else if !matches!(args[0], Value::BigInteger(_))
+                    && let Some(value) = integer_like_i64(interp, &args[0])?.checked_sub(1)
+                {
+                    Ok(Value::Integer(value))
                 } else {
                     Ok(normalize_bigint_value(
                         integer_like_bigint(interp, &args[0])? - 1,

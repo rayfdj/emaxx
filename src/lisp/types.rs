@@ -5,8 +5,9 @@ use num_traits::ToPrimitive;
 use std::fmt;
 use std::{
     borrow::Borrow,
-    cell::{Ref, RefCell, RefMut},
-    collections::HashSet,
+    cell::{Cell, Ref, RefCell, RefMut},
+    collections::{HashMap, HashSet},
+    hash::{BuildHasherDefault, Hasher},
     iter::FromIterator,
     ops::{Deref, DerefMut},
     path::Path,
@@ -16,21 +17,160 @@ use std::{
 const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
 const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 
-thread_local! {
-    static CONS_MUTATION_EPOCH: std::cell::Cell<ConsMutationEpoch> =
-        const { std::cell::Cell::new(ConsMutationEpoch(0)) };
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ConsMutationEpoch(u64);
+
+const CONS_MUTATION_WATCH_KEY_LIMIT: usize = 1 << 20;
+
+#[derive(Default)]
+struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut value = 0_u64;
+        for (index, byte) in bytes.iter().take(8).enumerate() {
+            value |= u64::from(*byte) << (index * 8);
+        }
+        self.0 = value;
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.0 = value as u64;
+    }
+}
+
+type ConsMutationWatchers =
+    HashMap<usize, Vec<Weak<Cell<bool>>>, BuildHasherDefault<IdentityHasher>>;
+
+thread_local! {
+    static CONS_MUTATION_EPOCH: Cell<ConsMutationEpoch> =
+        const { Cell::new(ConsMutationEpoch(0)) };
+    static CONS_MUTATION_WATCHERS: RefCell<ConsMutationWatchers> =
+        RefCell::new(ConsMutationWatchers::default());
+}
 
 pub(crate) fn cons_mutation_epoch() -> ConsMutationEpoch {
     CONS_MUTATION_EPOCH.get()
 }
 
-fn note_cons_mutation() {
+fn note_cons_mutation(field_id: usize) {
     let current = cons_mutation_epoch();
     CONS_MUTATION_EPOCH.set(ConsMutationEpoch(current.0.wrapping_add(1)));
+    CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
+        let mut remove = false;
+        if let Some(tokens) = watchers.get_mut(&field_id) {
+            tokens.retain(|token| {
+                let Some(token) = token.upgrade() else {
+                    return false;
+                };
+                token.set(false);
+                true
+            });
+            remove = tokens.is_empty();
+        }
+        if remove {
+            watchers.remove(&field_id);
+        }
+    });
+}
+
+fn register_cons_mutation_watchers(field_ids: &[usize], token: &Rc<Cell<bool>>) {
+    if field_ids.is_empty() {
+        return;
+    }
+    CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
+        if watchers.len() >= CONS_MUTATION_WATCH_KEY_LIMIT {
+            // Dead source forms can leave weak-only keys behind.  A rare
+            // bounded reset invalidates every still-live derivation before
+            // dropping those keys, so no cache can survive unsafely.
+            for tokens in watchers.values() {
+                for token in tokens {
+                    if let Some(token) = token.upgrade() {
+                        token.set(false);
+                    }
+                }
+            }
+            watchers.clear();
+        }
+        let weak = Rc::downgrade(token);
+        for field_id in field_ids {
+            watchers.entry(*field_id).or_default().push(weak.clone());
+        }
+    });
+}
+
+/// Mutation dependencies for one derived view of a cons graph.
+///
+/// Each dependency registers a weak invalidation token with the one mutation
+/// hook used by both cons fields.  Cache reads are therefore a single boolean
+/// load regardless of unrelated data mutation; mutations pay only for caches
+/// that actually depend on the field being borrowed mutably.
+#[derive(Debug)]
+pub(crate) struct ConsMutationSnapshot {
+    valid: Rc<Cell<bool>>,
+    field_ids: Vec<usize>,
+}
+
+impl ConsMutationSnapshot {
+    pub(crate) fn list_spine(value: &Value) -> Self {
+        let mut field_ids = Vec::new();
+        let mut seen = HashSet::new();
+        let mut current = value.clone();
+        while let Value::Cons(cell) = current {
+            let cell_id = ConsCell::identity(&cell);
+            if !seen.insert(cell_id) {
+                break;
+            }
+            field_ids.extend(ConsCell::mutation_field_ids(&cell));
+            current = cell.cdr.borrow().clone();
+        }
+        Self::from_field_ids(field_ids)
+    }
+
+    pub(crate) fn tree(value: &Value) -> Self {
+        let mut snapshot = Self::from_field_ids(Vec::new());
+        snapshot.include_tree(value);
+        snapshot
+    }
+
+    pub(crate) fn include_tree(&mut self, value: &Value) {
+        let mut seen = HashSet::new();
+        let mut pending = vec![value.clone()];
+        let mut added = Vec::new();
+        while let Some(value) = pending.pop() {
+            let Value::Cons(cell) = value else {
+                continue;
+            };
+            if !seen.insert(ConsCell::identity(&cell)) {
+                continue;
+            }
+            added.extend(ConsCell::mutation_field_ids(&cell));
+            pending.push(cell.car.borrow().clone());
+            pending.push(cell.cdr.borrow().clone());
+        }
+        added.sort_unstable();
+        added.dedup();
+        added.retain(|field_id| self.field_ids.binary_search(field_id).is_err());
+        register_cons_mutation_watchers(&added, &self.valid);
+        self.field_ids.extend(added);
+        self.field_ids.sort_unstable();
+    }
+
+    fn from_field_ids(mut field_ids: Vec<usize>) -> Self {
+        field_ids.sort_unstable();
+        field_ids.dedup();
+        let valid = Rc::new(Cell::new(true));
+        register_cons_mutation_watchers(&field_ids, &valid);
+        Self { valid, field_ids }
+    }
+
+    pub(crate) fn is_current(&self) -> bool {
+        self.valid.get()
+    }
 }
 
 /// Immutable shared text stored inside compact Lisp values.
@@ -415,7 +555,7 @@ impl ConsValueCell {
     }
 
     pub(crate) fn borrow_mut(&self) -> RefMut<'_, Value> {
-        note_cons_mutation();
+        note_cons_mutation(self as *const Self as usize);
         self.0.borrow_mut()
     }
 }
@@ -430,6 +570,13 @@ impl ConsCell {
 
     pub(crate) fn identity(cell: &SharedCons) -> usize {
         Rc::as_ptr(cell) as usize
+    }
+
+    fn mutation_field_ids(cell: &SharedCons) -> [usize; 2] {
+        [
+            &cell.car as *const ConsValueCell as usize,
+            &cell.cdr as *const ConsValueCell as usize,
+        ]
     }
 }
 
@@ -1433,6 +1580,39 @@ mod tests {
         let before_cdr = super::cons_mutation_epoch();
         *cdr.borrow_mut() = Value::Integer(4);
         assert_ne!(super::cons_mutation_epoch(), before_cdr);
+    }
+
+    #[test]
+    fn cons_mutation_snapshot_ignores_unrelated_cells_and_tracks_dependencies() {
+        let source = Value::list([Value::symbol("+"), Value::Integer(1)]);
+        let unrelated = Value::list([Value::symbol("data"), Value::Integer(2)]);
+        let snapshot = super::ConsMutationSnapshot::list_spine(&source);
+
+        unrelated
+            .set_cdr(Value::list([Value::Integer(3)]))
+            .expect("unrelated value is a cons");
+        assert!(snapshot.is_current());
+
+        source
+            .cdr()
+            .expect("source has an argument spine")
+            .set_car(Value::Integer(4))
+            .expect("source argument spine is a cons");
+        assert!(!snapshot.is_current());
+    }
+
+    #[test]
+    fn tree_mutation_snapshot_tracks_nested_cons_fields() {
+        let nested = Value::list([Value::symbol("inner"), Value::Integer(1)]);
+        let source = Value::list([Value::symbol("outer"), nested.clone()]);
+        let spine_snapshot = super::ConsMutationSnapshot::list_spine(&source);
+        let tree_snapshot = super::ConsMutationSnapshot::tree(&source);
+
+        nested
+            .set_car(Value::symbol("changed"))
+            .expect("nested value is a cons");
+        assert!(spine_snapshot.is_current());
+        assert!(!tree_snapshot.is_current());
     }
 
     #[test]
