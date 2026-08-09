@@ -159,51 +159,45 @@ pub(crate) fn user_name_from_uid(uid: u32) -> Option<String> {
     Some(name.to_string_lossy().into_owned())
 }
 
+#[cfg(unix)]
 pub(crate) fn group_name_from_gid(gid: i64) -> Result<Option<String>, LispError> {
-    if cfg!(target_os = "macos") {
-        let output = Command::new("dscacheutil")
-            .args(["-q", "group", "-a", "gid", &gid.to_string()])
-            .output();
-        if let Ok(output) = output
-            && output.status.success()
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            for line in text.lines() {
-                if let Some(name) = line.strip_prefix("name:") {
-                    return Ok(Some(name.trim().to_string()));
-                }
+    let Ok(gid) = libc::gid_t::try_from(gid) else {
+        return Ok(None);
+    };
+    let mut scratch_len = 16 * 1024;
+    loop {
+        let mut group = std::mem::MaybeUninit::<libc::group>::uninit();
+        let mut result = std::ptr::null_mut();
+        let mut scratch = vec![0_i8; scratch_len];
+        // SAFETY: all pointers refer to appropriately sized caller-owned
+        // storage for the duration of this reentrant libc lookup.
+        let status = unsafe {
+            libc::getgrgid_r(
+                gid,
+                group.as_mut_ptr(),
+                scratch.as_mut_ptr(),
+                scratch.len(),
+                &mut result,
+            )
+        };
+        if status == 0 {
+            if result.is_null() {
+                return Ok(None);
             }
+            // SAFETY: successful getgrgid_r initialized GROUP, whose name
+            // points into SCRATCH until this iteration returns.
+            let name = unsafe { std::ffi::CStr::from_ptr((*group.as_ptr()).gr_name) };
+            return Ok(Some(name.to_string_lossy().into_owned()));
         }
-    }
-
-    let output = Command::new("getent")
-        .args(["group", &gid.to_string()])
-        .output();
-    if let Ok(output) = output
-        && output.status.success()
-    {
-        let text = String::from_utf8_lossy(&output.stdout);
-        if let Some(name) = text.split(':').next()
-            && !name.is_empty()
-        {
-            return Ok(Some(name.to_string()));
+        if status != libc::ERANGE || scratch_len >= 1024 * 1024 {
+            return Ok(None);
         }
+        scratch_len *= 2;
     }
+}
 
-    if let Ok(groups) = std::fs::read_to_string("/etc/group") {
-        for line in groups.lines() {
-            let mut parts = line.split(':');
-            let Some(name) = parts.next() else { continue };
-            let _ = parts.next();
-            let Some(entry_gid) = parts.next() else {
-                continue;
-            };
-            if entry_gid.parse::<i64>().ok() == Some(gid) {
-                return Ok(Some(name.to_string()));
-            }
-        }
-    }
-
+#[cfg(not(unix))]
+pub(crate) fn group_name_from_gid(_gid: i64) -> Result<Option<String>, LispError> {
     Ok(None)
 }
 
@@ -316,10 +310,10 @@ pub(crate) fn emacs_pid_value() -> i64 {
     i64::from(std::process::id())
 }
 
-fn process_inventory() -> sysinfo::System {
+fn process_inventory(processes: sysinfo::ProcessesToUpdate<'_>) -> sysinfo::System {
     let mut system = sysinfo::System::new();
     system.refresh_processes_specifics(
-        sysinfo::ProcessesToUpdate::All,
+        processes,
         true,
         sysinfo::ProcessRefreshKind::everything().without_tasks(),
     );
@@ -331,7 +325,7 @@ pub(crate) fn list_system_processes_value() -> Value {
     if !darwin_process_inventory_available() {
         return Value::Nil;
     }
-    let system = process_inventory();
+    let system = process_inventory(sysinfo::ProcessesToUpdate::All);
     let mut pids = system
         .processes()
         .keys()
@@ -387,8 +381,13 @@ pub(crate) fn process_attributes_value(pid: i64) -> Value {
     let Ok(pid) = u32::try_from(pid) else {
         return Value::Nil;
     };
-    let system = process_inventory();
-    let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) else {
+    let pid = sysinfo::Pid::from_u32(pid);
+    // `process-attributes' asks about one PID.  Refreshing every process here
+    // made Proced's normal list-then-attribute traversal accidentally
+    // quadratic in the host process count.  Keep each answer fresh, as GNU
+    // does, while asking sysinfo to materialize only the requested process.
+    let system = process_inventory(sysinfo::ProcessesToUpdate::Some(&[pid]));
+    let Some(process) = system.process(pid) else {
         return Value::Nil;
     };
     let mut attributes = Vec::new();
@@ -426,7 +425,7 @@ pub(crate) fn process_attributes_value(pid: i64) -> Value {
     }
     #[cfg(unix)]
     {
-        let raw_pid = pid as libc::pid_t;
+        let raw_pid = pid.as_u32() as libc::pid_t;
         // SAFETY: getpgid and getsid accept an integer process id and do not
         // dereference caller-owned memory.
         let process_group = unsafe { libc::getpgid(raw_pid) };
@@ -461,6 +460,27 @@ pub(crate) fn process_attributes_value(pid: i64) -> Value {
         push("args", Value::String(command.into()));
     }
     Value::list(attributes)
+}
+
+#[cfg(test)]
+mod process_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn one_pid_refresh_does_not_materialize_the_full_process_table() {
+        let pid = sysinfo::Pid::from_u32(std::process::id());
+        let system = process_inventory(sysinfo::ProcessesToUpdate::Some(&[pid]));
+
+        assert!(
+            system.process(pid).is_some(),
+            "current process is inspectable"
+        );
+        assert_eq!(
+            system.processes().len(),
+            1,
+            "single-PID refresh must not become an all-process snapshot"
+        );
+    }
 }
 
 pub(crate) fn expand_file_name(path: &str, base: Option<&str>) -> String {

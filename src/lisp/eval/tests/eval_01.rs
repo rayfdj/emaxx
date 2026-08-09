@@ -5076,10 +5076,12 @@ fn define_minor_mode_registers_mode_line_and_keymap_metadata() {
 }
 
 #[test]
-fn native_url_transport_does_not_claim_the_lisp_owned_url_feature() {
+fn startup_does_not_claim_lisp_owned_url_features() {
     assert_eq!(
         eval_str(
             "(list (featurep 'url)
+                     (featurep 'url-http)
+                     (autoloadp (symbol-function 'url-retrieve))
                      url-configuration-directory
                      url-redirect-buffer
                      url-retrieve-number-of-calls
@@ -5090,6 +5092,8 @@ fn native_url_transport_does_not_claim_the_lisp_owned_url_feature() {
         ),
         Value::list([
             Value::Nil,
+            Value::Nil,
+            Value::T,
             Value::String("/nonexistent/.emacs.d/url/".into()),
             Value::Nil,
             Value::Integer(0),

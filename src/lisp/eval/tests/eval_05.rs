@@ -5583,6 +5583,43 @@ fn requiring_url_loads_lisp_setup_before_first_parser_call() {
 }
 
 #[test]
+fn requiring_url_http_replaces_autoloads_with_lisp_owned_functions() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize batch interpreter");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(let ((premature-feature (featurep 'url-http))
+                          (retrieve-autoload
+                           (autoloadp (symbol-function 'url-retrieve))))
+                     (require 'url-http)
+                     (list premature-feature
+                           retrieve-autoload
+                           (featurep 'url-http)
+                           (autoloadp (symbol-function 'url-retrieve))
+                           (fboundp 'url-http)
+                           (special-variable-p 'url-gateway-method)))"#,
+            ),
+            Value::list([
+                Value::Nil,
+                Value::T,
+                Value::T,
+                Value::Nil,
+                Value::T,
+                Value::T
+            ])
+        );
+    });
+}
+
+#[test]
 fn simple_compat_preloads_paren_blinking_defaults() {
     let mut interp = Interpreter::new();
     interp.set_load_path(

@@ -350,6 +350,27 @@ pub(crate) fn process_coding_pair(value: &Value) -> Result<(Value, Value), LispE
     Err(LispError::TypeError("cons".into(), value.type_name()))
 }
 
+fn process_creation_coding_systems(
+    interp: &Interpreter,
+    env: &Env,
+    coding: &Value,
+) -> (Value, Value) {
+    if coding.is_nil() {
+        (
+            interp
+                .lookup_var("coding-system-for-read", env)
+                .unwrap_or(Value::Nil),
+            interp
+                .lookup_var("coding-system-for-write", env)
+                .unwrap_or(Value::Nil),
+        )
+    } else {
+        coding
+            .cons_values()
+            .unwrap_or_else(|| (coding.clone(), coding.clone()))
+    }
+}
+
 pub(crate) struct MakeProcessArgs {
     pub(crate) buffer_id: Option<u64>,
     pub(crate) program: Option<String>,
@@ -525,7 +546,7 @@ pub(crate) fn internal_default_process_sentinel(
 ) -> Result<(), LispError> {
     if matches!(
         interp.process_status_value(process_id),
-        Some(Value::Symbol(status)) if status == "run"
+        Some(Value::Symbol(status)) if matches!(status.as_str(), "run" | "open")
     ) {
         return Ok(());
     }
@@ -900,144 +921,6 @@ pub(crate) fn write_process_output(
     Ok(())
 }
 
-// ── Native url-retrieve (GNU url.el / url-http.el are blocked: their
-// make-network-process transport has no emaxx equivalent) ──
-
-/// Fetch URL (http only) and return the raw response bytes
-/// (status line + headers + body).
-pub(crate) fn http_fetch_raw(url: &str) -> Result<Vec<u8>, String> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| format!("Unsupported URL: {url}"))?;
-    let (hostport, path) = match rest.find('/') {
-        Some(index) => (&rest[..index], &rest[index..]),
-        None => (rest, "/"),
-    };
-    let (host, port) = match hostport.rsplit_once(':') {
-        Some((host, port)) => (
-            host,
-            port.parse::<u16>().map_err(|error| error.to_string())?,
-        ),
-        None => (hostport, 80),
-    };
-    use std::io::{Read, Write};
-    let mut stream = std::net::TcpStream::connect((host, port))
-        .map_err(|error| format!("{host}:{port} {error}"))?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
-        .map_err(|error| error.to_string())?;
-    write!(
-        stream,
-        "GET {path} HTTP/1.0\r\nHost: {hostport}\r\nConnection: close\r\n\r\n"
-    )
-    .map_err(|error| error.to_string())?;
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .map_err(|error| error.to_string())?;
-    Ok(response)
-}
-
-/// Register an async retrieval: a worker thread fetches the response and
-/// the wait loops (accept-process-output, sit-for) deliver it.
-pub(crate) fn start_url_retrieval(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    url: &str,
-    callback: Value,
-    cbargs: Vec<Value>,
-) -> Result<Value, LispError> {
-    let buffer = call(
-        interp,
-        "generate-new-buffer",
-        &[Value::String(format!(" *http {url}*").into())],
-        env,
-    )?;
-    let buffer_id = interp.resolve_buffer_id(&buffer)?;
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let url_owned = url.to_string();
-    std::thread::spawn(move || {
-        let _ = sender.send(http_fetch_raw(&url_owned));
-    });
-    interp
-        .pending_url_retrievals
-        .push(crate::lisp::eval::PendingUrlRetrieval {
-            buffer_id,
-            url: url.to_string(),
-            callback,
-            cbargs,
-            receiver,
-        });
-    Ok(buffer)
-}
-
-/// Deliver completed retrievals: fill the response buffer and run the
-/// callback there (GNU url-retrieve semantics). Returns true if any fired.
-pub(crate) fn run_pending_url_retrievals(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    let mut ready = Vec::new();
-    let mut index = 0;
-    while index < interp.pending_url_retrievals.len() {
-        match interp.pending_url_retrievals[index].receiver.try_recv() {
-            Ok(result) => {
-                let pending = interp.pending_url_retrievals.remove(index);
-                ready.push((pending, result));
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => index += 1,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                let pending = interp.pending_url_retrievals.remove(index);
-                ready.push((pending, Err("connection aborted".into())));
-            }
-        }
-    }
-    let fired = !ready.is_empty();
-    for (pending, result) in ready {
-        let saved_buffer = interp.current_buffer_id();
-        interp.switch_to_buffer_id(pending.buffer_id)?;
-        let status = match result {
-            Ok(bytes) => {
-                // Bytes map to chars 0..255 so header parsing stays exact.
-                let text: String = bytes.iter().map(|byte| char::from(*byte)).collect();
-                interp.insert_current_buffer(&text);
-                interp.buffer.goto_char(interp.buffer.point_max());
-                // GNU url-http flags non-2xx responses in the callback
-                // status plist as (:error (error http CODE)).
-                let code = text
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .and_then(|code| code.parse::<i64>().ok());
-                match code {
-                    Some(code) if !(200..300).contains(&code) => Value::list([
-                        Value::Symbol(":error".into()),
-                        Value::list([
-                            Value::Symbol("error".into()),
-                            Value::Symbol("http".into()),
-                            Value::Integer(code),
-                        ]),
-                    ]),
-                    _ => Value::Nil,
-                }
-            }
-            Err(message) => Value::list([
-                Value::Symbol(":error".into()),
-                Value::list([
-                    Value::Symbol("error".into()),
-                    Value::String(format!("{}: {}", pending.url, message).into()),
-                ]),
-            ]),
-        };
-        let mut call_args = vec![status];
-        call_args.extend(pending.cbargs.clone());
-        let outcome = call_function_value(interp, &pending.callback, &call_args, env);
-        let _ = interp.switch_to_buffer_id(saved_buffer);
-        outcome?;
-    }
-    Ok(fired)
-}
-
 /// Drain live external process pipes into their buffers/filters.
 /// Returns true if any output was delivered.
 pub(crate) fn pump_external_process_output(
@@ -1225,6 +1108,44 @@ pub(super) fn network_client_error(error: &std::io::Error, args: &[Value]) -> Li
     LispError::SignalValue(Value::list(data))
 }
 
+fn activate_network_client(
+    interp: &mut Interpreter,
+    process: Value,
+    nowait: bool,
+    tls_parameters: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let process_id = interp.resolve_process_id(&process)?;
+    if !tls_parameters.is_nil() {
+        interp.set_process_gnutls_boot_parameters(process_id, tls_parameters.clone());
+    }
+    if nowait {
+        interp.mark_network_process_connecting(process_id);
+        return Ok(process);
+    }
+    if !tls_parameters.is_nil() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match progress_async_gnutls(interp, process_id)? {
+                AsyncGnuTlsProgress::NotRequested | AsyncGnuTlsProgress::Ready => break,
+                AsyncGnuTlsProgress::Pending if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                AsyncGnuTlsProgress::Pending => {
+                    return Err(LispError::Signal("GnuTLS handshake timed out".into()));
+                }
+                AsyncGnuTlsProgress::Failed(error) => {
+                    return Err(LispError::Signal(format!(
+                        "GnuTLS negotiation failed: {error:?}"
+                    )));
+                }
+            }
+        }
+    }
+    run_process_sentinel(interp, process_id, "open\n", env)?;
+    Ok(process)
+}
+
 /// Create a network server (`:server t`) or client stream.  emaxx models
 /// the subset erc-d exercises: a local/ipv4 TCP server with :filter,
 /// :sentinel and :log, plus TCP client streams.
@@ -1249,7 +1170,11 @@ pub(crate) fn make_network_process(
     let mut datagram = false;
     let mut family_local = false;
     let mut family_ipv4 = false;
+    let mut family_ipv6 = false;
+    let mut host_local = false;
     let mut nowait = false;
+    let mut tls_parameters = Value::Nil;
+    let mut coding = Value::Nil;
     let mut host: Option<String> = None;
     let mut service: Option<i64> = None;
     let mut service_path: Option<String> = None;
@@ -1271,14 +1196,25 @@ pub(crate) fn make_network_process(
                 _ => return Err(LispError::Signal("Unsupported connection type".into())),
             },
             ":nowait" => nowait = value.is_truthy(),
+            ":coding" => coding = value.clone(),
+            ":tls-parameters" => {
+                value
+                    .to_vec()
+                    .map_err(|_| wrong_type_argument("listp", value.clone()))?;
+                tls_parameters = value.clone();
+            }
             ":family" => {
                 family_local = matches!(value, Value::Symbol(symbol) if symbol == "local");
                 family_ipv4 = matches!(value, Value::Symbol(symbol) if symbol == "ipv4");
+                family_ipv6 = matches!(value, Value::Symbol(symbol) if symbol == "ipv6");
             }
             ":host" => {
                 host = match value {
                     Value::Nil => None,
-                    Value::Symbol(symbol) if symbol == "local" => Some("127.0.0.1".into()),
+                    Value::Symbol(symbol) if symbol == "local" => {
+                        host_local = true;
+                        None
+                    }
                     _ => Some(string_text(value)?),
                 }
             }
@@ -1304,6 +1240,10 @@ pub(crate) fn make_network_process(
         && interp
             .lookup_var("inherit-process-coding-system", env)
             .is_some_and(|value| value.is_truthy());
+    if host_local {
+        host = Some(if family_ipv6 { "::1" } else { "127.0.0.1" }.into());
+    }
+    let (decoding, encoding) = process_creation_coding_systems(interp, env, &coding);
     let name = interp.unique_process_name(&name);
     // GNU keeps the original keyword plist as the process's contact info
     // (p->childp), updating :service and appending the resolved :local /
@@ -1316,7 +1256,9 @@ pub(crate) fn make_network_process(
                 "Datagram local sockets are not supported".into(),
             ));
         }
-        let address_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
+        let address_host = host
+            .clone()
+            .unwrap_or_else(|| if family_ipv6 { "::1" } else { "127.0.0.1" }.into());
         let address_port = service.unwrap_or(0) as u16;
         let address =
             std::net::ToSocketAddrs::to_socket_addrs(&(address_host.as_str(), address_port))
@@ -1327,7 +1269,9 @@ pub(crate) fn make_network_process(
                         network_client_error(&error, args)
                     }
                 })?
-                .find(|address| !family_ipv4 || address.is_ipv4())
+                .find(|address| {
+                    (!family_ipv4 || address.is_ipv4()) && (!family_ipv6 || address.is_ipv6())
+                })
                 .ok_or_else(|| {
                     LispError::Signal(format!(
                         "make-network-process: no matching address for {address_host}"
@@ -1395,6 +1339,8 @@ pub(crate) fn make_network_process(
             None,
             None,
             Value::list(contact_items),
+            decoding,
+            encoding,
         )?;
         if !is_server {
             let process_id = interp.resolve_process_id(&process)?;
@@ -1435,6 +1381,8 @@ pub(crate) fn make_network_process(
                 None,
                 None,
                 Value::list(contact_items),
+                decoding,
+                encoding,
             );
         }
         let stream = std::os::unix::net::UnixStream::connect(&path)
@@ -1466,27 +1414,27 @@ pub(crate) fn make_network_process(
             None,
             None,
             Value::list(contact_items),
+            decoding,
+            encoding,
         )?;
-        let process_id = interp.resolve_process_id(&process)?;
-        if nowait {
-            interp.mark_network_process_connecting(process_id);
-        } else {
-            run_process_sentinel(interp, process_id, "open\n", env)?;
-        }
-        return Ok(process);
+        return activate_network_client(interp, process, nowait, &tls_parameters, env);
     }
 
     if is_server {
-        let bind_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
+        let bind_host = host
+            .clone()
+            .unwrap_or_else(|| if family_ipv6 { "::1" } else { "127.0.0.1" }.into());
         let bind_port = service.unwrap_or(0) as u16;
-        let listener = if family_ipv4 {
+        let listener = if family_ipv4 || family_ipv6 {
             let address =
                 std::net::ToSocketAddrs::to_socket_addrs(&(bind_host.as_str(), bind_port))
                     .map_err(|error| network_server_error(&error))?
-                    .find(std::net::SocketAddr::is_ipv4)
+                    .find(|address| {
+                        (!family_ipv4 || address.is_ipv4()) && (!family_ipv6 || address.is_ipv6())
+                    })
                     .ok_or_else(|| {
                         LispError::Signal(format!(
-                            "make-network-process: no IPv4 address for {bind_host}"
+                            "make-network-process: no requested-family address for {bind_host}"
                         ))
                     })?;
             std::net::TcpListener::bind(address)
@@ -1519,12 +1467,32 @@ pub(crate) fn make_network_process(
             None,
             None,
             Value::list(contact_items),
+            decoding,
+            encoding,
         )
     } else {
-        let connect_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
-        let stream =
-            std::net::TcpStream::connect((connect_host.as_str(), service.unwrap_or(0) as u16))
-                .map_err(|error| network_client_error(&error, args))?;
+        let connect_host = host
+            .clone()
+            .unwrap_or_else(|| if family_ipv6 { "::1" } else { "127.0.0.1" }.into());
+        let connect_port = service.unwrap_or(0) as u16;
+        let addresses =
+            std::net::ToSocketAddrs::to_socket_addrs(&(connect_host.as_str(), connect_port))
+                .map_err(|error| network_client_error(&error, args))?
+                .filter(|address| {
+                    (!family_ipv4 || address.is_ipv4()) && (!family_ipv6 || address.is_ipv6())
+                })
+                .collect::<Vec<_>>();
+        if addresses.is_empty() {
+            return Err(LispError::Signal(format!(
+                "make-network-process: no requested-family address for {connect_host}"
+            )));
+        }
+        // GNU iterates getaddrinfo results until one connection succeeds.
+        // Passing the full filtered slice gives Rust's socket layer the same
+        // fallback behavior (notably localhost resolving to IPv6 before an
+        // IPv4-only listener) without duplicating connection error policy.
+        let stream = std::net::TcpStream::connect(addresses.as_slice())
+            .map_err(|error| network_client_error(&error, args))?;
         stream
             .set_nonblocking(true)
             .map_err(|error| network_client_error(&error, args))?;
@@ -1548,15 +1516,12 @@ pub(crate) fn make_network_process(
             None,
             None,
             Value::list(contact_items),
+            decoding,
+            encoding,
         )?;
-        // GNU runs the sentinel with "open\n" once a client connects.
-        let process_id = interp.resolve_process_id(&process)?;
-        if nowait {
-            interp.mark_network_process_connecting(process_id);
-        } else {
-            run_process_sentinel(interp, process_id, "open\n", env)?;
-        }
-        Ok(process)
+        // GNU runs the sentinel with "open\n" only after any requested TLS
+        // negotiation has completed.
+        activate_network_client(interp, process, nowait, &tls_parameters, env)
     }
 }
 
@@ -1894,20 +1859,7 @@ pub(crate) fn make_serial_process(
     let sentinel = plist_member_value(args, ":sentinel").filter(Value::is_truthy);
     let plist = plist_member_value(args, ":plist").unwrap_or(Value::Nil);
     let coding = plist_member_value(args, ":coding").unwrap_or(Value::Nil);
-    let (decoding, encoding) = if coding.is_nil() {
-        (
-            interp
-                .lookup_var("coding-system-for-read", env)
-                .unwrap_or(Value::Nil),
-            interp
-                .lookup_var("coding-system-for-write", env)
-                .unwrap_or(Value::Nil),
-        )
-    } else {
-        coding
-            .cons_values()
-            .unwrap_or_else(|| (coding.clone(), coding.clone()))
-    };
+    let (decoding, encoding) = process_creation_coding_systems(interp, env, &coding);
     let noquery = plist_member_value(args, ":noquery").is_some_and(|value| value.is_truthy());
     let stopped = plist_member_value(args, ":stop").is_some_and(|value| value.is_truthy());
     let process = interp.create_serial_process(
@@ -1997,7 +1949,6 @@ pub(crate) fn wait_pumping_processes(
     loop {
         let mut progressed = pump_external_process_output(interp, env)?;
         progressed |= pump_connection_processes(interp, env)?;
-        progressed |= run_pending_url_retrievals(interp, env)?;
         delivered |= progressed;
         interp.drive_threads(env, true)?;
         let requested_process_delivered = target_process_id.is_some_and(|process_id| {
@@ -2021,7 +1972,6 @@ pub(crate) fn wait_pumping_processes(
             // one-wait lag under load.
             let mut final_progress = pump_external_process_output(interp, env)?;
             final_progress |= pump_connection_processes(interp, env)?;
-            final_progress |= run_pending_url_retrievals(interp, env)?;
             delivered |= final_progress;
             break;
         }
@@ -2076,9 +2026,24 @@ pub(crate) fn pump_connection_processes(
     // event loop reports completion.  The OS connection is already usable
     // in this compatibility runtime, but deferring the `open' transition
     // lets callers install their sentinel before it runs, like GNU Emacs.
-    for process_id in interp.open_connecting_network_processes() {
+    for process_id in interp.connecting_network_processes() {
         progressed = true;
-        run_process_sentinel(interp, process_id, "open\n", env)?;
+        match progress_async_gnutls(interp, process_id)? {
+            AsyncGnuTlsProgress::NotRequested | AsyncGnuTlsProgress::Ready => {
+                interp.mark_network_process_open(process_id);
+                run_process_sentinel(interp, process_id, "open\n", env)?;
+            }
+            AsyncGnuTlsProgress::Pending => {}
+            AsyncGnuTlsProgress::Failed(error) => {
+                interp.mark_network_process_failed(process_id);
+                run_process_sentinel(
+                    interp,
+                    process_id,
+                    &format!("TLS negotiation failed: {error:?}\n"),
+                    env,
+                )?;
+            }
+        }
     }
 
     // Accept new connections on every server listener.
@@ -2144,6 +2109,10 @@ pub(crate) fn pump_connection_processes(
             let server_sentinel = interp.process_sentinel(server_id);
             let server_log = interp.process_log_function(server_id);
             let server_buffer = interp.process_buffer_id(server_id);
+            let (child_decoding, child_encoding) = interp
+                .process_coding_system(server_id)?
+                .cons_values()
+                .unwrap_or((Value::Nil, Value::Nil));
             let child_inherit_coding_system = server_buffer.is_some()
                 && interp
                     .process_inherit_coding_system_flag(server_id)
@@ -2170,6 +2139,8 @@ pub(crate) fn pump_connection_processes(
                 Some(remote.clone()),
                 Some(server_id),
                 Value::list(contact_items),
+                child_decoding,
+                child_encoding,
             )?;
             let child_id = interp.resolve_process_id(&child)?;
             run_process_log(

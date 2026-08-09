@@ -36,10 +36,57 @@ large-directory performance gap rather than a Dired correctness or process-I/O
 failure.  Keep this distinct from the fixed dumped-image startup cost and from
 the compact-value interpreter work.  The broader source-interpreter follow-up,
 including the current Align and semantic-microbenchmark baselines, is tracked
-in [GitHub issue #12](https://github.com/rayfdj/emaxx/issues/12).
+in [GitHub issue #12](https://github.com/rayfdj/emaxx/issues/12).  Proced's
+separate post-bootstrap body gap is tracked in
+[GitHub issue #13](https://github.com/rayfdj/emaxx/issues/13).
 
 ## Current State
 
+- The 2026-08-09 Network Stream/SOCKS/Proced checkpoint keeps the published
+  ordered frontier at 4,582/7,080 and completes the required exact replay
+  through C# Mode.  The cumulative clean-source artifact is
+  `target/compat/run-1786281895637661000-45511`: all 351 files match, with
+  zero semantic mismatches.  Its nonzero harness exit is solely the current
+  policy that promotes 86 legacy >=2x body diagnostics to the process exit
+  status; it is not a compatibility failure.
+
+  Network Stream is exact at 27/27 with GNU/Emaxx setup 0.276/1.576 seconds
+  and body 19.610/19.465 seconds (0.992x).  SOCKS is exact at 10/10 with
+  setup 0.347/1.467 and body 0.652/0.699 seconds (1.072x).  Rust now supplies
+  the missing network/TLS primitives, address-family behavior, coding-system
+  precedence, asynchronous TLS state, peer-certificate data, and safe child
+  cleanup while GNU's `url-http.el` and `socks.el` retain protocol and policy
+  ownership.  In particular, the prior native URL shortcut and false
+  `url-http` startup feature were removed; requiring `url-http` now installs
+  the GNU Elisp functions.
+
+  Proced is exact at 6/6.  `process-attributes` refreshes only its requested
+  PID instead of materializing the whole process table, and Unix group names
+  use reentrant libc lookup rather than spawning `dscacheutil` once per PID.
+  Its body remains a genuine post-bootstrap performance issue: GNU 1.031
+  seconds versus Emaxx 13.997 seconds (13.573x), tracked in issue #13 rather
+  than obscured with local test-specific tuning.  TRAMP is faster than GNU in
+  the same artifact (GNU/Emaxx body 102.941/32.529 seconds).
+
+  The independent VM load-error tracing repair is committed as `f21042e`.
+  Latching `EMAXX_TRACE_LOAD_ERRORS` once instead of calling `getenv` for
+  every bytecode function call reduced the local fib kernel from 0.3271 to
+  0.1945 seconds and mapcar from 0.2692 to 0.1493 seconds; all 33 bytecode
+  tests and trace-on/off behavior pass.
+
+  Formatting, all-target/all-feature checking, clippy with warnings denied,
+  and the exact compatibility replay pass.  A full parallel debug unit run
+  completed 1,870/1,873 tests; its three process-wait failures were caused by
+  host child-exec throttling, not Emaxx event loss.  Each passed in isolation,
+  and a same-binary control using plain `std::process::Command` reproduced a
+  12.14-second `/bin/sh` delay.  In the instrumented Emaxx case the child
+  remained `run` and delivered normally after 22.9 seconds.  All temporary
+  diagnostics were removed.  The performance harness is 1/1, CLI is 10/10,
+  and the ERT runner is 3/3.  The compatibility harness was 32/33 under the
+  same launch throttling; its sole sub-poll timing case passed alone in 0.17
+  seconds.  NEXT: publish this checkpoint, review the supplied round-9 VM
+  performance patch independently, then begin canonical selector 4,583,
+  `dbus-test03-peer-interface`.
 - The 2026-08-09 compatibility-march evaluator baseline keeps the published
   frontier at 4,582/7,080 while making the remaining source-interpreter cost
   bounded and observable.  Source-form analysis now owns its macro and

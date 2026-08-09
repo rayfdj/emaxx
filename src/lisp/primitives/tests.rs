@@ -4785,6 +4785,176 @@ fn make_network_process_ipv4_family_prefers_an_ipv4_listener() {
 }
 
 #[test]
+fn make_network_process_ipv6_family_uses_an_ipv6_listener() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let process = call(
+        &mut interp,
+        "make-network-process",
+        &[
+            Value::Symbol(":name".into()),
+            Value::String("ipv6-listener".into()),
+            Value::Symbol(":server".into()),
+            Value::T,
+            Value::Symbol(":family".into()),
+            Value::Symbol("ipv6".into()),
+            Value::Symbol(":host".into()),
+            Value::Symbol("local".into()),
+            Value::Symbol(":service".into()),
+            Value::T,
+        ],
+        &mut env,
+    )
+    .expect("IPv6 loopback listener should bind");
+
+    let local = call(
+        &mut interp,
+        "process-contact",
+        &[process.clone(), Value::Symbol(":local".into())],
+        &mut env,
+    )
+    .expect("process-contact should expose the IPv6 listener address");
+    assert_eq!(
+        call(
+            &mut interp,
+            "length",
+            std::slice::from_ref(&local),
+            &mut env,
+        )
+        .expect("IPv6 address vector length"),
+        Value::Integer(9)
+    );
+    assert!(
+        call(&mut interp, "aref", &[local, Value::Integer(8)], &mut env,)
+            .expect("IPv6 listener port")
+            .as_integer()
+            .is_ok_and(|port| port > 0)
+    );
+
+    call(
+        &mut interp,
+        "delete-process",
+        std::slice::from_ref(&process),
+        &mut env,
+    )
+    .expect("IPv6 listener cleanup should succeed");
+}
+
+#[test]
+fn make_network_process_coding_precedence_matches_gnu() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        r#"
+        (let ((coding-system-for-read 'binary)
+              (coding-system-for-write 'utf-8-unix))
+          (let ((implicit (make-network-process
+                           :name "coding-implicit" :server t :noquery t
+                           :family 'ipv4 :service t :host 'local))
+                (nil-coding (make-network-process
+                             :name "coding-nil" :server t :noquery t
+                             :family 'ipv4 :service t :coding nil :host 'local))
+                (explicit (make-network-process
+                           :name "coding-explicit" :server t :noquery t
+                           :family 'ipv4 :service t
+                           :coding 'georgian-academy :host 'local)))
+            (unwind-protect
+                (list (process-coding-system implicit)
+                      (process-coding-system nil-coding)
+                      (process-coding-system explicit))
+              (delete-process implicit)
+              (delete-process nil-coding)
+              (delete-process explicit))))"#,
+    )
+    .read()
+    .expect("network coding precedence probe should parse")
+    .expect("network coding precedence probe should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("network coding precedence probe should evaluate");
+    let expected = Reader::new(
+        "((binary . utf-8-unix) (binary . utf-8-unix) \
+         (georgian-academy . georgian-academy))",
+    )
+    .read()
+    .expect("network coding precedence expectation should parse")
+    .expect("network coding precedence expectation should contain a form");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "network coding precedence differed from GNU:\nactual: {actual:?}"
+    );
+}
+
+#[test]
+fn localhost_family_fallback_opens_without_polluting_the_process_buffer() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let server = call(
+        &mut interp,
+        "make-network-process",
+        &[
+            Value::Symbol(":name".into()),
+            Value::String("clean-open-server".into()),
+            Value::Symbol(":server".into()),
+            Value::T,
+            Value::Symbol(":family".into()),
+            Value::Symbol("ipv4".into()),
+            Value::Symbol(":host".into()),
+            Value::Symbol("local".into()),
+            Value::Symbol(":service".into()),
+            Value::T,
+        ],
+        &mut env,
+    )
+    .expect("server should bind");
+    let port = call(
+        &mut interp,
+        "process-contact",
+        &[server.clone(), Value::Symbol(":service".into())],
+        &mut env,
+    )
+    .expect("server should expose its port");
+    let buffer = call(
+        &mut interp,
+        "generate-new-buffer",
+        &[Value::String(" *clean-network-open*".into())],
+        &mut env,
+    )
+    .expect("client buffer should be created");
+    let buffer_id = interp
+        .resolve_buffer_id(&buffer)
+        .expect("client buffer should resolve");
+    let client = call(
+        &mut interp,
+        "make-network-process",
+        &[
+            Value::Symbol(":name".into()),
+            Value::String("clean-open-client".into()),
+            Value::Symbol(":buffer".into()),
+            buffer,
+            Value::Symbol(":host".into()),
+            Value::String("localhost".into()),
+            Value::Symbol(":service".into()),
+            port,
+        ],
+        &mut env,
+    )
+    .expect("client should connect");
+
+    assert_eq!(
+        interp
+            .get_buffer_by_id(buffer_id)
+            .expect("client buffer should remain live")
+            .full_buffer_string(),
+        ""
+    );
+    for process in [client, server] {
+        call(&mut interp, "delete-process", &[process], &mut env)
+            .expect("network process cleanup should succeed");
+    }
+}
+
+#[test]
 fn make_network_process_nowait_opens_on_the_next_event_pump() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -6288,6 +6458,22 @@ fn native_gnutls_advertises_loaded_host_capabilities() {
             .expect("GnuTLS availability contract should evaluate"),
         Value::T
     );
+    let globals = Reader::new(
+        "(list (integerp libgnutls-version)
+               (> libgnutls-version 0)
+               gnutls-log-level
+               (special-variable-p 'libgnutls-version)
+               (special-variable-p 'gnutls-log-level))",
+    )
+    .read()
+    .expect("GnuTLS native globals probe should parse")
+    .expect("GnuTLS native globals probe should contain a form");
+    assert_eq!(
+        interp
+            .eval(&globals, &mut env)
+            .expect("GnuTLS native globals should evaluate"),
+        Value::list([Value::T, Value::T, Value::Integer(0), Value::T, Value::T])
+    );
 }
 
 #[test]
@@ -6850,6 +7036,60 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
         values_equal(&interp, &actual, &expected),
         "GnuTLS process transport did not round-trip through one live session:\nactual: {actual:?}"
     );
+
+    let asynchronous = format!(
+        r#"
+        (let* ((buffer (generate-new-buffer " *gnutls-async-transport*"))
+               (process (make-network-process
+                         :name "gnutls-async-transport"
+                         :buffer buffer
+                         :host "127.0.0.1"
+                         :service {port}
+                         :family 'ipv4
+                         :coding 'binary
+                         :sentinel #'ignore
+                         :noquery t
+                         :nowait t
+                         :tls-parameters
+                         '(gnutls-anon
+                           :hostname "localhost"
+                           :priority "NORMAL:+ANON-ECDH"))))
+          (unwind-protect
+              (let ((initial-status (process-status process))
+                    (tries 0))
+                (while (and (eq (process-status process) 'connect)
+                            (< (setq tries (1+ tries)) 100))
+                  (sit-for 0.01))
+                (let ((peer (gnutls-peer-status process)))
+                  (list initial-status
+                        (process-status process)
+                        (gnutls-get-initstage process)
+                        (list (stringp (plist-get peer :key-exchange))
+                              (stringp (plist-get peer :protocol))
+                              (stringp (plist-get peer :cipher))
+                              (stringp (plist-get peer :mac)))
+                        (progn
+                          (process-send-string process "async encrypted round trip\n")
+                          (accept-process-output process 2)
+                          (with-current-buffer buffer (buffer-string))))))
+            (delete-process process)
+            (kill-buffer buffer)))"#
+    );
+    let form = Reader::new(&asynchronous)
+        .read()
+        .expect("asynchronous GnuTLS transport program should parse")
+        .expect("asynchronous GnuTLS transport program should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("asynchronous GnuTLS transport program should evaluate");
+    let expected = Reader::new("(connect open 9 (t t t t) \"async encrypted round trip\\n\")")
+        .read()
+        .expect("asynchronous GnuTLS transport expectation should parse")
+        .expect("asynchronous GnuTLS transport expectation should contain a form");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "asynchronous GnuTLS negotiation did not complete in the process event loop:\nactual: {actual:?}"
+    );
 }
 
 #[test]
@@ -6957,6 +7197,10 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
                 (list boot
                       (stringp (plist-get peer :protocol))
                       (plist-get peer :warnings)
+                      (let ((certificate (plist-get peer :certificate)))
+                        (list (consp (plist-get peer :certificates))
+                              (stringp (plist-get certificate :issuer))
+                              (stringp (plist-get certificate :subject))))
                       (condition-case error-data
                           (gnutls-boot
                            mismatch 'gnutls-x509pki
@@ -6986,9 +7230,13 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
     assert_eq!(items.first(), Some(&Value::T));
     assert_eq!(items.get(1), Some(&Value::T));
     assert_eq!(items.get(2), Some(&Value::Nil));
+    assert_eq!(
+        items.get(3),
+        Some(&Value::list([Value::T, Value::T, Value::T]))
+    );
     assert!(
         matches!(
-            items.get(3).and_then(|error| error.car().ok()),
+            items.get(4).and_then(|error| error.car().ok()),
             Some(Value::Symbol(symbol)) if symbol == "error"
         ),
         "hostname mismatch should be a catchable error: {actual:?}"

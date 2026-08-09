@@ -140,6 +140,23 @@ fn send_all<W: std::io::Write>(stream: &mut W, input: &[u8]) -> Result<(), LispE
     Ok(())
 }
 
+fn terminate_child_without_blocking(mut runtime: RunningProcess) {
+    let _ = runtime.child.kill();
+    if matches!(runtime.child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    // GNU `delete-process' closes the Lisp process immediately and reaps the
+    // OS child later.  Waiting inline can deadlock when a killed server is
+    // still unwinding an active connection (notably gnutls-serv on Darwin).
+    // Retain the Child and its pipes in one detached reaper until wait(2)
+    // completes, so prompt deletion does not trade the stall for a zombie.
+    let _ = std::thread::Builder::new()
+        .name("emaxx-process-reaper".into())
+        .spawn(move || {
+            let _ = runtime.child.wait();
+        });
+}
+
 impl Interpreter {
     pub(super) fn find_thread_state(&self, record_id: u64) -> Option<&ThreadState> {
         self.thread_states
@@ -214,6 +231,15 @@ impl Interpreter {
         true
     }
 
+    pub(crate) fn process_gnutls_boot_parameters(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id)
+            .map(|process| process.gnutls.boot_parameters.clone())
+    }
+
+    pub(crate) fn clear_process_gnutls_boot_parameters(&mut self, record_id: u64) -> bool {
+        self.set_process_gnutls_boot_parameters(record_id, Value::Nil)
+    }
+
     pub fn process_gnutls_initstage(&self, record_id: u64) -> Option<i64> {
         self.find_process_state(record_id)
             .map(|process| process.gnutls.initstage)
@@ -248,6 +274,39 @@ impl Interpreter {
         process.gnutls.initstage = initstage;
         process.gnutls.active = true;
         process.gnutls.peer_status = peer_status;
+        Ok(())
+    }
+
+    pub(crate) fn continue_process_gnutls_handshake(
+        &mut self,
+        record_id: u64,
+    ) -> Result<(std::ffi::c_int, *mut std::ffi::c_void), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        let session = process
+            .gnutls
+            .session
+            .as_mut()
+            .ok_or_else(|| LispError::Signal("GnuTLS session is not initialized".into()))?;
+        let result = session.handshake(false)?;
+        Ok((result, session.raw_state()))
+    }
+
+    pub(crate) fn finish_process_gnutls_handshake(
+        &mut self,
+        record_id: u64,
+        peer_status: Value,
+    ) -> Result<(), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        process.gnutls.initstage = 9;
+        process.gnutls.peer_status = Self::stored_value(peer_status);
+        drop(std::mem::replace(
+            &mut process.gnutls.boot_parameters,
+            Value::Nil,
+        ));
         Ok(())
     }
 
@@ -439,6 +498,8 @@ impl Interpreter {
         remote: Option<String>,
         parent_server_id: Option<u64>,
         contact: Value,
+        decoding: Value,
+        encoding: Value,
     ) -> Result<Value, LispError> {
         let status = match &network {
             NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => ProcessStatus::Listen,
@@ -472,8 +533,8 @@ impl Interpreter {
             query_on_exit_flag: true,
             traffic_stopped: false,
             inherit_coding_system_flag,
-            decoding: Value::Nil,
-            encoding: Value::Nil,
+            decoding,
+            encoding,
             program: None,
             argv: Vec::new(),
             stderr_process_id: None,
@@ -1116,21 +1177,35 @@ impl Interpreter {
         true
     }
 
-    pub(crate) fn open_connecting_network_processes(&mut self) -> Vec<u64> {
+    pub(crate) fn connecting_network_processes(&self) -> Vec<u64> {
         let active_thread_id = self.active_thread_id;
-        let mut opened = Vec::new();
-        for process in &mut self.process_states {
-            if process.status == ProcessStatus::Connect
-                && process.network.is_some()
-                && process
-                    .thread_id
-                    .is_none_or(|thread_id| thread_id == active_thread_id)
-            {
-                process.status = ProcessStatus::Open;
-                opened.push(process.record_id);
-            }
-        }
-        opened
+        self.process_states
+            .iter()
+            .filter(|process| {
+                process.status == ProcessStatus::Connect
+                    && process.network.is_some()
+                    && process
+                        .thread_id
+                        .is_none_or(|thread_id| thread_id == active_thread_id)
+            })
+            .map(|process| process.record_id)
+            .collect()
+    }
+
+    pub(crate) fn mark_network_process_open(&mut self, record_id: u64) -> bool {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
+        };
+        process.status = ProcessStatus::Open;
+        true
+    }
+
+    pub(crate) fn mark_network_process_failed(&mut self, record_id: u64) -> bool {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
+        };
+        process.status = ProcessStatus::Failed;
+        true
     }
 
     pub fn process_is_live(&self, record_id: u64) -> bool {
@@ -1450,9 +1525,8 @@ impl Interpreter {
         process.gnutls.session = None;
         process.gnutls.active = false;
         process.gnutls.peer_status = Value::Nil;
-        if let Some(runtime) = process.runtime.as_mut() {
-            let _ = runtime.child.kill();
-            let _ = runtime.child.wait();
+        if let Some(runtime) = process.runtime.take() {
+            terminate_child_without_blocking(runtime);
         }
         if let Some(network) = process.network.take() {
             match &network {
