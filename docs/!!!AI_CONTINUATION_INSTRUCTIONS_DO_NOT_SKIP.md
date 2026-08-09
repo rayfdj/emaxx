@@ -18,6 +18,42 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-09 NETWORK STREAM/SOCKS/PROCED CHECKPOINT: the ordered frontier
+  remains 4,582/7,080, and the required cumulative replay through C# Mode is
+  exact.  Artifact `target/compat/run-1786281895637661000-45511` contains
+  351/351 matching files and zero semantic mismatches.  Its exit status is
+  nonzero only because the harness currently promotes 86 legacy >=2x body
+  diagnostics to an exit failure.
+
+  Network Stream is 27/27 exact (GNU/Emaxx body 19.610/19.465 seconds,
+  0.992x) and SOCKS is 10/10 exact (0.652/0.699 seconds, 1.072x).  Native Rust
+  owns the required socket, coding, TLS, certificate, and process-state
+  mechanisms; GNU `url-http.el` and `socks.el` retain protocol/policy
+  ownership.  Do not restore the removed native URL retrieval shortcut or
+  claim the `url-http` feature at startup.
+
+  Proced is 6/6 exact.  One-PID attributes no longer refresh the whole host
+  table, and Unix group-name lookup is in-process/reentrant.  Its remaining
+  body gap is GNU 1.031 seconds versus Emaxx 13.997 seconds (13.573x), tracked
+  in [issue #13](https://github.com/rayfdj/emaxx/issues/13).  TRAMP is faster
+  than GNU in this replay (102.941 versus 32.529 seconds body).
+
+  Commit `f21042e` independently latches `EMAXX_TRACE_LOAD_ERRORS`; focused
+  bytecode tests and trace behavior pass, fib improved 40.5%, and mapcar
+  improved 44.5% locally.  Formatting, checking, and clippy are green.  The
+  full parallel debug unit run reached 1,870/1,873; all three failures were
+  child-exec timeouts.  They passed in isolation, and a plain
+  `std::process::Command` control in the same binary independently stalled
+  `/bin/sh` for 12.14 seconds.  An instrumented Emaxx child stayed `run` and
+  delivered after 22.9 seconds, proving no event-loop loss; temporary
+  diagnostics were removed.  Performance-harness 1/1, CLI 10/10, and ERT
+  runner 3/3 pass.  Compatibility-harness reached 32/33 under the same launch
+  throttling; its only sub-poll timing failure passed alone in 0.17 seconds.
+
+  NEXT: publish the coherent Network Stream/SOCKS/Proced checkpoint, inspect
+  `/Users/nbmhqa186/Downloads/emaxx-vm-perf-round9.patch` as a separate
+  performance change, then begin selector 4,583,
+  `dbus-test03-peer-interface`.
 - 2026-08-09 COMPATIBILITY-MARCH EVALUATOR BASELINE: the published frontier
   remains 4,582/7,080.  The active performance triage policy now interrupts
   frontier work only when a completed post-bootstrap result is both at least

@@ -85,6 +85,7 @@ pub(crate) use case::*;
 pub(crate) use coding::*;
 pub(crate) use color_lcms::*;
 pub(crate) use completion::*;
+pub(crate) use dispatch::gnutls::{AsyncGnuTlsProgress, progress_async_gnutls};
 pub(crate) use file_io::*;
 pub(crate) use hash_insert::*;
 pub(crate) use hooks_overlays::*;

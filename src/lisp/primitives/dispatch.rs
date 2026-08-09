@@ -11,7 +11,7 @@ mod faces;
 mod files_process;
 mod fonts;
 mod frames;
-mod gnutls;
+pub(crate) mod gnutls;
 mod gui_actions;
 mod lists;
 pub(super) mod misc;

@@ -219,8 +219,6 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
     StartupFeature::new("overlay").with_subfeatures(overlay_subfeatures),
     StartupFeature::new("sha1"),
     StartupFeature::new("text-properties").with_subfeatures(text_properties_subfeatures),
-    // `url' remains a Lisp package; only its HTTP entry points are native.
-    StartupFeature::new("url-http"),
     StartupFeature::new("threads"),
 ];
 
@@ -1062,17 +1060,6 @@ enum SpecialBindingScope {
     BufferLocal(u64),
 }
 
-/// An in-flight native url-retrieve: a worker thread fetches the raw
-/// HTTP response; accept-process-output style waits deliver it to the
-/// response buffer and run the callback.
-pub(crate) struct PendingUrlRetrieval {
-    pub(crate) buffer_id: u64,
-    pub(crate) url: String,
-    pub(crate) callback: Value,
-    pub(crate) cbargs: Vec<Value>,
-    pub(crate) receiver: std::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct SpecialBindingRestore {
     binding_id: u64,
@@ -1248,6 +1235,8 @@ enum ProcessStatus {
     Open,
     /// Network connection closed.
     Closed,
+    /// Network connection or TLS negotiation failed.
+    Failed,
     /// Network server accepting connections.
     Listen,
 }
@@ -1270,6 +1259,7 @@ impl ProcessStatus {
             Self::Connect => "connect",
             Self::Open => "open",
             Self::Closed => "closed",
+            Self::Failed => "failed",
             Self::Listen => "listen",
         }
     }
@@ -2178,7 +2168,6 @@ pub struct Interpreter {
     >,
     pub(crate) gnu_pcase_load_attempted: bool,
     pub(crate) gnu_rx_load_attempted: bool,
-    pub(crate) pending_url_retrievals: Vec<PendingUrlRetrieval>,
     main_thread_id: u64,
     active_thread_id: u64,
     last_thread_error: Option<Value>,
@@ -2930,7 +2919,6 @@ impl Interpreter {
             file_name_handler_match_cache: HashMap::default(),
             gnu_pcase_load_attempted: false,
             gnu_rx_load_attempted: false,
-            pending_url_retrievals: Vec::new(),
             main_thread_id,
             active_thread_id: main_thread_id,
             last_thread_error: None,
@@ -2961,6 +2949,12 @@ impl Interpreter {
         for name in generated_autoloads::generated_dumped_variable_names() {
             interp.mark_special_variable(name);
         }
+        // gnutls.c publishes both variables before preloading gnutls.el.
+        // The shared library is resolved dynamically here, so availability
+        // refreshes the version value while preserving GNU's unavailable
+        // sentinel and the native logging default from startup onward.
+        interp.define_special_variable("libgnutls-version", Value::Integer(-1));
+        interp.define_special_variable("gnutls-log-level", Value::Integer(0));
         interp.define_special_variable("fringe-bitmaps", fringe_bitmaps);
         for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
             interp.put_symbol_property(name, "fringe", Value::Integer((index + 1) as i64));

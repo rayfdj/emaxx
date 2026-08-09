@@ -517,6 +517,10 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "hack-connection-local-variables-apply" => {
             Some(builtin_file_autoload("files-x", Value::Nil))
         }
+        // GNU preloads gnutls.el into the dumped image.  Keep construction of
+        // its high-level parameter plist in the owning Lisp library while
+        // preserving the same initial function availability here.
+        "gnutls-boot-parameters" => Some(builtin_file_autoload("gnutls", Value::Nil)),
         "key-valid-p" => Some(builtin_file_autoload("keymap", Value::Nil)),
         "keymap-global-set" => Some(builtin_file_autoload("keymap", Value::T)),
         "keymap-global-unset" => Some(builtin_file_autoload("keymap", Value::T)),

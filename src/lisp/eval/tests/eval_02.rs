@@ -4383,6 +4383,12 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
         builtin_file_autoload("elisp-mode", Value::Nil)
     );
     assert_eq!(
+        interp
+            .lookup_function("gnutls-boot-parameters", &env)
+            .unwrap(),
+        builtin_file_autoload("gnutls", Value::Nil)
+    );
+    assert_eq!(
         interp.lookup_function("key-valid-p", &env).unwrap(),
         builtin_file_autoload("keymap", Value::Nil)
     );
