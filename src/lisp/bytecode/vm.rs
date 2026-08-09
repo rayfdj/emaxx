@@ -138,6 +138,14 @@ struct Handler {
     unwind_len: usize,
 }
 
+/// Whether `EMAXX_TRACE_LOAD_ERRORS' asks for VM dispatch traces, read
+/// once per process: `run_with_stack' consults it on every bytecode
+/// call, and a getenv there scans the whole environment block each time.
+fn trace_load_errors() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some())
+}
+
 /// Materialize a constant still in reader form.  GNU's reader constructs
 /// `#[...]` functions and `#s(hash-table ...)` objects before bytecode sees
 /// them, including when they are nested inside an arbitrary list-valued
@@ -287,7 +295,7 @@ fn build_cached(
         match materialize_constant(interp, constant, env) {
             Ok(constant) => constants.push(constant),
             Err(error) => {
-                if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+                if trace_load_errors() {
                     eprintln!(
                         "bytecode constant {index} failed to materialize ({}): {error:?}",
                         constant.type_name()
@@ -479,7 +487,7 @@ fn run_with_stack(
     }
     let mut handlers: Vec<Handler> = Vec::new();
     let mut pc = 0usize;
-    let trace_errors = std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some();
+    let trace_errors = trace_load_errors();
 
     macro_rules! pop {
         () => {
