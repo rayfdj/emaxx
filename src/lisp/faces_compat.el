@@ -33,6 +33,38 @@
       (intern face)
     face))
 
+(defun face-list-p (face-or-list)
+  "Return non-nil when FACE-OR-LIST is a list of face references.
+A face attribute plist and the legacy foreground/background color forms are
+single anonymous faces, not lists of faces."
+  ;; This is GNU faces.el's Lisp view of the native merge_face_ref contract.
+  (and (listp face-or-list)
+       (not (memq (car face-or-list)
+                  '(foreground-color background-color)))
+       (not (keywordp (car face-or-list)))))
+
+(defun face-at-point (&optional text multiple)
+  "Return a named face in effect at point in the current buffer.
+When TEXT is non-nil, also recognize face names in the text at point.  When
+MULTIPLE is non-nil, return all named faces in precedence order."
+  (let (faces)
+    (when text
+      (let ((face (thing-at-point 'face)))
+        (when face
+          (push face faces))))
+    (let ((faceprop (or (get-char-property (point) 'read-face-name)
+                        (get-char-property (point) 'face))))
+      (cond
+       ((facep faceprop)
+        (push faceprop faces))
+       ((face-list-p faceprop)
+        (dolist (face faceprop)
+          (when (facep face)
+            (push face faces))))))
+    (if multiple
+        (delete-dups (nreverse faces))
+      (car (last faces)))))
+
 (defun face-id (face &optional _frame)
   (setq face (emaxx--normalize-face face))
   (unless (facep face)

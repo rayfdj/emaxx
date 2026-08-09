@@ -543,7 +543,23 @@ impl Interpreter {
             // loadhist uses `(defalias NAME nil)' while unloading; leaving
             // a literal nil binding here would hide any dumped autoload and
             // turn the next call into `(invalid-function nil)'.
-            if !function.is_nil() || !self.defer_unloaded_defsubst(&name, env) {
+            // GNU unloads a generic's `(defun . NAME)' entry before its
+            // `cl-defmethod' entries.  Native method wrappers are the only
+            // representation Emaxx has to peel, so keep that live chain until
+            // loadhist's generic-owned cl-defmethod handler removes the
+            // recorded methods.  A generic with no methods still follows the
+            // ordinary defalias-to-nil path.
+            let defer_native_generic_unload = function.is_nil()
+                && self
+                    .lookup_var("loadhist-unload-filename", env)
+                    .is_some_and(|value| value.is_truthy())
+                && self
+                    .get_symbol_property(&name, "emaxx-cl-defmethod-specializers")
+                    .and_then(|value| value.to_vec().ok())
+                    .is_some_and(|specializers| !specializers.is_empty());
+            if !function.is_nil()
+                || (!self.defer_unloaded_defsubst(&name, env) && !defer_native_generic_unload)
+            {
                 self.set_function_binding(
                     &name,
                     if function.is_nil() {

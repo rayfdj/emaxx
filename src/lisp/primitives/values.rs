@@ -534,7 +534,7 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
                 steps += 1;
                 current = cdr.borrow().clone();
             }
-            other => return other.cdr(),
+            other => return Err(wrong_type_argument("listp", other)),
         }
     }
 }

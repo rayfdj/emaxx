@@ -529,14 +529,18 @@ fn nthcdr_handles_circular_lists_with_large_counts() {
 }
 
 #[test]
-fn nth_and_nthcdr_project_runtime_keymaps_as_lists() {
+fn nth_and_nthcdr_share_gnu_negative_count_and_keymap_semantics() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let forms = Reader::new(
         r#"
             (let ((map (make-keymap)))
               (define-key map "x" 'sample-command)
-              (list (char-table-p (nth 1 map))
+              (list (eq (nth -2 '(first second)) 'first)
+                    (eq (elt '(first second) -2) 'first)
+                    (eq (nth -2 map) 'keymap)
+                    (eq (nthcdr -2 map) map)
+                    (char-table-p (nth 1 map))
                     (equal (car (nthcdr 2 map)) '(120 . sample-command))))
             "#,
     )
@@ -546,7 +550,7 @@ fn nth_and_nthcdr_project_runtime_keymaps_as_lists() {
         .iter()
         .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
         .expect("keymap nth forms should evaluate");
-    assert_eq!(result, Value::list([Value::T, Value::T]));
+    assert_eq!(result, Value::list(vec![Value::T; 6]));
 }
 
 #[test]
@@ -1489,6 +1493,42 @@ fn normal_mode_consults_auto_mode_alist_before_dispatching() {
     assert_eq!(
         interp.lookup_var("major-mode", &env),
         Some(Value::Symbol("sample-custom-mode".into()))
+    );
+}
+
+#[test]
+fn normal_mode_uses_gnu_default_perl_file_association() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_function_binding(
+        "perl-mode",
+        Some(Value::lambda(
+            Vec::new().into(),
+            vec![Value::list([
+                Value::Symbol("setq-local".into()),
+                Value::Symbol("major-mode".into()),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol("perl-mode".into()),
+                ]),
+            ])]
+            .into(),
+            shared_env(Vec::new()),
+        )),
+    );
+    interp.set_variable(
+        "buffer-file-name",
+        Value::String("/tmp/example.pl".into()),
+        &mut env,
+    );
+
+    assert_eq!(
+        call(&mut interp, "normal-mode", &[], &mut env).expect("dispatch default Perl mode"),
+        Value::Nil
+    );
+    assert_eq!(
+        interp.lookup_var("major-mode", &env),
+        Some(Value::Symbol("perl-mode".into()))
     );
 }
 

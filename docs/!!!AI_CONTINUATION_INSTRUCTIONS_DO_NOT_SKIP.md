@@ -18,6 +18,40 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-10 FLYMAKE CHECKPOINT: the fresh contiguous ordered frontier is
+  4,678/7,080, leaving 2,402 selectors.  Elixir TS (1 matching skip), Etags
+  (3/3), Executable (3/3), F90 (17/17), and Flymake (9/9) all match GNU.  The
+  exact final-source Flymake artifact is
+  `target/compat/run-1786307778758973000-93329`.
+
+  Preserve the ownership boundaries established here.  GNU `faces.el` owns
+  face-selection policy; `src/lisp/faces_compat.el` supplies the missing
+  `face-list-p` and `face-at-point` Elisp surface.  Native `nth`, list `elt`,
+  and `nthcdr` share `nthcdr_value`, including GNU negative-count, bignum,
+  cycle, keymap-identity, and `listp` error semantics.  The preloaded default
+  mode table contains GNU's exact Perl filename association, allowing the
+  already-correct Perl Flymake backend to run.
+
+  GNU `loadhist.el` remains the unload policy owner.  Because it visits a
+  generic's defun entry before its cl-defmethod entries, native defalias-to-nil
+  defers only while that generic still has method wrappers.  The existing
+  loadhist method shim then removes wrappers and introspection metadata in the
+  authoritative order.  Repeated whole-file unload and the six-case Edebug
+  regression pass.
+
+  Final Flymake GNU/Emaxx setup is 0.316/1.941 seconds and body is
+  7.883/9.422 seconds (1.195x).  No new file meets the march performance
+  threshold.  Rustfmt, diff validation, all-target/all-feature check, strict
+  Clippy, focused regressions, and final-source Flymake pass.  A restricted
+  full library run reached 1,873/1,888 before the final repairs; its three
+  real failures pass alone, while nine localhost failures are explicit socket
+  sandbox denials and three process waits reproduce the known host throttling.
+  Protected scratch files are unchanged.  Native remains 1,420/1,420.
+
+  NEXT: commit and push this checkpoint, audit
+  `/Users/nbmhqa186/Downloads/emaxx-vm-perf-round9.patch` independently, then
+  continue with selector 4,679, `gdb-mi-parse-value`, in
+  `test/lisp/progmodes/gdb-mi-tests.el`.
 - 2026-08-10 ELISP MODE CHECKPOINT: the fresh contiguous ordered frontier is
   4,645/7,080, leaving 2,435 selectors.  All 63 selected outcomes in
   `test/lisp/progmodes/elisp-mode-tests.el` match GNU exactly in
