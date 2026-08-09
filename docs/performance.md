@@ -101,6 +101,10 @@ artifacts retain total, setup, and body durations, while `emaxx_over_gnu_milli`
 and the 2x flag use only body duration from two completed runs.  A killed run
 is censored evidence, so it has no performance ratio and always makes the
 correctness comparison incomplete—even if both runners timed out identically.
+For successful runs, body duration is the interval between the child-written
+loaded marker and structured result file.  The host's 50-ms polling loop is
+used only to enforce the two deadlines; its observation cadence is not part of
+the performance measurement.
 
 ## Execution Model
 
@@ -397,13 +401,39 @@ The final exact file-level artifact is
 
 The comparable body ratio is 1.143x.  The formerly pathological exact
 selector measured GNU 0.180 seconds and Emaxx 0.296 seconds (1.639x) in
-`run-1786252168034490000-67122`.  File Notify's final four-test body measured
-0.060/0.120 seconds (1.994x), while ERC internal measured 0.120/0.240 seconds
-(1.993x); both are below the inclusive 2x gate and are small enough that the
-harness's 50-ms host observation cadence is visible.  The multi-second Auto
-Revert aggregate is the stronger performance result.  Info Xref measured
+`run-1786252168034490000-67122`.  A later timing audit found that the original
+File Notify and ERC numbers included the harness's 50-ms polling cadence.
+With child-written phase timestamps, File Notify measures 0.059 seconds GNU
+versus 0.058 seconds Emaxx (0.995x) in
+`run-1786257853829348000-72946`, while ERC internal measures 0.116/0.138
+seconds (1.186x) in `run-1786257870590167000-73067`.  Info Xref measured
 0.353 seconds GNU versus 0.300 seconds Emaxx (0.851x).  In all cases the
 larger Emaxx setup cost remains separately recorded and excluded.
+
+### Phase-Timing Precision Audit
+
+The first broad replay after the filesystem repair showed many small test
+files at approximately 55 ms Emaxx versus less than 1 ms GNU.  The constant
+was diagnostic: `run_command` polled the loaded marker and child status every
+50 ms, then calculated body time from the instants at which the supervisor
+noticed them.  Depending on which polling iteration observed child exit, an
+otherwise fast body could inherit almost one entire interval.  The partial
+artifact `target/compat/run-1786257103733205000-70665` is behaviorally useful
+but its short-body ratios are invalid.
+
+Successful-run timing now uses file modification times created inside each
+child: the loaded marker immediately precedes ERT, and the structured report
+immediately follows result collection.  Timeout decisions continue to use
+monotonic host instants and independent 180-second phase budgets.  A
+sub-poll-duration regression test ensures successful timing cannot fall back
+to the supervisor cadence.  All 33 release harness tests pass.
+
+The corrected Allout run in `run-1786257690707852000-72675` demonstrates the
+effect: the same five exact tests measure 0.010 seconds GNU and 0.002 seconds
+Emaxx (0.198x), rather than the false sub-millisecond/55-ms result.  Align's
+corrected 8/8 run in `run-1786257812286013000-72812` remains 0.371 seconds GNU
+versus 2.660 seconds Emaxx (7.162x), so that larger body gap is real and must
+be diagnosed thematically.
 
 Before a representation change is retained it must pass all of these gates:
 

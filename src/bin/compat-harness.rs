@@ -2127,7 +2127,7 @@ fn run_oracle(
     command.arg("--eval");
     command.arg(format!("(emaxx-compat-run (quote {selector}))"));
 
-    let process = run_command(command, timeout, &loaded_marker)?;
+    let process = run_command(command, timeout, &loaded_marker, Some(&result_path))?;
     let report =
         load_or_synthesize_report(&result_path, "oracle", relative_file, selector, &process)?;
     Ok(RunnerArtifacts { report, process })
@@ -2183,7 +2183,7 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
         request.selector
     ));
 
-    let process = run_command(command, request.timeout, &loaded_marker)?;
+    let process = run_command(command, request.timeout, &loaded_marker, Some(&result_path))?;
     let report = load_or_synthesize_report(
         &result_path,
         "emaxx",
@@ -2263,6 +2263,7 @@ fn run_command(
     mut command: Command,
     timeout: Option<Duration>,
     loaded_marker: &Path,
+    completed_marker: Option<&Path>,
 ) -> Result<ProcessResult, String> {
     // Capture output through temporary files rather than pipes: a pipe fills
     // up while we poll `try_wait' (deadlocking a chatty child), and any
@@ -2286,23 +2287,38 @@ fn run_command(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
+    let wall_started = SystemTime::now();
+    let started = Instant::now();
     let mut child = command
         .spawn()
         .map_err(|error| format!("spawn command: {error}"))?;
-    let started = Instant::now();
     let mut test_started = None;
+    let mut test_started_at = None;
     let mut setup_elapsed = None;
 
     let collect = |timeout_phase: Option<TimeoutPhase>,
                    exit_code: Option<i32>,
                    setup_elapsed: Option<Duration>,
-                   test_started: Option<Instant>|
+                   test_started: Option<Instant>,
+                   test_started_at: Option<SystemTime>|
      -> Result<ProcessResult, String> {
         let elapsed = started.elapsed();
         let stdout = fs::read_to_string(&stdout_path).unwrap_or_default();
         let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
         let _ = fs::remove_file(&stdout_path);
         let _ = fs::remove_file(&stderr_path);
+        // The supervisory loop deliberately polls coarsely so hundreds of
+        // compatibility children do not busy-wait.  Using the poll instant
+        // as a phase boundary therefore adds an arbitrary ~50 ms to short
+        // bodies.  Both runners write the loaded marker immediately before
+        // ERT and the structured report immediately after it, so their file
+        // timestamps provide the precise, runner-symmetric body interval.
+        let child_reported_test_elapsed = test_started_at.and_then(|started_at| {
+            completed_marker
+                .and_then(|path| fs::metadata(path).ok())
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|completed_at| completed_at.duration_since(started_at).ok())
+        });
         Ok(ProcessResult {
             exit_code,
             stdout,
@@ -2311,8 +2327,8 @@ fn run_command(
             timeout_phase,
             setup_elapsed: setup_elapsed.unwrap_or(elapsed),
             test_started: test_started.is_some(),
-            test_elapsed: test_started
-                .map(|test_started| test_started.elapsed())
+            test_elapsed: child_reported_test_elapsed
+                .or_else(|| test_started.map(|test_started| test_started.elapsed()))
                 .unwrap_or_default(),
             elapsed,
         })
@@ -2321,7 +2337,12 @@ fn run_command(
     loop {
         if test_started.is_none() && loaded_marker.is_file() {
             let now = Instant::now();
-            setup_elapsed = Some(now.duration_since(started));
+            test_started_at = fs::metadata(loaded_marker)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok());
+            setup_elapsed = test_started_at
+                .and_then(|loaded_at| loaded_at.duration_since(wall_started).ok())
+                .or_else(|| Some(now.duration_since(started)));
             test_started = Some(now);
         }
 
@@ -2329,7 +2350,13 @@ fn run_command(
             .try_wait()
             .map_err(|error| format!("wait for command: {error}"))?
         {
-            return collect(None, status.code(), setup_elapsed, test_started);
+            return collect(
+                None,
+                status.code(),
+                setup_elapsed,
+                test_started,
+                test_started_at,
+            );
         }
 
         let timeout_phase = timeout.and_then(|limit| match test_started {
@@ -2349,6 +2376,7 @@ fn run_command(
                 status.code(),
                 setup_elapsed,
                 test_started,
+                test_started_at,
             );
         }
 
@@ -2855,7 +2883,7 @@ mod tests {
                 "sleep 0.1; : > \"$EMAXX_TEST_PHASE_MARKER\"; sleep 0.8",
             ])
             .env("EMAXX_TEST_PHASE_MARKER", &marker);
-        let result = run_command(command, Some(Duration::from_millis(500)), &marker).unwrap();
+        let result = run_command(command, Some(Duration::from_millis(500)), &marker, None).unwrap();
         assert_eq!(result.timeout_phase, Some(TimeoutPhase::Test));
         assert!(result.setup_elapsed >= Duration::from_millis(75));
         assert!(result.test_elapsed >= Duration::from_millis(500));
@@ -2869,10 +2897,41 @@ mod tests {
         let marker = unique_temp_path("missing-phase-marker").unwrap();
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 1"]);
-        let result = run_command(command, Some(Duration::from_millis(75)), &marker).unwrap();
+        let result = run_command(command, Some(Duration::from_millis(75)), &marker, None).unwrap();
         assert_eq!(result.timeout_phase, Some(TimeoutPhase::Setup));
         assert!(!result.test_started);
         assert_eq!(result.test_elapsed, Duration::ZERO);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_uses_child_markers_for_sub_poll_body_timing() {
+        let loaded = unique_temp_path("phase-loaded").unwrap();
+        let completed = unique_temp_path("phase-completed").unwrap();
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "sleep 0.1; : > \"$EMAXX_TEST_PHASE_MARKER\"; : > \"$EMAXX_TEST_COMPLETED_MARKER\"",
+            ])
+            .env("EMAXX_TEST_PHASE_MARKER", &loaded)
+            .env("EMAXX_TEST_COMPLETED_MARKER", &completed);
+        let result = run_command(
+            command,
+            Some(Duration::from_millis(500)),
+            &loaded,
+            Some(&completed),
+        )
+        .unwrap();
+        assert!(!result.timed_out);
+        assert!(result.test_started);
+        assert!(
+            result.test_elapsed < Duration::from_millis(25),
+            "child markers reported {:?}",
+            result.test_elapsed
+        );
+        let _ = fs::remove_file(loaded);
+        let _ = fs::remove_file(completed);
     }
 
     #[test]

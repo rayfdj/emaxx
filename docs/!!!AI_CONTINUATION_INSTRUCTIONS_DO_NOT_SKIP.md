@@ -18,6 +18,33 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-09 PHASE-TIMING PRECISION REPAIR: the first complete-prefix replay
+  after filesystem commit `788dbad` exposed a repeated apparent Emaxx body
+  floor near 55 ms.  This was a harness measurement error, not runtime work:
+  `run_command` used its 50-ms supervisory polling instant for both the loaded
+  boundary and child completion.  A fast child that crossed one poll boundary
+  was charged the entire interval.  The interrupted diagnostic artifact is
+  `target/compat/run-1786257103733205000-70665`; do not use its short-body
+  ratios.
+
+  Successful runs now derive body duration from the child-written loaded
+  marker and structured-result file timestamps.  Polling remains only for
+  independent setup/test timeout enforcement.  A new sub-poll-duration test
+  prevents the 50-ms quantization from returning; all 33 release harness tests
+  pass.  Corrected Allout is exact at 5/5 in
+  `target/compat/run-1786257690707852000-72675`: GNU/Emaxx setup are
+  0.263/1.995 seconds, while body is 0.010/0.002 seconds (0.198x).  Corrected
+  File Notify is exact at 4/4 in `run-1786257853829348000-72946`, with body
+  0.059/0.058 seconds (0.995x).  Corrected ERC internal is exact at 13/13 in
+  `run-1786257870590167000-73067`, with body 0.116/0.138 seconds (1.186x).
+
+  The correction also confirms that Align's gap is real rather than polling
+  noise: eight tests are exact in `run-1786257812286013000-72812`, but body is
+  0.371 seconds GNU versus 2.660 seconds Emaxx (7.162x).  NEXT: commit and push
+  the timing repair, diagnose Align as a thematic body-performance problem,
+  then rerun the complete canonical prefix through C# Mode.  Do not advance
+  selector 4,583 before that replay is exact and every completed >=2x body
+  result has been classified.
 - 2026-08-09 FILE-NOTIFICATION AND HANDLER-DISPATCH REPAIR: the published
   ordered frontier remains 4,582/7,080 while the previously censored Auto
   Revert/File Notify files and sandbox-sensitive ERC/Info Xref files are now
@@ -59,9 +86,9 @@ counts as the progress denominator.
   reuse, dynamic handler rebinding, cons mutation, handler `operations`
   changes, and in-place mutable-regexp edits.  The unsandboxed release gate is
   green: 1,860 library, 32 compatibility-harness, one performance-harness,
-  ten CLI, and three ERT-runner tests.  NEXT: commit/push this coherent theme,
-  then run the complete canonical prefix through C# Mode on that commit.  Do
-  not start selector 4,583 until the replay is exact.
+  ten CLI, and three ERT-runner tests.  The theme is published as `788dbad`;
+  the phase-timing precision audit above supersedes the two sub-quarter-second
+  ratios reported here.
 - 2026-08-09 TRAMP CONNECTION-OWNERSHIP REPAIR: the published ordered
   frontier remains 4,582/7,080, but the complete canonical TRAMP file is now
   conclusively green.  The stall was caused by Emaxx creating a commandless

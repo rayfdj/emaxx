@@ -34,6 +34,29 @@ the compact-value interpreter work.
 
 ## Current State
 
+- The 2026-08-09 timing precision audit found that the phase split was
+  semantically correct for timeout enforcement but imprecise for fast-body
+  performance comparisons.  The supervisor checked both the loaded marker
+  and child exit every 50 ms, so some Emaxx bodies were charged a full polling
+  interval while a faster-exiting GNU child happened to be observed in the
+  same iteration.  Successful-run body timing now uses the filesystem
+  timestamps written by the child at the loaded marker and structured result;
+  the coarse loop remains solely an efficient timeout supervisor.  A focused
+  regression covers a body shorter than one polling interval, and the release
+  harness is 33/33.
+
+  The corrected five-test Allout artifact is
+  `target/compat/run-1786257690707852000-72675`: setup is 0.263 seconds GNU
+  versus 1.995 seconds Emaxx, while body is 0.010 versus 0.002 seconds (0.198x).
+  Corrected File Notify is exact at 4/4 in
+  `run-1786257853829348000-72946` (0.059/0.058-second body, 0.995x), and ERC
+  internal is exact at 13/13 in `run-1786257870590167000-73067`
+  (0.116/0.138-second body, 1.186x).  The interrupted broad artifact
+  `run-1786257103733205000-70665` must not be used for short-body ratios.
+  Align remains a genuine thematic gap after correction: 8/8 exact in
+  `run-1786257812286013000-72812`, with body 0.371 seconds GNU versus 2.660
+  seconds Emaxx (7.162x).  Profile and fix that body path, then replay the
+  complete prefix through C# Mode before advancing selector 4,583.
 - The 2026-08-09 filesystem-event and handler-dispatch checkpoint keeps the
   published frontier at 4,582/7,080 while resolving every file that the prior
   broad replay had censored or made environment-sensitive.  Queued native
@@ -58,20 +81,20 @@ the compact-value interpreter work.
 
   Exact final-source evidence: Auto Revert is 7/7 in
   `target/compat/run-1786252309469163000-67298`, with GNU setup/body
-  0.456/2.016 seconds and Emaxx 2.194/2.306 seconds (1.143x body).  File Notify
-  is 4/4 in `run-1786252435568937000-67476` (0.060/0.120-second body,
-  measured 1.994x).  ERC internal is 13/13 in
-  `run-1786252895157912000-68739` (0.120/0.240-second body, measured 1.993x),
-  and Info Xref is 4/4 in `run-1786252914842759000-68885`
+  0.456/2.016 seconds and Emaxx 2.194/2.306 seconds (1.143x body).  Corrected
+  timestamp-based measurement puts File Notify at 0.059/0.058-second body
+  (0.995x) and ERC internal at 0.116/0.138 seconds (1.186x), as recorded in
+  the timing-audit entry above.  Info Xref is 4/4 in
+  `run-1786252914842759000-68885`
   (0.353/0.300-second body, 0.851x).  The formerly pathological individual
   Auto Revert selector measured 1.639x after repair.  All setup figures remain
   separate from the 2x gate.
 
   Focused cache/event/indirect-buffer tests and the complete unsandboxed
   release gate pass: 1,860 library, 32 compatibility-harness, one
-  performance-harness, ten CLI, and three ERT-runner tests.  Commit and push
-  this theme, then replay the complete canonical prefix through C# Mode before
-  starting selector 4,583.
+  performance-harness, ten CLI, and three ERT-runner tests.  This theme is
+  published as `788dbad`; the separate timing-audit checkpoint above follows
+  it.
 - The 2026-08-09 TRAMP connection-ownership repair keeps the published
   ordered frontier at 4,582/7,080 while conclusively clearing its canonical
   TRAMP boundary.  Emaxx's in-process `/mock:' metadata transport had created
