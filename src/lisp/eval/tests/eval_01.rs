@@ -2436,6 +2436,81 @@ fn file_name_handlers_honor_precedence_operations_and_inhibition() {
 }
 
 #[test]
+fn file_name_handler_match_cache_reuses_stable_scans() {
+    crate::lisp::primitives::reset_file_name_handler_scan_count();
+    assert_eq!(
+        eval_str(
+            r#"(let ((file-name-handler-alist
+                      '(("cache-target" . emaxx-cache-handler))))
+                 (list (find-file-name-handler
+                        "/tmp/cache-target" 'file-exists-p)
+                       (find-file-name-handler
+                        "/tmp/cache-target" 'file-exists-p)))"#,
+        ),
+        Value::list([
+            Value::symbol("emaxx-cache-handler"),
+            Value::symbol("emaxx-cache-handler"),
+        ])
+    );
+    assert_eq!(crate::lisp::primitives::file_name_handler_scan_count(), 1);
+}
+
+#[test]
+fn file_name_handler_match_cache_tracks_every_mutable_authority() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((entry (cons "cache-one" 'emaxx-cache-first))
+                      (file-name-handler-alist (list entry)))
+                 (list
+                  (find-file-name-handler "/tmp/cache-one" 'file-exists-p)
+                  (progn
+                    (setcar entry "cache-two")
+                    (find-file-name-handler "/tmp/cache-one" 'file-exists-p))
+                  (find-file-name-handler "/tmp/cache-two" 'file-exists-p)
+                  (let ((file-name-handler-alist
+                         '(("cache-two" . emaxx-cache-second))))
+                    (find-file-name-handler "/tmp/cache-two" 'file-exists-p))
+                  (find-file-name-handler "/tmp/cache-two" 'file-exists-p)
+                  (progn
+                    (put 'emaxx-cache-first 'operations '(copy-file))
+                    (find-file-name-handler "/tmp/cache-two" 'file-exists-p))
+                  (find-file-name-handler "/tmp/cache-two" 'copy-file)))"#,
+        ),
+        Value::list([
+            Value::symbol("emaxx-cache-first"),
+            Value::Nil,
+            Value::symbol("emaxx-cache-first"),
+            Value::symbol("emaxx-cache-second"),
+            Value::symbol("emaxx-cache-first"),
+            Value::Nil,
+            Value::symbol("emaxx-cache-first"),
+        ])
+    );
+
+    // Mutable Lisp regexps are validated against their cached text snapshot:
+    // `aset' can change one without replacing its enclosing cons cells.
+    assert_eq!(
+        eval_str(
+            r#"(let* ((pattern (copy-sequence "mutable-a"))
+                      (file-name-handler-alist
+                       (list (cons pattern 'emaxx-mutable-handler))))
+                 (list
+                  (find-file-name-handler "/tmp/mutable-a" 'file-exists-p)
+                  (progn
+                    (aset pattern 8 ?b)
+                    (list
+                     (find-file-name-handler "/tmp/mutable-a" 'file-exists-p)
+                     (find-file-name-handler
+                      "/tmp/mutable-b" 'file-exists-p)))))"#,
+        ),
+        Value::list([
+            Value::symbol("emaxx-mutable-handler"),
+            Value::list([Value::Nil, Value::symbol("emaxx-mutable-handler")]),
+        ])
+    );
+}
+
+#[test]
 fn autoloaded_file_name_handlers_keep_their_symbol_identity() {
     let unique = format!(
         "{}-{}",

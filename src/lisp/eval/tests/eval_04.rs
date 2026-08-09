@@ -1399,6 +1399,98 @@ fn file_notifications_keep_callbacks_isolated_and_invalidate_deleted_paths() {
 }
 
 #[test]
+fn file_notifications_do_not_replay_events_to_later_watches() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-notify-generation-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(&path, "initial").expect("create notification generation test file");
+    let path_literal = serde_json::to_string(&path.display().to_string()).unwrap();
+    let form = format!(
+        r#"(progn
+             (require 'filenotify)
+             (let (events first second)
+               ;; Queue an event before either watch exists.  It must not be
+               ;; delivered retroactively when the command loop next idles.
+               (write-region "before" nil {path_literal} nil 'no-message)
+               (setq first
+                     (file-notify-add-watch
+                      {path_literal} '(change)
+                      (lambda (_event) (push 'first events)))
+                     second
+                     (file-notify-add-watch
+                      {path_literal} '(change)
+                      (lambda (_event) (push 'second events))))
+               (sleep-for 0)
+               (let ((before events))
+                 (write-region "after" nil {path_literal} nil 'no-message)
+                 (sleep-for 0)
+                 (prog1
+                     (list before
+                           (length events)
+                           (not (null (memq 'first events)))
+                           (not (null (memq 'second events))))
+                   (file-notify-rm-watch first)
+                   (file-notify-rm-watch second)))))"#
+    );
+    assert_eq!(
+        eval_str_with_upstream_load_path(&form),
+        Value::list([Value::Nil, Value::Integer(2), Value::T, Value::T])
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn file_notifications_observe_changes_made_outside_the_interpreter() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-notify-external-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(&path, "before").expect("create external notification test file");
+    let path_literal = serde_json::to_string(&path.display().to_string()).unwrap();
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    eval_str_with(
+        &mut interp,
+        &format!(
+            r#"(progn
+                 (require 'filenotify)
+                 (defvar emaxx-external-notify-events nil)
+                 (defvar emaxx-external-notify-watch
+                   (file-notify-add-watch
+                    {path_literal} '(change)
+                    (lambda (event)
+                      (push (cadr event) emaxx-external-notify-events)))))"#
+        ),
+    );
+
+    // Bypass every Lisp file primitive, just as an editor, compiler, or VCS
+    // subprocess would when replacing a visited file.
+    fs::write(&path, "changed by another process")
+        .expect("change watched file outside the interpreter");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (read-event nil nil 0.1)
+               (prog1 emaxx-external-notify-events
+                 (file-notify-rm-watch emaxx-external-notify-watch)))",
+        ),
+        Value::list([Value::symbol("changed")])
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn global_auto_revert_adopts_files_opened_after_enable() {
     let path = std::env::temp_dir().join(format!(
         "emaxx-notify-late-{}",
@@ -1476,6 +1568,44 @@ fn make_indirect_buffer_preserves_text_point_and_restriction() {
             Value::Integer(20),
         ])
     );
+}
+
+#[test]
+fn make_indirect_buffer_does_not_visit_the_base_buffers_file() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-indirect-file-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(&path, "shared text").expect("create indirect buffer source file");
+    let path_literal = serde_json::to_string(&path.display().to_string()).unwrap();
+    let form = format!(
+        r#"(let* ((base (find-file-noselect {path_literal}))
+                  (plain (make-indirect-buffer base " indirect-file-plain"))
+                  (clone (make-indirect-buffer base " indirect-file-clone" 'clone)))
+             (unwind-protect
+                 (list (with-current-buffer base buffer-file-name)
+                       (with-current-buffer plain
+                         (list buffer-file-name buffer-file-truename
+                               (buffer-modified-p)))
+                       (with-current-buffer clone
+                         (list buffer-file-name buffer-file-truename
+                               (buffer-modified-p))))
+               (kill-buffer plain)
+               (kill-buffer clone)
+               (kill-buffer base)))"#
+    );
+    assert_eq!(
+        eval_str_with_upstream_load_path(&form),
+        Value::list([
+            Value::String(path.display().to_string().into()),
+            Value::list([Value::Nil, Value::Nil, Value::Nil]),
+            Value::list([Value::Nil, Value::Nil, Value::Nil]),
+        ])
+    );
+    let _ = fs::remove_file(path);
 }
 
 #[test]

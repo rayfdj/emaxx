@@ -509,7 +509,7 @@ define_dispatch!(
                 let clone = args.get(2).is_some_and(|value| value.is_truthy());
                 let inhibit_hooks = args.get(3).is_some_and(|value| value.is_truthy());
                 let (new_id, _) = interp.create_buffer(&new_name);
-                let (text, props, point, mark, file, base_overlays, restriction, multibyte) = {
+                let (text, props, point, mark, base_overlays, restriction, multibyte) = {
                     let base = interp.get_buffer_by_id(base_id).ok_or_else(|| {
                         LispError::Signal(format!("No buffer with id {}", base_id))
                     })?;
@@ -518,7 +518,6 @@ define_dispatch!(
                         base.full_property_spans(),
                         base.point(),
                         base.mark(),
-                        base.file.clone(),
                         base.overlays.clone(),
                         base.restriction(),
                         base.is_multibyte(),
@@ -538,7 +537,10 @@ define_dispatch!(
                 };
                 if let Some(buffer) = interp.get_buffer_by_id_mut(new_id) {
                     *buffer = crate::buffer::Buffer::from_text(&new_name, &text);
-                    buffer.file = file;
+                    // GNU indirect buffers share their base buffer's text,
+                    // but never visit its file themselves.  In particular,
+                    // make-indirect-buffer clears both buffer-file-name and
+                    // buffer-file-truename even when CLONE is non-nil.
                     buffer.inhibit_hooks = inhibit_hooks;
                     buffer.set_multibyte(multibyte);
                     buffer.restore_restriction(restriction.0, restriction.1);

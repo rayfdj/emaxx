@@ -1606,6 +1606,32 @@ struct FileNotifyWatch {
     path: Option<String>,
     callback: Value,
     active: bool,
+    fingerprint: Option<FileNotifyFingerprint>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FileNotifyFingerprint {
+    Missing,
+    Present {
+        modified: Option<SystemTime>,
+        len: u64,
+        is_directory: bool,
+    },
+}
+
+#[derive(Clone)]
+struct PendingFileNotification {
+    path: String,
+    action: String,
+    callbacks: Vec<(i64, Value)>,
+}
+
+pub(crate) struct FileNameHandlerMatchCacheEntry {
+    pub(crate) handler_alist: Value,
+    pub(crate) cons_epoch: crate::lisp::types::ConsMutationEpoch,
+    pub(crate) definition_generation: u64,
+    pub(crate) pattern_snapshots: Vec<(Value, String)>,
+    pub(crate) matches: Vec<(usize, Value)>,
 }
 
 #[derive(Clone, Debug)]
@@ -2149,8 +2175,13 @@ pub struct Interpreter {
     /// forms; `quote' returns them as-is (keyed by car-cell address, the
     /// stored Value keeps the template alive so keys stay unique).
     plain_quote_templates: HashMap<usize, ConsMutationStamped<Value>>,
-    pending_file_notifications: Vec<(String, String)>,
+    pending_file_notifications: Vec<PendingFileNotification>,
     file_notify_watches: HashMap<i64, FileNotifyWatch>,
+    pub(crate) file_name_handler_match_cache: HashMap<
+        (String, String),
+        FileNameHandlerMatchCacheEntry,
+        crate::lisp::primitives::FnvBuildHasher,
+    >,
     pub(crate) gnu_pcase_load_attempted: bool,
     pub(crate) gnu_rx_load_attempted: bool,
     pub(crate) pending_url_retrievals: Vec<PendingUrlRetrieval>,
@@ -2888,6 +2919,7 @@ impl Interpreter {
             plain_quote_templates: HashMap::new(),
             pending_file_notifications: Vec::new(),
             file_notify_watches: HashMap::new(),
+            file_name_handler_match_cache: HashMap::default(),
             gnu_pcase_load_attempted: false,
             gnu_rx_load_attempted: false,
             pending_url_retrievals: Vec::new(),
