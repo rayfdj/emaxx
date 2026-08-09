@@ -566,19 +566,20 @@ fn custom_current_group_alist_defaults_to_nil() {
 }
 
 #[test]
-fn emacs_lisp_mode_syntax_table_defaults_to_lisp_data_table() {
-    // The shared GNU lisp-data-mode-syntax-table built at startup: `.'
-    // must read as a symbol constituent (copy-syntax-table callers like
-    // ietf-drums.el depend on the entries).
+fn emacs_lisp_mode_syntax_table_is_the_elisp_specific_child() {
+    // GNU's table inherits the Lisp-data punctuation entries but removes the
+    // generic prefix flag from `@'; syntax-propertize restores it for `,@'.
     assert_eq!(
         eval_str("emacs-lisp-mode-syntax-table"),
-        Value::CharTable(3)
+        Value::CharTable(4)
     );
     assert_eq!(
         eval_str(
-            "(with-temp-buffer (set-syntax-table (copy-syntax-table emacs-lisp-mode-syntax-table)) (char-syntax ?.))"
+            "(with-temp-buffer
+               (set-syntax-table (copy-syntax-table emacs-lisp-mode-syntax-table))
+               (list (char-syntax ?.) (char-syntax ?@)))"
         ),
-        Value::Integer('_' as i64)
+        Value::list([Value::Integer('_' as i64), Value::Integer('_' as i64),])
     );
 }
 

@@ -13,7 +13,7 @@ fn coding_plist(mnemonic: char, extras: impl IntoIterator<Item = (String, Value)
     Value::list(items)
 }
 
-fn syntax_spec_value(spec: &str) -> Value {
+pub(super) fn syntax_spec_value(spec: &str) -> Value {
     Value::String(spec.to_string().into())
 }
 

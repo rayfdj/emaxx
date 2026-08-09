@@ -1264,11 +1264,11 @@ define_dispatch!(
                 else {
                     unreachable!("make_char_table returns a char-table");
                 };
-                // A fresh per-buffer table inheriting the static GNU
-                // lisp-data-mode-syntax-table (built in Interpreter::new).
+                // A fresh per-buffer table inheriting the dumped GNU
+                // emacs-lisp-mode table (built in Interpreter::new).
                 interp.set_char_table_parent(
                     syntax_table_id,
-                    Some(interp.lisp_data_syntax_table_id()),
+                    Some(interp.emacs_lisp_mode_syntax_table_id()),
                 )?;
                 interp.set_current_syntax_table(syntax_table_id);
                 Ok(Value::Nil)

@@ -2696,10 +2696,8 @@ impl Interpreter {
                     ],
                     category_docs: Vec::new(),
                 },
-                // GNU lisp-data-mode-syntax-table, exposed through the
-                // `emacs-lisp-mode-syntax-table' variable so that
-                // copy-syntax-table callers (ietf-drums.el) inherit the
-                // symbol-constituent punctuation entries.
+                // GNU lisp-data-mode-syntax-table.  Lisp symbols inherit its
+                // punctuation entries, including the generic `@' prefix.
                 CharTableState {
                     id: 3,
                     subtype: Some("syntax-table".into()),
@@ -2707,6 +2705,23 @@ impl Interpreter {
                     parent: Some(standard_syntax_table_id),
                     extra_slots: Vec::new(),
                     entries: lisp_data_syntax_table_entries(),
+                    category_docs: Vec::new(),
+                },
+                // GNU emacs-lisp-mode-syntax-table is a child of the data
+                // table, but deliberately removes `@''s generic prefix flag:
+                // syntax-propertize adds it back only for the `,@' reader
+                // token (bug#24542).
+                CharTableState {
+                    id: 4,
+                    subtype: Some("syntax-table".into()),
+                    default: Value::Nil,
+                    parent: Some(3),
+                    extra_slots: Vec::new(),
+                    entries: vec![CharTableEntry {
+                        start: '@' as u32,
+                        end: '@' as u32,
+                        value: syntax_spec_value("_"),
+                    }],
                     category_docs: Vec::new(),
                 },
             ],
@@ -2784,7 +2799,7 @@ impl Interpreter {
             standard_case_table_id: None,
             ascii_case_table_ids: Vec::new(),
             buffer_case_tables: Vec::new(),
-            next_char_table_id: 4,
+            next_char_table_id: 5,
             records: vec![
                 RecordState {
                     id: main_thread_id,

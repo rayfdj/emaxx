@@ -533,9 +533,10 @@ impl Interpreter {
             "window-display-table" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
             "text-mode-syntax-table" => Some(Value::CharTable(2)),
-            "emacs-lisp-mode-syntax-table"
-            | "lisp-mode-syntax-table"
-            | "lisp-data-mode-syntax-table" => {
+            "emacs-lisp-mode-syntax-table" => {
+                Some(Value::CharTable(self.emacs_lisp_mode_syntax_table_id()))
+            }
+            "lisp-mode-syntax-table" | "lisp-data-mode-syntax-table" => {
                 Some(Value::CharTable(self.lisp_data_syntax_table_id()))
             }
             "prog-mode-syntax-table" => Some(Value::CharTable(self.standard_syntax_table_id())),
