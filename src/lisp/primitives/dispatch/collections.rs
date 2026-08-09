@@ -1160,10 +1160,11 @@ define_dispatch!(
 
             "setcdr" => {
                 need_args(name, args, 2)?;
-                let Value::Cons(_) = &args[0] else {
+                if matches!(&args[0], Value::Cons(_)) {
+                    args[0].set_cdr(args[1].clone())?;
+                } else if !replace_runtime_keymap_tail(interp, &args[0], &args[1])? {
                     return Err(wrong_type_argument("consp", args[0].clone()));
-                };
-                args[0].set_cdr(args[1].clone())?;
+                }
                 interp.note_definition_changed();
                 Ok(args[1].clone())
             }

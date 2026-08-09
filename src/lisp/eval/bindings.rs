@@ -466,8 +466,16 @@ impl Interpreter {
             "text-quoting-style" => Some(Value::Nil),
             "hack-local-variables-hook" => Some(Value::Nil),
             "custom-current-group-alist" => Some(Value::Nil),
-            "defun-declarations-alist" => Some(Value::Nil),
-            "macro-declarations-alist" => Some(Value::Nil),
+            // File-less embeddings may load a downstream library without
+            // reconstructing GNU loadup first.  Keep the early nil contract
+            // only until byte-run.el begins installing its real declaration
+            // helpers; from that point its defvars must be allowed to bind
+            // the authoritative registries.
+            "defun-declarations-alist" | "macro-declarations-alist"
+                if !self.has_lisp_function("byte-run--set-speed") =>
+            {
+                Some(Value::Nil)
+            }
             "post-self-insert-hook" => Some(Value::Nil),
             "macroexp--dynvars" => Some(Value::Nil),
             "macroexpand-all-environment" => Some(Value::Nil),

@@ -42,6 +42,52 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-10 GDB-through-PEG checkpoint advances the fresh contiguous
+  ordered frontier to 4,729/7,080, leaving 2,351 selectors.  All 51 outcomes
+  from GDB MI through PEG now match GNU: GDB MI (1), Glasses (7), Go TS (2),
+  Grep (6), Heex TS (1), Hideshow (8), Java TS (2), JS (14), Lua TS (4),
+  Octave (1), OPascal (1), Pascal (2), and PEG (2).  The final-source PEG
+  artifact is `target/compat/run-1786314481831475000-1058`.
+
+  Reconstructed startup now loads GNU's complete `byte-run.el`, `menu-bar.el`,
+  and `emacs-lisp/lisp.el` owners in loadup order.  The declaration registries
+  are no longer hard-coded as permanently bound nil, so byte-run installs its
+  `speed`, `debug`, compiler-macro, and related expanders without startup
+  warning spam; direct/file-less embeddings retain an early nil fallback only
+  until byte-run begins loading.  Runtime keymaps keep stable Rust identity
+  while one public-tail mutation bridge implements GNU's cons/list `setcdr`
+  contract needed by menu-bar.  Loaded `js.el` now owns JS mode policy and
+  indentation rather than being shadowed by the native fallback.  GNU's dumped
+  Elisp `event-end` and `posn-set-point` remain on the Elisp side.
+
+  The shared native fixes are not mode-specific: style-c doubled line comments
+  now match their newline end style, which repairs OPascal `//` tokenization;
+  `looking-at` retains one character of left context for zero-width symbol-end
+  assertions while preserving `\=` at the original point; integer buffer
+  positions accept the signed fixnum domain and transient in-range bignums;
+  and `indent-line-to` has GNU's point and return-value boundaries.  The native
+  compiler now publishes its GNU-visible state, diagnoses macro-expanded and
+  function-quoted nested lambda bodies, and captures macroexpansion warnings in
+  `*Compile-Log*`.  PEG therefore observes both its intentional unresolved-rule
+  warning and its left-recursion warning without loading GNU `bytecomp.el` over
+  the native compiler boundary.
+
+  Final PEG setup is GNU/Emaxx 0.267/2.073 seconds and body is 0.018/0.017
+  seconds.  Grep body is 0.321/0.344 seconds (1.072x).  The largest diagnostic
+  ratios remain tiny absolute gaps: JS 0.026/0.418 seconds, Hideshow
+  0.013/0.139, and Pascal 0.008/0.090.  None meets the agreed simultaneous 5x
+  and one-second march threshold.  The next Perl file runs 59/66 tests
+  successfully but has seven semantic mismatches in
+  `target/compat/run-1786313687449184000-390`; its body is 0.137/0.580 seconds
+  (4.231x), also below the interruption threshold.
+
+  All 35 byte-compiler regressions, all 12 forward-comment regressions, the
+  runtime-keymap integration set, the looking-at set, the byte-run ownership
+  test, all-target/all-feature checking, strict Clippy, rustfmt, diff checks,
+  and the final exact PEG oracle run pass.  Protected scratch files remain
+  untouched.  Native remains complete at 1,420/1,420.  NEXT is
+  `test/lisp/progmodes/perl-mode-tests.el`, beginning with selector 4,730,
+  `cperl-test-attribute-list-rx` (66 selected outcomes in the file).
 - The 2026-08-10 Flymake checkpoint advances the fresh contiguous ordered
   frontier to 4,678/7,080, leaving 2,402 selectors.  Elixir TS (1/1 matching
   skip), Etags (3/3), Executable (3/3), F90 (17/17), and Flymake (9/9) all

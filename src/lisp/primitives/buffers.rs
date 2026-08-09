@@ -96,7 +96,19 @@ pub(crate) fn overlay_covers_position(
 
 pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {
     match value {
-        Value::Integer(pos) if *pos >= 0 => Ok(*pos as usize),
+        // GNU clamps an ordinary fixnum position below point-min at the
+        // consuming buffer operation (for example, `goto-char -10' reaches
+        // point-min).  Preserve that signed boundary here rather than
+        // misclassifying a negative integer as a non-position type.
+        Value::Integer(pos) => Ok((*pos).max(0) as usize),
+        // A small BigInteger can arise transiently inside Emaxx even though
+        // GNU would represent the same numeric value as a fixnum.  Accept it
+        // only when it fits the ordinary signed position domain; a genuine
+        // out-of-range bignum retains GNU's integer-or-marker-p error.
+        Value::BigInteger(pos) => pos
+            .to_i64()
+            .map(|pos| pos.max(0) as usize)
+            .ok_or_else(|| LispError::TypeError("integer-or-marker-p".into(), value.type_name())),
         Value::Marker(id) => interp
             .marker_position(*id)
             .ok_or_else(|| LispError::TypeError("integer-or-marker-p".into(), value.type_name())),

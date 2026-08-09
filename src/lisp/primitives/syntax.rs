@@ -570,8 +570,9 @@ fn matching_open_char(ch: char, entry: SyntaxEntry) -> Option<char> {
     })
 }
 
-fn newline_ends_comments(interp: &Interpreter, table_id: u64) -> bool {
-    syntax_entry_for_code(interp, table_id, '\n' as u32).class == SyntaxClass::CommentEnd
+fn newline_comment_end_style(interp: &Interpreter, table_id: u64) -> Option<u8> {
+    let entry = syntax_entry_for_code(interp, table_id, '\n' as u32);
+    (entry.class == SyntaxClass::CommentEnd).then(|| scan_comment_style(&entry, None))
 }
 
 fn comment_start_at(
@@ -592,7 +593,8 @@ fn comment_start_at(
     if entry.class == SyntaxClass::CommentStart {
         return Some(CommentStart {
             kind: CommentKind::Single {
-                line: entry.style_b && newline_ends_comments(interp, table_id),
+                line: newline_comment_end_style(interp, table_id)
+                    == Some(scan_comment_style(&entry, None)),
             },
             style: scan_comment_style(&entry, None),
             len: 1,
@@ -603,11 +605,11 @@ fn comment_start_at(
     if !(entry.start_first && next_entry.start_second) {
         return None;
     }
-    if ch == next && entry.style_b && next_entry.style_b && newline_ends_comments(interp, table_id)
-    {
+    let style = scan_comment_style(&next_entry, Some(&entry));
+    if ch == next && newline_comment_end_style(interp, table_id) == Some(style) {
         return Some(CommentStart {
             kind: CommentKind::Single { line: true },
-            style: scan_comment_style(&next_entry, Some(&entry)),
+            style,
             len: 2,
         });
     }

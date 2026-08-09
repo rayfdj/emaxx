@@ -18,6 +18,45 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-10 GDB-THROUGH-PEG CHECKPOINT: the fresh contiguous ordered frontier
+  is 4,729/7,080, leaving 2,351 selectors.  All 51 outcomes across GDB MI,
+  Glasses, Go TS, Grep, Heex TS, Hideshow, Java TS, JS, Lua TS, Octave,
+  OPascal, Pascal, and PEG match GNU.  The final-source artifact is
+  `target/compat/run-1786314481831475000-1058`.
+
+  Preserve the ownership boundaries established here.  Batch reconstruction
+  loads complete GNU `byte-run.el`, `menu-bar.el`, and `emacs-lisp/lisp.el`
+  owners in loadup order; do not replace their declaration, menu, structural
+  navigation, or JS policy with Rust lists.  The declaration-registry nil
+  fallback is deliberately conditional: it supports direct/file-less
+  embeddings only until byte-run starts loading, then GNU's defvars become the
+  authority.  `simple_compat.el` keeps `inline` and `byte-compile-info` only as
+  missing-owner fallbacks.  Runtime keymaps remain identity-bearing Rust
+  records, with `replace_runtime_keymap_tail` as the one bridge for GNU's
+  public cons-tail mutation contract.  Loaded `js.el` must continue to win over
+  the native no-library fallback.
+
+  Shared semantic repairs: style-c doubled line comments use the matching
+  newline end style; ordinary `looking-at` keeps one preceding character so
+  zero-width symbol boundaries see left context without weakening `\=`;
+  signed/in-range integer buffer positions, `indent-line-to`, dumped event
+  helpers, and JS navigation match GNU.  Native byte compilation remains in
+  Rust, but publishes `byte-compile-unresolved-functions`, diagnoses expanded
+  and nested function-quoted bodies, and captures macroexpansion warning
+  messages in `*Compile-Log*`.  Do not load GNU bytecomp.el over it.
+
+  Final PEG GNU/Emaxx setup is 0.267/2.073 seconds and body is 0.018/0.017.
+  The largest new ratios are millisecond-scale (JS +392 ms, Hideshow +126 ms,
+  Pascal +82 ms); none meets both performance gates.  Perl is the next file:
+  59/66 pass, seven mismatch, setup 0.295/1.848 seconds and body 0.137/0.580
+  (4.231x), artifact `target/compat/run-1786313687449184000-390`.
+
+  Byte compiler 35/35, forward-comment 12/12, runtime-keymap and looking-at
+  focused sets, byte-run ownership, check, strict Clippy, rustfmt, diff check,
+  and final PEG all pass.  Protected scratch files are untouched; native stays
+  1,420/1,420.  NEXT: commit/push this checkpoint, then diagnose
+  `test/lisp/progmodes/perl-mode-tests.el`, starting at selector 4,730,
+  `cperl-test-attribute-list-rx`.
 - 2026-08-10 FLYMAKE CHECKPOINT: the fresh contiguous ordered frontier is
   4,678/7,080, leaving 2,402 selectors.  Elixir TS (1 matching skip), Etags
   (3/3), Executable (3/3), F90 (17/17), and Flymake (9/9) all match GNU.  The

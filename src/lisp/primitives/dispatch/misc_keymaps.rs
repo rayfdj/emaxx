@@ -10616,8 +10616,41 @@ fn byte_compile_emit_warnings(
     suppressions: &[ByteCompileSuppression],
     env: &Env,
 ) -> Result<(), LispError> {
-    let mut diagnostics = ByteCompileDiagnostics::default();
-    diagnostics.scan_with_suppressions(interp, form, false, suppressions);
+    // GNU's `byte-compile' reports unresolved calls for an individual
+    // function just as `byte-compile-from-buffer' does for a file.  This is
+    // observable through *Compile-Log* even when no .elc is written.
+    let mut diagnostics = ByteCompileDiagnostics {
+        warn_unresolved: true,
+        ..Default::default()
+    };
+    let mut macro_env = env.clone();
+    // Macro expanders report semantic diagnostics through `message'
+    // (PEG's cycle detector is one example).  GNU's byte compiler captures
+    // those messages in *Compile-Log*; keep a scoped capture so native
+    // compilation does not lose them on stderr.
+    interp
+        .message_capture_stack
+        .push(crate::lisp::eval::MessageCapture {
+            text: String::new(),
+            live_var: None,
+        });
+    let expanded_result = interp.macroexpand_all_form_with_environment(form, None, &mut macro_env);
+    let macro_messages = interp
+        .message_capture_stack
+        .pop()
+        .map(|capture| capture.text)
+        .unwrap_or_default();
+    if !interp.message_capture_stack.is_empty() && !macro_messages.is_empty() {
+        interp.append_message_capture(&macro_messages, false, &mut macro_env);
+    }
+    let expanded = expanded_result?;
+    diagnostics.scan_with_suppressions(interp, &expanded, false, suppressions);
+    for warning in macro_messages
+        .lines()
+        .filter(|line| line.contains("Warning:"))
+    {
+        byte_compile_log_warning(interp, env, warning)?;
+    }
     byte_compile_log_diagnostics(interp, env, &[], diagnostics)
 }
 
@@ -11401,7 +11434,21 @@ impl ByteCompileDiagnostics {
             "defmacro" => self.scan_defmacro(interp, &items),
             "cl-defmethod" => self.scan_cl_defmethod(interp, &items),
             "lambda" => self.scan_lambda(interp, &items),
-            "quote" | "function" => {}
+            "quote" => {}
+            "function" => {
+                // `#'symbol' is data, but `#'(lambda ...)' is executable
+                // compiler input.  Macroexpansion of cl-flet/cl-labels puts
+                // generated local function bodies behind this wrapper; GNU
+                // diagnoses unresolved calls in those bodies as well.
+                if let Some(lambda) = items.get(1)
+                    && matches!(
+                        lambda.to_vec().ok().and_then(|items| items.first().cloned()),
+                        Some(Value::Symbol(head)) if head == "lambda"
+                    )
+                {
+                    self.scan(interp, lambda, ignored_value);
+                }
+            }
             "autoload" => {
                 self.scan_non_top_level_macro_autoload(interp, &items);
                 self.scan_named_docstring_form(
