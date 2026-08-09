@@ -1515,8 +1515,19 @@ pub(crate) fn render_prin1_ephemeral(
     render_prin1(interp, value, &mut env)
 }
 
-pub(crate) fn read_one_form(text: &str) -> Result<(Value, usize), LispError> {
-    let mut reader = crate::lisp::reader::Reader::with_raw_quote_symbols(text);
+pub(crate) fn read_one_form_in_env(
+    interp: &Interpreter,
+    text: &str,
+    env: &Env,
+) -> Result<(Value, usize), LispError> {
+    read_one_form_with_symbol_shorthands(text, read_symbol_shorthands_in_env(interp, env)?)
+}
+
+fn read_one_form_with_symbol_shorthands(
+    text: &str,
+    symbol_shorthands: Vec<(String, String)>,
+) -> Result<(Value, usize), LispError> {
+    let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(text, symbol_shorthands);
     let value = match reader.read()? {
         Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
         None => return Err(LispError::EndOfInput),
@@ -1547,7 +1558,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                         .map_err(|error| LispError::Signal(error.to_string()))?,
                 )
             };
-            let (value, consumed) = read_one_positioned_form(interp, &text, start as i64)?;
+            let (value, consumed) = read_one_positioned_form(interp, env, &text, start as i64)?;
             if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                 buffer.goto_char((start + consumed).min(end));
             }
@@ -1575,7 +1586,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
-            let (value, consumed) = read_one_positioned_form(interp, &text, start as i64)?;
+            let (value, consumed) = read_one_positioned_form(interp, env, &text, start as i64)?;
             interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
             Ok(value)
         }
@@ -1597,17 +1608,18 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
         }
         _ => {
             let text = string_text(source)?;
-            read_one_positioned_form(interp, &text, 0).map(|(value, _)| value)
+            read_one_positioned_form(interp, env, &text, 0).map(|(value, _)| value)
         }
     }
 }
 
 fn read_one_positioned_form(
     interp: &mut Interpreter,
+    env: &Env,
     text: &str,
     base_position: i64,
 ) -> Result<(Value, usize), LispError> {
-    let (value, consumed) = read_one_form(text)?;
+    let (value, consumed) = read_one_form_in_env(interp, text, env)?;
     let mut tokens = symbol_tokens_with_positions(text, base_position);
     Ok((
         position_symbols_in_value(interp, value, &mut tokens),
@@ -1780,7 +1792,7 @@ pub(crate) fn read_from_callable_source(
         };
         text.push(ch);
     }
-    read_one_form(&text).map(|(value, _)| value)
+    read_one_form_in_env(interp, &text, env).map(|(value, _)| value)
 }
 
 pub(crate) fn read_from_lisp_source(
@@ -2318,7 +2330,7 @@ fn read_from_lisp_source_raw(
                         .map_err(|error| LispError::Signal(error.to_string()))?,
                 )
             };
-            let (value, consumed) = read_one_form(&text)?;
+            let (value, consumed) = read_one_form_in_env(interp, &text, env)?;
             if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                 buffer.goto_char((start + consumed).min(end));
             }
@@ -2346,7 +2358,7 @@ fn read_from_lisp_source_raw(
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
-            let (value, consumed) = read_one_form(&text)?;
+            let (value, consumed) = read_one_form_in_env(interp, &text, env)?;
             interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
             Ok(value)
         }
@@ -2356,7 +2368,7 @@ fn read_from_lisp_source_raw(
         }
         _ => {
             let s = string_text(source)?;
-            read_one_form(&s).map(|(value, _)| value)
+            read_one_form_in_env(interp, &s, env).map(|(value, _)| value)
         }
     }
 }

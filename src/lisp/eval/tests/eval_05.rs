@@ -336,12 +336,12 @@ fn delay_mode_hooks_is_dynamically_scoped() {
 }
 
 #[test]
-fn run_mode_hooks_preserves_builtin_definition() {
+fn loaded_elisp_can_replace_run_mode_hooks_bootstrap_fallback() {
     assert_eq!(
         eval_str(
             "(progn (defun run-mode-hooks (&rest _) 'shadowed) (run-mode-hooks 'sample-hook))"
         ),
-        Value::Nil
+        Value::Symbol("shadowed".into())
     );
 }
 
@@ -388,6 +388,58 @@ fn hack_local_variables_accepts_optional_mode_arg() {
     assert_eq!(
         eval_str("(list (hack-local-variables) (hack-local-variables 'no-mode))"),
         Value::list([Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
+fn normal_mode_delegates_file_local_variable_policy_to_files_el() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(format!("emaxx-file-locals-{unique}.el"));
+    std::fs::write(
+        &path,
+        r#";;; -*- lexical-binding: t; -*-
+(message "fixture")
+;; Local Variables:
+;; read-symbol-shorthands: (("s-" . "long-"))
+;; End:
+"#,
+    )
+    .unwrap();
+    let result = eval_str_with_upstream_batch(&format!(
+        r#"(with-current-buffer (find-file-noselect {:?})
+             (normal-mode)
+             (list read-symbol-shorthands
+                   file-local-variables-alist
+                   (default-value 'read-symbol-shorthands)))"#,
+        path.display().to_string(),
+    ));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        result,
+        Value::list([
+            Value::list([Value::cons(
+                Value::String("s-".into()),
+                Value::String("long-".into()),
+            )]),
+            Value::list([
+                Value::cons(Value::Symbol("lexical-binding".into()), Value::T),
+                Value::cons(
+                    Value::Symbol("read-symbol-shorthands".into()),
+                    Value::list([Value::cons(
+                        Value::String("s-".into()),
+                        Value::String("long-".into()),
+                    )]),
+                ),
+            ]),
+            Value::Nil,
+        ])
     );
 }
 

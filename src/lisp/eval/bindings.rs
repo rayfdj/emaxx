@@ -991,7 +991,9 @@ impl Interpreter {
         let mut names = Vec::new();
         let mut seen = HashSet::new();
         let mut push_name = |name: &str| {
-            if crate::lisp::types::visible_symbol_name(name) != name {
+            if crate::lisp::types::visible_symbol_name(name) != name
+                || self.uninterned_standard_symbol_names.contains(name)
+            {
                 return;
             }
             if seen.insert(name.to_string()) {
@@ -1028,6 +1030,9 @@ impl Interpreter {
     /// `intern-soft' is a hash-table operation upstream and must not rebuild
     /// that complete view for every lookup.
     pub(crate) fn standard_obarray_contains_symbol(&self, name: &str) -> bool {
+        if self.uninterned_standard_symbol_names.contains(name) {
+            return false;
+        }
         matches!(name, "nil" | "t")
             || self.interned_symbol_names.contains(name)
             || self.globals.contains_key(name)
@@ -1036,6 +1041,10 @@ impl Interpreter {
             || (self.macros_name_counts.contains_key(name)
                 && !name.starts_with(MACRO_SHADOW_PREFIX))
             || self.symbol_property_index(name).is_some()
+    }
+
+    pub(crate) fn standard_obarray_symbol_is_uninterned(&self, name: &str) -> bool {
+        self.uninterned_standard_symbol_names.contains(name)
     }
 
     /// Track a macro-table insertion so name-count lookups stay in sync.

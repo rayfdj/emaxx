@@ -42,6 +42,28 @@
   (declare (side-effect-free t))
   (vconcat string))
 
+;; GNU dumps this subr.el policy before any major mode runs.  Keep the
+;; complete hook and file-local-variable sequence in Elisp; the native
+;; `run-mode-hooks' arm is only a file-less bootstrap fallback.
+(defun run-mode-hooks (&rest hooks)
+  "Run mode hooks `delayed-mode-hooks' and HOOKS, or delay HOOKS."
+  (if delay-mode-hooks
+      (dolist (hook hooks)
+        (push hook delayed-mode-hooks))
+    (setq hooks (nconc (nreverse delayed-mode-hooks) hooks))
+    (and (bound-and-true-p syntax-propertize-function)
+         (not (local-variable-p 'parse-sexp-lookup-properties))
+         (setq-local parse-sexp-lookup-properties t))
+    (setq delayed-mode-hooks nil)
+    (apply #'run-hooks (cons 'change-major-mode-after-body-hook hooks))
+    (if (buffer-file-name)
+        (with-demoted-errors "File local-variables error: %s"
+          (hack-local-variables 'no-mode)))
+    (run-hooks 'after-change-major-mode-hook)
+    (dolist (fun (prog1 (nreverse delayed-after-hook-functions)
+                   (setq delayed-after-hook-functions nil)))
+      (funcall fun))))
+
 (defun plistp (object)
   "Non-nil if and only if OBJECT is a valid plist."
   (declare (pure t) (side-effect-free error-free))
