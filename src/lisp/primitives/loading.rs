@@ -752,7 +752,12 @@ pub(crate) fn locate_file_internal(
             let candidate = unquote_local_file_name(&candidate).unwrap_or(candidate);
             let predicate = (!predicate.is_nil()).then_some(predicate);
             if locate_file_candidate_matches(interp, predicate, &candidate, env)? {
-                return Ok(Value::String(candidate.into()));
+                // Search the isolated physical tree, but report the same
+                // standard-Lisp source provenance exposed by GNU's build-tree
+                // load path.  Test-owned paths are outside the configured
+                // prefix and remain untouched.
+                let provenance = interp.load_source_provenance_path(Path::new(&candidate));
+                return Ok(Value::String(provenance.display().to_string().into()));
             }
         }
     }

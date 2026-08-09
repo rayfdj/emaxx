@@ -2737,6 +2737,8 @@ define_dispatch!(
                 // function binding; a fresh generic must not rank its methods
                 // against specializers of the destroyed chain.
                 interp.put_symbol_property(symbol, "emaxx-cl-defmethod-specializers", Value::Nil);
+                interp.put_symbol_property(symbol, "emaxx-cl-defmethod-introspection", Value::Nil);
+                interp.remove_symbol_property(symbol, "emaxx-cl-defgeneric-implicit");
                 Ok(Value::Symbol(symbol.to_string().into()))
             }
             "funcall-interactively" => {

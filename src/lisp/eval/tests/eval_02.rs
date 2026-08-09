@@ -5876,6 +5876,7 @@ fn load_file_strict_records_cl_defmethod_files() {
         std::fs::write(
             &path,
             "(cl-defgeneric sample-load-method (x))\n\
+             (cl-defmethod sample-load-method (x) x)\n\
              (cl-defmethod sample-load-method ((x string)) x)\n\
              (cl-defmethod sample-load-method ((x integer)) x)\n",
         )
@@ -5889,10 +5890,18 @@ fn load_file_strict_records_cl_defmethod_files() {
                 &format!(
                     "(let ((files (cl--generic-method-files 'sample-load-method))\
                            (path {path:?}))\
-                       (and (equal (length files) 2)\
-                            (equal (mapcar #'car files) (list path path))\
+                       (and (equal (length files) 3)\
+                            (equal (symbol-file 'sample-load-method 'defun) path)\
+                            (equal (symbol-file
+                                    '(sample-load-method nil string)
+                                    'cl-defmethod)
+                                   path)\
+                            (equal (mapcar #'car files) (list path path path))\
                             (equal (mapcar #'cadr files)\
-                                   '(sample-load-method sample-load-method))))"
+                                   '(sample-load-method sample-load-method
+                                     sample-load-method))\
+                            (equal (mapcar #'cddr files)\
+                                   '((nil t) (nil string) (nil integer)))))"
                 )
             ),
             Value::T

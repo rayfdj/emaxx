@@ -2057,6 +2057,10 @@ pub struct Interpreter {
     after_load_forms: Vec<(String, Vec<Value>, Env)>,
     /// File currently being loaded, if any.
     current_load_file: Option<String>,
+    /// Physical standard-Lisp source prefix and the build-tree prefix GNU's
+    /// dumped load path exposes for that source.  File reads stay isolated;
+    /// observable load provenance follows the image/runtime contract.
+    load_source_provenance_remap: Option<(PathBuf, PathBuf)>,
     /// Source files whose compile-time-only forms must not acquire runtime
     /// load-history entries while Emaxx interprets their source fallback.
     load_history_suppressed_files: Vec<String>,
@@ -2400,6 +2404,11 @@ impl Interpreter {
                 ("cpp-font-lock-keywords".into(), Value::Nil),
                 ("current-load-list".into(), Value::Nil),
                 ("load-history".into(), Value::Nil),
+                // doc.c publishes the object-file inventory used to map
+                // native definitions back to their C sources.  The concrete
+                // value is populated from the standard DOC file during the
+                // reconstructed dump/startup phase.
+                ("build-files".into(), Value::Nil),
                 ("case-replace".into(), Value::T),
                 ("byte-compile-log-buffer".into(), Value::Nil),
                 ("defining-kbd-macro".into(), Value::Nil),
@@ -2856,6 +2865,7 @@ impl Interpreter {
                 .collect(),
             after_load_forms: Vec::new(),
             current_load_file: None,
+            load_source_provenance_remap: None,
             load_history_suppressed_files: Vec::new(),
             ert_test_source_file: None,
             current_ert_test_name: None,
@@ -5908,7 +5918,15 @@ fn cl_defmethod_load_history_specializers(spec: &Value) -> Vec<Value> {
             is_context = true;
             continue;
         }
+        if matches!(&item, Value::Symbol(symbol) if symbol.starts_with('&')) {
+            break;
+        }
         let Ok(parts) = item.to_vec() else {
+            // Every unspecialized mandatory argument is represented by `t'
+            // in GNU cl-generic's load-history key.  Omitting these entries
+            // makes default methods indistinguishable from a generic with no
+            // methods and breaks both unloading and Elisp xref discovery.
+            specializers.push(Value::T);
             continue;
         };
         if is_context {
@@ -5916,6 +5934,8 @@ fn cl_defmethod_load_history_specializers(spec: &Value) -> Vec<Value> {
             is_context = false;
         } else if let Some(specializer) = parts.get(1) {
             specializers.push(specializer.clone());
+        } else {
+            specializers.push(Value::T);
         }
     }
     specializers

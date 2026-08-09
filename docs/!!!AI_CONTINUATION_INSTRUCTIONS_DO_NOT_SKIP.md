@@ -18,6 +18,35 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-10 ELISP MODE CHECKPOINT: the fresh contiguous ordered frontier is
+  4,645/7,080, leaving 2,435 selectors.  All 63 selected outcomes in
+  `test/lisp/progmodes/elisp-mode-tests.el` match GNU exactly in
+  `target/compat/run-1786301833561642000-88549`.
+
+  Native generic dispatch remains in idiomatic Rust, while GNU
+  `elisp-mode.el` retains xref and presentation policy through a read-only
+  `cl-generic` inspection facade.  Canonical method metadata now records
+  qualifiers, source lambda lists, mandatory `t` specializers, documentation,
+  implicit-generic state, structured load-history identities, and replacement
+  cleanup without creating a second dispatcher.
+
+  Batch startup now performs GNU's existing `Snarf-documentation` phase.  The
+  one DOC parser installs native variable offsets and derives `build-files`
+  from DOC source records, allowing Help/xref to resolve C functions and
+  variables without symbol-specific maps.  Standard Lisp is still read from
+  the isolated checkout, but load and locate provenance names the build tree
+  exposed by GNU's batch load path; the mapping is limited to `lisp/`, so
+  test-owned files retain isolated paths.  Focused tests cover DOC provenance,
+  build-source versus test-source path separation, native generic inspection,
+  implicit-generic documentation, and structured `symbol-file` lookup.
+
+  The exact run records GNU/Emaxx setup at 0.538/2.343 seconds and body at
+  1.372/3.922 seconds (2.857x).  The body is below the agreed 5x march
+  threshold; startup remains separately tracked image-reconstruction work.
+  Formatting, diff check, all-target/all-feature checking, strict Clippy, and
+  the focused regressions pass.  Native remains complete at 1,420/1,420.
+  NEXT is selector 4,646, `elixir-ts-mode-test-indentation`, in
+  `test/lisp/progmodes/elixir-ts-mode-tests.el` (1 selected outcome).
 - 2026-08-09 VM PERFORMANCE ROUND 9: retain only the validated Bloom-filter
   half of `/Users/nbmhqa186/Downloads/emaxx-vm-perf-round9.patch`.  Mutable
   cons fields use a lazy 256-Kibit negative filter before consulting the one

@@ -661,7 +661,10 @@ pub fn load_file_strict(
         source
     };
     let warning_message = unescaped_char_literal_warning(path, &source);
-    let load_file = path.display().to_string();
+    let load_file = interp
+        .load_source_provenance_path(path)
+        .display()
+        .to_string();
     let previous = interp.set_current_load_file(Some(load_file.clone()));
     let mut env = types::Env::new();
     // GNU `load' establishes these as real specbind layers.  A Rust-only
@@ -694,7 +697,7 @@ pub fn load_file_strict(
         ),
         (
             "current-load-list",
-            types::Value::list([types::Value::String(path.display().to_string().into())]),
+            types::Value::list([types::Value::String(load_file.clone().into())]),
         ),
     ] {
         match interp.bind_special_dynamic(name, value, &mut env) {
@@ -772,9 +775,7 @@ pub fn load_file_strict(
     }
     let current_load_list = interp
         .lookup_var("current-load-list", &types::Env::new())
-        .unwrap_or_else(|| {
-            types::Value::list([types::Value::String(path.display().to_string().into())])
-        });
+        .unwrap_or_else(|| types::Value::list([types::Value::String(load_file.clone().into())]));
     interp.commit_entire_load_history(&load_file, current_load_list);
     if let Some(message) = warning_message {
         append_message(interp, &message);

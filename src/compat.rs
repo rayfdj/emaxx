@@ -13,6 +13,10 @@ pub const ORACLE_LOCK_PATH: &str = "compat/oracle.lock.json";
 pub const ORACLE_LOCAL_PATH: &str = "compat/oracle.local.json";
 pub const ORACLE_HELPER_PATH: &str = "compat/emacs_compat_runner.el";
 pub const BATCH_RESULT_FILE_ENV: &str = "EMAXX_BATCH_RESULT_FILE";
+/// Source tree named by GNU's dumped standard-Lisp load path.  Emaxx may read
+/// equivalent files from an isolated runtime checkout while preserving this
+/// build-tree provenance at the Elisp boundary.
+pub const DUMP_SOURCE_DIRECTORY_ENV: &str = "EMAXX_DUMP_SOURCE_DIRECTORY";
 const ORACLE_BATCH_REPORT_BRIDGES: [&str; 1] = ["test/lisp/kmacro-tests.el"];
 pub const SUPPORTED_ENV_VARS: [&str; 4] = [
     "EMACS_TEST_TIMEOUT",

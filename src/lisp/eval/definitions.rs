@@ -4074,6 +4074,15 @@ impl Interpreter {
             ));
         }
         let name = function_name_from_binding_form(&items[1])?;
+        // A later explicit cl-defgeneric replaces the implicit generic that
+        // cl-defmethod creates.  Keep that origin fact separate from the
+        // method table so Lisp inspection can reproduce GNU's xref policy.
+        self.remove_symbol_property(&name, "emaxx-cl-defgeneric-implicit");
+        // GNU cl-generic-ensure-function installs a callable function cell
+        // and records it as a defun even when the generic has no default
+        // implementation.  find-lisp-object-file-name uses that entry before
+        // elisp-mode's generic-specific inspection begins.
+        self.record_definition_in_load_history("defun", &name);
         let dispatch_lambda_list =
             Value::list(lower_cl_defun_lambda_list(&name, &items[2])?.params);
         self.put_symbol_property(
@@ -4357,6 +4366,8 @@ impl Interpreter {
                 matches!(value, Value::Cons(_) | Value::Nil).then_some(index)
             })
             .ok_or_else(|| LispError::Signal("cl-defmethod needs a lambda list".into()))?;
+        let source_qualifiers = items[2..lambda_list_index].to_vec();
+        let source_lambda_list = items[lambda_list_index].clone();
         // Rewrite context-rewriter entries before any downstream parsing.
         let items_storage;
         let items = match self.expand_generic_context_rewriters(&items[lambda_list_index], env)? {
@@ -4431,11 +4442,13 @@ impl Interpreter {
         // conditions, and wrapper parameters all agree even when each
         // `cl-defmethod' picks different argument names.
         if self.cl_defgeneric_lambda_list(&method_name).is_none() {
+            self.record_definition_in_load_history("defun", &method_name);
             self.put_symbol_property(
                 &method_name,
                 "emaxx-cl-defgeneric-lambda-list",
                 lowered_lambda_list.clone(),
             );
+            self.put_symbol_property(&method_name, "emaxx-cl-defgeneric-implicit", Value::T);
         } else if let Some(generic_lambda_list) = self.cl_defgeneric_lambda_list(&method_name) {
             let method_params = self.parse_params(&lowered_lambda_list)?;
             let generic_params = self.parse_params(&generic_lambda_list)?;
@@ -4460,6 +4473,15 @@ impl Interpreter {
             &method_name,
             &items[2..lambda_list_index],
             &items[lambda_list_index],
+        );
+        self.record_cl_defmethod_introspection(
+            &method_name,
+            &source_qualifiers,
+            &source_lambda_list,
+            &Value::list(cl_defmethod_load_history_specializers(
+                &items[lambda_list_index],
+            )),
+            method_doc.clone().unwrap_or(Value::Nil),
         );
         let is_before_method = items[2..lambda_list_index]
             .iter()
@@ -4617,6 +4639,7 @@ impl Interpreter {
                     &method_name,
                     current_stored_specializer.metadata_value(),
                 );
+                self.restore_cl_defgeneric_documentation(&method_name, generic_doc.as_ref());
                 return Ok(items[1].clone());
             }
             // Keep the :before/:after wrapper stack ordered with the most
@@ -4678,6 +4701,7 @@ impl Interpreter {
                 &method_name,
                 current_stored_specializer.metadata_value(),
             );
+            self.restore_cl_defgeneric_documentation(&method_name, generic_doc.as_ref());
             return Ok(items[1].clone());
         }
         if let Some(specializer) = ordered_method_specializers.first().cloned() {
@@ -4894,6 +4918,7 @@ impl Interpreter {
                     &current_method_symbol,
                     &replacement,
                 ) {
+                    self.restore_cl_defgeneric_documentation(&method_name, generic_doc.as_ref());
                     return Ok(items[1].clone());
                 }
             }
@@ -5087,6 +5112,7 @@ impl Interpreter {
                 &method_name,
                 current_stored_specializer.metadata_value(),
             );
+            self.restore_cl_defgeneric_documentation(&method_name, generic_doc.as_ref());
             return Ok(items[1].clone());
         }
         if method_specializers.is_empty()
@@ -5109,6 +5135,7 @@ impl Interpreter {
             if cl_defmethod_replace_ignore_previous_bindings(self, &previous, &base_method)
                 || cl_defmethod_replace_terminal_previous_bindings(&previous, &base_method)
             {
+                self.restore_cl_defgeneric_documentation(&method_name, generic_doc.as_ref());
                 return Ok(items[1].clone());
             }
         }
@@ -5276,12 +5303,66 @@ impl Interpreter {
         // `sf_defun' correctly clears stale docs for ordinary redefinitions;
         // restore this separately owned generic metadata after the wrapper
         // transition.  Method docstrings remain on their method metadata.
-        if result.is_ok()
-            && let Some(generic_doc) = generic_doc
-        {
-            self.put_symbol_property(&method_name, "function-documentation", generic_doc);
+        if result.is_ok() {
+            self.restore_cl_defgeneric_documentation(&method_name, generic_doc.as_ref());
         }
         result
+    }
+
+    fn record_cl_defmethod_introspection(
+        &mut self,
+        method_name: &str,
+        qualifiers: &[Value],
+        lambda_list: &Value,
+        specializers: &Value,
+        documentation: Value,
+    ) {
+        let qualifiers = Value::list(qualifiers.to_vec());
+        let descriptor = Value::list([
+            Value::Symbol("emaxx-native-method".into()),
+            qualifiers.clone(),
+            lambda_list.clone(),
+            specializers.clone(),
+            documentation,
+        ]);
+        let mut methods = self
+            .get_symbol_property(method_name, "emaxx-cl-defmethod-introspection")
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default();
+        let existing = methods.iter().position(|method| {
+            method.to_vec().is_ok_and(|parts| {
+                parts.get(1) == Some(&qualifiers) && parts.get(3) == Some(specializers)
+            })
+        });
+        if let Some(index) = existing {
+            methods[index] = descriptor;
+        } else {
+            methods.insert(0, descriptor);
+        }
+        self.put_symbol_property(
+            method_name,
+            "emaxx-cl-defmethod-introspection",
+            Value::list(methods),
+        );
+    }
+
+    fn restore_cl_defgeneric_documentation(
+        &mut self,
+        method_name: &str,
+        explicit_documentation: Option<&Value>,
+    ) {
+        if self
+            .get_symbol_property(method_name, "emaxx-cl-defgeneric-implicit")
+            .is_some_and(|value| value.is_truthy())
+        {
+            self.put_symbol_property(
+                method_name,
+                "function-documentation",
+                Value::String("\n\n(fn ARG &rest ARGS)".into()),
+            );
+        } else if let Some(documentation) = explicit_documentation {
+            self.put_symbol_property(method_name, "function-documentation", documentation.clone());
+        }
     }
 
     fn canonical_function_name(&self, name: &str, env: &Env) -> String {
@@ -5393,6 +5474,22 @@ impl Interpreter {
             method_name,
             "emaxx-cl-defmethod-specializers",
             Value::list(metadata),
+        );
+        let qualifier_value = Value::list(qualifiers);
+        let specializer_value = Value::list(specializers);
+        let mut introspection = self
+            .get_symbol_property(method_name, "emaxx-cl-defmethod-introspection")
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default();
+        introspection.retain(|method| {
+            !method.to_vec().is_ok_and(|parts| {
+                parts.get(1) == Some(&qualifier_value) && parts.get(3) == Some(&specializer_value)
+            })
+        });
+        self.put_symbol_property(
+            method_name,
+            "emaxx-cl-defmethod-introspection",
+            Value::list(introspection),
         );
     }
 
