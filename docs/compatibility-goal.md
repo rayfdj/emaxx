@@ -34,6 +34,44 @@ the compact-value interpreter work.
 
 ## Current State
 
+- The 2026-08-09 filesystem-event and handler-dispatch checkpoint keeps the
+  published frontier at 4,582/7,080 while resolving every file that the prior
+  broad replay had censored or made environment-sensitive.  Queued native
+  filesystem events now retain the watch generation that existed when the
+  operation occurred, preventing a stale cleanup event from being delivered
+  to a later watch for the same path.  Active local watches also retain one
+  metadata fingerprint so command-loop waits observe writes performed by
+  subprocesses and other host processes.  This is the native backend
+  boundary; GNU `filenotify.el` and Auto Revert still own event normalization,
+  watch policy, and buffer reversion.
+
+  A body-only profile then found roughly 250 ms in repeated
+  `file-name-handler-alist` regex scans.  The new bounded per-interpreter
+  derived match cache validates path/operation results against handler-list
+  identity, the one shared cons-mutation epoch, symbol-property definition
+  generation, and mutable regexp contents; syntax-table-dependent patterns
+  bypass it.  It therefore removes repeated matching without creating a
+  second handler authority.  Indirect buffers now clear the base buffer's
+  filename/truename like GNU, and host identity uses the existing
+  cross-platform in-process system query instead of repeatedly spawning
+  `hostname`.
+
+  Exact final-source evidence: Auto Revert is 7/7 in
+  `target/compat/run-1786252309469163000-67298`, with GNU setup/body
+  0.456/2.016 seconds and Emaxx 2.194/2.306 seconds (1.143x body).  File Notify
+  is 4/4 in `run-1786252435568937000-67476` (0.060/0.120-second body,
+  measured 1.994x).  ERC internal is 13/13 in
+  `run-1786252895157912000-68739` (0.120/0.240-second body, measured 1.993x),
+  and Info Xref is 4/4 in `run-1786252914842759000-68885`
+  (0.353/0.300-second body, 0.851x).  The formerly pathological individual
+  Auto Revert selector measured 1.639x after repair.  All setup figures remain
+  separate from the 2x gate.
+
+  Focused cache/event/indirect-buffer tests and the complete unsandboxed
+  release gate pass: 1,860 library, 32 compatibility-harness, one
+  performance-harness, ten CLI, and three ERT-runner tests.  Commit and push
+  this theme, then replay the complete canonical prefix through C# Mode before
+  starting selector 4,583.
 - The 2026-08-09 TRAMP connection-ownership repair keeps the published
   ordered frontier at 4,582/7,080 while conclusively clearing its canonical
   TRAMP boundary.  Emaxx's in-process `/mock:' metadata transport had created

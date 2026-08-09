@@ -828,15 +828,10 @@ pub(crate) fn system_name_value() -> String {
                 .ok()
                 .filter(|value| !value.is_empty())
         })
-        .or_else(|| {
-            std::process::Command::new("hostname")
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .and_then(|output| String::from_utf8(output.stdout).ok())
-                .map(|name| name.trim().to_string())
-                .filter(|name| !name.is_empty())
-        })
+        // GNU resolves the host identity in-process with gethostname (or the
+        // platform equivalent).  `sysinfo` provides that same cross-platform
+        // boundary without spawning `hostname` on every Lisp call.
+        .or_else(sysinfo::System::host_name)
         .unwrap_or_else(|| "localhost".into())
 }
 
@@ -1418,7 +1413,7 @@ pub(crate) fn mock_file_name_handler_operation(
 }
 
 pub(crate) fn find_file_name_handler(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     file: &str,
     operation: &str,
@@ -1471,7 +1466,6 @@ pub(crate) fn find_file_name_handler(
     let handlers = interp
         .lookup_var("file-name-handler-alist", env)
         .unwrap_or(Value::Nil);
-    let entries = handlers.to_vec()?;
     let operation = Value::Symbol(operation.to_string().into());
     let inhibited = if interp
         .lookup_var("inhibit-file-name-operation", env)
@@ -1485,44 +1479,108 @@ pub(crate) fn find_file_name_handler(
     } else {
         Vec::new()
     };
-    let mut regexp_env = env.clone();
-    regexp_env.push(vec![("case-fold-search".into(), Value::Nil)].into());
+    let cache_key = (file.to_string(), operation.as_symbol()?.to_string());
+    let cons_epoch = crate::lisp::types::cons_mutation_epoch();
+    let definition_generation = interp.current_definition_generation();
+    let handler_alist_id = handlers.cons_id();
+    let cached_matches = interp
+        .file_name_handler_match_cache
+        .get(&cache_key)
+        .filter(|entry| {
+            entry.cons_epoch == cons_epoch
+                && entry.definition_generation == definition_generation
+                && entry.handler_alist.cons_id() == handler_alist_id
+                && entry.pattern_snapshots.iter().all(|(pattern, snapshot)| {
+                    string_like(pattern).is_some_and(|pattern| pattern.text == *snapshot)
+                })
+        })
+        .map(|entry| entry.matches.clone());
+    let matches = if let Some(matches) = cached_matches {
+        matches
+    } else {
+        #[cfg(test)]
+        FILE_NAME_HANDLER_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+        let entries = handlers.to_vec()?;
+        let mut regexp_env = env.clone();
+        regexp_env.push(vec![("case-fold-search".into(), Value::Nil)].into());
+        let mut cacheable = handler_alist_id.is_some();
+        let mut pattern_snapshots = Vec::new();
+        let mut matches = Vec::new();
+        for entry in entries {
+            let Some((pattern, handler)) = (entry).cons_cells() else {
+                continue;
+            };
+            let pattern = pattern.borrow().clone();
+            let handler = handler.borrow().clone();
+            let Some(pattern_text) = string_like(&pattern) else {
+                continue;
+            };
+            cacheable &= !regexp::pattern_depends_on_syntax_table(&pattern_text.text);
+            pattern_snapshots.push((pattern, pattern_text.text.clone()));
+            if let Value::Symbol(symbol) = &handler
+                && let Some(operations) = interp.get_symbol_property(symbol, "operations")
+                && !operations.is_nil()
+                && !operations.to_vec()?.contains(&operation)
+            {
+                continue;
+            }
+            let regexp = regexp::compile_elisp_regex(interp, &pattern_text, &regexp_env, "", true)?;
+            let Some(captures) = regexp
+                .captures(file)
+                .map_err(|error| LispError::Signal(error.to_string()))?
+            else {
+                continue;
+            };
+            let position = captures
+                .get(0)
+                .expect("a successful regexp match has group zero")
+                .start();
+            matches.push((position, handler));
+        }
+        if cacheable {
+            if interp.file_name_handler_match_cache.len() >= 4096 {
+                interp.file_name_handler_match_cache.clear();
+            }
+            interp.file_name_handler_match_cache.insert(
+                cache_key,
+                crate::lisp::eval::FileNameHandlerMatchCacheEntry {
+                    handler_alist: handlers,
+                    // Regexp compilation may lazily initialize Lisp-visible
+                    // tables.  Stamp the derived result after that work so
+                    // the entry is not born stale.
+                    cons_epoch: crate::lisp::types::cons_mutation_epoch(),
+                    definition_generation: interp.current_definition_generation(),
+                    pattern_snapshots,
+                    matches: matches.clone(),
+                },
+            );
+        }
+        matches
+    };
     let mut best = None;
     let mut result = None;
-
-    for entry in entries {
-        let Some((pattern, handler)) = (entry).cons_cells() else {
-            continue;
-        };
-        let pattern = pattern.borrow().clone();
-        let handler = handler.borrow().clone();
-        let Some(pattern) = string_like(&pattern) else {
-            continue;
-        };
-        if let Value::Symbol(symbol) = &handler
-            && let Some(operations) = interp.get_symbol_property(symbol, "operations")
-            && !operations.is_nil()
-            && !operations.to_vec()?.contains(&operation)
-        {
-            continue;
-        }
-        let regexp = regexp::compile_elisp_regex(interp, &pattern, &regexp_env, "", true)?;
-        let Some(captures) = regexp
-            .captures(file)
-            .map_err(|error| LispError::Signal(error.to_string()))?
-        else {
-            continue;
-        };
-        let position = captures
-            .get(0)
-            .expect("a successful regexp match has group zero")
-            .start();
+    for (position, handler) in matches {
         if best.is_none_or(|current| position > current) && !inhibited.contains(&handler) {
             best = Some(position);
             result = Some(handler);
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+thread_local! {
+    static FILE_NAME_HANDLER_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_file_name_handler_scan_count() {
+    FILE_NAME_HANDLER_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn file_name_handler_scan_count() -> usize {
+    FILE_NAME_HANDLER_SCAN_COUNT.with(std::cell::Cell::get)
 }
 
 #[derive(Clone, Copy)]

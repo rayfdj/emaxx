@@ -367,6 +367,44 @@ performance claim: after the semantic connection fix, Emaxx's in-process mock
 filesystem operations make this complete selected workload faster despite its
 larger separately reported setup cost.
 
+### Auto Revert Body and File-Handler Dispatch
+
+After setup/load was removed from the timeout and performance equation, the
+complete Auto Revert file initially exposed one 5-second body wait.  The wait
+was semantic, not evaluator slowness: a queued cleanup event was resolved
+against a later watch generation and invalidated it before its real event,
+while subprocess writes had no host-notification path.  Retaining event-time
+recipients and polling one metadata fingerprint per active local watch made
+all seven canonical tests exact and removed the fallback wait.
+
+The corrected individual selector still measured about 2.3x GNU.  A
+test-phase-only diagnostic profile (removed after use) attributed roughly 250
+ms to repeated `file-name-handler-alist` scans spread across
+`expand-file-name`, directory splitting, existence checks, and related local
+file operations.  The retained bounded match cache is per interpreter and is
+validated by the handler-list identity, global cons-mutation epoch, symbol
+property generation, operation/path, and current mutable-regexp text.
+Syntax-table-dependent patterns bypass it, so the cache cannot freeze a match
+whose meaning follows buffer syntax.
+
+The final exact file-level artifact is
+`target/compat/run-1786252309469163000-67298`:
+
+| Runner | Setup/load | Seven selected tests |
+|---|---:|---:|
+| GNU Emacs | 0.456 s | 2.016 s |
+| `emaxx` | 2.194 s | 2.306 s |
+
+The comparable body ratio is 1.143x.  The formerly pathological exact
+selector measured GNU 0.180 seconds and Emaxx 0.296 seconds (1.639x) in
+`run-1786252168034490000-67122`.  File Notify's final four-test body measured
+0.060/0.120 seconds (1.994x), while ERC internal measured 0.120/0.240 seconds
+(1.993x); both are below the inclusive 2x gate and are small enough that the
+harness's 50-ms host observation cadence is visible.  The multi-second Auto
+Revert aggregate is the stronger performance result.  Info Xref measured
+0.353 seconds GNU versus 0.300 seconds Emaxx (0.851x).  In all cases the
+larger Emaxx setup cost remains separately recorded and excluded.
+
 Before a representation change is retained it must pass all of these gates:
 
 - the paired source-interpreter suite with semantic checks and interleaved

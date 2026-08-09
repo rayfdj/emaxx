@@ -18,6 +18,50 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-09 FILE-NOTIFICATION AND HANDLER-DISPATCH REPAIR: the published
+  ordered frontier remains 4,582/7,080 while the previously censored Auto
+  Revert/File Notify files and sandbox-sensitive ERC/Info Xref files are now
+  exact.  The old Auto Revert pass was invalid: native filesystem events kept
+  only a path/action pair and resolved their recipients later, so a queued
+  cleanup event could be replayed to a newly registered watch.  Conversely,
+  changes made by subprocesses bypassed the native file primitives and never
+  generated an event.  Pending events now retain the descriptors/callbacks
+  that existed when the event was generated, while one host-side metadata
+  fingerprint per active local watch supplies external-change observation.
+  GNU `filenotify.el` and Auto Revert remain the policy owners.
+
+  Profiling the corrected body exposed a separate common hot path: repeated
+  local operations spent about 250 ms rescanning and regex-matching
+  `file-name-handler-alist`.  A bounded per-interpreter derived match cache
+  now keys by path/operation and validates against handler-list identity, the
+  shared cons-mutation epoch, symbol-property definition generation, and live
+  mutable-regexp text.  Syntax-table-dependent patterns bypass the cache.
+  The Lisp alist remains the sole authority.  GNU's additional native
+  contracts are restored too: indirect buffers do not visit their base
+  buffer's file, and `system-name` uses the existing cross-platform in-process
+  system query rather than spawning `hostname` per call.
+
+  Final-source Auto Revert artifact
+  `target/compat/run-1786252309469163000-67298` is exact at 7/7.  GNU
+  setup/body are 0.456/2.016 seconds; Emaxx setup/body are 2.194/2.306
+  seconds, a 1.143x comparable body ratio.  The formerly 46x-slow selector
+  passed before the final diagnostic removal at GNU/Emaxx body 0.180/0.296
+  seconds (1.639x) in `run-1786252168034490000-67122`.  Final File Notify is
+  exact at 4/4 in `run-1786252435568937000-67476` (body 0.060/0.120 seconds,
+  measured 1.994x).  ERC internal is exact at 13/13 in
+  `run-1786252895157912000-68739` (0.120/0.240 seconds, measured 1.993x), and
+  Info Xref is exact at 4/4 in `run-1786252914842759000-68885`
+  (0.353/0.300 seconds, 0.851x).  Setup is separately reported and excluded
+  from every ratio.
+
+  Focused coverage includes event-generation isolation, external host writes,
+  notification invalidation, indirect-buffer file ownership, stable cache
+  reuse, dynamic handler rebinding, cons mutation, handler `operations`
+  changes, and in-place mutable-regexp edits.  The unsandboxed release gate is
+  green: 1,860 library, 32 compatibility-harness, one performance-harness,
+  ten CLI, and three ERT-runner tests.  NEXT: commit/push this coherent theme,
+  then run the complete canonical prefix through C# Mode on that commit.  Do
+  not start selector 4,583 until the replay is exact.
 - 2026-08-09 TRAMP CONNECTION-OWNERSHIP REPAIR: the published ordered
   frontier remains 4,582/7,080, but the complete canonical TRAMP file is now
   conclusively green.  The stall was caused by Emaxx creating a commandless

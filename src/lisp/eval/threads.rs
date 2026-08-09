@@ -1724,8 +1724,19 @@ impl Interpreter {
     }
 
     pub fn queue_file_notification(&mut self, path: &str, action: &str) {
+        // A kernel notification belongs only to watches that existed when
+        // the filesystem operation occurred.  Resolving recipients later
+        // would replay an old event to a newly registered watch for the same
+        // path, which can tear down that new watch before its first real
+        // event arrives.
+        let callbacks = self.file_notify_callbacks_for_path(path);
+        self.refresh_file_notify_fingerprints_for_path(path);
         self.pending_file_notifications
-            .push((path.to_string(), action.to_string()));
+            .push(PendingFileNotification {
+                path: path.to_string(),
+                action: action.to_string(),
+                callbacks,
+            });
     }
 
     pub(crate) fn register_file_notify_watch(
@@ -1734,12 +1745,14 @@ impl Interpreter {
         path: Option<String>,
         callback: Value,
     ) {
+        let fingerprint = path.as_deref().map(file_notify_fingerprint);
         self.file_notify_watches.insert(
             descriptor,
             FileNotifyWatch {
                 path,
                 callback: Self::stored_value(callback),
                 active: true,
+                fingerprint,
             },
         );
     }
@@ -1775,10 +1788,64 @@ impl Interpreter {
             .collect()
     }
 
+    fn refresh_file_notify_fingerprints_for_path(&mut self, event_path: &str) {
+        for watch in self.file_notify_watches.values_mut() {
+            let Some(watched_path) = watch.path.as_deref() else {
+                continue;
+            };
+            if file_notify_watch_covers(watched_path, event_path) {
+                watch.fingerprint = Some(file_notify_fingerprint(watched_path));
+            }
+        }
+    }
+
+    fn poll_external_file_notifications(&mut self) {
+        let mut changed_paths = Vec::<(String, String)>::new();
+        for watch in self.file_notify_watches.values_mut() {
+            if !watch.active {
+                continue;
+            }
+            let Some(path) = watch.path.as_deref() else {
+                continue;
+            };
+            let current = file_notify_fingerprint(path);
+            if watch.fingerprint.as_ref() == Some(&current) {
+                continue;
+            }
+            watch.fingerprint = Some(current.clone());
+            if !changed_paths
+                .iter()
+                .any(|(changed_path, _)| changed_path == path)
+            {
+                let action = match current {
+                    FileNotifyFingerprint::Missing => "deleted",
+                    FileNotifyFingerprint::Present { .. } => "changed",
+                };
+                changed_paths.push((path.to_string(), action.to_string()));
+            }
+        }
+
+        for (path, action) in changed_paths {
+            let callbacks = self.file_notify_callbacks_for_path(&path);
+            self.pending_file_notifications
+                .push(PendingFileNotification {
+                    path,
+                    action,
+                    callbacks,
+                });
+        }
+    }
+
     pub fn run_pending_file_notifications(&mut self, env: &mut Env) -> Result<(), LispError> {
         let pending = std::mem::take(&mut self.pending_file_notifications);
-        for (path, action) in pending {
-            let outcome = primitives::deliver_file_notification(self, env, &path, &action);
+        for notification in pending {
+            let outcome = primitives::deliver_file_notification(
+                self,
+                env,
+                &notification.path,
+                &notification.action,
+                notification.callbacks,
+            );
             match outcome {
                 Ok(()) => {}
                 Err(error @ LispError::Throw(_, _)) => return Err(error),
@@ -2245,6 +2312,10 @@ impl Interpreter {
             }
         }
         if wake_sleepers {
+            // Native file operations enqueue their own exact events.  This
+            // metadata scan supplies the host-backend half of kqueue for
+            // changes made by subprocesses or other processes.
+            self.poll_external_file_notifications();
             self.run_pending_file_notifications(env)?;
             self.run_pending_timer_events(env)?;
         }
@@ -2763,6 +2834,17 @@ fn file_notify_watch_covers(watched_path: &str, event_path: &str) -> bool {
     event_path
         .rsplit_once('/')
         .is_some_and(|(parent, _)| parent == watched)
+}
+
+fn file_notify_fingerprint(path: &str) -> FileNotifyFingerprint {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => FileNotifyFingerprint::Present {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+            is_directory: metadata.is_dir(),
+        },
+        Err(_) => FileNotifyFingerprint::Missing,
+    }
 }
 
 fn read_nonblocking_pipe<T: Read>(pipe: &mut T, output: &mut Vec<u8>) -> Result<bool, LispError> {

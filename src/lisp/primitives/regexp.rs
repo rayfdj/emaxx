@@ -452,22 +452,25 @@ fn translate_zero_width_assertion(
 // regex character class.  Comment delimiters come from explicit table
 // entries; symbol constituents must distinguish GNU's `\s_' from `\sw' and
 // include mode-specific ASCII entries such as `:' in Emacs Lisp mode.
+pub(super) fn pattern_depends_on_syntax_table(pattern: &str) -> bool {
+    pattern.contains("\\s<")
+        || pattern.contains("\\S<")
+        || pattern.contains("\\s>")
+        || pattern.contains("\\S>")
+        || pattern.contains("\\s_")
+        || pattern.contains("\\S_")
+        || pattern.contains("\\s!")
+        || pattern.contains("\\S!")
+        || pattern.contains("\\s|")
+        || pattern.contains("\\S|")
+        || pattern.contains("\\sw")
+        || pattern.contains("\\Sw")
+        || pattern.contains("\\w")
+        || pattern.contains("\\W")
+}
+
 fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
-    if !pattern.contains("\\s<")
-        && !pattern.contains("\\S<")
-        && !pattern.contains("\\s>")
-        && !pattern.contains("\\S>")
-        && !pattern.contains("\\s_")
-        && !pattern.contains("\\S_")
-        && !pattern.contains("\\s!")
-        && !pattern.contains("\\S!")
-        && !pattern.contains("\\s|")
-        && !pattern.contains("\\S|")
-        && !pattern.contains("\\sw")
-        && !pattern.contains("\\Sw")
-        && !pattern.contains("\\w")
-        && !pattern.contains("\\W")
-    {
+    if !pattern_depends_on_syntax_table(pattern) {
         return pattern.to_string();
     }
     let class_expansion = |class_char: char, negated: bool| -> String {

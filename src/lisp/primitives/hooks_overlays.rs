@@ -320,6 +320,7 @@ pub(crate) fn deliver_file_notification(
     env: &mut Env,
     path: &str,
     action: &str,
+    callbacks: Vec<(i64, Value)>,
 ) -> Result<(), LispError> {
     let saved_buffer_id = interp.current_buffer_id();
     let backend_action = match action {
@@ -330,7 +331,6 @@ pub(crate) fn deliver_file_notification(
         "renamed" => "rename",
         other => other,
     };
-    let callbacks = interp.file_notify_callbacks_for_path(path);
     let mut result = Ok(());
     for (descriptor, callback) in callbacks {
         let event = Value::list([
