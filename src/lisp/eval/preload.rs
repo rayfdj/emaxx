@@ -260,6 +260,10 @@ pub(crate) fn builtin_auto_mode_alist() -> Value {
             Value::Symbol("python-mode".into()),
         ),
         Value::cons(
+            Value::String("\\.\\([pP]\\([Llm]\\|erl\\|od\\)\\|al\\)\\'".into()),
+            Value::Symbol("perl-mode".into()),
+        ),
+        Value::cons(
             Value::String("\\.mk\\'".into()),
             Value::Symbol("makefile-bsdmake-mode".into()),
         ),

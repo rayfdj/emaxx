@@ -5629,6 +5629,53 @@ fn faces_compat_provides_face_ids_and_colors_at_point() {
 }
 
 #[test]
+fn faces_compat_reports_named_faces_at_point_in_precedence_order() {
+    let mut interp = Interpreter::new();
+    load_faces_compat(&mut interp);
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (defface sample-point-face-a '((t :weight bold)) \"a\")
+               (defface sample-point-face-b '((t :slant italic)) \"b\")
+               (list
+                (with-temp-buffer
+                  (insert \"x\")
+                  (let ((overlay (make-overlay 1 2)))
+                    (overlay-put overlay 'face 'sample-point-face-a)
+                    (goto-char 1)
+                    (face-at-point)))
+                (with-temp-buffer
+                  (insert (propertize
+                           \"x\" 'face
+                           '(sample-point-face-a (:weight bold)
+                             sample-point-face-b sample-point-face-a)))
+                  (goto-char 1)
+                  (face-at-point nil t))
+                (with-temp-buffer
+                  (insert (propertize
+                           \"x\" 'face 'sample-point-face-a
+                           'read-face-name 'sample-point-face-b))
+                  (goto-char 1)
+                  (face-at-point))
+                (face-list-p '(sample-point-face-a sample-point-face-b))
+                (face-list-p '(:weight bold))))",
+        ),
+        Value::list([
+            Value::symbol("sample-point-face-a"),
+            Value::list([
+                Value::symbol("sample-point-face-a"),
+                Value::symbol("sample-point-face-b"),
+            ]),
+            Value::symbol("sample-point-face-b"),
+            Value::T,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn faces_compat_preserves_builtin_user_themes() {
     let mut interp = Interpreter::new();
     load_faces_compat(&mut interp);

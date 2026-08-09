@@ -42,6 +42,42 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-10 Flymake checkpoint advances the fresh contiguous ordered
+  frontier to 4,678/7,080, leaving 2,402 selectors.  Elixir TS (1/1 matching
+  skip), Etags (3/3), Executable (3/3), F90 (17/17), and Flymake (9/9) all
+  match GNU.  The final-source Flymake artifact is
+  `target/compat/run-1786307778758973000-93329`.
+
+  GNU `faces.el` remains the policy owner: the Elisp compatibility layer now
+  supplies its `face-list-p` and `face-at-point` behavior, including overlay,
+  text-property, anonymous-face, `read-face-name`, precedence, and duplicate
+  handling.  Flymake's recurrent backend exposed a separate native contract:
+  GNU `nth`, list `elt`, and `nthcdr` return the original list for negative
+  counts.  They now share one cycle- and bignum-aware traversal authority and
+  preserve GNU's public `listp` error value.  The Perl backend was sound once
+  the preloaded default mode table gained GNU's exact Perl filename pattern.
+
+  The final gate also found a recent whole-file unload regression.  GNU
+  `loadhist.el` unloads a generic's defun entry before its method entries;
+  Emaxx now retains the native wrapper chain only across that interval, so the
+  existing generic-owned method remover can peel every method and metadata
+  entry.  Minimal repeated-load/unload and six-case Edebug regressions pass.
+
+  Final Flymake GNU/Emaxx setup is 0.316/1.941 seconds and body is
+  7.883/9.422 seconds (1.195x).  Etags body is 0.631/0.933 seconds (1.479x);
+  F90's 0.009/0.158-second ratio is only a 149-ms absolute gap.  Elixir TS and
+  Executable bodies are faster in Emaxx.  All completed comparable work stays
+  below the march threshold.
+
+  Formatting, diff validation, all-target/all-feature checking, strict
+  Clippy, exact final-source Flymake, and every focused regression pass.  The
+  full restricted-sandbox library run reached 1,873/1,888 before the final
+  repairs: its three real failures now pass alone; nine remaining failures are
+  explicit localhost `Operation not permitted` denials and three are the
+  already-characterized host process-launch/wait throttling cases.  Protected
+  scratch files remain untouched.  Native remains complete at 1,420/1,420.
+  NEXT is selector 4,679, `gdb-mi-parse-value`, in
+  `test/lisp/progmodes/gdb-mi-tests.el` (1 selected outcome).
 - The 2026-08-10 Elisp Mode checkpoint advances the fresh contiguous ordered
   frontier to 4,645/7,080, leaving 2,435 selectors.  All 63 selected outcomes
   in `test/lisp/progmodes/elisp-mode-tests.el` match GNU exactly in

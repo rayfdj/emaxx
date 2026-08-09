@@ -1311,18 +1311,11 @@ fn keyboard_macro_self_insert_text(event: &Value) -> Option<String> {
     Some(ch.to_string())
 }
 
-fn nth_list_element(list: &Value, n: usize) -> Result<Value, LispError> {
-    let mut tail = list.clone();
-    for _ in 0..n {
-        match tail {
-            Value::Nil => return Ok(Value::Nil),
-            Value::Cons(ref cell) => {
-                let next = cell.cdr.borrow().clone();
-                tail = next;
-            }
-            other => return Err(wrong_type_argument("listp", other)),
-        }
-    }
+fn nth_list_element(list: &Value, count: &Value) -> Result<Value, LispError> {
+    // GNU fns.c defines `nth' and list `elt' as car(nthcdr(...)).  Keep that
+    // one traversal authority so negative counts, bignums, improper tails,
+    // and circular lists cannot drift between the three public primitives.
+    let tail = nthcdr_value(count, list)?;
     match tail {
         Value::Nil => Ok(Value::Nil),
         Value::Cons(ref cell) => Ok(cell.car.borrow().clone()),
@@ -1452,11 +1445,10 @@ define_dispatch!(
             }
             "nth" | "cl-nth-value" => {
                 need_args(name, args, 2)?;
-                let n = args[0].as_integer()? as usize;
                 if let Some(items) = keymap_list_items(interp, &args[1])? {
-                    Ok(items.get(n).cloned().unwrap_or(Value::Nil))
+                    nth_list_element(&Value::list(items), &args[0])
                 } else {
-                    nth_list_element(&args[1], n)
+                    nth_list_element(&args[1], &args[0])
                 }
             }
             "elt" => {
@@ -1469,8 +1461,7 @@ define_dispatch!(
                 {
                     super::call(interp, "aref", args, env)
                 } else if matches!(args[0], Value::Nil | Value::Cons(_)) {
-                    let n = args[1].as_integer()? as usize;
-                    nth_list_element(&args[0], n)
+                    nth_list_element(&args[0], &args[1])
                 } else {
                     super::call(interp, "aref", args, env)
                 }
@@ -1478,6 +1469,14 @@ define_dispatch!(
             "nthcdr" => {
                 need_args(name, args, 2)?;
                 if let Some(items) = keymap_list_items(interp, &args[1])? {
+                    if matches!(&args[0], Value::Integer(count) if *count <= 0)
+                        || matches!(&args[0], Value::BigInteger(count) if **count <= BigInt::from(0))
+                    {
+                        // Runtime keymaps project to GNU's cons-list surface,
+                        // but nthcdr with a nonpositive count returns the
+                        // original object, including its identity.
+                        return Ok(args[1].clone());
+                    }
                     return nthcdr_value(&args[0], &Value::list(items));
                 }
                 nthcdr_value(&args[0], &args[1])
