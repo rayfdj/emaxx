@@ -18,6 +18,30 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-09 VM PERFORMANCE ROUND 9: retain only the validated Bloom-filter
+  half of `/Users/nbmhqa186/Downloads/emaxx-vm-perf-round9.patch`.  Mutable
+  cons fields use a lazy 256-Kibit negative filter before consulting the one
+  authoritative mutation-watcher map.  Collisions/stale bits only add map
+  probes; registration order prevents false negatives, and empty/bounded
+  resets preserve invalidation safety.  Focused tests force a real collision,
+  drain dead watchers, and verify the filter resets without letting a cache
+  survive.
+
+  Do not restore the patch's cached verdict inside `EnvFrame`: on current main
+  it enlarged every frame allocation, did not improve fib or loop, and made
+  the full candidate slightly slower than Bloom-only.  Byte-identical clean
+  rebuilds plus 20-sample runs confirmed the remaining fib movement is about
+  3%/~5 ms; solving the lexical scan needs a design without a tax on every
+  fresh one-binding frame.
+
+  Clean `53b5e60` -> retained release minimums: vector-10M 1.3548 -> 0.9790
+  seconds, list-build-2M 0.1199 -> 0.0625, sort-5k 0.3943 -> 0.3295.  Mapcar,
+  string, and float remain faster than same-moment GNU.  `bench/driver.el` now
+  checks GNU-derived semantic outputs/checksums for every kernel before timing.
+  Value/type 17/17, bytecode 31/31, all-target/all-feature check, strict
+  clippy, rustfmt, and diff checks pass.  NEXT: publish this separate
+  performance checkpoint, then begin selector 4,583,
+  `dbus-test03-peer-interface`.
 - 2026-08-09 NETWORK STREAM/SOCKS/PROCED CHECKPOINT: the ordered frontier
   remains 4,582/7,080, and the required cumulative replay through C# Mode is
   exact.  Artifact `target/compat/run-1786281895637661000-45511` contains

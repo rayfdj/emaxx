@@ -46,11 +46,29 @@ impl Hasher for IdentityHasher {
 type ConsMutationWatchers =
     HashMap<usize, Vec<Weak<Cell<bool>>>, BuildHasherDefault<IdentityHasher>>;
 
+/// 256 Kibit Bloom filter over watched field addresses, allocated on first
+/// registration.  Mutation of an unwatched field is by far the common case
+/// (every `aset', `setcar', and buffer-local write lands here), so the
+/// watcher-map probe must cost nothing for fields no cache depends on.
+/// Stale bits from dead watchers only cause harmless extra probes; the
+/// filter resets whenever the watcher map is observed empty and at the
+/// bounded key-limit reset.
+const CONS_MUTATION_BLOOM_WORDS: usize = 4096;
+
+type ConsMutationBloom = Option<Box<[u64; CONS_MUTATION_BLOOM_WORDS]>>;
+
+fn cons_mutation_bloom_slot(field_id: usize) -> (usize, u64) {
+    let mixed = (field_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let bit = (mixed >> 46) as usize;
+    (bit >> 6, 1u64 << (bit & 63))
+}
+
 thread_local! {
     static CONS_MUTATION_EPOCH: Cell<ConsMutationEpoch> =
         const { Cell::new(ConsMutationEpoch(0)) };
     static CONS_MUTATION_WATCHERS: RefCell<ConsMutationWatchers> =
         RefCell::new(ConsMutationWatchers::default());
+    static CONS_MUTATION_WATCH_BLOOM: RefCell<ConsMutationBloom> = const { RefCell::new(None) };
 }
 
 pub(crate) fn cons_mutation_epoch() -> ConsMutationEpoch {
@@ -60,7 +78,16 @@ pub(crate) fn cons_mutation_epoch() -> ConsMutationEpoch {
 fn note_cons_mutation(field_id: usize) {
     let current = cons_mutation_epoch();
     CONS_MUTATION_EPOCH.set(ConsMutationEpoch(current.0.wrapping_add(1)));
-    CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
+    let watched = CONS_MUTATION_WATCH_BLOOM.with_borrow(|bloom| {
+        bloom.as_ref().is_some_and(|bloom| {
+            let (word, bit) = cons_mutation_bloom_slot(field_id);
+            bloom[word] & bit != 0
+        })
+    });
+    if !watched {
+        return;
+    }
+    let emptied = CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
         let mut remove = false;
         if let Some(tokens) = watchers.get_mut(&field_id) {
             tokens.retain(|token| {
@@ -75,15 +102,24 @@ fn note_cons_mutation(field_id: usize) {
         if remove {
             watchers.remove(&field_id);
         }
+        watchers.is_empty()
     });
+    if emptied {
+        CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| {
+            if let Some(bloom) = bloom.as_mut() {
+                bloom.fill(0);
+            }
+        });
+    }
 }
 
 fn register_cons_mutation_watchers(field_ids: &[usize], token: &Rc<Cell<bool>>) {
     if field_ids.is_empty() {
         return;
     }
-    CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
-        if watchers.len() >= CONS_MUTATION_WATCH_KEY_LIMIT {
+    let reset = CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
+        let reset = watchers.len() >= CONS_MUTATION_WATCH_KEY_LIMIT;
+        if reset {
             // Dead source forms can leave weak-only keys behind.  A rare
             // bounded reset invalidates every still-live derivation before
             // dropping those keys, so no cache can survive unsafely.
@@ -99,6 +135,17 @@ fn register_cons_mutation_watchers(field_ids: &[usize], token: &Rc<Cell<bool>>) 
         let weak = Rc::downgrade(token);
         for field_id in field_ids {
             watchers.entry(*field_id).or_default().push(weak.clone());
+        }
+        reset
+    });
+    CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| {
+        let bloom = bloom.get_or_insert_with(|| Box::new([0u64; CONS_MUTATION_BLOOM_WORDS]));
+        if reset {
+            bloom.fill(0);
+        }
+        for field_id in field_ids {
+            let (word, bit) = cons_mutation_bloom_slot(*field_id);
+            bloom[word] |= bit;
         }
     });
 }
@@ -1599,6 +1646,55 @@ mod tests {
             .set_car(Value::Integer(4))
             .expect("source argument spine is a cons");
         assert!(!snapshot.is_current());
+    }
+
+    #[test]
+    fn cons_mutation_bloom_collisions_only_probe_the_authoritative_watcher_map() {
+        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
+        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
+
+        let watched = 1_usize;
+        let slot = super::cons_mutation_bloom_slot(watched);
+        let collision = (watched + 1..)
+            .find(|candidate| super::cons_mutation_bloom_slot(*candidate) == slot)
+            .expect("the finite Bloom filter must have an address collision");
+        let snapshot = super::ConsMutationSnapshot::from_field_ids(vec![watched]);
+
+        super::note_cons_mutation(collision);
+        assert!(
+            snapshot.is_current(),
+            "a Bloom collision must not invalidate an unrelated dependency"
+        );
+        super::note_cons_mutation(watched);
+        assert!(!snapshot.is_current());
+
+        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
+        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
+    }
+
+    #[test]
+    fn cons_mutation_bloom_resets_after_the_last_dead_watcher_is_drained() {
+        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
+        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
+
+        let source = Value::cons(Value::Integer(1), Value::Integer(2));
+        let Value::Cons(cell) = &source else {
+            unreachable!("constructed cons")
+        };
+        let field_ids = super::ConsCell::mutation_field_ids(cell);
+        let snapshot = super::ConsMutationSnapshot::from_field_ids(field_ids.to_vec());
+        assert!(super::CONS_MUTATION_WATCH_BLOOM.with_borrow(|bloom| bloom.is_some()));
+
+        drop(snapshot);
+        source.set_car(Value::Integer(3)).expect("source is a cons");
+        source.set_cdr(Value::Integer(4)).expect("source is a cons");
+
+        assert!(super::CONS_MUTATION_WATCHERS.with_borrow(|watchers| watchers.is_empty()));
+        assert!(super::CONS_MUTATION_WATCH_BLOOM.with_borrow(|bloom| {
+            bloom
+                .as_ref()
+                .is_some_and(|words| words.iter().all(|word| *word == 0))
+        }));
     }
 
     #[test]
