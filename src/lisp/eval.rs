@@ -11,8 +11,8 @@ use super::primitives;
 use super::reader::{CHAR_TABLE_LITERAL_SYMBOL, RECORD_LITERAL_SYMBOL};
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    EmacsTermination, Env, LispError, SharedEnv, Value, WeakConsSlot, interned_symbol_value,
-    shared_env,
+    EmacsTermination, Env, EnvFrame, LispError, SharedEnv, Value, WeakConsSlot,
+    interned_symbol_value, shared_env,
 };
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use hashlink::LinkedHashMap;
@@ -2087,6 +2087,13 @@ pub struct Interpreter {
     /// genuinely captured lexical cell from an ordinary marked local without
     /// retaining every closure ever created.
     captured_lexical_frames: HashMap<i64, Vec<std::rc::Weak<std::cell::RefCell<Env>>>>,
+    /// Captured environments whose immutable frame-identity inventory has
+    /// already been added to `captured_lexical_frames'.  Pointer identity is
+    /// only a lookup accelerator: the weak witness rejects allocator-address
+    /// reuse, and periodic pruning bounds dead derived entries.
+    registered_captured_envs:
+        HashMap<usize, std::rc::Weak<std::cell::RefCell<Env>>, primitives::FnvBuildHasher>,
+    captured_env_registrations: usize,
     /// Evaluation context belongs to the closure object, not to its captured
     /// variable frames.  Keep weak identities here so metadata can never
     /// affect environment lookup, emptiness, or frame merging.  Absence is
@@ -2199,7 +2206,20 @@ struct MacroExpansionCacheEntry {
 
 struct SourceFormCacheEntry {
     source: WeakConsSlot,
+    analysis: SourceFormAnalysis,
+}
+
+/// Immutable decisions derived from one source cons tree.
+///
+/// The enclosing `ConsMutationStamped` entry is the only validity authority:
+/// any mutable cons-field borrow invalidates the flattened items and every
+/// classification below together.
+#[derive(Clone)]
+struct SourceFormAnalysis {
     items: Rc<Vec<Value>>,
+    native_form: Option<core::NativeForm>,
+    literal_kind: core::SourceLiteralKind,
+    if_test_mentions_setcdr: bool,
 }
 
 struct LambdaSourceBodyCacheEntry {
@@ -2805,6 +2825,8 @@ impl Interpreter {
             closure_capture_cache: Vec::new(),
             lexical_cell_updates: HashMap::new(),
             captured_lexical_frames: HashMap::new(),
+            registered_captured_envs: HashMap::default(),
+            captured_env_registrations: 0,
             closure_eval_contexts: HashMap::new(),
             closure_eval_context_registrations: 0,
             lossage_size: 300,
@@ -4063,6 +4085,21 @@ impl Interpreter {
     }
 
     pub(crate) fn register_captured_lexical_frames(&mut self, closure_env: &SharedEnv) {
+        let identity = Rc::as_ptr(closure_env) as usize;
+        if self
+            .registered_captured_envs
+            .get(&identity)
+            .and_then(Weak::upgrade)
+            .is_some_and(|registered| Rc::ptr_eq(&registered, closure_env))
+        {
+            return;
+        }
+
+        self.captured_env_registrations = self.captured_env_registrations.wrapping_add(1);
+        if self.captured_env_registrations.is_multiple_of(4096) {
+            self.registered_captured_envs
+                .retain(|_, owner| owner.strong_count() > 0);
+        }
         let frame_ids = closure_env
             .borrow()
             .iter()
@@ -4079,6 +4116,7 @@ impl Interpreter {
                 owners.push(owner.clone());
             }
         }
+        self.registered_captured_envs.insert(identity, owner);
     }
 
     pub(crate) fn record_lexical_cell_update_if_captured(
@@ -4152,6 +4190,28 @@ impl Interpreter {
         F: FnOnce(&mut Self, &mut Env) -> Result<Value, LispError>,
     {
         self.register_captured_lexical_frames(closure_env);
+        self.refresh_captured_lexical_cells(env);
+
+        // The common immediately-invoked-closure case still has every
+        // captured lexical frame live in the caller.  Stable frame identities
+        // prove these are the same GNU lexical cells, so evaluating directly
+        // on the live environment avoids cloning and later republishing the
+        // entire capture.  Require an exact frame-for-frame match: trimmed,
+        // escaped, synthetic, and merely same-shaped environments retain the
+        // general isolated merge path below.
+        let captured_is_current = {
+            let captured = closure_env.borrow();
+            !captured.is_empty()
+                && captured.len() == env.len()
+                && captured.iter().zip(env.iter()).all(|(captured, current)| {
+                    let identity = Self::frame_identity(captured);
+                    identity.is_some() && identity == Self::frame_identity(current)
+                })
+        };
+        if captured_is_current {
+            return evaluate(self, env);
+        }
+
         let mut captured_snapshot = closure_env.borrow().clone();
         self.refresh_captured_lexical_cells(&mut captured_snapshot);
         if captured_snapshot.is_empty() {
@@ -4182,7 +4242,6 @@ impl Interpreter {
             return result;
         }
 
-        self.refresh_captured_lexical_cells(env);
         let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
         let mut call_env = Self::merge_lexical_lambda_env(env, &captured_snapshot, &frame_mapping);
         let result = evaluate(self, &mut call_env);
@@ -4222,7 +4281,7 @@ impl Interpreter {
         result
     }
 
-    fn sync_cached_closure_frames(&mut self, updates: &[Vec<(String, Value)>]) {
+    fn sync_cached_closure_frames(&mut self, updates: &[EnvFrame]) {
         if updates.is_empty() {
             return;
         }
@@ -7160,7 +7219,7 @@ fn pcase_pattern_bindings_inner(
             if matches!(parts.first(), Some(Value::Symbol(name)) if name == "let")
                 && parts.len() >= 3
             {
-                env.push(bindings.clone());
+                env.push(bindings.clone().into());
                 let evaluated = interp.eval(&parts[2], env);
                 env.pop();
                 return pcase_pattern_bindings_inner(
@@ -7176,7 +7235,7 @@ fn pcase_pattern_bindings_inner(
             if matches!(parts.first(), Some(Value::Symbol(name)) if name == "guard")
                 && parts.len() >= 2
             {
-                env.push(bindings.clone());
+                env.push(bindings.clone().into());
                 let guard = interp.eval(&parts[1], env);
                 env.pop();
                 return Ok(guard?.is_truthy());

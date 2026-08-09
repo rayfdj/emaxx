@@ -1258,7 +1258,7 @@ impl Interpreter {
         }
         let mut context = env.clone();
         if let Some(frame) = activation_frame {
-            context.push(frame.to_vec());
+            context.push(frame.to_vec().into());
         }
         if let Some(backtrace) = self.backtrace_frames.last_mut() {
             backtrace.lexical_context = Some(context);
@@ -1473,7 +1473,7 @@ impl Interpreter {
         // Innermost bindings must win: binding lookup scans a frame back to
         // front, so store outer entries first.
         merged.reverse();
-        vec![merged]
+        vec![merged.into()]
     }
 
     pub fn set_window_margins(&mut self, window_id: u64, left: Option<i64>, right: Option<i64>) {

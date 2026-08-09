@@ -316,7 +316,7 @@ pub(crate) fn set_env_binding(env: &mut Env, name: &str, value: Value) {
             }
         }
     }
-    env.push(vec![(name.into(), value)]);
+    env.push(vec![(name.into(), value)].into());
 }
 
 pub(crate) fn sync_print_number_table(

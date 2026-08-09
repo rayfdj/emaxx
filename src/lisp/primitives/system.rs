@@ -1486,7 +1486,7 @@ pub(crate) fn find_file_name_handler(
         Vec::new()
     };
     let mut regexp_env = env.clone();
-    regexp_env.push(vec![("case-fold-search".into(), Value::Nil)]);
+    regexp_env.push(vec![("case-fold-search".into(), Value::Nil)].into());
     let mut best = None;
     let mut result = None;
 

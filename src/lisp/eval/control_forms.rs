@@ -43,15 +43,19 @@ impl Interpreter {
         crate::lisp::primitives::materialize_read_char_table_literals(self, &value)
     }
 
-    pub(super) fn sf_if(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+    pub(super) fn sf_if(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+        test_mentions_setcdr: bool,
+    ) -> Result<Value, LispError> {
         let Some(test_form) = items.get(1) else {
             return Ok(Value::Nil);
         };
         // The tail-alias machinery guards a self-mutating test form
-        // ((setcdr X ...) where X aliases the `if' form's own tail);
-        // an allocation-free pre-scan skips it for every ordinary `if'.
-        let mut scan_budget = 512u32;
-        let tail_aliases = if crate::lisp::eval::form_mentions_setcdr(test_form, &mut scan_budget) {
+        // ((setcdr X ...) where X aliases the `if' form's own tail).  The
+        // source-form cache performs this mutation-stamped scan once.
+        let tail_aliases = if test_mentions_setcdr {
             setcdr_tail_aliases(self, test_form, &Value::list(items[1..].to_vec()), env)
         } else {
             Vec::new()

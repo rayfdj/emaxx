@@ -1007,16 +1007,19 @@ fn write_process_output_decodes_with_the_default_process_coding_system() {
 #[test]
 fn process_coding_alist_overrides_the_default_for_synchronous_output() {
     let mut interp = Interpreter::new();
-    let mut env = vec![vec![(
-        "process-coding-system-alist".into(),
-        Value::list([Value::cons(
-            Value::String("sample\\'".into()),
-            Value::cons(
-                Value::Symbol("raw-text-unix".into()),
-                Value::Symbol("raw-text-unix".into()),
-            ),
-        )]),
-    )]];
+    let mut env = vec![
+        vec![(
+            "process-coding-system-alist".into(),
+            Value::list([Value::cons(
+                Value::String("sample\\'".into()),
+                Value::cons(
+                    Value::Symbol("raw-text-unix".into()),
+                    Value::Symbol("raw-text-unix".into()),
+                ),
+            )]),
+        )]
+        .into(),
+    ];
 
     write_process_output(
         &mut interp,
@@ -2184,7 +2187,7 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
     .expect("foo3");
     let plain = Value::Symbol("foo".into());
 
-    let mut disabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::Nil)]];
+    let mut disabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::Nil)].into()];
     assert_eq!(
         call(
             &mut interp,
@@ -2266,7 +2269,7 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
         Value::Nil
     );
 
-    let mut enabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)]];
+    let mut enabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
     assert_eq!(
         call(
             &mut interp,

@@ -94,6 +94,14 @@ If a measurement cannot separate startup-image construction honestly, report
 the full timing and mark it as unsegmented; do not use that number alone to
 trigger the 2× compatibility-frontier gate.
 
+`compat-harness` now makes this separation directly.  It writes a marker after
+the selected test file has loaded and gives setup/load and selected test
+execution independent deadlines (180 seconds per phase by default).  Timing
+artifacts retain total, setup, and body durations, while `emaxx_over_gnu_milli`
+and the 2x flag use only body duration from two completed runs.  A killed run
+is censored evidence, so it has no performance ratio and always makes the
+correctness comparison incomplete—even if both runners timed out identically.
+
 ## Execution Model
 
 `perf-harness` reuses the pinned oracle from the compatibility harness:
@@ -274,6 +282,79 @@ Routine development replays should now use focused/current-batch scopes and a
 short, explicitly recorded cap for that known incomplete boundary.  Reserve
 the 1,800-second TRAMP replay for changes to TRAMP/loading and coherent
 publication checkpoints; never convert the timeout into a pass or skip.
+
+### Post-Shallow-Environment Result
+
+The retained lexical-environment work makes each frame a one-pointer,
+copy-on-write snapshot.  Closure capture and invocation therefore share
+ordered binding vectors until a frame is actually mutated.  This does not add
+a competing lexical-cell model: stable frame identities and the existing
+overlay remain authoritative, and the live-environment path is used only for
+an exact frame-for-frame match.  A bounded weak-witness index avoids
+registering the same captured environment repeatedly.  The source-form cache
+also reuses native dispatch, literal classification, and `if` tail-alias
+analysis under its existing cons-mutation stamp and weak source witness.
+
+The final comparable artifact is
+`target/perf/run-1786242006/interpreter/source-eval-suite.perf/comparison.json`:
+
+| Case | GNU Emacs | `emaxx` | Ratio | Change from prior checkpoint |
+|---|---:|---:|---:|---:|
+| list walk | 0.015205 s | 0.101683 s | 6.687x | 3.23% faster |
+| cons allocation | 0.001374 s | 0.016675 s | 12.136x | 2.92% faster |
+| interpreted function calls | 0.001339 s | 0.018420 s | 13.756x | 6.48% faster |
+
+The change column compares the Emaxx medians with the retained
+post-source-dispatch artifact `run-1786226330`.  A closer immediately preceding
+run after the environment representation but before cached dispatch analysis,
+`run-1786238742`, measured 0.108944/0.017662/0.019318 seconds; the final values
+are respectively 6.66%, 5.59%, and 4.65% faster.  The ratios remain well over
+the comparable post-bootstrap 2x threshold, so this checkpoint is a thematic
+improvement, not the end of the interpreter work.
+
+The real-suite effect is larger where closure environment traffic dominates.
+On the same machine and test source, Bindat fell from Emaxx 20.461 seconds at
+base commit `29d4323` (`run-1786241225903316000-1785`) to 4.951 seconds
+(`run-1786241990186148000-6088`), a 75.8% reduction, while all 29 tests match
+GNU.  GNU measured 0.474 seconds in the final run; the unsegmented ratio still
+includes both runtimes' loading/startup paths and is not the post-bootstrap
+2x score.  Electric remains exact at 874/874 and essentially unchanged:
+same-machine base was GNU 0.818/Emaxx 13.856 seconds, while final was GNU
+0.798/Emaxx 13.865 seconds in
+`run-1786241865230074000-5935`.  That control rules out trading Bindat speed
+for an Electric regression and shows that Electric's remaining cost is a
+different evaluator/loading profile.
+
+Two tempting micro-changes were discarded: pointer equality for shared text
+and an FNV variable-alias map produced mixed results around one-percent
+machine noise.  A post-hoc selective closure-sync prototype was also removed
+after becoming pathologically slow.  Only the shallow-frame representation,
+exact live-frame path, idempotent registration, and mutation-stamped dispatch
+analysis were retained, with focused identity/invalidation tests and the full
+release suite green.
+
+### Phase-Aware Compatibility Timing
+
+The first real phase-split run, Bindat in
+`target/compat/run-1786245510121736000-13871`, reports:
+
+| Runner | Setup/load | Selected tests |
+|---|---:|---:|
+| GNU Emacs | 0.290 s | 0.218 s |
+| `emaxx` | 2.062 s | 3.180 s |
+
+All 29 results match.  The body ratio is 14.570x, so removing loading from the
+equation does not explain away Bindat's remaining gap; it confirms a thematic
+source-evaluator/runtime problem.
+
+The canonical TRAMP probe in
+`target/compat/run-1786245633469361000-14051` provides an equally important
+correction.  GNU setup/body took 1.441/6.527 seconds.  Emaxx completed setup in
+2.753 seconds and then exceeded 180.032 seconds in
+`tramp-test18-file-attributes`.  Therefore the current canonical TRAMP blocker
+is in selected test execution, not test-file loading.  Its Emaxx/GNU body
+ratio is intentionally absent because a timeout is a lower bound, not a
+completed sample.
 
 Before a representation change is retained it must pass all of these gates:
 

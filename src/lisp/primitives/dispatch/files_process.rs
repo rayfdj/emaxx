@@ -2225,27 +2225,39 @@ define_dispatch!(
                     }
                     MockFileNameHandlerOperation::ProcessFile => {
                         need_arg_range(name, args, 2, usize::MAX)?;
-                        env.push(mock_remote_process_frame(interp, env)?.ok_or_else(|| {
-                            LispError::Signal("Invalid mock remote directory".into())
-                        })?);
+                        env.push(
+                            mock_remote_process_frame(interp, env)?
+                                .ok_or_else(|| {
+                                    LispError::Signal("Invalid mock remote directory".into())
+                                })?
+                                .into(),
+                        );
                         let result = super::call(interp, "process-file", &args[1..], env);
                         env.pop();
                         result
                     }
                     MockFileNameHandlerOperation::ShellCommand => {
                         need_arg_range(name, args, 2, 4)?;
-                        env.push(mock_remote_process_frame(interp, env)?.ok_or_else(|| {
-                            LispError::Signal("Invalid mock remote directory".into())
-                        })?);
+                        env.push(
+                            mock_remote_process_frame(interp, env)?
+                                .ok_or_else(|| {
+                                    LispError::Signal("Invalid mock remote directory".into())
+                                })?
+                                .into(),
+                        );
                         let result = call(interp, "shell-command", &args[1..], env);
                         env.pop();
                         result
                     }
                     MockFileNameHandlerOperation::StartFileProcess => {
                         need_arg_range(name, args, 4, usize::MAX)?;
-                        env.push(mock_remote_process_frame(interp, env)?.ok_or_else(|| {
-                            LispError::Signal("Invalid mock remote directory".into())
-                        })?);
+                        env.push(
+                            mock_remote_process_frame(interp, env)?
+                                .ok_or_else(|| {
+                                    LispError::Signal("Invalid mock remote directory".into())
+                                })?
+                                .into(),
+                        );
                         let result = super::call(interp, "start-process", &args[1..], env);
                         env.pop();
                         result
@@ -5340,7 +5352,7 @@ fn make_process_value(
     };
     let uses_mock_frame = mock_frame.is_some();
     if let Some(frame) = mock_frame {
-        env.push(frame);
+        env.push(frame.into());
     }
     let runtime = parsed.program.as_ref().map(|command| {
         spawn_persistent_process(

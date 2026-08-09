@@ -392,7 +392,7 @@ impl Interpreter {
                 }
             }
         } else {
-            env.push(vec![(name, dir_value)]);
+            env.push(vec![(name, dir_value)].into());
             None
         };
         let mut result = self.sf_progn(&items[2..], env);
@@ -1658,7 +1658,7 @@ impl Interpreter {
             ),
         );
         let mut captured = env.clone();
-        captured.push(frame.clone());
+        captured.push(frame.clone().into());
         *closure_env.borrow_mut() = captured;
 
         Self::push_marked_frame(env, frame);
@@ -1769,7 +1769,7 @@ fn patch_returned_closure_binding(value: &Value, name: &str, current_value: &Val
             let closure_env = &lambda_value.env;
             let mut closure_env = closure_env.borrow_mut();
             if closure_env.is_empty() {
-                closure_env.push(vec![(name.to_string(), current_value.clone())]);
+                closure_env.push(vec![(name.to_string(), current_value.clone())].into());
                 return;
             }
             for frame in closure_env.iter_mut() {

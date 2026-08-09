@@ -8,7 +8,7 @@ use std::{
     cell::{Ref, RefCell, RefMut},
     collections::HashSet,
     iter::FromIterator,
-    ops::Deref,
+    ops::{Deref, DerefMut},
     path::Path,
     rc::{Rc, Weak},
 };
@@ -602,9 +602,86 @@ pub enum Value {
     Unbound,
 }
 
-/// An environment frame: a list of (name, value) bindings.
-/// We use a simple vector of frames for lexical scoping.
-pub type Env = Vec<Vec<(String, Value)>>;
+/// One lexical environment frame.
+///
+/// Capturing or invoking a closure snapshots an environment far more often
+/// than it mutates one.  Share the frame's ordered binding vector across
+/// those snapshots and detach only the frame that is actually written.  The
+/// evaluator's exact frame/name overlay remains the authority for GNU's
+/// shared lexical-cell semantics; this type only removes redundant deep
+/// copies of derived snapshots.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnvFrame(Rc<Vec<(String, Value)>>);
+
+impl EnvFrame {
+    pub fn new(bindings: Vec<(String, Value)>) -> Self {
+        Self(Rc::new(bindings))
+    }
+}
+
+impl Default for EnvFrame {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl From<Vec<(String, Value)>> for EnvFrame {
+    fn from(bindings: Vec<(String, Value)>) -> Self {
+        Self::new(bindings)
+    }
+}
+
+impl FromIterator<(String, Value)> for EnvFrame {
+    fn from_iter<T: IntoIterator<Item = (String, Value)>>(iter: T) -> Self {
+        Self::new(iter.into_iter().collect())
+    }
+}
+
+impl Deref for EnvFrame {
+    type Target = Vec<(String, Value)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for EnvFrame {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Rc::make_mut(&mut self.0)
+    }
+}
+
+impl IntoIterator for EnvFrame {
+    type Item = (String, Value);
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Rc::try_unwrap(self.0)
+            .unwrap_or_else(|bindings| bindings.as_ref().clone())
+            .into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a EnvFrame {
+    type Item = &'a (String, Value);
+    type IntoIter = std::slice::Iter<'a, (String, Value)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut EnvFrame {
+    type Item = &'a mut (String, Value);
+    type IntoIter = std::slice::IterMut<'a, (String, Value)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Rc::make_mut(&mut self.0).iter_mut()
+    }
+}
+
+/// An environment is an ordered outer-to-inner list of lexical frames.
+pub type Env = Vec<EnvFrame>;
 
 pub fn shared_env(env: Env) -> SharedEnv {
     Rc::new(RefCell::new(env))
@@ -1194,7 +1271,7 @@ impl From<crate::buffer::BufferError> for LispError {
 #[cfg(test)]
 mod tests {
     use super::{
-        LispError, SharedCons, SymbolName, Value, make_uninterned_symbol_name, shared_env,
+        EnvFrame, LispError, SharedCons, SymbolName, Value, make_uninterned_symbol_name, shared_env,
     };
     use std::rc::Rc;
 
@@ -1205,6 +1282,24 @@ mod tests {
             2 * std::mem::size_of::<usize>(),
             "Value clone and stack traffic depends on the compact two-word representation",
         );
+    }
+
+    #[test]
+    fn environment_frames_are_one_pointer_shallow_snapshots() {
+        assert_eq!(
+            std::mem::size_of::<EnvFrame>(),
+            std::mem::size_of::<usize>(),
+            "environment snapshot traffic depends on a one-pointer frame",
+        );
+
+        let frame = EnvFrame::from(vec![("cell".into(), Value::Integer(1))]);
+        let mut snapshot = frame.clone();
+        assert!(Rc::ptr_eq(&frame.0, &snapshot.0));
+
+        snapshot[0].1 = Value::Integer(2);
+        assert!(!Rc::ptr_eq(&frame.0, &snapshot.0));
+        assert_eq!(frame[0].1, Value::Integer(1));
+        assert_eq!(snapshot[0].1, Value::Integer(2));
     }
 
     #[test]

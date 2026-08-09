@@ -18,6 +18,72 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-09 SHALLOW LEXICAL-ENVIRONMENT CHECKPOINT: the published ordered
+  frontier remains 4,582/7,080 (2,498 selectors left).  `EnvFrame` is a
+  one-pointer copy-on-write binding vector, so closure snapshots share frames
+  until an actual write.  This is only a representation optimization: the
+  existing stable-frame overlay remains the authority for shared GNU lexical
+  cells.  The immediate-closure fast path requires an exact nonempty
+  frame-for-frame identity match.  Escaped, trimmed, synthetic, and
+  same-shaped captures still use the general merge/publish path.  A bounded
+  weak-witness index makes captured-environment registration idempotent and
+  rejects address reuse.
+
+  The existing mutation-stamped source-form cache now also carries native
+  dispatch, literal classification, and `if`/`setcdr` tail-alias analysis.
+  It does not introduce a second syntax cache or invalidation mechanism: the
+  same typed cons-mutation epoch and weak source witness invalidate every
+  derived field.  Focused tests pin frame size, copy-on-write detachment,
+  exact live-frame mutation, captured-environment registration, and cached
+  analysis reclassification after head mutation.
+
+  Same-machine Bindat improved from Emaxx 20.461 seconds at base `29d4323` to
+  4.951 seconds in `target/compat/run-1786241990186148000-6088`, with 29/29
+  tests exact and GNU at 0.474 seconds.  Electric remains exact at 874/874 in
+  `target/compat/run-1786241865230074000-5935` (GNU 0.798 seconds, Emaxx
+  13.865 seconds), effectively unchanged against the same-machine base
+  control.  The final comparable artifact is
+  `target/perf/run-1786242006/interpreter/source-eval-suite.perf/comparison.json`:
+  list walking is 6.687x GNU (Emaxx 0.101683 seconds), cons allocation 12.136x
+  (0.016675 seconds), and interpreted calls 13.756x (0.018420 seconds).  These
+  semantic-checking post-bootstrap cases still exceed 2x; continue thematic
+  source-evaluator work rather than declaring the performance problem solved.
+
+  The unsandboxed complete release run is green: library 1,855/1,855,
+  compatibility-harness 29/29, performance-harness 1/1, CLI 10/10, and ERT
+  runner 3/3.  Rustfmt, diff check, all-target/all-feature check, strict
+  Clippy, and generated-autoload comparison pass.  Native remains
+  1,420/1,420.
+
+  The compatibility harness now enforces independent setup/load and selected
+  test-body budgets, 180 seconds each by default.  It writes a marker after
+  the target `.el` file loads and resets the host deadline at that boundary.
+  Raw logs and timing JSON record setup, body, and timeout phase separately;
+  the 2x rule uses completed body time only.  Any timeout forces an incomplete
+  mismatch, including the formerly false-green case where both runners were
+  killed and produced the same synthesized report.  Focused harness coverage
+  is 32/32, including phase reset, pre-marker setup timeout, and paired
+  timeout invalidation.
+
+  Phase-aware Bindat is exact at 29/29 in
+  `target/compat/run-1786245510121736000-13871`: GNU setup/body are
+  0.290/0.218 seconds and Emaxx setup/body are 2.062/3.180 seconds.  Thus its
+  post-load body remains 14.570x slower and legitimately triggers thematic
+  evaluator work.  The canonical TRAMP selector in
+  `target/compat/run-1786245633469361000-14051` disproves the earlier loading
+  diagnosis: Emaxx loads `tramp-tests.el` in 2.753 seconds, then
+  `tramp-test18-file-attributes` exceeds its separate 180.032-second body
+  budget.  GNU setup/body are 1.441/6.527 seconds.  Diagnose that test body;
+  do not spend time optimizing test-file loading as its putative cause.
+
+  A 351-file replay through C# Mode completed under the older combined
+  120-second policy in `target/compat/run-1786242037256082000-6266`, but it is
+  not recertification evidence: Auto Revert and File Notify were censored,
+  several ERC scenarios were sandbox-sensitive, Info Xref differed by
+  pass/skip, and paired TRAMP kills were incorrectly shown as matching by the
+  old harness.  Re-run those exact files with the phase-aware harness and the
+  required permissions.  Do not start selector 4,583 until the prefix is
+  genuinely recertified.
 - 2026-08-09 MUTATION-SAFE SOURCE-DISPATCH CHECKPOINT: the published ordered
   frontier remains 4,582/7,080 (2,498 selectors left).  A bounded
   source-form snapshot cache and bounded RAII evaluated-argument pool remove a
@@ -3888,9 +3954,11 @@ artifacts that differ in harness, oracle executable/helper, selector, exact
 file list, name filter, profile, or timeout.  Pass-to-skip, missing results,
 and extra results are not silently treated as success.  Do not weaken these
 checks to reuse an old artifact: regenerate both sides with the current
-harness.  The default timeout is 120 seconds; CLI values take precedence over
-`EMACS_TEST_TIMEOUT`.  Artifact directory names use nanosecond time plus PID
-and are created exclusively, so a run cannot append to an older run.
+harness.  The default is 180 seconds independently for setup/load and selected
+test execution; the clock resets when the target file's loaded marker appears.
+CLI values take precedence over `EMACS_TEST_TIMEOUT`.  Artifact directory names
+use nanosecond time plus PID and are created exclusively, so a run cannot append
+to an older run.
 
 For the next known frontier, run:
 

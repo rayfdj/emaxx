@@ -898,7 +898,7 @@ pub(crate) fn printer_env_with_overrides(
         _ => return Err(LispError::Signal("invalid print overrides".into())),
     }
 
-    adjusted.push(bindings);
+    adjusted.push(bindings.into());
     Ok(adjusted)
 }
 

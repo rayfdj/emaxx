@@ -153,7 +153,7 @@ macro_rules! native_form_is_special {
 macro_rules! define_native_forms {
     ($($kind:ident $variant:ident => $($name:literal)|+;)+) => {
         #[derive(Clone, Copy)]
-        enum NativeForm {
+        pub(super) enum NativeForm {
             $($variant,)+
         }
 
@@ -339,6 +339,16 @@ pub(crate) fn native_form_fallback_arity(name: &str) -> Option<(i64, i64)> {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) enum SourceLiteralKind {
+    #[default]
+    None,
+    Vector,
+    BoolVector,
+    CharTable,
+    Record,
+}
+
 impl Interpreter {
     // This evaluator recurses once per subform rather than once per
     // funcall/eval level like GNU Emacs, so the same Lisp program nests
@@ -351,7 +361,7 @@ impl Interpreter {
     // thread's large stack backs the same headroom here.
     const LISP_EVAL_DEPTH_SCALE: usize = 384;
 
-    fn source_form_items(&mut self, source: &Value) -> Result<Rc<Vec<Value>>, LispError> {
+    fn source_form_analysis(&mut self, source: &Value) -> Result<SourceFormAnalysis, LispError> {
         let Some((source_anchor, _)) = source.cons_cells() else {
             return Err(LispError::TypeError("list".into(), source.type_name()));
         };
@@ -365,10 +375,37 @@ impl Interpreter {
                 .upgrade()
                 .is_some_and(|cached| cached.ptr_eq(&source_anchor))
         {
-            return Ok(cached.items.clone());
+            return Ok(cached.analysis.clone());
         }
 
         let items = Rc::new(source.to_vec()?);
+        let mut native_form = None;
+        let mut literal_kind = SourceLiteralKind::None;
+        let mut if_test_mentions_setcdr = false;
+        if let Some(Value::Symbol(name)) = items.first() {
+            native_form = NativeForm::for_name(name);
+            literal_kind = match name.as_str() {
+                "vector-literal" => SourceLiteralKind::Vector,
+                "bool-vector-literal" => SourceLiteralKind::BoolVector,
+                CHAR_TABLE_LITERAL_SYMBOL => SourceLiteralKind::CharTable,
+                RECORD_LITERAL_SYMBOL if items[1..].iter().all(is_record_literal_slot_form) => {
+                    SourceLiteralKind::Record
+                }
+                _ => SourceLiteralKind::None,
+            };
+            if matches!(native_form, Some(NativeForm::If)) {
+                let mut scan_budget = 512;
+                if_test_mentions_setcdr = items
+                    .get(1)
+                    .is_some_and(|test| form_mentions_setcdr(test, &mut scan_budget));
+            }
+        }
+        let analysis = SourceFormAnalysis {
+            items,
+            native_form,
+            literal_kind,
+            if_test_mentions_setcdr,
+        };
         if self.source_form_items_cache.len() >= SOURCE_FORM_ITEMS_CACHE_LIMIT {
             self.source_form_items_cache.clear();
         }
@@ -376,10 +413,10 @@ impl Interpreter {
             source_id,
             ConsMutationStamped::new(SourceFormCacheEntry {
                 source: source_anchor.downgrade(),
-                items: items.clone(),
+                analysis: analysis.clone(),
             }),
         );
-        Ok(items)
+        Ok(analysis)
     }
 
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
@@ -441,27 +478,30 @@ impl Interpreter {
             Value::Symbol(name) => self.lookup(name, env),
 
             Value::Cons(_) => {
-                let items = self.source_form_items(expr)?;
+                let SourceFormAnalysis {
+                    items,
+                    native_form,
+                    literal_kind,
+                    if_test_mentions_setcdr,
+                } = self.source_form_analysis(expr)?;
                 if items.is_empty() {
                     return Ok(Value::Nil);
                 }
 
-                if matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
-                    return Ok(expr.clone());
-                }
-                if matches!(
-                    items.first(),
-                    Some(Value::Symbol(name)) if name == "bool-vector-literal"
-                ) {
-                    return Ok(self.create_record("bool-vector", items[1..].to_vec()));
-                }
-                if is_char_table_literal_reader_form(expr) {
-                    return crate::lisp::primitives::materialize_read_char_table_literals(
-                        self, expr,
-                    );
-                }
-                if is_record_literal_reader_form(expr) {
-                    return self.eval_record_literal_form(&items[1..], env);
+                match literal_kind {
+                    SourceLiteralKind::Vector => return Ok(expr.clone()),
+                    SourceLiteralKind::BoolVector => {
+                        return Ok(self.create_record("bool-vector", items[1..].to_vec()));
+                    }
+                    SourceLiteralKind::CharTable => {
+                        return crate::lisp::primitives::materialize_read_char_table_literals(
+                            self, expr,
+                        );
+                    }
+                    SourceLiteralKind::Record => {
+                        return self.eval_record_literal_form(&items[1..], env);
+                    }
+                    SourceLiteralKind::None => {}
                 }
 
                 // Check for special forms first
@@ -480,10 +520,12 @@ impl Interpreter {
                         // the native arms below are the no-file fallback.
                         self.ensure_gnu_pcase_loaded();
                     }
-                    if let Some(native_form) = NativeForm::for_name(name) {
+                    if let Some(native_form) = native_form {
                         match native_form {
                             NativeForm::Quote => return self.sf_quote(&items),
-                            NativeForm::If => return self.sf_if(&items, env),
+                            NativeForm::If => {
+                                return self.sf_if(&items, env, if_test_mentions_setcdr);
+                            }
                             NativeForm::IfLet => {
                                 if !self.has_macro_binding("if-let") {
                                     return self.sf_if_let(&items, env);
@@ -1549,7 +1591,7 @@ impl Interpreter {
                     // argument frame, and those must not leak into the
                     // caller's environment.
                     let caller_len = env.len();
-                    env.push(frame);
+                    env.push(frame.into());
                     let previous_floor = self.special_scan_floor;
                     self.special_scan_floor = caller_len;
                     let result = self.sf_progn(function_executable_body(body), env);
@@ -1589,7 +1631,7 @@ impl Interpreter {
                         }
                     }
                     let captured_len = env.len();
-                    env.push(frame);
+                    env.push(frame.into());
                     let previous_floor = self.special_scan_floor;
                     self.special_scan_floor = caller_len;
                     let result = self.sf_progn(function_executable_body(body), env);
@@ -1631,8 +1673,8 @@ impl Interpreter {
                         }
                     }
                     let captured_len = call_env.len();
-                    call_env.push(vec![("__closure-isolated-current-env".into(), Value::T)]);
-                    call_env.push(frame);
+                    call_env.push(vec![("__closure-isolated-current-env".into(), Value::T)].into());
+                    call_env.push(frame.into());
                     let previous_floor = self.special_scan_floor;
                     self.special_scan_floor = 0;
                     let result = self.sf_progn(function_executable_body(body), &mut call_env);
@@ -1645,7 +1687,7 @@ impl Interpreter {
                     let result =
                         self.eval_with_closure_env(closure_env, env, |interp, call_env| {
                             let depth = call_env.len();
-                            call_env.push(frame);
+                            call_env.push(frame.into());
                             let result = interp.sf_progn(function_executable_body(body), call_env);
                             call_env.truncate(depth);
                             result
@@ -1683,11 +1725,14 @@ impl Interpreter {
             return Ok(value);
         }
         let mut call_env = closure_env.borrow().clone();
-        call_env.push(vec![
-            ("vals".into(), Self::stored_value(args[0].clone())),
-            ("start".into(), Self::stored_value(args[1].clone())),
-            ("end".into(), Self::stored_value(args[2].clone())),
-        ]);
+        call_env.push(
+            vec![
+                ("vals".into(), Self::stored_value(args[0].clone())),
+                ("start".into(), Self::stored_value(args[1].clone())),
+                ("end".into(), Self::stored_value(args[2].clone())),
+            ]
+            .into(),
+        );
         self.sf_progn(function_executable_body(body), &mut call_env)
     }
 

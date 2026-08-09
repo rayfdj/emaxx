@@ -622,16 +622,60 @@ fn sibling_closure_called_during_writer_sees_the_immediate_update() {
 fn captured_frame_index_updates_live_closures_outside_the_dedup_cache() {
     let mut interp = Interpreter::new();
     let identity = Interpreter::fresh_frame_identity();
-    let captured = shared_env(vec![vec![
-        ("cell".into(), Value::Integer(1)),
-        identity.clone(),
-    ]]);
+    let captured = shared_env(vec![
+        vec![("cell".into(), Value::Integer(1)), identity.clone()].into(),
+    ]);
     interp.register_captured_lexical_frames(&captured);
     assert!(interp.closure_capture_cache.is_empty());
 
-    interp.sync_cached_closure_frames(&[vec![("cell".into(), Value::Integer(23)), identity]]);
+    interp
+        .sync_cached_closure_frames(&[vec![("cell".into(), Value::Integer(23)), identity].into()]);
 
     assert_eq!(captured.borrow()[0][0].1, Value::Integer(23));
+}
+
+#[test]
+fn captured_environment_registration_is_idempotent() {
+    let mut interp = Interpreter::new();
+    let captured = shared_env(vec![
+        vec![
+            ("cell".into(), Value::Integer(1)),
+            Interpreter::fresh_frame_identity(),
+        ]
+        .into(),
+    ]);
+
+    interp.register_captured_lexical_frames(&captured);
+    interp.register_captured_lexical_frames(&captured);
+
+    assert_eq!(interp.captured_env_registrations, 1);
+    let frame_id = Interpreter::frame_identity(&captured.borrow()[0]).unwrap();
+    assert_eq!(interp.captured_lexical_frames[&frame_id].len(), 1);
+}
+
+#[test]
+fn exact_live_capture_executes_on_the_authoritative_outer_frame() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    Interpreter::push_marked_frame(&mut env, vec![("cell".into(), Value::Integer(1))]);
+    let captured = interp.capture_closure_env(env.clone());
+
+    let result = interp
+        .eval_with_closure_env(&captured, &mut env, |interp, call_env| {
+            interp.set_variable("cell", Value::Integer(23), call_env);
+            Ok(interp.lookup_var("cell", call_env).unwrap())
+        })
+        .unwrap();
+
+    assert_eq!(result, Value::Integer(23));
+    assert_eq!(env[0][0].1, Value::Integer(23));
+    // The closure's snapshot need not be recopied: the exact frame/name
+    // overlay is the single authority for a captured cell after mutation.
+    assert_eq!(captured.borrow()[0][0].1, Value::Integer(1));
+    assert_eq!(
+        interp.effective_captured_binding(&captured, "cell"),
+        Some(Value::Integer(23))
+    );
 }
 
 #[test]

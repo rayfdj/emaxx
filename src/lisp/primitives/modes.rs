@@ -823,7 +823,7 @@ pub(super) fn magic_mode_function(
             };
             let matched = if let Some(pattern) = string_like(&matcher) {
                 let mut regexp_env = env.clone();
-                regexp_env.push(vec![("case-fold-search".into(), Value::Nil)]);
+                regexp_env.push(vec![("case-fold-search".into(), Value::Nil)].into());
                 let regex = regexp::compile_elisp_regex(interp, &pattern, &regexp_env, "", true)?;
                 regex
                     .captures(&beginning)
