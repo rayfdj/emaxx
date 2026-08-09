@@ -18,6 +18,36 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-09 TRAMP CONNECTION-OWNERSHIP REPAIR: the published ordered
+  frontier remains 4,582/7,080, but the complete canonical TRAMP file is now
+  conclusively green.  The stall was caused by Emaxx creating a commandless
+  pipe as a `/mock:' lifecycle token and marking it connected.  GNU
+  `tramp-sh.el' later treated the same process as its backend, sent
+  `echo are you awake`, and spun on zero-time process polls waiting for a
+  prompt.  `ensure_mock_connection` now delegates to loaded GNU
+  `tramp-maybe-open-connection`; it does not synthesize a competing connection
+  or move GNU-owned shell protocol into Rust.  Without loaded TRAMP, native
+  mock metadata remains connection-independent.
+
+  Exact clean-source artifact
+  `target/compat/run-1786247326058943000-22698` proves both runners discovered
+  110 tests, selected exactly 59 canonical non-expensive/non-unstable cases,
+  and produced all 59 results as 52 passes and seven matching skips.  GNU
+  setup/body are 1.395/97.018 seconds; Emaxx setup/body are 3.301/63.210
+  seconds, a 0.651x body ratio.  The formerly stalled exact selector passed in
+  the diagnostic candidate at a 1.713x body ratio.  The focused delegation
+  regression and `upstream_dnd_mock_remote_transport_handles_file_lifecycle`
+  pass; all temporary operation/process tracing has been removed.
+
+  The full release gate passes outside the restricted socket sandbox: 1,855
+  library, 32 compatibility-harness, one performance-harness, ten CLI, and
+  three ERT-runner tests.
+
+  NEXT: push this repair, then exact-replay the previously censored Auto Revert
+  and File Notify files plus the
+  sandbox-sensitive ERC and Info Xref results from
+  `target/compat/run-1786242037256082000-6266`.  Only after those results make
+  the complete 1..4,582 prefix conclusive may selector 4,583 begin.
 - 2026-08-09 SHALLOW LEXICAL-ENVIRONMENT CHECKPOINT: the published ordered
   frontier remains 4,582/7,080 (2,498 selectors left).  `EnvFrame` is a
   one-pointer copy-on-write binding vector, so closure snapshots share frames
@@ -73,8 +103,9 @@ counts as the progress denominator.
   `target/compat/run-1786245633469361000-14051` disproves the earlier loading
   diagnosis: Emaxx loads `tramp-tests.el` in 2.753 seconds, then
   `tramp-test18-file-attributes` exceeds its separate 180.032-second body
-  budget.  GNU setup/body are 1.441/6.527 seconds.  Diagnose that test body;
-  do not spend time optimizing test-file loading as its putative cause.
+  budget.  GNU setup/body are 1.441/6.527 seconds.  That phase evidence led to
+  the connection-ownership repair above; do not resurrect the incorrect
+  loading diagnosis.
 
   A 351-file replay through C# Mode completed under the older combined
   120-second policy in `target/compat/run-1786242037256082000-6266`, but it is

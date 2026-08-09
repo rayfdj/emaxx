@@ -352,9 +352,20 @@ The canonical TRAMP probe in
 correction.  GNU setup/body took 1.441/6.527 seconds.  Emaxx completed setup in
 2.753 seconds and then exceeded 180.032 seconds in
 `tramp-test18-file-attributes`.  Therefore the current canonical TRAMP blocker
-is in selected test execution, not test-file loading.  Its Emaxx/GNU body
-ratio is intentionally absent because a timeout is a lower bound, not a
-completed sample.
+was in selected test execution, not test-file loading.  The subsequent process
+trace found a commandless lifecycle token incorrectly marked as a connected
+TRAMP backend.  Once connection establishment returned to GNU-owned
+`tramp-sh.el`, that exact selector completed at 11.049 seconds Emaxx versus
+6.447 seconds GNU, a 1.713x body ratio.
+
+The clean complete canonical file in
+`target/compat/run-1786247326058943000-22698` is stronger evidence: both
+runners returned all 59 selected outcomes with matching statuses.  GNU
+setup/body measured 1.395/97.018 seconds and Emaxx 3.301/63.210 seconds.  The
+0.651x body ratio shows why censored runs must never be extrapolated into a
+performance claim: after the semantic connection fix, Emaxx's in-process mock
+filesystem operations make this complete selected workload faster despite its
+larger separately reported setup cost.
 
 Before a representation change is retained it must pass all of these gates:
 
