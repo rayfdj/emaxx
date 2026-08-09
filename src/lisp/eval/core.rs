@@ -30,6 +30,56 @@ thread_local! {
     static PROFILE_DUMP_COUNTDOWN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+const EVAL_VALUE_BUFFER_POOL_LIMIT: usize = 128;
+const EVAL_VALUE_BUFFER_CAPACITY_LIMIT: usize = 256;
+const SOURCE_FORM_ITEMS_CACHE_LIMIT: usize = 1 << 18;
+
+thread_local! {
+    static EVAL_VALUE_BUFFER_POOL: std::cell::RefCell<Vec<Vec<Value>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// One temporary evaluated-argument vector.
+///
+/// Evaluation has many early-return paths for special forms and errors. RAII
+/// guarantees that every path clears the vector before recycling its storage,
+/// without making the evaluator's control flow responsible for pool hygiene.
+struct EvalValueBuffer(Vec<Value>);
+
+impl EvalValueBuffer {
+    fn take() -> Self {
+        Self(EVAL_VALUE_BUFFER_POOL.with_borrow_mut(|pool| pool.pop().unwrap_or_default()))
+    }
+}
+
+impl std::ops::Deref for EvalValueBuffer {
+    type Target = Vec<Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for EvalValueBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for EvalValueBuffer {
+    fn drop(&mut self) {
+        let mut buffer = std::mem::take(&mut self.0);
+        buffer.clear();
+        if buffer.capacity() <= EVAL_VALUE_BUFFER_CAPACITY_LIMIT {
+            EVAL_VALUE_BUFFER_POOL.with_borrow_mut(|pool| {
+                if pool.len() < EVAL_VALUE_BUFFER_POOL_LIMIT {
+                    pool.push(buffer);
+                }
+            });
+        }
+    }
+}
+
 fn profile_enter() {
     PROFILE_CHILD_STACK.with(|stack| stack.borrow_mut().push(std::time::Duration::ZERO));
 }
@@ -301,6 +351,37 @@ impl Interpreter {
     // thread's large stack backs the same headroom here.
     const LISP_EVAL_DEPTH_SCALE: usize = 384;
 
+    fn source_form_items(&mut self, source: &Value) -> Result<Rc<Vec<Value>>, LispError> {
+        let Some((source_anchor, _)) = source.cons_cells() else {
+            return Err(LispError::TypeError("list".into(), source.type_name()));
+        };
+        let source_id = source_anchor.cell_id();
+        if let Some(cached) = self
+            .source_form_items_cache
+            .get(&source_id)
+            .and_then(ConsMutationStamped::current)
+            && cached
+                .source
+                .upgrade()
+                .is_some_and(|cached| cached.ptr_eq(&source_anchor))
+        {
+            return Ok(cached.items.clone());
+        }
+
+        let items = Rc::new(source.to_vec()?);
+        if self.source_form_items_cache.len() >= SOURCE_FORM_ITEMS_CACHE_LIMIT {
+            self.source_form_items_cache.clear();
+        }
+        self.source_form_items_cache.insert(
+            source_id,
+            ConsMutationStamped::new(SourceFormCacheEntry {
+                source: source_anchor.downgrade(),
+                items: items.clone(),
+            }),
+        );
+        Ok(items)
+    }
+
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         if let Some(termination) = self.pending_termination().cloned() {
             return Err(LispError::Terminate(termination));
@@ -360,7 +441,7 @@ impl Interpreter {
             Value::Symbol(name) => self.lookup(name, env),
 
             Value::Cons(_) => {
-                let items = expr.to_vec()?;
+                let items = self.source_form_items(expr)?;
                 if items.is_empty() {
                     return Ok(Value::Nil);
                 }
@@ -1095,7 +1176,7 @@ impl Interpreter {
         if unevald_frame {
             self.push_unevaluated_backtrace_frame(source_form);
         }
-        let mut args = Vec::new();
+        let mut args = EvalValueBuffer::take();
         let mut arg_error = None;
         for item in &items[1..] {
             match self.eval(item, env) {
@@ -1888,4 +1969,30 @@ fn semantic_action_filter_plist(items: Vec<Value>) -> Value {
         }
     }
     Value::list(filtered)
+}
+
+#[cfg(test)]
+mod eval_value_buffer_tests {
+    use super::*;
+
+    #[test]
+    fn scratch_buffers_are_cleared_and_oversized_storage_is_not_retained() {
+        EVAL_VALUE_BUFFER_POOL.with_borrow_mut(Vec::clear);
+
+        {
+            let mut buffer = EvalValueBuffer::take();
+            buffer.extend([Value::string("temporary"), Value::symbol("value")]);
+        }
+        EVAL_VALUE_BUFFER_POOL.with_borrow(|pool| {
+            assert_eq!(pool.len(), 1);
+            assert!(pool[0].is_empty());
+        });
+
+        {
+            let mut buffer = EvalValueBuffer::take();
+            assert!(buffer.is_empty());
+            buffer.reserve(EVAL_VALUE_BUFFER_CAPACITY_LIMIT + 1);
+        }
+        EVAL_VALUE_BUFFER_POOL.with_borrow(|pool| assert!(pool.is_empty()));
+    }
 }

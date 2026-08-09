@@ -1079,8 +1079,9 @@ impl Interpreter {
     pub(crate) fn cached_macro_expansion(&self, form: &Value, lexical: bool) -> Option<Value> {
         let (car, _) = form.cons_cells()?;
         let key = (car.cell_id(), lexical);
-        let (generation, expanded, _) = self.macro_expansion_cache.get(&key)?;
-        (*generation == self.definition_generation).then(|| expanded.clone())
+        let cached = self.macro_expansion_cache.get(&key)?.current()?;
+        (cached.definition_generation == self.definition_generation)
+            .then(|| cached.expansion.clone())
     }
 
     /// Cache FORM's macro expansion at the current definition generation.
@@ -1094,8 +1095,14 @@ impl Interpreter {
         if self.macro_expansion_cache.len() >= (1 << 20) {
             self.macro_expansion_cache.clear();
         }
-        self.macro_expansion_cache
-            .insert(key, (self.definition_generation, expanded, form.clone()));
+        self.macro_expansion_cache.insert(
+            key,
+            ConsMutationStamped::new(MacroExpansionCacheEntry {
+                definition_generation: self.definition_generation,
+                expansion: expanded,
+                _source: form.clone(),
+            }),
+        );
     }
 
     /// Append cl-macrolet-style local macros to the positional table,

@@ -34,6 +34,33 @@ the compact-value interpreter work.
 
 ## Current State
 
+- The 2026-08-09 mutation-safe source-dispatch checkpoint keeps the published
+  ordered frontier at 4,582/7,080.  Repeated source-form flattening now uses a
+  bounded derived-snapshot cache, and evaluated argument vectors use a bounded
+  RAII pool.  One typed cons-mutation epoch invalidates source-form,
+  macro-expansion, lambda-body, and quote-template derivations; weak witnesses
+  reject recycled cons addresses.  Focused tests cover car/cdr mutation,
+  nested macro and lambda source changes, quote-template resolution, error
+  recovery, and pool hygiene without changing the Rust/Elisp ownership
+  boundary.  The paired post-bootstrap run in
+  `target/perf/run-1786226330` improves Emaxx list walking by 8.93%, cons
+  allocation by 8.95%, and interpreted calls by 6.91% against the exact
+  immediately preceding run, corroborated by two independent repeats.
+  Electric remains exact at 874/874 in
+  `target/compat/run-1786226417171206000-50677`.  The cumulative replay through
+  C# Mode matched 350/351 files in
+  `target/compat/run-1786232582936062000-54801`; the only mismatch is the same
+  pre-existing TRAMP load timeout (GNU 98.886 seconds, Emaxx capped at
+  1,800.079 seconds), and every later file matched.  Disjoint Rust and
+  publication coverage passed 1,851/1,851 tests; six localhost-dependent
+  primitive cases denied by the sandbox passed in exact permitted replays.
+  Rustfmt, diff check, all-target/all-feature compilation, strict Clippy,
+  compatibility-harness 29/29, performance-harness 1/1, CLI 10/10, and ERT
+  runner 3/3 pass.  Native remains 1,420/1,420.  Next, profile a body-heavy
+  post-bootstrap suite and remove repeated symbol interning/hashing and lookup
+  traffic if that profile confirms the current native sample.  Routine runs
+  must use focused/batched scopes and a short recorded cap for the known TRAMP
+  boundary; reserve its 1,800-second replay for relevant or publication work.
 - The 2026-08-09 compact shared-value checkpoint keeps the ordered frontier at
   4,582/7,080 while reducing `Value` from 40 to 16 bytes on the measured
   64-bit target.  Text, ordinary interned symbol names, immutable big

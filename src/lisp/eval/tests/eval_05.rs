@@ -5199,6 +5199,105 @@ fn unevaluated_backtrace_frame_retains_the_live_source_form() {
 }
 
 #[test]
+fn cached_source_forms_observe_mutation_and_recover_after_errors() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new("(+ 1 2)")
+        .read()
+        .expect("source form should parse")
+        .expect("source form should exist");
+
+    assert_eq!(interp.eval(&form, &mut env).unwrap(), Value::Integer(3));
+    form.set_car(Value::symbol("*"))
+        .expect("call source should be mutable");
+    form.cdr()
+        .expect("call should have arguments")
+        .set_car(Value::Integer(3))
+        .expect("first argument cell should be mutable");
+    assert_eq!(interp.eval(&form, &mut env).unwrap(), Value::Integer(6));
+
+    let improper = Value::cons(Value::symbol("+"), Value::Integer(1));
+    assert!(matches!(
+        interp.eval(&improper, &mut env),
+        Err(LispError::TypeError(expected, _)) if expected == "list"
+    ));
+    assert_eq!(interp.eval(&form, &mut env).unwrap(), Value::Integer(6));
+}
+
+#[test]
+fn cons_mutation_invalidates_all_source_derivations() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let definition = Reader::new("(defmacro mutation-probe (value) (list 'quote value))")
+        .read()
+        .expect("macro definition should parse")
+        .expect("macro definition should exist");
+    interp.eval(&definition, &mut env).expect("define macro");
+
+    let macro_call = Reader::new("(mutation-probe first)")
+        .read()
+        .expect("macro call should parse")
+        .expect("macro call should exist");
+    assert_eq!(
+        interp.eval(&macro_call, &mut env).unwrap(),
+        Value::symbol("first")
+    );
+    macro_call
+        .cdr()
+        .expect("macro call should have an argument")
+        .set_car(Value::symbol("second"))
+        .expect("macro argument cell should be mutable");
+    assert_eq!(
+        interp.eval(&macro_call, &mut env).unwrap(),
+        Value::symbol("second")
+    );
+
+    let lambda_form = Reader::new("(lambda () 1)")
+        .read()
+        .expect("lambda should parse")
+        .expect("lambda should exist");
+    let first_lambda = interp.eval(&lambda_form, &mut env).expect("first lambda");
+    lambda_form
+        .cdr()
+        .expect("lambda should have parameters")
+        .cdr()
+        .expect("lambda should have a body")
+        .set_car(Value::Integer(2))
+        .expect("lambda body cell should be mutable");
+    let second_lambda = interp.eval(&lambda_form, &mut env).expect("second lambda");
+    assert_eq!(
+        interp
+            .call_function_value(first_lambda, None, &[], &mut env)
+            .unwrap(),
+        Value::Integer(1)
+    );
+    assert_eq!(
+        interp
+            .call_function_value(second_lambda, None, &[], &mut env)
+            .unwrap(),
+        Value::Integer(2)
+    );
+
+    let quote_form = Reader::new("'(plain)")
+        .read()
+        .expect("quote should parse")
+        .expect("quote should exist");
+    let quote_template = quote_form
+        .cdr()
+        .expect("quote should have an argument")
+        .car()
+        .expect("quote argument should exist");
+    assert_eq!(interp.eval(&quote_form, &mut env).unwrap(), quote_template);
+    quote_template
+        .set_car(Value::symbol("emaxx--hash-table-literal"))
+        .expect("quote template should be mutable");
+    assert!(matches!(
+        interp.eval(&quote_form, &mut env).unwrap(),
+        Value::Record(_)
+    ));
+}
+
+#[test]
 fn ert_x_remote_temp_directory_loads_after_tramp() {
     // `env.el' is part of GNU's dumped startup image.  Exercise Tramp from
     // the same initialized boundary instead of constructing an impossible

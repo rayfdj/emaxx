@@ -2022,11 +2022,19 @@ pub struct Interpreter {
     /// otherwise re-expand per evaluation — the dominant cost under
     /// erc's message load).  The cached entry holds the ORIGINAL form
     /// too, so its cons stays alive and the address is never reused.
-    macro_expansion_cache: HashMap<(usize, bool), (u64, Value, Value)>,
+    macro_expansion_cache: HashMap<(usize, bool), ConsMutationStamped<MacroExpansionCacheEntry>>,
+    /// Flattened source forms keyed by their car-cell identity.  Entries are
+    /// derived snapshots stamped with the global cons-mutation epoch and a
+    /// weak source witness, never a second syntax authority.
+    source_form_items_cache: HashMap<
+        usize,
+        ConsMutationStamped<SourceFormCacheEntry>,
+        crate::lisp::primitives::FnvBuildHasher,
+    >,
     /// Immutable lambda code keyed by the source form's car-cell identity.
     /// The weak source witness prevents a recycled allocator address from
     /// aliasing an unrelated form whose older closure is still alive.
-    lambda_source_bodies: HashMap<usize, LambdaSourceBodyCacheEntry>,
+    lambda_source_bodies: HashMap<usize, ConsMutationStamped<LambdaSourceBodyCacheEntry>>,
     /// Features currently available in this interpreter.
     provided_features: Vec<String>,
     /// Forms waiting for a feature to be provided.
@@ -2133,7 +2141,7 @@ pub struct Interpreter {
     /// Quoted templates already scanned and found free of reader marker
     /// forms; `quote' returns them as-is (keyed by car-cell address, the
     /// stored Value keeps the template alive so keys stay unique).
-    pub(crate) plain_quote_templates: HashMap<usize, Value>,
+    plain_quote_templates: HashMap<usize, ConsMutationStamped<Value>>,
     pending_file_notifications: Vec<(String, String)>,
     file_notify_watches: HashMap<i64, FileNotifyWatch>,
     pub(crate) gnu_pcase_load_attempted: bool,
@@ -2165,7 +2173,39 @@ pub(crate) enum ActiveHandler {
     Case(Vec<Value>),
 }
 
-type LambdaSourceBodyCacheEntry = (WeakConsSlot, Weak<Vec<Value>>);
+struct ConsMutationStamped<T> {
+    epoch: crate::lisp::types::ConsMutationEpoch,
+    value: T,
+}
+
+impl<T> ConsMutationStamped<T> {
+    fn new(value: T) -> Self {
+        Self {
+            epoch: crate::lisp::types::cons_mutation_epoch(),
+            value,
+        }
+    }
+
+    fn current(&self) -> Option<&T> {
+        (self.epoch == crate::lisp::types::cons_mutation_epoch()).then_some(&self.value)
+    }
+}
+
+struct MacroExpansionCacheEntry {
+    definition_generation: u64,
+    expansion: Value,
+    _source: Value,
+}
+
+struct SourceFormCacheEntry {
+    source: WeakConsSlot,
+    items: Rc<Vec<Value>>,
+}
+
+struct LambdaSourceBodyCacheEntry {
+    source: WeakConsSlot,
+    body: Weak<Vec<Value>>,
+}
 
 fn make_query_replace_map(interp: &mut Interpreter) -> Value {
     let map = primitives::make_runtime_keymap(interp, Some("query-replace-map"));
@@ -2738,6 +2778,7 @@ impl Interpreter {
             function_resolution_cache: HashMap::default(),
             not_macro_names: HashMap::new(),
             macro_expansion_cache: HashMap::new(),
+            source_form_items_cache: HashMap::default(),
             lambda_source_bodies: HashMap::new(),
             provided_features: STARTUP_FEATURES
                 .iter()
@@ -6149,7 +6190,7 @@ fn cl_defmethod_replace_ignore_previous_bindings_inner(
         Value::Cons(cons_cell) => {
             let car = &cons_cell.car;
             let cdr = &cons_cell.cdr;
-            let cons_id = car.as_ptr() as usize;
+            let cons_id = crate::lisp::types::ConsCell::identity(cons_cell);
             if !seen_cons.insert(cons_id) {
                 return false;
             }
@@ -6222,7 +6263,7 @@ fn cl_defmethod_replace_terminal_previous_bindings(function: &Value, replacement
             Value::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
-                let cons_id = car.as_ptr() as usize;
+                let cons_id = crate::lisp::types::ConsCell::identity(cons_cell);
                 if !seen_cons.insert(cons_id) {
                     return false;
                 }
@@ -6307,7 +6348,7 @@ fn cl_defmethod_previous_binding_inner(
         Value::Cons(cons_cell) => {
             let car = &cons_cell.car;
             let cdr = &cons_cell.cdr;
-            let cons_id = car.as_ptr() as usize;
+            let cons_id = crate::lisp::types::ConsCell::identity(cons_cell);
             if !seen_cons.insert(cons_id) {
                 return None;
             }

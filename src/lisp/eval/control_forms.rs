@@ -13,14 +13,20 @@ impl Interpreter {
         // is cached per template so hot code doesn't rescan large constants.
         if let Value::Cons(cell) = &items[1] {
             let key = crate::lisp::types::ConsCell::identity(cell);
-            if self.plain_quote_templates.contains_key(&key) {
+            if self
+                .plain_quote_templates
+                .get(&key)
+                .and_then(ConsMutationStamped::current)
+                .is_some()
+            {
                 return Ok(items[1].clone());
             }
             if !reader::quote_template_needs_resolution(&items[1]) {
                 if self.plain_quote_templates.len() >= (1 << 20) {
                     self.plain_quote_templates.clear();
                 }
-                self.plain_quote_templates.insert(key, items[1].clone());
+                self.plain_quote_templates
+                    .insert(key, ConsMutationStamped::new(items[1].clone()));
                 return Ok(items[1].clone());
             }
         } else if !reader::quote_template_needs_resolution(&items[1]) {

@@ -16,6 +16,23 @@ use std::{
 const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
 const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 
+thread_local! {
+    static CONS_MUTATION_EPOCH: std::cell::Cell<ConsMutationEpoch> =
+        const { std::cell::Cell::new(ConsMutationEpoch(0)) };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ConsMutationEpoch(u64);
+
+pub(crate) fn cons_mutation_epoch() -> ConsMutationEpoch {
+    CONS_MUTATION_EPOCH.get()
+}
+
+fn note_cons_mutation() {
+    let current = cons_mutation_epoch();
+    CONS_MUTATION_EPOCH.set(ConsMutationEpoch(current.0.wrapping_add(1)));
+}
+
 /// Immutable shared text stored inside compact Lisp values.
 #[repr(transparent)]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -375,15 +392,39 @@ pub struct BufferValue {
 /// borrows for `setcar`, `setcdr`, reader fixups, and vector element slots.
 #[derive(Debug)]
 pub struct ConsCell {
-    pub(crate) car: RefCell<Value>,
-    pub(crate) cdr: RefCell<Value>,
+    pub(crate) car: ConsValueCell,
+    pub(crate) cdr: ConsValueCell,
+}
+
+/// One tracked field of a cons cell.
+///
+/// Every mutable borrow advances the single mutation epoch used to validate
+/// all derived source-form caches. The wrapper has the same storage shape as
+/// its `RefCell<Value>` payload and keeps mutation tracking out of callers.
+#[repr(transparent)]
+#[derive(Debug)]
+pub(crate) struct ConsValueCell(RefCell<Value>);
+
+impl ConsValueCell {
+    fn new(value: Value) -> Self {
+        Self(RefCell::new(value))
+    }
+
+    pub(crate) fn borrow(&self) -> Ref<'_, Value> {
+        self.0.borrow()
+    }
+
+    pub(crate) fn borrow_mut(&self) -> RefMut<'_, Value> {
+        note_cons_mutation();
+        self.0.borrow_mut()
+    }
 }
 
 impl ConsCell {
     fn new(car: Value, cdr: Value) -> Self {
         Self {
-            car: RefCell::new(car),
-            cdr: RefCell::new(cdr),
+            car: ConsValueCell::new(car),
+            cdr: ConsValueCell::new(cdr),
         }
     }
 
@@ -797,11 +838,20 @@ impl Value {
     /// Convert a proper list to a Vec.
     pub fn to_vec(&self) -> Result<Vec<Value>, LispError> {
         let mut result = Vec::new();
+        self.extend_list_elements(&mut result)?;
+        Ok(result)
+    }
+
+    /// Append the elements of a proper list to an existing value buffer.
+    ///
+    /// Source evaluation and other callers share this path so cycle and
+    /// improper-list handling cannot drift between independent list walkers.
+    pub(crate) fn extend_list_elements(&self, result: &mut Vec<Value>) -> Result<(), LispError> {
         let mut current = self.clone();
         let mut seen = CycleGuard::new();
         loop {
             match current {
-                Value::Nil => return Ok(result),
+                Value::Nil => return Ok(()),
                 Value::Cons(cell) => {
                     if seen.step(ConsCell::identity(&cell)) {
                         return Err(circular_list_error());
@@ -1270,6 +1320,24 @@ mod tests {
         };
 
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn every_cons_field_mutation_advances_the_shared_epoch() {
+        assert_eq!(
+            std::mem::size_of::<super::ConsValueCell>(),
+            std::mem::size_of::<std::cell::RefCell<Value>>()
+        );
+
+        let pair = Value::cons(Value::Integer(1), Value::Integer(2));
+        let before_car = super::cons_mutation_epoch();
+        pair.set_car(Value::Integer(3)).expect("set car");
+        assert_ne!(super::cons_mutation_epoch(), before_car);
+
+        let (_, cdr) = pair.cons_cells().expect("constructed cons");
+        let before_cdr = super::cons_mutation_epoch();
+        *cdr.borrow_mut() = Value::Integer(4);
+        assert_ne!(super::cons_mutation_epoch(), before_cdr);
     }
 
     #[test]
