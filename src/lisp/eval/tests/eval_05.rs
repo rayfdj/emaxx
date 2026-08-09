@@ -1853,6 +1853,26 @@ fn eval_lexical_argument_controls_macroexpander_lexical_binding() {
 }
 
 #[test]
+fn lexical_eval_does_not_bind_lexical_binding_for_non_macro_calls() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar emaxx-test-macro-probe-events nil)
+               (setq emaxx-test-macro-probe-events nil)
+               (let ((watcher
+                      (lambda (&rest args)
+                        (setq emaxx-test-macro-probe-events
+                              (cons args emaxx-test-macro-probe-events)))))
+                 (add-variable-watcher 'lexical-binding watcher)
+                 (eval '(+ 1 2) t)
+                 (remove-variable-watcher 'lexical-binding watcher)
+                 (length emaxx-test-macro-probe-events)))"
+        ),
+        Value::Integer(0)
+    );
+}
+
+#[test]
 fn backquote_splices_vector_values_without_internal_marker() {
     assert_eq!(
         eval_str("(let ((vec [ba bb bc])) `(a ,@vec c))"),

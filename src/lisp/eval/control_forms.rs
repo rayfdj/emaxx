@@ -25,8 +25,13 @@ impl Interpreter {
                 if self.plain_quote_templates.len() >= (1 << 20) {
                     self.plain_quote_templates.clear();
                 }
-                self.plain_quote_templates
-                    .insert(key, ConsMutationStamped::new(items[1].clone()));
+                self.plain_quote_templates.insert(
+                    key,
+                    ConsMutationStamped::new(
+                        crate::lisp::types::ConsMutationSnapshot::tree(&items[1]),
+                        items[1].clone(),
+                    ),
+                );
                 return Ok(items[1].clone());
             }
         } else if !reader::quote_template_needs_resolution(&items[1]) {

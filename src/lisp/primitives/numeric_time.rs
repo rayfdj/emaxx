@@ -2123,6 +2123,18 @@ pub(crate) fn numeric_ordering(
         return Ok(None);
     }
 
+    // GNU's arithcompare handles two fixnums directly. Markers coerce to
+    // fixnums at the same boundary, so keep this overwhelmingly common path
+    // allocation-free and reserve exact-rational construction for mixed or
+    // genuinely large representations.
+    if matches!(left, Value::Integer(_) | Value::Marker(_))
+        && matches!(right, Value::Integer(_) | Value::Marker(_))
+    {
+        return Ok(Some(
+            integer_like_i64(interp, left)?.cmp(&integer_like_i64(interp, right)?),
+        ));
+    }
+
     if let (Some(left_exact), Some(right_exact)) = (
         exact_binary_rational(interp, left)?,
         exact_binary_rational(interp, right)?,

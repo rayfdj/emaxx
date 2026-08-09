@@ -1685,7 +1685,11 @@ impl Interpreter {
         // so ordinary evaluation and explicit `macroexpand-all' cannot drift
         // (ERT relies on this to expand test bodies at definition time).
         let expanded = self
-            .try_builtin_macroexpand("cl-macrolet", &items[1..], env)?
+            .try_builtin_macroexpand_in_context(
+                super::macros::BuiltinMacroForm::ClMacrolet,
+                &items[1..],
+                env,
+            )?
             .expect("a valid cl-macrolet form always expands");
         self.eval(&expanded, env)
     }

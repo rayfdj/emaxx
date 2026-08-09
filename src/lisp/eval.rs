@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
@@ -2042,13 +2043,6 @@ pub struct Interpreter {
     /// the hot per-form path while any definition change invalidates all
     /// verdicts at once.
     not_macro_names: HashMap<String, u64>,
-    /// Per-callsite macro expansions, keyed by the form's car cell address
-    /// and effective lexical mode, and validated against `definition_generation` (compiled
-    /// GNU code expands each macro call once; interpreted emaxx would
-    /// otherwise re-expand per evaluation — the dominant cost under
-    /// erc's message load).  The cached entry holds the ORIGINAL form
-    /// too, so its cons stays alive and the address is never reused.
-    macro_expansion_cache: HashMap<(usize, bool), ConsMutationStamped<MacroExpansionCacheEntry>>,
     /// Flattened source forms keyed by their car-cell identity.  Entries are
     /// derived snapshots stamped with the global cons-mutation epoch and a
     /// weak source witness, never a second syntax authority.
@@ -2212,27 +2206,35 @@ pub(crate) enum ActiveHandler {
 }
 
 struct ConsMutationStamped<T> {
-    epoch: crate::lisp::types::ConsMutationEpoch,
+    mutations: crate::lisp::types::ConsMutationSnapshot,
     value: T,
 }
 
 impl<T> ConsMutationStamped<T> {
-    fn new(value: T) -> Self {
-        Self {
-            epoch: crate::lisp::types::cons_mutation_epoch(),
-            value,
-        }
+    fn new(mutations: crate::lisp::types::ConsMutationSnapshot, value: T) -> Self {
+        Self { mutations, value }
     }
 
     fn current(&self) -> Option<&T> {
-        (self.epoch == crate::lisp::types::cons_mutation_epoch()).then_some(&self.value)
+        self.mutations.is_current().then_some(&self.value)
     }
 }
 
-struct MacroExpansionCacheEntry {
+struct SourceMacroExpansionCacheEntry {
     definition_generation: u64,
     expansion: Value,
-    _source: Value,
+    mutations: crate::lisp::types::ConsMutationSnapshot,
+}
+
+struct SourceFunctionCallCacheEntry {
+    definition_generation: u64,
+    resolution: FunctionResolution,
+}
+
+#[derive(Default)]
+struct SourceMacroCallCache {
+    not_macro_generation: Option<u64>,
+    expansions: [Option<SourceMacroExpansionCacheEntry>; 2],
 }
 
 struct SourceFormCacheEntry {
@@ -2243,14 +2245,21 @@ struct SourceFormCacheEntry {
 /// Immutable decisions derived from one source cons tree.
 ///
 /// The enclosing `ConsMutationStamped` entry is the only validity authority:
-/// any mutable cons-field borrow invalidates the flattened items and every
-/// classification below together.
+/// mutation of a cons field used by this source form invalidates the
+/// flattened items and every classification below together.
 #[derive(Clone)]
 struct SourceFormAnalysis {
     items: Rc<Vec<Value>>,
     native_form: Option<core::NativeForm>,
     literal_kind: core::SourceLiteralKind,
     if_test_mentions_setcdr: bool,
+    /// Callsite-local macro verdicts share the source-analysis lifetime. This
+    /// avoids a second identity hash on every evaluation while retaining
+    /// independent lexical/dynamic expansions and tree-mutation validity.
+    macro_calls: Rc<RefCell<SourceMacroCallCache>>,
+    /// Generation-stamped function-cell resolution for this exact callsite.
+    /// Local cl-flet/cl-labels frames bypass it before lookup.
+    function_call: Rc<RefCell<Option<SourceFunctionCallCacheEntry>>>,
 }
 
 struct LambdaSourceBodyCacheEntry {
@@ -2828,7 +2837,6 @@ impl Interpreter {
             definition_generation: 0,
             function_resolution_cache: HashMap::default(),
             not_macro_names: HashMap::new(),
-            macro_expansion_cache: HashMap::new(),
             source_form_items_cache: HashMap::default(),
             lambda_source_bodies: HashMap::new(),
             provided_features: STARTUP_FEATURES

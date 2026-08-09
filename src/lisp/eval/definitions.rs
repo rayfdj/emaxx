@@ -5782,14 +5782,13 @@ impl Interpreter {
         items: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let source_anchor = source.cons_cells().map(|(car, _)| car);
-        self.sf_lambda_with_source(items, source_anchor, env)
+        self.sf_lambda_with_source(items, Some(source), env)
     }
 
     fn sf_lambda_with_source(
         &mut self,
         items: &[Value],
-        source_anchor: Option<crate::lisp::types::ConsSlot>,
+        source: Option<&Value>,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         if items.len() < 2 {
@@ -5823,7 +5822,7 @@ impl Interpreter {
             self.mark_closure_eval_context(&closure_env, false);
             closure_env
         };
-        let body = match source_anchor {
+        let body = match source.and_then(|source| source.cons_cells().map(|(car, _)| car)) {
             Some(source_anchor) => {
                 let source_id = source_anchor.cell_id();
                 if let Some(cached) = self
@@ -5841,10 +5840,15 @@ impl Interpreter {
                     let body = Rc::new(body);
                     self.lambda_source_bodies.insert(
                         source_id,
-                        ConsMutationStamped::new(LambdaSourceBodyCacheEntry {
-                            source: source_anchor.downgrade(),
-                            body: Rc::downgrade(&body),
-                        }),
+                        ConsMutationStamped::new(
+                            crate::lisp::types::ConsMutationSnapshot::list_spine(
+                                source.expect("a source anchor came from a source form"),
+                            ),
+                            LambdaSourceBodyCacheEntry {
+                                source: source_anchor.downgrade(),
+                                body: Rc::downgrade(&body),
+                            },
+                        ),
                     );
                     body
                 }

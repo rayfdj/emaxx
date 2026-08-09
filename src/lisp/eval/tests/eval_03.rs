@@ -6178,6 +6178,137 @@ fn named_lisp_calls_share_immutable_function_code() {
 }
 
 #[test]
+fn source_call_resolves_lisp_function_before_evaluating_arguments() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defun emaxx-test-resolution-order (_value) 'old)
+               (list
+                (emaxx-test-resolution-order
+                 (progn
+                   (fset 'emaxx-test-resolution-order (lambda (_value) 'new))
+                   nil))
+                (emaxx-test-resolution-order nil)))"
+        ),
+        Value::list([Value::symbol("old"), Value::symbol("new")])
+    );
+}
+
+#[test]
+fn source_call_keeps_pre_argument_native_resolution_and_invalidates_later_calls() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (list
+                (+ (progn (fset '+ (lambda (&rest _values) 99)) 1) 2)
+                (+ 1 2)))"
+        ),
+        Value::list([Value::Integer(3), Value::Integer(99)])
+    );
+}
+
+#[test]
+fn source_call_cache_never_shadows_a_local_function_frame() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let definition = Reader::new("(defun emaxx-test-callsite-shadow (value) (+ value 1))")
+        .read()
+        .expect("global definition should parse")
+        .expect("global definition should exist");
+    interp
+        .eval(&definition, &mut env)
+        .expect("global definition should evaluate");
+
+    // Reuse this exact source cons across all three environments so the
+    // test exercises the callsite-local resolution cache itself.
+    let call = Reader::new("(emaxx-test-callsite-shadow 1)")
+        .read()
+        .expect("call should parse")
+        .expect("call should exist");
+    assert_eq!(
+        interp
+            .eval(&call, &mut env)
+            .expect("global call should evaluate"),
+        Value::Integer(2)
+    );
+
+    let local_function = Reader::new("(lambda (value) (+ value 10))")
+        .read()
+        .expect("local function should parse")
+        .and_then(|form| interp.eval(&form, &mut env).ok())
+        .expect("local function should evaluate");
+    Interpreter::push_marked_frame(
+        &mut env,
+        vec![
+            (
+                crate::lisp::eval::bindings::FUNCTION_FRAME_MARKER.to_string(),
+                Value::T,
+            ),
+            ("emaxx-test-callsite-shadow".into(), local_function),
+        ],
+    );
+    assert_eq!(
+        interp
+            .eval(&call, &mut env)
+            .expect("locally shadowed call should evaluate"),
+        Value::Integer(11)
+    );
+    env.pop();
+
+    assert_eq!(
+        interp
+            .eval(&call, &mut env)
+            .expect("global call after local scope should evaluate"),
+        Value::Integer(2)
+    );
+}
+
+#[test]
+fn source_call_cache_never_shadows_a_callable_in_a_plain_lexical_frame() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let definition = Reader::new("(defun emaxx-test-plain-shadow (value) (+ value 1))")
+        .read()
+        .expect("global definition should parse")
+        .expect("global definition should exist");
+    interp
+        .eval(&definition, &mut env)
+        .expect("global definition should evaluate");
+
+    let call = Reader::new("(emaxx-test-plain-shadow 1)")
+        .read()
+        .expect("call should parse")
+        .expect("call should exist");
+    assert_eq!(
+        interp
+            .eval(&call, &mut env)
+            .expect("global call should evaluate"),
+        Value::Integer(2)
+    );
+
+    let local_function = Reader::new("(lambda (value) (+ value 20))")
+        .read()
+        .expect("local function should parse")
+        .and_then(|form| interp.eval(&form, &mut env).ok())
+        .expect("local function should evaluate");
+    env.push(vec![("emaxx-test-plain-shadow".into(), local_function)].into());
+    assert_eq!(
+        interp
+            .eval(&call, &mut env)
+            .expect("plain lexical shadow should evaluate"),
+        Value::Integer(21)
+    );
+    env.pop();
+
+    assert_eq!(
+        interp
+            .eval(&call, &mut env)
+            .expect("global call after local scope should evaluate"),
+        Value::Integer(2)
+    );
+}
+
+#[test]
 fn dumped_string_equal_alias_is_visible_to_metadata_consumers() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(
