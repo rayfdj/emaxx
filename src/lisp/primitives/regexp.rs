@@ -2040,13 +2040,6 @@ pub(super) fn looking_at_impl(
         .ok_or_else(|| LispError::TypeError("string".into(), pattern_value.type_name()))?;
     let pattern = regex_pattern_with_search_spaces(interp, &pattern, env);
     let pos = interp.buffer.point();
-    let regex = compile_elisp_regex(
-        interp,
-        &pattern,
-        env,
-        r"\A",
-        pos == interp.buffer.point_min(),
-    )?;
     let tail = interp
         .buffer
         .buffer_substring(pos, interp.buffer.point_max())
@@ -2076,17 +2069,45 @@ pub(super) fn looking_at_impl(
         }
         return Ok(Value::T);
     }
+
+    // A regexp anchored at point still needs the character immediately to
+    // its left in order to evaluate zero-width word/symbol-end assertions.
+    // Keep exactly that one character as context and translate `\=' to the
+    // boundary after it.  This also preserves `\=' in the middle of a
+    // pattern: it becomes false after the regexp has consumed anything.
+    let haystack_start = pos.saturating_sub(1).max(interp.buffer.point_min());
+    let haystack = interp
+        .buffer
+        .buffer_substring(haystack_start, interp.buffer.point_max())
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let search_offset = if haystack_start < pos {
+        haystack.chars().next().map(char::len_utf8).unwrap_or(0)
+    } else {
+        0
+    };
+    let point_assertion = if search_offset == 0 {
+        r"\A"
+    } else {
+        r"(?<=\A[\s\S])"
+    };
+    let regex = compile_elisp_regex(
+        interp,
+        &pattern,
+        env,
+        point_assertion,
+        pos == interp.buffer.point_min(),
+    )?;
     if let Some(captures) = regex
-        .captures(&tail)
+        .captures_from_pos(&haystack, search_offset)
         .map_err(|error| LispError::Signal(error.to_string()))?
         && let Some(matched) = captures.get(0)
-        && matched.start() == 0
+        && matched.start() == search_offset
     {
         if update_match_data {
             set_match_data(
                 interp,
-                pos,
-                &tail,
+                haystack_start,
+                &haystack,
                 &captures,
                 regex.capture_mapping(),
                 Some(interp.current_buffer_id()),

@@ -2332,24 +2332,97 @@ pub(crate) fn keymap_direct_bindings(
             // A bare keymap element is an inherited parent, not a binding.
             continue;
         }
-        let Some((event, definition)) = entry.cons_values() else {
-            continue;
-        };
-        let sequence = Value::list([Value::Symbol("vector-literal".into()), event]);
-        let Ok(parts) = key_sequence_keymap_parts(&sequence) else {
-            continue;
-        };
-        if parts.is_empty() {
-            continue;
+        if let Some(binding) = runtime_keymap_binding_from_public_entry(&entry, true)? {
+            bindings.push(binding);
         }
-        bindings.push(RuntimeKeymapBinding {
-            key: key_sequence_binding_text(&sequence)?,
-            parts: Some(parts),
-            value: definition,
-            after_prompt: true,
-        });
     }
     Ok(bindings)
+}
+
+fn runtime_keymap_binding_from_public_entry(
+    entry: &Value,
+    after_prompt: bool,
+) -> Result<Option<RuntimeKeymapBinding>, LispError> {
+    let Some((event, definition)) = entry.cons_values() else {
+        return Ok(None);
+    };
+    let sequence = Value::list([Value::Symbol("vector-literal".into()), event]);
+    let Ok(parts) = key_sequence_keymap_parts(&sequence) else {
+        return Ok(None);
+    };
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(RuntimeKeymapBinding {
+        key: key_sequence_binding_text(&sequence)?,
+        parts: Some(parts),
+        value: definition,
+        after_prompt,
+    }))
+}
+
+/// Replace the public cdr of an identity-bearing runtime keymap.
+///
+/// GNU keymaps are cons lists, and dumped Lisp legitimately mutates a map's
+/// tail with `setcdr'.  Emaxx stores keymaps in records so their identity is
+/// stable across Rust-owned lookup tables; this is the single mutation door
+/// that translates the public `(keymap ...)' tail back into that record.
+pub(crate) fn replace_runtime_keymap_tail(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    tail: &Value,
+) -> Result<bool, LispError> {
+    let Some(id) = keymap_record_id(interp, keymap) else {
+        return Ok(false);
+    };
+    let items = tail
+        .to_vec()
+        .map_err(|_| wrong_type_argument("listp", tail.clone()))?;
+
+    let mut name = Value::Nil;
+    let mut parent = Value::Nil;
+    let mut char_table = Value::Nil;
+    let mut before_prompt = Vec::new();
+    let mut after_prompt = Vec::new();
+    let mut saw_prompt = false;
+
+    for item in items {
+        if matches!(item, Value::CharTable(_)) {
+            char_table = item;
+            continue;
+        }
+        if is_keymap_value(interp, &item) {
+            parent = item;
+            continue;
+        }
+        if !saw_prompt && string_like(&item).is_some() {
+            name = item;
+            saw_prompt = true;
+            continue;
+        }
+        if let Some(binding) = runtime_keymap_binding_from_public_entry(&item, saw_prompt)? {
+            if saw_prompt {
+                after_prompt.push(binding);
+            } else {
+                before_prompt.push(binding);
+            }
+        }
+    }
+
+    // Record storage keeps pre-prompt entries in definition order, while the
+    // public keymap list exposes those entries in reverse insertion order.
+    before_prompt.reverse();
+    before_prompt.extend(after_prompt);
+
+    let Some(record) = interp.find_record_mut(id) else {
+        return Ok(false);
+    };
+    record.slots.resize(KEYMAP_CHAR_TABLE_SLOT + 1, Value::Nil);
+    record.slots[0] = name;
+    record.slots[KEYMAP_PARENT_SLOT] = parent;
+    record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(before_prompt);
+    record.slots[KEYMAP_CHAR_TABLE_SLOT] = char_table;
+    Ok(true)
 }
 
 pub(crate) fn keymap_parent_values(interp: &Interpreter, keymap: &Value) -> Vec<Value> {

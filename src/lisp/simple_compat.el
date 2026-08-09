@@ -5731,10 +5731,12 @@ Like GNU's `help--window-setup': BODY runs in the help buffer with
     (goto-char pos)))
 
 ;; byte-run.el: `inline' marks a form for inline expansion; at run
-;; time it is progn.
-(defmacro inline (&rest body)
-  "Like `progn', but when compiled inline top-level function calls in body."
-  (cons 'progn body))
+;; time it is progn.  The normal batch image loads the complete GNU owner;
+;; retain this only for an embedding with no upstream Lisp load path.
+(unless (fboundp 'inline)
+  (defmacro inline (&rest body)
+    "Like `progn', but when compiled inline top-level function calls in body."
+    (cons 'progn body)))
 
 ;; simple.el: join the current line to the previous one.
 (defun delete-indentation (&optional arg)
@@ -6340,17 +6342,20 @@ If `default-directory' is already an existing directory, it's not changed."
   "Return the standard value of VARIABLE."
   (eval (car (get variable 'standard-value)) t))
 
-;; GNU byte-run.el (verbatim): loaddefs-gen.el logs through it.
-(defun byte-compile-info (string &optional message type)
-  "Format STRING in a way that looks pleasing in the compilation output.
+;; GNU byte-run.el (verbatim): loaddefs-gen.el logs through it.  The fallback
+;; serves file-less embeddings; reconstructed GNU batch startup keeps the
+;; complete byte-run.el definition installed.
+(unless (fboundp 'byte-compile-info)
+  (defun byte-compile-info (string &optional message type)
+    "Format STRING in a way that looks pleasing in the compilation output.
 If MESSAGE, output the message, too.
 
 If TYPE, it should be a string that says what the information
 type is.  This defaults to \"INFO\"."
-  (let ((string (format "  %-9s%s" (or type "INFO") string)))
-    (when message
-      (message "%s" string))
-    string))
+    (let ((string (format "  %-9s%s" (or type "INFO") string)))
+      (when message
+        (message "%s" string))
+      string)))
 
 ;; GNU subr.el (verbatim).
 (defun ensure-empty-lines (&optional lines)
@@ -9943,6 +9948,23 @@ PARENT if non-nil should be a keymap."
              (nth 1 event))
         (event--posn-at-point))))
 
+;; GNU subr.el (verbatim).  Keep the start/end event-position pair together;
+;; mouse commands use both from the dumped image without requiring a feature.
+(defun event-end (event)
+  "Return the ending position of EVENT.
+EVENT should be a click, drag, touch screen, or key press event.
+
+See `event-start' for a description of the value returned."
+  (declare (side-effect-free t))
+  (if (and (consp event)
+           (or (eq (car event) 'touchscreen-begin)
+               (eq (car event) 'touchscreen-end)))
+      (cdadr event)
+    (or (and (consp event)
+             (not (eq (car event) 'touchscreen-update))
+             (nth (if (consp (nth 2 event)) 2 1) event))
+        (event--posn-at-point))))
+
 (defun posn-point (position)
   "Return the buffer position recorded in POSITION."
   (or (nth 5 position)
@@ -9956,6 +9978,23 @@ PARENT if non-nil should be a keymap."
   (defalias 'posn-window
     (byte-compile (lambda (position) (nth 0 position)))
     "Return the window (or frame) recorded in POSITION."))
+
+;; GNU subr.el (verbatim).  Mouse-driven mode commands call this dumped Lisp
+;; helper without requiring another library; the window and point operations
+;; remain native primitives beneath the same boundary.
+(defun posn-set-point (position)
+  "Move point to POSITION.
+Select the corresponding window as well."
+  (if (framep (posn-window position))
+      (progn
+	(unless (windowp (frame-selected-window (posn-window position)))
+	  (error "Position not in text area of window"))
+	(select-window (frame-selected-window (posn-window position))))
+    (unless (windowp (posn-window position))
+      (error "Position not in text area of window"))
+    (select-window (posn-window position)))
+  (if (numberp (posn-point position))
+      (goto-char (posn-point position))))
 
 ;; subr.el is dumped before help-fns.el.
 (unless (fboundp 'chmod)

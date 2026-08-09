@@ -1512,6 +1512,141 @@ fn keymap_list_helpers_cover_grep_tool_bar_setup() {
 }
 
 #[test]
+fn runtime_keymap_setcdr_replaces_the_public_tail_without_losing_identity() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((map (make-sparse-keymap "Old"))
+                      (tail '("New" (fresh menu-item "Fresh" ignore))))
+                  (define-key map [old] 'ignore)
+                  (list
+                   (eq (setcdr map tail) tail)
+                   (consp map)
+                   (eq (car map) 'keymap)
+                   (equal (cdr map) tail)
+                   (lookup-key map [old])
+                   (lookup-key map [fresh])
+                   (keymapp map)))
+                "#,
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::Symbol("ignore".into()),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn dumped_event_position_helpers_select_the_event_window_and_point() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (with-temp-buffer
+                  (save-window-excursion
+                    (let ((window (selected-window)))
+                      (set-window-buffer window (current-buffer))
+                      (insert "abcd")
+                      (goto-char 1)
+                      (let* ((position
+                              (list window 3 '(1 . 1) 0 nil 3 '(1 . 1)
+                                    nil '(1 . 1) '(1 . 1)))
+                             (event (list 'S-mouse-2 position)))
+                        (posn-set-point (event-end event))
+                        (list (point)
+                              (eq (selected-window) window)
+                              (equal (event-start event) position))))))
+                "#,
+        ),
+        Value::list([Value::Integer(3), Value::T, Value::T])
+    );
+}
+
+#[test]
+fn loaded_byte_run_owns_the_complete_declaration_registries() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (list
+                 (fboundp 'byte-run--set-speed)
+                 (functionp (cadr (assq 'speed defun-declarations-alist)))
+                 (functionp (cadr (assq 'debug macro-declarations-alist)))
+                 (functionp (cadr (assq 'compiler-macro
+                                         defun-declarations-alist)))
+                 (eq (symbol-function 'inline) 'progn))
+                "#,
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn loaded_js_library_owns_the_complete_mode_policy() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (progn
+                  (require 'js)
+                  (with-temp-buffer
+                    (js-mode)
+                    (list
+                     major-mode
+                     (derived-mode-p 'js-base-mode)
+                     indent-line-function
+                     beginning-of-defun-function
+                     end-of-defun-function
+                     fill-paragraph-function
+                     normal-auto-fill-function
+                     syntax-propertize-function
+                     comment-line-break-function)))
+                "#,
+        ),
+        Value::list([
+            Value::Symbol("js-mode".into()),
+            Value::T,
+            Value::Symbol("js-indent-line".into()),
+            Value::Symbol("js-beginning-of-defun".into()),
+            Value::Symbol("js-end-of-defun".into()),
+            Value::Symbol("js-fill-paragraph".into()),
+            Value::Symbol("js-do-auto-fill".into()),
+            Value::Symbol("js-syntax-propertize".into()),
+            Value::Symbol("c-indent-new-comment-line".into()),
+        ])
+    );
+}
+
+#[test]
+fn indent_line_to_leaves_point_and_return_value_at_gnu_boundaries() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (list
+                 (with-temp-buffer
+                   (insert "{x")
+                   (goto-char 2)
+                   (equal (list (indent-line-to 4) (point) (buffer-string))
+                          '(4 5 "    {x")))
+                 (with-temp-buffer
+                   (insert "  x")
+                   (goto-char 4)
+                   (equal (list (indent-line-to 4) (point) (buffer-string))
+                          '(4 5 "    x")))
+                 (with-temp-buffer
+                   (insert "    x")
+                   (goto-char 6)
+                   (equal (list (indent-line-to 2) (point) (buffer-string))
+                          '(nil 3 "  x"))))
+                "#,
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn key_binding_resolves_minor_mode_remaps() {
     assert_eq!(
         eval_str(

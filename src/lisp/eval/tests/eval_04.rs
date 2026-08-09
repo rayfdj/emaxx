@@ -4480,6 +4480,26 @@ fn failed_looking_at_preserves_previous_match_data() {
 }
 
 #[test]
+fn looking_at_sees_left_context_for_zero_width_symbol_boundaries() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (with-temp-buffer
+              (insert "x")
+              (goto-char (point-max))
+              (list (looking-at "\\_>")
+                    (looking-at "\\_<")
+                    (progn
+                      (goto-char (point-min))
+                      (looking-at "\\=x"))
+                    (looking-at "x\\=")))
+            "#
+        ),
+        Value::list([Value::T, Value::Nil, Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn boundary_heavy_searches_use_linear_candidates_without_weakening_symbol_boundaries() {
     assert_eq!(
         eval_str(

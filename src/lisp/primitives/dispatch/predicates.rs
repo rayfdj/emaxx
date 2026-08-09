@@ -813,7 +813,9 @@ define_dispatch!(
                 // Vector and bool-vector literals ride on conses internally but
                 // are not conses to Lisp.
                 Ok(
-                    if args[0].is_cons() && !is_vector_like_value(interp, &args[0]) {
+                    if (args[0].is_cons() && !is_vector_like_value(interp, &args[0]))
+                        || keymap_list_items(interp, &args[0])?.is_some()
+                    {
                         Value::T
                     } else {
                         Value::Nil

@@ -2550,8 +2550,8 @@ define_dispatch!(
                 // when the indentation is already at the requested column.
                 let current = super::call(interp, "current-column", &[], env)?.as_integer()?;
                 if current == column {
-                    interp.buffer.goto_char(saved.max(indentation_end));
-                    return Ok(Value::Integer(column));
+                    interp.buffer.goto_char(indentation_end);
+                    return Ok(Value::Nil);
                 }
                 if indentation_end > bol {
                     ensure_region_modifiable(interp, bol, indentation_end, env)?;
@@ -2559,14 +2559,15 @@ define_dispatch!(
                 }
                 interp.buffer.goto_char(bol);
                 super::call(interp, "indent-to", &[Value::Integer(column)], env)?;
-                if saved > indentation_end {
-                    let removed = indentation_end - bol;
-                    let inserted = interp.buffer.point().saturating_sub(bol);
-                    interp
-                        .buffer
-                        .goto_char(saved.saturating_sub(removed).saturating_add(inserted));
-                }
-                Ok(Value::Integer(column))
+                // GNU's Lisp owner deliberately leaves point at the end of
+                // indentation, regardless of its incoming position.  Its
+                // return value is `indent-to's column only when indentation
+                // grows; unchanged or reduced indentation returns nil.
+                Ok(if current < column {
+                    Value::Integer(column)
+                } else {
+                    Value::Nil
+                })
             }
             "indent-relative" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -4020,10 +4021,7 @@ fn symbol_name_or_string(value: &Value) -> Result<String, LispError> {
 fn simple_c_family_indent_line(interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
     let major_mode = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
     let mode = major_mode.as_symbol().unwrap_or("");
-    if !matches!(
-        mode,
-        "c-mode" | "c++-mode" | "java-mode" | "js-mode" | "javascript-mode" | "plainer-c-mode"
-    ) {
+    if !matches!(mode, "c-mode" | "c++-mode" | "java-mode" | "plainer-c-mode") {
         return Ok(false);
     }
 

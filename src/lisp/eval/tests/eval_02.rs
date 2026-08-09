@@ -978,6 +978,106 @@ fn byte_compile_suppresses_prefixless_defvar_warning() {
 }
 
 #[test]
+fn native_byte_compiler_publishes_gnu_compiler_state_variables() {
+    assert_eq!(
+        eval_str(
+            "(list (boundp 'byte-compile-unresolved-functions) \
+                   byte-compile-unresolved-functions)",
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn byte_compile_reports_unresolved_calls_for_individual_lambdas() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((byte-compile-log-buffer
+                       (generate-new-buffer " *Compile-Log*")))
+                  (byte-compile '(lambda () (emaxx-missing-bytecomp-function)))
+                  (with-current-buffer byte-compile-log-buffer
+                    (not (null
+                          (re-search-forward
+                           "emaxx-missing-bytecomp-function.*not known to be defined"
+                           nil t)))))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn byte_compile_reports_unresolved_calls_introduced_by_macroexpansion() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defmacro emaxx-bytecomp-missing-expander ()
+                    '(emaxx-missing-after-macroexpansion))
+                  (let ((byte-compile-log-buffer
+                         (generate-new-buffer " *Compile-Log*")))
+                    (byte-compile '(lambda ()
+                                     (emaxx-bytecomp-missing-expander)))
+                    (with-current-buffer byte-compile-log-buffer
+                      (not (null
+                            (re-search-forward
+                             "emaxx-missing-after-macroexpansion.*not known to be defined"
+                             nil t))))))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn byte_compile_diagnoses_function_quoted_nested_lambda_bodies() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((byte-compile-log-buffer
+                       (generate-new-buffer " *Compile-Log*")))
+                  (byte-compile
+                   '(lambda ()
+                      (let ((worker
+                             #'(lambda ()
+                                 (emaxx-missing-in-nested-bytecomp-lambda))))
+                        (funcall worker))))
+                  (with-current-buffer byte-compile-log-buffer
+                    (not (null
+                          (re-search-forward
+                           "emaxx-missing-in-nested-bytecomp-lambda.*not known to be defined"
+                           nil t)))))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn byte_compile_captures_macroexpansion_warnings_in_compile_log() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defmacro emaxx-bytecomp-warning-expander ()
+                    (message "Warning: generated macro diagnostic")
+                    t)
+                  (let ((byte-compile-log-buffer
+                         (generate-new-buffer " *Compile-Log*")))
+                    (byte-compile
+                     '(lambda () (emaxx-bytecomp-warning-expander)))
+                    (with-current-buffer byte-compile-log-buffer
+                      (not (null
+                            (re-search-forward
+                             "Warning: generated macro diagnostic" nil t))))))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn byte_compile_from_buffer_warns_for_unresolved_calls_outside_feature_guards() {
     assert_eq!(
         eval_str(
@@ -2449,6 +2549,25 @@ fn forward_comment_matches_syntax_tests_c_forward_case() {
                 "#
         ),
         Value::list([Value::Integer(2), Value::T, Value::Integer(15)])
+    );
+}
+
+#[test]
+fn forward_comment_moves_over_style_c_double_slash_comments() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (let ((table (make-syntax-table)))
+                    (modify-syntax-entry ?/ ". 12c" table)
+                    (modify-syntax-entry ?\n "> c" table)
+                    (set-syntax-table table))
+                  (insert "// comment\ncode")
+                  (goto-char (point-min))
+                  (list (forward-comment 1) (point)))
+                "#
+        ),
+        Value::list([Value::T, Value::Integer(12)])
     );
 }
 

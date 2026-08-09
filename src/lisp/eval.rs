@@ -2411,6 +2411,10 @@ impl Interpreter {
                 ("build-files".into(), Value::Nil),
                 ("case-replace".into(), Value::T),
                 ("byte-compile-log-buffer".into(), Value::Nil),
+                // Emaxx keeps byte compilation native, but Lisp callers may
+                // inspect the same dynamically scoped compiler state that
+                // GNU bytecomp.el publishes around `byte-compile'.
+                ("byte-compile-unresolved-functions".into(), Value::Nil),
                 ("defining-kbd-macro".into(), Value::Nil),
                 ("delay-mode-hooks".into(), Value::Nil),
                 ("delayed-after-hook-functions".into(), Value::Nil),
@@ -2562,6 +2566,7 @@ impl Interpreter {
                 "overlay-arrow-string".into(),
                 "load-read-function".into(),
                 "byte-compile-log-buffer".into(),
+                "byte-compile-unresolved-functions".into(),
                 "command-line-args".into(),
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),

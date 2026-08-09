@@ -408,6 +408,20 @@ fn effective_batch_load_path(options: &BatchRunOptions) -> Result<Vec<PathBuf>, 
 }
 
 fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), String> {
+    // byte-run.el is the first portable Lisp owner loaded by GNU loadup.  It
+    // intentionally has no `provide' form, but installs the declaration
+    // expanders used by later libraries (speed, safety, compiler-macro, and
+    // friends).  Load the complete owner rather than copying whichever
+    // declaration helper a downstream macro happens to call.
+    if interpreter
+        .resolve_load_target("emacs-lisp/byte-run")
+        .is_some()
+    {
+        interpreter
+            .load_target("emacs-lisp/byte-run")
+            .map_err(|error| format!("preload emacs-lisp/byte-run: {error}"))?;
+    }
+
     // keymap.el is loaded near the start of GNU loadup, before bindings.el.
     // Its macros own high-level keymap construction policy; the Rust layer
     // supplies the mutable keymap primitives they target.
@@ -622,6 +636,30 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         interpreter
             .load_target("isearch")
             .map_err(|error| format!("preload isearch: {error}"))?;
+    }
+
+    // menu-bar.el follows isearch.el in GNU loadup and is part of the dumped
+    // image.  Mode libraries therefore expand its Lisp-owned menu macros
+    // without requiring `menu-bar' first.  Load the complete owner here;
+    // runtime keymaps retain their Rust identity while exposing GNU's mutable
+    // cons-list interface to this library.
+    if !interpreter.has_feature("menu-bar") && interpreter.resolve_load_target("menu-bar").is_some()
+    {
+        interpreter
+            .load_target("menu-bar")
+            .map_err(|error| format!("preload menu-bar: {error}"))?;
+    }
+
+    // GNU dumps emacs-lisp/lisp.el immediately after the menu libraries.
+    // Its structural navigation commands (including forward/backward-list)
+    // are Lisp policy layered over the native syntax scanner and are called
+    // directly by mode libraries such as js.el.
+    if !interpreter.has_feature("lisp")
+        && interpreter.resolve_load_target("emacs-lisp/lisp").is_some()
+    {
+        interpreter
+            .load_target("emacs-lisp/lisp")
+            .map_err(|error| format!("preload lisp: {error}"))?;
     }
 
     // register.el is dumped shortly after isearch.el.  Kmacro and other

@@ -49,6 +49,24 @@ fn count_lines_matches_emacs_boundary_behavior() {
 }
 
 #[test]
+fn buffer_positions_accept_integer_values_independent_of_internal_width() {
+    let interp = Interpreter::new();
+    assert_eq!(
+        position_from_value(&interp, &Value::Integer(73)).expect("fixnum position"),
+        73
+    );
+    assert_eq!(
+        position_from_value(&interp, &Value::big_integer(BigInt::from(73)))
+            .expect("small bignum representation"),
+        73
+    );
+    assert_eq!(
+        position_from_value(&interp, &Value::Integer(-30)).expect("negative fixnum position"),
+        0
+    );
+}
+
+#[test]
 fn file_modes_number_to_symbolic_formats_tar_modes() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

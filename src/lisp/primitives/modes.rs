@@ -64,7 +64,6 @@ define_dispatch!(
                 derived_mode_set_parent(interp, "java-mode", Some("prog-mode"));
                 activate_c_family_mode(interp, "java-mode", "Java")
             }
-            #[dispatch(builtin_override)]
             "js-mode" => {
                 derived_mode_set_parent(interp, "js-mode", Some("prog-mode"));
                 let result =
@@ -98,7 +97,6 @@ define_dispatch!(
                 Ok(result)
             }
             // GNU js.el makes `javascript-mode' a defalias for `js-mode'.
-            #[dispatch(builtin_override)]
             "javascript-mode" => call(interp, "js-mode"),
             "ruby-mode" => {
                 derived_mode_set_parent(interp, "ruby-mode", Some("prog-mode"));
