@@ -289,14 +289,60 @@ pub(crate) fn initialize_batch_interpreter(
     // Loading the dumped Lisp owners below corresponds to GNU's pre-dump
     // phase, where delayed Custom initializers accumulate until startup.
     interpreter.set_variable("custom-delayed-init-variables", Value::Nil, &mut Vec::new());
+    configure_batch_source_provenance(&mut interpreter)?;
     preload_batch_compat_libraries(&mut interpreter)?;
     // The reconstructed dumped image still comes from source.  Compiled
     // resolution is enabled only afterward; making the preload itself use
     // `.elc' requires a coherent dumped-image/runtime project of its own.
     interpreter.set_prefer_compiled_loads(lisp::bytecode_vm_enabled());
+    initialize_batch_documentation(&mut interpreter)?;
     complete_delayed_custom_initialization(&mut interpreter)?;
     initialize_batch_locale_environment(&mut interpreter)?;
     Ok(interpreter)
+}
+
+fn configure_batch_source_provenance(interpreter: &mut Interpreter) -> Result<(), String> {
+    let Ok(dump_root) = env::var(compat::DUMP_SOURCE_DIRECTORY_ENV) else {
+        return Ok(());
+    };
+    let test_directory = env::var("EMACS_TEST_DIRECTORY")
+        .map_err(|error| format!("resolve runtime source directory: {error}"))?;
+    let runtime_test_directory = PathBuf::from(test_directory);
+    let runtime_root = runtime_test_directory.parent().ok_or_else(|| {
+        format!(
+            "runtime test directory has no source-tree parent: {}",
+            runtime_test_directory.display()
+        )
+    })?;
+    // The test file itself and test-owned helper libraries stay tied to the
+    // disposable checkout.  GNU's standard Lisp load path, by contrast,
+    // still names the tree that built the executable; map only that `lisp/'
+    // subtree while continuing to read its isolated physical counterpart.
+    interpreter.set_load_source_provenance_remap(
+        runtime_root.join("lisp"),
+        Path::new(&dump_root).join("lisp"),
+    );
+    Ok(())
+}
+
+fn initialize_batch_documentation(interpreter: &mut Interpreter) -> Result<(), String> {
+    // dump-mode.el calls `Snarf-documentation' after the native definitions
+    // and dumped Lisp owners have been installed.  Reconstruct that phase so
+    // variable doc references and C source provenance have the same shape at
+    // the batch boundary.  Embedded interpreters with no installed DOC file
+    // deliberately remain usable.
+    let form = Reader::new(
+        "(let ((doc-file (expand-file-name internal-doc-file-name doc-directory)))
+           (when (file-readable-p doc-file)
+             (Snarf-documentation internal-doc-file-name)))",
+    )
+    .read_all()
+    .map_err(|error| format!("read batch documentation startup form: {error}"))?
+    .remove(0);
+    interpreter
+        .eval(&form, &mut Vec::new())
+        .map_err(|error| format!("initialize batch documentation: {error}"))?;
+    Ok(())
 }
 
 fn complete_delayed_custom_initialization(interpreter: &mut Interpreter) -> Result<(), String> {
@@ -1058,6 +1104,119 @@ mod tests {
             interpreter.lookup_var("command-line-args-left", &Vec::new()),
             Some(Value::Nil)
         );
+    }
+
+    #[test]
+    fn batch_documentation_startup_installs_native_provenance_from_doc() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = env::temp_dir().join(format!("emaxx-batch-doc-{unique}"));
+        fs::create_dir_all(&root).expect("create DOC directory");
+        fs::write(
+            root.join("DOC"),
+            b"\x1fSbuffer.o\n\x1fSeditfns.o\n\x1fVdefault-directory\nDefault directory.\n",
+        )
+        .expect("write DOC fixture");
+
+        let mut interpreter = Interpreter::new();
+        interpreter.set_variable(
+            "doc-directory",
+            Value::String(lisp::primitives::path_to_directory_string(&root).into()),
+            &mut Vec::new(),
+        );
+        initialize_batch_documentation(&mut interpreter).expect("snarf batch DOC fixture");
+
+        assert_eq!(
+            interpreter.lookup_var("build-files", &Vec::new()),
+            Some(Value::list([
+                Value::String("buffer.o".into()),
+                Value::String("editfns.o".into()),
+            ]))
+        );
+        assert!(matches!(
+            interpreter.get_symbol_property("default-directory", "variable-documentation"),
+            Some(Value::Integer(_))
+        ));
+
+        fs::remove_dir_all(root).expect("remove DOC fixture");
+    }
+
+    #[test]
+    fn dumped_load_history_keeps_build_tree_provenance() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = env::temp_dir().join(format!("emaxx-load-provenance-{unique}"));
+        let runtime_root = root.join("runtime");
+        let dump_root = root.join("build");
+        let runtime_lisp = runtime_root.join("lisp/progmodes/xref.el");
+        let runtime_test = runtime_root.join("test/xref-probe.el");
+        fs::create_dir_all(runtime_lisp.parent().expect("Lisp parent"))
+            .expect("create runtime Lisp directory");
+        fs::create_dir_all(runtime_test.parent().expect("test parent"))
+            .expect("create runtime test directory");
+        fs::write(
+            &runtime_lisp,
+            "(defun xref-find-definitions ())\n(provide 'xref)\n",
+        )
+        .expect("write standard Lisp fixture");
+        fs::write(&runtime_test, "(defun xref-probe-test ())\n").expect("write test Lisp fixture");
+
+        let mut interpreter = Interpreter::new();
+        interpreter
+            .set_load_source_provenance_remap(runtime_root.join("lisp"), dump_root.join("lisp"));
+        lisp::load_file_strict(&mut interpreter, &runtime_lisp)
+            .expect("load standard Lisp fixture");
+        lisp::load_file_strict(&mut interpreter, &runtime_test).expect("load test Lisp fixture");
+
+        let located = Reader::new(&format!(
+            "(locate-file \"xref\" (list {:?}) '(\".el\") nil)",
+            runtime_lisp
+                .parent()
+                .expect("standard Lisp fixture parent")
+                .display()
+                .to_string()
+        ))
+        .read_all()
+        .expect("read locate-file provenance probe")
+        .remove(0);
+        assert_eq!(
+            interpreter
+                .eval(&located, &mut Vec::new())
+                .expect("locate standard Lisp fixture"),
+            Value::String(
+                dump_root
+                    .join("lisp/progmodes/xref.el")
+                    .display()
+                    .to_string()
+                    .into()
+            )
+        );
+
+        let history = interpreter
+            .lookup_var("load-history", &Vec::new())
+            .expect("load history")
+            .to_vec()
+            .expect("load history list");
+        assert_eq!(
+            history[0].car().expect("isolated test filename"),
+            Value::String(runtime_test.display().to_string().into())
+        );
+        assert_eq!(
+            history[1].car().expect("remapped standard filename"),
+            Value::String(
+                dump_root
+                    .join("lisp/progmodes/xref.el")
+                    .display()
+                    .to_string()
+                    .into()
+            )
+        );
+
+        fs::remove_dir_all(root).expect("remove load provenance fixture");
     }
 
     #[test]

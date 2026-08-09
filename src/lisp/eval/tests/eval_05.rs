@@ -4321,6 +4321,76 @@ fn compiled_generic_method_entry_point_preserves_arguments_and_next_method() {
 }
 
 #[test]
+fn native_cl_generic_facade_exposes_complete_method_introspection() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(progn
+               (cl-defgeneric emaxx-introspection-generic (x)
+                 \"generic-doc\")
+               (cl-defmethod emaxx-introspection-generic (x)
+                 \"default-doc\" x)
+               (cl-defmethod emaxx-introspection-generic ((x integer))
+                 \"integer-doc\" x)
+               (let ((generic (cl--generic
+                               'emaxx-introspection-generic)))
+                 (list generic
+                       (mapcar
+                        (lambda (method)
+                          (list (cl--generic-method-qualifiers method)
+                                (cl--generic-method-specializers method)
+                                (cl--generic-method-info method)))
+                        (cl--generic-method-table generic))
+                       (cl--generic-load-hist-format
+                        'emaxx-introspection-generic nil '(integer)))))",
+        ),
+        Value::list([
+            Value::Symbol("emaxx-introspection-generic".into()),
+            Value::list([
+                Value::list([
+                    Value::Nil,
+                    Value::list([Value::Symbol("integer".into())]),
+                    Value::list([
+                        Value::String("".into()),
+                        Value::list([Value::list([
+                            Value::Symbol("x".into()),
+                            Value::Symbol("integer".into()),
+                        ])]),
+                        Value::String("integer-doc".into()),
+                    ]),
+                ]),
+                Value::list([
+                    Value::Nil,
+                    Value::list([Value::T]),
+                    Value::list([
+                        Value::String("".into()),
+                        Value::list([Value::Symbol("x".into())]),
+                        Value::String("default-doc".into()),
+                    ]),
+                ]),
+            ]),
+            Value::list([
+                Value::Symbol("emaxx-introspection-generic".into()),
+                Value::Nil,
+                Value::Symbol("integer".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn implicit_native_generic_keeps_gnu_documentation_sentinel() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(progn
+               (cl-defmethod emaxx-implicit-introspection-generic (x)
+                 \"default-doc\" x)
+               (documentation 'emaxx-implicit-introspection-generic t))",
+        ),
+        Value::String("\n\n(fn ARG &rest ARGS)".into())
+    );
+}
+
+#[test]
 fn char_access_accepts_out_of_range_negative_integer_positions() {
     assert_eq!(
         eval_str(
@@ -6146,7 +6216,8 @@ fn completion_at_point_displays_ambiguous_candidates_after_no_progress() {
 }
 
 fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
-    let emacs_repo = upstream_emacs_repo();
+    let emacs_repo =
+        std::fs::canonicalize(upstream_emacs_repo()).expect("canonical upstream Emacs repository");
     let options = crate::batch::BatchRunOptions {
         load_path: crate::compat::emaxx_upstream_load_path(&emacs_repo)
             .expect("upstream load path"),
@@ -6231,6 +6302,25 @@ fn upstream_completion_preview_uses_preloaded_forward_symbol() {
         let summary = interp.run_ert_tests_with_selector(None);
         assert_eq!(summary.total, 11, "{:#?}", interp.test_results);
         assert_eq!(summary.passed, 11, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn upstream_elisp_mode_xref_reads_native_generic_metadata() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("progmodes/elisp-mode-tests.el");
+        let selector = eval_str_with(
+            &mut interp,
+            "'(member
+               xref-elisp-test-find-defs-defgeneric-co-located-default
+               xref-elisp-test-find-defs-defgeneric-implicit-generic
+               xref-elisp-test-find-defs-defgeneric-no-default
+               xref-elisp-test-find-defs-defgeneric-no-methods
+               xref-elisp-test-find-defs-defgeneric-separate-default)",
+        );
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+        assert_eq!(summary.total, 5, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 5, "{:#?}", interp.test_results);
     });
 }
 

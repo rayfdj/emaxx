@@ -365,6 +365,34 @@ If AUTOLOAD is `macro', only load macro autoloads."
            (get f 'emaxx-cl-defmethod-specializers))
        t))
 
+;; GNU dumps cl-generic.el, while Emaxx keeps dispatch in its host-backed
+;; bootstrap facade.  Expose the same read-only Lisp inspection boundary from
+;; the facade's canonical method metadata; elisp-mode.el and Help can then
+;; retain ownership of presentation and xref policy without a second generic
+;; dispatch engine.
+(defmacro cl--generic (name)
+  `(let ((cl--generic-name ,name))
+     (and (cl-generic-p cl--generic-name) cl--generic-name)))
+
+(defun cl--generic-method-table (generic)
+  (get generic 'emaxx-cl-defmethod-introspection))
+
+(defun cl--generic-method-qualifiers (method)
+  (nth 1 method))
+
+(defun cl--generic-method-specializers (method)
+  (nth 3 method))
+
+(defun cl--generic-load-hist-format (name qualifiers specializers)
+  `(,name ,qualifiers . ,specializers))
+
+(defun cl--generic-method-info (method)
+  (let* ((qualifiers (cl--generic-method-qualifiers method))
+         (printed (and qualifiers (prin1-to-string qualifiers))))
+    (list (if printed (concat (substring printed 1 -1) " ") "")
+          (nth 2 method)
+          (nth 4 method))))
+
 (defun emaxx--cl-generic-describe-function (function)
   "Append native generic method documentation for FUNCTION to Help output.
 The generic dispatcher owns method metadata in Rust during bootstrap, while
@@ -769,10 +797,17 @@ MET-NAME is as recorded in `load-history' for the method."
       nil t)
      (re-search-forward base-re nil t))))
 
+;; WORKAROUND: GNU cl-generic.el intentionally keeps this mutable because
+;; text properties on defconst values are not preserved by dumping.
+(defvar cl--generic-find-defgeneric-regexp
+  "(\\(?:cl-\\)?defgeneric[ \t]+%s\\_>")
+
 (with-eval-after-load 'find-func
   (defvar find-function-regexp-alist)
   (add-to-list 'find-function-regexp-alist
-               (cons 'cl-defmethod #'cl--generic-search-method)))
+               (cons 'cl-defmethod #'cl--generic-search-method))
+  (add-to-list 'find-function-regexp-alist
+               '(cl-defgeneric . cl--generic-find-defgeneric-regexp)))
 
 (defun cl-generic--method-qualifier-p (x)
   "Return non-nil if X is a method qualifier rather than an arglist."

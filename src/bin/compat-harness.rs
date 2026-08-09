@@ -2156,6 +2156,11 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     )?;
     let mut command = Command::new(request.binary);
     compat::configure_upstream_like_env(&mut command, &test_directory);
+    // GNU's dumped standard-Lisp load path retains the tree that built it,
+    // even while this test executes in a disposable checkout.  Emaxx reads an
+    // isolated copy, so pass the equivalent observable provenance separately
+    // from those physical runtime paths.
+    command.env(compat::DUMP_SOURCE_DIRECTORY_ENV, request.load_path_repo);
     let _temp_directory = configure_isolated_temp_directory(&mut command, "emaxx")?;
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
     // Emaxx's Lisp condition is the compatibility result, while this

@@ -41,6 +41,23 @@ impl Interpreter {
         self.current_load_file.as_deref()
     }
 
+    pub(crate) fn set_load_source_provenance_remap(
+        &mut self,
+        physical_root: PathBuf,
+        provenance_root: PathBuf,
+    ) {
+        self.load_source_provenance_remap = Some((physical_root, provenance_root));
+    }
+
+    pub(crate) fn load_source_provenance_path(&self, path: &std::path::Path) -> PathBuf {
+        let Some((physical_root, provenance_root)) = &self.load_source_provenance_remap else {
+            return path.to_path_buf();
+        };
+        path.strip_prefix(physical_root)
+            .map(|relative| provenance_root.join(relative))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+
     fn current_load_history_file(&self) -> Option<String> {
         self.lookup_var("current-load-list", &Env::new())
             .and_then(|value| value.to_vec().ok())

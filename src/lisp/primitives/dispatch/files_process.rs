@@ -2452,6 +2452,7 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 Ok(resolve_load_target_in_env(interp, &library, env)
+                    .map(|path| interp.load_source_provenance_path(&path))
                     .map(|path| Value::String(path.display().to_string().into()))
                     .unwrap_or(Value::Nil))
             }

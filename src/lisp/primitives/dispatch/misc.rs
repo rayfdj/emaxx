@@ -2586,6 +2586,20 @@ fn snarf_documentation(
     })?;
     let entries = parse_doc_file_entries(&bytes)?;
     interp.set_variable("internal-doc-file-name", filename.clone(), env);
+    // GNU's help-fns.el validates C source markers against the native object
+    // inventory in `build-files'.  DOC already carries that inventory as S
+    // records, so derive it from this parse instead of maintaining a second
+    // hard-coded list which can drift with the selected GNU tree.
+    interp.set_variable(
+        "build-files",
+        Value::list(
+            entries
+                .iter()
+                .filter(|entry| entry.kind == b'S')
+                .map(|entry| Value::String(entry.name.clone().into())),
+        ),
+        env,
+    );
     let delayed = interp
         .lookup_var("custom-delayed-init-variables", env)
         .and_then(|value| value.to_vec().ok())

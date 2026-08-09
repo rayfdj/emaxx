@@ -955,19 +955,18 @@ define_dispatch!(
                         .map(|value| Value::String(value.into()))
                         .unwrap_or(Value::Nil));
                 }
-                if let Ok(symbol) = args[0].as_symbol()
-                    && let Some(file) = symbol_file_from_load_history(
-                        interp,
-                        symbol,
-                        args.get(1).and_then(|kind| kind.as_symbol().ok()),
-                        env,
-                    )
-                {
+                if let Some(file) = symbol_file_from_load_history(
+                    interp,
+                    &args[0],
+                    args.get(1).and_then(|kind| kind.as_symbol().ok()),
+                    env,
+                ) {
                     // simple_compat.el is Emaxx's aggregate realization of
                     // GNU's dumped files, not their logical source.  Preserve
                     // later user redefinitions, but map definitions from this
                     // one bootstrap aggregate back to the owning GNU file.
                     if file.ends_with("/src/lisp/simple_compat.el")
+                        && let Ok(symbol) = args[0].as_symbol()
                         && let Some(path) = symbol_file_from_preloaded_sources(interp, symbol)
                     {
                         return Ok(Value::String(path.into()));
@@ -980,6 +979,15 @@ define_dispatch!(
                     args.get(1).and_then(|t| t.as_symbol().ok()),
                     None | Some("defun") | Some("defvar")
                 ) && let Ok(symbol) = args[0].as_symbol()
+                    // A numeric documentation property is the native-variable
+                    // provenance marker installed by `Snarf-documentation'.
+                    // GNU returns nil here and lets help-fns.el resolve the C
+                    // source; a preloaded Lisp textual match must not mask it.
+                    && !(args.get(1).and_then(|t| t.as_symbol().ok()) == Some("defvar")
+                        && matches!(
+                            interp.get_symbol_property(symbol, "variable-documentation"),
+                            Some(Value::Integer(_))
+                        ))
                     && let Some(path) = symbol_file_from_preloaded_sources(interp, symbol)
                 {
                     return Ok(Value::String(path.into()));
@@ -4132,7 +4140,7 @@ define_dispatch!(
 
 fn symbol_file_from_load_history(
     interp: &Interpreter,
-    symbol: &str,
+    object: &Value,
     kind: Option<&str>,
     env: &Env,
 ) -> Option<String> {
@@ -4141,16 +4149,16 @@ fn symbol_file_from_load_history(
         let mut parts = load_entry.to_vec().ok()?.into_iter();
         let file = parts.next().and_then(|value| string_like(&value))?.text;
         let matches = parts.any(|definition| match kind {
-            Some("defvar") => matches!(&definition, Value::Symbol(name) if name == symbol),
+            Some("defvar") => &definition == object,
             Some(expected_kind) => definition.cons_values().is_some_and(|(entry_kind, name)| {
                 matches!(entry_kind, Value::Symbol(actual_kind) if actual_kind == expected_kind)
-                    && matches!(name, Value::Symbol(actual_name) if actual_name == symbol)
+                    && &name == object
             }),
             None => {
-                matches!(&definition, Value::Symbol(name) if name == symbol)
+                &definition == object
                     || definition.cons_values().is_some_and(|(entry_kind, name)| {
                         !matches!(entry_kind, Value::Symbol(ref actual_kind) if actual_kind == "require")
-                            && matches!(name, Value::Symbol(actual_name) if actual_name == symbol)
+                            && &name == object
                     })
             }
         });
