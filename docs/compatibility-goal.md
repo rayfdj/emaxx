@@ -42,6 +42,35 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-09 VM performance round-9 checkpoint retains the safe half of
+  the supplied `emaxx-vm-perf-round9.patch` and rejects the half that did not
+  validate on the current tip.  Mutable cons fields now use a lazily allocated
+  256-Kibit Bloom filter to reject overwhelmingly common unwatched writes
+  before probing the authoritative mutation-watcher map.  False positives and
+  stale bits can only cause an extra map lookup; registrations set the bit
+  after updating the map, the filter clears when the last dead watcher drains,
+  and the existing bounded reset still invalidates every live token before
+  clearing state.
+
+  The proposed cached function-resolution verdict inside every `EnvFrame` was
+  deliberately not retained.  It enlarged every frame allocation and produced
+  no measurable win on this tip; the full patch was slightly slower than the
+  Bloom-only candidate across the relevant kernels.  Exact clean rebuilds were
+  byte-identical, and 20-sample fib distributions confirmed that the remaining
+  roughly 3%/5-ms movement is real but small.  The per-call lexical scan needs
+  a design that does not tax every freshly allocated one-binding frame.
+
+  Same-machine release results (minimum of five, identical GNU-compiled
+  bytecode) compare clean `53b5e60` to the retained candidate: vector-10M
+  1.3548 -> 0.9790 seconds, list-build-2M 0.1199 -> 0.0625, and sort-5k
+  0.3943 -> 0.3295.  Mapcar remains faster than GNU (0.1491 vs 0.2177
+  seconds), as do string and float.  The tracked `bench/driver.el` now verifies
+  GNU-derived semantic results/checksums for every kernel before timing, so an
+  incorrect fast result cannot pass as an optimization.  Focused Bloom
+  collision/reset tests, all 17 value/type tests, all 31 bytecode tests,
+  all-target/all-feature checking, strict clippy, rustfmt, and diff checks
+  pass.  NEXT: publish this separate checkpoint, then begin selector 4,583,
+  `dbus-test03-peer-interface`.
 - The 2026-08-09 Network Stream/SOCKS/Proced checkpoint keeps the published
   ordered frontier at 4,582/7,080 and completes the required exact replay
   through C# Mode.  The cumulative clean-source artifact is
