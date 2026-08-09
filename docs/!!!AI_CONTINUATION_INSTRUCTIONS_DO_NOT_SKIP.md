@@ -18,6 +18,48 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-09 MUTATION-SAFE SOURCE-DISPATCH CHECKPOINT: the published ordered
+  frontier remains 4,582/7,080 (2,498 selectors left).  A bounded
+  source-form snapshot cache and bounded RAII evaluated-argument pool remove a
+  repeatable slice of source-interpreter allocation/list-flattening traffic.
+  They are derived caches, not syntax authorities: one typed cons-mutation
+  epoch stamps source forms, macro expansions, lambda bodies, and plain quote
+  templates, while weak source witnesses reject allocator-address reuse.
+  Focused tests cover car/cdr mutation, nested macro and old/new lambda source
+  behavior, quote-template resolution, error recovery, buffer clearing, and
+  oversized-buffer rejection.
+
+  The comparable artifact is
+  `target/perf/run-1786226330/interpreter/source-eval-suite.perf/comparison.json`:
+  list walking is 7.472x GNU time (Emaxx 0.105080 seconds), cons allocation is
+  12.974x (0.017177 seconds), and interpreted calls are 14.612x (0.019696
+  seconds).  Against the exact immediately preceding Emaxx run those are
+  improvements of 8.93%, 8.95%, and 6.91%; runs `1786225791` and `1786225856`
+  independently corroborate them.  Electric is exact at 874/874 in
+  `target/compat/run-1786226417171206000-50677` (0.825 seconds GNU, 12.591
+  seconds Emaxx).  Its unsegmented time is effectively unchanged and includes
+  the dumped-image/startup asymmetry; do not claim the cache fixes that gap.
+
+  The cumulative replay through C# Mode matched 350/351 files in
+  `target/compat/run-1786232582936062000-54801`.  The sole mismatch is the
+  pre-existing `test/lisp/net/tramp-tests.el` load timeout: GNU took 98.886
+  seconds, while Emaxx discovered no tests before its 1,800.079-second cap;
+  every file after TRAMP matched.  Disjoint Rust/publication coverage passed
+  1,851/1,851 tests, with six sandbox-denied localhost primitive cases passing
+  exact permitted replays.  Rustfmt, diff check, all-target/all-feature check,
+  strict Clippy, compatibility-harness 29/29, performance-harness 1/1, CLI
+  10/10, and ERT runner 3/3 pass.  Native remains 1,420/1,420.
+
+  NEXT: commit/push this coherent cache slice, then profile a body-heavy
+  post-bootstrap workload such as Bindat or ERC.  The current native sample
+  points to repeated symbol interning/hashing, function/variable lookup,
+  `Value` clone/drop, and backtrace traffic.  Confirm the dominant real-suite
+  path before changing symbol identity.  Use focused/current-batch replays for
+  routine work and a short explicitly recorded cap for the known TRAMP
+  boundary; reserve the 1,800-second replay for TRAMP/loading changes and
+  coherent publication checkpoints.  A timeout remains incomplete, never a
+  pass or skip.  Do not start selector 4,583 until the cumulative prefix is
+  genuinely recertified.
 - 2026-08-09 COMPACT SHARED-VALUE CHECKPOINT: the published ordered frontier
   remains 4,582/7,080 (2,498 selectors left).  `Value` is now 16 bytes on the
   measured 64-bit target, down from 40: strings and symbol names share text,

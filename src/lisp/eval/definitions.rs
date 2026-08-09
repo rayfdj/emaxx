@@ -5815,18 +5815,26 @@ impl Interpreter {
         let body = match source_anchor {
             Some(source_anchor) => {
                 let source_id = source_anchor.cell_id();
-                if let Some((cached_source, cached_body)) =
-                    self.lambda_source_bodies.get(&source_id)
-                    && cached_source
+                if let Some(cached) = self
+                    .lambda_source_bodies
+                    .get(&source_id)
+                    .and_then(ConsMutationStamped::current)
+                    && cached
+                        .source
                         .upgrade()
                         .is_some_and(|cached| cached.ptr_eq(&source_anchor))
-                    && let Some(body) = cached_body.upgrade()
+                    && let Some(body) = cached.body.upgrade()
                 {
                     body
                 } else {
                     let body = Rc::new(body);
-                    self.lambda_source_bodies
-                        .insert(source_id, (source_anchor.downgrade(), Rc::downgrade(&body)));
+                    self.lambda_source_bodies.insert(
+                        source_id,
+                        ConsMutationStamped::new(LambdaSourceBodyCacheEntry {
+                            source: source_anchor.downgrade(),
+                            body: Rc::downgrade(&body),
+                        }),
+                    );
                     body
                 }
             }

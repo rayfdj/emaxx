@@ -169,10 +169,12 @@ The representation explains the scale:
 - `emaxx::lisp::types::Value` is 40 bytes on the measured 64-bit target.
 - GNU's `Lisp_Object` is one tagged machine word (8 bytes on the same class of
   target).
-- An `emaxx` cons currently owns two separate `Rc<RefCell<Value>>` allocations;
-  GNU represents a cons as one object containing two tagged words.
-- Source evaluation flattens each list form into a fresh owned `Vec<Value>`
-  before dispatch, multiplying the large-value and owned-symbol costs.
+- At the pre-migration baseline, an `emaxx` cons owned two separate
+  `Rc<RefCell<Value>>` allocations; GNU represents a cons as one object
+  containing two tagged words.
+- At that baseline, source evaluation flattened each list form into a fresh
+  owned `Vec<Value>` before dispatch, multiplying the large-value and
+  owned-symbol costs.
 
 This is a runtime representation/execution-model gap, not an inherent C versus
 Rust result and not a bytecode-VM regression.  The optimized VM does not run
@@ -185,9 +187,10 @@ Small isolated experiments are not performance claims:
 - disabling all backtrace recording improved the three cases by about 9–10%,
   but is not a valid implementation because it breaks debugger and backtrace
   semantics;
-- caching repeated flattened source forms improved the synthetic cases by
-  about 10–12% and preserved Electric's 874/874 result, but full Electric
-  timing did not reproduce a stable win, so the prototype was not retained.
+- an early cache for repeated flattened source forms improved the synthetic
+  cases by about 10–12%, but lacked a complete mutation-invalidation contract;
+  that prototype was not retained.  The later typed, mutation-stamped design
+  described below closes that correctness gap and produces a repeatable win.
 
 The thematic work is therefore a compact Lisp value/object representation,
 including shared/interned symbol identities, one-object cons cells, and source
@@ -223,6 +226,54 @@ measured 0.745 versus 11.784 seconds.  The pre-migration focused Emaxx result
 was 13.475 seconds.  These unsegmented end-to-end measurements include the
 startup/loading cost and therefore are supporting evidence, not direct input
 to the post-bootstrap 2x gate.
+
+### Post-Compact Source-Dispatch Result
+
+The retained source-form snapshot cache and evaluated-argument buffer pool are
+recorded in
+`target/perf/run-1786226330/interpreter/source-eval-suite.perf/comparison.json`:
+
+| Case | GNU Emacs | `emaxx` | Ratio | Emaxx improvement |
+|---|---:|---:|---:|---:|
+| list walk | 0.014064 s | 0.105080 s | 7.472x | 8.93% |
+| cons allocation | 0.001324 s | 0.017177 s | 12.974x | 8.95% |
+| interpreted function calls | 0.001348 s | 0.019696 s | 14.612x | 6.91% |
+
+The improvement column compares Emaxx with the exact immediately preceding
+checkpoint run in `run-1786224259`, not with GNU.  Independent runs
+`1786225791` and `1786225856` reported Emaxx medians of 0.105937/0.017317/
+0.020124 and 0.105445/0.017201/0.019726 seconds, so the retained gain is well
+outside the roughly one-percent machine-noise concern.
+
+This is a derived snapshot cache, not a second syntax authority.  A single
+typed cons-mutation epoch stamps source-form, macro-expansion, lambda-body, and
+plain-quote derivations; all mutable cons-field borrows advance it.  Weak
+source witnesses prevent allocator-address reuse from aliasing unrelated
+forms.  Focused tests mutate cars and cdrs through ordinary source calls,
+macros, old and new lambda closures, and reader-resolved quote templates, and
+also cover recovery after evaluation errors.  The argument-vector pool uses
+RAII so every early return clears its buffer, and it rejects oversized storage
+instead of retaining it indefinitely.
+
+Electric remains semantically exact at 874/874 in
+`target/compat/run-1786226417171206000-50677`: GNU took 0.825 seconds and Emaxx
+12.591 seconds.  That unsegmented result is effectively unchanged at machine
+variation scale and still includes the dumped-image/startup asymmetry.  The
+cache is therefore retained for its repeatable comparable post-bootstrap gain
+and mutation-safe architecture, not as a claim that it closes Electric's
+end-to-end gap.  Body-heavy Bindat, Edebug, ERC, international-text, and
+package workloads still exceed the 2x threshold after any plausible fixed
+startup subtraction; profile their shared evaluator/value-traffic path next.
+
+The cumulative replay through C# Mode in
+`target/compat/run-1786232582936062000-54801` matched 350/351 files.  The sole
+mismatch is the pre-existing `test/lisp/net/tramp-tests.el` load boundary:
+GNU loaded and completed discovery in 98.886 seconds, while Emaxx discovered
+no tests before the 1,800.079-second cap.  Every file after TRAMP matched.
+Routine development replays should now use focused/current-batch scopes and a
+short, explicitly recorded cap for that known incomplete boundary.  Reserve
+the 1,800-second TRAMP replay for changes to TRAMP/loading and coherent
+publication checkpoints; never convert the timeout into a pass or skip.
 
 Before a representation change is retained it must pass all of these gates:
 
