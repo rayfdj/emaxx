@@ -3207,6 +3207,25 @@ fn scan_sexps_treats_lisp_prefix_as_part_of_expression() {
 }
 
 #[test]
+fn emacs_lisp_syntax_propertize_limits_at_prefix_to_comma_at() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(with-temp-buffer
+               (emacs-lisp-mode)
+               (insert \"(a '@)\")
+               (let ((quoted (scan-sexps (+ (point-min) 3) 1)))
+                 (erase-buffer)
+                 (insert \"(a ,@)\")
+                 (list quoted
+                       (condition-case nil
+                           (progn (scan-sexps (+ (point-min) 3) 1) nil)
+                         (scan-error t)))))"
+        ),
+        Value::list([Value::Integer(6), Value::T])
+    );
+}
+
+#[test]
 fn scan_sexps_uses_current_string_quote_delimiter() {
     assert_eq!(
         eval_str(

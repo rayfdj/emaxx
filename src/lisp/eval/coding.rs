@@ -525,6 +525,12 @@ impl Interpreter {
         3
     }
 
+    /// The dumped GNU emacs-lisp-mode-syntax-table child, whose `@' entry
+    /// differs from lisp-data-mode until syntax-propertize sees `,@'.
+    pub fn emacs_lisp_mode_syntax_table_id(&self) -> u64 {
+        4
+    }
+
     pub fn current_syntax_table_id(&self) -> u64 {
         self.buffer_syntax_tables
             .iter()
