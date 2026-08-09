@@ -1460,6 +1460,44 @@ fn byte_compile_file_warns_when_lexical_binding_cookie_is_missing() {
     assert_eq!(result, Value::list([Value::T, Value::Nil, Value::Nil]));
 }
 
+#[test]
+fn byte_compile_file_reads_and_interns_file_local_symbol_shorthands() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-shorthand-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.el");
+    std::fs::write(
+        &source_path,
+        r#";;; -*- lexical-binding: t; -*-
+(defun s-target () 42)
+;; Local Variables:
+;; read-symbol-shorthands: (("s-" . "long-"))
+;; End:
+"#,
+    )
+    .unwrap();
+
+    let result = eval_str(&format!(
+        r#"(progn
+             (byte-compile-file {:?})
+             (list (intern-soft "long-target")
+                   (intern-soft "s-target")))"#,
+        source_path.display().to_string(),
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        result,
+        Value::list([Value::Symbol("long-target".into()), Value::Nil])
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn byte_compile_file_uses_temp_output_when_source_directory_is_unwritable() {

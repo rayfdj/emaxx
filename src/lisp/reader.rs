@@ -457,6 +457,18 @@ impl<'a> Reader<'a> {
     }
 
     fn apply_symbol_shorthands(&self, token: String) -> String {
+        // GNU deliberately preserves the traditional punctuation-only core
+        // symbols even when one of their characters is configured as a
+        // shorthand prefix.  For example, a `-` shorthand may expand
+        // `-foo`, but must not rename `/=` or `---`.
+        if token.bytes().all(|byte| {
+            matches!(
+                byte,
+                b'^' | b'*' | b'+' | b'-' | b'/' | b'<' | b'=' | b'>' | b'_' | b'|'
+            )
+        }) {
+            return token;
+        }
         for (short, long) in &self.symbol_shorthands {
             if let Some(rest) = token.strip_prefix(short) {
                 return format!("{long}{rest}");
@@ -1185,7 +1197,14 @@ impl<'a> Reader<'a> {
             }
             Some(b'_') => {
                 self.advance();
-                Ok(Some(Value::Symbol(String::new().into())))
+                match self.peek() {
+                    None
+                    | Some(
+                        b' ' | b'\t' | b'\n' | b'\r' | 0x0C | b'(' | b')' | b'[' | b']' | b'"'
+                        | b'\'' | b';' | b'#' | b'`' | b',',
+                    ) => Ok(Some(Value::Symbol(String::new().into()))),
+                    Some(_) => self.read_atom_with_shorthands(false),
+                }
             }
             Some(b'\'') => {
                 // #'symbol — function quote, treat as (function sym)
@@ -1614,6 +1633,13 @@ impl<'a> Reader<'a> {
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
+        self.read_atom_with_shorthands(true)
+    }
+
+    fn read_atom_with_shorthands(
+        &mut self,
+        apply_shorthands: bool,
+    ) -> Result<Option<Value>, LispError> {
         let mut token = String::new();
         let mut saw_escape = false;
         while let Some(ch) = self.peek() {
@@ -1671,7 +1697,11 @@ impl<'a> Reader<'a> {
         }
 
         if saw_escape {
-            let token = self.apply_symbol_shorthands(token);
+            let token = if apply_shorthands {
+                self.apply_symbol_shorthands(token)
+            } else {
+                token
+            };
             return Ok(Some(match token.as_str() {
                 "nil" => Value::Nil,
                 "t" => Value::T,
@@ -1680,23 +1710,29 @@ impl<'a> Reader<'a> {
         }
 
         // Try parsing as integer
-        if let Ok(n) = token.parse::<i64>() {
-            return Ok(Some(Value::Integer(n)));
-        }
-        if is_integer_token(&token)
-            && let Ok(n) = token.parse::<BigInt>()
-        {
-            return Ok(Some(normalize_bigint(n)));
+        if apply_shorthands {
+            if let Ok(n) = token.parse::<i64>() {
+                return Ok(Some(Value::Integer(n)));
+            }
+            if is_integer_token(&token)
+                && let Ok(n) = token.parse::<BigInt>()
+            {
+                return Ok(Some(normalize_bigint(n)));
+            }
+
+            if let Some(f) = parse_special_float_token(&token) {
+                return Ok(Some(Value::Float(f)));
+            }
+            if let Some(number) = parse_decimal_token(&token) {
+                return Ok(Some(number));
+            }
         }
 
-        if let Some(f) = parse_special_float_token(&token) {
-            return Ok(Some(Value::Float(f)));
-        }
-        if let Some(number) = parse_decimal_token(&token) {
-            return Ok(Some(number));
-        }
-
-        let token = self.apply_symbol_shorthands(token);
+        let token = if apply_shorthands {
+            self.apply_symbol_shorthands(token)
+        } else {
+            token
+        };
 
         // Special atoms
         match token.as_str() {
@@ -2251,7 +2287,7 @@ mod tests {
     #[test]
     fn expands_symbol_shorthands_while_reading_atoms() {
         let mut reader = Reader::with_symbol_shorthands(
-            "(ft--helper 'ft-hash-table-weakness)",
+            "(ft--helper 'ft-hash-table-weakness /= - #_ft-raw #_123)",
             vec![("ft-".into(), "fns-tests-".into())],
         );
         assert_eq!(
@@ -2262,6 +2298,26 @@ mod tests {
                     Value::Symbol("quote".into()),
                     Value::Symbol("fns-tests-hash-table-weakness".into()),
                 ]),
+                Value::Symbol("/=".into()),
+                Value::Symbol("-".into()),
+                Value::Symbol("ft-raw".into()),
+                Value::Symbol("123".into()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn symbol_shorthands_preserve_punctuation_only_symbols() {
+        let mut reader = Reader::with_symbol_shorthands(
+            "(/= 42 (-foo 42))",
+            vec![("-".into(), "fooey-".into())],
+        );
+        assert_eq!(
+            reader.read_all().unwrap(),
+            vec![Value::list([
+                Value::Symbol("/=".into()),
+                Value::Integer(42),
+                Value::list([Value::Symbol("fooey-foo".into()), Value::Integer(42),]),
             ])]
         );
     }

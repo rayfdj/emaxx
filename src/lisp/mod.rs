@@ -608,8 +608,12 @@ fn read_symbol_shorthands_value(shorthands: &[(String, String)]) -> types::Value
 
 pub fn read_forms(path: &Path) -> Result<Vec<types::Value>, types::LispError> {
     let source = read_source(path)?;
-    let settings = source_settings(&source)?;
-    reader::Reader::with_symbol_shorthands(&source, settings.read_symbol_shorthands).read_all()
+    read_source_forms(&source)
+}
+
+pub(crate) fn read_source_forms(source: &str) -> Result<Vec<types::Value>, types::LispError> {
+    let settings = source_settings(source)?;
+    reader::Reader::with_symbol_shorthands(source, settings.read_symbol_shorthands).read_all()
 }
 
 pub fn load_file_strict(
@@ -659,18 +663,12 @@ pub fn load_file_strict(
     let warning_message = unescaped_char_literal_warning(path, &source);
     let load_file = path.display().to_string();
     let previous = interp.set_current_load_file(Some(load_file.clone()));
-    let previous_load_list = interp
-        .lookup_var("current-load-list", &types::Env::new())
-        .unwrap_or(types::Value::Nil);
-    let previous_read_symbol_shorthands = interp
-        .lookup_var("read-symbol-shorthands", &types::Env::new())
-        .unwrap_or(types::Value::Nil);
     let mut env = types::Env::new();
     // GNU `load' establishes these as real specbind layers.  A Rust-only
     // current-file side channel is insufficient: an outer Lisp binding such
     // as `(let ((load-file-name nil)) (load ...))' must be shadowed by the
     // file being loaded, then restored on every exit path.
-    let mut dynamic_restores = Vec::with_capacity(5);
+    let mut dynamic_restores = Vec::with_capacity(7);
     for (name, value) in [
         (
             "load-file-name",
@@ -690,6 +688,14 @@ pub fn load_file_strict(
                 types::Value::Nil
             },
         ),
+        (
+            "read-symbol-shorthands",
+            read_symbol_shorthands_value(&settings.read_symbol_shorthands),
+        ),
+        (
+            "current-load-list",
+            types::Value::list([types::Value::String(path.display().to_string().into())]),
+        ),
     ] {
         match interp.bind_special_dynamic(name, value, &mut env) {
             Ok(restore) => dynamic_restores.push(restore),
@@ -700,14 +706,6 @@ pub fn load_file_strict(
             }
         }
     }
-    interp.set_global_binding(
-        "read-symbol-shorthands",
-        read_symbol_shorthands_value(&settings.read_symbol_shorthands),
-    );
-    interp.set_global_binding(
-        "current-load-list",
-        types::Value::list([types::Value::String(path.display().to_string().into())]),
-    );
     let forms = match reader::Reader::with_symbol_shorthands(
         &source,
         settings.read_symbol_shorthands.clone(),
@@ -717,11 +715,6 @@ pub fn load_file_strict(
         Ok(forms) => forms,
         Err(error) => {
             let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-            restore_load_dynamic_bindings(
-                interp,
-                previous_read_symbol_shorthands,
-                previous_load_list,
-            );
             interp.set_current_load_file(previous);
             return Err(error);
         }
@@ -773,11 +766,6 @@ pub fn load_file_strict(
                 );
             }
             let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-            restore_load_dynamic_bindings(
-                interp,
-                previous_read_symbol_shorthands,
-                previous_load_list,
-            );
             interp.set_current_load_file(previous);
             return Err(error);
         }
@@ -792,7 +780,6 @@ pub fn load_file_strict(
         append_message(interp, &message);
     }
     restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env)?;
-    restore_load_dynamic_bindings(interp, previous_read_symbol_shorthands, previous_load_list);
     interp.set_current_load_file(previous);
     Ok(())
 }
@@ -821,30 +808,36 @@ pub fn run_ert_file(
     let settings = source_settings(&source)?;
     let mut interp = eval::Interpreter::new();
     let previous = interp.set_current_load_file(Some(path.display().to_string()));
-    let previous_load_list = interp
-        .lookup_var("current-load-list", &types::Env::new())
-        .unwrap_or(types::Value::Nil);
-    let previous_read_symbol_shorthands = interp
-        .lookup_var("read-symbol-shorthands", &types::Env::new())
-        .unwrap_or(types::Value::Nil);
     let mut env = types::Env::new();
-    let lexical_restore = interp.bind_special_dynamic(
-        "lexical-binding",
-        if settings.lexical_binding {
-            types::Value::T
-        } else {
-            types::Value::Nil
-        },
-        &mut env,
-    )?;
-    interp.set_global_binding(
-        "read-symbol-shorthands",
-        read_symbol_shorthands_value(&settings.read_symbol_shorthands),
-    );
-    interp.set_global_binding(
-        "current-load-list",
-        types::Value::list([types::Value::String(path.display().to_string().into())]),
-    );
+    let mut dynamic_restores = Vec::with_capacity(3);
+    for (name, value) in [
+        (
+            "lexical-binding",
+            if settings.lexical_binding {
+                types::Value::T
+            } else {
+                types::Value::Nil
+            },
+        ),
+        (
+            "read-symbol-shorthands",
+            read_symbol_shorthands_value(&settings.read_symbol_shorthands),
+        ),
+        (
+            "current-load-list",
+            types::Value::list([types::Value::String(path.display().to_string().into())]),
+        ),
+    ] {
+        match interp.bind_special_dynamic(name, value, &mut env) {
+            Ok(restore) => dynamic_restores.push(restore),
+            Err(error) => {
+                let _ =
+                    restore_special_dynamic_bindings(&mut interp, &mut dynamic_restores, &mut env);
+                interp.set_current_load_file(previous);
+                return Err(error);
+            }
+        }
+    }
     let forms = match reader::Reader::with_symbol_shorthands(
         &source,
         settings.read_symbol_shorthands.clone(),
@@ -853,12 +846,7 @@ pub fn run_ert_file(
     {
         Ok(forms) => forms,
         Err(error) => {
-            let _ = interp.restore_special_dynamic(lexical_restore, &mut env);
-            restore_load_dynamic_bindings(
-                &mut interp,
-                previous_read_symbol_shorthands,
-                previous_load_list,
-            );
+            let _ = restore_special_dynamic_bindings(&mut interp, &mut dynamic_restores, &mut env);
             interp.set_current_load_file(previous);
             return Err(error);
         }
@@ -872,12 +860,7 @@ pub fn run_ert_file(
         // Ignore errors in top-level forms (e.g. require of missing features)
         let _ = interp.eval(form, &mut env);
     }
-    interp.restore_special_dynamic(lexical_restore, &mut env)?;
-    restore_load_dynamic_bindings(
-        &mut interp,
-        previous_read_symbol_shorthands,
-        previous_load_list,
-    );
+    restore_special_dynamic_bindings(&mut interp, &mut dynamic_restores, &mut env)?;
     interp.set_current_load_file(previous);
 
     // Run the collected tests
@@ -895,15 +878,6 @@ pub fn run_ert_file(
         .collect();
 
     Ok((passed, failed, total, results))
-}
-
-fn restore_load_dynamic_bindings(
-    interp: &mut eval::Interpreter,
-    previous_read_symbol_shorthands: types::Value,
-    previous_load_list: types::Value,
-) {
-    interp.set_global_binding("read-symbol-shorthands", previous_read_symbol_shorthands);
-    interp.set_global_binding("current-load-list", previous_load_list);
 }
 
 #[cfg(test)]

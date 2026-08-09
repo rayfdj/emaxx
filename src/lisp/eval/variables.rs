@@ -489,9 +489,22 @@ impl Interpreter {
     }
 
     pub fn intern_symbol_name(&mut self, name: &str) {
+        self.uninterned_standard_symbol_names.remove(name);
         if self.interned_symbol_names.insert(name.to_string()) {
             self.interned_symbols.push(name.to_string());
         }
+    }
+
+    pub(crate) fn unintern_standard_symbol_name(&mut self, name: &str) -> bool {
+        if !self.standard_obarray_contains_symbol(name) {
+            return false;
+        }
+        self.uninterned_standard_symbol_names
+            .insert(name.to_string());
+        if self.interned_symbol_names.remove(name) {
+            self.interned_symbols.retain(|candidate| candidate != name);
+        }
+        true
     }
 
     /// Register ordinary symbols constructed by the Lisp reader in the

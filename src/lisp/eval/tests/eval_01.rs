@@ -251,10 +251,28 @@ fn md5_accepts_buffer_sources_and_coding_symbols() {
 fn intern_soft_accepts_symbol_arguments() {
     assert_eq!(
         eval_str(
-            "(list (intern-soft 'sample-symbol)\
-                   (intern-soft (make-symbol \"sample-symbol\")))"
+            "(let* ((private (obarray-make))\
+                    (private-symbol (intern \"private-symbol\" private))\
+                    (sample-symbol (intern \"sample-symbol\")))\
+               (list (intern-soft nil)\
+                     (intern-soft t)\
+                     (intern-soft sample-symbol)\
+                     (intern-soft (make-symbol \"sample-symbol\"))\
+                     (intern-soft nil private)\
+                     (intern-soft t private)\
+                     (eq private-symbol (intern-soft private-symbol private))\
+                     (null (intern-soft sample-symbol private))))"
         ),
-        Value::list([Value::Symbol("sample-symbol".into()), Value::Nil])
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::Symbol("sample-symbol".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+        ])
     );
 }
 
@@ -265,6 +283,58 @@ fn intern_preserves_canonical_nil_and_t_values() {
             "(list (intern \"nil\") (intern \"t\") (intern-soft \"nil\") (intern-soft \"t\"))"
         ),
         Value::list([Value::Nil, Value::T, Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn runtime_readers_honor_dynamic_symbol_shorthands_and_escapes() {
+    assert_eq!(
+        eval_str(
+            r##"(let ((read-symbol-shorthands '(("s-" . "long-")
+                                                ("-" . "fooey-"))))
+                 (list
+                  (car (read-from-string "s-name"))
+                  (with-temp-buffer
+                    (insert "s-buffer")
+                    (goto-char (point-min))
+                    (read (current-buffer)))
+                  (car (read-from-string "(/= (-name))"))
+                  (car (read-from-string "#_s-raw"))))"##,
+        ),
+        Value::list([
+            Value::Symbol("long-name".into()),
+            Value::Symbol("long-buffer".into()),
+            Value::list([
+                Value::Symbol("/=".into()),
+                Value::list([Value::Symbol("fooey-name".into())]),
+            ]),
+            Value::Symbol("s-raw".into()),
+        ])
+    );
+}
+
+#[test]
+fn standard_obarray_unintern_detaches_membership_until_reinterned() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun emaxx-standard-unintern-target () 42)
+                 (let ((symbol 'emaxx-standard-unintern-target))
+                   (list (unintern symbol)
+                         (intern-soft symbol)
+                         (fboundp symbol)
+                         (unintern "emaxx-standard-unintern-missing")
+                         (progn
+                           (intern "emaxx-standard-unintern-target")
+                           (intern-soft "emaxx-standard-unintern-target")))))"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Symbol("emaxx-standard-unintern-target".into()),
+        ])
     );
 }
 

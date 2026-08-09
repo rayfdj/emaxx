@@ -1840,6 +1840,12 @@ pub struct Interpreter {
     /// the vector makes completion deterministic, while this set prevents
     /// source loading from turning symbol interning into a quadratic scan.
     interned_symbol_names: HashSet<String>,
+    /// Names removed from the standard obarray while their old symbol cells
+    /// remain live.  GNU keeps those cells on the detached symbol object;
+    /// this tombstone prevents function/value indexes from accidentally
+    /// making the name look interned again until a reader or `intern' creates
+    /// the new canonical name.
+    uninterned_standard_symbol_names: HashSet<String>,
     /// Runtime record representing GNU's preloaded standard `obarray'.  Its
     /// symbol view is synthesized from the interpreter's canonical namespace
     /// indexes rather than duplicated in the record's storage slot.
@@ -2610,6 +2616,7 @@ impl Interpreter {
             symbol_properties_index: HashMap::default(),
             interned_symbols: Vec::new(),
             interned_symbol_names: HashSet::new(),
+            uninterned_standard_symbol_names: HashSet::new(),
             standard_obarray_id,
             variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),

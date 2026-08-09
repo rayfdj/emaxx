@@ -331,6 +331,21 @@ pub(crate) fn unintern_from_obarray(
     let Value::Record(id) = obarray else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
+    if interp.is_standard_obarray_id(*id) {
+        let symbol_name = match target {
+            Value::Nil => "nil".to_string(),
+            Value::T => "t".to_string(),
+            Value::Symbol(name) => {
+                let visible = crate::lisp::types::visible_symbol_name(name);
+                if visible != name {
+                    return Ok(false);
+                }
+                visible.to_string()
+            }
+            _ => apply_symbol_shorthands_in_env(interp, &string_text(target)?, env)?,
+        };
+        return Ok(interp.unintern_standard_symbol_name(&symbol_name));
+    }
     let Some(record) = interp.find_record(*id) else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
@@ -522,7 +537,9 @@ pub(crate) fn default_intern_soft_result(
     symbol_name: &str,
     env: &Env,
 ) -> Value {
-    if matches!(symbol_name, "nil" | "t") {
+    if interp.standard_obarray_symbol_is_uninterned(symbol_name) {
+        Value::Nil
+    } else if matches!(symbol_name, "nil" | "t") {
         crate::lisp::types::interned_symbol_value(symbol_name.into())
     } else if symbol_name.starts_with(':')
         || interp.lookup_var(symbol_name, env).is_some()

@@ -360,20 +360,18 @@ define_dispatch!(
                     normalize_string_index(args.get(2), chars.len() as i64, chars.len() as i64)?
                         as usize;
                 let slice: String = chars[start..end].iter().collect();
-                let mut reader = crate::lisp::reader::Reader::with_raw_quote_symbols(&slice);
-                match reader.read()? {
-                    Some(val) => {
-                        let consumed = slice[..reader.position()].chars().count();
-                        let resolved = crate::lisp::reader::resolve_circular_read_syntax(val)?;
-                        let materialized = materialize_read_hash_table_literals(interp, &resolved)?;
+                match read_one_form_in_env(interp, &slice, env) {
+                    Ok((val, consumed)) => {
+                        let materialized = materialize_read_hash_table_literals(interp, &val)?;
                         let materialized =
                             materialize_read_char_table_literals(interp, &materialized)?;
+                        interp.intern_symbols_in_value(&materialized);
                         Ok(Value::cons(
                             materialized,
                             Value::Integer((start + consumed) as i64),
                         ))
                     }
-                    None => Err(LispError::EndOfInput),
+                    Err(error) => Err(error),
                 }
             }
             "md5" => {
@@ -771,8 +769,29 @@ define_dispatch!(
                             .filter(|value| !value.is_nil())
                     });
                 let symbol_name = match &args[0] {
+                    // `nil' and `t' are symbols in Elisp even though Emaxx
+                    // gives their canonical values dedicated representations.
+                    // Like every other symbol argument, GNU's `intern-soft'
+                    // returns the exact object only when it belongs to the
+                    // requested obarray.  `nil' is also the miss result, so it
+                    // can be returned immediately for every obarray.
+                    Value::Nil => return Ok(Value::Nil),
+                    Value::T if obarray.is_none() => return Ok(Value::T),
+                    Value::T if matches!(&obarray, Some(Value::Record(id)) if interp.is_standard_obarray_id(*id)) =>
+                    {
+                        return Ok(if interp.standard_obarray_contains_symbol("t") {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        });
+                    }
+                    Value::T => return Ok(Value::Nil),
                     Value::Symbol(symbol) if obarray.is_none() => {
-                        return Ok(Value::Symbol(symbol.clone()));
+                        return Ok(if interp.standard_obarray_contains_symbol(symbol) {
+                            Value::Symbol(symbol.clone())
+                        } else {
+                            Value::Nil
+                        });
                     }
                     Value::Symbol(symbol)
                         if matches!(&obarray, Some(Value::Record(id)) if interp.is_standard_obarray_id(*id))
@@ -782,9 +801,27 @@ define_dispatch!(
                         // member of the standard obarray.  Synthetic `make-symbol'
                         // and private-obarray names carry identity markers and
                         // must still miss here.
-                        return Ok(Value::Symbol(symbol.clone()));
+                        return Ok(if interp.standard_obarray_contains_symbol(symbol) {
+                            Value::Symbol(symbol.clone())
+                        } else {
+                            Value::Nil
+                        });
                     }
-                    Value::Symbol(symbol) => symbol.to_string(),
+                    Value::Symbol(symbol) => {
+                        let Some(obarray) = &obarray else {
+                            return Ok(Value::Symbol(symbol.clone()));
+                        };
+                        let interned = intern_soft_in_obarray(
+                            interp,
+                            obarray,
+                            crate::lisp::types::visible_symbol_name(symbol),
+                        )?;
+                        return Ok(if interned == args[0] {
+                            args[0].clone()
+                        } else {
+                            Value::Nil
+                        });
+                    }
                     _ => string_text(&args[0])?,
                 };
                 let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
@@ -1987,7 +2024,6 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "run-hooks" => run_hooks_dispatch(interp, args, env, false),
-            #[dispatch(builtin_override)]
             "run-mode-hooks" => run_hooks_dispatch(interp, args, env, true),
             "run-hook-with-args" => {
                 if args.is_empty() {

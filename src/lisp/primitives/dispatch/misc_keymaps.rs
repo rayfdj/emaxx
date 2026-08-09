@@ -10773,7 +10773,10 @@ fn byte_compile_file_body(
         byte_compile_log_warning(interp, env, &warning)?;
     }
 
-    let forms = crate::lisp::reader::Reader::new(source).read_all()?;
+    let forms = crate::lisp::read_source_forms(source)?;
+    for form in &forms {
+        interp.intern_symbols_in_value(form);
+    }
     let mut diagnostics = ByteCompileDiagnostics {
         docstring_max_width: byte_compile_source_docstring_max_width(source),
         ..Default::default()
