@@ -6275,6 +6275,82 @@ fn fset_can_define_function_aliases() {
 }
 
 #[test]
+fn builtin_alias_calls_invalidate_on_every_redefinition() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let define_car = Reader::new("(defalias 'emaxx-test-hot-alias #'car)")
+        .read()
+        .expect("builtin alias should parse")
+        .expect("builtin alias definition should exist");
+    interp
+        .eval(&define_car, &mut env)
+        .expect("define builtin alias");
+
+    // Reuse these exact source conses so both the source-callsite cache and
+    // symbolic funcall cache must observe each definition generation.
+    let source_call = Reader::new("(emaxx-test-hot-alias '(1 2 3))")
+        .read()
+        .expect("source alias call should parse")
+        .expect("source alias call should exist");
+    let symbolic_funcall = Reader::new("(funcall 'emaxx-test-hot-alias '(4 5 6))")
+        .read()
+        .expect("symbolic alias funcall should parse")
+        .expect("symbolic alias funcall should exist");
+    for _ in 0..32 {
+        assert_eq!(
+            interp
+                .eval(&source_call, &mut env)
+                .expect("cached source alias should call car"),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            interp
+                .eval(&symbolic_funcall, &mut env)
+                .expect("cached symbolic alias should call car"),
+            Value::Integer(4)
+        );
+    }
+
+    let redefine_cdr = Reader::new("(fset 'emaxx-test-hot-alias #'cdr)")
+        .read()
+        .expect("builtin alias redefinition should parse")
+        .expect("builtin alias redefinition should exist");
+    interp
+        .eval(&redefine_cdr, &mut env)
+        .expect("redefine builtin alias");
+    assert_eq!(
+        interp
+            .eval(&source_call, &mut env)
+            .expect("source cache should observe cdr redefinition"),
+        Value::list([Value::Integer(2), Value::Integer(3)])
+    );
+    assert_eq!(
+        interp
+            .eval(&symbolic_funcall, &mut env)
+            .expect("funcall cache should observe cdr redefinition"),
+        Value::list([Value::Integer(5), Value::Integer(6)])
+    );
+
+    let redefine_lisp =
+        Reader::new("(fset 'emaxx-test-hot-alias (lambda (value) (list 'lisp value)))")
+            .read()
+            .expect("Lisp alias redefinition should parse")
+            .expect("Lisp alias redefinition should exist");
+    interp
+        .eval(&redefine_lisp, &mut env)
+        .expect("redefine alias as Lisp function");
+    assert_eq!(
+        interp
+            .eval(&source_call, &mut env)
+            .expect("source cache should observe Lisp redefinition"),
+        Value::list([
+            Value::symbol("lisp"),
+            Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)]),
+        ])
+    );
+}
+
+#[test]
 fn named_lisp_calls_share_immutable_function_code() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

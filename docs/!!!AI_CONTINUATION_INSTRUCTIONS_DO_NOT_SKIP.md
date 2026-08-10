@@ -18,6 +18,33 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-10 VM PERFORMANCE ROUND 10: retain only the validated subset of
+  `/Users/nbmhqa186/Downloads/emaxxvmperfround10.patch`.  Bytecode primitive
+  facts use static-string pointers through the existing identity hasher, with
+  length checked inside each pointer bucket; do not restore the supplied FNV
+  tuple key, which regressed short arithmetic primitive names.  Dense runtime
+  hash-table record IDs share that identity hasher.  Non-record eq/hash probes
+  skip symbol-with-position decoding, and `SharedText` equality uses pointer
+  equality before preserving content equality for distinct allocations.
+
+  Do not restore the patch's `plist-member` hunk: it returned a property value
+  instead of the matching plist tail and hid GNU's dotted/circular-list
+  errors.  New regressions cover those exact contracts and custom predicates.
+  Do not restore the `ResolvedBuiltin` payload either; repeated candidate
+  builds moved unrelated common kernels 4-6%, while the rare alias path remains
+  correct under the existing generation cache and has a new repeated
+  source/funcall redefinition regression.
+
+  Conservative current release minima versus preserved `1f319b1`: hash-3M
+  0.6840 -> 0.5704 seconds (-16.6%), vector-10M 0.9553 -> 0.9187 (-3.8%),
+  list-build-2M 0.0640 -> 0.0626 (-2.2%), regex-500k 0.6671 -> 0.6560
+  (-1.7%); every other kernel is within 1.5%.  Current GNU minima confirm
+  Emaxx is faster on string, float, and mapcar.  Benchmark semantic preflight,
+  bytecode 31/31, value/type 18/18, and focused hash/plist/source/symbol tests
+  pass.  NEXT: commit/push this isolated checkpoint, then assess
+  `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch` on the resulting
+  tree.  Report scope, risk, likely payoff, and whether it should wait until
+  7,080; do not publish or implement it without the user's explicit decision.
 - 2026-08-10 PERL CHECKPOINT: the fresh contiguous ordered frontier is
   4,799/7,080, leaving 2,281 selectors.  Perl's complete 66-case default
   selection matches GNU in the final-source artifact
@@ -73,11 +100,11 @@ counts as the progress denominator.
   pass in focused sequential replay.  Do not replace this with blanket serial
   execution or scattered new annotations.
 
-  NEXT after committing and pushing this isolated checkpoint: audit and
-  validate `/Users/nbmhqa186/Downloads/emaxx-vm-perf-round9.patch`, then
-  `/Users/nbmhqa186/Downloads/emaxxvmperfround10.patch`.  Against the resulting
-  tree, assess `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch`
-  and publish a GitHub issue only if its diagnosis is still supported.  Then
+  Round 9 is already the published Bloom-only `90c77a6`, and the validated
+  round-10 subset is recorded above.  Against that resulting tree, assess
+  `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch`, report whether
+  its diagnosis is still supported, and stop for the user's decision before
+  publishing or implementing anything.  Then
   resume selector 4,800 and repair Git VC detection without counting Emaxx's
   unilateral skip as a pass.
 - 2026-08-10 GDB-THROUGH-PEG CHECKPOINT: the fresh contiguous ordered frontier

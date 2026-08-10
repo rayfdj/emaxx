@@ -23,7 +23,7 @@ pub(crate) struct ConsMutationEpoch(u64);
 const CONS_MUTATION_WATCH_KEY_LIMIT: usize = 1 << 20;
 
 #[derive(Default)]
-struct IdentityHasher(u64);
+pub(crate) struct IdentityHasher(u64);
 
 impl Hasher for IdentityHasher {
     fn finish(&self) -> u64 {
@@ -43,8 +43,9 @@ impl Hasher for IdentityHasher {
     }
 }
 
-type ConsMutationWatchers =
-    HashMap<usize, Vec<Weak<Cell<bool>>>, BuildHasherDefault<IdentityHasher>>;
+pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
+
+type ConsMutationWatchers = HashMap<usize, Vec<Weak<Cell<bool>>>, IdentityBuildHasher>;
 
 /// 256 Kibit Bloom filter over watched field addresses, allocated on first
 /// registration.  Mutation of an unwatched field is by far the common case
@@ -222,8 +223,22 @@ impl ConsMutationSnapshot {
 
 /// Immutable shared text stored inside compact Lisp values.
 #[repr(transparent)]
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Eq, PartialOrd, Ord)]
 pub struct SharedText(Rc<String>);
+
+impl PartialEq for SharedText {
+    fn eq(&self, other: &Self) -> bool {
+        // Interned symbol names share one allocation, so the common case
+        // (`eq'-style symbol comparison) never reaches the byte compare.
+        Rc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
+impl std::hash::Hash for SharedText {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.0, state);
+    }
+}
 
 impl SharedText {
     pub fn new(text: String) -> Self {
@@ -1505,6 +1520,29 @@ mod tests {
         };
 
         assert!(Rc::ptr_eq(&text.0, &cloned_text.0));
+    }
+
+    #[test]
+    fn shared_text_equality_covers_shared_and_distinct_equal_allocations() {
+        use std::hash::{Hash, Hasher};
+
+        let shared = super::SharedText::from("same text");
+        let clone = shared.clone();
+        let distinct = super::SharedText::from("same text");
+        let different = super::SharedText::from("different text");
+
+        assert!(Rc::ptr_eq(&shared.0, &clone.0));
+        assert!(!Rc::ptr_eq(&shared.0, &distinct.0));
+        assert_eq!(shared, clone);
+        assert_eq!(shared, distinct);
+        assert_ne!(shared, different);
+
+        let hash = |value: &super::SharedText| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(hash(&shared), hash(&distinct));
     }
 
     #[test]

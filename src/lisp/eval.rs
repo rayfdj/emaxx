@@ -1918,7 +1918,10 @@ pub struct Interpreter {
     /// Indexed storage for GNU `equal' hash tables.  Record slots retain
     /// metadata compatibility, while this sidecar gives structured Lisp keys
     /// the same hashed lookup shape as Emacs's native implementation.
-    equal_hash_tables: HashMap<u64, EqualHashTableState>,
+    /// Keyed by dense record id with the shared identity hasher: SipHash
+    /// showed up at 6% of a `puthash'/`gethash' kernel just locating the
+    /// table per operation.
+    equal_hash_tables: HashMap<u64, EqualHashTableState, crate::lisp::types::IdentityBuildHasher>,
     /// Charset aliases defined at runtime.
     charset_aliases: Vec<(String, String)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
@@ -2740,7 +2743,7 @@ impl Interpreter {
                 },
             ],
             unicode_property_table_ids: HashMap::new(),
-            equal_hash_tables: HashMap::new(),
+            equal_hash_tables: HashMap::default(),
             charset_aliases: Vec::new(),
             charset_ids: vec![
                 ("ascii".into(), 0),

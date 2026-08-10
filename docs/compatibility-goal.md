@@ -42,6 +42,40 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-10 VM performance round-10 checkpoint retains only the parts of
+  `/Users/nbmhqa186/Downloads/emaxxvmperfround10.patch` that remain correct and
+  faster on current main.  Dedicated bytecode primitive opcodes cache their
+  immutable dispatch facts by static-string address.  The supplied FNV tuple
+  key regressed one-character arithmetic names, so the retained design reuses
+  the repository's identity hasher for the pointer and checks the length in
+  its normally one-entry bucket.  Dense runtime hash-table record IDs now use
+  that same single identity-hasher authority.  Ordinary non-record identity
+  and hash probes skip symbol-with-position decoding, while `SharedText`
+  equality first recognizes its shared allocation and retains content equality
+  and hashing for distinct allocations.
+
+  Two supplied changes were deliberately rejected.  Its `plist-member` fast
+  path returned the property value instead of the matching plist tail and
+  converted GNU's dotted/circular-list errors to nil; the existing correct
+  implementation remains, with new direct tests for matching tails, malformed
+  lists, cycles, and custom predicates.  The alias-to-builtin resolution
+  payload moved unrelated mapcar/buffer/plist kernels by 4-6% depending on
+  layout, so the uncommon alias case keeps the simpler generation-stamped
+  resolution path; a repeated source/funcall redefinition test covers its
+  invalidation contract.
+
+  Conservative best-of-repeated-five-sample release minima compare preserved
+  `1f319b1` to the retained candidate: hash-3M 0.6840 -> 0.5704 seconds
+  (-16.6%), vector-10M 0.9553 -> 0.9187 (-3.8%), list-build-2M 0.0640 ->
+  0.0626 (-2.2%), and regex-500k 0.6671 -> 0.6560 (-1.7%).  Every other
+  kernel is within 1.5%, with no retained meaningful regression.  Same-moment
+  GNU minima show Emaxx already faster on string (0.2443 vs 0.4660), float
+  (0.8167 vs 1.3441), and mapcar (0.1481 vs 0.2206).  The remaining ratios
+  include fib 7.4x, loop 4.6x, vector 7.8x, hash 6.8x, buffer 2.6x, and plist
+  14.4x; these microkernels are diagnostic follow-up, not compatibility-march
+  blockers.  All benchmark preflight checks, 31 bytecode tests, 18 value/type
+  tests, hash-table, plist, source-call, and symbol-with-position regressions
+  pass.
 - The 2026-08-10 Perl checkpoint advances the fresh contiguous ordered
   frontier to 4,799/7,080, leaving 2,281 selectors.  All 66 selected outcomes
   in `test/lisp/progmodes/perl-mode-tests.el` match GNU in the final-source
@@ -112,13 +146,12 @@ separate post-bootstrap body gap is tracked in
   cargo run --release --bin compat-harness -- run --scope all --selector default --file test/lisp/progmodes/project-tests.el --timeout-seconds 180
   ```
 
-  After this checkpoint is committed and pushed, independently audit and
-  validate `/Users/nbmhqa186/Downloads/emaxx-vm-perf-round9.patch`, then
-  `/Users/nbmhqa186/Downloads/emaxxvmperfround10.patch`.  Only against that
-  resulting tree, assess
-  `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch` and publish its
-  diagnosis as a GitHub issue if current evidence supports it.  Do not mix any
-  of those artifacts into this clean compatibility checkpoint.
+  Round 9 is already published as the validated Bloom-only `90c77a6`; round
+  10 is recorded above.  Against the resulting tree, assess
+  `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch`, report its
+  scope/risk/payoff and whether it should wait until 7,080, then stop for the
+  user's decision.  Do not publish or implement it without that explicit
+  decision.  Do not mix it into this clean performance checkpoint.
 - The 2026-08-10 GDB-through-PEG checkpoint advances the fresh contiguous
   ordered frontier to 4,729/7,080, leaving 2,351 selectors.  All 51 outcomes
   from GDB MI through PEG now match GNU: GDB MI (1), Glasses (7), Go TS (2),

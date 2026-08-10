@@ -431,7 +431,11 @@ pub(crate) fn values_eq_in_env(
     right: &Value,
     env: &Env,
 ) -> bool {
-    if let Some(equal) = symbol_with_pos_eq_in_env(interp, left, right, env) {
+    // Only records can carry symbol-with-pos payloads; every other pair
+    // (the overwhelmingly common case) must not pay the outlined probes.
+    if (matches!(left, Value::Record(_)) || matches!(right, Value::Record(_)))
+        && let Some(equal) = symbol_with_pos_eq_in_env(interp, left, right, env)
+    {
         return equal;
     }
 
@@ -1580,7 +1584,9 @@ pub(crate) fn runtime_hash_bucket_key(
         return equal_hash_table_key_hash(interp, value);
     }
     let mut state = 0xcbf2_9ce4_8422_2325u64;
-    if let Some((symbol, _)) = symbol_with_pos_parts(interp, value) {
+    if matches!(value, Value::Record(_))
+        && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)
+    {
         hash_value_eq(&mut state, &symbol);
         return Some(state as i64);
     }
