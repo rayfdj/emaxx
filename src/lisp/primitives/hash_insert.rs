@@ -667,7 +667,11 @@ pub(crate) fn insert_char_impl(
         _ => 1,
     };
     let inherit = args.get(2).is_some_and(Value::is_truthy);
-    if let Some(c) = char::from_u32(ch as u32) {
+    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&ch) {
+        let byte = (ch - RAW_BYTE8_BASE as i64) as u8;
+        let text: String = std::iter::repeat_n(raw_byte_regex_char(byte), count).collect();
+        insert_text_with_hooks(interp, &text, &[], inherit, false, env)?;
+    } else if let Some(c) = char::from_u32(ch as u32) {
         let text: String = std::iter::repeat_n(c, count).collect();
         insert_text_with_hooks(interp, &text, &[], inherit, false, env)?;
     } else if (0..=0x3F_FFFF).contains(&ch) {
@@ -752,7 +756,9 @@ pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispErro
             let fragment = match arg {
                 Value::Integer(n) => {
                     let offset = text.chars().count();
-                    if let Some(c) = char::from_u32(*n as u32) {
+                    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(n) {
+                        raw_byte_regex_char((*n - RAW_BYTE8_BASE as i64) as u8).to_string()
+                    } else if let Some(c) = char::from_u32(*n as u32) {
                         c.to_string()
                     } else if (0..=0x3F_FFFF).contains(n) {
                         props.push(TextPropertySpan {

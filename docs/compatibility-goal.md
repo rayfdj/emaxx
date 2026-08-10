@@ -42,6 +42,72 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-11 Project/PostScript worktree advances the verified contiguous
+  frontier to 4,811/7,080, leaving 2,269 selectors.  It remains unpublished
+  until the documentation, final static gates, commit, push, and origin
+  synchronization below finish.  The exact final-source compatibility runs
+  are all green: Perl 66/66 in
+  `target/compat/run-1786383162706070000-28330`, Project 9/9 in
+  `target/compat/run-1786383275831770000-28508`, and PostScript 3/3 in
+  `target/compat/run-1786383308552953000-28707`.  Their common subject-source
+  fingerprint is
+  `57e087c350d094f2bdfacb852162a1f8657f04cec5d8b169516d2fce6935faf4`.
+
+  Final GNU/Emaxx setup and body timings are: Perl setup 0.305/2.175 seconds
+  and body 0.134/0.819 seconds (6.092x, +685 ms); Project setup 0.283/1.817
+  and body 0.663/1.043 seconds (1.573x, +380 ms); PostScript setup
+  0.243/1.922 and body 0.283/0.223 seconds (Emaxx faster).  Perl retains the
+  harness's diagnostic 2x warning but is below the simultaneous one-second
+  compatibility-march interruption threshold.  The fixed setup gap remains
+  separate dumped-image work.
+
+  Project now uses GNU `vc.el`'s autoloaded `vc-responsible-backend` instead
+  of Emaxx's former always-nil fallback, and GNU's destructive
+  `delete-consecutive-dups` remains an exact Elisp implementation with
+  identity-sensitive regressions.  PostScript establishes one shared public
+  buffer-character view for raw byte8 data: insertion retains the existing
+  private-use representation, public character access consults the
+  `emaxx-raw-char` property, and every buffer-regexp path uses one
+  position-preserving raw-byte haystack projection.  The existing regexp
+  translator remains the sole pattern-grammar owner.
+
+  The elevated library publication run is green at 1,913/1,913 in 3,889.31
+  seconds, including all nine socket/TLS cases that a restricted sandbox had
+  denied and the event-based process-output regressions.  Its subsequent
+  binary phase exposed one invalid scheduler-sensitive timing test after the
+  heavily loaded run, not a product failure.  Timeout-phase selection is now
+  exercised as a pure elapsed-time decision, while child-reported phase
+  markers are verified by exact timestamps instead of a sub-poll wall-clock
+  deadline.  The final focused tests pass, as do all `compat-harness` tests
+  33/33 and `perf-harness` 1/1.  Only binary test/harness source changed after
+  the complete library run, so this is one composed, source-proportionate
+  publication gate rather than a reason to repeat the unchanged 65-minute
+  library suite.
+
+  Next is selector 4,812, `ruby--set-encoding-when-latin-15`, in
+  `test/lisp/progmodes/ruby-mode-tests.el`.  The exploratory Ruby artifact
+  `target/compat/run-1786372344692765000-21409` has 77/108 matching outcomes,
+  setup 0.255/2.192 seconds, and body 1.233/23.922 seconds.  Repair correctness
+  before profiling.  Read-only triage has already located four shared owners:
+
+  - GNU's dumped `language/european.el` defines `iso-latin-9` and the
+    ISO-8859-15 aliases; Emaxx's generic charset codec already round-trips the
+    real map, so load the Elisp owner instead of adding a Rust codec table.
+  - GNU `subr.el` defines `store-match-data` as an alias for
+    `set-match-data`; preserve that Elisp ownership.
+  - Native optional bounds for `font-lock-ensure`/`font-lock-flush` must map
+    explicit nil to the buffer boundary, and the shared keyword-level chooser
+    must accept GNU's one-symbol decoration list rather than treating that
+    symbol as a keyword entry.
+  - Syntax-property sentinels are already position preserving, but `\\_<` and
+    `\\_>` still use static symbol classes.  Repair property-aware word/symbol
+    boundaries inside the existing translator/adaptor and add direct
+    GNU-derived position regressions; do not add a second regexp parser.
+
+  Ruby already reaches GNU's Elisp `smie-indent-line`, so investigate its
+  remaining indentation failures only after these shared layers.  Rerun all
+  108 canonical outcomes after the first repairs, regroup what remains, then
+  profile the comparable body if it still exceeds both performance gates.
 - The 2026-08-10 VM performance round-10 checkpoint retains only the parts of
   `/Users/nbmhqa186/Downloads/emaxxvmperfround10.patch` that remain correct and
   faster on current main.  Dedicated bytecode primitive opcodes cache their
@@ -147,11 +213,10 @@ separate post-bootstrap body gap is tracked in
   ```
 
   Round 9 is already published as the validated Bloom-only `90c77a6`; round
-  10 is recorded above.  Against the resulting tree, assess
-  `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch`, report its
-  scope/risk/payoff and whether it should wait until 7,080, then stop for the
-  user's decision.  Do not publish or implement it without that explicit
-  decision.  Do not mix it into this clean performance checkpoint.
+  10 is recorded above.  The symbol-object proposal is explicitly deferred
+  until after 7,080.  Reassess it against current measurements then and report
+  its scope, risks, likely payoff, and recommendation to the user before
+  publishing an issue or implementation.
 - The 2026-08-10 GDB-through-PEG checkpoint advances the fresh contiguous
   ordered frontier to 4,729/7,080, leaving 2,351 selectors.  All 51 outcomes
   from GDB MI through PEG now match GNU: GDB MI (1), Glasses (7), Go TS (2),
