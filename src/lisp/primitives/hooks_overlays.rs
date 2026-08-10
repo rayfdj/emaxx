@@ -940,12 +940,21 @@ pub(crate) fn font_lock_fontify_defaults_region(
     // declaration without changing the buffer's ordinary syntax table.
     let saved_buffer = interp.current_buffer_id();
     let saved_syntax_table = interp.current_syntax_table_id();
+    // GNU `font-lock-fontify-keywords-region' dynamically binds ordinary
+    // regexp matching to this mode-specific value.  The ambient search flag
+    // is commonly t, while language keywords such as Ruby constants are
+    // deliberately case-sensitive.
+    let keyword_case_fold = interp
+        .lookup_var("font-lock-keywords-case-fold-search", env)
+        .unwrap_or(Value::Nil);
+    let case_fold_restore =
+        interp.bind_special_dynamic("case-fold-search", keyword_case_fold, env)?;
     if let Some(Value::CharTable(table_id)) =
         interp.buffer_local_value(saved_buffer, "font-lock-syntax-table")
     {
         interp.set_current_syntax_table(table_id);
     }
-    let result = (|| {
+    let result: Result<(), LispError> = (|| {
         // GNU fontification triggers `syntax-propertize' through syntax-ppss;
         // run it up front so `syntax-table' text properties are in place.
         if let Ok(function) = interp.lookup_function("syntax-propertize", env) {
@@ -969,11 +978,13 @@ pub(crate) fn font_lock_fontify_defaults_region(
         }
         Ok(())
     })();
+    let restore_result = interp.restore_special_dynamic(case_fold_restore, env);
     if interp.current_buffer_id() != saved_buffer {
         let _ = interp.switch_to_buffer_id(saved_buffer);
     }
     interp.set_current_syntax_table(saved_syntax_table);
-    result
+    result?;
+    restore_result
 }
 
 // GNU font-lock-set-defaults installs the variable alist trailing
@@ -1070,7 +1081,34 @@ fn font_lock_apply_default_variable_bindings(
 
 // Resolve the KEYWORDS position of `font-lock-defaults': a symbol names a
 // variable holding the keywords; a list of symbols offers decoration
-// levels (GNU's default `font-lock-maximum-decoration' t picks the last).
+// levels selected by `font-lock-maximum-decoration'.
+fn font_lock_decoration_level(interp: &Interpreter, env: &Env) -> Value {
+    let configured = interp
+        .lookup_var("font-lock-maximum-decoration", env)
+        .unwrap_or(Value::T);
+    if !matches!(configured, Value::Cons(..)) {
+        return configured;
+    }
+
+    // GNU `font-lock-value-in-major-mode' treats a cons value as an alist and
+    // prefers the current major mode over its `t' fallback, irrespective of
+    // entry order.
+    let major_mode = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
+    let mut fallback = None;
+    for entry in configured.to_vec().unwrap_or_default() {
+        let Some((mode, level)) = entry.cons_values() else {
+            continue;
+        };
+        if values_eq_in_env(interp, &mode, &major_mode, env) {
+            return level;
+        }
+        if matches!(mode, Value::T) {
+            fallback = Some(level);
+        }
+    }
+    fallback.unwrap_or(Value::Nil)
+}
+
 fn font_lock_choose_keywords(
     interp: &mut Interpreter,
     spec: &Value,
@@ -1092,12 +1130,24 @@ fn font_lock_choose_keywords(
             }
             Value::Cons(..) => {
                 let items = resolved.to_vec().unwrap_or_default();
+                // GNU recognizes a decoration-level list from its first
+                // element alone.  In particular, `(ruby-font-lock-keywords)'
+                // is one level, not one malformed keyword entry.
                 if items
-                    .iter()
-                    .all(|item| matches!(item, Value::Symbol(_) | Value::Nil))
-                    && items.len() > 1
+                    .first()
+                    .is_none_or(|item| matches!(item, Value::Symbol(_) | Value::Nil | Value::T))
                 {
-                    resolved = items.last().cloned().unwrap_or(Value::Nil);
+                    let level = font_lock_decoration_level(interp, env);
+                    let last = items.last().cloned().unwrap_or(Value::Nil);
+                    resolved = match level {
+                        Value::Integer(index) => items
+                            .get(index.max(0) as usize)
+                            .filter(|item| !item.is_nil())
+                            .cloned()
+                            .unwrap_or(last),
+                        Value::T => last,
+                        _ => items.first().cloned().unwrap_or(Value::Nil),
+                    };
                     continue;
                 }
                 return Ok(items);

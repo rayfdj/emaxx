@@ -735,7 +735,15 @@ impl Interpreter {
                             NativeForm::Decf => return self.sf_incf(&items, env, -1),
                             NativeForm::ClCallf => return self.sf_cl_callf(&items, env),
                             NativeForm::Defvar => {
-                                return self.sf_defvar(&items, env);
+                                // GNU custom.el owns `defcustom' keyword policy.
+                                // Keep the native implementation for bootstrap and
+                                // file-less interpreters, but stop shadowing the real
+                                // macro once the preloaded Elisp owner is available.
+                                if !matches!(&items[0], Value::Symbol(name)
+                                    if name == "defcustom" && self.has_macro_binding(name))
+                                {
+                                    return self.sf_defvar(&items, env);
+                                }
                             }
                             NativeForm::DefvarLocal => return self.sf_defvar_local(&items, env),
                             NativeForm::Defgroup => return self.sf_defgroup(&items),

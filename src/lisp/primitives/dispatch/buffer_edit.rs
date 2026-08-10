@@ -877,13 +877,13 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                syntax::skip_syntax_impl(interp, &args[0], args.get(1), true)
+                syntax::skip_syntax_impl(interp, &args[0], args.get(1), true, env)
             }
             "skip-syntax-backward" => {
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                syntax::skip_syntax_impl(interp, &args[0], args.get(1), false)
+                syntax::skip_syntax_impl(interp, &args[0], args.get(1), false, env)
             }
             "backward-char" => {
                 let n = if args.is_empty() || args[0].is_nil() {
@@ -959,6 +959,7 @@ define_dispatch!(
                     &Value::String(" ".into()),
                     Some(&Value::Integer(limit as i64)),
                     true,
+                    env,
                 )?;
                 Ok(Value::Nil)
             }

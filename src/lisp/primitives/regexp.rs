@@ -44,6 +44,30 @@ impl SyntaxPropertyEncoding {
     }
 }
 
+fn boundary_character_class(
+    base: &str,
+    encoding: Option<&SyntaxPropertyEncoding>,
+    syntax_classes: &[char],
+) -> String {
+    let Some(encoding) = encoding else {
+        return base.to_string();
+    };
+    let sentinels = encoding
+        .sentinels
+        .iter()
+        .filter(|entry| syntax_classes.contains(&entry.class))
+        .map(|entry| format!(r"\x{{{:x}}}", entry.sentinel as u32))
+        .collect::<String>();
+    if sentinels.is_empty() {
+        return base.to_string();
+    }
+
+    let prefix = base
+        .strip_suffix(']')
+        .expect("regexp boundary classes are bracket expressions");
+    format!("{prefix}{sentinels}]")
+}
+
 fn chars_equal_for_regexp(left: char, right: char, case_fold: bool) -> bool {
     left == right || (case_fold && left.to_lowercase().eq(right.to_lowercase()))
 }
@@ -147,6 +171,7 @@ fn translate_elisp_regex_with_point(
     encoding: Option<&SyntaxPropertyEncoding>,
     case_fold: bool,
 ) -> String {
+    let symbol_boundary_class = boundary_character_class(REGEX_SYMBOL_CLASS, encoding, &['w', '_']);
     let property_newline_sentinels = encoding
         .map(|encoding| encoding.original_sentinels('\n', false))
         .unwrap_or_default();
@@ -327,7 +352,7 @@ fn translate_elisp_regex_with_point(
                     Some('<') => {
                         translated.push_str(&translate_zero_width_assertion(
                             &mut chars,
-                            &format!("(?<!{})(?={})", REGEX_SYMBOL_CLASS, REGEX_SYMBOL_CLASS),
+                            &format!("(?<!{symbol_boundary_class})(?={symbol_boundary_class})"),
                         ));
                         at_branch_start = false;
                         can_repeat_previous = false;
@@ -336,7 +361,7 @@ fn translate_elisp_regex_with_point(
                     Some('>') => {
                         translated.push_str(&translate_zero_width_assertion(
                             &mut chars,
-                            &format!("(?<={})(?!{})", REGEX_SYMBOL_CLASS, REGEX_SYMBOL_CLASS),
+                            &format!("(?<={symbol_boundary_class})(?!{symbol_boundary_class})"),
                         ));
                         at_branch_start = false;
                         can_repeat_previous = false;
@@ -594,8 +619,8 @@ fn translate_zero_width_assertion(
 
 // Rewrite syntax atoms whose meaning cannot be represented by a fixed Rust
 // regex character class.  Comment delimiters come from explicit table
-// entries; symbol constituents must distinguish GNU's `\s_' from `\sw' and
-// include mode-specific ASCII entries such as `:' in Emacs Lisp mode.
+// entries; symbol and string constituents must include mode-specific ASCII
+// assignments such as Ruby's single-quote string delimiter.
 pub(super) fn pattern_depends_on_syntax_table(pattern: &str) -> bool {
     let mut chars = pattern.chars();
     while let Some(ch) = chars.next() {
@@ -607,6 +632,7 @@ pub(super) fn pattern_depends_on_syntax_table(pattern: &str) -> bool {
             // another regexp escape.
             Some('\\') => {}
             Some('w' | 'W') => return true,
+            Some('_') if matches!(chars.next(), Some('<' | '>')) => return true,
             Some('s' | 'S') if chars.next().is_some() => return true,
             Some(_) | None => {}
         }
@@ -623,7 +649,7 @@ fn resolve_table_syntax_classes(
         return pattern.to_string();
     }
     let class_expansion = |class_char: char, negated: bool| -> String {
-        let mut chars = if matches!(class_char, '_' | '!' | '|') {
+        let mut chars = if matches!(class_char, '_' | '!' | '|' | '"') {
             super::syntax::syntax_class_ascii_chars(interp, class_char)
         } else {
             super::syntax::syntax_class_explicit_chars(interp, class_char)
@@ -694,7 +720,7 @@ fn resolve_table_syntax_classes(
                             TABLE_WORD_CLASS_MARKER
                         });
                     }
-                    Some('<') | Some('>') | Some('_') | Some('!') | Some('|') => {
+                    Some('<') | Some('>') | Some('_') | Some('!') | Some('|') | Some('"') => {
                         chars.next();
                         let class_char = chars.next().expect("peeked class");
                         result.push_str(&class_expansion(class_char, escape == 'S'));
@@ -905,7 +931,10 @@ fn regex_posix_class_fragment(name: &str) -> Option<&'static str> {
         "multibyte" => Some(r"\x{0080}-\x{D7FF}\x{E100}-\x{10FFFF}"),
         "nonascii" => Some(r"\x{0080}-\x{10FFFF}"),
         "print" => Some(r"\p{Alphabetic}\p{Number}\p{Punctuation}\p{Symbol}\p{Mark}\p{Zs}"),
-        "punct" => Some(r"\p{Punctuation}"),
+        // GNU regex-emacs.c defines ASCII punct as every printable
+        // non-alphanumeric byte.  Unicode's Punctuation property alone omits
+        // ASCII symbols such as `|', `+', and `$'.
+        "punct" => Some(r"\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E\p{Punctuation}"),
         "space" => Some(r"\p{White_Space}"),
         "unibyte" => Some(r"\x00-\x7F\x{E080}-\x{E0FF}"),
         "upper" => Some(r"\p{Uppercase}"),

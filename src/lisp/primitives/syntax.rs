@@ -176,18 +176,16 @@ pub(super) fn syntax_class_char(class: SyntaxClass) -> char {
 }
 
 pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
-    let chars: Vec<char> = spec.chars().collect();
-    let class = syntax_class_from_char(*chars.first()?)?;
+    let mut chars = spec.chars();
+    let class = syntax_class_from_char(chars.next()?)?;
     let mut entry = SyntaxEntry {
         class,
         ..SyntaxEntry::default()
     };
-    let mut index = 1usize;
-    if matches!(class, SyntaxClass::OpenParen | SyntaxClass::CloseParen) && chars.len() > 1 {
-        entry.matching = Some(chars[1]);
-        index = 2;
+    if matches!(class, SyntaxClass::OpenParen | SyntaxClass::CloseParen) {
+        entry.matching = chars.next();
     }
-    for flag in chars.iter().skip(index) {
+    for flag in chars {
         match flag {
             '1' => entry.start_first = true,
             '2' => entry.start_second = true,
@@ -201,6 +199,34 @@ pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
         }
     }
     Some(entry)
+}
+
+#[cfg(test)]
+mod syntax_spec_tests {
+    use super::{SyntaxClass, parse_syntax_spec};
+
+    #[test]
+    fn parses_matching_characters_and_flags_without_changing_the_grammar() {
+        let entry = parse_syntax_spec("(λ1np").expect("valid open-delimiter syntax");
+        assert_eq!(entry.class, SyntaxClass::OpenParen);
+        assert_eq!(entry.matching, Some('λ'));
+        assert!(entry.start_first);
+        assert!(entry.nested);
+        assert!(entry.prefix);
+
+        let word = parse_syntax_spec("w2c").expect("valid word syntax");
+        assert_eq!(word.class, SyntaxClass::Word);
+        assert!(word.start_second);
+        assert!(word.style_c);
+        assert_eq!(
+            parse_syntax_spec("-")
+                .expect("dash is GNU whitespace syntax")
+                .class,
+            SyntaxClass::Whitespace
+        );
+        assert!(parse_syntax_spec("").is_none());
+        assert!(parse_syntax_spec("?").is_none());
+    }
 }
 
 fn syntax_entry_code(entry: SyntaxEntry) -> i64 {
@@ -462,10 +488,30 @@ pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u
     let Some(ch) = char::from_u32(code) else {
         return SyntaxEntry::default();
     };
-    interp
-        .char_table_get(table_id, code)
-        .and_then(|value| string_like(&value).and_then(|value| parse_syntax_spec(&value.text)))
-        .unwrap_or_else(|| default_syntax_entry(ch))
+    let Some((explicit, terminal)) = interp.char_table_explicit_or_terminal(table_id, code) else {
+        return default_syntax_entry(ch);
+    };
+    let value = match explicit {
+        Some(value) => value,
+        None if terminal.id == interp.standard_syntax_table_id() && terminal.default.is_nil() => {
+            return default_syntax_entry(ch);
+        }
+        None => &terminal.default,
+    };
+    match value {
+        Value::Nil => SyntaxEntry {
+            // A nil entry in a syntax table denotes whitespace.  In
+            // particular, `(make-char-table 'syntax-table nil)' is the
+            // intentionally blank table used by syntax propertizers to make
+            // every character insignificant except explicitly installed
+            // delimiters.
+            class: SyntaxClass::Whitespace,
+            ..SyntaxEntry::default()
+        },
+        value => string_like(value)
+            .and_then(|value| parse_syntax_spec(&value.text))
+            .unwrap_or_else(|| default_syntax_entry(ch)),
+    }
 }
 
 pub(super) fn current_syntax_word_char(
@@ -1264,7 +1310,10 @@ pub(super) fn scan_lists_gnu(
     // primitive itself does not expose regexp match-data changes made by
     // that propertizer to its caller.
     ensure_syntax_propertized_preserving_match_data(interp, env);
-    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    // Buffer positions remain absolute while narrowed.  Keep this text
+    // indexed in the same coordinate system and use BEGV/ZV as the scan
+    // bounds, just as GNU's scan_lists does.
+    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
     let begv = interp.buffer.point_min() as i64;
     let zv = interp.buffer.point_max() as i64;
@@ -1655,16 +1704,6 @@ fn scan_string_forward(chars: &[char], quote_idx: usize, end: usize) -> Option<u
     None
 }
 
-fn is_escaped(chars: &[char], idx: usize) -> bool {
-    let mut count = 0usize;
-    let mut scan = idx;
-    while scan > 0 && chars[scan - 1] == '\\' {
-        count += 1;
-        scan -= 1;
-    }
-    count % 2 == 1
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CommentStop {
     No,
@@ -1699,7 +1738,8 @@ pub(super) fn parse_forward(
     if from > to {
         return Err(LispError::Signal("`from` is greater than `to`".into()));
     }
-    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    // FROM and TO are absolute buffer positions even under narrowing.
+    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
     let comment_end_can_be_escaped = interp
         .lookup_var("comment-end-can-be-escaped", env)
@@ -2022,7 +2062,11 @@ pub(super) fn parse_forward(
     Ok(encode_parse_state(&state))
 }
 
-fn find_comment_ending_at(
+// Fallback for ambiguous or nested multi-character comment terminators.
+// The ordinary path uses one syntax-aware backward parse; this bounded
+// candidate check is needed only when that parse points into an earlier
+// unterminated/nested construct or an overlapping delimiter.
+fn find_complete_comment_ending_at(
     interp: &Interpreter,
     table_id: u64,
     chars: &[char],
@@ -2116,13 +2160,6 @@ fn syntax_entry_class_matches(entry: SyntaxEntry, class: char) -> bool {
     }
 }
 
-fn syntax_class_char_matches(interp: &Interpreter, class: char, ch: char) -> bool {
-    syntax_entry_class_matches(
-        syntax_entry_for_char(interp, interp.current_syntax_table_id(), ch),
-        class,
-    )
-}
-
 pub(super) fn syntax_class_at_buffer_position_matches(
     interp: &Interpreter,
     env: &Env,
@@ -2156,14 +2193,26 @@ pub(super) fn syntax_class_chars_at_buffer_position(
     Some((table_class, effective_class))
 }
 
-fn syntax_class_matches(interp: &Interpreter, spec: &str, ch: char) -> bool {
+fn syntax_classes_at_position_match(
+    interp: &Interpreter,
+    spec: &str,
+    ch: char,
+    position: usize,
+    lookup_properties: bool,
+) -> bool {
     let (negated, classes) = spec
         .strip_prefix('^')
         .map(|rest| (true, rest))
         .unwrap_or((false, spec));
+    let table_id = interp.current_syntax_table_id();
+    let entry = if lookup_properties {
+        syntax_entry_at_buffer_position(interp, table_id, ch, position)
+    } else {
+        syntax_entry_for_char(interp, table_id, ch)
+    };
     let matched = classes
         .chars()
-        .any(|class| syntax_class_char_matches(interp, class, ch));
+        .any(|class| syntax_entry_class_matches(entry, class));
     if negated { !matched } else { matched }
 }
 
@@ -2172,8 +2221,12 @@ pub(super) fn skip_syntax_impl(
     syntax_value: &Value,
     limit_value: Option<&Value>,
     forward: bool,
+    env: &Env,
 ) -> Result<Value, LispError> {
     let syntax = string_text(syntax_value)?;
+    let lookup_properties = interp
+        .lookup_var("parse-sexp-lookup-properties", env)
+        .is_some_and(|value| value.is_truthy());
     let limit = if let Some(limit_value) = limit_value {
         if limit_value.is_nil() {
             if forward {
@@ -2195,7 +2248,13 @@ pub(super) fn skip_syntax_impl(
             let Some(ch) = interp.buffer.char_at(interp.buffer.point()) else {
                 break;
             };
-            if !syntax_class_matches(interp, &syntax, ch) {
+            if !syntax_classes_at_position_match(
+                interp,
+                &syntax,
+                ch,
+                interp.buffer.point(),
+                lookup_properties,
+            ) {
                 break;
             }
             let _ = interp.buffer.forward_char(1);
@@ -2205,7 +2264,13 @@ pub(super) fn skip_syntax_impl(
             let Some(ch) = interp.buffer.char_before() else {
                 break;
             };
-            if !syntax_class_matches(interp, &syntax, ch) {
+            if !syntax_classes_at_position_match(
+                interp,
+                &syntax,
+                ch,
+                interp.buffer.point() - 1,
+                lookup_properties,
+            ) {
                 break;
             }
             let _ = interp.buffer.forward_char(-1);
@@ -2254,7 +2319,7 @@ pub(super) fn down_list_impl(
         }
         return Ok(Value::Nil);
     }
-    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
     if count < 0 {
         // Move backward down a list level: stop just before the close paren
@@ -2329,7 +2394,7 @@ pub(super) fn up_list_impl(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let count = count_value.map_or(Ok(1), Value::as_integer)?;
-    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
     for _ in 0..count.unsigned_abs() {
         let point_idx = interp.buffer.point().saturating_sub(1).min(chars.len());
@@ -2440,29 +2505,69 @@ pub(super) fn forward_comment_impl(
             let idx = point - 2;
             let ch = chars[idx];
             let entry = syntax_entry_at_buffer_position(interp, table_id, ch, point - 1);
-            if entry.class == SyntaxClass::Whitespace {
-                point -= 1;
-                continue;
-            }
-            // A comment-end character has semantic priority over its
-            // fallback whitespace role.  This matters for newline enders
-            // supplied by `syntax-table' text properties (heredocs are a
-            // common example): skipping the newline first loses the only
-            // position from which the matching comment start can be found.
-            if let Some(start_pos) = find_comment_ending_at(
-                interp,
-                table_id,
-                &chars,
-                point,
-                minimum,
-                comment_end_can_be_escaped,
+            let comment_end_start = if matches!(
+                entry.class,
+                SyntaxClass::CommentEnd | SyntaxClass::GenericCommentDelimiter
             ) {
-                point = start_pos;
-                break;
+                Some(point - 1)
+            } else if entry.end_second && point >= minimum + 2 {
+                let first_position = point - 2;
+                let first = syntax_entry_at_buffer_position(
+                    interp,
+                    table_id,
+                    chars[first_position - 1],
+                    first_position,
+                );
+                first.end_first.then_some(first_position)
+            } else {
+                None
+            };
+            if let Some(end_start) = comment_end_start {
+                let quoted = comment_end_can_be_escaped
+                    && scan_char_quoted(interp, table_id, &chars, end_start as i64, minimum as i64);
+                if !quoted {
+                    let parsed_start =
+                        scan_back_comment(interp, env, end_start as i64).and_then(|start_pos| {
+                            let index = usize::try_from(start_pos).ok()?.checked_sub(1)?;
+                            let start = comment_start_at(interp, table_id, &chars, index)?;
+                            let (end, closed) = skip_comment_with_status(
+                                interp,
+                                table_id,
+                                &chars,
+                                index,
+                                start,
+                                comment_end_can_be_escaped,
+                            );
+                            (closed && end + 1 == point).then_some(start_pos as usize)
+                        });
+                    if let Some(start_pos) = parsed_start {
+                        point = start_pos;
+                        break;
+                    }
+                }
+                if ch == '\n' {
+                    // GNU treats a newline whose end-comment syntax does not
+                    // close any comment as ordinary whitespace.
+                    point -= 1;
+                    continue;
+                }
+                if !quoted
+                    && let Some(start_pos) = find_complete_comment_ending_at(
+                        interp,
+                        table_id,
+                        &chars,
+                        point,
+                        minimum,
+                        comment_end_can_be_escaped,
+                    )
+                {
+                    point = start_pos;
+                    break;
+                }
+                interp.buffer.goto_char(point);
+                return Ok(Value::Nil);
             }
-            if entry.class == SyntaxClass::CommentEnd && ch == '\n' {
-                // GNU treats a newline whose end-comment syntax does not
-                // close any comment as ordinary whitespace.
+            if entry.class == SyntaxClass::Whitespace {
                 point -= 1;
                 continue;
             }
@@ -2485,8 +2590,16 @@ pub(super) fn backward_prefix_chars(interp: &mut Interpreter) -> Result<Value, L
     let mut position = interp.buffer.point();
     while position > minimum {
         let ch = chars[position - 2];
-        let entry = syntax_entry_for_char(interp, table_id, ch);
-        if !(entry.class == SyntaxClass::Quote || entry.prefix) || is_escaped(&chars, position - 2)
+        let char_position = position - 1;
+        let entry = syntax_entry_at_buffer_position(interp, table_id, ch, char_position);
+        if !(entry.class == SyntaxClass::Quote || entry.prefix)
+            || scan_char_quoted(
+                interp,
+                table_id,
+                &chars,
+                char_position as i64,
+                minimum as i64,
+            )
         {
             break;
         }

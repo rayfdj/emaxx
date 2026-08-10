@@ -1962,15 +1962,8 @@ impl Interpreter {
     pub fn make_char_table(&mut self, subtype: Option<String>, default: Value) -> Value {
         let id = self.next_char_table_id;
         self.next_char_table_id += 1;
-        self.char_tables.push(CharTableState {
-            id,
-            subtype,
-            default,
-            parent: None,
-            extra_slots: Vec::new(),
-            entries: Vec::new(),
-            category_docs: Vec::new(),
-        });
+        self.char_tables
+            .push(CharTableState::new(id, subtype, default));
         Value::CharTable(id)
     }
 
@@ -2182,7 +2175,7 @@ impl Interpreter {
         let table = self.find_char_table_mut(id).ok_or_else(|| {
             LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
         })?;
-        table.entries.push(CharTableEntry {
+        table.push_entry(CharTableEntry {
             start: start.min(end),
             end: start.max(end),
             value,
@@ -2200,12 +2193,7 @@ impl Interpreter {
 
     pub fn char_table_get(&self, id: u64, key: u32) -> Option<Value> {
         let table = self.find_char_table(id)?;
-        if let Some(entry) = table
-            .entries
-            .iter()
-            .rev()
-            .find(|entry| entry.start <= key && key <= entry.end)
-        {
+        if let Some(entry) = table.explicit_entry(key) {
             return Some(entry.value.clone());
         }
         if let Some(parent_id) = table.parent
@@ -2225,6 +2213,32 @@ impl Interpreter {
             return Some(value);
         }
         Some(table.default.clone())
+    }
+
+    /// Resolve the first explicit entry in a character-table parent chain
+    /// without cloning its Lisp value.  When no entry applies, return the
+    /// terminal table whose default owns the result.  Subsystems that need a
+    /// native view (notably syntax scanning) can thereby avoid constructing a
+    /// public Lisp descriptor merely to decode it again.
+    pub(crate) fn char_table_explicit_or_terminal(
+        &self,
+        mut id: u64,
+        key: u32,
+    ) -> Option<(Option<&Value>, &CharTableState)> {
+        for _ in 0..=self.char_tables.len() {
+            let table = self.find_char_table(id)?;
+            if let Some(entry) = table.explicit_entry(key) {
+                return Some((Some(&entry.value), table));
+            }
+            let Some(parent_id) = table.parent else {
+                return Some((None, table));
+            };
+            if self.find_char_table(parent_id).is_none() {
+                return Some((None, table));
+            }
+            id = parent_id;
+        }
+        None
     }
 
     pub fn char_table_range(&self, id: u64, start: u32, end: u32) -> Option<Value> {
@@ -2300,12 +2314,7 @@ impl Interpreter {
 
     pub fn char_table_explicit_get(&self, id: u64, key: u32) -> Option<Value> {
         let table = self.find_char_table(id)?;
-        if let Some(entry) = table
-            .entries
-            .iter()
-            .rev()
-            .find(|entry| entry.start <= key && key <= entry.end)
-        {
+        if let Some(entry) = table.explicit_entry(key) {
             return Some(entry.value.clone());
         }
         if let Some(parent_id) = table.parent {
@@ -2362,6 +2371,24 @@ impl Interpreter {
             self.mark_ascii_case_table(new_id);
         }
         Ok(Value::CharTable(new_id))
+    }
+
+    /// Copy a syntax table with GNU's syntax-specific default and parent
+    /// rules.  A raw character-table clone is not sufficient: only the
+    /// standard syntax table owns a root default, while every copy inherits
+    /// from the standard table when its source had no parent.
+    pub fn copy_syntax_table(&mut self, id: u64) -> Result<Value, LispError> {
+        let copy = self.clone_char_table(id)?;
+        let Value::CharTable(copy_id) = copy else {
+            unreachable!("clone_char_table returns a character table")
+        };
+        let standard_id = self.standard_syntax_table_id;
+        let table = self.find_char_table_mut(copy_id).ok_or_else(|| {
+            LispError::TypeError("char-table".into(), format!("char-table<{copy_id}>"))
+        })?;
+        table.default = Value::Nil;
+        table.parent.get_or_insert(standard_id);
+        Ok(Value::CharTable(copy_id))
     }
 
     pub fn create_record(&mut self, type_name: &str, slots: Vec<Value>) -> Value {
@@ -2855,7 +2882,7 @@ mod load_resolution_tests {
 
 #[cfg(test)]
 mod runtime_index_tests {
-    use super::{Interpreter, Value};
+    use super::{CharTableEntry, Interpreter, Value};
 
     #[test]
     fn dense_char_table_ids_resolve_their_own_slots() {
@@ -2881,6 +2908,115 @@ mod runtime_index_tests {
         );
         assert!(interp.find_char_table(0).is_none());
         assert!(interp.find_char_table(second_id + 1).is_none());
+    }
+
+    #[test]
+    fn ascii_char_table_index_preserves_overrides_inheritance_and_mutation() {
+        let mut interp = Interpreter::new();
+        let Value::CharTable(parent_id) =
+            interp.make_char_table(Some("parent".into()), Value::Integer(10))
+        else {
+            unreachable!("make_char_table must return a char table")
+        };
+        interp
+            .char_table_set_range(parent_id, 'a' as u32, 'z' as u32, Value::Integer(20))
+            .expect("parent range must be writable");
+
+        let Value::CharTable(child_id) =
+            interp.make_char_table(Some("child".into()), Value::Integer(30))
+        else {
+            unreachable!("make_char_table must return a char table")
+        };
+        interp
+            .set_char_table_parent(child_id, Some(parent_id))
+            .expect("child must accept a live parent");
+        interp
+            .char_table_set_range(child_id, 'm' as u32, 'z' as u32, Value::Integer(40))
+            .expect("child range must be writable");
+        interp
+            .char_table_set(child_id, 'x' as u32, Value::Integer(50))
+            .expect("child character must be writable");
+        interp
+            .char_table_set(child_id, 'x' as u32, Value::Nil)
+            .expect("explicit nil must be writable");
+
+        assert_eq!(
+            interp.char_table_get(child_id, 'a' as u32),
+            Some(Value::Integer(20))
+        );
+        assert_eq!(
+            interp.char_table_get(child_id, 'm' as u32),
+            Some(Value::Integer(40))
+        );
+        assert_eq!(
+            interp.char_table_get(child_id, 'x' as u32),
+            Some(Value::Nil)
+        );
+
+        // Inherited results are deliberately not cached in the child.
+        interp
+            .char_table_set(parent_id, 'a' as u32, Value::Integer(21))
+            .expect("parent character must remain writable");
+        assert_eq!(
+            interp.char_table_get(child_id, 'a' as u32),
+            Some(Value::Integer(21))
+        );
+
+        let Value::CharTable(clone_id) = interp
+            .clone_char_table(child_id)
+            .expect("live child table must be cloneable")
+        else {
+            unreachable!("clone_char_table must return a char table")
+        };
+        interp
+            .char_table_set(child_id, 'x' as u32, Value::Integer(51))
+            .expect("original table must remain writable after cloning");
+        assert_eq!(
+            interp.char_table_get(child_id, 'x' as u32),
+            Some(Value::Integer(51))
+        );
+        assert_eq!(
+            interp.char_table_get(clone_id, 'x' as u32),
+            Some(Value::Nil)
+        );
+
+        // Non-ASCII characters retain the authoritative reverse range scan.
+        interp
+            .char_table_set_range(child_id, 0x100, 0x200, Value::Integer(60))
+            .expect("non-ASCII range must be writable");
+        interp
+            .char_table_set_range(child_id, 0x180, 0x180, Value::Integer(61))
+            .expect("non-ASCII override must be writable");
+        assert_eq!(
+            interp.char_table_get(child_id, 0x180),
+            Some(Value::Integer(61))
+        );
+
+        // Whole-vector replacement and clearing rebuild the derived index.
+        interp
+            .find_char_table_mut(child_id)
+            .expect("child table must remain live")
+            .replace_entries(vec![CharTableEntry {
+                start: 'q' as u32,
+                end: 'q' as u32,
+                value: Value::Integer(70),
+            }]);
+        assert_eq!(
+            interp.char_table_get(child_id, 'q' as u32),
+            Some(Value::Integer(70))
+        );
+        assert_eq!(
+            interp.char_table_get(child_id, 'x' as u32),
+            Some(Value::Integer(20))
+        );
+        interp
+            .find_char_table_mut(child_id)
+            .expect("child table must remain live")
+            .clear_entries();
+        assert_eq!(
+            interp.char_table_get(child_id, 'q' as u32),
+            Some(Value::Integer(20))
+        );
     }
 
     #[test]

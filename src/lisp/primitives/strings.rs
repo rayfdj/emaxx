@@ -637,6 +637,12 @@ pub(crate) fn property_from_props_with_category(
     props: &[(String, Value)],
     prop: &str,
 ) -> Option<Value> {
+    // Categories and aliases can only redirect a property already present in
+    // this interval.  Most buffer positions have no properties at all, so do
+    // not perform a buffer-local alias lookup for an empty interval.
+    if props.is_empty() {
+        return None;
+    }
     let direct = props
         .iter()
         .find(|(name, _)| name == prop)
@@ -673,8 +679,7 @@ pub(crate) fn buffer_property_at_with_category(
     if pos < buffer.point_min() || pos >= buffer.point_max() {
         return None;
     }
-    let props = buffer.text_properties_at(pos);
-    property_from_props_with_category(interp, &props, prop)
+    property_from_props_with_category(interp, buffer.text_properties_at_ref(pos), prop)
 }
 
 pub(crate) fn buffer_char_property_at(

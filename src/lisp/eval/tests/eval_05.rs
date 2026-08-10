@@ -392,7 +392,7 @@ fn hack_local_variables_accepts_optional_mode_arg() {
 }
 
 #[test]
-fn normal_mode_delegates_file_local_variable_policy_to_files_el() {
+fn find_file_noselect_delegates_file_local_variable_policy_to_files_el() {
     let unique = format!(
         "{}-{}",
         std::process::id(),
@@ -414,7 +414,6 @@ fn normal_mode_delegates_file_local_variable_policy_to_files_el() {
     .unwrap();
     let result = eval_str_with_upstream_batch(&format!(
         r#"(with-current-buffer (find-file-noselect {:?})
-             (normal-mode)
              (list read-symbol-shorthands
                    file-local-variables-alist
                    (default-value 'read-symbol-shorthands)))"#,
@@ -439,6 +438,57 @@ fn normal_mode_delegates_file_local_variable_policy_to_files_el() {
                 ),
             ]),
             Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn defcustom_safe_metadata_controls_file_local_variable_acceptance() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let option = format!("emaxx-safe-local-{unique}");
+    let path = std::env::temp_dir().join(format!("emaxx-safe-local-{unique}.el"));
+    std::fs::write(
+        &path,
+        format!(
+            ";;; fixture\n(message \"fixture\")\n;; Local Variables:\n;; {option}: 7\n;; End:\n"
+        ),
+    )
+    .unwrap();
+    let result = eval_str_with_upstream_batch(&format!(
+        r#"(progn
+             (defcustom {option} 1 "Doc."
+               :type 'integer
+               :safe 'integerp
+               :risky t)
+             (let ((declaration-owner (macrop 'defcustom)))
+               (with-current-buffer (find-file-noselect {:?})
+                 (list declaration-owner
+                       {option}
+                       (local-variable-p '{option})
+                       (default-value '{option})
+                       (get '{option} 'safe-local-variable)
+                       (get '{option} 'risky-local-variable)
+                       file-local-variables-alist))))"#,
+        path.display().to_string(),
+    ));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        result,
+        Value::list([
+            Value::T,
+            Value::Integer(7),
+            Value::T,
+            Value::Integer(1),
+            Value::symbol("integerp"),
+            Value::T,
+            Value::list([Value::cons(Value::symbol(&option), Value::Integer(7),)]),
         ])
     );
 }
@@ -4235,9 +4285,12 @@ fn custom_declare_variable_keeps_compiled_custom_policy_in_elisp() {
                  'sample-compiled-group nil \"Group.\" :prefix \"sample-\")
                (custom-declare-variable
                  'sample-compiled-option '(+ 1 2) \"Doc.\"
-                 :type 'integer :group 'sample-compiled-group)
+                 :type 'integer :group 'sample-compiled-group
+                 :safe 'integerp :risky t)
                (list sample-compiled-option
                      (get 'sample-compiled-option 'custom-type)
+                     (get 'sample-compiled-option 'safe-local-variable)
+                     (get 'sample-compiled-option 'risky-local-variable)
                      (special-variable-p 'sample-compiled-option)
                      (get 'sample-compiled-group 'custom-prefix)
                      (get 'sample-compiled-group 'custom-group)))",
@@ -4245,6 +4298,8 @@ fn custom_declare_variable_keeps_compiled_custom_policy_in_elisp() {
         Value::list([
             Value::Integer(3),
             Value::symbol("integer"),
+            Value::symbol("integerp"),
+            Value::T,
             Value::T,
             Value::String("sample-".into()),
             Value::list([Value::list([
@@ -6012,6 +6067,30 @@ fn simple_compat_preloads_subr_shell_process_wrappers() {
 }
 
 #[test]
+fn simple_compat_preloads_store_match_data_as_the_gnu_alias() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (string-match \"b\" \"abc\")
+               (store-match-data '(0 1))
+               (list (fboundp 'store-match-data) (match-data)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::list([Value::Integer(0), Value::Integer(1)]),
+        ])
+    );
+}
+
+#[test]
 fn simple_compat_preloads_delete_consecutive_dups_with_destructive_identity() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(
@@ -6086,6 +6165,48 @@ fn batch_startup_preloads_gnu_environment_helpers() {
             Value::T,
             Value::T,
             Value::String("$EMAXX_UNDEFINED/x".into()),
+        ])
+    );
+}
+
+#[test]
+fn batch_startup_preloads_the_gnu_european_coding_owner() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize batch interpreter");
+    interp.set_variable(
+        "data-directory",
+        Value::String(
+            crate::lisp::primitives::path_to_directory_string(&upstream_emacs_repo().join("etc"))
+                .into(),
+        ),
+        &mut Vec::new(),
+    );
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(list (featurep 'european)
+                     (coding-system-p 'iso-8859-15)
+                     (coding-system-base 'latin-9)
+                     (string-to-list
+                      (encode-coding-string "€Œ" 'iso-8859-15))
+                     (string-to-list
+                      (encode-coding-string "Ⓡ" 'iso-8859-15))
+                     (decode-coding-string
+                      (unibyte-string #xa4 #xbc) 'iso-8859-15))"#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::symbol("iso-latin-9"),
+            Value::list([Value::Integer(0xa4), Value::Integer(0xbc)]),
+            Value::list([Value::Integer(b' ' as i64)]),
+            Value::String("€Œ".into()),
         ])
     );
 }

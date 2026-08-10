@@ -982,6 +982,7 @@ pub struct CharTableState {
     pub extra_slots: Vec<Value>,
     pub entries: Vec<CharTableEntry>,
     pub category_docs: Vec<(u32, String)>,
+    ascii_entry_indices: Option<Box<[usize; 128]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -989,6 +990,85 @@ pub struct CharTableEntry {
     pub start: u32,
     pub end: u32,
     pub value: Value,
+}
+
+impl CharTableState {
+    pub(crate) fn new(id: u64, subtype: Option<String>, default: Value) -> Self {
+        Self::with_entries(id, subtype, default, None, Vec::new())
+    }
+
+    pub(crate) fn with_entries(
+        id: u64,
+        subtype: Option<String>,
+        default: Value,
+        parent: Option<u64>,
+        entries: Vec<CharTableEntry>,
+    ) -> Self {
+        let ascii_entry_indices = Self::build_ascii_entry_indices(&entries);
+        Self {
+            id,
+            subtype,
+            default,
+            parent,
+            extra_slots: Vec::new(),
+            entries,
+            category_docs: Vec::new(),
+            ascii_entry_indices,
+        }
+    }
+
+    fn build_ascii_entry_indices(entries: &[CharTableEntry]) -> Option<Box<[usize; 128]>> {
+        let mut indices = None;
+        for (index, entry) in entries.iter().enumerate() {
+            if entry.start >= 128 {
+                continue;
+            }
+            let indices = indices.get_or_insert_with(|| Box::new([usize::MAX; 128]));
+            for slot in entry.start as usize..=entry.end.min(127) as usize {
+                indices[slot] = index;
+            }
+        }
+        indices
+    }
+
+    pub(crate) fn push_entry(&mut self, entry: CharTableEntry) {
+        let index = self.entries.len();
+        let start = entry.start;
+        let end = entry.end;
+        self.entries.push(entry);
+        if start >= 128 {
+            return;
+        }
+        let indices = self
+            .ascii_entry_indices
+            .get_or_insert_with(|| Box::new([usize::MAX; 128]));
+        for slot in start as usize..=end.min(127) as usize {
+            indices[slot] = index;
+        }
+    }
+
+    pub(crate) fn replace_entries(&mut self, entries: Vec<CharTableEntry>) {
+        self.ascii_entry_indices = Self::build_ascii_entry_indices(&entries);
+        self.entries = entries;
+    }
+
+    pub(crate) fn clear_entries(&mut self) {
+        self.entries.clear();
+        self.ascii_entry_indices = None;
+    }
+
+    pub(crate) fn explicit_entry(&self, key: u32) -> Option<&CharTableEntry> {
+        if key < 128 {
+            let index = *self.ascii_entry_indices.as_ref()?.get(key as usize)?;
+            return (index != usize::MAX)
+                .then_some(index)
+                .and_then(|index| self.entries.get(index));
+        }
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| entry.start <= key && key <= entry.end)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2676,25 +2756,22 @@ impl Interpreter {
             markers_by_buffer: HashMap::new(),
             buffer_mark_marker_ids: HashMap::new(),
             char_tables: vec![
-                CharTableState {
-                    id: standard_syntax_table_id,
-                    subtype: Some("syntax-table".into()),
-                    default: Value::Nil,
-                    parent: None,
-                    extra_slots: Vec::new(),
-                    entries: standard_syntax_table_entries(),
-                    category_docs: Vec::new(),
-                },
+                CharTableState::with_entries(
+                    standard_syntax_table_id,
+                    Some("syntax-table".into()),
+                    Value::Nil,
+                    None,
+                    standard_syntax_table_entries(),
+                ),
                 // GNU text-mode-syntax-table: `"' and `\' are
                 // punctuation, `'' is a word constituent with the prefix
                 // flag (Bug#15014 hinges on `"' NOT being a string quote).
-                CharTableState {
-                    id: 2,
-                    subtype: Some("syntax-table".into()),
-                    default: Value::Nil,
-                    parent: Some(standard_syntax_table_id),
-                    extra_slots: Vec::new(),
-                    entries: vec![
+                CharTableState::with_entries(
+                    2,
+                    Some("syntax-table".into()),
+                    Value::Nil,
+                    Some(standard_syntax_table_id),
+                    vec![
                         CharTableEntry {
                             start: '"' as u32,
                             end: '"' as u32,
@@ -2711,36 +2788,31 @@ impl Interpreter {
                             value: Value::String("w p".into()),
                         },
                     ],
-                    category_docs: Vec::new(),
-                },
+                ),
                 // GNU lisp-data-mode-syntax-table.  Lisp symbols inherit its
                 // punctuation entries, including the generic `@' prefix.
-                CharTableState {
-                    id: 3,
-                    subtype: Some("syntax-table".into()),
-                    default: Value::Nil,
-                    parent: Some(standard_syntax_table_id),
-                    extra_slots: Vec::new(),
-                    entries: lisp_data_syntax_table_entries(),
-                    category_docs: Vec::new(),
-                },
+                CharTableState::with_entries(
+                    3,
+                    Some("syntax-table".into()),
+                    Value::Nil,
+                    Some(standard_syntax_table_id),
+                    lisp_data_syntax_table_entries(),
+                ),
                 // GNU emacs-lisp-mode-syntax-table is a child of the data
                 // table, but deliberately removes `@''s generic prefix flag:
                 // syntax-propertize adds it back only for the `,@' reader
                 // token (bug#24542).
-                CharTableState {
-                    id: 4,
-                    subtype: Some("syntax-table".into()),
-                    default: Value::Nil,
-                    parent: Some(3),
-                    extra_slots: Vec::new(),
-                    entries: vec![CharTableEntry {
+                CharTableState::with_entries(
+                    4,
+                    Some("syntax-table".into()),
+                    Value::Nil,
+                    Some(3),
+                    vec![CharTableEntry {
                         start: '@' as u32,
                         end: '@' as u32,
                         value: syntax_spec_value("_"),
                     }],
-                    category_docs: Vec::new(),
-                },
+                ),
             ],
             unicode_property_table_ids: HashMap::new(),
             equal_hash_tables: HashMap::default(),
