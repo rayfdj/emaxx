@@ -42,6 +42,65 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-11 Ruby implementation checkpoint is published at
+  `79e8a95cd5658deb693df211663404c985fc52b5`.  The complete
+  canonical selection in `test/lisp/progmodes/ruby-mode-tests.el` matches GNU
+  108/108 (106 passes and two expected failures) in final-source artifact
+  `target/compat/run-1786402704432030000-46190`.  Its subject-source
+  fingerprint is
+  `1a2402aac316daccb0f6a020f29ebe1eefd9f8a1cbda9b31f05fd261947734fd`.
+  It advances the contiguous frontier to 4,919/7,080 and leaves 2,161
+  selectors.  The next selector is 4,920,
+  `ruby-ts-add-log-current-method-after-endless-method`, in
+  `test/lisp/progmodes/ruby-ts-mode-tests.el`.
+
+  Final GNU/Emaxx setup time is 0.319/2.771 seconds.  Comparable body time is
+  1.174/5.140 seconds, 4.377x and +3.966 seconds.  The harness correctly keeps
+  its diagnostic 2x warning, but the body is below the simultaneous 5x
+  compatibility-march interruption threshold.  Five earlier same-source
+  exact samples after the thematic optimization ranged from 5.161 to 5.293
+  Emaxx body seconds and 4.303x to 4.967x, with medians 5.211 seconds and
+  4.335x.  That is about a 45% reduction from the first exact 9.526-second
+  Emaxx body.  The separate reconstructed-versus-dumped setup gap remains
+  issue #11 work.
+
+  Ruby exposed shared contracts rather than Ruby-specific policy: preload
+  GNU's European coding owner; retain `store-match-data` as GNU Elisp's alias;
+  honor nil Font Lock bounds, decoration levels, and case folding; preserve
+  effective per-character syntax for boundaries, syntax atoms, skipping,
+  comments, and blank syntax tables; keep narrowed syntax-scan coordinates
+  absolute; run normal-mode policy from `find-file-noselect`; and retain
+  `defcustom` plus safe/risky metadata ownership in Elisp.  The regexp
+  translator remains the single grammar owner.
+
+  The retained performance repairs are all derived-state optimizations with
+  explicit authority and mutation coverage: binary borrowed lookup over
+  sorted non-overlapping text-property spans; an ASCII character-table cache
+  of local entry indices that preserves explicit nil and live inheritance; a
+  most-recent Rope chunk character cache invalidated at every text mutation
+  and swapped with its Rope; allocation-free syntax-spec parsing; and borrowed
+  syntax-table parent traversal.  Profiles eliminate the former linear
+  character-table and Rope character walks without changing the public Lisp
+  representations.
+
+  A first complete gate caught one genuine integration mismatch that focused
+  Ruby runs did not: Emaxx had implemented `copy-syntax-table` as a raw
+  character-table clone.  GNU `syntax.c` clears the copy's root default and
+  gives a parentless copy the standard syntax table as parent.  The shared
+  primitive now follows that contract, while generic `copy-char-table` stays
+  unchanged; a direct GNU-derived regression and the original
+  syntax-property regexp regression both pass.
+
+  Final publication evidence is green: `cargo fmt --all`, `git diff --check`,
+  `cargo check --all-targets --all-features`, strict all-target/all-feature
+  Clippy, the focused 14-test syntax-table group, and elevated
+  `cargo test --all-targets --all-features`.  The latter passes library
+  1,930/1,930 in 4,247.08 seconds, `compat-harness` 33/33, `perf-harness` 1/1,
+  CLI 10/10, and ERT runner 3/3, including real localhost, TLS, PTY, and
+  process coverage.  Preserve the selective scheduler: the slow Eshell and
+  persistent-process cases passed on its exclusive side while unrelated tests
+  remained parallel.
+
 - The 2026-08-11 Project/PostScript checkpoint is published at `40072b1` and
   advances the contiguous frontier to 4,811/7,080, leaving 2,269 selectors.
   The exact final-source compatibility runs are all green: Perl 66/66 in

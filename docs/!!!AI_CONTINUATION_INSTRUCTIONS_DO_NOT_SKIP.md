@@ -18,6 +18,52 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-11 RUBY CHECKPOINT: implementation is published at
+  `79e8a95cd5658deb693df211663404c985fc52b5`.  The final-source canonical
+  Ruby selection matches GNU 108/108 (106 passes, two expected failures) in
+  `target/compat/run-1786402704432030000-46190`, with subject-source hash
+  `1a2402aac316daccb0f6a020f29ebe1eefd9f8a1cbda9b31f05fd261947734fd`.
+  The contiguous frontier is 4,919/7,080 with 2,161 selectors remaining.
+  Next is selector 4,920,
+  `ruby-ts-add-log-current-method-after-endless-method`, in
+  `test/lisp/progmodes/ruby-ts-mode-tests.el`.
+
+  Final GNU/Emaxx setup is 0.319/2.771 seconds; body is 1.174/5.140 seconds,
+  4.377x and +3.966 seconds.  Retain the 2x diagnostic, but this is below the
+  5x march-interruption threshold.  Five earlier exact optimized samples had
+  Emaxx bodies 5.161-5.293 seconds and ratios 4.303x-4.967x (medians 5.211
+  seconds and 4.335x), about 45% faster than the first exact 9.526-second
+  body.  Keep dumped startup separate under issue #11.
+
+  Shared semantic repairs cover GNU's European coding preload,
+  `store-match-data` Elisp alias ownership, Font Lock bounds/decorations and
+  case-fold binding, effective syntax properties in regexp/search/comment
+  scanning, absolute narrowed coordinates, blank syntax tables,
+  `find-file-noselect` normal-mode policy, and Elisp-owned `defcustom`
+  metadata.  Do not add Ruby-specific Rust policy or a second regexp parser.
+
+  Retained thematic performance work uses derived caches only: binary borrowed
+  property-span lookup; local ASCII character-table entry indices with exact
+  explicit-nil/inheritance semantics; an invalidated most-recent Rope chunk
+  character cache; allocation-free syntax-spec parsing; and borrowed
+  syntax-table parent traversal.  Every mutation door has focused coverage.
+
+  The first complete gate exposed an old shared `copy-syntax-table` mismatch:
+  GNU clears the copied root default and supplies the standard syntax table as
+  parent when needed, while Emaxx had performed a raw char-table clone.  The
+  syntax-specific primitive now matches GNU `syntax.c`; generic
+  `copy-char-table` is unchanged.  Direct copy and original regexp regressions
+  pass.
+
+  Final gates pass: formatting, diff check, all-target/all-feature check,
+  strict Clippy, the 14-test syntax-table group, and elevated complete tests:
+  library 1,930/1,930 in 4,247.08 seconds, `compat-harness` 33/33,
+  `perf-harness` 1/1, CLI 10/10, and ERT runner 3/3.  Real socket/TLS/PTY
+  coverage passed.  The selective scheduler also carried the exclusive
+  Eshell/process cases without serializing unrelated tests.
+
+  NEXT: begin selector 4,920 and continue the ordered manifest.
+
 - 2026-08-11 PROJECT/POSTSCRIPT CHECKPOINT: published at `40072b1`, advancing
   the contiguous frontier to 4,811/7,080 and leaving 2,269 selectors.  The
   final-source canonical artifacts are Perl 66/66 at
