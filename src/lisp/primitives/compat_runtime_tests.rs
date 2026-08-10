@@ -8,9 +8,13 @@ fn upstream_emacs_repo() -> PathBuf {
 }
 
 fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
+    let permit = crate::test_support::acquire_host_test_permit();
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
-        .spawn(test)
+        .spawn(move || {
+            let _permit = permit;
+            test();
+        })
         .expect("spawn large-stack test thread")
         .join()
         .expect("join large-stack test thread");

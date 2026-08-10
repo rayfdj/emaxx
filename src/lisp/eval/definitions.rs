@@ -784,10 +784,7 @@ impl Interpreter {
             return self.sf_setq(&setq_items, env);
         }
         let place = items[1].to_vec()?;
-        if let Some(Value::Symbol(name)) = place.first()
-            && let Some(expanded) = self.try_macroexpand(name, &place[1..], env)?
-            && expanded != items[1]
-        {
+        if let Some(expanded) = self.try_expand_generalized_place(&items[1], &place, env)? {
             let expanded_items = [Value::Symbol("setf".into()), expanded, items[2].clone()];
             return self.sf_setf(&expanded_items, env);
         }
@@ -1357,15 +1354,11 @@ impl Interpreter {
         let index_value = self.eval(index_expr, env)?;
         let value = self.eval(value_expr, env)?;
 
-        if matches!(current, Value::CharTable(_))
-            || matches!(
-                &current,
-                Value::Record(id)
-                    if self
-                        .find_record(*id)
-                        .is_some_and(|record| record.type_name == "bool-vector")
-            )
-        {
+        // `aref' arrays are identity-bearing.  Mutate them through the one
+        // primitive implementation so records (including EIEIO class
+        // records), bool vectors, and char tables all retain their identity.
+        // The fallback below exists for Emaxx's list-backed vector facade.
+        if matches!(current, Value::CharTable(_) | Value::Record(_)) {
             primitives::call(self, "aset", &[current, index_value, value.clone()], env)?;
             return Ok(value);
         }

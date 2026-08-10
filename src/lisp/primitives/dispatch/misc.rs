@@ -1082,12 +1082,15 @@ define_dispatch!(
                 else {
                     return Ok(Value::Nil);
                 };
-                let is_macro = if let Ok(items) = definition.to_vec() {
-                    matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "macro")
-                        || autoload_is_macro(interp, args[0].as_symbol().ok(), &definition)
-                } else {
-                    false
-                };
+                // A live macro's function cell is the dotted pair
+                // `(macro . FUNCTION)', not a proper list.  Inspect its cons
+                // head directly; `to_vec' intentionally rejects that GNU
+                // representation and made `macrop' return nil for macros
+                // loaded from the real preloaded libraries.
+                let is_macro =
+                    definition.cons_values().is_some_and(
+                        |(head, _)| matches!(head, Value::Symbol(symbol) if symbol == "macro"),
+                    ) || autoload_is_macro(interp, args[0].as_symbol().ok(), &definition);
                 Ok(if is_macro { Value::T } else { Value::Nil })
             }
             "apropos-internal" => {

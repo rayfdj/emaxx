@@ -989,6 +989,9 @@ impl Interpreter {
 
     pub fn has_macro_binding(&self, name: &str) -> bool {
         self.resolve_macro_binding(name).is_some()
+            || self
+                .function_cell_macro_expander(name, &Env::new())
+                .is_some()
     }
 
     pub(crate) fn macro_function_value(&self, name: &str) -> Option<Value> {

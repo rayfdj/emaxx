@@ -3720,6 +3720,10 @@ impl Interpreter {
         for name in ["parse-sexp-ignore-comments", "parse-sexp-lookup-properties"] {
             interp.define_special_variable(name, Value::Nil);
         }
+        // syntax.c also owns this scanner policy switch.  Its default is t,
+        // and Lisp navigation/indentation code dynamically binds it while
+        // calling separately defined helpers.
+        interp.define_special_variable("open-paren-in-column-0-is-defun-start", Value::T);
         // GNU textprop.c supplies syntax-table/display, and the dumped Lisp
         // image adds composition/fill-space.  `insert-and-inherit' consults
         // this process-wide special when deciding which adjacent properties

@@ -131,7 +131,10 @@ impl ParseState {
 
 pub(super) fn syntax_class_from_char(ch: char) -> Option<SyntaxClass> {
     Some(match ch {
-        ' ' => SyntaxClass::Whitespace,
+        // GNU syntax.c accepts both descriptor spellings.  `-' is commonly
+        // used by syntax propertizers because it is visible in tables and
+        // regular expressions, unlike a leading space.
+        ' ' | '-' => SyntaxClass::Whitespace,
         '.' => SyntaxClass::Punctuation,
         'w' => SyntaxClass::Word,
         '_' => SyntaxClass::Symbol,
@@ -656,7 +659,9 @@ fn skip_comment_with_status(
             while cursor < chars.len() {
                 let entry =
                     syntax_entry_at_buffer_position(interp, table_id, chars[cursor], cursor + 1);
-                if entry.class == SyntaxClass::CommentEnd {
+                if entry.class == SyntaxClass::CommentEnd
+                    && scan_comment_style(&entry, None) == start.style
+                {
                     if line
                         && chars[cursor] == '\n'
                         && comment_end_can_be_escaped
@@ -758,26 +763,6 @@ fn skip_whitespace_forward(
             break;
         }
         idx += 1;
-    }
-    idx + 1
-}
-
-fn skip_whitespace_backward(
-    interp: &Interpreter,
-    table_id: u64,
-    chars: &[char],
-    pos: usize,
-    minimum: usize,
-) -> usize {
-    let mut idx = pos.saturating_sub(1);
-    while idx >= minimum {
-        let entry = syntax_entry_for_char(interp, table_id, chars[idx - 1]);
-        if entry.class != SyntaxClass::Whitespace
-            && !(entry.class == SyntaxClass::CommentEnd && chars[idx - 1] == '\n')
-        {
-            break;
-        }
-        idx -= 1;
     }
     idx + 1
 }
@@ -2159,6 +2144,18 @@ pub(super) fn syntax_class_at_buffer_position_matches(
     syntax_entry_class_matches(entry, class)
 }
 
+pub(super) fn syntax_class_chars_at_buffer_position(
+    interp: &Interpreter,
+    position: usize,
+) -> Option<(char, char)> {
+    let ch = interp.buffer.char_at(position)?;
+    let table_id = interp.current_syntax_table_id();
+    let table_class = syntax_class_char(syntax_entry_for_char(interp, table_id, ch).class);
+    let effective_class =
+        syntax_class_char(syntax_entry_at_buffer_position(interp, table_id, ch, position).class);
+    Some((table_class, effective_class))
+}
+
 fn syntax_class_matches(interp: &Interpreter, spec: &str, ch: char) -> bool {
     let (negated, classes) = spec
         .strip_prefix('^')
@@ -2435,31 +2432,43 @@ pub(super) fn forward_comment_impl(
 
     let mut point = original_point;
     for _ in 0..count.unsigned_abs() {
-        if let Some(start_pos) = find_comment_ending_at(
-            interp,
-            table_id,
-            &chars,
-            point,
-            minimum,
-            comment_end_can_be_escaped,
-        ) {
-            point = start_pos;
-            continue;
+        loop {
+            if point <= minimum {
+                interp.buffer.goto_char(minimum);
+                return Ok(Value::Nil);
+            }
+            let idx = point - 2;
+            let ch = chars[idx];
+            let entry = syntax_entry_at_buffer_position(interp, table_id, ch, point - 1);
+            if entry.class == SyntaxClass::Whitespace {
+                point -= 1;
+                continue;
+            }
+            // A comment-end character has semantic priority over its
+            // fallback whitespace role.  This matters for newline enders
+            // supplied by `syntax-table' text properties (heredocs are a
+            // common example): skipping the newline first loses the only
+            // position from which the matching comment start can be found.
+            if let Some(start_pos) = find_comment_ending_at(
+                interp,
+                table_id,
+                &chars,
+                point,
+                minimum,
+                comment_end_can_be_escaped,
+            ) {
+                point = start_pos;
+                break;
+            }
+            if entry.class == SyntaxClass::CommentEnd && ch == '\n' {
+                // GNU treats a newline whose end-comment syntax does not
+                // close any comment as ordinary whitespace.
+                point -= 1;
+                continue;
+            }
+            interp.buffer.goto_char(point);
+            return Ok(Value::Nil);
         }
-        let candidate = skip_whitespace_backward(interp, table_id, &chars, point, minimum);
-        if let Some(start_pos) = find_comment_ending_at(
-            interp,
-            table_id,
-            &chars,
-            candidate,
-            minimum,
-            comment_end_can_be_escaped,
-        ) {
-            point = start_pos;
-            continue;
-        }
-        interp.buffer.goto_char(candidate);
-        return Ok(Value::Nil);
     }
     interp.buffer.goto_char(point);
     Ok(Value::T)

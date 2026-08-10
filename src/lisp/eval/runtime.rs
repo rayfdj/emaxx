@@ -2573,8 +2573,7 @@ impl Interpreter {
     }
 
     pub(crate) fn has_lisp_macro(&self, name: &str) -> bool {
-        self.macros_name_counts.contains_key(name)
-            && self.macros.iter().any(|binding| binding.name == name)
+        self.has_macro_binding(name)
     }
 
     pub fn provide_feature(&mut self, feature: &str) {

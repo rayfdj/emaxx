@@ -3270,9 +3270,9 @@ fn indent_line_to_replaces_existing_indentation() {
                 "#
         ),
         Value::list([
-            Value::Integer(2),
+            Value::Nil,
             Value::String("  value".into()),
-            Value::Integer(4),
+            Value::Integer(2),
         ])
     );
 }
@@ -4892,6 +4892,249 @@ fn regexp_word_atoms_follow_the_current_syntax_table_without_cache_leakage() {
                 Value::Nil,
             ]),
             Value::list([Value::Integer(0), Value::Integer(0)]),
+        ])
+    );
+}
+
+#[test]
+fn regexp_syntax_atoms_honor_position_specific_syntax_properties() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (list
+             ;; Seed the compiled-regexp cache with the same pattern and
+             ;; sentinel scalar, but a different original character.  The
+             ;; following buffer must not inherit that translation.
+             (with-temp-buffer
+               (insert "x")
+               (put-text-property 1 2 'syntax-table (string-to-syntax "< c"))
+               (let ((parse-sexp-lookup-properties t))
+                 (looking-at-p "\\(?:$\\)\\s<")))
+             (with-temp-buffer
+               (insert "a\nb\n")
+               (put-text-property 2 3 'syntax-table (string-to-syntax "< c"))
+               (let ((parse-sexp-lookup-properties t))
+                 (list
+                 (progn
+                   (goto-char 1)
+                   (re-search-forward "\\(?:$\\)\\s<" nil t)
+                   (list (match-beginning 0) (match-end 0)))
+                 (progn
+                   (goto-char 1)
+                   (re-search-forward "\n" nil t))
+                 (progn
+                   (goto-char 2)
+                   (looking-at-p "\\s<"))
+                 (progn
+                   (goto-char 2)
+                   (looking-at-p "."))
+                 ;; Quantifying dot must repeat the encoded-newline guard,
+                 ;; not check it only once before an otherwise free `.*'.
+                 (progn
+                   (erase-buffer)
+                   (insert "xy\nz\n")
+                   (put-text-property 3 4 'syntax-table
+                                      (string-to-syntax "< c"))
+                   (goto-char 1)
+                   (re-search-forward "x.*\\(\n\\)" nil t)
+                   (list (point) (match-string 0)))
+                 (progn
+                   (erase-buffer)
+                   (insert "a\nb\n")
+                   (put-text-property 2 3 'syntax-table
+                                      (string-to-syntax "< c"))
+                   (goto-char 2)
+                   (looking-at-p "[\n]"))
+                 ;; A property-bearing literal elsewhere in the haystack
+                 ;; must not rewrite group metadata in \\(?:...\\).
+                 (progn
+                   (erase-buffer)
+                   (set-syntax-table (copy-syntax-table))
+                   (modify-syntax-entry ?_ "w")
+                   (insert "sub y_max :")
+                   (put-text-property 11 12 'syntax-table
+                                      (string-to-syntax "\""))
+                   (goto-char 1)
+                   (re-search-forward
+                    "\\<\\(package\\|sub\\)\\>[ \\t]*\\(\\(?:\\sw\\|::\\)+\\)?"
+                    nil t)
+                   (list (point) (match-string 2)))
+                 ;; Explicit group-number metadata has the same `:' hazard.
+                 (progn
+                   (goto-char 1)
+                   (re-search-forward
+                    "\\(?1:sub\\) \\(?2:\\sw+\\)"
+                    nil t)
+                   (list (point) (match-string 1) (match-string 2)))
+                 ;; Every syntax-class designator, not just comment syntax,
+                 ;; reads the effective per-character entry.
+                 (progn
+                   (erase-buffer)
+                   (insert "x")
+                   (put-text-property 1 2 'syntax-table
+                                      (string-to-syntax "-"))
+                   (goto-char 1)
+                   (list (looking-at-p "\\s-")
+                         (looking-at-p "\\S-")))
+                 ;; Literal preservation is part of the grammar translator:
+                 ;; repeat/group metadata must not be rewritten just because
+                 ;; the same character has syntax-table properties elsewhere.
+                 (progn
+                   (erase-buffer)
+                   (insert "aa,")
+                   (put-text-property 3 4 'syntax-table
+                                      (string-to-syntax "< c"))
+                   (goto-char 1)
+                   (looking-at-p "\\(?:a\\{1,2\\}\\|\\s<\\)"))
+                 ;; `$' is a literal away from a branch end and must retain
+                 ;; that identity when its haystack occurrence is encoded.
+                 (progn
+                   (erase-buffer)
+                   (insert "a$b")
+                   (put-text-property 2 3 'syntax-table
+                                      (string-to-syntax "< c"))
+                   (goto-char 1)
+                   (looking-at-p "a$b\\|\\s<"))
+                 ;; Case folding applies to the encoded character's original
+                 ;; spelling for both literals and bracket membership.
+                 (progn
+                   (erase-buffer)
+                   (insert "a")
+                   (put-text-property 1 2 'syntax-table
+                                      (string-to-syntax "< c"))
+                   (goto-char 1)
+                   (let ((case-fold-search t))
+                     (list (looking-at-p "A\\|z\\s<")
+                           (looking-at-p "[A]\\|z\\s<")
+                           (looking-at-p "[A-Z]\\|z\\s<")
+                           (looking-at-p "[^A]\\|z\\s<"))))
+                 (progn
+                   (erase-buffer)
+                   (insert "a\nb\n")
+                   (put-text-property 2 3 'syntax-table
+                                      (string-to-syntax "< c"))
+                   (goto-char 2)
+                   (looking-at-p "[^\n]"))
+                 (progn
+                   (goto-char 2)
+                   (looking-at-p "[[:space:]]"))
+                 ;; `looking-at' keeps one character of left context.  When
+                 ;; that character is syntax-property encoded, its UTF-8 byte
+                 ;; width must not be mistaken for the original ASCII width;
+                 ;; a zero-width match previously landed inside the sentinel.
+                 (progn
+                   (erase-buffer)
+                   (insert "xy")
+                   (put-text-property 1 2 'syntax-table
+                                      (string-to-syntax "-"))
+                   (goto-char 2)
+                   (let ((matched (looking-at "\\s-*")))
+                     (list matched (match-beginning 0) (match-end 0))))
+                 (progn
+                   (erase-buffer)
+                   (insert "a\nb\n")
+                   (put-text-property 2 3 'syntax-table
+                                      (string-to-syntax "< c"))
+                   (goto-char 2)
+                   (looking-at-p "[^x]"))
+                 (progn
+                   (goto-char 3)
+                   (re-search-forward "\\(?:$\\)\\s<" nil t))))))
+            "#,
+        ),
+        Value::list([
+            Value::Nil,
+            Value::list([
+                Value::list([Value::Integer(2), Value::Integer(3)]),
+                Value::Integer(3),
+                Value::T,
+                Value::Nil,
+                Value::list([Value::Integer(4), Value::String("xy\n".into())]),
+                Value::T,
+                Value::list([Value::Integer(10), Value::String("y_max".into())]),
+                Value::list([
+                    Value::Integer(10),
+                    Value::String("sub".into()),
+                    Value::String("y_max".into()),
+                ]),
+                Value::list([Value::T, Value::Nil]),
+                Value::T,
+                Value::T,
+                Value::list([Value::T, Value::T, Value::T, Value::Nil]),
+                Value::Nil,
+                Value::T,
+                Value::list([Value::T, Value::Integer(2), Value::Integer(2)]),
+                Value::T,
+                Value::Nil,
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn backward_forward_comment_honors_property_comment_end_before_whitespace() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (with-temp-buffer
+              (insert "code;\nBODY\nEND\n\nnext")
+              ;; Intermediate newlines carry the mode's ordinary line-comment
+              ;; end style; only the property-marked `> c' closes this
+              ;; synthetic comment.
+              (modify-syntax-entry ?\n "> b")
+              (put-text-property 6 7 'syntax-table (string-to-syntax "< c"))
+              (put-text-property 15 16 'syntax-table (string-to-syntax "> c"))
+              (let ((parse-sexp-lookup-properties t))
+                (goto-char 17)
+                (let* ((one-result (forward-comment -1))
+                       (one-point (point))
+                       (one-char (char-after)))
+                  (goto-char 17)
+                  (let ((many-result (forward-comment (- (point-max)))))
+                    (list one-result one-point one-char
+                          many-result (point) (char-before))))))
+            "#,
+        ),
+        Value::list([
+            Value::T,
+            Value::Integer(6),
+            Value::Integer('\n' as i64),
+            Value::Nil,
+            Value::Integer(6),
+            Value::Integer(';' as i64),
+        ])
+    );
+}
+
+#[test]
+fn font_lock_defaults_syntax_alist_is_scoped_to_fontification() {
+    assert_eq!(
+        eval_str(
+            r##"
+            (with-temp-buffer
+              (set-syntax-table (make-syntax-table))
+              (modify-syntax-entry ?# "<")
+              (modify-syntax-entry ?\n ">")
+              (insert "# note\nsub y_max")
+              (setq font-lock-defaults
+                    '((("\\<\\(sub\\)\\>[ \\t]*\\(\\sw+\\)"
+                        (1 font-lock-keyword-face)
+                        (2 font-lock-function-name-face nil t)))
+                      nil nil ((?_ . "w")) nil
+                      (font-lock-syntactic-face-function
+                       . (lambda (_) 'font-lock-comment-face))))
+              (font-lock-ensure)
+              (list (get-text-property 2 'face)
+                    (get-text-property 12 'face)
+                    (get-text-property 14 'face)
+                    (char-syntax ?_)))
+            "##,
+        ),
+        Value::list([
+            Value::Symbol("font-lock-comment-face".into()),
+            Value::Symbol("font-lock-function-name-face".into()),
+            Value::Symbol("font-lock-function-name-face".into()),
+            Value::Integer('_' as i64),
         ])
     );
 }

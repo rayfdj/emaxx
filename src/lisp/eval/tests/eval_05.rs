@@ -7310,7 +7310,7 @@ fn eshell_test_interpreter(test_file: &str) -> Interpreter {
 
 #[test]
 fn upstream_eshell_script_regressions_stay_green() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-script-tests.el");
         let selector = eval_str_with(
             &mut interp,
@@ -7326,7 +7326,7 @@ fn upstream_eshell_script_regressions_stay_green() {
 
 #[test]
 fn upstream_eshell_unix_regressions_stay_green_in_file_order() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-unix-tests.el");
         let summary = interp.run_ert_tests_with_selector(None);
 
@@ -7337,7 +7337,7 @@ fn upstream_eshell_unix_regressions_stay_green_in_file_order() {
 
 #[test]
 fn upstream_eshell_command_regressions_stay_green() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("esh-cmd-tests.el");
         let selector = eval_str_with(
             &mut interp,
@@ -7373,7 +7373,7 @@ fn upstream_eshell_command_regressions_stay_green() {
 
 #[test]
 fn upstream_eshell_external_regressions_stay_green_in_file_order() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("esh-ext-tests.el");
         let summary = interp.run_ert_tests_with_selector(None);
 
@@ -7384,32 +7384,36 @@ fn upstream_eshell_external_regressions_stay_green_in_file_order() {
 
 #[test]
 fn eshell_matching_input_navigation_crosses_nonsticky_prompts() {
-    let mut interp = eshell_test_interpreter("em-prompt-tests.el");
-    assert_eq!(
-        eval_str_with(
-            &mut interp,
-            "(progn
-               (em-prompt-test/forward-backward-matching-input-1)
-               t)"
-        ),
-        Value::T
-    );
+    run_exclusive_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-prompt-tests.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (em-prompt-test/forward-backward-matching-input-1)
+                   t)"
+            ),
+            Value::T
+        );
+    });
 }
 
 #[test]
 fn eshell_paragraph_navigation_dynamically_inhibits_field_motion() {
-    let mut interp = eshell_test_interpreter("em-prompt-tests.el");
-    assert_eq!(
-        eval_str_with(
-            &mut interp,
-            "(list
-               (special-variable-p 'inhibit-field-text-motion)
-               (progn
-                 (em-prompt-test/forward-backward-paragraph-1)
-                 t))"
-        ),
-        Value::list([Value::T, Value::T])
-    );
+    run_exclusive_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-prompt-tests.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(list
+                   (special-variable-p 'inhibit-field-text-motion)
+                   (progn
+                     (em-prompt-test/forward-backward-paragraph-1)
+                     t))"
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    });
 }
 
 #[test]
@@ -7492,7 +7496,7 @@ fn todo_month_edits_observe_dynamic_prefix_argument() {
 
 #[test]
 fn eshell_glob_completion_inserts_its_single_match() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-cmpl-tests.el");
 
         assert_eq!(
@@ -7511,7 +7515,7 @@ fn eshell_glob_completion_inserts_its_single_match() {
 
 #[test]
 fn eshell_ambiguous_completion_displays_candidates_on_second_attempt() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-cmpl-tests.el");
 
         assert_eq!(
@@ -7535,7 +7539,7 @@ fn eshell_ambiguous_completion_displays_candidates_on_second_attempt() {
 
 #[test]
 fn eshell_completes_lisp_function_names_in_forms_and_subcommands() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-cmpl-tests.el");
 
         assert_eq!(
@@ -7557,7 +7561,7 @@ fn eshell_completes_lisp_function_names_in_forms_and_subcommands() {
 
 #[test]
 fn eshell_completes_function_quoted_and_backquoted_lisp_symbols() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-cmpl-tests.el");
 
         assert_eq!(
@@ -7579,7 +7583,7 @@ fn eshell_completes_function_quoted_and_backquoted_lisp_symbols() {
 
 #[test]
 fn eshell_completes_marker_buffer_references_in_all_supported_forms() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-cmpl-tests.el");
 
         assert_eq!(
@@ -7610,7 +7614,7 @@ fn eshell_completes_marker_buffer_references_in_all_supported_forms() {
 
 #[test]
 fn eshell_cd_can_list_files_without_replacing_last_command_metadata() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-dirs-tests.el");
 
         assert_eq!(
@@ -7641,7 +7645,7 @@ fn eshell_cd_can_list_files_without_replacing_last_command_metadata() {
 
 #[test]
 fn eshell_directory_module_cases_pass_in_native_runner() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-dirs-tests.el");
         let summary = interp.run_ert_tests_with_selector(None);
 
@@ -7653,7 +7657,7 @@ fn eshell_directory_module_cases_pass_in_native_runner() {
 
 #[test]
 fn eshell_external_pipeline_finishes_redirected_output_before_returning() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-extpipe-tests.el");
 
         assert_eq!(
@@ -7679,7 +7683,7 @@ fn eshell_external_pipeline_finishes_redirected_output_before_returning() {
 
 #[test]
 fn eshell_external_pipeline_parser_only_shells_the_external_segment() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-extpipe-tests.el");
 
         assert_eq!(
@@ -7703,7 +7707,7 @@ fn eshell_external_pipeline_parser_only_shells_the_external_segment() {
 
 #[test]
 fn eshell_internal_command_feeds_external_pipeline_before_returning() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-extpipe-tests.el");
 
         assert_eq!(
@@ -7729,7 +7733,7 @@ fn eshell_internal_command_feeds_external_pipeline_before_returning() {
 
 #[test]
 fn eshell_remote_user_directory_is_not_misread_as_a_glob() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-glob-tests.el");
 
         assert_eq!(
@@ -7750,7 +7754,7 @@ fn eshell_remote_user_directory_is_not_misread_as_a_glob() {
 
 #[test]
 fn eshell_history_module_cases_pass_in_native_runner() {
-    run_with_large_stack(|| {
+    run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-hist-tests.el");
         let summary = interp.run_ert_tests_with_selector(None);
 
