@@ -6012,6 +6012,60 @@ fn simple_compat_preloads_subr_shell_process_wrappers() {
 }
 
 #[test]
+fn simple_compat_preloads_delete_consecutive_dups_with_destructive_identity() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let* ((items (list 'a 'a 'b 'b 'a))
+                    (result (delete-consecutive-dups items)))
+               (list (eq items result)
+                     result
+                     (delete-consecutive-dups (list 'a 'b 'a) t)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::list([Value::symbol("a"), Value::symbol("b"), Value::symbol("a"),]),
+            Value::list([Value::symbol("a"), Value::symbol("b")]),
+        ])
+    );
+}
+
+#[test]
+fn simple_compat_preserves_the_real_vc_responsible_backend_autoload() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize batch interpreter");
+        let repo = serde_json::to_string(&upstream_emacs_repo().display().to_string())
+            .expect("encode upstream path");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                &format!(
+                    "(list (autoloadp (symbol-function 'vc-responsible-backend))
+                           (let ((vc-handled-backends '(Git)))
+                             (vc-responsible-backend {repo} t))
+                           (featurep 'vc))"
+                )
+            ),
+            Value::list([Value::T, Value::symbol("Git"), Value::T])
+        );
+    });
+}
+
+#[test]
 fn batch_startup_preloads_gnu_environment_helpers() {
     let options = crate::batch::BatchRunOptions {
         load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())

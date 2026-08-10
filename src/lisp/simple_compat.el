@@ -8206,10 +8206,25 @@ directory in this environment (there is no remote support)."
   "Set the extended attributes of FILE (unsupported)."
   nil)
 
-(defun vc-responsible-backend (_file &optional _no-error)
-  "Return the version-control backend responsible for FILE.
-Version control is not integrated in this environment."
-  nil)
+;; GNU subr.el (verbatim).  project.el uses this dumped helper after VC's
+;; subprocess has returned its file list; keep the list policy in Elisp.
+(defun delete-consecutive-dups (list &optional circular)
+  "Destructively remove `equal' consecutive duplicates from LIST.
+First and last elements are considered consecutive if CIRCULAR is
+non-nil.
+Of several consecutive `equal' occurrences, the one earliest in
+the list is kept."
+  (let ((tail list) last)
+    (while (cdr tail)
+      (if (equal (car tail) (cadr tail))
+	  (setcdr tail (cddr tail))
+	(setq last tail
+	      tail (cdr tail))))
+    (if (and circular
+	     last
+	     (equal (car tail) (car list)))
+	(setcdr last nil)))
+  list)
 
 ;;; Change-group / undo machinery (verbatim from GNU simple.el and
 ;;; subr.el): viper's undo grouping builds on these.

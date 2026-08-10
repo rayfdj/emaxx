@@ -1821,11 +1821,8 @@ define_dispatch!(
             }
 
             // ── More buffer ops ──
-            "following-char" => match interp.buffer.char_at(interp.buffer.point()) {
-                Some(c) => Ok(Value::Integer(public_buffer_char_code(
-                    c,
-                    interp.buffer.is_multibyte(),
-                ))),
+            "following-char" => match public_buffer_char_code_at(interp, interp.buffer.point()) {
+                Some(code) => Ok(Value::Integer(code)),
                 None => Ok(Value::Integer(0)),
             },
             "preceding-char" => {
@@ -1833,11 +1830,8 @@ define_dispatch!(
                 if pt <= interp.buffer.point_min() {
                     Ok(Value::Integer(0))
                 } else {
-                    match interp.buffer.char_at(pt - 1) {
-                        Some(c) => Ok(Value::Integer(public_buffer_char_code(
-                            c,
-                            interp.buffer.is_multibyte(),
-                        ))),
+                    match public_buffer_char_code_at(interp, pt - 1) {
+                        Some(code) => Ok(Value::Integer(code)),
                         None => Ok(Value::Integer(0)),
                     }
                 }

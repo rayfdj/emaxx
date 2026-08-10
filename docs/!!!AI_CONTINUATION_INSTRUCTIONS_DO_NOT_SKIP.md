@@ -18,6 +18,55 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-11 PROJECT/POSTSCRIPT CHECKPOINT: the verified worktree frontier is
+  4,811/7,080, leaving 2,269 selectors, but it is not published yet.  Finish
+  the final static gates, update this checkpoint's commit identity, commit,
+  synchronize, push, and confirm `main == origin/main` before beginning Ruby.
+  The final-source canonical artifacts are Perl 66/66 at
+  `target/compat/run-1786383162706070000-28330`, Project 9/9 at
+  `target/compat/run-1786383275831770000-28508`, and PostScript 3/3 at
+  `target/compat/run-1786383308552953000-28707`; all use subject-source hash
+  `57e087c350d094f2bdfacb852162a1f8657f04cec5d8b169516d2fce6935faf4`.
+
+  GNU/Emaxx setup and body timings: Perl 0.305/2.175 and 0.134/0.819 seconds
+  (6.092x, +685 ms); Project 0.283/1.817 and 0.663/1.043 (1.573x, +380 ms);
+  PostScript 0.243/1.922 and 0.283/0.223 (Emaxx faster).  Perl's 2x diagnostic
+  does not meet the simultaneous +1-second interruption gate.  Continue to
+  report but exclude reconstructed-versus-dumped setup from that gate.
+
+  Project removes the incorrect always-nil `vc-responsible-backend` fallback,
+  allowing GNU `vc.el` to retain Elisp ownership, and carries GNU's exact
+  destructive `delete-consecutive-dups` in Elisp with identity regressions.
+  PostScript has one shared raw-byte character contract: insertion keeps the
+  existing private-use representation, public access reads the raw-character
+  property, and all buffer regexp paths use one position-preserving haystack
+  adaptor.  Do not create another byte normalization path or regexp parser.
+
+  The elevated library gate passed 1,913/1,913 in 3,889.31 seconds, including
+  the formerly sandbox-denied sockets/TLS cases and revised event-based
+  process waits.  The old harness marker test then failed after prolonged host
+  starvation because it incorrectly made a sub-second scheduler deadline part
+  of its assertion.  The final harness factors timeout phase selection into a
+  pure elapsed-time helper and proves child-marker precedence using identical
+  marker timestamps.  Both focused tests pass; the full final binary gates
+  pass `compat-harness` 33/33 and `perf-harness` 1/1.  Only bin harness/test
+  source changed after the green library run, so do not repeat that unchanged
+  65-minute library suite without new evidence.
+
+  NEXT after publication: selector 4,812,
+  `ruby--set-encoding-when-latin-15`, in
+  `test/lisp/progmodes/ruby-mode-tests.el`.  Exploratory artifact
+  `target/compat/run-1786372344692765000-21409` is 77/108, with setup
+  GNU/Emaxx 0.255/2.192 seconds and body 1.233/23.922 seconds.  Correctness
+  triage already proves: preload GNU's `language/european.el` owner rather
+  than adding a Rust ISO-8859-15 table; add GNU `subr.el`'s Elisp alias from
+  `store-match-data` to `set-match-data`; make explicit nil optional
+  font-lock bounds select buffer boundaries; implement GNU's one-level
+  `font-lock-maximum-decoration` selection; and make `\\_<`/`\\_>` honor the
+  existing syntax-property sentinels inside the single regexp translator.
+  Add direct regressions for each owner, rerun all 108 outcomes, and only then
+  profile the 19.39x/+22.689-second Ruby body gap.  Ruby already uses GNU's
+  Elisp SMIE indentation owner; do not introduce Ruby-specific Rust policy.
 - 2026-08-10 VM PERFORMANCE ROUND 10: retain only the validated subset of
   `/Users/nbmhqa186/Downloads/emaxxvmperfround10.patch`.  Bytecode primitive
   facts use static-string pointers through the existing identity hasher, with
@@ -41,10 +90,10 @@ counts as the progress denominator.
   (-1.7%); every other kernel is within 1.5%.  Current GNU minima confirm
   Emaxx is faster on string, float, and mapcar.  Benchmark semantic preflight,
   bytecode 31/31, value/type 18/18, and focused hash/plist/source/symbol tests
-  pass.  NEXT: commit/push this isolated checkpoint, then assess
-  `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch` on the resulting
-  tree.  Report scope, risk, likely payoff, and whether it should wait until
-  7,080; do not publish or implement it without the user's explicit decision.
+  pass.  This checkpoint is already published at `3ffb015`.  The symbol-object
+  proposal is deferred until after 7,080; then remeasure and report its scope,
+  risk, likely payoff, and recommendation before publishing or implementing
+  anything.
 - 2026-08-10 PERL CHECKPOINT: the fresh contiguous ordered frontier is
   4,799/7,080, leaving 2,281 selectors.  Perl's complete 66-case default
   selection matches GNU in the final-source artifact
@@ -101,12 +150,10 @@ counts as the progress denominator.
   execution or scattered new annotations.
 
   Round 9 is already the published Bloom-only `90c77a6`, and the validated
-  round-10 subset is recorded above.  Against that resulting tree, assess
-  `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch`, report whether
-  its diagnosis is still supported, and stop for the user's decision before
-  publishing or implementing anything.  Then
-  resume selector 4,800 and repair Git VC detection without counting Emaxx's
-  unilateral skip as a pass.
+  round-10 subset is recorded above.  The symbol-object proposal is deferred
+  until after 7,080 and must be discussed with the user before publication or
+  implementation.  Historical next work was selector 4,800; the newer
+  Project/PostScript checkpoint above supersedes it.
 - 2026-08-10 GDB-THROUGH-PEG CHECKPOINT: the fresh contiguous ordered frontier
   is 4,729/7,080, leaving 2,351 selectors.  All 51 outcomes across GDB MI,
   Glasses, Go TS, Grep, Heex TS, Hideshow, Java TS, JS, Lua TS, Octave,

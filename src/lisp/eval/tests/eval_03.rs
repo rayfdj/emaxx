@@ -4988,6 +4988,62 @@ fn raw_byte_characters_build_multibyte_strings_across_character_apis() {
 }
 
 #[test]
+fn raw_byte_regexp_ranges_and_buffer_accessors_share_one_character_view() {
+    assert_eq!(
+        eval_str(
+            r#"(list
+                 (with-temp-buffer
+                   (set-buffer-multibyte nil)
+                   (insert #x90 #x91 #x92)
+                   (goto-char (point-min))
+                   (let ((after (char-after))
+                         (following (following-char))
+                         seen)
+                     (while (re-search-forward "[\200-\377]" nil t)
+                       (push (multibyte-char-to-unibyte (char-before)) seen))
+                     (list after following (char-before) (preceding-char)
+                           (nreverse seen))))
+                 (with-temp-buffer
+                   (insert (unibyte-char-to-multibyte #x90)
+                           (unibyte-char-to-multibyte #x91)
+                           (unibyte-char-to-multibyte #x92))
+                   (goto-char (point-min))
+                   (let ((after (char-after))
+                         (following (following-char))
+                         seen)
+                     (while (re-search-forward "[\200-\377]" nil t)
+                       (push (multibyte-char-to-unibyte (char-before)) seen))
+                     (list after following (char-before) (preceding-char)
+                           (nreverse seen)))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(0x90),
+                Value::Integer(0x90),
+                Value::Integer(0x92),
+                Value::Integer(0x92),
+                Value::list([
+                    Value::Integer(0x90),
+                    Value::Integer(0x91),
+                    Value::Integer(0x92),
+                ]),
+            ]),
+            Value::list([
+                Value::Integer(0x3fff90),
+                Value::Integer(0x3fff90),
+                Value::Integer(0x3fff92),
+                Value::Integer(0x3fff92),
+                Value::list([
+                    Value::Integer(0x90),
+                    Value::Integer(0x91),
+                    Value::Integer(0x92),
+                ]),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn print_quoted_does_not_consume_an_elided_print_level() {
     assert_eq!(
         eval_str(

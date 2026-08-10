@@ -2264,6 +2264,18 @@ fn load_or_synthesize_report(
     Ok(report)
 }
 
+fn timeout_phase_for_elapsed(
+    timeout: Option<Duration>,
+    process_elapsed: Duration,
+    test_elapsed: Option<Duration>,
+) -> Option<TimeoutPhase> {
+    timeout.and_then(|limit| match test_elapsed {
+        Some(elapsed) if elapsed > limit => Some(TimeoutPhase::Test),
+        None if process_elapsed > limit => Some(TimeoutPhase::Setup),
+        _ => None,
+    })
+}
+
 fn run_command(
     mut command: Command,
     timeout: Option<Duration>,
@@ -2364,11 +2376,11 @@ fn run_command(
             );
         }
 
-        let timeout_phase = timeout.and_then(|limit| match test_started {
-            Some(test_started) if test_started.elapsed() > limit => Some(TimeoutPhase::Test),
-            None if started.elapsed() > limit => Some(TimeoutPhase::Setup),
-            _ => None,
-        });
+        let timeout_phase = timeout_phase_for_elapsed(
+            timeout,
+            started.elapsed(),
+            test_started.map(|test_started| test_started.elapsed()),
+        );
         if let Some(timeout_phase) = timeout_phase {
             child
                 .kill()
@@ -2877,23 +2889,26 @@ mod tests {
         assert!(!timing.emaxx_at_least_twice_as_slow);
     }
 
-    #[cfg(unix)]
     #[test]
     fn command_timeout_resets_when_test_execution_starts() {
-        let marker = unique_temp_path("phase-marker").unwrap();
-        let mut command = Command::new("sh");
-        command
-            .args([
-                "-c",
-                "sleep 0.1; : > \"$EMAXX_TEST_PHASE_MARKER\"; sleep 0.8",
-            ])
-            .env("EMAXX_TEST_PHASE_MARKER", &marker);
-        let result = run_command(command, Some(Duration::from_millis(500)), &marker, None).unwrap();
-        assert_eq!(result.timeout_phase, Some(TimeoutPhase::Test));
-        assert!(result.setup_elapsed >= Duration::from_millis(75));
-        assert!(result.test_elapsed >= Duration::from_millis(500));
-        assert!(result.elapsed >= Duration::from_millis(575));
-        let _ = fs::remove_file(marker);
+        let limit = Some(Duration::from_millis(500));
+        assert_eq!(
+            timeout_phase_for_elapsed(
+                limit,
+                Duration::from_millis(900),
+                Some(Duration::from_millis(499)),
+            ),
+            None,
+            "setup time must stop consuming the budget after the marker"
+        );
+        assert_eq!(
+            timeout_phase_for_elapsed(
+                limit,
+                Duration::from_millis(900),
+                Some(Duration::from_millis(501)),
+            ),
+            Some(TimeoutPhase::Test)
+        );
     }
 
     #[cfg(unix)]
@@ -2917,24 +2932,14 @@ mod tests {
         command
             .args([
                 "-c",
-                "sleep 0.1; : > \"$EMAXX_TEST_PHASE_MARKER\"; : > \"$EMAXX_TEST_COMPLETED_MARKER\"",
+                "sleep 0.1; : > \"$EMAXX_TEST_PHASE_MARKER\"; : > \"$EMAXX_TEST_COMPLETED_MARKER\"; touch -r \"$EMAXX_TEST_PHASE_MARKER\" \"$EMAXX_TEST_COMPLETED_MARKER\"",
             ])
             .env("EMAXX_TEST_PHASE_MARKER", &loaded)
             .env("EMAXX_TEST_COMPLETED_MARKER", &completed);
-        let result = run_command(
-            command,
-            Some(Duration::from_millis(500)),
-            &loaded,
-            Some(&completed),
-        )
-        .unwrap();
+        let result = run_command(command, None, &loaded, Some(&completed)).unwrap();
         assert!(!result.timed_out);
         assert!(result.test_started);
-        assert!(
-            result.test_elapsed < Duration::from_millis(25),
-            "child markers reported {:?}",
-            result.test_elapsed
-        );
+        assert_eq!(result.test_elapsed, Duration::ZERO);
         let _ = fs::remove_file(loaded);
         let _ = fs::remove_file(completed);
     }

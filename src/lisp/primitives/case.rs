@@ -78,6 +78,25 @@ pub(crate) fn public_buffer_char_code(ch: char, multibyte: bool) -> i64 {
     }
 }
 
+/// Return the Lisp-visible character at a buffer position.
+///
+/// Most characters live directly in the rope.  Emacs characters outside
+/// Unicode's scalar range use a placeholder plus an internal property, so
+/// every public character accessor must consult that property through this
+/// one boundary rather than leaking the placeholder value.
+pub(crate) fn public_buffer_char_code_at(interp: &Interpreter, position: usize) -> Option<i64> {
+    interp
+        .buffer
+        .text_property_at(position, "emaxx-raw-char")
+        .and_then(|value| value.as_integer().ok())
+        .or_else(|| {
+            interp
+                .buffer
+                .char_at(position)
+                .map(|ch| public_buffer_char_code(ch, interp.buffer.is_multibyte()))
+        })
+}
+
 pub(crate) fn single_char_case_mapping(iter: impl Iterator<Item = char>, fallback: u32) -> u32 {
     let mut iter = iter;
     match (iter.next(), iter.next()) {

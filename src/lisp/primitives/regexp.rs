@@ -1661,6 +1661,61 @@ fn encode_syntax_property_haystack(
     })
 }
 
+/// Project a buffer slice into the scalar representation used by the regexp
+/// engine while preserving one scalar per buffer character.
+///
+/// GNU regexp byte escapes match bytes in a unibyte buffer and the equivalent
+/// eight-bit characters in a multibyte buffer.  Emaxx represents those bytes
+/// with private-use scalars; normalize both buffer representations here so
+/// the regexp translator remains the single pattern-grammar owner and match
+/// positions stay identical to buffer positions.
+fn buffer_regexp_haystack(
+    interp: &Interpreter,
+    start: usize,
+    end: usize,
+) -> Result<String, LispError> {
+    let text = interp
+        .buffer
+        .buffer_substring(start, end)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let has_raw_char_properties = interp.buffer.has_text_property_named("emaxx-raw-char");
+    if interp.buffer.is_multibyte() && !has_raw_char_properties {
+        return Ok(text);
+    }
+
+    let mut raw_codes = vec![None; text.chars().count()];
+    if has_raw_char_properties {
+        for span in interp.buffer.substring_property_spans(start, end) {
+            let raw_code = span
+                .props
+                .iter()
+                .find(|(name, _)| name == "emaxx-raw-char")
+                .and_then(|(_, value)| value.as_integer().ok());
+            if let Some(raw_code) = raw_code {
+                raw_codes[span.start..span.end].fill(Some(raw_code));
+            }
+        }
+    }
+
+    Ok(text
+        .chars()
+        .enumerate()
+        .map(|(offset, original)| {
+            let public = raw_codes[offset].unwrap_or(original as i64);
+            if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&public) {
+                raw_byte_regex_char((public - RAW_BYTE8_BASE as i64) as u8)
+            } else if !interp.buffer.is_multibyte()
+                && raw_byte_from_regex_char(original).is_none()
+                && (0x80..=0xFF).contains(&public)
+            {
+                raw_byte_regex_char(public as u8)
+            } else {
+                original
+            }
+        })
+        .collect())
+}
+
 pub(super) fn compile_elisp_regex(
     interp: &Interpreter,
     pattern: &StringLike,
@@ -2485,10 +2540,7 @@ pub(super) fn looking_at_impl(
         .ok_or_else(|| LispError::TypeError("string".into(), pattern_value.type_name()))?;
     let pattern = regex_pattern_with_search_spaces(interp, &pattern, env);
     let pos = interp.buffer.point();
-    let tail = interp
-        .buffer
-        .buffer_substring(pos, interp.buffer.point_max())
-        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let tail = buffer_regexp_haystack(interp, pos, interp.buffer.point_max())?;
     if posix {
         let Some(selected) = posix_longest_match(
             interp,
@@ -2521,10 +2573,7 @@ pub(super) fn looking_at_impl(
     // boundary after it.  This also preserves `\=' in the middle of a
     // pattern: it becomes false after the regexp has consumed anything.
     let haystack_start = pos.saturating_sub(1).max(interp.buffer.point_min());
-    let haystack = interp
-        .buffer
-        .buffer_substring(haystack_start, interp.buffer.point_max())
-        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let haystack = buffer_regexp_haystack(interp, haystack_start, interp.buffer.point_max())?;
     let has_left_context = haystack_start < pos;
     let point_assertion = if has_left_context {
         r"(?<=\A[\s\S])"
@@ -2592,10 +2641,7 @@ pub(super) fn looking_back_impl(
         .transpose()?
         .unwrap_or_else(|| interp.buffer.point_min())
         .clamp(interp.buffer.point_min(), pos);
-    let haystack = interp
-        .buffer
-        .buffer_substring(limit, pos)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let haystack = buffer_regexp_haystack(interp, limit, pos)?;
     let syntax_encoding =
         encode_syntax_property_haystack(interp, env, limit, &haystack, &pattern.text);
     let regex = compile_elisp_regex_with_syntax_properties(
@@ -2773,10 +2819,7 @@ pub(super) fn buffer_regex_search(
         } else {
             interp.buffer.point_min()
         };
-        let haystack = interp
-            .buffer
-            .buffer_substring(haystack_start, limit)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let haystack = buffer_regexp_haystack(interp, haystack_start, limit)?;
         let syntax_encoding = (!posix)
             .then(|| {
                 encode_syntax_property_haystack(
@@ -2963,10 +3006,7 @@ pub(super) fn buffer_regex_search(
         }
         for _ in 0..count {
             let absolute_start = interp.buffer.point_min();
-            let prefix = interp
-                .buffer
-                .buffer_substring(absolute_start, interp.buffer.point())
-                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let prefix = buffer_regexp_haystack(interp, absolute_start, interp.buffer.point())?;
             let syntax_encoding = (!posix)
                 .then(|| {
                     encode_syntax_property_haystack(

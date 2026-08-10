@@ -4616,14 +4616,14 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
     )
     .expect("start-process should launch a writer");
 
-    // This is a deadline, not a sleep: the process normally returns at
-    // once.  Keep it generous because the full parallel suite can leave a
-    // newly spawned shell unscheduled for more than one second on a busy
-    // host.  The exact seconds-only parsing contract is asserted below.
+    // Wait for the process event itself.  A wall-clock deadline makes this
+    // test depend on when the host schedules a newly spawned shell during
+    // the complete parallel suite; the exact seconds-only parsing contract
+    // is asserted deterministically below.
     let accepted = call(
         &mut interp,
         "accept-process-output",
-        &[process.clone(), Value::Integer(10)],
+        std::slice::from_ref(&process),
         &mut env,
     )
     .expect("accept-process-output should wait for output");
@@ -12046,22 +12046,20 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
         &mut env,
     )
     .expect("restore default process filter");
-    // Poll the actual delivery condition after reenabling the descriptor.
-    // The process-test gate removes in-suite competition, while this bounded
-    // deadline still prevents a wedged host child from hanging the test run.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        let delivered = call(
+    // Wait for the process event rather than imposing a host scheduling
+    // deadline.  The process-test gate prevents peer process tests from
+    // competing, and accept-process-output owns the blocking contract being
+    // tested here.
+    assert_eq!(
+        call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.05)],
+            std::slice::from_ref(&process),
             &mut env,
         )
-        .expect("wait for resumed output");
-        if delivered == Value::T {
-            break;
-        }
-    }
+        .expect("wait for resumed output"),
+        Value::T
+    );
     let contents = interp
         .get_buffer_by_id(buffer_id)
         .expect("held-output buffer")

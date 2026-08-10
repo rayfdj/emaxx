@@ -2092,11 +2092,8 @@ define_dispatch!(
                         ));
                     }
                 };
-                match pos.and_then(|position| interp.buffer.char_at(position)) {
-                    Some(c) => Ok(Value::Integer(public_buffer_char_code(
-                        c,
-                        interp.buffer.is_multibyte(),
-                    ))),
+                match pos.and_then(|position| public_buffer_char_code_at(interp, position)) {
+                    Some(code) => Ok(Value::Integer(code)),
                     None => Ok(Value::Nil),
                 }
             }
@@ -2121,11 +2118,8 @@ define_dispatch!(
                 if pos <= interp.buffer.point_min() {
                     Ok(Value::Nil)
                 } else {
-                    match interp.buffer.char_at(pos - 1) {
-                        Some(c) => Ok(Value::Integer(public_buffer_char_code(
-                            c,
-                            interp.buffer.is_multibyte(),
-                        ))),
+                    match public_buffer_char_code_at(interp, pos - 1) {
+                        Some(code) => Ok(Value::Integer(code)),
                         None => Ok(Value::Nil),
                     }
                 }
