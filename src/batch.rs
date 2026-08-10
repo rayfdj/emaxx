@@ -563,6 +563,7 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     for library in [
         "language/chinese",
         "language/english",
+        "language/european",
         "language/hebrew",
         "language/utf-8-lang",
     ] {

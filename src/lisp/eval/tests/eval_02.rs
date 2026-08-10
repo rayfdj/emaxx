@@ -2311,6 +2311,25 @@ fn regexp_syntax_classes_match_standard_delimiters() {
 }
 
 #[test]
+fn regexp_string_syntax_class_uses_the_current_table_not_a_literal_quote() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (let ((table (make-syntax-table)))
+                    (modify-syntax-entry ?' "\"" table)
+                    (set-syntax-table table)
+                    (insert "'")
+                    (goto-char 1)
+                    (list (looking-at-p "\\s\"")
+                          (looking-at-p "\\S\""))))
+                "#,
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn invisible_p_tracks_invisible_text_properties() {
     assert_eq!(
         eval_str(
@@ -2411,6 +2430,33 @@ fn forward_comment_uses_absolute_positions_in_a_narrowed_buffer() {
 }
 
 #[test]
+fn backward_forward_comment_does_not_find_comment_openers_inside_strings() {
+    assert_eq!(
+        eval_str(
+            r##"
+                (list
+                 (with-temp-buffer
+                   (modify-syntax-entry ?# "< b")
+                   (modify-syntax-entry ?\n "> b")
+                   (insert "\"bar#x\"\n")
+                   (goto-char (point-max))
+                   (list (forward-comment (- (point))) (point)))
+                 (with-temp-buffer
+                   (modify-syntax-entry ?# "< b")
+                   (modify-syntax-entry ?\n "> b")
+                   (insert "#x\n")
+                   (goto-char (point-max))
+                   (list (forward-comment -1) (point))))
+                "##,
+        ),
+        Value::list([
+            Value::list([Value::Nil, Value::Integer(8)]),
+            Value::list([Value::T, Value::Integer(1)]),
+        ])
+    );
+}
+
+#[test]
 fn scan_lists_backward_skips_line_comments() {
     assert_eq!(
         eval_str(
@@ -2443,6 +2489,98 @@ fn forward_list_moves_over_syntax_table_brace_lists() {
                 "#
         ),
         Value::Integer(22)
+    );
+}
+
+#[test]
+fn blank_temporary_syntax_tables_and_narrowed_scans_use_gnu_coordinates() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "prefix (alpha\n beta) suffix")
+                  (goto-char 8)
+                  (let* ((op (char-after))
+                         (cl (cdr (aref (syntax-table) op)))
+                         parse-sexp-lookup-properties
+                         (syntax-propertize-function nil))
+                    (with-syntax-table (make-char-table 'syntax-table nil)
+                      (let ((blank-classes
+                             (list (char-syntax ?a)
+                                   (char-syntax ?[)
+                                   (char-syntax ?\s))))
+                        (modify-syntax-entry op
+                                             (concat "(" (char-to-string cl)))
+                        (modify-syntax-entry cl
+                                             (concat ")" (char-to-string op)))
+                        (modify-syntax-entry ?\\ "\\")
+                        (narrow-to-region 8 21)
+                        (forward-list)
+                        (list blank-classes (point) (point-min) (point-max))))))
+                "#,
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(' ' as i64),
+                Value::Integer(' ' as i64),
+                Value::Integer(' ' as i64),
+            ]),
+            Value::Integer(21),
+            Value::Integer(8),
+            Value::Integer(21),
+        ])
+    );
+}
+
+#[test]
+fn skip_syntax_honors_effective_syntax_properties_when_enabled() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "%")
+                  (put-text-property 1 2 'syntax-table
+                                     (string-to-syntax "|"))
+                  (list
+                   (let ((parse-sexp-lookup-properties nil))
+                     (goto-char 1)
+                     (list (skip-syntax-forward ".")
+                           (progn (goto-char 1)
+                                  (skip-syntax-forward "|"))))
+                   (let ((parse-sexp-lookup-properties t))
+                     (goto-char 1)
+                     (list (skip-syntax-forward ".")
+                           (progn (goto-char 1)
+                                  (skip-syntax-forward "|"))))))
+                "#,
+        ),
+        Value::list([
+            Value::list([Value::Integer(0), Value::Integer(0)]),
+            Value::list([Value::Integer(0), Value::Integer(1)]),
+        ])
+    );
+}
+
+#[test]
+fn backward_sexp_uses_effective_syntax_when_skipping_prefix_chars() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (let ((table (make-syntax-table)))
+                    (modify-syntax-entry ?: "' p" table)
+                    (set-syntax-table table)
+                    (setq-local parse-sexp-lookup-properties t)
+                    (insert ":()")
+                    ;; Ruby uses this shape to suppress the base prefix
+                    ;; syntax of a ternary colon immediately before `('.
+                    (put-text-property 1 2 'syntax-table '(1))
+                    (goto-char (point-max))
+                    (backward-sexp)
+                    (point)))
+                "#,
+        ),
+        Value::Integer(2)
     );
 }
 

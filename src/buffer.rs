@@ -31,6 +31,12 @@ pub struct Buffer {
     /// The text.
     text: Rope,
 
+    /// Derived character view of the most recently read Rope chunk. Syntax
+    /// and motion code commonly scan adjacent characters through `char_at`;
+    /// retaining one decoded chunk avoids a tree walk per character while
+    /// keeping Rope as the sole text authority.
+    char_cache: RefCell<RopeCharCache>,
+
     /// Current cursor position (1-based char offset).
     pt: usize,
 
@@ -132,6 +138,22 @@ struct UndoListView {
 #[derive(Default)]
 struct UndoListViewCache(RefCell<Option<UndoListView>>);
 
+#[derive(Clone, Default)]
+struct RopeCharCache {
+    start: usize,
+    chars: Vec<char>,
+    valid: bool,
+}
+
+impl RopeCharCache {
+    fn character(&self, index: usize) -> Option<char> {
+        if !self.valid {
+            return None;
+        }
+        self.chars.get(index.checked_sub(self.start)?).copied()
+    }
+}
+
 impl Clone for UndoListViewCache {
     fn clone(&self) -> Self {
         // A cloned buffer is an independent text/undo snapshot.  Rebuild its
@@ -223,6 +245,7 @@ impl Buffer {
             name: name.to_string(),
             last_name: None,
             text,
+            char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: None,
             mark_active: false,
@@ -255,6 +278,7 @@ impl Buffer {
             name: name.to_string(),
             last_name: None,
             text,
+            char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: None,
             mark_active: false,
@@ -344,6 +368,7 @@ impl Buffer {
         }
 
         self.text = Rope::from_str(&text);
+        self.invalidate_char_cache();
         self.saved_text = saved_text;
         self.multibyte = enabled;
         self.clear_undo_history();
@@ -687,29 +712,23 @@ impl Buffer {
     }
 
     pub fn text_property_at(&self, pos: usize, prop: &str) -> Option<Value> {
-        if pos < self.point_min() || pos >= self.point_max() {
-            return None;
-        }
-        self.text_properties
+        self.text_properties_at_ref(pos)
             .iter()
-            .find(|span| span.start <= pos && pos < span.end)
-            .and_then(|span| {
-                span.props
-                    .iter()
-                    .find(|(name, _)| name == prop)
-                    .map(|(_, value)| value.clone())
-            })
+            .find(|(name, _)| name == prop)
+            .map(|(_, value)| value.clone())
+    }
+
+    pub(crate) fn text_properties_at_ref(&self, pos: usize) -> &[(String, Value)] {
+        if pos < self.point_min() || pos >= self.point_max() {
+            return &[];
+        }
+        text_property_span_at(&self.text_properties, pos)
+            .map(|span| span.props.as_slice())
+            .unwrap_or_default()
     }
 
     pub fn text_properties_at(&self, pos: usize) -> Vec<(String, Value)> {
-        if pos < self.point_min() || pos >= self.point_max() {
-            return Vec::new();
-        }
-        self.text_properties
-            .iter()
-            .find(|span| span.start <= pos && pos < span.end)
-            .map(|span| span.props.clone())
-            .unwrap_or_default()
+        self.text_properties_at_ref(pos).to_vec()
     }
 
     pub fn add_text_properties(&mut self, start: usize, end: usize, props: &[(String, Value)]) {
@@ -752,12 +771,27 @@ impl Buffer {
         });
     }
 
+    fn invalidate_char_cache(&mut self) {
+        self.char_cache.get_mut().valid = false;
+    }
+
     /// Character at position (1-based). None if out of range.
     pub fn char_at(&self, pos: usize) -> Option<char> {
         if pos < self.begv || pos >= self.zv {
             return None;
         }
-        Some(self.text.char(pos - 1))
+        let index = pos - 1;
+        if let Some(ch) = self.char_cache.borrow().character(index) {
+            return Some(ch);
+        }
+
+        let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
+        let mut cache = self.char_cache.borrow_mut();
+        cache.start = chunk_start;
+        cache.chars.clear();
+        cache.chars.extend(chunk.chars());
+        cache.valid = true;
+        cache.character(index)
     }
 
     /// Character just after point.
@@ -842,6 +876,7 @@ impl Buffer {
         let insert_at = self.pt;
         let idx0 = self.pt - 1; // 0-based
         self.text.insert(idx0, s);
+        self.invalidate_char_cache();
 
         // Record undo
         if !self.undo_disabled {
@@ -903,6 +938,7 @@ impl Buffer {
         }
         self.text.remove(from0..to0);
         self.text.insert(from0, text);
+        self.invalidate_char_cache();
         self.modiff += 1;
         self.chars_modiff = self.modiff;
         self.autosaved = false;
@@ -943,6 +979,7 @@ impl Buffer {
         }
 
         self.text.remove(from0..to0);
+        self.invalidate_char_cache();
 
         // Adjust point
         if self.pt > to {
@@ -1251,6 +1288,7 @@ impl Buffer {
 
     pub fn swap_text_state(&mut self, other: &mut Buffer) {
         std::mem::swap(&mut self.text, &mut other.text);
+        std::mem::swap(&mut self.char_cache, &mut other.char_cache);
         std::mem::swap(&mut self.pt, &mut other.pt);
         std::mem::swap(&mut self.mark, &mut other.mark);
         std::mem::swap(&mut self.mark_active, &mut other.mark_active);
@@ -1722,10 +1760,16 @@ fn map_position_through_groups(
     })
 }
 
+fn text_property_span_at(spans: &[TextPropertySpan], pos: usize) -> Option<&TextPropertySpan> {
+    let insertion = spans.partition_point(|span| span.start <= pos);
+    insertion
+        .checked_sub(1)
+        .and_then(|index| spans.get(index))
+        .filter(|span| pos < span.end)
+}
+
 fn properties_at_from(spans: &[TextPropertySpan], pos: usize) -> Vec<(String, Value)> {
-    spans
-        .iter()
-        .find(|span| span.start <= pos && pos < span.end)
+    text_property_span_at(spans, pos)
         .map(|span| span.props.clone())
         .unwrap_or_default()
 }
@@ -1809,14 +1853,17 @@ fn merge_adjacent_spans(mut spans: Vec<TextPropertySpan>) -> Vec<TextPropertySpa
     spans.sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
     let mut merged: Vec<TextPropertySpan> = Vec::new();
     for span in spans {
-        if let Some(last) = merged.last_mut()
-            && last.end == span.start
-            && text_property_plists_eq(&last.props, &span.props)
-        {
-            last.end = span.end;
-        } else {
-            merged.push(span);
+        if let Some(last) = merged.last_mut() {
+            debug_assert!(
+                last.end <= span.start,
+                "text property spans must be non-overlapping"
+            );
+            if last.end == span.start && text_property_plists_eq(&last.props, &span.props) {
+                last.end = span.end;
+                continue;
+            }
         }
+        merged.push(span);
     }
     merged
 }
@@ -1909,6 +1956,51 @@ mod tests {
     }
 
     #[test]
+    fn sparse_text_property_lookup_respects_span_boundaries() {
+        let mut buf = Buffer::from_text("properties", &"x".repeat(400));
+        for index in 0..64 {
+            let start = 2 + index * 5;
+            buf.set_text_properties(
+                start,
+                start + 2,
+                &[("slot".into(), Value::Integer(index as i64))],
+            );
+        }
+
+        assert!(buf.text_properties_at_ref(0).is_empty());
+        assert!(buf.text_properties_at_ref(1).is_empty());
+        assert!(buf.text_properties_at_ref(buf.point_max()).is_empty());
+        for index in 0..64 {
+            let start = 2 + index * 5;
+            let expected = [("slot".into(), Value::Integer(index as i64))];
+            assert_eq!(buf.text_properties_at_ref(start), expected.as_slice());
+            assert_eq!(buf.text_properties_at_ref(start + 1), expected.as_slice());
+            assert!(buf.text_properties_at_ref(start + 2).is_empty());
+            assert_eq!(buf.text_properties_at(start), expected);
+            assert_eq!(
+                buf.text_property_at(start, "slot"),
+                Some(Value::Integer(index as i64))
+            );
+        }
+
+        // Fill the first gap with the preceding span's properties.  The
+        // mutation authority must merge the adjacent equal intervals while
+        // retaining a sharp boundary at the differently-valued next span.
+        buf.set_text_properties(4, 7, &[("slot".into(), Value::Integer(0))]);
+        assert_eq!(buf.text_property_at(6, "slot"), Some(Value::Integer(0)));
+        assert_eq!(buf.text_property_at(7, "slot"), Some(Value::Integer(1)));
+        assert!(
+            buf.text_properties
+                .windows(2)
+                .all(|spans| spans[0].end <= spans[1].start)
+        );
+        assert_eq!(
+            (buf.text_properties[0].start, buf.text_properties[0].end),
+            (2, 7)
+        );
+    }
+
+    #[test]
     fn line_boundaries() {
         // editfns-tests--line-boundaries
         let mut buf = Buffer::from_text("test", "ab\ncd\n");
@@ -1944,6 +2036,32 @@ mod tests {
         buf.insert("b");
         assert_eq!(buf.buffer_string(), "abc");
         assert_eq!(buf.point(), 3); // after 'b'
+    }
+
+    #[test]
+    fn rope_character_cache_tracks_text_mutation_and_swap() {
+        let text = format!("{}λ{}", "a".repeat(1500), "b".repeat(1500));
+        let mut buf = Buffer::from_text("cached", &text);
+        assert_eq!(buf.char_at(1501), Some('λ'));
+        assert!(buf.char_cache.borrow().valid);
+
+        buf.goto_char(1);
+        buf.insert("z");
+        assert!(!buf.char_cache.borrow().valid);
+        assert_eq!(buf.char_at(1502), Some('λ'));
+
+        buf.replace_region_in_place(1502, 1503, "Ω", false);
+        assert!(!buf.char_cache.borrow().valid);
+        assert_eq!(buf.char_at(1502), Some('Ω'));
+
+        assert_eq!(buf.delete_region(1, 2), Ok("z".into()));
+        assert_eq!(buf.char_at(1501), Some('Ω'));
+
+        let mut other = Buffer::from_text("other", "q");
+        assert_eq!(other.char_at(1), Some('q'));
+        buf.swap_text_state(&mut other);
+        assert_eq!(buf.char_at(1), Some('q'));
+        assert_eq!(other.char_at(1501), Some('Ω'));
     }
 
     #[test]

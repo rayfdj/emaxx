@@ -1459,9 +1459,12 @@ define_dispatch!(
                             "find-file-literally",
                             Value::T,
                         );
-                    } else if let Some(mode) = mode.as_deref() {
-                        let _ = call_major_or_named_mode(interp, mode, env)?;
                     } else {
+                        // GNU files.el owns the complete visiting lifecycle:
+                        // mode selection and file/directory-local variables
+                        // are one `normal-mode' operation.  Choosing a known
+                        // suffix's mode directly here skipped the latter for
+                        // nearly every ordinary source file.
                         let _ = call_named_function(interp, "normal-mode", &[Value::T], env)?;
                     }
                     if file_exists && !file_writable_p(&path) {

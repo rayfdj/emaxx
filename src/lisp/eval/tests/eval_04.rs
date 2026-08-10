@@ -5072,6 +5072,35 @@ fn regexp_syntax_atoms_honor_position_specific_syntax_properties() {
 }
 
 #[test]
+fn copied_syntax_tables_clear_the_root_default_and_inherit_standard_syntax() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (let* ((standard (standard-syntax-table))
+                   (copy (copy-syntax-table standard))
+                   (custom (make-char-table 'syntax-table
+                                            (string-to-syntax "w")))
+                   (custom-copy (copy-syntax-table custom)))
+              (with-temp-buffer
+                (set-syntax-table copy)
+                (list (char-syntax ?a)
+                      (eq (char-table-parent copy) standard)
+                      (char-table-range copy nil)
+                      (char-table-range custom-copy nil)
+                      (eq (char-table-parent custom-copy) standard))))
+            "#,
+        ),
+        Value::list([
+            Value::Integer('w' as i64),
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn backward_forward_comment_honors_property_comment_end_before_whitespace() {
     assert_eq!(
         eval_str(
@@ -5135,6 +5164,137 @@ fn font_lock_defaults_syntax_alist_is_scoped_to_fontification() {
             Value::Symbol("font-lock-function-name-face".into()),
             Value::Symbol("font-lock-function-name-face".into()),
             Value::Integer('_' as i64),
+        ])
+    );
+}
+
+#[test]
+fn regexp_boundaries_honor_per_character_syntax_properties() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (list
+             (with-temp-buffer
+               (insert "a!")
+               (put-text-property 2 3 'syntax-table (string-to-syntax "_"))
+               (let ((parse-sexp-lookup-properties t))
+                 (goto-char 1)
+                 (let ((result (re-search-forward "a!?\\_>" nil t)))
+                   (list result (match-beginning 0) (match-end 0)))))
+             (with-temp-buffer
+               (insert "a!")
+               (put-text-property 2 3 'syntax-table (string-to-syntax "w"))
+               (let ((parse-sexp-lookup-properties t))
+                 (goto-char 1)
+                 (let ((result (re-search-forward "a!?\\_>" nil t)))
+                   (list result (match-beginning 0) (match-end 0))))))
+            "#,
+        ),
+        Value::list([
+            Value::list([Value::Integer(3), Value::Integer(1), Value::Integer(3)]),
+            Value::list([Value::Integer(3), Value::Integer(1), Value::Integer(3)]),
+        ])
+    );
+}
+
+#[test]
+fn regexp_ascii_punct_class_includes_symbols_like_gnu() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (list
+             (mapcar (lambda (text) (string-match-p "[[:punct:]]" text))
+                     '("|" "+" "$" "^" "~" "_" "(" "%" "!"))
+             (mapcar (lambda (text) (string-match-p "[[:punct:]]" text))
+                     '("a" "0" " ")))
+            "#,
+        ),
+        Value::list([
+            Value::list(std::iter::repeat_n(Value::Integer(0), 9)),
+            Value::list([Value::Nil, Value::Nil, Value::Nil]),
+        ])
+    );
+}
+
+#[test]
+fn font_lock_optional_nil_bounds_and_decoration_levels_match_gnu() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (list
+             (with-temp-buffer
+               (insert "alpha")
+               (setq font-lock-mode t
+                     font-lock-fontified t
+                     font-lock-defaults
+                     '(( ("alpha" 0 font-lock-keyword-face) )))
+               (font-lock-ensure nil nil)
+               (font-lock-flush nil nil)
+               (get-text-property 1 'face))
+             (with-temp-buffer
+               (insert "alpha beta")
+               (setq emaxx-test-font-lock-level
+                     '(("beta" 0 font-lock-function-name-face))
+                     font-lock-defaults '((emaxx-test-font-lock-level))
+                     font-lock-maximum-decoration t)
+               (font-lock-ensure)
+               (get-text-property 7 'face))
+             (with-temp-buffer
+               (insert "alpha beta")
+               (setq emaxx-test-font-lock-level-zero
+                     '(("alpha" 0 font-lock-keyword-face))
+                     emaxx-test-font-lock-level-one
+                     '(("beta" 0 font-lock-function-name-face))
+                     font-lock-defaults
+                     '((emaxx-test-font-lock-level-zero
+                        emaxx-test-font-lock-level-one))
+                     font-lock-maximum-decoration 0)
+               (font-lock-ensure)
+               (list (get-text-property 1 'face)
+                     (get-text-property 7 'face))))
+            "#,
+        ),
+        Value::list([
+            Value::symbol("font-lock-keyword-face"),
+            Value::symbol("font-lock-function-name-face"),
+            Value::list([Value::symbol("font-lock-keyword-face"), Value::Nil]),
+        ])
+    );
+}
+
+#[test]
+fn font_lock_keyword_matching_uses_and_restores_its_case_fold_setting() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (let ((case-fold-search t))
+              (list
+               (with-temp-buffer
+                 (insert "A a")
+                 (setq font-lock-mode t
+                       font-lock-defaults
+                       '(( ("[A-Z]+" 0 font-lock-type-face) ) nil nil))
+                 (font-lock-ensure)
+                 (list (get-text-property 1 'face)
+                       (get-text-property 3 'face)))
+               (with-temp-buffer
+                 (insert "A a")
+                 (setq font-lock-mode t
+                       font-lock-defaults
+                       '(( ("[A-Z]+" 0 font-lock-type-face) ) nil t))
+                 (font-lock-ensure)
+                 (list (get-text-property 1 'face)
+                       (get-text-property 3 'face)))
+               case-fold-search))
+            "#,
+        ),
+        Value::list([
+            Value::list([Value::symbol("font-lock-type-face"), Value::Nil]),
+            Value::list([
+                Value::symbol("font-lock-type-face"),
+                Value::symbol("font-lock-type-face"),
+            ]),
+            Value::T,
         ])
     );
 }

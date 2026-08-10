@@ -514,7 +514,7 @@ pub(crate) fn substitute_object_recurse(
             if let Some(table) = interp.find_char_table_mut(*id) {
                 table.default = default;
                 table.extra_slots = updated_slots;
-                table.entries = updated_entries;
+                table.replace_entries(updated_entries);
             }
             Ok(subtree.clone())
         }

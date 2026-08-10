@@ -739,7 +739,7 @@ define_dispatch!(
                             LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
                         })?;
                         table.default = args[1].clone();
-                        table.entries.clear();
+                        table.clear_entries();
                         Ok(args[0].clone())
                     }
                     other => Err(LispError::TypeError("array".into(), other.type_name())),
@@ -1072,7 +1072,13 @@ define_dispatch!(
                         return Err(LispError::TypeError("char-table".into(), other.type_name()));
                     }
                 };
-                interp.clone_char_table(source)
+                if interp.char_table_purpose(source) != Some("syntax-table") {
+                    return Err(LispError::TypeError(
+                        "syntax-table".into(),
+                        "char-table".into(),
+                    ));
+                }
+                interp.copy_syntax_table(source)
             }
 
             "syntax-table" => {

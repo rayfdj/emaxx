@@ -272,8 +272,18 @@ fn encode_charset_coding_bytes(
         }
         let code = charsets
             .iter()
-            .find_map(|charset| encode_charset_char(interp, charset, scalar))
-            .ok_or_else(|| LispError::Signal("Character cannot be encoded".into()))?;
+            .find_map(|charset| encode_charset_char(interp, charset, scalar));
+        let code = if let Some(code) = code {
+            code
+        } else if ascii_compatible {
+            encoded.push(b' ');
+            continue;
+        } else {
+            charsets
+                .iter()
+                .find_map(|charset| encode_charset_char(interp, charset, u32::from(b' ')))
+                .ok_or_else(|| LispError::Signal("Character cannot be encoded".into()))?
+        };
         let bytes = code.to_be_bytes();
         let first = bytes
             .iter()
@@ -1139,6 +1149,30 @@ fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str)
                 }
             })
             .collect(),
+        "charset" => {
+            let charsets = coding_system_charset_names(interp, coding);
+            let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
+            text.chars()
+                .map(|ch| {
+                    let scalar = raw_byte_from_regex_char(ch)
+                        .map(u32::from)
+                        .unwrap_or(ch as u32);
+                    if ascii_compatible && scalar <= 0x7f
+                        || charsets
+                            .iter()
+                            .any(|charset| encode_charset_char(interp, charset, scalar).is_some())
+                    {
+                        ch
+                    } else {
+                        // GNU's charset coders use a space as their default
+                        // replacement for an unrepresentable character.  The
+                        // selected coding system remains authoritative; this
+                        // is not an implicit fallback to UTF-8.
+                        ' '
+                    }
+                })
+                .collect()
+        }
         "us-ascii" => text
             .chars()
             .map(|ch| {

@@ -1944,7 +1944,7 @@ fn char_table_from_literal_fields(
         Value::CharTable(parent_id) => Some(parent_id),
         _ => None,
     };
-    state.entries = entries;
+    state.replace_entries(entries);
     state.extra_slots = extra_slots;
     Ok(table)
 }

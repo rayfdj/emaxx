@@ -2274,23 +2274,25 @@ define_dispatch!(
                 {
                     return Ok(Value::Nil);
                 }
-                let start = args
-                    .first()
-                    .map(|value| position_from_value(interp, value))
-                    .transpose()?
-                    .unwrap_or_else(|| interp.buffer.point_min());
-                let end = args
-                    .get(1)
-                    .map(|value| position_from_value(interp, value))
-                    .transpose()?
-                    .unwrap_or_else(|| interp.buffer.point_max());
+                let start = match args.first() {
+                    Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+                    Some(_) | None => interp.buffer.point_min(),
+                };
+                let end = match args.get(1) {
+                    Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+                    Some(_) | None => interp.buffer.point_max(),
+                };
                 font_lock_ensure_region(interp, start, end, env)?;
                 Ok(Value::Nil)
             }
             #[dispatch(builtin_override)]
             "font-lock-ensure" | "font-lock-fontify-region" => {
                 // font-lock-fontify-region also takes GNU's optional LOUDLY.
-                need_arg_range(name, args, 0, 3)?;
+                if name == "font-lock-ensure" {
+                    need_arg_range(name, args, 0, 2)?;
+                } else {
+                    need_arg_range(name, args, 2, 3)?;
+                }
                 // GNU fontifies whenever fontification is specified for the
                 // buffer (font-lock-specified-p), even with font-lock-mode off
                 // in batch.
@@ -2312,16 +2314,20 @@ define_dispatch!(
                 {
                     return Ok(Value::Nil);
                 }
-                let start = args
-                    .first()
-                    .map(|value| position_from_value(interp, value))
-                    .transpose()?
-                    .unwrap_or_else(|| interp.buffer.point_min());
-                let end = args
-                    .get(1)
-                    .map(|value| position_from_value(interp, value))
-                    .transpose()?
-                    .unwrap_or_else(|| interp.buffer.point_max());
+                let start = match args.first() {
+                    Some(value) if name == "font-lock-ensure" && value.is_nil() => {
+                        interp.buffer.point_min()
+                    }
+                    Some(value) => position_from_value(interp, value)?,
+                    None => interp.buffer.point_min(),
+                };
+                let end = match args.get(1) {
+                    Some(value) if name == "font-lock-ensure" && value.is_nil() => {
+                        interp.buffer.point_max()
+                    }
+                    Some(value) => position_from_value(interp, value)?,
+                    None => interp.buffer.point_max(),
+                };
                 let region_function = interp
                     .lookup_var("font-lock-fontify-region-function", env)
                     .filter(|function| {

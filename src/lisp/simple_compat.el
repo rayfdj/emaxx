@@ -34,6 +34,7 @@
 ;; function cell even though both names execute through the Rust primitive;
 ;; metadata consumers such as `function-alias-p' follow the alias.
 (defalias 'string= #'string-equal)
+(defalias 'store-match-data #'set-match-data)
 
 ;; This tiny subr.el conversion helper is part of the dumped image.  Keep the
 ;; definition in Lisp and let the native sequence primitive own representation.
@@ -12070,6 +12071,23 @@ set to nil, as the value is no longer rogue."
       (make-variable-buffer-local symbol)))
   (run-hooks 'custom-define-hook)
   symbol)
+
+;; GNU custom.el owns this macro.  The evaluator retains a bootstrap fallback,
+;; but normal batch startup must expand through `custom-declare-variable' so
+;; keyword policy such as :safe and :risky has one Elisp owner.
+(defmacro defcustom (symbol standard doc &rest args)
+  "Declare SYMBOL as a customizable variable."
+  (declare (doc-string 3) (debug (name body))
+	   (indent defun))
+  `(custom-declare-variable
+    ',symbol
+    ,(if lexical-binding
+	 ;; Preserve lexical evaluation of STANDARD exactly as GNU custom.el
+	 ;; does while still storing a re-evaluable standard-value expression.
+	 ``(funcall #',(lambda () "" ,standard))
+       `',standard)
+    ,doc
+    ,@args))
 
 (defun custom-declare-group (symbol members doc &rest args)
   "Like `defgroup', but SYMBOL is evaluated as a normal argument."
