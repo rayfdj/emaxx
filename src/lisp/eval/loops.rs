@@ -2182,6 +2182,41 @@ impl Interpreter {
         }
     }
 
+    /// GNU gv.el's one expansion pipeline for generalized-variable places:
+    /// first ordinary macro expansion, then the operator's compiler macro
+    /// when the place was unchanged.  Both native SETF evaluation and nested
+    /// place resolution use this owner so the two paths cannot drift.
+    pub(super) fn try_expand_generalized_place(
+        &mut self,
+        place: &Value,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Option<Value>, LispError> {
+        let Some(Value::Symbol(name)) = items.first() else {
+            return Ok(None);
+        };
+        if let Some(expanded) = self.try_macroexpand(name, &items[1..], env)?
+            && expanded != *place
+        {
+            return Ok(Some(expanded));
+        }
+        // The handler receives the complete place followed by its arguments.
+        // Read the property on every resolution: `put' may install or replace
+        // it between calls, and symbol-property mutation already invalidates
+        // source-form macro caches independently.
+        let Some(expander) = self
+            .get_symbol_property(name, "compiler-macro")
+            .filter(Value::is_truthy)
+        else {
+            return Ok(None);
+        };
+        let mut expander_args = Vec::with_capacity(items.len());
+        expander_args.push(place.clone());
+        expander_args.extend(items[1..].iter().cloned());
+        let expanded = self.call_function_value(expander, None, &expander_args, env)?;
+        Ok((expanded != *place).then_some(expanded))
+    }
+
     pub(super) fn resolve_setf_place(
         &mut self,
         place: &Value,
@@ -2191,10 +2226,7 @@ impl Interpreter {
             return Ok(place.clone());
         };
         let items = place.to_vec()?;
-        if let Some(Value::Symbol(name)) = items.first()
-            && let Some(expanded) = self.try_macroexpand(name, &items[1..], env)?
-            && expanded != *place
-        {
+        if let Some(expanded) = self.try_expand_generalized_place(place, &items, env)? {
             return self.resolve_setf_place(&expanded, env);
         }
         match items.first() {

@@ -4417,6 +4417,7 @@ fn macrop_recognizes_defined_and_autoloaded_macros() {
                        (defalias 'sample-alias-macro 'sample-live-macro)
                        (list
                         (macrop 'sample-live-macro)
+                        (macrop (symbol-function 'sample-live-macro))
                         (macrop 'sample-alias-macro)
                         (progn
                           (autoload 'sample-auto-macro \"sample-auto\" nil nil 'macro)
@@ -4424,7 +4425,14 @@ fn macrop_recognizes_defined_and_autoloaded_macros() {
                         (sample-alias-macro)
                         (macrop 'car)))"
             ),
-            Value::list([Value::T, Value::T, Value::T, Value::Nil, Value::Nil])
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+            ])
         );
     });
 }

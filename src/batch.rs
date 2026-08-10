@@ -573,6 +573,16 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         }
     }
 
+    // GNU loads indent.el immediately before cl-generic and simple.el.  Its
+    // TAB command and indentation orchestration are Lisp policy layered over
+    // native buffer primitives; preload the complete owner instead of growing
+    // a second, partial command implementation as language modes exercise it.
+    if !interpreter.has_feature("indent") && interpreter.resolve_load_target("indent").is_some() {
+        interpreter
+            .load_target("indent")
+            .map_err(|error| format!("preload indent: {error}"))?;
+    }
+
     // GNU dumps simple.el before minibuffer.el.  It owns the completion-list
     // navigation and selection commands used by Minibuffer's M-up/M-down
     // bindings.  Keep those command policies in the standard GNU library
@@ -1046,9 +1056,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
+        let permit = crate::test_support::acquire_host_test_permit();
         thread::Builder::new()
             .stack_size(128 * 1024 * 1024)
-            .spawn(test)
+            .spawn(move || {
+                let _permit = permit;
+                test();
+            })
             .expect("spawn large-stack test thread")
             .join()
             .expect("join large-stack test thread");
@@ -1861,6 +1875,7 @@ mod tests {
     #[test]
     fn batch_runtime_applies_the_gnu_locale_startup_policy() {
         run_with_large_stack(|| {
+            crate::test_support::mark_process_test();
             let emacs_repo = compat::project_root().join("../emacs");
             let oracle = emacs_repo.join("src/emacs");
             let expression = "(list current-locale-environment

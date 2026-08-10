@@ -941,6 +941,22 @@ fn setf_supports_aref_places_bound_in_lexical_variables() {
 }
 
 #[test]
+fn setf_aref_mutates_record_slots_without_losing_identity() {
+    assert_eq!(
+        eval_str(
+            "(let ((object (record 'sample 1 '(2))))
+               (cl-pushnew 3 (aref object 2))
+               (list (recordp object) (aref object 0) (aref object 2)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Symbol("sample".into()),
+            Value::list([Value::Integer(3), Value::Integer(2)]),
+        ])
+    );
+}
+
+#[test]
 fn setf_uses_symbol_gv_setter_declarations() {
     assert_eq!(
         eval_str(

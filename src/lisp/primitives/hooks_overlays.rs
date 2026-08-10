@@ -932,36 +932,58 @@ pub(crate) fn font_lock_fontify_defaults_region(
         return Ok(());
     }
     let defaults_items = defaults.to_vec().unwrap_or_default();
-    font_lock_apply_default_variable_bindings(interp, &defaults_items);
-    // GNU fontification triggers `syntax-propertize' through syntax-ppss;
-    // run it up front so `syntax-table' text properties are in place.
-    if let Ok(function) = interp.lookup_function("syntax-propertize", env) {
-        let _ = interp.call_function_value(
-            function,
-            Some("syntax-propertize"),
-            &[Value::Integer(end as i64)],
-            env,
-        );
+    font_lock_apply_default_variable_bindings(interp, &defaults_items)?;
+
+    // font-lock-default-fontify-region runs both syntactic and keyword
+    // fontification under the mode's derived `font-lock-syntax-table'.  In
+    // Perl mode this is what makes `_` a word constituent while matching a
+    // declaration without changing the buffer's ordinary syntax table.
+    let saved_buffer = interp.current_buffer_id();
+    let saved_syntax_table = interp.current_syntax_table_id();
+    if let Some(Value::CharTable(table_id)) =
+        interp.buffer_local_value(saved_buffer, "font-lock-syntax-table")
+    {
+        interp.set_current_syntax_table(table_id);
     }
-    let keywords_only = defaults_items.get(1).is_some_and(|value| value.is_truthy());
-    if !keywords_only {
-        font_lock_syntactic_pass(interp, start, end, env)?;
+    let result = (|| {
+        // GNU fontification triggers `syntax-propertize' through syntax-ppss;
+        // run it up front so `syntax-table' text properties are in place.
+        if let Ok(function) = interp.lookup_function("syntax-propertize", env) {
+            let _ = interp.call_function_value(
+                function,
+                Some("syntax-propertize"),
+                &[Value::Integer(end as i64)],
+                env,
+            );
+        }
+        let keywords_only = defaults_items.get(1).is_some_and(|value| value.is_truthy());
+        if !keywords_only {
+            font_lock_syntactic_pass(interp, start, end, env)?;
+        }
+        let Some(keywords_spec) = defaults_items.first().cloned() else {
+            return Ok(());
+        };
+        let entries = font_lock_choose_keywords(interp, &keywords_spec, env)?;
+        for entry in entries {
+            font_lock_apply_keyword_entry(interp, &entry, start, end, env)?;
+        }
+        Ok(())
+    })();
+    if interp.current_buffer_id() != saved_buffer {
+        let _ = interp.switch_to_buffer_id(saved_buffer);
     }
-    let Some(keywords_spec) = defaults_items.first().cloned() else {
-        return Ok(());
-    };
-    let entries = font_lock_choose_keywords(interp, &keywords_spec, env)?;
-    for entry in entries {
-        font_lock_apply_keyword_entry(interp, &entry, start, end, env)?;
-    }
-    Ok(())
+    interp.set_current_syntax_table(saved_syntax_table);
+    result
 }
 
 // GNU font-lock-set-defaults installs the variable alist trailing
 // font-lock-defaults as buffer-local state.  Modes use this for behavioral
 // hooks as well as cosmetic policy; SGML/NXML's syntactic-face function, for
 // example, distinguishes attribute strings from quoted text outside tags.
-fn font_lock_apply_default_variable_bindings(interp: &mut Interpreter, defaults: &[Value]) {
+fn font_lock_apply_default_variable_bindings(
+    interp: &mut Interpreter,
+    defaults: &[Value],
+) -> Result<(), LispError> {
     let buffer_id = interp.current_buffer_id();
     for (name, value) in [
         ("font-lock-keywords-only", defaults.get(1)),
@@ -988,6 +1010,51 @@ fn font_lock_apply_default_variable_bindings(interp: &mut Interpreter, defaults:
             interp.set_buffer_local_value(buffer_id, name, value);
         }
     }
+
+    if interp
+        .buffer_local_value(buffer_id, "font-lock-syntax-table")
+        .is_none()
+    {
+        let syntax_alist = defaults.get(3).cloned().unwrap_or(Value::Nil);
+        if syntax_alist.is_nil() {
+            interp.set_buffer_local_value(buffer_id, "font-lock-syntax-table", Value::Nil);
+        } else {
+            let Value::CharTable(table_id) =
+                interp.clone_char_table(interp.current_syntax_table_id())?
+            else {
+                unreachable!("clone_char_table returns a char table");
+            };
+            for entry in syntax_alist.to_vec()? {
+                let Some((characters, syntax)) = entry.cons_values() else {
+                    continue;
+                };
+                let characters = match characters {
+                    Value::Integer(character) => vec![character],
+                    Value::String(_) | Value::StringObject(_) => string_text(&characters)?
+                        .chars()
+                        .map(|character| character as i64)
+                        .collect(),
+                    _ => continue,
+                };
+                let syntax = string_text(&syntax)?;
+                for character in characters {
+                    let Ok(character) = u32::try_from(character) else {
+                        continue;
+                    };
+                    interp.char_table_set(
+                        table_id,
+                        character,
+                        Value::String(syntax.clone().into()),
+                    )?;
+                }
+            }
+            interp.set_buffer_local_value(
+                buffer_id,
+                "font-lock-syntax-table",
+                Value::CharTable(table_id),
+            );
+        }
+    }
     if interp
         .buffer_local_value(buffer_id, "font-lock-set-defaults")
         .is_none()
@@ -998,6 +1065,7 @@ fn font_lock_apply_default_variable_bindings(interp: &mut Interpreter, defaults:
             .unwrap_or(Value::Nil);
         interp.set_buffer_local_value(buffer_id, "font-lock-major-mode", major_mode);
     }
+    Ok(())
 }
 
 // Resolve the KEYWORDS position of `font-lock-defaults': a symbol names a
@@ -1088,36 +1156,36 @@ fn font_lock_syntactic_pass(
             )?,
             _ => default_face,
         };
-        // Find the end of the construct.
-        let construct_end = if in_comment {
-            interp.buffer.goto_char(construct_start);
-            let moved = font_lock_call_quiet(interp, "forward-comment", &[Value::Integer(1)], env)
-                .unwrap_or(Value::Nil);
-            if moved.is_truthy() {
-                interp.buffer.point().min(end.max(pos + 1))
-            } else {
-                end
-            }
-        } else {
-            // Scan forward until the string state clears.
-            let mut cursor = pos + 1;
-            while cursor < end {
-                let state = font_lock_call_quiet(
-                    interp,
-                    "syntax-ppss",
-                    &[Value::Integer((cursor + 1) as i64)],
-                    env,
-                )
-                .unwrap_or(Value::Nil);
-                let items = state.to_vec().unwrap_or_default();
-                if !items.get(3).is_some_and(|value| value.is_truthy()) {
-                    cursor += 1;
-                    break;
-                }
-                cursor += 1;
-            }
-            cursor
-        };
+        // Continue the already-computed PPSS state until this construct's
+        // closing syntax boundary.  This is the same parser and temporary
+        // syntax table that produced STATE, but it scans the construct once;
+        // asking `syntax-ppss' to reparse every successive prefix is
+        // quadratic on large comments and heredocs.
+        let scan_start = (pos + 1).min(end);
+        // `syntax-ppss' parses under `syntax-ppss-table' and restores the
+        // buffer's ordinary table before returning.  Resume under that same
+        // table: otherwise a delimiter whose syntax differs between the two
+        // tables (notably an apostrophe in the regression below) never closes
+        // the state we just obtained.
+        let saved_syntax_table = interp.current_syntax_table_id();
+        if let Some(Value::CharTable(table_id)) = interp.lookup_var("syntax-ppss-table", env) {
+            interp.set_current_syntax_table(table_id);
+        }
+        let parse_result = super::syntax::parse_forward(
+            interp,
+            scan_start,
+            end,
+            None,
+            false,
+            Some(&state),
+            super::syntax::CommentStop::SyntaxTable,
+            env,
+        );
+        interp.set_current_syntax_table(saved_syntax_table);
+        let construct_end = parse_result
+            .map(|_| interp.buffer.point())
+            .unwrap_or(scan_start)
+            .max(scan_start);
         let span_end = construct_end.max(pos + 1).min(end);
         if !face.is_nil() {
             font_lock_put_buffer_property(

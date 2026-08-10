@@ -18,6 +18,68 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-10 PERL CHECKPOINT: the fresh contiguous ordered frontier is
+  4,799/7,080, leaving 2,281 selectors.  Perl's complete 66-case default
+  selection matches GNU in the final-source artifact
+  `target/compat/run-1786366039178122000-16825`; exact
+  `cperl-test-bug-47112` matches in
+  `target/compat/run-1786365917822616000-16574`.  The first four Project
+  selectors also match.  Selector 4,800,
+  `project-vc-extra-root-markers-supports-wildcards`, is next: GNU detects Git,
+  executes the body, and passes, while Emaxx's `vc-responsible-backend` returns
+  nil, causing Emaxx alone to fail the test's prerequisite and report skipped.
+  The harness correctly records that status difference as a mismatch in
+  `target/compat/run-1786366058746610000-16954`.  The same run shows the next
+  three Project VC selectors as GNU PASS/Emaxx SKIP too:
+  `project-vc-nonexistent-directory-no-error`, `project-vc-recognizes-git`,
+  and `project-vc-supports-project-in-different-dir`.
+
+  Preserve the shared architecture established here.  Position-specific
+  `syntax-table` properties are represented at the regexp/search boundary by
+  a position-preserving encoding whose mapping is part of the compiled cache
+  key.  Anchors, dot, bracket expressions, positive and negative syntax atoms,
+  and ordinary literals retain their original-character semantics.  The
+  existing Emacs-regexp translator is the only grammar owner; do not re-add a
+  second parser for literal preservation.  Focused coverage includes
+  noncapturing and explicitly numbered groups, interval metadata, literal
+  `$`, encoded newlines under dot/anchors/brackets, all syntax-class
+  designators, negation, and cross-buffer cache isolation.
+
+  Backward `forward-comment` pairs property-supplied comment ends before
+  treating unmatched newline ends as whitespace and respects comment styles.
+  `-` is GNU's alternate whitespace syntax designator.  Font Lock constructs
+  and scopes its defaults syntax table, while its syntactic pass continues a
+  single parser state linearly rather than issuing one growing-prefix PPSS
+  parse per character.  GNU `indent.el` remains the Elisp indentation-policy
+  owner; native startup only preloads that owner and supplies its host
+  primitives/default variable.
+
+  Final Perl setup is GNU/Emaxx 0.260/1.935 seconds and body is 0.063/0.833
+  (13.066x but only a 770-ms absolute body gap, below the agreed interruption
+  threshold).  Project setup is 0.322/1.828 seconds and body is 1.099/0.737;
+  Emaxx is faster in that comparable body.
+  Run the exact Perl selector, the full Perl file, and the full Project file
+  with `--selector default --timeout-seconds 180` to reproduce the artifacts.
+
+  Preserve the selective test scheduler.  Shared large-stack integration
+  tests have two-way capacity, while Eshell and proven timing-sensitive tests
+  use the exclusive side.  A separate process-test gate is acquired
+  automatically at Emaxx's synchronous/persistent subprocess boundary and is
+  held for the marked test thread's lifetime; unrelated Rust tests remain
+  parallel.  Its separate gate avoids shared-to-exclusive self-deadlock.
+  The 1,906-test default-parallel run completed in 5,206.32 seconds with every
+  marked Eshell family passing.  Nine failures were restricted-sandbox
+  network denials; three process deadlines under severe external host load all
+  pass in focused sequential replay.  Do not replace this with blanket serial
+  execution or scattered new annotations.
+
+  NEXT after committing and pushing this isolated checkpoint: audit and
+  validate `/Users/nbmhqa186/Downloads/emaxx-vm-perf-round9.patch`, then
+  `/Users/nbmhqa186/Downloads/emaxxvmperfround10.patch`.  Against the resulting
+  tree, assess `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch`
+  and publish a GitHub issue only if its diagnosis is still supported.  Then
+  resume selector 4,800 and repair Git VC detection without counting Emaxx's
+  unilateral skip as a pass.
 - 2026-08-10 GDB-THROUGH-PEG CHECKPOINT: the fresh contiguous ordered frontier
   is 4,729/7,080, leaving 2,351 selectors.  All 51 outcomes across GDB MI,
   Glasses, Go TS, Grep, Heex TS, Hideshow, Java TS, JS, Lua TS, Octave,

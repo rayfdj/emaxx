@@ -1,52 +1,8 @@
 use super::*;
 use crate::lisp::reader::Reader;
 use std::path::PathBuf;
-use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-const MAX_CONCURRENT_LARGE_STACK_TESTS: usize = 2;
-
-struct LargeStackTestGate {
-    active: Mutex<usize>,
-    available: Condvar,
-}
-
-struct LargeStackTestPermit {
-    gate: &'static LargeStackTestGate,
-}
-
-impl Drop for LargeStackTestPermit {
-    fn drop(&mut self) {
-        let mut active = self
-            .gate
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *active = active.saturating_sub(1);
-        self.gate.available.notify_one();
-    }
-}
-
-fn acquire_large_stack_test_permit() -> LargeStackTestPermit {
-    static GATE: OnceLock<LargeStackTestGate> = OnceLock::new();
-    let gate = GATE.get_or_init(|| LargeStackTestGate {
-        active: Mutex::new(0),
-        available: Condvar::new(),
-    });
-    let mut active = gate
-        .active
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    while *active >= MAX_CONCURRENT_LARGE_STACK_TESTS {
-        active = gate
-            .available
-            .wait(active)
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-    }
-    *active += 1;
-    LargeStackTestPermit { gate }
-}
 
 fn eval_str(src: &str) -> Value {
     let mut interp = Interpreter::new();
@@ -111,7 +67,7 @@ fn assert_string_list(value: Value, expected: &[&str]) {
 }
 
 fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
-    let permit = acquire_large_stack_test_permit();
+    let permit = crate::test_support::acquire_host_test_permit();
     thread::Builder::new()
         .stack_size(128 * 1024 * 1024)
         .spawn(move || {
@@ -124,12 +80,25 @@ fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
 }
 
 fn run_large_stack_test(test_fn: fn()) {
-    let permit = acquire_large_stack_test_permit();
+    let permit = crate::test_support::acquire_host_test_permit();
     thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
             let _permit = permit;
             test_fn();
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn run_exclusive_with_large_stack(test: impl FnOnce() + Send + 'static) {
+    let permit = crate::test_support::acquire_exclusive_host_test_permit();
+    thread::Builder::new()
+        .stack_size(128 * 1024 * 1024)
+        .spawn(move || {
+            let _permit = permit;
+            test();
         })
         .unwrap()
         .join()

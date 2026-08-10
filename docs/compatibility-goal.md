@@ -42,6 +42,83 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-10 Perl checkpoint advances the fresh contiguous ordered
+  frontier to 4,799/7,080, leaving 2,281 selectors.  All 66 selected outcomes
+  in `test/lisp/progmodes/perl-mode-tests.el` match GNU in the final-source
+  artifact `target/compat/run-1786366039178122000-16825`; the exact replay of
+  the formerly failing `cperl-test-bug-47112` also matches in
+  `target/compat/run-1786365917822616000-16574`.  The first four Project
+  selectors match too.  The exploratory Project run then finds four GNU
+  PASS/Emaxx SKIP mismatches, beginning at selector 4,800,
+  `project-vc-extra-root-markers-supports-wildcards`, is the next mismatch:
+  Emaxx's `vc-responsible-backend` returns nil, causing Emaxx alone to fail the
+  test's prerequisite and report skipped, while GNU identifies Git, executes
+  the body, and passes.  The harness correctly counts that status difference
+  as a mismatch.  The following three mismatches are
+  `project-vc-nonexistent-directory-no-error`, `project-vc-recognizes-git`,
+  and `project-vc-supports-project-in-different-dir`; all share the same VC
+  detection boundary.  The final-source exploratory artifact is
+  `target/compat/run-1786366058746610000-16954`.
+
+  The Perl failures were a shared syntax/search composition gap, not a Perl
+  policy port.  With `parse-sexp-lookup-properties` non-nil, regexp syntax
+  atoms now use each buffer character's effective `syntax-table` property.
+  A position-preserving private-use encoding lets the existing regexp engine
+  distinguish characters that have the same spelling but different effective
+  syntax while retaining exact match positions.  Anchors, dot, bracket
+  classes, ordinary literals, positive/negative syntax atoms, and the compiled
+  regexp cache all preserve the original character contract.  Literal
+  preservation lives in the existing Emacs-regexp translator—the single
+  grammar owner—so group and repeat metadata are never parsed by a second
+  mini-parser.
+
+  The same repair covers the surrounding parser contracts.  `string-to-syntax`
+  accepts GNU's visible `-` spelling for whitespace.  Backward
+  `forward-comment` gives a property-supplied comment end priority over its
+  fallback newline-whitespace role and pairs only matching comment styles.
+  Font Lock derives and scopes the `font-lock-defaults` syntax alist, then
+  continues one already-computed parse state to a construct boundary instead
+  of reparsing every growing prefix.  That changes Perl heredoc fontification
+  from quadratic PPSS traffic to one linear parse without moving mode policy
+  out of GNU's Elisp.  GNU `indent.el` remains the indentation policy owner and
+  is preloaded in its dump-order position; native code only supplies the
+  scanner variable and primitives it calls.
+
+  Final Perl setup is GNU/Emaxx 0.260/1.935 seconds and body is 0.063/0.833
+  seconds (13.066x, a 770-ms absolute body gap).  The ratio remains diagnostic,
+  but the body is below the simultaneous one-second march threshold; setup is
+  reported separately and remains excluded as dumped-image reconstruction.
+  Project setup is 0.322/1.828 seconds and body is 1.099/0.737 (Emaxx is
+  faster in the comparable body).
+
+  Test-only host scheduling now has one shared/exclusive authority.  Ordinary
+  large-stack integration tests retain bounded two-way parallelism; Eshell and
+  the few proven timing-sensitive host tests take its exclusive permit.
+  Separately, all tests crossing Emaxx's synchronous or persistent subprocess
+  boundary join one process-test group automatically, so future tests cannot
+  omit a per-test marker while unrelated Rust tests remain parallel.  A full
+  default-parallel run completed all 1,906 library tests in 5,206.32 seconds:
+  all marked Eshell families passed; nine failures were restricted-sandbox
+  socket/TLS/UDP denials, and three process deadlines coincided with severe
+  external host scheduling delays.  Those three pass in focused sequential
+  replay, including both process-filter cases together.  Gate lifecycle and
+  shared/exclusive fairness have direct regression tests.
+
+  Exact replay commands were:
+
+  ```sh
+  cargo run --release --bin compat-harness -- run --scope all --selector default --file test/lisp/progmodes/perl-mode-tests.el --name cperl-test-bug-47112 --timeout-seconds 180
+  cargo run --release --bin compat-harness -- run --scope all --selector default --file test/lisp/progmodes/perl-mode-tests.el --timeout-seconds 180
+  cargo run --release --bin compat-harness -- run --scope all --selector default --file test/lisp/progmodes/project-tests.el --timeout-seconds 180
+  ```
+
+  After this checkpoint is committed and pushed, independently audit and
+  validate `/Users/nbmhqa186/Downloads/emaxx-vm-perf-round9.patch`, then
+  `/Users/nbmhqa186/Downloads/emaxxvmperfround10.patch`.  Only against that
+  resulting tree, assess
+  `/Users/nbmhqa186/Downloads/emaxxsymbolobjectsissuedoc.patch` and publish its
+  diagnosis as a GitHub issue if current evidence supports it.  Do not mix any
+  of those artifacts into this clean compatibility checkpoint.
 - The 2026-08-10 GDB-through-PEG checkpoint advances the fresh contiguous
   ordered frontier to 4,729/7,080, leaving 2,351 selectors.  All 51 outcomes
   from GDB MI through PEG now match GNU: GDB MI (1), Glasses (7), Go TS (2),

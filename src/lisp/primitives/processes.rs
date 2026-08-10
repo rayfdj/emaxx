@@ -7,6 +7,9 @@ pub(crate) fn run_external_process(
     input: Option<&[u8]>,
     env: &Env,
 ) -> Result<std::process::Output, LispError> {
+    #[cfg(test)]
+    crate::test_support::mark_process_test();
+
     let mut command = Command::new(program);
     command.args(argv);
     configure_external_command(interp, env, &mut command);
@@ -55,6 +58,9 @@ pub(crate) fn spawn_persistent_process(
     connection_type: Option<&Value>,
     separate_stderr: bool,
 ) -> Result<RunningProcess, LispError> {
+    #[cfg(test)]
+    crate::test_support::mark_process_test();
+
     let mut command = Command::new(program);
     command.args(argv);
     configure_external_command(interp, env, &mut command);

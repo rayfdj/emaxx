@@ -7,6 +7,7 @@ fn upstream_emacs_repo() -> PathBuf {
 }
 
 fn assert_upstream_primitive_contract(program: &str, expected: &str) {
+    crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
     let output = std::process::Command::new(&binary)
         .args(["--batch", "-Q", "--eval", program])
@@ -26,6 +27,7 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
 }
 
 fn assert_upstream_primitive_contract_with_stdin(program: &str, stdin: &str, expected: &str) {
+    crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
     let mut child = std::process::Command::new(&binary)
         .args(["--batch", "-Q", "--eval", program])
@@ -1125,6 +1127,7 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
                table)
               (prin1
                (list (string-to-syntax ".")
+                     (string-to-syntax "-")
                      (string-to-syntax ". 1234")
                      (string-to-syntax "(] 1234")
                      (string-to-syntax "@")
@@ -1136,12 +1139,22 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
                          (string-to-syntax "z")
                        (error (list (car error)
                                     (error-message-string error)))))))"#,
-        "((1) (983041) (983044 . 93) nil (8388609) (8388609) (8388609) (8388609) (error \"Invalid syntax description letter: z\"))",
+        "((1) (0) (983041) (983044 . 93) nil (8388609) (8388609) (8388609) (8388609) (error \"Invalid syntax description letter: z\"))",
     );
 
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
 
+    assert_eq!(
+        call(
+            &mut interp,
+            "string-to-syntax",
+            &[Value::String("-".into())],
+            &mut env,
+        )
+        .expect("hyphen whitespace syntax alias"),
+        Value::list([Value::Integer(0)])
+    );
     assert_eq!(
         call(
             &mut interp,
@@ -3952,6 +3965,10 @@ fn process_lines_uses_default_directory_as_subprocess_cwd() {
 #[cfg(unix)]
 #[test]
 fn process_send_string_and_region_route_output_to_the_process_buffer() {
+    // This timing-sensitive real subprocess test failed only while competing
+    // with the marked GNU-library integration class.  Share that class's
+    // explicit permit; unrelated primitive tests remain parallel.
+    let _permit = crate::test_support::acquire_exclusive_host_test_permit();
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let (buffer_id, buffer_name) = interp.create_buffer("*process-output*");
@@ -4581,6 +4598,7 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
 
 #[test]
 fn accept_process_output_honors_seconds_with_no_millis_argument() {
+    let _permit = crate::test_support::acquire_exclusive_host_test_permit();
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let buffer = Value::buffer(interp.current_buffer_id(), String::new());
@@ -4602,16 +4620,26 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
     // once.  Keep it generous because the full parallel suite can leave a
     // newly spawned shell unscheduled for more than one second on a busy
     // host.  The exact seconds-only parsing contract is asserted below.
-    assert_eq!(
-        call(
-            &mut interp,
-            "accept-process-output",
-            &[process, Value::Integer(10)],
-            &mut env,
-        )
-        .expect("accept-process-output should wait for output"),
-        Value::T
-    );
+    let accepted = call(
+        &mut interp,
+        "accept-process-output",
+        &[process.clone(), Value::Integer(10)],
+        &mut env,
+    )
+    .expect("accept-process-output should wait for output");
+    if accepted != Value::T {
+        let process_id = interp
+            .resolve_process_id(&process)
+            .expect("resolve timed process");
+        let (pending_stdout, pending_stderr) = interp
+            .poll_process_output(process_id)
+            .expect("inspect timed process output");
+        panic!(
+            "accept-process-output timed out: status={:?}, deliveries={:?}, pending_stdout={pending_stdout:?}, pending_stderr={pending_stderr:?}",
+            interp.process_status_value(process_id),
+            interp.process_output_delivery_count(process_id),
+        );
+    }
     assert_eq!(interp.buffer.full_buffer_string(), "ready");
     assert_eq!(
         wait_duration(&[Value::Integer(10)]).expect("ten-second wait should be valid"),
@@ -11954,6 +11982,7 @@ fn native_system_process_inventory_matches_oracle_availability() {
 #[cfg(unix)]
 #[test]
 fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
+    let _permit = crate::test_support::acquire_exclusive_host_test_permit();
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let (buffer_id, _) = interp.create_buffer(" *held-process-output*");
@@ -12017,10 +12046,9 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
         &mut env,
     )
     .expect("restore default process filter");
-    // The full debug suite runs heavyweight Eshell interpreters and several
-    // native subprocess probes concurrently.  Keep polling the actual
-    // delivery condition, but do not make host scheduler latency a semantic
-    // failure.
+    // Poll the actual delivery condition after reenabling the descriptor.
+    // The process-test gate removes in-suite competition, while this bounded
+    // deadline still prevents a wedged host child from hanging the test run.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         let delivered = call(
@@ -12034,13 +12062,25 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
             break;
         }
     }
-    assert_eq!(
-        interp
-            .get_buffer_by_id(buffer_id)
-            .expect("held-output buffer")
-            .buffer_string(),
-        "held\n"
-    );
+    let contents = interp
+        .get_buffer_by_id(buffer_id)
+        .expect("held-output buffer")
+        .buffer_string();
+    if contents != "held\n" {
+        let process_id = interp
+            .resolve_process_id(&process)
+            .expect("resolve held-output process");
+        let (pending_stdout, pending_stderr) = interp
+            .poll_process_output(process_id)
+            .expect("inspect undelivered held output");
+        panic!(
+            "held output was not delivered: status={:?}, filter={:?}, paused={}, deliveries={:?}, pending_stdout={pending_stdout:?}, pending_stderr={pending_stderr:?}",
+            interp.process_status_value(process_id),
+            interp.process_filter_value(process_id),
+            interp.process_output_paused(process_id),
+            interp.process_output_delivery_count(process_id),
+        );
+    }
     call(
         &mut interp,
         "delete-process",

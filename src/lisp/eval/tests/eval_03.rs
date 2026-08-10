@@ -3346,8 +3346,10 @@ fn cl_generic_exhausted_dispatch_signals_like_gnu() {
 fn setf_updates_eieio_class_parent_metadata() {
     assert_eq!(
         eval_str(
-            "(let ((parent (record 'eieio--class))
-                       (child (record 'eieio--class)))
+            "(let ((parent (record 'eieio--class
+                                   'sample-autoload-parent nil nil nil nil))
+                       (child (record 'eieio--class
+                                      'sample-autoload-child nil nil nil nil)))
                    (setf (cl--find-class 'sample-autoload-parent) parent)
                    (setf (cl--class-parents child) (list parent))
                    (setf (cl--find-class 'sample-autoload-child) child)
