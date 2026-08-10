@@ -637,6 +637,41 @@ fn plist_defaults_to_eq_and_honors_equal_test_functions() {
 }
 
 #[test]
+fn plist_member_preserves_tails_and_structural_errors() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        r#"
+            (let ((cycle (list 'a 1 'b 2)))
+              (setcdr (last cycle) cycle)
+              (list
+               (equal (plist-member '(a 1 b 2) 'b) '(b 2))
+               (equal (plist-member '(a) 'a) '(a))
+               (null (plist-get cycle 'missing))
+               (eq (condition-case error
+                       (plist-member cycle 'missing)
+                     (error (car error)))
+                   'circular-list)
+               (eq (condition-case error
+                       (plist-member '(a 1 . tail) 'missing)
+                     (error (car error)))
+                   'wrong-type-argument)
+               (equal (plist-member '("a" 1) (string ?a) #'equal)
+                      '("a" 1))))
+            "#,
+    )
+    .read()
+    .expect("plist structural contract should parse")
+    .expect("plist structural contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("plist structural contract should evaluate"),
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn string_distance_matches_upstream_multibyte_cases() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

@@ -220,15 +220,46 @@ fn materialize_constant_cons(
     Ok(constant.clone())
 }
 
+type PrimitiveFactBucket = Vec<(usize, crate::lisp::primitives::NameFacts)>;
+type PrimitiveFactCache =
+    std::collections::HashMap<usize, PrimitiveFactBucket, crate::lisp::types::IdentityBuildHasher>;
+
 /// Call a named Emaxx primitive with stack values (the Bcar/Bplus-style
 /// single-instruction function ops).
+///
+/// The names are a closed set of static literals naming GNU's dedicated
+/// opcodes (`Bnth', `Bpoint', ...), so their dispatch facts are cached by
+/// string address: the general string-keyed probe ran once per executed
+/// opcode and was a measurable slice of `nth'-heavy bytecode.
 fn prim(
     interp: &mut Interpreter,
-    name: &str,
+    name: &'static str,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    primitives::call(interp, name, args, env)
+    thread_local! {
+        static PRIM_FACTS: std::cell::RefCell<PrimitiveFactCache> =
+            std::cell::RefCell::new(PrimitiveFactCache::default());
+    }
+    let pointer = name.as_ptr() as usize;
+    let facts = PRIM_FACTS.with_borrow(|cache| {
+        cache.get(&pointer).and_then(|entries| {
+            entries
+                .iter()
+                .find_map(|(length, facts)| (*length == name.len()).then_some(*facts))
+        })
+    });
+    let facts = match facts {
+        Some(facts) => facts,
+        None => {
+            let facts = crate::lisp::primitives::name_facts(name);
+            PRIM_FACTS.with_borrow_mut(|cache| {
+                cache.entry(pointer).or_default().push((name.len(), facts));
+            });
+            facts
+        }
+    };
+    primitives::call_with_facts(interp, name, facts, args, env)
 }
 
 /// A byte-code function decoded, validated, and materialized once:
