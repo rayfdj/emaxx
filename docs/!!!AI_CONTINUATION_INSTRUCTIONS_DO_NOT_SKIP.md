@@ -18,11 +18,9 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- 2026-08-11 PROJECT/POSTSCRIPT CHECKPOINT: the verified worktree frontier is
-  4,811/7,080, leaving 2,269 selectors, but it is not published yet.  Finish
-  the final static gates, update this checkpoint's commit identity, commit,
-  synchronize, push, and confirm `main == origin/main` before beginning Ruby.
-  The final-source canonical artifacts are Perl 66/66 at
+- 2026-08-11 PROJECT/POSTSCRIPT CHECKPOINT: published at `40072b1`, advancing
+  the contiguous frontier to 4,811/7,080 and leaving 2,269 selectors.  The
+  final-source canonical artifacts are Perl 66/66 at
   `target/compat/run-1786383162706070000-28330`, Project 9/9 at
   `target/compat/run-1786383275831770000-28508`, and PostScript 3/3 at
   `target/compat/run-1786383308552953000-28707`; all use subject-source hash
