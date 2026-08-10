@@ -42,11 +42,9 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
-- The 2026-08-11 Project/PostScript worktree advances the verified contiguous
-  frontier to 4,811/7,080, leaving 2,269 selectors.  It remains unpublished
-  until the documentation, final static gates, commit, push, and origin
-  synchronization below finish.  The exact final-source compatibility runs
-  are all green: Perl 66/66 in
+- The 2026-08-11 Project/PostScript checkpoint is published at `40072b1` and
+  advances the contiguous frontier to 4,811/7,080, leaving 2,269 selectors.
+  The exact final-source compatibility runs are all green: Perl 66/66 in
   `target/compat/run-1786383162706070000-28330`, Project 9/9 in
   `target/compat/run-1786383275831770000-28508`, and PostScript 3/3 in
   `target/compat/run-1786383308552953000-28707`.  Their common subject-source
