@@ -2233,29 +2233,34 @@ define_dispatch!(
                 Ok(args[0].clone())
             }
             "handler-bind-1" => {
-                if args.len() != 3 {
+                if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let thunk = resolve_callable(interp, &args[0], env)?;
-                let condition = args[1].as_symbol()?.to_string();
-                let handler = resolve_callable(interp, &args[2], env)?;
-                match interp.call_function_value(thunk, None, &[], env) {
-                    Ok(value) => Ok(value),
-                    Err(error) => {
-                        let error_type = error.condition_type();
-                        if condition != "error" && condition != error_type {
-                            return Err(error);
-                        }
-                        let error_value = error_condition_value(&error);
-                        let _ = interp.call_function_value(
-                            handler,
-                            None,
-                            std::slice::from_ref(&error_value),
-                            env,
-                        )?;
-                        Err(LispError::SignalValue(error_value))
+                if args.len().is_multiple_of(2) {
+                    return Err(LispError::Signal(
+                        "Trailing CONDITIONS without HANDLER in `handler-bind`".into(),
+                    ));
+                }
+                let mut active = Vec::with_capacity(args.len() / 2);
+                for pair in args[1..].chunks_exact(2) {
+                    let conditions = match &pair[0] {
+                        Value::Nil => Vec::new(),
+                        Value::Cons(_) => pair[0]
+                            .to_vec()?
+                            .iter()
+                            .map(|condition| condition.as_symbol().map(str::to_string))
+                            .collect::<Result<Vec<_>, _>>()?,
+                        condition => vec![condition.as_symbol()?.to_string()],
+                    };
+                    if !conditions.is_empty() {
+                        active.push((conditions, pair[1].clone()));
                     }
                 }
+                active.reverse();
+                let handler_start = interp.push_handler_bindings(&active);
+                let result = interp.call_function_value(args[0].clone(), None, &[], env);
+                interp.pop_handler_bindings(handler_start);
+                result
             }
             "debugger-trap" => Ok(Value::Nil),
             "mapbacktrace" => {
@@ -2263,13 +2268,20 @@ define_dispatch!(
                 let callback = resolve_callable(interp, &args[0], env)?;
                 let base = args.get(1).filter(|value| !value.is_nil());
                 let frames = interp.backtrace_frames_snapshot();
-                let start = base
-                    .and_then(|base| {
-                        frames
+                let start = match base {
+                    Some(base) => {
+                        let Some(start) = frames
                             .iter()
                             .position(|(_, function, _, _)| function == base)
-                    })
-                    .unwrap_or(0);
+                        else {
+                            // GNU get_backtrace_starting_at treats a base with
+                            // no live activation frame as an empty traversal.
+                            return Ok(Value::Nil);
+                        };
+                        start
+                    }
+                    None => 0,
+                };
                 for (evald, function, frame_args, debug_on_exit) in frames.into_iter().skip(start) {
                     let flags = if debug_on_exit {
                         Value::list([Value::Symbol(":debug-on-exit".into()), Value::T])
@@ -3966,7 +3978,6 @@ define_dispatch!(
                     found.unwrap_or(default)
                 })
             }
-            #[dispatch(builtin_override)]
             "ert-set-test" => {
                 need_args(name, args, 2)?;
                 let symbol = args[0].as_symbol()?.to_string();

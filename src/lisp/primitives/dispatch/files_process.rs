@@ -1166,7 +1166,10 @@ define_dispatch!(
             }
             "prog-mode" => {
                 need_args(name, args, 0)?;
-                derived_mode_set_parent(interp, "prog-mode", Some("fundamental-mode"));
+                // define-derived-mode deliberately normalizes
+                // fundamental-mode to no recorded parent.  Keep the file-less
+                // native fallback consistent with that Lisp-owned hierarchy.
+                derived_mode_set_parent(interp, "prog-mode", None);
                 interp.set_buffer_local_value(
                     interp.current_buffer_id(),
                     "major-mode",

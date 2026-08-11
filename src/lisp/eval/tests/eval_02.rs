@@ -2180,6 +2180,28 @@ fn cl_labels_functions_can_call_local_labels() {
 }
 
 #[test]
+fn loaded_cl_labels_keeps_nested_pcase_commas_inside_backquote_patterns() {
+    run_with_large_stack(|| {
+        // GNU cl-labels expands its binding parser through pcase patterns
+        // containing nested raw `\,' symbols.  A constant-suffix backquote
+        // optimization must not turn those pattern markers into variables.
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(progn
+                     (require 'cl-lib)
+                     (cl-labels
+                         ((prn3 (x y z)
+                            (prin1-to-string (list x y z)))
+                          (cat3 (x y z)
+                            (concat "(" x " " y " " z ")")))
+                       (prn3 nil nil nil)))"#,
+            ),
+            Value::String("(nil nil nil)".into())
+        );
+    });
+}
+
+#[test]
 fn byte_compile_warns_for_quoted_condition_names() {
     assert_eq!(
         eval_str(

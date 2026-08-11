@@ -104,6 +104,30 @@ fn backquote_splice_elements(interp: &Interpreter, value: Value) -> Result<Vec<V
 }
 
 impl Interpreter {
+    /// Finish the Interpreter-dependent part of GNU's reader contract.
+    ///
+    /// Emaxx deliberately parses without an Interpreter, so circular labels
+    /// and identity-bearing `#s(...)' literals remain explicit reader forms
+    /// until the object crosses into evaluation.  Keep the allocation order
+    /// in one place so quoted data, directly evaluated vectors, and future
+    /// reader entry points cannot materialize different object graphs.
+    pub(crate) fn materialize_read_object_literals(
+        &mut self,
+        value: Value,
+    ) -> Result<Value, LispError> {
+        if !crate::lisp::reader::quote_template_needs_resolution(&value) {
+            return Ok(value);
+        }
+        let value = if crate::lisp::reader::contains_circular_read_syntax(&value) {
+            crate::lisp::reader::resolve_circular_read_syntax(value)?
+        } else {
+            value
+        };
+        let value = self.materialize_read_record_literals(&value)?;
+        let value = crate::lisp::primitives::materialize_read_hash_table_literals(self, &value)?;
+        crate::lisp::primitives::materialize_read_char_table_literals(self, &value)
+    }
+
     /// Materialize `#[...]' and ordinary `#s(...)' reader forms throughout a
     /// freshly-read object.  GNU creates record objects in the reader, even
     /// below `quote'.  Emaxx keeps parsing independent of an Interpreter, so
@@ -2683,6 +2707,35 @@ fn backquote_template_code_at_depth(template: &Value, depth: usize) -> Value {
     if !matches!(template, Value::Cons(_)) {
         return quote_literal(template);
     }
+    // GNU backquote-listify folds a nonempty constant proper-list suffix into
+    // one quoted tail, then builds a prefix of direct unquotes with cons.
+    // Besides avoiding needless allocation, this constructor shape is
+    // observable through `macroexpand' (let-when-compile's font-lock form is
+    // the canonical example).  The simplified native expander must leave
+    // nested dynamic subtrees and splices to the depth-aware general path:
+    // treating pcase's nested comma patterns as direct unquotes leaks `\,' as
+    // an evaluated variable while expanding cl-labels.
+    if depth == 0
+        && let Ok(elements) = template.to_vec()
+        && !backquote_spine_has_unquote_tail(template)
+        && let Some(last_dynamic) = elements.iter().rposition(template_tree_unquotes)
+        && last_dynamic + 1 < elements.len()
+        && elements[..=last_dynamic].iter().all(|element| {
+            !template_tree_unquotes(element)
+                || matches!(backquote_unquote_form(element), Some(("comma", _)))
+        })
+    {
+        let suffix_start = last_dynamic + 1;
+        let mut result = quote_literal(&Value::list(elements[suffix_start..].iter().cloned()));
+        for element in elements[..suffix_start].iter().rev() {
+            result = Value::list([
+                Value::Symbol("cons".into()),
+                backquote_template_code_at_depth(element, depth),
+                result,
+            ]);
+        }
+        return result;
+    }
     // Walk the list spine, batching plain elements into (list ...) chunks
     // and splicing ,@ elements and dotted tails through (append ...).
     let mut segments: Vec<Value> = Vec::new();
@@ -2758,6 +2811,22 @@ fn backquote_template_code_at_depth(template: &Value, depth: usize) -> Value {
                 .collect::<Vec<_>>(),
         ),
     }
+}
+
+// A dotted unquote tail such as `(lambda ,args . ,body) is represented by a
+// cdr whose whole value is `(\, body)'.  Flattening that spine with `to_vec'
+// would mistake it for two ordinary list elements and evaluate `\,' as a
+// variable.  GNU backquote-process stops its list scan at exactly this
+// boundary, so suffix folding must do the same.
+fn backquote_spine_has_unquote_tail(form: &Value) -> bool {
+    let mut tail = form.clone();
+    while let Some((_, cdr)) = tail.cons_values() {
+        if backquote_unquote_form(&cdr).is_some() {
+            return true;
+        }
+        tail = cdr;
+    }
+    false
 }
 
 // Whether a template subtree contains a comma/comma-at marker outside

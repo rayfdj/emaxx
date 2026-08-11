@@ -790,6 +790,16 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             &["module-init-failed", "module-load-failed", "error"],
             "Module initialization failed",
         ),
+        // sqlite.c defines these condition hierarchies even when a caller
+        // never loads sqlite.el.  Generic condition consumers such as ERT's
+        // `should-error' inspect the symbol properties after the native
+        // primitive signals.
+        ("sqlite-error", &["sqlite-error", "error"], "Database error"),
+        (
+            "sqlite-locked-error",
+            &["sqlite-locked-error", "sqlite-error", "error"],
+            "Database locked",
+        ),
         // cl-generic is dumped in GNU and native/preprovided in Emaxx.
         ("cl-no-method", &["cl-no-method", "error"], "No method"),
         (
@@ -2286,8 +2296,10 @@ pub struct Interpreter {
 /// matching `handler-bind' functions run at the signal point (pre-unwind).
 #[derive(Clone)]
 pub(crate) enum ActiveHandler {
-    /// A single CONDITION/HANDLER pair from `handler-bind'.
-    Bind(String, Value),
+    /// One CONDITIONS/HANDLER pair from `handler-bind'.  Keep the condition
+    /// list grouped so a handler whose list contains both a child condition
+    /// and one of its parents still runs exactly once for a signal.
+    Bind(Vec<String>, Value),
     /// The clause heads of an active `condition-case' (minus :success).
     Case(Vec<Value>),
 }

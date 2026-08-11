@@ -1,4 +1,4 @@
-use super::eval::{BufferDisposition, Interpreter, RunningProcess, error_condition_value};
+use super::eval::{BufferDisposition, Interpreter, RunningProcess};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
 use super::types::{

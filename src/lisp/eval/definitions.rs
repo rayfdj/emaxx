@@ -2378,11 +2378,18 @@ impl Interpreter {
             }
 
             if kind == "define-derived-mode" {
-                let parent = items.get(2).and_then(|value| match value {
-                    Value::Symbol(symbol) => Some(symbol.as_str()),
-                    Value::Nil => None,
-                    _ => None,
-                });
+                let parent = items
+                    .get(2)
+                    .and_then(|value| match value {
+                        Value::Symbol(symbol) => Some(symbol.as_str()),
+                        Value::Nil => None,
+                        _ => None,
+                    })
+                    // GNU's define-derived-mode treats fundamental-mode as
+                    // the absence of a parent: the generated mode calls
+                    // kill-all-local-variables directly and stores no
+                    // derived-mode-parent property.
+                    .filter(|parent| *parent != "fundamental-mode");
                 let map_name = format!("{name}-map");
                 let hook_name = format!("{name}-hook");
                 let default_syntax_table_name = format!("{name}-syntax-table");
