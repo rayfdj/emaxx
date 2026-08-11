@@ -42,6 +42,86 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-11 Subword-through-So-Long implementation checkpoint is at
+  `5612e303462c3c00c3d498c3db4b8294c8e690b7`.  The final-source canonical
+  replay advances the contiguous frontier from 4,981 to **5,114/7,080**,
+  leaving **1,966** selectors.  All 133 newly covered selected outcomes match
+  GNU, with no timeout, unilateral skip, or changed status.  NEXT is selector
+  **5,115**, `sort-tests--fields-1`, in `test/lisp/sort-tests.el` (five
+  selected outcomes in the file).
+
+  Every canonical artifact below used subject-source fingerprint
+  `ab75d605ef4f7573b8cd144c34ff2a6ceea5798a0f78dea376f47457efab558e`
+  and release subject binary
+  `692528c2c3bb6bd2612910e49fb5ac8a1f64ad28bc893b74559a6963122f463c`:
+
+  | Canonical selection | Result | Artifact | GNU/Emaxx setup ms | GNU/Emaxx body ms |
+  | --- | ---: | --- | ---: | ---: |
+  | Subword | 2/2 | `target/compat/run-1786451202673202000-76942` | 438/2,395 | 35/8 |
+  | Tcl | 7/7 | `target/compat/run-1786451334551268000-77127` | 271/1,893 | 15/7 |
+  | TypeScript TS | 1/1 | `target/compat/run-1786451344217123000-77256` | 253/1,999 | 28/2 |
+  | Which Func | 1/1 | `target/compat/run-1786451431780963000-78074` | 280/1,952 | 227/498 |
+  | Xref | 13/13 | `target/compat/run-1786451477350834000-78217` | 277/1,891 | 1,348/1,726 |
+  | PS Print | 1/1 | `target/compat/run-1786451490894594000-78461` | 270/1,895 | 10/0 |
+  | Register | 1/1 | `target/compat/run-1786451501120946000-78588` | 229/2,219 | 8/1 |
+  | Repeat | 3/3 | `target/compat/run-1786451512161154000-78712` | 250/1,889 | 14/139 |
+  | Replace | 29/29 | `target/compat/run-1786451542482358000-78846` | 244/1,870 | 1,758/119 |
+  | Rot13 | 3/3 | `target/compat/run-1786451554950849000-78984` | 279/1,894 | 9/1 |
+  | Saveplace | 5/5 | `target/compat/run-1786451565403648000-79110` | 260/1,827 | 373/296 |
+  | Scroll Lock | 3/3 | `target/compat/run-1786451575715718000-79242` | 293/1,853 | 8/1 |
+  | Server | 7/7 | `target/compat/run-1786451585422757000-79367` | 246/1,965 | 9/3 |
+  | SES | 14/14 | `target/compat/run-1786451595350069000-79495` | 250/2,039 | 19/52 |
+  | Shadowfile | 8/8 | `target/compat/run-1786451606307581000-79621` | 1,612/2,486 | 3,260/2,038 |
+  | Shell | 8/8 | `target/compat/run-1786451624318750000-80447` | 295/1,944 | 11/8 |
+  | So Long autoload longlines | 1/1 | `target/compat/run-1786451635515061000-80573` | 242/1,862 | 12/10 |
+  | So Long autoload major | 1/1 | `target/compat/run-1786451646264710000-80706` | 244/1,882 | 9/7 |
+  | So Long autoload minor | 1/1 | `target/compat/run-1786451656304749000-80843` | 230/1,888 | 8/7 |
+  | So Long | 24/24 | `target/compat/run-1786451666633980000-80969` | 262/1,919 | 258/824 |
+
+  No stable comparable body meets the simultaneous 5x/+1-second interruption
+  gate.  Which Func's canonical body is 2.194x and +271 ms; Xref is 1.280x
+  and +378 ms; Repeat is 9.929x but only +125 ms; SES is 2.737x and +33 ms;
+  and So Long is 3.194x and +566 ms.  The first Which Func replay at
+  `target/compat/run-1786451355113835000-77383` produced a 5.196x/+1,006 ms
+  one-off.  Five immediate same-source/binary repeats did not reproduce it:
+  GNU bodies were 213-257 ms (median 224) and Emaxx bodies 476-515 ms (median
+  494), so it is recorded as machine noise rather than a retained local fix.
+  The setup gap remains separate dumped-image issue #11 work.
+
+  Shared host repairs follow GNU's owners.  `forward-word` now uses effective
+  syntax plus `find-word-boundary-function-table`, while strict word motion
+  bypasses mode callbacks.  `kill-all-local-variables` implements permanent
+  locals, its optional kill-permanent argument, watcher ordering, and the
+  subtle detachment/unwind rules for active buffer-local special bindings.
+  Global `write-file-functions` no longer becomes accidentally buffer-local.
+  Default function-key translation is shared at the key-event boundary;
+  command-loop prefix transfer, pre/post hook order, keyboard macros, and
+  minibuffer command execution use one lifecycle.  `read-key` and
+  `completing-read-function` honor loaded or temporarily replaced Elisp
+  owners, and a no-event minibuffer enters/restores real minibuffer state and
+  runs its setup hook before batch stdin.
+
+  GNU-owned policy remains in Elisp.  Batch startup reconstructs the dumped
+  programming-mode parent order and the complete Paragraphs, Newcomment,
+  Replace, Lisp mode, and Emacs Lisp mode owners.  `fundamental-mode`, `kbd`,
+  `string-replace`, and the `wholenump` alias retain their GNU Elisp
+  implementations; `key-parse` remains owned by `keymap.el`, not by a new Rust
+  primitive.  The deliberately bare package fixture now loads that dependency
+  instead of crossing the Rust/Elisp boundary.  Native remains 1,420/1,420 in
+  its precise sense: exhaustive configured C-primitive surface inventory and
+  dispatch, not exhaustive branch/state semantic equivalence.
+
+  Final publication evidence is green on the frozen source: formatting and
+  diff checks; `cargo check --all-targets --all-features` in 32.61 seconds;
+  strict all-target/all-feature Clippy in 45.13 seconds; generated validation
+  13/13 in 178.25 seconds; and elevated
+  `cargo test --all-targets --all-features` with library 1,953/1,953 in
+  3,805.46 seconds, `compat-harness` 33/33, `perf-harness` 1/1, CLI 10/10,
+  and ERT runner 3/3.  The elevated run includes real socket/TLS/PTY/process
+  coverage.  A process-filter test now establishes child readiness with an
+  event-based wait before starting its semantic `read-event` deadline; no
+  blanket serialization or product timeout was added.
+
 - The 2026-08-11 Shell/SQL implementation checkpoint is published at
   `f5fa1df3aa9c731582a3717145527d00b550c59b`.  Final-source replays share
   subject fingerprint

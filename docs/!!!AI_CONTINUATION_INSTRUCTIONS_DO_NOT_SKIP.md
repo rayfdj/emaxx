@@ -18,6 +18,70 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-11 SUBWORD-THROUGH-SO-LONG CHECKPOINT: implementation is at
+  `5612e303462c3c00c3d498c3db4b8294c8e690b7`.  The final-source
+  replay covers selectors 4,982-5,114: all 133 selected outcomes match GNU,
+  advancing the contiguous frontier to **5,114/7,080** with **1,966**
+  remaining.  NEXT is selector **5,115**, `sort-tests--fields-1`, in
+  `test/lisp/sort-tests.el` (five selected outcomes).
+
+  All canonical artifacts use source fingerprint
+  `ab75d605ef4f7573b8cd144c34ff2a6ceea5798a0f78dea376f47457efab558e`
+  and release subject binary
+  `692528c2c3bb6bd2612910e49fb5ac8a1f64ad28bc893b74559a6963122f463c`:
+
+  | Selection | Result | Artifact | GNU/Emaxx setup ms | GNU/Emaxx body ms |
+  | --- | ---: | --- | ---: | ---: |
+  | Subword | 2/2 | `target/compat/run-1786451202673202000-76942` | 438/2,395 | 35/8 |
+  | Tcl | 7/7 | `target/compat/run-1786451334551268000-77127` | 271/1,893 | 15/7 |
+  | TypeScript TS | 1/1 | `target/compat/run-1786451344217123000-77256` | 253/1,999 | 28/2 |
+  | Which Func | 1/1 | `target/compat/run-1786451431780963000-78074` | 280/1,952 | 227/498 |
+  | Xref | 13/13 | `target/compat/run-1786451477350834000-78217` | 277/1,891 | 1,348/1,726 |
+  | PS Print | 1/1 | `target/compat/run-1786451490894594000-78461` | 270/1,895 | 10/0 |
+  | Register | 1/1 | `target/compat/run-1786451501120946000-78588` | 229/2,219 | 8/1 |
+  | Repeat | 3/3 | `target/compat/run-1786451512161154000-78712` | 250/1,889 | 14/139 |
+  | Replace | 29/29 | `target/compat/run-1786451542482358000-78846` | 244/1,870 | 1,758/119 |
+  | Rot13 | 3/3 | `target/compat/run-1786451554950849000-78984` | 279/1,894 | 9/1 |
+  | Saveplace | 5/5 | `target/compat/run-1786451565403648000-79110` | 260/1,827 | 373/296 |
+  | Scroll Lock | 3/3 | `target/compat/run-1786451575715718000-79242` | 293/1,853 | 8/1 |
+  | Server | 7/7 | `target/compat/run-1786451585422757000-79367` | 246/1,965 | 9/3 |
+  | SES | 14/14 | `target/compat/run-1786451595350069000-79495` | 250/2,039 | 19/52 |
+  | Shadowfile | 8/8 | `target/compat/run-1786451606307581000-79621` | 1,612/2,486 | 3,260/2,038 |
+  | Shell | 8/8 | `target/compat/run-1786451624318750000-80447` | 295/1,944 | 11/8 |
+  | So Long autoload longlines | 1/1 | `target/compat/run-1786451635515061000-80573` | 242/1,862 | 12/10 |
+  | So Long autoload major | 1/1 | `target/compat/run-1786451646264710000-80706` | 244/1,882 | 9/7 |
+  | So Long autoload minor | 1/1 | `target/compat/run-1786451656304749000-80843` | 230/1,888 | 8/7 |
+  | So Long | 24/24 | `target/compat/run-1786451666633980000-80969` | 262/1,919 | 258/824 |
+
+  No stable body meets the simultaneous 5x/+1-second interruption gate.
+  Repeat is 9.929x but only +125 ms; So Long is 3.194x/+566 ms; the other
+  slower stable bodies are smaller.  Which Func's first 5.196x/+1,006 ms
+  sample at `target/compat/run-1786451355113835000-77383` did not recur in
+  five immediate same-source/binary repeats: GNU body range 213-257 ms
+  (median 224), Emaxx 476-515 ms (median 494).  Record it as host noise and
+  keep setup reconstruction under issue #11.
+
+  Shared fixes: syntax- and callback-correct word motion; complete
+  `kill-all-local-variables` permanent-local, watcher, active-binding, and
+  unwind semantics; global `write-file-functions`; one function-key
+  translation boundary; one command-loop/prefix/hook lifecycle for macros and
+  minibuffers; replaceable Elisp `read-key`; delegated
+  `completing-read-function`; and real minibuffer setup/restoration before
+  batch stdin.  Batch startup reconstructs GNU's programming-mode parent
+  order plus Paragraphs, Newcomment, Replace, Lisp mode, and Emacs Lisp mode.
+  GNU-owned `fundamental-mode`, `kbd`, `string-replace`, and `wholenump` stay
+  in Elisp.  `key-parse` comes from `keymap.el`; do not invent a Rust primitive
+  for it.  Native 1,420/1,420 remains the exact configured C-primitive surface
+  and dispatch invariant, not exhaustive semantic proof.
+
+  Final gates on the frozen source are green: format and diff checks; check in
+  32.61 seconds; strict Clippy in 45.13 seconds; generated validation 13/13 in
+  178.25 seconds; elevated full tests with library 1,953/1,953 in 3,805.46
+  seconds, `compat-harness` 33/33, `perf-harness` 1/1, CLI 10/10, and ERT
+  runner 3/3.  Real network/TLS/PTY/process coverage passed.  The process
+  filter regression uses an event-based readiness wait before its semantic
+  deadline; preserve the selective scheduler and do not blanket-serialize.
+
 - 2026-08-11 SHELL/SQL CHECKPOINT: implementation is published at
   `f5fa1df3aa9c731582a3717145527d00b550c59b`.  Final-source artifacts share
   subject fingerprint
