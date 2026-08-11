@@ -2450,12 +2450,20 @@ pub(super) fn up_list_impl(
 pub(super) fn forward_comment_impl(
     interp: &mut Interpreter,
     count_value: Option<&Value>,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let count = count_value.map_or(Ok(1), Value::as_integer)?;
     if count == 0 {
         return Ok(Value::T);
     }
+
+    // GNU's backward comment scan consults `syntax-ppss', which lazily runs
+    // the mode's syntax propertizer.  Do that before taking the syntax/text
+    // snapshot so position-specific syntax (for example, a shell `#' inside
+    // a word) participates even when no caller has parsed the buffer first.
+    // Like the GNU scan primitive, do not expose regexp match-data changes
+    // made internally by the propertizer.
+    ensure_syntax_propertized_preserving_match_data(interp, env);
 
     let minimum = interp.buffer.point_min();
     let mut chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();

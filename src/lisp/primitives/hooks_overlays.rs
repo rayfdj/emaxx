@@ -1080,8 +1080,8 @@ fn font_lock_apply_default_variable_bindings(
 }
 
 // Resolve the KEYWORDS position of `font-lock-defaults': a symbol names a
-// variable holding the keywords; a list of symbols offers decoration
-// levels selected by `font-lock-maximum-decoration'.
+// function or variable producing the keywords; a list of symbols offers
+// decoration levels selected by `font-lock-maximum-decoration'.
 fn font_lock_decoration_level(interp: &Interpreter, env: &Env) -> Value {
     let configured = interp
         .lookup_var("font-lock-maximum-decoration", env)
@@ -1123,10 +1123,19 @@ fn font_lock_choose_keywords(
         }
         match &resolved {
             Value::Symbol(name) => {
-                let Some(value) = interp.lookup_var(name, env) else {
+                // GNU `font-lock-eval-keywords' gives the function cell
+                // precedence, then evaluates the variable cell, and repeats
+                // until it reaches a list.  Shell mode uses this path: its
+                // decoration levels name zero-argument keyword providers.
+                if let Ok(function) = interp.lookup_function(name, env) {
+                    let function_name = name.to_string();
+                    resolved =
+                        interp.call_function_value(function, Some(&function_name), &[], env)?;
+                } else if let Some(value) = interp.lookup_var(name, env) {
+                    resolved = value;
+                } else {
                     return Ok(Vec::new());
-                };
-                resolved = value;
+                }
             }
             Value::Cons(..) => {
                 let items = resolved.to_vec().unwrap_or_default();

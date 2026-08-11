@@ -2457,6 +2457,32 @@ fn backward_forward_comment_does_not_find_comment_openers_inside_strings() {
 }
 
 #[test]
+fn forward_comment_lazily_applies_position_specific_syntax() {
+    assert_eq!(
+        eval_str(
+            r##"
+                (with-temp-buffer
+                  (modify-syntax-entry ?# "<")
+                  (modify-syntax-entry ?\n ">")
+                  (setq-local syntax-propertize-function
+                              (lambda (start end)
+                                (goto-char start)
+                                (when (search-forward "#" end t)
+                                  (put-text-property
+                                   (1- (point)) (point) 'syntax-table
+                                   (string-to-syntax "_")))
+                                (goto-char end)))
+                  (insert "foo#zot")
+                  (goto-char (point-max))
+                  (list (forward-comment (- (point)))
+                        (point)))
+                "##,
+        ),
+        Value::list([Value::Nil, Value::Integer(8),])
+    );
+}
+
+#[test]
 fn scan_lists_backward_skips_line_comments() {
     assert_eq!(
         eval_str(
@@ -6976,6 +7002,69 @@ fn commandp_uses_the_generated_gnu_native_interactive_manifest() {
                         last-command-event))))"
         ),
         Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
+fn prefix_numeric_value_accepts_every_lisp_object_like_gnu() {
+    assert_eq!(
+        eval_str(
+            r#"
+              (list (prefix-numeric-value nil)
+                    (prefix-numeric-value '-)
+                    (prefix-numeric-value 'sqltest)
+                    (prefix-numeric-value 7)
+                    (prefix-numeric-value '(4 5))
+                    (prefix-numeric-value '(4 . tail))
+                    (prefix-numeric-value '(symbol))
+                    (prefix-numeric-value 1.5)
+                    (prefix-numeric-value "x")
+                    (prefix-numeric-value 1000000000000000000000000000000)
+                    (prefix-numeric-value
+                     '(1000000000000000000000000000000)))
+            "#,
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(-1),
+            Value::Integer(1),
+            Value::Integer(7),
+            Value::Integer(4),
+            Value::Integer(4),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+        ])
+    );
+}
+
+#[test]
+fn string_affix_helpers_preserve_subr_el_length_short_circuits() {
+    assert_eq!(
+        eval_str(
+            r#"
+              (list (string-prefix-p " " nil)
+                    (string-suffix-p " " nil)
+                    (string-prefix-p '(not-a-string) nil)
+                    (string-suffix-p '(not-a-string) nil)
+                    (string-prefix-p "AB" "abc" t)
+                    (string-suffix-p "BC" "abc" t)
+                    (string-prefix-p "abcd" "abc")
+                    (string-suffix-p "abcd" "abc"))
+            "#,
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+        ])
     );
 }
 
