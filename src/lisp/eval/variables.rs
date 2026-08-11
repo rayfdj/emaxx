@@ -1542,11 +1542,11 @@ impl Interpreter {
             .unwrap_or((None, None))
     }
 
-    pub fn push_handler_bindings(&mut self, bindings: &[(String, Value)]) -> usize {
+    pub fn push_handler_bindings(&mut self, bindings: &[(Vec<String>, Value)]) -> usize {
         let start = self.active_handlers.len();
         self.active_handlers.extend(
-            bindings.iter().map(|(condition, handler)| {
-                ActiveHandler::Bind(condition.clone(), handler.clone())
+            bindings.iter().map(|(conditions, handler)| {
+                ActiveHandler::Bind(conditions.clone(), handler.clone())
             }),
         );
         start
@@ -1653,8 +1653,10 @@ impl Interpreter {
                         break;
                     }
                 }
-                ActiveHandler::Bind(condition, handler) => {
-                    if !Self::condition_symbol_matches(condition, &error_type, &condition_list) {
+                ActiveHandler::Bind(conditions, handler) => {
+                    if !conditions.iter().any(|condition| {
+                        Self::condition_symbol_matches(condition, &error_type, &condition_list)
+                    }) {
                         continue;
                     }
                     let result = self.call_function_value(

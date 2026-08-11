@@ -542,7 +542,9 @@ impl Interpreter {
                 }
 
                 match literal_kind {
-                    SourceLiteralKind::Vector => return Ok(expr.clone()),
+                    SourceLiteralKind::Vector => {
+                        return self.materialize_read_object_literals(expr.clone());
+                    }
                     SourceLiteralKind::BoolVector => {
                         return Ok(self.create_record("bool-vector", items[1..].to_vec()));
                     }

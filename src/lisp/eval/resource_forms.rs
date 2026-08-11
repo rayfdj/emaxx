@@ -198,18 +198,24 @@ impl Interpreter {
                 return Err(LispError::Signal("handler-bind: invalid binding".into()));
             }
             // CONDITIONS is a condition name or a list of condition names.
-            let conditions: Vec<String> = match parts[0].to_vec() {
-                Ok(symbols) if !symbols.is_empty() => symbols
+            let conditions: Vec<String> = match &parts[0] {
+                Value::Nil => Vec::new(),
+                Value::Cons(_) => parts[0]
+                    .to_vec()?
                     .iter()
                     .map(|symbol| symbol.as_symbol().map(str::to_string))
                     .collect::<Result<_, _>>()?,
-                _ => vec![parts[0].as_symbol()?.to_string()],
+                condition => vec![condition.as_symbol()?.to_string()],
             };
             let handler = self.eval(&parts[1], env)?;
-            for condition in conditions {
-                active.push((condition, handler.clone()));
+            if !conditions.is_empty() {
+                active.push((conditions, handler));
             }
         }
+        // GNU pushes the last source pair first, leaving the first pair at
+        // the head of its innermost-first handler chain.  Emaxx walks this
+        // vector in reverse, so store the pairs in that same pushed order.
+        active.reverse();
         let start = self.push_handler_bindings(&active);
         let result = self.sf_progn(&items[2..], env);
         self.pop_handler_bindings(start);

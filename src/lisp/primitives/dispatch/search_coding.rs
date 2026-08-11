@@ -1,5 +1,52 @@
 use super::*;
 
+fn replacement_case_action(
+    interp: &Interpreter,
+    matched: &str,
+    env: &crate::lisp::types::Env,
+) -> Option<CaseAction> {
+    let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
+    let mut previous_is_word = false;
+    let mut some_multiletter_word = false;
+    let mut some_lowercase = false;
+    let mut some_uppercase = false;
+    let mut some_nonuppercase_initial = false;
+
+    for character in matched.chars() {
+        let code = character as u32;
+        let lowercase = simple_upcase_char(code) != code;
+        let uppercase = simple_downcase_char(code, false) != code;
+        if lowercase {
+            some_lowercase = true;
+            if previous_is_word {
+                some_multiletter_word = true;
+            } else {
+                some_nonuppercase_initial = true;
+            }
+        } else if uppercase {
+            some_uppercase = true;
+            if previous_is_word {
+                some_multiletter_word = true;
+            }
+        } else if !previous_is_word {
+            // This mirrors search.c's treatment of a caseless character at a
+            // word boundary: it cannot establish a capitalized word.
+            some_nonuppercase_initial = true;
+        }
+        previous_is_word = case_word_char(interp, character, case_symbols_as_words);
+    }
+
+    if !some_lowercase && some_multiletter_word {
+        Some(CaseAction::Up)
+    } else if !some_nonuppercase_initial && some_multiletter_word {
+        Some(CaseAction::UpcaseInitials)
+    } else if !some_nonuppercase_initial && some_uppercase {
+        Some(CaseAction::Up)
+    } else {
+        None
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BufferReplacementHunk {
     old_start: usize,
@@ -503,6 +550,7 @@ define_dispatch!(
             "replace-match" => {
                 need_args(name, args, 1)?;
                 let replacement = string_text(&args[0])?;
+                let fixedcase = args.get(1).is_some_and(Value::is_truthy);
                 let literal = args.get(2).is_some_and(Value::is_truthy);
                 let replace_index = args
                     .get(4)
@@ -521,12 +569,18 @@ define_dispatch!(
                 if let Some(source) = args.get(3).filter(|value| !value.is_nil()) {
                     let source = string_like(source)
                         .ok_or_else(|| LispError::TypeError("string".into(), source.type_name()))?;
-                    let replacement = regexp::expand_replace_match_text(
+                    let matched = regexp::slice_string_chars(&source.text, start, end);
+                    let mut replacement = regexp::expand_replace_match_text(
                         &replacement,
                         &match_data,
                         literal,
                         &source.text,
                     )?;
+                    if !fixedcase
+                        && let Some(action) = replacement_case_action(interp, &matched, env)
+                    {
+                        replacement = casify_string(interp, &replacement, action, env)?;
+                    }
                     let source_len = source.text.chars().count();
                     let updated = format!(
                         "{}{}{}",
@@ -534,22 +588,24 @@ define_dispatch!(
                         replacement,
                         regexp::slice_string_chars(&source.text, end, source_len)
                     );
-                    interp.last_match_data = Some(regexp::update_match_data_after_replace(
-                        &match_data,
-                        replace_index,
-                        start,
-                        end,
-                        replacement.chars().count(),
-                    ));
-                    interp.last_match_data_buffer_id = None;
+                    // The STRING form is non-destructive and GNU returns
+                    // before changing search_regs.  Later replacements must
+                    // continue to see the original match and subexpressions.
                     return Ok(make_shared_string_value_with_multibyte(
                         updated,
                         Vec::new(),
                         source.multibyte,
                     ));
                 }
-                let replacement =
+                let matched = interp
+                    .buffer
+                    .buffer_substring(start, end)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                let mut replacement =
                     regexp::expand_replace_match(interp, &replacement, &match_data, literal)?;
+                if !fixedcase && let Some(action) = replacement_case_action(interp, &matched, env) {
+                    replacement = casify_string(interp, &replacement, action, env)?;
+                }
                 let replacement_len = replacement.chars().count();
                 let saved_markers =
                     interp.live_marker_positions_for_buffer(interp.current_buffer_id());

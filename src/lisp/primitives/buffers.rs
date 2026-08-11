@@ -1682,28 +1682,32 @@ pub(crate) fn invisibility_spec_matches(spec: &Value, value: &Value) -> bool {
     }
 }
 
-pub(crate) fn compare_buffer_substrings(left: &str, right: &str) -> i64 {
-    let left_chars: Vec<char> = left.chars().collect();
-    let right_chars: Vec<char> = right.chars().collect();
-    let min_len = left_chars.len().min(right_chars.len());
-    for index in 0..min_len {
-        if left_chars[index] != right_chars[index] {
-            let offset = (index + 1) as i64;
-            return if left_chars[index] < right_chars[index] {
-                -offset
-            } else {
-                offset
-            };
-        }
-    }
-    if left_chars.len() == right_chars.len() {
-        0
-    } else {
-        let offset = (min_len + 1) as i64;
-        if left_chars.len() < right_chars.len() {
-            -offset
-        } else {
-            offset
+pub(crate) fn compare_buffer_substrings(
+    left: &str,
+    right: &str,
+    mut canonicalize: impl FnMut(char) -> u32,
+) -> i64 {
+    let mut left_chars = left.chars();
+    let mut right_chars = right.chars();
+    let mut matched = 0i64;
+
+    loop {
+        match (left_chars.next(), right_chars.next()) {
+            (Some(left), Some(right)) => {
+                let left = canonicalize(left);
+                let right = canonicalize(right);
+                if left != right {
+                    return if left < right {
+                        -matched - 1
+                    } else {
+                        matched + 1
+                    };
+                }
+                matched += 1;
+            }
+            (Some(_), None) => return matched + 1,
+            (None, Some(_)) => return -matched - 1,
+            (None, None) => return 0,
         }
     }
 }

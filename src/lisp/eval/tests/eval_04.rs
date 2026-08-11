@@ -4645,8 +4645,11 @@ fn dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape() {
                 Value::String("Demo".into()),
                 Value::Symbol("ignore".into()),
                 Value::T,
-                Value::Symbol("byte-code-function".into()),
-                Value::Symbol("re-search-forward".into()),
+                // GNU's dump/byte compiler preserves `last' as a subr.
+                // Emaxx deliberately loads its GNU Elisp owner from source,
+                // so the observable source-function representation is a cons.
+                Value::Symbol("cons".into()),
+                Value::BuiltinFunc("re-search-forward".into()),
                 Value::String("subr.el".into()),
                 Value::String("subr.el".into()),
                 Value::T,
@@ -4852,7 +4855,9 @@ fn batch_native_lisp_callables_preserve_help_arglists() {
                     Value::T,
                 ]),
                 Value::list([
-                    Value::Integer(257),
+                    // GNU's dumped `zerop' is a subr; the complete GNU
+                    // source owner exposes its one-element lambda list here.
+                    Value::list([Value::Symbol("number".into())]),
                     Value::cons(Value::Integer(1), Value::Integer(1)),
                     Value::list([Value::Symbol("number".into())]),
                 ]),

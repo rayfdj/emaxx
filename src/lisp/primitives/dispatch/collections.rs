@@ -1506,19 +1506,56 @@ define_dispatch!(
                 Ok(head)
             }
 
-            "delete" | "remq" => {
+            "delete" => {
+                need_args(name, args, 2)?;
+                let elt = &args[0];
+                if string_like(&args[1]).is_some() || is_vector_value(&args[1]) {
+                    return remove_equal(interp, elt, &args[1]);
+                }
+
+                // GNU Fdelete reuses every retained cons cell.  This is
+                // observable through eq and is what subr.el's destructive
+                // delete-dups relies on; rebuilding a filtered list silently
+                // changes both APIs' contracts.
+                let mut head = args[1].clone();
+                let mut previous: Option<Value> = None;
+                let mut tail = args[1].clone();
+                let mut seen = crate::lisp::types::CycleGuard::new();
+                loop {
+                    match tail.clone() {
+                        Value::Nil => break,
+                        Value::Cons(cell) => {
+                            if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+                                return Err(LispError::SignalValue(Value::list([
+                                    Value::Symbol("circular-list".into()),
+                                    Value::String("Circular list".into()),
+                                ])));
+                            }
+                            let next = cell.cdr.borrow().clone();
+                            if values_equal(interp, elt, &cell.car.borrow()) {
+                                if let Some(previous) = &previous {
+                                    previous.set_cdr(next.clone())?;
+                                } else {
+                                    head = next.clone();
+                                }
+                            } else {
+                                previous = Some(tail.clone());
+                            }
+                            tail = next;
+                        }
+                        other => return Err(wrong_type_argument("listp", other)),
+                    }
+                }
+                Ok(head)
+            }
+
+            "remq" => {
                 need_args(name, args, 2)?;
                 let elt = &args[0];
                 let items = args[1].to_vec()?;
                 let filtered: Vec<Value> = items
                     .into_iter()
-                    .filter(|item| {
-                        if name == "delete" {
-                            !values_equal(interp, item, elt)
-                        } else {
-                            !values_eq_in_env(interp, item, elt, env)
-                        }
-                    })
+                    .filter(|item| !values_eq_in_env(interp, item, elt, env))
                     .collect();
                 Ok(Value::list(filtered))
             }

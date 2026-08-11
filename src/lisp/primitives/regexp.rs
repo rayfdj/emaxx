@@ -3403,7 +3403,11 @@ pub(super) fn expand_replace_match(
                     expanded.push_str(&match_text_from_buffer(interp, match_data, capture_index)?);
                 }
                 '\\' => expanded.push('\\'),
-                other => expanded.push(other),
+                _ => {
+                    return Err(LispError::Signal(
+                        "Invalid use of `\\' in replacement text".into(),
+                    ));
+                }
             }
             index += 2;
             continue;
@@ -3437,7 +3441,15 @@ pub(super) fn expand_replace_match_text(
                     expanded.push_str(&match_text_from_string(source, match_data, capture_index));
                 }
                 '\\' => expanded.push('\\'),
-                other => expanded.push(other),
+                '?' => {
+                    expanded.push('\\');
+                    expanded.push('?');
+                }
+                _ => {
+                    return Err(LispError::Signal(
+                        "Invalid use of `\\' in replacement text".into(),
+                    ));
+                }
             }
             index += 2;
             continue;

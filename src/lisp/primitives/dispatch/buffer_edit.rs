@@ -4078,6 +4078,14 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 let symbol = args[0].as_symbol()?;
                 let property = args[1].as_symbol()?;
+                // GNU Elisp owns `ert-set-test' and `define-symbol-prop',
+                // including duplicate-definition policy and load-history
+                // provenance.  Mirror the final public property write into
+                // Emaxx's native runner index only when it is an actual ERT
+                // record; ordinary user properties remain ordinary `put'.
+                if property == "ert--test" && matches!(&args[2], Value::Record(_)) {
+                    return interp.ert_set_test(symbol, &args[2]);
+                }
                 // Loaded cl-preloaded.el expands
                 // `(setf (cl--find-class NAME) RECORD)' to this public plist
                 // write.  Register the class identity at that producer boundary

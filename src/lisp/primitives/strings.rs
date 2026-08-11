@@ -150,10 +150,7 @@ pub(crate) fn fold_string_compare_code(code: i64, ignore_case: bool) -> i64 {
     let Some(codepoint) = u32::try_from(code).ok() else {
         return code;
     };
-    let Some(ch) = char::from_u32(codepoint) else {
-        return code;
-    };
-    ch.to_lowercase().next().unwrap_or(ch) as i64
+    simple_upcase_char(codepoint) as i64
 }
 
 pub(crate) fn normalize_compare_strings_end(
@@ -316,10 +313,9 @@ pub(crate) fn aset_string_value(
     if index >= chars.len() {
         return Err(LispError::Signal("Args out of range".into()));
     }
-    let ch = if !string.multibyte {
-        if !(0..=255).contains(&code) {
-            return Err(LispError::Signal("Invalid character".into()));
-        }
+    let ch = if string.multibyte {
+        char_from_integer(code)?
+    } else if (0..=255).contains(&code) {
         let byte = code as u8;
         if byte <= 0x7F {
             byte as char
@@ -327,11 +323,19 @@ pub(crate) fn aset_string_value(
             raw_byte_regex_char(byte)
         }
     } else {
-        let current = chars[index] as u32;
-        if current > 0x7F || !(0..=0x7F).contains(&code) {
-            return Err(LispError::Signal("Invalid character".into()));
+        // GNU can promote an all-ASCII unibyte string in place when the new
+        // character needs multibyte storage.  Raw non-ASCII bytes cannot be
+        // reinterpreted during that promotion, so they keep the documented
+        // args-out-of-range failure instead.
+        if chars.iter().any(|ch| !ch.is_ascii()) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("args-out-of-range".into()),
+                target.clone(),
+                Value::Integer(code),
+            ])));
         }
-        char::from_u32(code as u32).ok_or_else(|| LispError::Signal("Invalid character".into()))?
+        string.multibyte = true;
+        char_from_integer(code)?
     };
     chars[index] = ch;
     string.text = chars.into_iter().collect();

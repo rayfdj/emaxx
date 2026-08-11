@@ -140,40 +140,32 @@ pub(crate) fn hook_values(
             .unwrap_or_default()
     };
     let current = interp.lookup_var(hook_name, env);
-    match buffer_id.and_then(|id| interp.buffer_local_hook(id, hook_name)) {
-        Some(stored_local) => {
-            let mirror = Value::list(stored_local.clone());
-            // A dynamic `let' can filter or replace the visible local hook
-            // value.  In that case its list, rather than the backing metadata,
-            // is authoritative; a `t' sentinel still splices the default.
-            let local = match current {
-                Some(value) if !crate::lisp::primitives::values_equal(interp, &value, &mirror) => {
-                    value_hooks(Some(value))
-                }
-                _ => stored_local,
-            };
-            let mut default = value_hooks(interp.default_value(hook_name));
-            default.retain(|hook| !matches!(hook, Value::T));
+    let local = buffer_id.is_some_and(|id| {
+        interp.buffer_local_value(id, hook_name).is_some()
+            || interp.buffer_local_hook(id, hook_name).is_some()
+    });
+    let mut hooks = value_hooks(current);
+    if !local {
+        hooks.retain(|hook| !matches!(hook, Value::T));
+        return hooks;
+    }
 
-            // GNU walks the depth-sorted local value and splices the default
-            // handlers exactly where `t' occurs.  Negative local depths run
-            // before the default hook and positive depths after it.
-            let mut result = Vec::new();
-            for hook in local {
-                if matches!(hook, Value::T) {
-                    result.extend(default.iter().cloned());
-                } else {
-                    result.push(hook);
-                }
-            }
-            result
-        }
-        None => {
-            let mut hooks = value_hooks(current);
-            hooks.retain(|hook| !matches!(hook, Value::T));
-            hooks
+    // The Lisp-visible local/default value cells are authoritative.  GNU's
+    // Elisp `add-hook' owner can create or mutate a local hook without going
+    // through the native bootstrap helper, so the Rust depth mirror may be
+    // absent.  A local `t' sentinel splices the default at that exact point;
+    // local nil deliberately suppresses the default.
+    let mut default = value_hooks(interp.default_value(hook_name));
+    default.retain(|hook| !matches!(hook, Value::T));
+    let mut result = Vec::new();
+    for hook in hooks {
+        if matches!(hook, Value::T) {
+            result.extend(default.iter().cloned());
+        } else {
+            result.push(hook);
         }
     }
+    result
 }
 
 pub(crate) fn run_named_hooks(

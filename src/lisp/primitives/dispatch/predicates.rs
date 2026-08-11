@@ -1054,7 +1054,8 @@ define_dispatch!(
             "recordp" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Record(_))
+                    if matches!(args[0], Value::Record(id)
+                        if interp.hash_table_runtime_entries(id).is_none())
                         || record_literal_items(&args[0]).is_some()
                     {
                         Value::T

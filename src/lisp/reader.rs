@@ -613,6 +613,7 @@ impl<'a> Reader<'a> {
                         Some(b't') => s.push('\t'),
                         Some(b'r') => s.push('\r'),
                         Some(b'e') => s.push('\x1B'),
+                        Some(b'd') => s.push('\x7F'),
                         Some(b'\n') => {}
                         Some(b'\r') => {
                             if self.peek() == Some(b'\n') {
@@ -630,6 +631,7 @@ impl<'a> Reader<'a> {
                         Some(b'a') => s.push('\x07'),
                         Some(b'b') => s.push('\x08'),
                         Some(b'f') => s.push('\x0C'),
+                        Some(b'v') => s.push('\x0B'),
                         Some(b'^') => {
                             let code = self.read_string_control_escape()?;
                             if code <= 0x7F {
@@ -2085,6 +2087,8 @@ mod tests {
     #[test]
     fn reads_escape_character_string_literals() {
         assert_eq!(read_one(r#""\e[33m""#), Value::String("\x1B[33m".into()));
+        assert_eq!(read_one(r#""\d""#), Value::String("\x7F".into()));
+        assert_eq!(read_one(r#""\v""#), Value::String("\x0B".into()));
     }
 
     #[test]

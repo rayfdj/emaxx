@@ -107,6 +107,385 @@ fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
 }
 
 #[test]
+fn compare_buffer_substrings_uses_dynamic_case_folding_and_the_canonical_table() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        r#"
+        (with-temp-buffer
+          (insert "Aza")
+          (list
+           (let ((case-fold-search nil))
+             (compare-buffer-substrings nil 1 2 nil 3 4))
+           (let ((case-fold-search t))
+             (compare-buffer-substrings nil 1 2 nil 3 4))
+           (let ((case-fold-search t))
+             (compare-buffer-substrings nil 1 3 nil 3 4))
+           (let ((case-fold-search t))
+             (compare-buffer-substrings nil 3 4 nil 1 3))
+           (let* ((table (copy-sequence (current-case-table)))
+                  (canonical (make-char-table 'case-table)))
+             (set-char-table-range canonical ?A ?z)
+             (set-char-table-range canonical ?z ?z)
+             (set-char-table-extra-slot table 1 canonical)
+             (set-case-table table)
+             (let ((case-fold-search t))
+               (compare-buffer-substrings nil 1 2 nil 2 3)))))
+        "#,
+    )
+    .read_all()
+    .expect("case-folded substring comparison probe should parse")
+    .remove(0);
+
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("case-folded substring comparison should evaluate"),
+        Value::list([
+            Value::Integer(-1),
+            Value::Integer(0),
+            Value::Integer(2),
+            Value::Integer(-2),
+            Value::Integer(0),
+        ])
+    );
+}
+
+#[test]
+fn subr_frontier_compare_strings_uses_gnu_simple_upcase_canonicalization() {
+    let program = r#"(prin1 (list
+      (compare-strings "Όσος" nil nil "ΌΣΟΣ" nil nil t)
+      (compare-strings "ẞ" nil nil "ß" nil nil t)))"#;
+    assert_upstream_primitive_contract(program, "(t t)");
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(&program[7..program.len() - 1])
+        .read()
+        .expect("comparison contract should parse")
+        .expect("comparison contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("comparison contract should evaluate"),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
+fn subr_frontier_reader_decodes_the_complete_classic_string_escape_table() {
+    let contract = r#"(list (string-to-list "\a\b\d\e\f\n\r\t\v")
+                  (split-string "vd jc"))"#;
+    let expected = "((7 8 127 27 12 10 13 9 11) (\"vd\" \"jc\"))";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("classic reader escape contract should parse")
+        .expect("classic reader escape contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("classic reader escape contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
+fn subr_frontier_delete_reuses_retained_cons_cells_and_copies_other_sequences() {
+    let contract = r#"(let* ((xs (list "a" "a" "b" "b" "a" "c"))
+                  (first-b (cddr xs))
+                  (result (delete "a" xs)))
+             (list (eq result first-b)
+                   (equal result '("b" "b" "c"))
+                   (delete ?a "aba")
+                   (delete 'a [a b a])))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), "(t t \"b\" [b])");
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("delete contract should parse")
+        .expect("delete contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("delete contract should evaluate")
+            .to_string(),
+        r#"(t t "b" [b])"#
+    );
+}
+
+#[test]
+fn subr_frontier_buffer_local_value_signals_when_no_binding_exists() {
+    let contract = r#"(let ((buffer (generate-new-buffer "boundp-owner")))
+             (unwind-protect
+                 (condition-case error
+                     (buffer-local-value 'emaxx-never-bound buffer)
+                   (void-variable (car error)))
+               (kill-buffer buffer)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), "void-variable");
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("buffer-local-value contract should parse")
+        .expect("buffer-local-value contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("void-variable should be caught"),
+        Value::Symbol("void-variable".into())
+    );
+}
+
+#[test]
+fn subr_frontier_mapbacktrace_with_an_absent_base_is_an_empty_traversal() {
+    let contract = r#"(let ((called nil) (base (make-symbol "absent")))
+             (list (mapbacktrace (lambda (&rest _) (setq called t)) base)
+                   called))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), "(nil nil)");
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("mapbacktrace contract should parse")
+        .expect("mapbacktrace contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("mapbacktrace contract should evaluate"),
+        Value::list([Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
+fn subr_frontier_replace_match_applies_gnu_case_adaptation() {
+    let contract = r#"(let ((source "Beta"))
+             (string-match "B\\(..\\)a" source)
+             (list (replace-match "carrot" nil nil source)
+                   (replace-match "carrot" t nil source)
+                   (replace-match "m\\1a" nil nil source)))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {contract})"),
+        "(\"Carrot\" \"carrot\" \"Meta\")",
+    );
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("replace-match contract should parse")
+        .expect("replace-match contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("replace-match contract should evaluate")
+            .to_string(),
+        r#"("Carrot" "carrot" "Meta")"#
+    );
+}
+
+#[test]
+fn subr_frontier_recordp_does_not_expose_hash_table_runtime_storage() {
+    let contract = "(list (recordp (make-hash-table)) (recordp #s(sample value)))";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), "(nil t)");
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("record predicate contract should parse")
+        .expect("record predicate contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("record predicate contract should evaluate"),
+        Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn subr_frontier_direct_vector_evaluation_materializes_nested_record_literals() {
+    let contract = r#"(let ((vector [#s(sample value)]))
+             (list (recordp (aref vector 0))
+                   (prin1-to-string vector)))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {contract})"),
+        r#"(t "[#s(sample value)]")"#,
+    );
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("nested record vector contract should parse")
+        .expect("nested record vector contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("nested record vector contract should evaluate")
+            .to_string(),
+        r#"(t "[#s(sample value)]")"#
+    );
+}
+
+#[test]
+fn subr_frontier_aset_promotes_ascii_unibyte_strings_like_gnu() {
+    let contract = r#"(let ((ascii (string-as-unibyte "a"))
+                   (byte8 (string-as-unibyte "a"))
+                   (raw (unibyte-string #x80))
+                   (multi (string-to-multibyte "é")))
+             (aset ascii 0 ?ƒ)
+             (aset byte8 0 #x3fffc9)
+             (aset multi 0 ?a)
+             (list ascii
+                   (multibyte-string-p ascii)
+                   (aref ascii 0)
+                   (multibyte-string-p byte8)
+                   (aref byte8 0)
+                   multi
+                   (multibyte-string-p multi)
+                   (condition-case error
+                       (aset raw 0 ?ƒ)
+                     (args-out-of-range
+                      (list (car error) (nth 2 error))))))"#;
+    let expected = r#"("ƒ" t 402 t 4194249 "a" t (args-out-of-range 402))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("aset string-promotion contract should parse")
+        .expect("aset string-promotion contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("aset string-promotion contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
+fn subr_frontier_replace_match_distinguishes_string_and_buffer_escapes() {
+    let contract = r#"(let ((source "aba"))
+             (string-match "a" source)
+             (list
+              (replace-match "\\\\,\\?" nil nil source)
+              (condition-case error
+                  (replace-match "\\x" nil nil source)
+                (error (car error)))
+              (condition-case error
+                  (with-temp-buffer
+                    (insert "a")
+                    (goto-char (point-min))
+                    (re-search-forward "a")
+                    (replace-match "\\?" nil nil)
+                    (buffer-string))
+                (error (car error)))))"#;
+    let expected = r#"("\\,\\?ba" error error)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("replace-match escape contract should parse")
+        .expect("replace-match escape contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("replace-match escape contract should evaluate"),
+        Value::list([
+            Value::String("\\,\\?ba".into()),
+            Value::Symbol("error".into()),
+            Value::Symbol("error".into()),
+        ])
+    );
+}
+
+#[test]
+fn subr_frontier_fundamental_mode_is_not_a_stored_derived_parent() {
+    let contract = r#"(progn
+             (define-derived-mode emaxx-sample-root fundamental-mode "Root")
+             (define-derived-mode emaxx-sample-child emaxx-sample-root "Child")
+             (list (get 'emaxx-sample-root 'derived-mode-parent)
+                   (derived-mode-all-parents 'emaxx-sample-child)))"#;
+    let expected = "(nil (emaxx-sample-child emaxx-sample-root))";
+    assert_upstream_primitive_contract(
+        &format!("(progn (require 'derived) (prin1 {contract}))"),
+        expected,
+    );
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("derived-mode parent contract should parse")
+        .expect("derived-mode parent contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("derived-mode parent contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
+fn subr_frontier_backquote_folds_the_constant_suffix_like_gnu() {
+    let contract = "(macroexpand '`(a ,x b ,y 0 font-lock-keyword-face))";
+    let expected = "(cons 'a (cons x (cons 'b (cons y '(0 font-lock-keyword-face)))))";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("backquote suffix contract should parse")
+        .expect("backquote suffix contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("backquote suffix contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
+fn subr_frontier_hook_execution_uses_elisp_owned_local_value_cells() {
+    let contract = r#"(progn
+             (setq emaxx-hook-log nil)
+             (fset 'emaxx-global-hook
+                   (lambda () (push 'global emaxx-hook-log)))
+             (fset 'emaxx-local-before
+                   (lambda () (push 'local-before emaxx-hook-log)))
+             (fset 'emaxx-local-after
+                   (lambda () (push 'local-after emaxx-hook-log)))
+             (setq-default emaxx-owner-hook '(emaxx-global-hook))
+             (with-temp-buffer
+               (make-local-variable 'emaxx-owner-hook)
+               ;; Deliberately bypass native add-hook bookkeeping, as GNU's
+               ;; complete subr.el owner is entitled to do.
+               (setq emaxx-owner-hook
+                     '(emaxx-local-before t emaxx-local-after))
+               (run-hooks 'emaxx-owner-hook)
+               (nreverse emaxx-hook-log)))"#;
+    let expected = "(local-before global local-after)";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("Elisp-owned hook contract should parse")
+        .expect("Elisp-owned hook contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("Elisp-owned hook contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
 fn redisplay_defaults_match_native_terminal_and_input_state() {
     let mut interp = Interpreter::new();
     let form = Reader::new(
@@ -5473,6 +5852,43 @@ fn native_sqlite_columns_uses_the_live_result_set_schema() {
             .eval(&form, &mut env)
             .expect("sqlite-columns should expose the result-set schema"),
         Value::list(vec![Value::T; 7])
+    );
+}
+
+#[test]
+fn native_sqlite_errors_publish_the_gnu_condition_hierarchy() {
+    let program = r#"
+        (let ((db (sqlite-open)))
+          (unwind-protect
+              (progn
+                (sqlite-execute db "create table test (a)")
+                (list
+                 (get 'sqlite-error 'error-conditions)
+                 (get 'sqlite-error 'error-message)
+                 (get 'sqlite-locked-error 'error-conditions)
+                 (get 'sqlite-locked-error 'error-message)
+                 (condition-case err
+                     (sqlite-execute db
+                                     "insert into test values (fake(2))")
+                   (sqlite-error (car err)))))
+            (sqlite-close db)))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "((sqlite-error error) \"Database error\" (sqlite-locked-error sqlite-error error) \"Database locked\" sqlite-error)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("SQLite condition contract should parse")
+        .expect("SQLite condition contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("SQLite conditions should publish their GNU hierarchy")
+            .to_string(),
+        r#"((sqlite-error error) "Database error" (sqlite-locked-error sqlite-error error) "Database locked" sqlite-error)"#
     );
 }
 

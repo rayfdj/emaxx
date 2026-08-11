@@ -450,6 +450,43 @@ fn handler_bind_handlers_do_not_apply_inside_handlers() {
 }
 
 #[test]
+fn handler_bind_1_accepts_gnu_condition_lists_and_multiple_pairs() {
+    assert_eq!(
+        eval_str(
+            "(let (seen)
+               (list
+                (condition-case err
+                    (handler-bind-1
+                     (lambda () (signal 'wrong-type-argument '(x)))
+                     '(wrong-type-argument error)
+                     (lambda (err) (push (car err) seen))
+                     '(wrong-type-argument)
+                     (lambda (_err) (push 'second seen)))
+                  (wrong-type-argument
+                   (list (nreverse seen) (car err))))
+                (handler-bind-1
+                 (lambda () 'ok)
+                 nil
+                 (lambda (_err) 'bad))
+                (condition-case err
+                    (handler-bind-1 (lambda () t) '(error))
+                  (error (car err)))))",
+        ),
+        Value::list([
+            Value::list([
+                Value::list([
+                    Value::symbol("wrong-type-argument"),
+                    Value::symbol("second"),
+                ]),
+                Value::symbol("wrong-type-argument"),
+            ]),
+            Value::symbol("ok"),
+            Value::symbol("error"),
+        ])
+    );
+}
+
+#[test]
 fn lambda_without_body_still_reports_invalid_function_for_bad_args() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -6422,7 +6459,7 @@ fn derived_mode_add_parents_updates_runtime_mode_hierarchy() {
                     (derived-mode-p 'sample-alias)
                     (derived-mode-p 'fundamental-mode)))"
         ),
-        Value::list([Value::T, Value::T, Value::T])
+        Value::list([Value::T, Value::T, Value::Nil])
     );
 }
 
@@ -6440,7 +6477,6 @@ fn derived_mode_all_parents_reports_parent_alias_and_extra_modes() {
         Value::list([
             Value::Symbol("sample-child".into()),
             Value::Symbol("sample-parent".into()),
-            Value::Symbol("fundamental-mode".into()),
             Value::Symbol("sample-alias".into()),
         ])
     );

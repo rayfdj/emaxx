@@ -1541,15 +1541,21 @@ impl Interpreter {
         fn resolves_to_ignore(
             interp: &Interpreter,
             value: &Value,
+            ignore_function: Option<&Value>,
             seen_records: &mut std::collections::HashSet<u64>,
         ) -> bool {
+            if ignore_function.is_some_and(|ignore| value == ignore) {
+                return true;
+            }
             match value {
                 Value::BuiltinFunc(name) | Value::Symbol(name) => name == "ignore",
                 Value::Record(record_id) if seen_records.insert(*record_id) => interp
                     .find_record(*record_id)
                     .filter(|record| record.type_name == "byte-code-function")
                     .and_then(|record| record.slots.first())
-                    .is_some_and(|callable| resolves_to_ignore(interp, callable, seen_records)),
+                    .is_some_and(|callable| {
+                        resolves_to_ignore(interp, callable, ignore_function, seen_records)
+                    }),
                 _ => false,
             }
         }
@@ -1559,7 +1565,13 @@ impl Interpreter {
         // callable in slot zero.  Generic dispatch compares callable identity,
         // so normalize that representation boundary before testing the
         // `ignore' end-of-chain sentinel.
-        resolves_to_ignore(self, value, &mut std::collections::HashSet::new())
+        let ignore_function = self.raw_function_binding("ignore", &Env::new());
+        resolves_to_ignore(
+            self,
+            value,
+            ignore_function.as_ref(),
+            &mut std::collections::HashSet::new(),
+        )
     }
 
     pub(crate) fn class_children(&self, name: &str) -> Vec<Value> {

@@ -166,7 +166,38 @@ define_dispatch!(
                 need_args(name, args, 6)?;
                 let left = comparison_substring(interp, &args[0], &args[1], &args[2])?;
                 let right = comparison_substring(interp, &args[3], &args[4], &args[5])?;
-                Ok(Value::Integer(compare_buffer_substrings(&left, &right)))
+                // GNU editfns.c consults `case-fold-search' in the current
+                // buffer, even when either substring belongs to another
+                // buffer.  Its canonical table is extra slot one of the
+                // current downcase table; Emaxx's lazily initialized standard
+                // table has the same effective mapping in the downcase table
+                // until a materialized canonical slot exists.
+                let canonical_table = if interp
+                    .lookup_var("case-fold-search", env)
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    let downcase_table = interp.current_case_table_id();
+                    Some(match interp.char_table_extra_slot(downcase_table, 1) {
+                        Some(Value::CharTable(canonical_table)) => canonical_table,
+                        _ => downcase_table,
+                    })
+                } else {
+                    None
+                };
+                Ok(Value::Integer(compare_buffer_substrings(
+                    &left,
+                    &right,
+                    |character| {
+                        let code = character as u32;
+                        let Some(table) = canonical_table else {
+                            return code;
+                        };
+                        match interp.char_table_get(table, code) {
+                            Some(Value::Integer(mapped)) => u32::try_from(mapped).unwrap_or(code),
+                            _ => code,
+                        }
+                    },
+                )))
             }
             "field-beginning" | "field-end" => {
                 let pos = if args.is_empty() || args[0].is_nil() {
@@ -655,16 +686,16 @@ define_dispatch!(
             }
             "buffer-local-value" => {
                 need_args(name, args, 2)?;
-                let symbol = args[0].as_symbol()?.to_string();
+                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
                 let buffer_id = interp.resolve_buffer_id(&args[1])?;
                 // GNU falls back to the DEFAULT value when BUFFER has no local
                 // binding; another buffer's local value must not leak through
                 // (erc-open's prior-session detection reads `erc--target').
-                Ok(interp
+                interp
                     .buffer_local_value(buffer_id, &symbol)
                     .or_else(|| interp.default_value(&symbol))
                     .or_else(|| interp.symbol_value_cell(&symbol).ok())
-                    .unwrap_or(Value::Nil))
+                    .ok_or(LispError::Void(symbol))
             }
             "buffer-local-toplevel-value" => {
                 need_args(name, args, 1)?;

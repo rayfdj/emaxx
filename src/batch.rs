@@ -447,6 +447,22 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         lisp::load_file_strict(interpreter, &path)
             .map_err(|error| format!("load {}: {error}", path.display()))?;
     }
+    // GNU loads the complete subr.el into the dumped startup image.  It has no
+    // `provide' form, so feature checks cannot represent that startup fact.
+    // Keep simple_compat.el as the file-less/bootstrap substrate needed while
+    // reconstructing the image, then load the real Lisp owner so initialized
+    // batch execution does not depend on a growing hand-copied subset.
+    if interpreter.resolve_load_target("subr").is_some() {
+        // Interpreter::new installs an identity-bearing global-map fallback
+        // for file-less embeddings.  GNU subr.el owns the initialized map,
+        // including its full character table; let its defvar initializer run
+        // instead of retaining the provisional map and a parallel Rust list
+        // of default bindings.
+        interpreter.remove_global_binding("global-map");
+        interpreter
+            .load_target("subr")
+            .map_err(|error| format!("preload subr: {error}"))?;
+    }
     // GNU dumps abbrev.el before language modes are loaded.  It owns active
     // table traversal, expansion hooks, case handling, and usage state; the
     // native layer supplies the table/obarray substrate and self-insert's
@@ -1954,6 +1970,38 @@ mod tests {
                 interpreter
                     .eval(&form, &mut Vec::new())
                     .expect("evaluate dumped register startup probe"),
+                Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_complete_subr_owner() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (fboundp 'buffer-local-boundp)\
+                       (fboundp 'global-key-binding)\
+                       (fboundp 'list-of-strings-p)\
+                       (fboundp 'merge-ordered-lists)\
+                       (eq (global-key-binding \"x\") 'self-insert-command)\
+                       (eq (xor nil 'truthy) 'truthy))",
+            )
+            .read_all()
+            .expect("read complete subr startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate complete subr startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
             );
         });

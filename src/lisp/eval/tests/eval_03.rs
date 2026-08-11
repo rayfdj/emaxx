@@ -1607,7 +1607,7 @@ fn loaded_js_library_owns_the_complete_mode_policy() {
         ),
         Value::list([
             Value::Symbol("js-mode".into()),
-            Value::T,
+            Value::Symbol("js-base-mode".into()),
             Value::Symbol("js-indent-line".into()),
             Value::Symbol("js-beginning-of-defun".into()),
             Value::Symbol("js-end-of-defun".into()),
@@ -3327,6 +3327,11 @@ fn cl_generic_exhausted_dispatch_signals_like_gnu() {
     assert_eq!(
         eval_str(
             "(progn
+                   ;; Complete subr.el exposes `ignore' as an Elisp function
+                   ;; object, and obsolete EIEIO seeds an empty generic with
+                   ;; that exact object rather than the symbol `ignore'.
+                   (defun ignore (&rest _args) nil)
+                   (defalias 'sample-hooks-fn (symbol-function 'ignore))
                    (defclass sample-hooks-a nil nil)
                    (cl-defmethod sample-hooks-fn ((_x sample-hooks-a))
                      (cl-call-next-method))
@@ -6825,11 +6830,15 @@ fn upstream_script_modes_own_their_derived_mode_contracts() {
         Value::list([
             Value::list([
                 Value::Symbol("sh-mode".into()),
-                Value::T,
+                Value::Symbol("sh-base-mode".into()),
                 Value::Nil,
                 Value::T,
             ]),
-            Value::list([Value::Symbol("python-mode".into()), Value::T, Value::Nil,]),
+            Value::list([
+                Value::Symbol("python-mode".into()),
+                Value::Symbol("python-base-mode".into()),
+                Value::Nil,
+            ]),
             Value::list([
                 Value::Symbol("python-mode".into()),
                 Value::Symbol("awk-mode".into()),
