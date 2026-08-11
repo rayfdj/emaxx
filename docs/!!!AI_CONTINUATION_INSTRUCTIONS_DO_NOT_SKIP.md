@@ -18,6 +18,58 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-12 SORT-THROUGH-SUBR CHECKPOINT: implementation is at
+  `7df0499a36619aef7899328fabb357a2dd56a575`.  The final-source replay covers
+  selectors 5,115-5,184: all **70/70** selected outcomes match GNU, advancing
+  the contiguous frontier to **5,184/7,080** with **1,896** remaining.  Subr
+  matches 60 passes plus GNU's one skip.  NEXT is selector **5,185**,
+  `tab-bar-tests-close-other-tabs-default`, in `test/lisp/tab-bar-tests.el`
+  (two selected outcomes).
+
+  All artifacts use source fingerprint
+  `65a25f0134c47c05d7956aa59380ff4909371b6281a186213ec96277a78c711b`,
+  release subject binary
+  `ced0a5993c5caff1530152cc482485572433c35d9346596a1eb3986d1759bb53`,
+  and separate 180-second setup/body budgets:
+
+  | Selection | Result | Artifact | GNU/Emaxx setup ms | GNU/Emaxx body ms |
+  | --- | ---: | --- | ---: | ---: |
+  | Sort | 5/5 | `target/compat/run-1786473158837815000-95814` | 272/2,321 | 34/384 |
+  | Soundex | 1/1 | `target/compat/run-1786473273877746000-96041` | 262/3,209 | 11/1 |
+  | SQLite | 2/2 | `target/compat/run-1786473296455243000-96278` | 277/2,061 | 12/2 |
+  | Startup | 1/1 | `target/compat/run-1786473312661487000-96421` | 240/2,048 | 9/0 |
+  | Subr | 61/61 | `target/compat/run-1786473326925405000-96551` | 350/2,069 | 161/282 |
+
+  No body crosses the simultaneous 5x/+1-second interruption gate.  Sort is
+  11.184x but only +350 ms; Subr is 1.752x/+121 ms; Emaxx is faster in the
+  other three bodies.  Keep reconstructed startup under issue #11.
+
+  Shared repairs: complete GNU `subr.el` startup ownership; one evaluator
+  materializer for circular/record/hash/char-table reader objects; exact
+  backquote constant suffixes without dotted-tail or nested-pcase comma
+  corruption; classic reader escapes; canonical case-folded comparison;
+  destructive `delete` identity; correct absent `buffer-local-value` and
+  `mapbacktrace` behavior; ASCII-unibyte `aset` promotion; `recordp` hiding
+  hash-table storage; and complete `replace-match` case, escape, and search
+  state.  Fundamental mode remains no stored derived parent, and Lisp-visible
+  hook value cells are authoritative.
+
+  SQLite publishes GNU's condition hierarchy.  `handler-bind-1` accepts
+  arbitrary condition-list/handler pairs with GNU ordering.  GNU Elisp owns
+  ERT policy; only real public `ert--test` record writes mirror into the native
+  runner index.  Generic exhaustion recognizes the exact source-defined
+  `ignore` callable.  Loaded GNU ERT is 55/55; canonical EIEIO is 40 passes
+  plus one matched skip.  `key-parse` stays in `keymap.el`, not Rust.  Native
+  1,420/1,420 remains the exact C-primitive inventory/metadata/dispatch
+  invariant, not exhaustive semantic proof.
+
+  Final gates are green: format and diff; check in 27.34 seconds; strict
+  Clippy in 28.68 seconds; generated library validation 13/13 in 39.94
+  seconds; elevated full tests with library 1,971/1,971 in 5,421.06 seconds,
+  `compat-harness` 33/33, `perf-harness` 1/1, CLI 10/10, and ERT runner 3/3.
+  Real localhost, IPv4/IPv6, UDP, TLS, PTY, serial, subprocess, and scheduler
+  coverage passed with no sandbox-denied substitution.
+
 - 2026-08-11 SUBWORD-THROUGH-SO-LONG CHECKPOINT: implementation is at
   `5612e303462c3c00c3d498c3db4b8294c8e690b7`.  The final-source
   replay covers selectors 4,982-5,114: all 133 selected outcomes match GNU,

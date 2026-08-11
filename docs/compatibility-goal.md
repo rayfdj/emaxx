@@ -42,6 +42,69 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-12 Sort-through-Subr implementation checkpoint is at
+  `7df0499a36619aef7899328fabb357a2dd56a575`.  The final-source canonical
+  replay covers selectors 5,115-5,184: all **70/70** selected outcomes match
+  GNU, advancing the contiguous frontier to **5,184/7,080** with **1,896**
+  remaining.  Subr matches 60 passes plus the same one skip as GNU; no timeout,
+  unilateral skip, or changed status is counted.  NEXT is selector **5,185**,
+  `tab-bar-tests-close-other-tabs-default`, in `test/lisp/tab-bar-tests.el`
+  (two selected outcomes).
+
+  Every canonical artifact used source fingerprint
+  `65a25f0134c47c05d7956aa59380ff4909371b6281a186213ec96277a78c711b`,
+  release subject binary
+  `ced0a5993c5caff1530152cc482485572433c35d9346596a1eb3986d1759bb53`,
+  and separate 180-second setup/body budgets:
+
+  | Canonical selection | Result | Artifact | GNU/Emaxx setup ms | GNU/Emaxx body ms |
+  | --- | ---: | --- | ---: | ---: |
+  | Sort | 5/5 | `target/compat/run-1786473158837815000-95814` | 272/2,321 | 34/384 |
+  | Soundex | 1/1 | `target/compat/run-1786473273877746000-96041` | 262/3,209 | 11/1 |
+  | SQLite | 2/2 | `target/compat/run-1786473296455243000-96278` | 277/2,061 | 12/2 |
+  | Startup | 1/1 | `target/compat/run-1786473312661487000-96421` | 240/2,048 | 9/0 |
+  | Subr | 61/61 | `target/compat/run-1786473326925405000-96551` | 350/2,069 | 161/282 |
+
+  No comparable body meets the simultaneous 5x/+1-second interruption gate.
+  Sort is 11.184x but only +350 ms; Subr is 1.752x/+121 ms, and Emaxx is
+  faster in the other three bodies.  Keep the reconstructed-startup setup gap
+  under issue #11 and outside this body decision.
+
+  The shared repairs follow GNU's ownership boundaries.  Batch startup now
+  loads the complete GNU `subr.el` owner after its bootstrap substrate rather
+  than growing a hand-copied subset.  Reader-dependent circular, record, hash,
+  and char-table materialization has one evaluator entry point shared by
+  quoted data and direct vectors.  Backquote preserves GNU's constant-suffix
+  constructor shape without flattening dotted unquote tails or nested pcase
+  commas.  Rust host contracts now cover classic reader escapes, canonical
+  case-folded comparison, destructive `delete` identity, absent
+  `buffer-local-value` and `mapbacktrace` bases, string promotion by `aset`,
+  `recordp` hiding hash-table storage, and `replace-match` case/escape/search
+  state.  Fundamental mode remains the absence of a stored derived parent,
+  and hook execution reads the authoritative Lisp-visible local/default value
+  cells.
+
+  SQLite conditions publish the GNU hierarchy.  `handler-bind-1` now accepts
+  arbitrary condition-list/handler pairs with GNU ordering and pre-unwind
+  grouping.  GNU Elisp remains the ERT policy owner: `ert-set-test` is no
+  longer a preferred Rust override, while the public `ert--test` property
+  producer mirrors real ERT records into the native runner index.  Generic
+  exhaustion recognizes the exact source-defined `ignore` function object.
+  The complete loaded GNU ERT self-suite is 55/55 and the canonical EIEIO
+  suite is 40 passes plus one matched skip.  `key-parse` remains owned by
+  `keymap.el`; no Rust primitive was invented.  Native remains 1,420/1,420 in
+  its exact inventory/metadata/dispatch sense, not as a claim of exhaustive
+  branch/state equivalence.
+
+  Final publication evidence is green on the checkpoint source: format and
+  diff checks; `cargo check --all-targets --all-features` in 27.34 seconds;
+  strict Clippy in 28.68 seconds; the generated library group 13/13 in 39.94
+  seconds; and the elevated `cargo test --all-targets --all-features` with
+  library **1,971/1,971** in 5,421.06 seconds, `compat-harness` 33/33,
+  `perf-harness` 1/1, CLI 10/10, and ERT runner 3/3.  Real localhost,
+  IPv4/IPv6, UDP, TLS, PTY, serial, subprocess, and scheduler coverage passed;
+  no sandbox denial or isolated-rerun substitution remains in this gate.
+
 - The 2026-08-11 Subword-through-So-Long implementation checkpoint is at
   `5612e303462c3c00c3d498c3db4b8294c8e690b7`.  The final-source canonical
   replay advances the contiguous frontier from 4,981 to **5,114/7,080**,
