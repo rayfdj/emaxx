@@ -382,12 +382,20 @@ pub(crate) fn pop_unread_command_event_value(
 }
 
 pub(crate) fn unread_command_event_char(event: &Value) -> Result<char, LispError> {
-    unread_event_char(event)
+    translated_unread_event_char(event)
         .ok_or_else(|| LispError::Signal(format!("Invalid unread command event {}", event)))
 }
 
 pub(crate) fn normalize_input_event_value(event: Value) -> Result<Value, LispError> {
     if let Some(ch) = unread_event_char(&event) {
+        Ok(Value::Integer(ch as i64))
+    } else {
+        Ok(event)
+    }
+}
+
+pub(crate) fn normalize_key_event_value(event: Value) -> Result<Value, LispError> {
+    if let Some(ch) = translated_unread_event_char(&event) {
         Ok(Value::Integer(ch as i64))
     } else {
         Ok(event)
@@ -416,6 +424,29 @@ pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
         Value::String(text) => text.chars().next(),
         Value::StringObject(state) => state.borrow().text.chars().next(),
         _ => None,
+    }
+}
+
+/// GNU's default `local-function-key-map' translations.  Raw event readers
+/// preserve these symbols, while key sequences, character readers, and
+/// minibuffer command loops consume their translated character events.
+pub(crate) fn function_key_default_translation(name: &str) -> Option<i64> {
+    Some(match name {
+        "escape" => 27,
+        "tab" => 9,
+        "return" => 13,
+        "linefeed" => 10,
+        "delete" | "backspace" => 127,
+        _ => return None,
+    })
+}
+
+pub(crate) fn translated_unread_event_char(value: &Value) -> Option<char> {
+    match value {
+        Value::Symbol(name) => {
+            function_key_default_translation(name).and_then(|code| char::from_u32(code as u32))
+        }
+        _ => unread_event_char(value),
     }
 }
 
@@ -640,7 +671,7 @@ pub(crate) fn read_key_sequence_event(
     let event = if let Some(decoded) = read_decoded_input_event(interp, env)? {
         decoded
     } else {
-        normalize_input_event_value(pop_unread_command_event_value(interp, env)?)?
+        normalize_key_event_value(pop_unread_command_event_value(interp, env)?)?
     };
     translate_mouse_read_key_sequence_event(interp, event, env)
 }

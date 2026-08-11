@@ -110,6 +110,36 @@ fn real_outline_library_loads_over_the_runtime_keymap_list_adapter() {
 }
 
 #[test]
+fn preloaded_fundamental_mode_runs_the_elisp_owned_reset_lifecycle() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (defvar-local emaxx-test-fundamental-reset nil)
+               (with-temp-buffer
+                 (setq-local emaxx-test-fundamental-reset 'stale)
+                 (fundamental-mode)
+                 (list major-mode
+                       mode-name
+                       emaxx-test-fundamental-reset
+                       (local-variable-p 'emaxx-test-fundamental-reset))))",
+        ),
+        Value::list([
+            Value::symbol("fundamental-mode"),
+            Value::String("Fundamental".into()),
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn dumped_word_motion_and_auto_fill_controls_are_complete() {
     let mut interp = Interpreter::new();
     crate::lisp::load_file_strict(
@@ -146,6 +176,113 @@ fn dumped_word_motion_and_auto_fill_controls_are_complete() {
             Value::Nil,
             Value::T,
         ])
+    );
+}
+
+#[test]
+fn forward_word_uses_boundary_functions_and_reports_buffer_edges_like_gnu() {
+    assert_eq!(
+        eval_str(
+            r#"
+              (progn
+                (fset 'emaxx-test-word-boundary
+                      (lambda (pos limit)
+                        (if (< pos limit)
+                            (min (+ pos 3) limit)
+                          (max (- pos 2) limit))))
+                (with-temp-buffer
+                  (insert "fooBar baz")
+                  (let ((table (make-char-table nil nil)))
+                    (set-char-table-range table t 'emaxx-test-word-boundary)
+                    (setq-local find-word-boundary-function-table table)
+                    (list
+                     (progn (goto-char 1) (list (forward-word) (point)))
+                     (list (forward-word) (point))
+                     (list (forward-word) (point))
+                     (list (forward-word) (point))
+                     (progn (goto-char (point-max))
+                            (list (forward-word -1) (point)))
+                     (progn (goto-char (point-min))
+                            (list (forward-word -1) (point)))
+                     (progn (goto-char (point-min))
+                            (list (forward-word nil) (point)))))))
+              "#,
+        ),
+        Value::list([
+            Value::list([Value::T, Value::Integer(4)]),
+            Value::list([Value::T, Value::Integer(7)]),
+            Value::list([Value::T, Value::Integer(11)]),
+            Value::list([Value::Nil, Value::Integer(11)]),
+            Value::list([Value::T, Value::Integer(8)]),
+            Value::list([Value::Nil, Value::Integer(1)]),
+            Value::list([Value::T, Value::Integer(4)]),
+        ])
+    );
+}
+
+#[test]
+fn strict_word_motion_bypasses_mode_specific_boundary_functions() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+              (progn
+                (fset 'emaxx-test-word-boundary
+                      (lambda (pos limit)
+                        (if (< pos limit)
+                            (min (+ pos 3) limit)
+                          (max (- pos 2) limit))))
+                (with-temp-buffer
+                  (insert "fooBar")
+                  (let ((table (make-char-table nil nil)))
+                    (set-char-table-range table t 'emaxx-test-word-boundary)
+                    (setq-local find-word-boundary-function-table table)
+                    (goto-char (point-min))
+                    (list (forward-word-strictly) (point)))))
+              "#,
+        ),
+        Value::list([Value::T, Value::Integer(7)])
+    );
+}
+
+#[test]
+fn word_boundary_table_is_special_across_lexical_function_calls() {
+    assert_eq!(
+        eval_str(
+            r#"
+              (progn
+                (fset 'emaxx-test-ordinary-word-motion
+                      (eval '(lambda (position)
+                               (save-excursion
+                                 (goto-char position)
+                                 (forward-word 1)
+                                 (point)))
+                            t))
+                (fset 'emaxx-test-reentrant-boundary
+                      (eval '(lambda (position _limit)
+                               (let ((find-word-boundary-function-table
+                                      (make-char-table nil nil)))
+                                 (emaxx-test-ordinary-word-motion position)))
+                            t))
+                (with-temp-buffer
+                  (insert "fooBar")
+                  (let ((table (make-char-table nil nil)))
+                    (set-char-table-range table t 'emaxx-test-reentrant-boundary)
+                    (setq-local find-word-boundary-function-table table)
+                    (goto-char (point-min))
+                    (list
+                     (special-variable-p 'find-word-boundary-function-table)
+                     (forward-word)
+                     (point)))))
+              "#,
+        ),
+        Value::list([Value::T, Value::T, Value::Integer(7)])
     );
 }
 
@@ -1253,7 +1390,11 @@ fn package_upgrade_reloads_previously_loaded_library_before_compiling() {
             .expect("upstream load path");
         interp.set_load_path(load_path);
         interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        for feature in ["button", "backquote", "seq"] {
+        // `simple_compat.el' installs GNU subr.el's Elisp-owned `kbd', whose
+        // owner dependency `key-parse' comes from keymap.el during loadup.
+        // This deliberately bare package fixture must reconstruct that same
+        // dependency instead of inventing a Rust `key-parse' primitive.
+        for feature in ["button", "backquote", "keymap", "seq"] {
             if !interp.has_feature(feature) && interp.resolve_load_target(feature).is_some() {
                 interp.load_target(feature).unwrap();
             }
@@ -7233,18 +7374,111 @@ fn evaluated_cl_macrolet_expands_nested_lambda_bodies_before_scope_exit() {
 }
 
 #[test]
-fn mode_reset_preserves_active_buffer_local_special_bindings() {
+fn mode_reset_detaches_active_buffer_local_special_bindings_like_gnu() {
     assert_eq!(
         eval_str(
-            "(with-temp-buffer
-               (setq-local lexical-binding nil)
-               (list (let ((lexical-binding t))
-                       (kill-all-local-variables)
-                       lexical-binding)
-                     lexical-binding
-                     (local-variable-p 'lexical-binding)))"
+            "(progn
+               (defvar-local emaxx-test-mode-reset-a 'global)
+               (defvar-local emaxx-test-mode-reset-b 'global)
+               (list
+                (with-temp-buffer
+                  (setq-local emaxx-test-mode-reset-a 'local)
+                  (list
+                   (let ((emaxx-test-mode-reset-a 'bound))
+                     (kill-all-local-variables)
+                     (list emaxx-test-mode-reset-a
+                           (local-variable-p 'emaxx-test-mode-reset-a)))
+                   emaxx-test-mode-reset-a
+                   (local-variable-p 'emaxx-test-mode-reset-a)))
+                (with-temp-buffer
+                  (setq-local emaxx-test-mode-reset-b 'local)
+                  (list
+                   (let ((emaxx-test-mode-reset-b 'bound))
+                     (kill-all-local-variables)
+                     (setq emaxx-test-mode-reset-b 'new)
+                     (list emaxx-test-mode-reset-b
+                           (local-variable-p 'emaxx-test-mode-reset-b)))
+                   emaxx-test-mode-reset-b
+                   (local-variable-p 'emaxx-test-mode-reset-b)))))"
         ),
-        Value::list([Value::T, Value::Nil, Value::T])
+        Value::list([
+            Value::list([
+                Value::list([Value::symbol("global"), Value::Nil]),
+                Value::symbol("global"),
+                Value::Nil,
+            ]),
+            Value::list([
+                Value::list([Value::symbol("new"), Value::T]),
+                Value::symbol("local"),
+                Value::T,
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn mode_reset_honors_permanent_locals_and_kill_permanent_argument() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar-local emaxx-test-permanent-reset-a 'global)
+               (defvar-local emaxx-test-permanent-reset-b 'global)
+               (put 'emaxx-test-permanent-reset-a 'permanent-local t)
+               (put 'emaxx-test-permanent-reset-b 'permanent-local t)
+               (list
+                (with-temp-buffer
+                  (setq-local emaxx-test-permanent-reset-a 'local)
+                  (let ((emaxx-test-permanent-reset-a 'bound))
+                    (kill-all-local-variables)
+                    (list emaxx-test-permanent-reset-a
+                          (local-variable-p 'emaxx-test-permanent-reset-a))))
+                (with-temp-buffer
+                  (setq-local emaxx-test-permanent-reset-b 'local)
+                  (list
+                   (let ((emaxx-test-permanent-reset-b 'bound))
+                     (kill-all-local-variables t)
+                     (list emaxx-test-permanent-reset-b
+                           (local-variable-p 'emaxx-test-permanent-reset-b)))
+                   emaxx-test-permanent-reset-b
+                   (local-variable-p 'emaxx-test-permanent-reset-b)))))"
+        ),
+        Value::list([
+            Value::list([Value::symbol("bound"), Value::T]),
+            Value::list([
+                Value::list([Value::symbol("global"), Value::Nil]),
+                Value::symbol("global"),
+                Value::Nil,
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn mode_reset_notifies_watchers_before_removing_even_permanent_locals() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar-local emaxx-test-watched-reset 'global)
+               (put 'emaxx-test-watched-reset 'permanent-local t)
+               (let (events)
+                 (with-temp-buffer
+                   (add-variable-watcher
+                    'emaxx-test-watched-reset
+                    (lambda (_symbol new operation where)
+                      (push (list new operation (eq where (current-buffer))) events)))
+                   (setq-local emaxx-test-watched-reset 'local)
+                   (setq events nil)
+                   (kill-all-local-variables)
+                   (list emaxx-test-watched-reset (nreverse events)))))"
+        ),
+        Value::list([
+            Value::symbol("local"),
+            Value::list([Value::list([
+                Value::Nil,
+                Value::symbol("makunbound"),
+                Value::T,
+            ])]),
+        ])
     );
 }
 

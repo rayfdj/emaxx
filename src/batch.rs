@@ -595,13 +595,10 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .map_err(|error| format!("preload simple: {error}"))?;
     }
 
-    // These map-owning libraries are also part of GNU's dumped image.  Keep
-    // their definitions on the Lisp side and load them in loadup order; Help
-    // legitimately refers to the maps without first requiring either file.
-    for (feature, provisional_maps) in [
-        ("minibuffer", &["minibuffer-local-completion-map"][..]),
-        ("progmodes/elisp-mode", &["emacs-lisp-mode-map"][..]),
-    ] {
+    // Minibuffer is also part of GNU's dumped image.  Keep its definitions on
+    // the Lisp side; Help legitimately refers to this map without requiring
+    // the feature first.
+    for (feature, provisional_maps) in [("minibuffer", &["minibuffer-local-completion-map"][..])] {
         if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
             continue;
         }
@@ -683,6 +680,66 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .map_err(|error| format!("preload register: {error}"))?;
     }
 
+    // paragraphs.el follows register.el in GNU loadup and intentionally has
+    // no `provide' form.  It owns `use-hard-newlines' and the complete
+    // paragraph/sentence policy used directly by dumped clients such as So
+    // Long, so reconstruct the file itself rather than copying whichever
+    // missing entry point a client happens to expose.
+    if interpreter
+        .resolve_load_target("textmodes/paragraphs")
+        .is_some()
+    {
+        interpreter
+            .load_target("textmodes/paragraphs")
+            .map_err(|error| format!("preload textmodes/paragraphs: {error}"))?;
+    }
+
+    // GNU loadup establishes the programming-mode parent before loading the
+    // shared Lisp modes.  Loading lisp-mode first leaves its derived-mode
+    // parent pointing at Emaxx's file-less bootstrap fallback, which skips
+    // the Elisp-owned reset/hook lifecycle.  Provisional identity-bearing
+    // maps must yield before each real `defvar-keymap' owner runs.
+    for (library, feature, provisional_maps) in [
+        ("progmodes/prog-mode", "prog-mode", &[][..]),
+        (
+            "emacs-lisp/lisp-mode",
+            "lisp-mode",
+            &["lisp-mode-shared-map", "lisp-mode-map"][..],
+        ),
+    ] {
+        if interpreter.has_feature(feature) || interpreter.resolve_load_target(library).is_none() {
+            continue;
+        }
+        for map in provisional_maps {
+            interpreter.remove_global_binding(map);
+        }
+        interpreter
+            .load_target(library)
+            .map_err(|error| format!("preload {library}: {error}"))?;
+    }
+
+    // GNU preloads newcomment.el immediately before replace.el.  It owns the
+    // comment-motion and editing policy used by startup predicates such as So
+    // Long's leading-comment scan; preserve that complete Elisp owner rather
+    // than treating a swallowed `void-function' as a negative predicate.
+    if !interpreter.has_feature("newcomment")
+        && interpreter.resolve_load_target("newcomment").is_some()
+    {
+        interpreter
+            .load_target("newcomment")
+            .map_err(|error| format!("preload newcomment: {error}"))?;
+    }
+
+    // replace.el follows the standard mode/register cluster in GNU loadup
+    // and is part of the dumped image.  Its Occur and query-replace engines
+    // are Elisp policy; tests and preloaded clients legitimately call them
+    // without requiring `replace', so reconstruct that same owner here.
+    if !interpreter.has_feature("replace") && interpreter.resolve_load_target("replace").is_some() {
+        interpreter
+            .load_target("replace")
+            .map_err(|error| format!("preload replace: {error}"))?;
+    }
+
     // GNU loads this VC/uniquify cluster immediately before Electric.
     // Downstream dumped files call its Lisp-owned helpers without requiring
     // the features, so preserve the complete owners and their load order.
@@ -715,6 +772,21 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         interpreter
             .load_target(library)
             .map_err(|error| format!("preload {library}: {error}"))?;
+    }
+
+    // GNU loads and dumps the Emacs Lisp mode after its parent modes and the
+    // portable Electric/Eldoc/Cconv cluster.  Keep that final mode policy in
+    // its owning Elisp file rather than allowing the native bootstrap arm to
+    // remain the visible definition in a full batch runtime.
+    if !interpreter.has_feature("elisp-mode")
+        && interpreter
+            .resolve_load_target("progmodes/elisp-mode")
+            .is_some()
+    {
+        interpreter.remove_global_binding("emacs-lisp-mode-map");
+        interpreter
+            .load_target("progmodes/elisp-mode")
+            .map_err(|error| format!("preload progmodes/elisp-mode: {error}"))?;
     }
 
     // loaddefs.el is generated after the owning dumped libraries.  Its
@@ -1398,6 +1470,103 @@ mod tests {
     }
 
     #[test]
+    fn batch_runtime_preloads_programming_mode_owners_in_parent_order() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(progn
+                   (defvar-local emaxx-test-mode-owner-reset nil)
+                   (list
+                    (featurep 'prog-mode)
+                    (featurep 'lisp-mode)
+                    (featurep 'elisp-mode)
+                    (keymapp prog-mode-map)
+                    (keymapp lisp-mode-shared-map)
+                    (keymapp lisp-mode-map)
+                    (keymapp emacs-lisp-mode-map)
+                    (with-temp-buffer
+                      (setq-local emaxx-test-mode-owner-reset 'stale)
+                      (emacs-lisp-mode)
+                      (list major-mode
+                            emaxx-test-mode-owner-reset
+                            (local-variable-p 'emaxx-test-mode-owner-reset)))))",
+            )
+            .read_all()
+            .expect("read programming-mode startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate programming-mode startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::list([Value::symbol("emacs-lisp-mode"), Value::Nil, Value::Nil,]),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_gnu_paragraph_and_comment_owners() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list
+                   (with-temp-buffer
+                     (insert \"first\\n\\nsecond\")
+                     (use-hard-newlines 1 'always)
+                     (list (fboundp 'use-hard-newlines)
+                           (get 'use-hard-newlines 'permanent-local)
+                           use-hard-newlines
+                           (text-property-any
+                            (point-min) (point-max) 'hard t)))
+                   (with-temp-buffer
+                     (emacs-lisp-mode)
+                     (insert \";; long\\nx\")
+                     (goto-char (point-min))
+                     (list (featurep 'newcomment)
+                           (comment-forward 1)
+                           (point)
+                           (char-after))))",
+            )
+            .read_all()
+            .expect("read paragraphs startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate paragraphs startup probe"),
+                Value::list([
+                    Value::list([Value::T, Value::T, Value::T, Value::Integer(6)]),
+                    Value::list([Value::T, Value::T, Value::Integer(9), Value::Integer(120),]),
+                ])
+            );
+        });
+    }
+
+    #[test]
     fn batch_runtime_preloads_the_standard_font_lock_face_surface() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");
@@ -1549,6 +1718,10 @@ mod tests {
                               '(t t t nil nil))
                        (fboundp 'event-start)
                        (fboundp 'posn-point)
+                       (featurep 'replace)
+                       (mapcar #'fboundp
+                               '(occur perform-replace replace-regexp
+                                 query-replace--split-string))
                        (catch 'state
                          (minibuffer-with-setup-hook
                              (lambda ()
@@ -1584,6 +1757,8 @@ mod tests {
                     Value::T,
                     Value::T,
                     Value::T,
+                    Value::T,
+                    Value::list([Value::T, Value::T, Value::T, Value::T]),
                     Value::list([
                         Value::Integer(1),
                         Value::String("Prompt: ".into()),

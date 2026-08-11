@@ -1295,6 +1295,40 @@ fn run_hook_with_args_until_failure_stops_at_first_nil_result() {
 }
 
 #[test]
+fn global_write_file_hooks_remain_visible_in_new_buffers() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (setq-default write-file-functions nil)
+               (let ((calls 0))
+                 (add-hook 'write-file-functions
+                           (lambda () (setq calls (1+ calls)) nil))
+                 (with-temp-buffer
+                   (list (local-variable-p 'write-file-functions)
+                         (length write-file-functions)
+                         (run-hook-with-args-until-success
+                          'write-file-functions)
+                         calls
+                         (length (default-value 'write-file-functions))
+                         (local-variable-p 'write-contents-functions)
+                         (progn
+                           (setq write-contents-functions nil)
+                           (local-variable-p
+                            'write-contents-functions))))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Integer(1),
+            Value::Nil,
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Nil,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn add_hook_orders_functions_by_gnu_depth() {
     assert_eq!(
         eval_str(

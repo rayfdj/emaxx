@@ -2948,6 +2948,45 @@ fn kmacro_frontier_literal_angle_bracket_bindings_remain_distinct() {
 }
 
 #[test]
+fn legacy_keymaps_accept_nil_as_an_event_without_making_it_a_valid_key_string() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(let ((map (make-sparse-keymap)))
+                 (define-key map [nil] 'nil-event)
+                 (list (lookup-key map [nil])
+                       (lookup-key (make-sparse-keymap) [nil] t)
+                       (key-description [nil])
+                       (key-valid-p [nil])))"#,
+        ),
+        Value::list([
+            Value::symbol("nil-event"),
+            Value::Nil,
+            Value::String("<nil>".into()),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn preloaded_string_replace_preserves_gnu_string_identity_and_properties() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(let* ((source (propertize "foo" 'source t))
+                      (replacement (propertize "Q" 'replacement t))
+                      (unchanged (string-replace "z" replacement source))
+                      (changed (string-replace "o" replacement source)))
+                 (list (eq unchanged source)
+                       (get-text-property 0 'source unchanged)
+                       (get-text-property 0 'source changed)
+                       (get-text-property 1 'source changed)
+                       (get-text-property 1 'replacement changed)
+                       (get-text-property 2 'replacement changed)))"#,
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::Nil, Value::T, Value::T,])
+    );
+}
+
+#[test]
 fn kmacro_frontier_num_input_keys_counts_prefix_events_and_macro_eof() {
     assert_eq!(
         eval_str(
@@ -2958,6 +2997,102 @@ fn kmacro_frontier_num_input_keys_counts_prefix_events_and_macro_eof() {
         ),
         Value::list([Value::String("abb".into()), Value::Integer(5)])
     );
+}
+
+#[test]
+fn keyboard_macro_command_cycle_matches_gnu_prefix_phase_order() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(let (trace)
+                     (defun emaxx-prefix-phase-probe (arg)
+                       (interactive "P")
+                       (push (list 'body arg prefix-arg
+                                   current-prefix-arg last-prefix-arg)
+                             trace))
+                     (global-set-key "a" #'emaxx-prefix-phase-probe)
+                     (add-hook 'pre-command-hook
+                               (lambda ()
+                                 (when (eq this-command
+                                           'emaxx-prefix-phase-probe)
+                                   (push (list 'pre prefix-arg
+                                               current-prefix-arg
+                                               last-prefix-arg)
+                                         trace))))
+                     (add-hook 'post-command-hook
+                               (lambda ()
+                                 (when (eq this-command
+                                           'emaxx-prefix-phase-probe)
+                                   (push (list 'post prefix-arg
+                                               current-prefix-arg
+                                               last-prefix-arg)
+                                         trace))))
+                     (execute-kbd-macro (kbd "C-2 a a"))
+                     (nreverse trace))"#,
+            ),
+            Value::list([
+                Value::list([
+                    Value::symbol("pre"),
+                    Value::Integer(2),
+                    Value::Nil,
+                    Value::Nil,
+                ]),
+                Value::list([
+                    Value::symbol("body"),
+                    Value::Integer(2),
+                    Value::Nil,
+                    Value::Integer(2),
+                    Value::Nil,
+                ]),
+                Value::list([
+                    Value::symbol("post"),
+                    Value::Nil,
+                    Value::Integer(2),
+                    Value::Integer(2),
+                ]),
+                Value::list([
+                    Value::symbol("pre"),
+                    Value::Nil,
+                    Value::Integer(2),
+                    Value::Integer(2),
+                ]),
+                Value::list([
+                    Value::symbol("body"),
+                    Value::Nil,
+                    Value::Nil,
+                    Value::Nil,
+                    Value::Integer(2),
+                ]),
+                Value::list([Value::symbol("post"), Value::Nil, Value::Nil, Value::Nil,]),
+            ])
+        );
+    });
+}
+
+#[test]
+fn keyboard_macro_pre_command_hook_can_preserve_the_previous_prefix() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(let (calls)
+                     (defun emaxx-prefix-preservation-probe (arg)
+                       (interactive "P")
+                       (push arg calls))
+                     (global-set-key "a" #'emaxx-prefix-preservation-probe)
+                     (add-hook 'pre-command-hook
+                               (lambda ()
+                                 (when (and
+                                        (eq this-command
+                                            'emaxx-prefix-preservation-probe)
+                                        (not prefix-arg)
+                                        current-prefix-arg)
+                                   (setq prefix-arg current-prefix-arg))))
+                     (execute-kbd-macro (kbd "C-2 a a"))
+                     (nreverse calls))"#,
+            ),
+            Value::list([Value::Integer(2), Value::Integer(2)])
+        );
+    });
 }
 
 #[test]
@@ -6108,6 +6243,98 @@ fn simple_compat_preloads_store_match_data_as_the_gnu_alias() {
         Value::list([
             Value::T,
             Value::list([Value::Integer(0), Value::Integer(1)]),
+        ])
+    );
+}
+
+#[test]
+fn simple_compat_preloads_wholenump_as_the_gnu_natnump_alias() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (eq (symbol-function 'wholenump) 'natnump)
+                   (wholenump 0)
+                   (wholenump 1000000000000000000000000000000)
+                   (wholenump -1)
+                   (wholenump 1.0)
+                   (wholenump nil))"
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn preloaded_completing_read_delegates_through_the_gnu_dispatch_variable() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize batch interpreter");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list
+               (cl-letf (((symbol-function 'read-from-minibuffer)
+                          (lambda (&rest _args) \"mocked\")))
+                 (completing-read \"Prompt: \" nil))
+               (let ((completing-read-function
+                      (lambda (&rest args) (length args))))
+                 (completing-read \"Prompt: \" nil nil t nil nil nil t)))"
+        ),
+        Value::list([Value::String("mocked".into()), Value::Integer(8)])
+    );
+}
+
+#[test]
+fn preloaded_kbd_preserves_gnu_ascii_string_and_symbolic_vector_results() {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize batch interpreter");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (kbd \"RET\")
+                   (kbd \"a RET\")
+                   (kbd \"<return>\")
+                   (kbd \"é\")
+                   (stringp (kbd \"RET\"))
+                   (vectorp (kbd \"<return>\")))"
+        ),
+        Value::list([
+            Value::String("\r".into()),
+            Value::String("a\r".into()),
+            Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::Symbol("return".into()),
+            ]),
+            Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::Integer('é' as i64),
+            ]),
+            Value::T,
+            Value::T,
         ])
     );
 }

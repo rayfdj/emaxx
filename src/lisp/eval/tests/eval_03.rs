@@ -6331,6 +6331,93 @@ fn fset_can_define_function_aliases() {
 }
 
 #[test]
+fn read_key_function_cell_honors_cl_letf_and_restores_the_native_fallback() {
+    assert_eq!(
+        eval_str(
+            "(let ((original (symbol-function 'read-key)))
+               (list
+                (cl-letf (((symbol-function 'read-key) #'ignore))
+                  (list (read-key) (funcall 'read-key)))
+                (eq original (symbol-function 'read-key))))"
+        ),
+        Value::list([Value::list([Value::Nil, Value::Nil]), Value::T])
+    );
+}
+
+#[test]
+fn read_key_call_caches_invalidate_on_explicit_function_cell_changes() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let save_original =
+        Reader::new("(setq emaxx-test-original-read-key (symbol-function 'read-key))")
+            .read()
+            .expect("read-key save should parse")
+            .expect("read-key save should exist");
+    interp
+        .eval(&save_original, &mut env)
+        .expect("save native read-key function cell");
+
+    let source_call = Reader::new("(read-key 'source)")
+        .read()
+        .expect("read-key source call should parse")
+        .expect("read-key source call should exist");
+    let symbolic_funcall = Reader::new("(funcall 'read-key 'funcall)")
+        .read()
+        .expect("read-key funcall should parse")
+        .expect("read-key funcall should exist");
+
+    for (definition, source_result, funcall_result) in [
+        (
+            "(fset 'read-key (lambda (value) (list 'first value)))",
+            Value::list([Value::symbol("first"), Value::symbol("source")]),
+            Value::list([Value::symbol("first"), Value::symbol("funcall")]),
+        ),
+        (
+            "(fset 'read-key (lambda (value) (list 'second value)))",
+            Value::list([Value::symbol("second"), Value::symbol("source")]),
+            Value::list([Value::symbol("second"), Value::symbol("funcall")]),
+        ),
+        (
+            "(defun read-key (value) (list 'elisp-owner value))",
+            Value::list([Value::symbol("elisp-owner"), Value::symbol("source")]),
+            Value::list([Value::symbol("elisp-owner"), Value::symbol("funcall")]),
+        ),
+    ] {
+        let definition = Reader::new(definition)
+            .read()
+            .expect("read-key replacement should parse")
+            .expect("read-key replacement should exist");
+        interp
+            .eval(&definition, &mut env)
+            .expect("replace read-key function cell");
+        assert_eq!(
+            interp
+                .eval(&source_call, &mut env)
+                .expect("source call should observe replacement"),
+            source_result
+        );
+        assert_eq!(
+            interp
+                .eval(&symbolic_funcall, &mut env)
+                .expect("symbolic funcall should observe replacement"),
+            funcall_result
+        );
+    }
+
+    let restore = Reader::new("(fset 'read-key emaxx-test-original-read-key)")
+        .read()
+        .expect("read-key restoration should parse")
+        .expect("read-key restoration should exist");
+    interp
+        .eval(&restore, &mut env)
+        .expect("restore native read-key function cell");
+    assert_eq!(
+        interp.logical_function_binding("read-key", &env),
+        Some(Value::BuiltinFunc("read-key".into()))
+    );
+}
+
+#[test]
 fn builtin_alias_calls_invalidate_on_every_redefinition() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();

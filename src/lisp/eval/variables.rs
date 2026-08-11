@@ -826,7 +826,7 @@ impl Interpreter {
         let index = self
             .active_special_restores
             .iter()
-            .rposition(|restore| restore.name == name)?;
+            .rposition(|restore| !restore.local_binding_killed && restore.name == name)?;
         let restore = &self.active_special_restores[index];
         match restore.scope {
             SpecialBindingScope::Global
@@ -856,7 +856,9 @@ impl Interpreter {
         let current_buffer_id = self.current_buffer_id();
         let mut found = false;
         for restore in self.active_special_restores.iter().rev().filter(|restore| {
-            restore.name == name && matches!(restore.scope, SpecialBindingScope::Global)
+            !restore.local_binding_killed
+                && restore.name == name
+                && matches!(restore.scope, SpecialBindingScope::Global)
         }) {
             found = true;
             if self.is_always_buffer_local_special(name)
@@ -876,7 +878,9 @@ impl Interpreter {
         self.active_special_restores
             .iter()
             .find(|restore| {
-                restore.name == name && matches!(restore.scope, SpecialBindingScope::Global)
+                !restore.local_binding_killed
+                    && restore.name == name
+                    && matches!(restore.scope, SpecialBindingScope::Global)
             })
             .map(|restore| restore.previous.clone())
     }
@@ -889,7 +893,8 @@ impl Interpreter {
         self.active_special_restores
             .iter()
             .find(|restore| {
-                restore.name == name
+                !restore.local_binding_killed
+                    && restore.name == name
                     && matches!(restore.scope, SpecialBindingScope::BufferLocal(id) if id == buffer_id)
             })
             .map(|restore| restore.previous.clone())
@@ -901,7 +906,9 @@ impl Interpreter {
         value: Option<Value>,
     ) -> bool {
         let Some(index) = self.active_special_restores.iter().position(|restore| {
-            restore.name == name && matches!(restore.scope, SpecialBindingScope::Global)
+            !restore.local_binding_killed
+                && restore.name == name
+                && matches!(restore.scope, SpecialBindingScope::Global)
         }) else {
             return false;
         };
@@ -916,7 +923,8 @@ impl Interpreter {
         value: Option<Value>,
     ) -> bool {
         let Some(index) = self.active_special_restores.iter().position(|restore| {
-            restore.name == name
+            !restore.local_binding_killed
+                && restore.name == name
                 && matches!(restore.scope, SpecialBindingScope::BufferLocal(id) if id == buffer_id)
         }) else {
             return false;
@@ -1061,6 +1069,7 @@ impl Interpreter {
                 binding_buffer_id: None,
                 previous: Some(previous),
                 previous_undo_state: Some(previous_undo_state),
+                local_binding_killed: false,
             };
             self.active_special_restores.push(restore.clone());
             return Ok(restore);
@@ -1076,6 +1085,7 @@ impl Interpreter {
                 binding_buffer_id: None,
                 previous,
                 previous_undo_state: None,
+                local_binding_killed: false,
             }
         } else {
             let previous = self.global_value(&name);
@@ -1093,6 +1103,7 @@ impl Interpreter {
                 binding_buffer_id,
                 previous,
                 previous_undo_state: None,
+                local_binding_killed: false,
             }
         };
         self.active_special_restores.push(restore.clone());
@@ -1125,8 +1136,23 @@ impl Interpreter {
         name: &str,
     ) -> bool {
         self.active_special_restores.iter().any(|restore| {
-            restore.name == name && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
+            !restore.local_binding_killed
+                && restore.name == name
+                && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
         })
+    }
+
+    /// Detach every active dynamic binding from a local cell removed by
+    /// `kill-all-local-variables'.  The restore record remains on the stack:
+    /// if the body creates a fresh local cell before unwinding, GNU restores
+    /// the pre-binding value into that cell; otherwise unwind is a no-op.
+    pub(crate) fn mark_buffer_local_special_binding_killed(&mut self, buffer_id: u64, name: &str) {
+        for restore in &mut self.active_special_restores {
+            if restore.name == name && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
+            {
+                restore.local_binding_killed = true;
+            }
+        }
     }
 
     pub(crate) fn restore_special_binding(
@@ -1143,6 +1169,12 @@ impl Interpreter {
         } else {
             restore
         };
+        if restore.local_binding_killed
+            && matches!(restore.scope, SpecialBindingScope::BufferLocal(buffer_id)
+                if self.buffer_local_value(buffer_id, &restore.name).is_none())
+        {
+            return Ok(());
+        }
         if let Some(previous_undo_state) = restore.previous_undo_state {
             let buffer_id = match restore.scope {
                 SpecialBindingScope::BufferLocal(buffer_id) => buffer_id,
