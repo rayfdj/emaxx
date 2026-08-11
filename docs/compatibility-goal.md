@@ -42,6 +42,67 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-11 Shell/SQL implementation checkpoint is published at
+  `f5fa1df3aa9c731582a3717145527d00b550c59b`.  Final-source replays share
+  subject fingerprint
+  `0fab2373c024355353b222a077044d1631cf2d303b4f0badd5a3b71c4d9a6bf6`:
+  Ruby TS is 22/22 in `target/compat/run-1786416780323943000-53469`, Rust TS
+  1/1 in `target/compat/run-1786417324532487000-53871`, Scheme 1/1 in
+  `target/compat/run-1786417371693872000-54007`, Shell 6/6 in
+  `target/compat/run-1786417428087140000-54139`, and SQL 32/32 in
+  `target/compat/run-1786417474756985000-54278`.  This advances the contiguous
+  frontier to 4,981/7,080 and leaves 2,099 selectors.  NEXT is selector 4,982,
+  `subword-tests`, in `test/lisp/progmodes/subword-tests.el` (2 selected
+  outcomes).
+
+  Final GNU/Emaxx setup and comparable-body milliseconds are: Ruby TS
+  1,075/9,423 and 298/124; Rust TS 1,068/8,053 and 82/12; Scheme
+  1,213/8,755 and 52/24; Shell 1,136/8,007 and 68/378; SQL 1,209/7,662 and
+  214/244.  Shell's body is 5.520x but only +310 ms, so it remains diagnostic
+  rather than interrupting the compatibility march under the simultaneous
+  5x/+1-second rule.  The reconstructed-versus-dumped setup gap remains
+  separate issue #11 work; this replay also encountered unusually slow local
+  binary scanning, which the phase-aware harness records as setup.
+
+  Shell exposed two shared contracts.  Font Lock keyword symbols prefer a
+  callable function cell before their variable cell, as GNU's
+  `font-lock-eval-keywords` requires; decoration levels such as Shell's
+  zero-argument providers now work without mode-specific policy.  Backward
+  `forward-comment` also lazily syntax-propertizes before taking its scan
+  snapshot, so position-specific syntax participates while internal match
+  data remains hidden.
+
+  SQL exposed both sides of the host/Elisp boundary.  Rust's
+  `prefix-numeric-value` now follows the exact `callint.c` decision table:
+  fixnums and conses with a fixnum car are recognized, `-` maps to -1, and
+  every other Lisp object maps to 1.  The existing preloaded
+  `string-prefix-p`/`string-suffix-p` fallback delegates to the shared
+  sequence-length and `compare-strings` owners in GNU `subr.el` evaluation
+  order, preserving its non-string short circuits instead of maintaining a
+  second comparison algorithm.  Missing `font-core.el` hook orchestration
+  (`font-lock-change-mode` and `font-lock-defontify`) remains Elisp in
+  `simple_compat.el`, including widening, property removal, and modified-state
+  restoration.
+
+  Native remains 1,420/1,420.  Keep that statement precise: it is exhaustive
+  native surface inventory (name, arity, command/special-form metadata, and
+  dispatch), not a proof that every primitive has already been exhaustively
+  tested over every Lisp type and runtime state.  The branch-complete
+  `prefix-numeric-value` regression is exactly the deeper coverage supplied by
+  the ordered 7,080 integration march.
+
+  Publication evidence is green: formatting, diff check, and strict
+  all-target/all-feature Clippy pass.  The complete library run exercised all
+  1,933 tests in 5,231.62 seconds: 1,923 passed directly, nine localhost/TLS
+  cases denied by the restricted sandbox all passed in exact elevated reruns,
+  and the only other failure was a process-output test whose child launch
+  exceeded its former 10-second test allowance.  That test passed alone and,
+  after raising only its non-product ceiling to 60 seconds, passed while
+  actually needing 15.72 seconds on this machine.  Binary gates pass
+  `compat-harness` 33/33, `perf-harness` 1/1, CLI 10/10, and ERT runner 3/3.
+  Preserve this selective scheduler and phase-aware timeout accounting; do not
+  serialize unrelated tests or turn the test allowance into a product timeout.
+
 - The 2026-08-11 Ruby implementation checkpoint is published at
   `79e8a95cd5658deb693df211663404c985fc52b5`.  The complete
   canonical selection in `test/lisp/progmodes/ruby-mode-tests.el` matches GNU

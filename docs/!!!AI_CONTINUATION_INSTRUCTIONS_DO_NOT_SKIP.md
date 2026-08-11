@@ -18,6 +18,49 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-11 SHELL/SQL CHECKPOINT: implementation is published at
+  `f5fa1df3aa9c731582a3717145527d00b550c59b`.  Final-source artifacts share
+  subject fingerprint
+  `0fab2373c024355353b222a077044d1631cf2d303b4f0badd5a3b71c4d9a6bf6`:
+  Ruby TS 22/22 at `target/compat/run-1786416780323943000-53469`, Rust TS 1/1
+  at `target/compat/run-1786417324532487000-53871`, Scheme 1/1 at
+  `target/compat/run-1786417371693872000-54007`, Shell 6/6 at
+  `target/compat/run-1786417428087140000-54139`, and SQL 32/32 at
+  `target/compat/run-1786417474756985000-54278`.  The contiguous frontier is
+  4,981/7,080 with 2,099 selectors remaining.  NEXT is selector 4,982,
+  `subword-tests`, in `test/lisp/progmodes/subword-tests.el` (2 selected
+  outcomes).
+
+  GNU/Emaxx setup and body milliseconds: Ruby TS 1,075/9,423 and 298/124;
+  Rust TS 1,068/8,053 and 82/12; Scheme 1,213/8,755 and 52/24; Shell
+  1,136/8,007 and 68/378; SQL 1,209/7,662 and 214/244.  Shell's 5.520x body
+  ratio is only +310 ms, below the simultaneous +1-second interruption gate.
+  Keep reconstructed startup under issue #11 and outside body decisions.
+
+  Shared fixes: Font Lock keyword symbols prefer their callable function cell
+  before the variable cell; backward `forward-comment` lazily applies
+  position-specific syntax while preserving match data; Rust
+  `prefix-numeric-value` follows the complete GNU `callint.c` decision table;
+  the existing preloaded string-affix fallback reuses shared length and
+  `compare-strings` owners in GNU `subr.el` order; and the missing
+  `font-core.el` mode-change/defontify hook pair stays in Elisp.  Do not add
+  Shell- or SQL-specific Rust policy or duplicate comparison/syntax owners.
+
+  Native 1,420/1,420 means exhaustive surface inventory—name, arity,
+  metadata, and dispatch—not exhaustive deep semantic proof over every type
+  and state.  Continue adding branch-complete GNU owner regressions when the
+  ordered integration suite exposes an uncovered contract.
+
+  Gates: formatting, diff check, and strict all-target/all-feature Clippy are
+  green.  The 1,933-test library run passed 1,923 directly in 5,231.62
+  seconds; all nine sandbox-denied localhost/TLS tests passed in exact elevated
+  reruns.  The remaining full-run failure was test-only launch starvation:
+  the process-output case passed alone and passed after its non-product wait
+  ceiling rose from 10 to 60 seconds, actually requiring 15.72 seconds.  The
+  binary gates pass `compat-harness` 33/33, `perf-harness` 1/1, CLI 10/10, and
+  ERT runner 3/3.  Preserve selective scheduling and setup/body timeout
+  accounting; do not blanket-serialize the suite.
+
 - 2026-08-11 RUBY CHECKPOINT: implementation is published at
   `79e8a95cd5658deb693df211663404c985fc52b5`.  The final-source canonical
   Ruby selection matches GNU 108/108 (106 passes, two expected failures) in
