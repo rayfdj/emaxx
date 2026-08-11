@@ -279,20 +279,54 @@ define_dispatch!(
             }
             "string-prefix-p" | "string-suffix-p" => {
                 need_arg_range(name, args, 2, 3)?;
-                let affix = string_text(&args[0])?;
-                let text = string_text(&args[1])?;
                 let ignore_case = args.get(2).is_some_and(Value::is_truthy);
-                let (affix, text) = if ignore_case {
-                    (affix.to_lowercase(), text.to_lowercase())
+                let comparison = if name == "string-prefix-p" {
+                    // This is preloaded Lisp in GNU's subr.el.  Preserve its
+                    // evaluation and short-circuit order instead of imposing
+                    // a stricter native string-only contract: non-string
+                    // sequences can reach the length comparison, and a
+                    // longer prefix returns nil before compare-strings runs.
+                    let affix_length = sequence_length_value(interp, &args[0])?;
+                    let text_length = sequence_length_value(interp, &args[1])?;
+                    if affix_length > text_length {
+                        return Ok(Value::Nil);
+                    }
+                    let zero = Value::Integer(0);
+                    let end = Value::Integer(affix_length);
+                    compare_strings_value(
+                        &args[0],
+                        Some(&zero),
+                        Some(&end),
+                        &args[1],
+                        Some(&zero),
+                        Some(&end),
+                        ignore_case,
+                    )?
                 } else {
-                    (affix, text)
+                    // string-suffix-p computes STRING's length first in
+                    // subr.el, then short-circuits when SUFFIX is longer.
+                    let text_length = sequence_length_value(interp, &args[1])?;
+                    let affix_length = sequence_length_value(interp, &args[0])?;
+                    let start = text_length - affix_length;
+                    if start < 0 {
+                        return Ok(Value::Nil);
+                    }
+                    let start = Value::Integer(start);
+                    compare_strings_value(
+                        &args[0],
+                        None,
+                        None,
+                        &args[1],
+                        Some(&start),
+                        None,
+                        ignore_case,
+                    )?
                 };
-                let matches = if name == "string-prefix-p" {
-                    text.starts_with(&affix)
+                Ok(if matches!(comparison, Value::T) {
+                    Value::T
                 } else {
-                    text.ends_with(&affix)
-                };
-                Ok(if matches { Value::T } else { Value::Nil })
+                    Value::Nil
+                })
             }
             "string-limit" => {
                 need_arg_range(name, args, 2, 4)?;

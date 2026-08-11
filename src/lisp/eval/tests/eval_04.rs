@@ -5251,6 +5251,20 @@ fn font_lock_optional_nil_bounds_and_decoration_levels_match_gnu() {
                      font-lock-maximum-decoration 0)
                (font-lock-ensure)
                (list (get-text-property 1 'face)
+                     (get-text-property 7 'face)))
+             (with-temp-buffer
+               (insert "alpha beta")
+               ;; Function and variable cells are independent.  GNU's
+               ;; font-lock-eval-keywords deliberately prefers the function.
+               (setq emaxx-test-font-lock-provider
+                     '(("alpha" 0 font-lock-keyword-face))
+                     font-lock-defaults
+                     '((emaxx-test-font-lock-provider)))
+               (fset 'emaxx-test-font-lock-provider
+                     (lambda ()
+                       '(("beta" 0 font-lock-function-name-face))))
+               (font-lock-ensure)
+               (list (get-text-property 1 'face)
                      (get-text-property 7 'face))))
             "#,
         ),
@@ -5258,6 +5272,7 @@ fn font_lock_optional_nil_bounds_and_decoration_levels_match_gnu() {
             Value::symbol("font-lock-keyword-face"),
             Value::symbol("font-lock-function-name-face"),
             Value::list([Value::symbol("font-lock-keyword-face"), Value::Nil]),
+            Value::list([Value::Nil, Value::symbol("font-lock-function-name-face")]),
         ])
     );
 }

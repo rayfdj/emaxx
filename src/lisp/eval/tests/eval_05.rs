@@ -6034,12 +6034,34 @@ fn simple_compat_exposes_the_dumped_font_lock_hook_entry_point() {
         eval_str_with(
             &mut interp,
             "(with-temp-buffer
-               (list (fboundp 'turn-on-font-lock)
-                     font-lock-mode
-                     (turn-on-font-lock)
-                     font-lock-mode))"
+               (insert \"abc\")
+               (put-text-property 1 4 'font-lock-face 'bold)
+               (set-buffer-modified-p nil)
+               (narrow-to-region 2 3)
+               (font-lock-defontify)
+               (let ((properties
+                      (save-restriction
+                        (widen)
+                        (text-properties-at 1))))
+                 (list (fboundp 'turn-on-font-lock)
+                       (buffer-modified-p)
+                       properties
+                       font-lock-mode
+                       (turn-on-font-lock)
+                       font-lock-mode
+                       (font-lock-change-mode)
+                       font-lock-mode)))"
         ),
-        Value::list([Value::T, Value::Nil, Value::T, Value::T])
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+        ])
     );
 }
 

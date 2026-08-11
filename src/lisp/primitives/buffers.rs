@@ -1709,18 +1709,17 @@ pub(crate) fn compare_buffer_substrings(left: &str, right: &str) -> i64 {
 }
 
 pub(crate) fn prefix_numeric_value(value: &Value) -> Result<Value, LispError> {
-    match value {
-        Value::Nil => Ok(Value::Integer(1)),
-        Value::Integer(_) | Value::BigInteger(_) => Ok(value.clone()),
-        Value::Symbol(symbol) if symbol == "-" => Ok(Value::Integer(-1)),
-        Value::Cons(_) => {
-            let items = value.to_vec()?;
-            if items.len() == 1 {
-                prefix_numeric_value(&items[0])
-            } else {
-                Err(LispError::TypeError("number".into(), value.type_name()))
-            }
-        }
-        _ => Err(LispError::TypeError("number".into(), value.type_name())),
-    }
+    Ok(match value {
+        Value::Nil => Value::Integer(1),
+        Value::Symbol(symbol) if symbol == "-" => Value::Integer(-1),
+        Value::Integer(_) => value.clone(),
+        Value::Cons(_) => value
+            .cons_values()
+            .and_then(|(head, _)| matches!(head, Value::Integer(_)).then_some(head))
+            .unwrap_or(Value::Integer(1)),
+        // GNU accepts any Lisp object here.  Values outside the raw-prefix
+        // representation, including floats and bignums, have numeric meaning
+        // 1 rather than signaling a type error.
+        _ => Value::Integer(1),
+    })
 }

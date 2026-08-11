@@ -4033,7 +4033,8 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
     // Process output is asynchronous.  Wait explicitly, as Lisp callers
     // must, before asserting on its buffer.  The long deadline does not slow
     // the normal case (accept returns on delivery), but avoids mistaking CPU
-    // starvation in the parallel fast suite for a process semantic failure.
+    // starvation or endpoint scanning in the full parallel suite for a
+    // process semantic failure.
     let current_contents = interp
         .get_buffer_by_id(buffer_id)
         .expect("process buffer")
@@ -4049,7 +4050,7 @@ fn process_send_string_and_region_route_output_to_the_process_buffer() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Integer(10)],
+            &[process.clone(), Value::Integer(60)],
             &mut env,
         )
         .expect("accept-process-output should receive the echo");

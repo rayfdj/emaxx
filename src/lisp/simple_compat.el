@@ -5572,6 +5572,24 @@ when one is set."
   (when mode
     (setq-local char-property-alias-alist '((face font-lock-face)))))
 
+;; font-core.el installs these preloaded hook functions before font-lock.el is
+;; loaded.  Keep their buffer-state orchestration in Lisp; the native layer
+;; only supplies the text-property and mode primitives they call.
+(defun font-lock-change-mode ()
+  (font-lock-mode -1))
+
+(defun font-lock-defontify ()
+  "Clear out all `font-lock-face' properties in current buffer.
+A major mode that uses `font-lock-face' properties might want to put
+this function onto `change-major-mode-hook'."
+  (let ((modp (buffer-modified-p))
+        (inhibit-read-only t))
+    (save-restriction
+      (widen)
+      (remove-list-of-text-properties (point-min) (point-max)
+                                      '(font-lock-face)))
+    (restore-buffer-modified-p modp)))
+
 ;; Keep font-core.el's public hook entry point at the Lisp boundary while the
 ;; mode engine itself remains native.  Dumped major-mode hooks (including
 ;; Info-mode-hook) call this wrapper without requiring font-core.
