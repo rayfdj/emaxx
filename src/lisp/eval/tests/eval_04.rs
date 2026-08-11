@@ -784,6 +784,39 @@ fn read_string_preserves_non_string_defaults_on_empty_input() {
 }
 
 #[test]
+fn no_event_minibuffer_runs_setup_hook_before_batch_input_and_restores_state() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((minibuffer-setup-hook
+                       (list
+                        (lambda ()
+                          (throw 'state
+                            (list (minibuffer-depth)
+                                  (minibuffer-prompt)
+                                  (point)
+                                  (minibuffer-contents)
+                                  (windowp (active-minibuffer-window))))))))
+                 (list
+                  (catch 'state
+                    (read-from-minibuffer "Prompt: " "seed"))
+                  (minibuffer-depth)
+                  (active-minibuffer-window)))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(1),
+                Value::String("Prompt: ".into()),
+                Value::Integer(13),
+                Value::String("seed".into()),
+                Value::T,
+            ]),
+            Value::Integer(0),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn simulated_minibuffer_keys_preserve_the_callers_prefix_argument() {
     assert_eq!(
         eval_str(
@@ -794,6 +827,29 @@ fn simulated_minibuffer_keys_preserve_the_callers_prefix_argument() {
         Value::list([
             Value::String("nick".into()),
             Value::list([Value::Integer(4)]),
+        ])
+    );
+}
+
+#[test]
+fn simulated_input_translates_symbolic_return_at_gnu_key_boundaries() {
+    assert_eq!(
+        eval_str(
+            r#"(list
+                 (ert-simulate-keys [?b ?2 return]
+                   (read-string "Cell: "))
+                 (ert-simulate-keys [?b ?2 return]
+                   (completing-read "Cell: " nil))
+                 (ert-simulate-keys [return] (read-event))
+                 (ert-simulate-keys [return] (read-key))
+                 (ert-simulate-keys [return] (read-char)))"#
+        ),
+        Value::list([
+            Value::String("b2".into()),
+            Value::String("b2".into()),
+            Value::Symbol("return".into()),
+            Value::Integer(13),
+            Value::Integer(13),
         ])
     );
 }

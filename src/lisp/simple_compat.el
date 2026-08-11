@@ -35,6 +35,46 @@
 ;; metadata consumers such as `function-alias-p' follow the alias.
 (defalias 'string= #'string-equal)
 (defalias 'store-match-data #'set-match-data)
+(defalias 'wholenump #'natnump)
+
+;; GNU preloads this subr.el owner after keymap.el has supplied `key-parse'.
+;; Its string/vector choice is public: ASCII-only sequences retain the
+;; historical string representation, while symbolic events require a vector.
+(defun kbd (keys)
+  "Convert KEYS to the internal Emacs key representation.
+KEYS should be a string in the format returned by commands such
+as \\[describe-key] (`describe-key').
+
+This is the same format used for saving keyboard macros (see
+`edmacro-mode').
+
+Here's some example key sequences:
+
+    \"f\"
+    \"C-c C-c\"
+    \"H-<left>\"
+    \"M-RET\"
+    \"C-M-<return>\"
+
+For an approximate inverse of this, see `key-description'."
+  (declare (pure t) (side-effect-free t))
+  (let ((res (key-parse keys)))
+    (when (and (>= (length res) 4)
+               (eq (aref res 0) ?\C-x)
+               (eq (aref res 1) ?\()
+               (eq (aref res (- (length res) 2)) ?\C-x)
+               (eq (aref res (- (length res) 1)) ?\)))
+      (setq res (apply #'vector (let ((lres (append res nil)))
+                                  (setq lres (cddr lres))
+                                  (setq lres (nreverse lres))
+                                  (setq lres (cddr lres))
+                                  (nreverse lres)))))
+    (if (not (memq nil (mapcar (lambda (ch)
+                                 (and (numberp ch)
+                                      (<= 0 ch 127)))
+                               res)))
+        (concat (mapcar #'identity res))
+      res)))
 
 ;; This tiny subr.el conversion helper is part of the dumped image.  Keep the
 ;; definition in Lisp and let the native sequence primitive own representation.
@@ -64,6 +104,15 @@
     (dolist (fun (prog1 (nreverse delayed-after-hook-functions)
                    (setq delayed-after-hook-functions nil)))
       (funcall fun))))
+
+;; GNU preloads this simple.el mode definition.  Keep the mode lifecycle in
+;; Elisp: the host owns buffer-local reset and hook primitives, while this
+;; function owns their ordering.
+(defun fundamental-mode ()
+  "Major mode not specialized for anything in particular."
+  (interactive)
+  (kill-all-local-variables)
+  (run-mode-hooks))
 
 (defun plistp (object)
   "Non-nil if and only if OBJECT is a valid plist."
@@ -4777,6 +4826,28 @@ Defaults to `error'."
 
 (add-hook 'prefix-command-preserve-state-hook
           #'universal-argument--preserve)
+
+;; GNU preloads subr.el's Lisp-owned implementation.  In particular, a
+;; no-op replacement returns the original string object, and real
+;; replacements preserve the properties carried by the untouched substrings
+;; and the replacement text through `substring' and `concat'.
+(defun string-replace (from-string to-string in-string)
+  "Replace FROM-STRING with TO-STRING in IN-STRING each time it occurs."
+  (when (equal from-string "")
+    (signal 'wrong-length-argument '(0)))
+  (let ((start 0)
+        (result nil)
+        pos)
+    (while (setq pos (string-search from-string in-string start))
+      (unless (= start pos)
+        (push (substring in-string start pos) result))
+      (push to-string result)
+      (setq start (+ pos (length from-string))))
+    (if (null result)
+        in-string
+      (unless (= start (length in-string))
+        (push (substring in-string start) result))
+      (apply #'concat (nreverse result)))))
 
 ;; GNU loaddefs autoloads these entry points.
 (autoload 'sh-mode "sh-script" nil t)

@@ -1,5 +1,134 @@
 use super::*;
 
+fn word_syntax_at(interp: &Interpreter, env: &Env, position: usize) -> bool {
+    super::super::syntax::syntax_class_at_buffer_position_matches(interp, env, position, 'w')
+}
+
+fn word_boundary_function(
+    interp: &Interpreter,
+    env: &Env,
+    character: char,
+) -> Option<(Value, String)> {
+    let Value::CharTable(table_id) = interp.lookup_var("find-word-boundary-function-table", env)?
+    else {
+        return None;
+    };
+    let function_name = interp
+        .char_table_get(table_id, character as u32)?
+        .as_symbol()
+        .ok()?
+        .to_owned();
+    let function = interp.lookup_function(&function_name, env).ok()?;
+    Some((function, function_name))
+}
+
+fn call_word_boundary_function(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    function: Value,
+    function_name: &str,
+    position: usize,
+    limit: usize,
+) -> Result<Option<usize>, LispError> {
+    let result = interp.call_function_value(
+        function,
+        Some(function_name),
+        &[
+            Value::Integer(position as i64),
+            Value::Integer(limit as i64),
+        ],
+        env,
+    )?;
+    Ok(match result {
+        Value::Integer(position) => usize::try_from(position).ok(),
+        _ => None,
+    })
+}
+
+fn move_forward_one_word(interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
+    let end = interp.buffer.point_max();
+    while interp.buffer.point() < end && !word_syntax_at(interp, env, interp.buffer.point()) {
+        let _ = interp.buffer.forward_char(1);
+    }
+    if interp.buffer.point() == end {
+        return Ok(false);
+    }
+
+    let first = interp.buffer.point();
+    let character = interp
+        .buffer
+        .char_at(first)
+        .expect("point before point-max has a character");
+    let _ = interp.buffer.forward_char(1);
+    if let Some((function, function_name)) = word_boundary_function(interp, env, character) {
+        let after_first = interp.buffer.point();
+        let boundary =
+            call_word_boundary_function(interp, env, function, &function_name, first, end)?
+                .filter(|boundary| after_first < *boundary && *boundary <= end)
+                .unwrap_or(after_first);
+        interp.buffer.goto_char(boundary);
+    } else {
+        while interp.buffer.point() < end && word_syntax_at(interp, env, interp.buffer.point()) {
+            let _ = interp.buffer.forward_char(1);
+        }
+    }
+    Ok(true)
+}
+
+fn move_backward_one_word(interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
+    let beginning = interp.buffer.point_min();
+    while interp.buffer.point() > beginning {
+        let previous = interp.buffer.point() - 1;
+        if word_syntax_at(interp, env, previous) {
+            break;
+        }
+        let _ = interp.buffer.forward_char(-1);
+    }
+    if interp.buffer.point() == beginning {
+        return Ok(false);
+    }
+
+    let _ = interp.buffer.forward_char(-1);
+    let last = interp.buffer.point();
+    let character = interp
+        .buffer
+        .char_at(last)
+        .expect("point at a word character has a character");
+    if let Some((function, function_name)) = word_boundary_function(interp, env, character) {
+        let boundary =
+            call_word_boundary_function(interp, env, function, &function_name, last, beginning)?
+                .filter(|boundary| beginning <= *boundary && *boundary < last)
+                .unwrap_or(last);
+        interp.buffer.goto_char(boundary);
+    } else {
+        while interp.buffer.point() > beginning {
+            let previous = interp.buffer.point() - 1;
+            if !word_syntax_at(interp, env, previous) {
+                break;
+            }
+            let _ = interp.buffer.forward_char(-1);
+        }
+    }
+    Ok(true)
+}
+
+fn forward_word(interp: &mut Interpreter, count: i64, env: &mut Env) -> Result<Value, LispError> {
+    let forward = count >= 0;
+    let mut remaining = count.unsigned_abs();
+    while remaining > 0 {
+        let moved = if forward {
+            move_forward_one_word(interp, env)?
+        } else {
+            move_backward_one_word(interp, env)?
+        };
+        if !moved {
+            return Ok(Value::Nil);
+        }
+        remaining -= 1;
+    }
+    Ok(Value::T)
+}
+
 fn stickiness_names_property(setting: &Value, prop: &str) -> bool {
     match setting {
         Value::T => true,
@@ -732,56 +861,17 @@ define_dispatch!(
                 }
             }
             "forward-word" => {
-                let n = if args.is_empty() {
+                need_arg_range(name, args, 0, 1)?;
+                let n = if args.is_empty() || args[0].is_nil() {
                     1
                 } else {
                     args[0].as_integer()?
                 };
-                let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
-                let syntax_word_chars = interp.syntax_word_chars();
-                let is_word = |ch: char| {
-                    ch.is_alphanumeric()
-                        || (case_symbols_as_words && ch == '_')
-                        || syntax_word_chars
-                            .iter()
-                            .any(|code| *code == normalize_case_key(ch as u32))
-                };
-                let forward = n >= 0;
-                let mut remaining = n.unsigned_abs();
-                while remaining > 0 {
-                    if forward {
-                        while let Some(ch) = interp.buffer.char_at(interp.buffer.point()) {
-                            if is_word(ch) {
-                                break;
-                            }
-                            let _ = interp.buffer.forward_char(1);
-                        }
-                        while let Some(ch) = interp.buffer.char_at(interp.buffer.point()) {
-                            if !is_word(ch) {
-                                break;
-                            }
-                            let _ = interp.buffer.forward_char(1);
-                        }
-                    } else {
-                        while interp.buffer.point() > interp.buffer.point_min() {
-                            if matches!(interp.buffer.char_before(), Some(ch) if is_word(ch)) {
-                                break;
-                            }
-                            let _ = interp.buffer.forward_char(-1);
-                        }
-                        while interp.buffer.point() > interp.buffer.point_min() {
-                            if !matches!(interp.buffer.char_before(), Some(ch) if is_word(ch)) {
-                                break;
-                            }
-                            let _ = interp.buffer.forward_char(-1);
-                        }
-                    }
-                    remaining -= 1;
-                }
-                Ok(Value::Nil)
+                forward_word(interp, n, env)
             }
             "backward-word" => {
-                let n = if args.is_empty() {
+                need_arg_range(name, args, 0, 1)?;
+                let n = if args.is_empty() || args[0].is_nil() {
                     1
                 } else {
                     args[0].as_integer()?

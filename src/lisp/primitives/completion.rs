@@ -1048,13 +1048,24 @@ pub(crate) fn completing_read(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if args.is_empty() || args.len() > 8 {
+    if args.len() < 2 || args.len() > 8 {
         return Err(LispError::WrongNumberOfArgs(
             "completing-read".into(),
             args.len(),
         ));
     }
     ensure_interaction_allowed(interp, env)?;
+
+    // GNU's Fcompleting_read delegates the entire policy to this variable;
+    // minibuffer.el normally installs `completing-read-default'.  Honor that
+    // loaded Elisp owner (including dynamic replacement and its mockable call
+    // to `read-from-minibuffer') before using the file-less native fallback.
+    if let Some(function) = interp
+        .lookup_var("completing-read-function", env)
+        .filter(|function| !function.is_nil())
+    {
+        return call_function_value(interp, &function, args, env);
+    }
 
     if !interp.kbd_macro_executions.is_empty() {
         crate::lisp::primitives::dispatch::prepare_kbd_macro_minibuffer_entry(interp, env)?;
@@ -1729,7 +1740,7 @@ fn simulated_completing_read(
     let mut cursor = 0usize;
     let mut accepted = None;
     while let Ok(event) = crate::lisp::primitives::pop_unread_command_event_value(interp, env) {
-        let Some(ch) = crate::lisp::primitives::unread_event_char(&event) else {
+        let Some(ch) = crate::lisp::primitives::translated_unread_event_char(&event) else {
             continue;
         };
         match ch {

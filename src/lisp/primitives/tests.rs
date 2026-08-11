@@ -9678,7 +9678,8 @@ fn process_filters_can_observe_that_read_event_is_waiting_for_user_input() {
                          ((p
                            (make-process
                             :name "wait-input"
-                            :command '("/bin/cat")
+                            :command '("/bin/sh" "-c"
+                                       "printf ready; exec /bin/cat")
                             :connection-type 'pipe
                             :filter
                             (lambda (_process text)
@@ -9689,9 +9690,16 @@ fn process_filters_can_observe_that_read_event_is_waiting_for_user_input() {
                             :sentinel 'ignore)))
                          (unwind-protect
                              (progn
+                               ;; Establish child readiness before starting
+                               ;; the semantic timeout.  Host executable
+                               ;; scanning may otherwise consume that entire
+                               ;; timeout before /bin/cat reaches its read.
+                               (accept-process-output p)
+                               (setq emaxx-test-wait-seen nil
+                                     emaxx-test-wait-received nil)
                                (process-send-string p "x")
                                (list
-                               (read-event nil nil 10)
+                                (read-event nil nil 10)
                                 emaxx-test-wait-seen
                                 emaxx-test-wait-received
                                 (waiting-for-user-input-p)))

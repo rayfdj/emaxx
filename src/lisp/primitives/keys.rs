@@ -601,6 +601,7 @@ pub(crate) fn single_key_description_text(
     no_angles: bool,
 ) -> Result<String, LispError> {
     match key {
+        Value::Nil => Ok(describe_symbolic_key("nil", no_angles)),
         Value::Integer(code) => Ok(describe_key_code(*code)),
         Value::Symbol(symbol) => Ok(describe_symbolic_key(symbol, no_angles)),
         Value::T => Ok(describe_symbolic_key("t", no_angles)),

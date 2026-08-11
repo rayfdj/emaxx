@@ -1148,6 +1148,11 @@ pub(crate) struct SpecialBindingRestore {
     binding_buffer_id: Option<u64>,
     previous: Option<Value>,
     previous_undo_state: Option<crate::buffer::UndoState>,
+    // `kill-all-local-variables' can remove a buffer-local value while a
+    // dynamic binding of that value is active.  The binding then stops
+    // participating in lookup and assignment.  On unwind GNU restores the
+    // old local value only if code created a new local cell in the meantime.
+    local_binding_killed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -3795,6 +3800,12 @@ impl Interpreter {
         for name in ["parse-sexp-ignore-comments", "parse-sexp-lookup-properties"] {
             interp.define_special_variable(name, Value::Nil);
         }
+        // syntax.c owns this function table as a native DEFVAR_LISP.  Word
+        // modes install buffer-local tables, then dynamically bind an empty
+        // table while their boundary callback calls ordinary word motion to
+        // avoid reentrancy.  Keep the value and special declaration atomic.
+        let word_boundary_table = interp.make_char_table(None, Value::Nil);
+        interp.define_special_variable("find-word-boundary-function-table", word_boundary_table);
         // syntax.c also owns this scanner policy switch.  Its default is t,
         // and Lisp navigation/indentation code dynamically binds it while
         // calling separately defined helpers.
@@ -3812,18 +3823,15 @@ impl Interpreter {
                 Value::cons(Value::Symbol("display".into()), Value::T),
             ]),
         );
-        // files.el is dumped in GNU, so these `defvar-local' contracts must
-        // exist before user/test code can set them and thereby trigger the
-        // lazy files.el load.  Otherwise the first assignment leaks globally
-        // and changes the save policy of every later buffer.
-        for name in [
-            "write-file-functions",
-            "local-write-file-hooks",
-            "write-contents-functions",
-        ] {
-            interp.define_per_buffer_special(name, Value::Nil);
-            interp.put_symbol_property(name, "permanent-local", Value::T);
-        }
+        // files.el keeps `write-file-functions' global by default: a local
+        // binding is allowed and survives a mode change, but ordinary global
+        // additions must remain visible in every buffer.  The two legacy and
+        // contents hooks are genuinely `defvar-local'.
+        interp.define_special_variable("write-file-functions", Value::Nil);
+        interp.put_symbol_property("write-file-functions", "permanent-local", Value::T);
+        interp.define_per_buffer_special("local-write-file-hooks", Value::Nil);
+        interp.put_symbol_property("local-write-file-hooks", "permanent-local", Value::T);
+        interp.define_per_buffer_special("write-contents-functions", Value::Nil);
         interp.define_per_buffer_special("buffer-save-without-query", Value::Nil);
         for (name, value) in [
             ("save-some-buffers-default-predicate", Value::Nil),

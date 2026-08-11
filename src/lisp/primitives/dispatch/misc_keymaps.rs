@@ -2757,20 +2757,17 @@ define_dispatch!(
                 })
             }
             "kill-all-local-variables" => {
-                need_args(name, args, 0)?;
+                need_arg_range(name, args, 0, 1)?;
                 let buffer_id = interp.current_buffer_id();
+                let kill_permanent = args.first().is_some_and(Value::is_truthy);
                 run_named_hooks(interp, "change-major-mode-hook", env, Some(buffer_id))?;
                 let locals = interp.buffer_local_variables(buffer_id);
                 let mut permanent = Vec::new();
                 for (name, value) in &locals {
-                    if interp
-                        .get_symbol_property(name, "permanent-local")
-                        .is_some_and(|value| value.is_truthy())
-                        || interp.has_active_buffer_local_special_binding(buffer_id, name)
-                    {
-                        permanent.push((name.clone(), value.clone()));
-                        continue;
-                    }
+                    let preserve = !kill_permanent
+                        && interp
+                            .get_symbol_property(name, "permanent-local")
+                            .is_some_and(|value| value.is_truthy());
                     interp.notify_variable_watchers(
                         name,
                         Value::Nil,
@@ -2778,8 +2775,17 @@ define_dispatch!(
                         Some(buffer_id),
                         env,
                     )?;
+                    if preserve {
+                        permanent.push((name.clone(), value.clone()));
+                        continue;
+                    }
+                    interp.mark_buffer_local_special_binding_killed(buffer_id, name);
                 }
-                interp.clear_buffer_local_state_for_mode_change(buffer_id);
+                if kill_permanent {
+                    interp.clear_buffer_local_state(buffer_id);
+                } else {
+                    interp.clear_buffer_local_state_for_mode_change(buffer_id);
+                }
                 for (name, value) in permanent {
                     interp.set_buffer_local_value(buffer_id, &name, value);
                 }
