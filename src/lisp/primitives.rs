@@ -351,6 +351,7 @@ pub(crate) fn arith_error() -> LispError {
 pub(crate) use dispatch::FnvBuildHasher;
 pub(crate) use dispatch::NameFacts;
 pub(crate) use dispatch::call_with_facts;
+pub(crate) use dispatch::echo_area_message;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::name_facts;

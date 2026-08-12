@@ -22,6 +22,7 @@ pub(crate) use lists::{
     prepare_kbd_macro_minibuffer_entry, read_minibuffer_text_from_kbd_macro_inner,
     set_tty_minibuffer_reader,
 };
+pub(crate) use display::echo_area_message;
 pub(crate) use misc_keymaps::oclosure_type_of;
 mod overlays;
 mod predicates;

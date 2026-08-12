@@ -3810,6 +3810,7 @@ pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> 
         // C-x C-c (GNU `save-buffers-kill-terminal'), and the horizontal
         // arrows (GNU `right-char'/`left-char').
         "DEL" => Some("backward-delete-char-untabify"),
+        "C-g" => Some("keyboard-quit"),
         "C-_" => Some("undo"),
         "C-x C-s" => Some("save-buffer"),
         "C-x C-w" => Some("write-file"),

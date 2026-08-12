@@ -13,8 +13,8 @@ pub mod buffer;
 pub mod compat;
 pub mod lisp;
 pub mod overlay;
-pub mod perf;
 pub mod tty;
+pub mod perf;
 
 #[cfg(test)]
 mod anti_cheat;
