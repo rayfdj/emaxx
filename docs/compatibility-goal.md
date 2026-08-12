@@ -42,6 +42,41 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-13 Filelock-through-Fns checkpoint advances the exact contiguous
+  frontier to **6,566/7,080**, leaving **514** selectors.  Its final-source
+  atomic replay covers selectors 6,451-6,566: all **116/116** outcomes match
+  GNU (114 passes and the same two collation skips), with no timeout,
+  unilateral skip, failure, or changed status.  NEXT is selector **6,567**,
+  `font-parse-tests`, in `test/src/font-tests.el` (two selected outcomes).
+
+  The canonical artifact is
+  `target/compat/regression-add-1786559823033091000-7116`, with source
+  fingerprint
+  `5e5d419b8813577f555a60fb32ea1e1340df7ecb35501d9577ee69780f37b12c`,
+  release binary
+  `ff2734aad7b2d56c21373ef38c3e6640dcc71547da5a2472c4f5d673b3a8c3b8`,
+  harness `7cc7218868e036c88187db007edae563fbfabccc4b0de52561677b6a9974fb4c`,
+  and pinned GNU commit `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+  Filelock is 6/6, Floatfns 29/29, and Fns is 81/81 (79 passes plus the same
+  two skips).  Post-bootstrap GNU/Emaxx bodies are 223/328, 15/28, and 682/723
+  ms respectively, so none crosses 2x.  Setup is separately 217-259 ms GNU
+  versus 2,379-2,639 ms Emaxx under dumped-startup issue #11.
+
+  One shared constant-memory destructive-list deletion engine now owns both
+  `delq` (`eq`) and `delete` (`equal`), including cycle detection, dotted-list
+  errors, and retained-cons identity.  Macroexpanded backquote preserves a
+  record literal used as a dotted tail as one object rather than traversing
+  its private reader encoding.  `value<` enforces GNU's exact two-argument
+  public contract.  A blanket generated-arity check at raw native dispatch
+  was deliberately rejected because bootstrap-only internal shims currently
+  accept extension arguments there; a future global enforcement change must
+  first separate the public Lisp-call boundary.
+
+  Final gates are green: formatting/diff, all-target/all-feature check, strict
+  Clippy, generated validation 13/13, focused deletion/arity/backquote tests,
+  all 26 backquote regressions, and the exact release replay.  All three owners
+  are recorded in `compat/compat_regressions.json`.
+
 - The 2026-08-12 Data-through-Fileio checkpoint advances the exact contiguous
   frontier to **6,450/7,080**, leaving **630** selectors.  The final-source
   atomic replay covers selectors 6,316-6,450: all **135/135** outcomes match

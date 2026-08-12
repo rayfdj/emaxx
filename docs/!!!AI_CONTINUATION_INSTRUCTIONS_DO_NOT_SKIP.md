@@ -18,6 +18,46 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-13 FILELOCK-THROUGH-FNS CHECKPOINT: the exact contiguous frontier
+  is **6,566/7,080**, leaving **514** selectors.  The final-source atomic
+  replay covers selectors 6,451-6,566: all **116/116** outcomes match GNU
+  (114 passes and the same two collation skips), with no timeout, unilateral
+  skip, failure, or changed status.  NEXT is selector **6,567**,
+  `font-parse-tests`, in `test/src/font-tests.el` (two selected outcomes).
+
+  Canonical artifact:
+  `target/compat/regression-add-1786559823033091000-7116`.  Subject-source
+  fingerprint is
+  `5e5d419b8813577f555a60fb32ea1e1340df7ecb35501d9577ee69780f37b12c`,
+  release binary hash is
+  `ff2734aad7b2d56c21373ef38c3e6640dcc71547da5a2472c4f5d673b3a8c3b8`,
+  harness hash is
+  `7cc7218868e036c88187db007edae563fbfabccc4b0de52561677b6a9974fb4c`,
+  and pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+  Filelock is 6/6, Floatfns 29/29, and Fns is 81/81 (79 passes plus the same
+  two skips).  Release post-bootstrap GNU/Emaxx bodies are 223/328, 15/28,
+  and 682/723 ms; no owner crosses 2x.  Setup remains the separate dumped
+  startup issue at 217-259 ms GNU versus 2,379-2,639 ms Emaxx.
+
+  Fns initially timed out because `delq` had a separate destructive-list
+  traversal without the cycle guard already used by `delete`.  Both now use
+  one constant-memory Brent-guarded engine with selectable `eq`/`equal`
+  comparison, preserving retained cons identity and GNU dotted-list errors.
+  Macroexpanded backquote now treats a record literal in dotted-tail position
+  as one reader object instead of flattening its internal cons representation.
+  `value<` enforces its exact two-argument native contract, including the
+  over-arity case in the GNU owner.  A proposed global generated-arity gate
+  was rejected after it proved that current internal bootstrap shims have
+  extension arguments; do not reintroduce that indiscriminately at raw native
+  dispatch without first separating the public Lisp-call boundary.
+
+  Final-source evidence is green: format/diff, all-target/all-feature check,
+  strict Clippy, generated validation 13/13, focused delete/arity/backquote
+  regressions, the complete 26-test backquote slice, and the exact 116-outcome
+  release replay.  The three owners are recorded in
+  `compat/compat_regressions.json`.  Protected `.DS_Store` and scratch files
+  remain untouched and uncommitted.
+
 - 2026-08-12 DATA-THROUGH-FILEIO CHECKPOINT: the exact contiguous frontier is
   **6,450/7,080**, leaving **630** selectors.  The final-source atomic replay
   covers selectors 6,316-6,450: all **135/135** selected outcomes match GNU

@@ -370,6 +370,10 @@
       "selector": "t"
     },
     {
+      "path": "test/src/floatfns-tests.el",
+      "selector": "t"
+    },
+    {
       "path": "test/src/fns-tests.el",
       "selector": "t"
     },

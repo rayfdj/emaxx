@@ -15,6 +15,56 @@ fn args_out_of_range(sequence: &Value, index: &Value) -> LispError {
     ]))
 }
 
+#[derive(Clone, Copy)]
+enum DeleteListComparison {
+    Eq,
+    Equal,
+}
+
+fn delete_from_list(
+    interp: &mut Interpreter,
+    elt: &Value,
+    list: &Value,
+    env: &Env,
+    comparison: DeleteListComparison,
+) -> Result<Value, LispError> {
+    let mut head = list.clone();
+    let mut previous: Option<Value> = None;
+    let mut tail = list.clone();
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    loop {
+        match tail.clone() {
+            Value::Nil => return Ok(head),
+            Value::Cons(cell) => {
+                if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        Value::String("Circular list".into()),
+                    ])));
+                }
+                let next = cell.cdr.borrow().clone();
+                let matches = match comparison {
+                    DeleteListComparison::Eq => {
+                        values_eq_in_env(interp, &cell.car.borrow(), elt, env)
+                    }
+                    DeleteListComparison::Equal => values_equal(interp, elt, &cell.car.borrow()),
+                };
+                if matches {
+                    if let Some(previous) = &previous {
+                        previous.set_cdr(next.clone())?;
+                    } else {
+                        head = next.clone();
+                    }
+                } else {
+                    previous = Some(tail.clone());
+                }
+                tail = next;
+            }
+            _ => return Err(wrong_type_argument("listp", head)),
+        }
+    }
+}
+
 fn current_category_table_id(interp: &mut Interpreter) -> u64 {
     interp
         .buffer_local_value(interp.current_buffer_id(), "category-table")
@@ -1492,32 +1542,7 @@ define_dispatch!(
 
             "delq" => {
                 need_args(name, args, 2)?;
-                let elt = &args[0];
-                let mut head = args[1].clone();
-                while let Value::Cons(cell) = head.clone() {
-                    if values_eq_in_env(interp, &cell.car.borrow(), elt, env) {
-                        head = cell.cdr.borrow().clone();
-                    } else {
-                        break;
-                    }
-                }
-                let mut current = head.clone();
-                while let Value::Cons(cell) = current.clone() {
-                    let next = cell.cdr.borrow().clone();
-                    match next {
-                        Value::Cons(cons_cell) => {
-                            let next_car = &cons_cell.car;
-                            let next_cdr = &cons_cell.cdr;
-                            if values_eq_in_env(interp, &next_car.borrow(), elt, env) {
-                                *cell.cdr.borrow_mut() = next_cdr.borrow().clone();
-                            } else {
-                                current = Value::Cons(cons_cell);
-                            }
-                        }
-                        _ => break,
-                    }
-                }
-                Ok(head)
+                delete_from_list(interp, &args[0], &args[1], env, DeleteListComparison::Eq)
             }
 
             "delete" => {
@@ -1531,36 +1556,7 @@ define_dispatch!(
                 // observable through eq and is what subr.el's destructive
                 // delete-dups relies on; rebuilding a filtered list silently
                 // changes both APIs' contracts.
-                let mut head = args[1].clone();
-                let mut previous: Option<Value> = None;
-                let mut tail = args[1].clone();
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                loop {
-                    match tail.clone() {
-                        Value::Nil => break,
-                        Value::Cons(cell) => {
-                            if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-                                return Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("circular-list".into()),
-                                    Value::String("Circular list".into()),
-                                ])));
-                            }
-                            let next = cell.cdr.borrow().clone();
-                            if values_equal(interp, elt, &cell.car.borrow()) {
-                                if let Some(previous) = &previous {
-                                    previous.set_cdr(next.clone())?;
-                                } else {
-                                    head = next.clone();
-                                }
-                            } else {
-                                previous = Some(tail.clone());
-                            }
-                            tail = next;
-                        }
-                        other => return Err(wrong_type_argument("listp", other)),
-                    }
-                }
-                Ok(head)
+                delete_from_list(interp, elt, &args[1], env, DeleteListComparison::Equal)
             }
 
             "remq" => {
