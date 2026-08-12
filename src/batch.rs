@@ -463,6 +463,42 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .load_target("subr")
             .map_err(|error| format!("preload subr: {error}"))?;
     }
+    // GNU loadup loads the complete widget.el and custom.el owners between
+    // keymap/subr bootstrap and face declarations.  Cus-face and loaded theme
+    // files call Custom helpers (notably `custom-check-theme') without local
+    // requires because those functions are already dumped.  Preserve that
+    // Elisp ownership and order instead of recreating theme policy in Rust.
+    for feature in ["widget", "custom"] {
+        if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
+            continue;
+        }
+        interpreter
+            .load_target(feature)
+            .map_err(|error| format!("preload {feature}: {error}"))?;
+    }
+    // GNU loads and dumps cus-face.el and faces.el after the native face
+    // vectors exist.  faces_compat.el remains the file-less/bootstrap
+    // substrate above; initialized batch execution must expose the complete
+    // Elisp owner rather than pinning its high-level query policy in Rust.
+    for feature in ["cus-face", "faces"] {
+        if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
+            continue;
+        }
+        interpreter
+            .load_target(feature)
+            .map_err(|error| format!("preload {feature}: {error}"))?;
+    }
+    // GNU loadup dumps the complete terminal-color owner before font-core
+    // and font-lock.  faces.el deliberately calls this Elisp API without a
+    // local require, so an initialized runtime must reconstruct the same
+    // preload fact rather than depend on the bootstrap subset.
+    if !interpreter.has_feature("term/tty-colors")
+        && interpreter.resolve_load_target("term/tty-colors").is_some()
+    {
+        interpreter
+            .load_target("term/tty-colors")
+            .map_err(|error| format!("preload term/tty-colors: {error}"))?;
+    }
     // GNU dumps abbrev.el before language modes are loaded.  It owns active
     // table traversal, expansion hooks, case handling, and usage state; the
     // native layer supplies the table/obarray substrate and self-insert's
@@ -472,17 +508,22 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .load_target("abbrev")
             .map_err(|error| format!("preload abbrev: {error}"))?;
     }
-    // GNU dumps font-lock.el and jit-lock.el in this order.  Emaxx keeps
-    // font-core's mode engine native, but loads these owning Lisp libraries so
-    // clients see the complete standard face and JIT registration surfaces
-    // instead of growing compatibility lists of whichever names tests expose.
-    for feature in ["font-lock", "jit-lock"] {
-        if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
+    // Reconstruct GNU loadup's complete Font Lock owner sequence.  The native
+    // layer remains the file-less substrate, but initialized execution must
+    // use font-core.el's mode lifecycle and syntax.el/font-lock.el/jit-lock.el
+    // policy rather than a hand-maintained subset of their dumped state.
+    for (feature, library) in [
+        ("font-core", "font-core"),
+        ("syntax", "emacs-lisp/syntax"),
+        ("font-lock", "font-lock"),
+        ("jit-lock", "jit-lock"),
+    ] {
+        if interpreter.has_feature(feature) || interpreter.resolve_load_target(library).is_none() {
             continue;
         }
         interpreter
-            .load_target(feature)
-            .map_err(|error| format!("preload {feature}: {error}"))?;
+            .load_target(library)
+            .map_err(|error| format!("preload {library}: {error}"))?;
     }
     // GNU dumps tabulated-list.el into the initial image (loadup reaches it
     // through buff-menu.el).  An autoload for the mode function alone is not
@@ -519,6 +560,11 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .map_err(|error| format!("preload window: {error}"))?;
     }
     if !interpreter.has_feature("files") && interpreter.resolve_load_target("files").is_some() {
+        // Interpreter::new keeps a compact auto-mode fallback for file-less
+        // embeddings.  GNU files.el owns the initialized registry; its
+        // `defvar' must see the cell unbound so the complete base table is in
+        // place before generated loaddefs extend it below.
+        interpreter.remove_global_binding("auto-mode-alist");
         interpreter
             .load_target("files")
             .map_err(|error| format!("preload files: {error}"))?;
@@ -569,7 +615,7 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     // language loadup group also contains extended utf-8-emacs source above
     // Unicode (not representable by Rust String) and belongs with the tabled
     // internal-representation/bytecode work, not this compatibility fix.
-    for library in ["case-table", "charprop", "charscript"] {
+    for library in ["case-table", "charprop", "characters", "charscript"] {
         if interpreter.resolve_load_target(library).is_some() {
             interpreter
                 .load_target(library)
@@ -674,6 +720,17 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .map_err(|error| format!("preload menu-bar: {error}"))?;
     }
 
+    // GNU loadup loads and dumps tab-bar.el immediately after menu-bar.el.
+    // Its frame-local tab data, commands, and undo policy are Elisp-owned
+    // startup state: callers may use them without requiring `tab-bar' first.
+    // Reconstruct the complete owner here rather than mirroring whichever
+    // entry point a test happens to reach in the Rust host.
+    if !interpreter.has_feature("tab-bar") && interpreter.resolve_load_target("tab-bar").is_some() {
+        interpreter
+            .load_target("tab-bar")
+            .map_err(|error| format!("preload tab-bar: {error}"))?;
+    }
+
     // GNU dumps emacs-lisp/lisp.el immediately after the menu libraries.
     // Its structural navigation commands (including forward/backward-list)
     // are Lisp policy layered over the native syntax scanner and are called
@@ -732,6 +789,16 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         interpreter
             .load_target(library)
             .map_err(|error| format!("preload {library}: {error}"))?;
+    }
+
+    // GNU loadup dumps the complete fill.el owner after the standard mode
+    // cluster.  The file intentionally has no `provide' form, so reload it
+    // after simple_compat.el's file-less no-op substrate and let its real
+    // paragraph engine own initialized batch execution.
+    if interpreter.resolve_load_target("textmodes/fill").is_some() {
+        interpreter
+            .load_target("textmodes/fill")
+            .map_err(|error| format!("preload textmodes/fill: {error}"))?;
     }
 
     // GNU preloads newcomment.el immediately before replace.el.  It owns the
@@ -1537,7 +1604,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_runtime_preloads_the_gnu_paragraph_and_comment_owners() {
+    fn batch_runtime_preloads_the_gnu_paragraph_fill_and_comment_owners() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");
             let options = BatchRunOptions {
@@ -1564,7 +1631,29 @@ mod tests {
                      (list (featurep 'newcomment)
                            (comment-forward 1)
                            (point)
-                           (char-after))))",
+                           (char-after)))
+                   (with-temp-buffer
+                     (setq fill-column 10)
+                     (insert \"alpha beta gamma\")
+                     (fill-region-as-paragraph (point-min) (point-max))
+                     (list
+                      (string-suffix-p
+                       \"/textmodes/fill.el\"
+                       (symbol-file 'fill-region-as-paragraph 'defun))
+                      (buffer-string)))
+                   (progn
+                     (require 'texinfo)
+                     (with-temp-buffer
+                       (insert
+                        \"@defun face-remap-add-relative face &rest specs\n\"
+                        \"This function adds the face spec in @var{specs} as relative\n\"
+                        \"remappings for face @var{face} in the current buffer.  The remaining\n\"
+                        \"arguments, @var{specs}, should form either a list of face names, or a\n\"
+                        \"property list of attribute/value pairs.\n\")
+                       (goto-char 49)
+                       (texinfo-mode)
+                       (fill-paragraph)
+                       (buffer-string))))",
             )
             .read_all()
             .expect("read paragraphs startup probe")
@@ -1577,13 +1666,22 @@ mod tests {
                 Value::list([
                     Value::list([Value::T, Value::T, Value::T, Value::Integer(6)]),
                     Value::list([Value::T, Value::T, Value::Integer(9), Value::Integer(120),]),
+                    Value::list([Value::T, Value::String("alpha beta\ngamma".into()),]),
+                    Value::String(
+                        "@defun face-remap-add-relative face &rest specs\n\
+                         This function adds the face spec in @var{specs} as relative remappings\n\
+                         for face @var{face} in the current buffer.  The remaining arguments,\n\
+                         @var{specs}, should form either a list of face names, or a property\n\
+                         list of attribute/value pairs.\n"
+                            .into(),
+                    ),
                 ])
             );
         });
     }
 
     #[test]
-    fn batch_runtime_preloads_the_standard_font_lock_face_surface() {
+    fn batch_runtime_preloads_the_complete_face_and_font_lock_owners() {
         run_with_large_stack(|| {
             let emacs_repo = compat::project_root().join("../emacs");
             let options = BatchRunOptions {
@@ -1594,9 +1692,35 @@ mod tests {
             let mut interpreter =
                 initialize_batch_interpreter(&options).expect("init batch interpreter");
             let form = Reader::new(
-                "(list (featurep 'font-lock)
+                "(list (featurep 'cus-face)
+                       (featurep 'custom)
+                       (not (subr-primitive-p
+                             (symbol-function 'custom-check-theme)))
+                       (featurep 'faces)
+                       (not (subr-primitive-p
+                             (symbol-function 'face-background)))
+                       (not (subr-primitive-p
+                             (symbol-function 'face-set-after-frame-default)))
+                       (equal (face-background 'default nil 'default)
+                              \"unspecified-bg\")
+                       (featurep 'term/tty-colors)
+                       (not (subr-primitive-p
+                             (symbol-function 'tty-color-translate)))
+                       (featurep 'font-core)
+                       (boundp 'global-font-lock-mode)
+                       (null global-font-lock-mode)
+                       (not (subr-primitive-p
+                             (symbol-function 'font-lock-mode)))
+                       (featurep 'syntax)
+                       (not (subr-primitive-p
+                             (symbol-function 'syntax-propertize)))
+                       (featurep 'font-lock)
+                       (not (subr-primitive-p
+                             (symbol-function 'font-lock-ensure)))
+                       (not (subr-primitive-p
+                             (symbol-function 'font-lock-fontify-region)))
                        (featurep 'jit-lock)
-                       (facep 'font-lock-builtin-face)
+                       (not (null (facep 'font-lock-builtin-face)))
                        (face-attr-construct 'font-lock-builtin-face)
                        (fboundp 'copy-to-buffer)
                        (fboundp 'jit-lock-register))",
@@ -1613,11 +1737,69 @@ mod tests {
                     Value::T,
                     Value::T,
                     Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
                     Value::list([
                         Value::Symbol(":weight".into()),
                         Value::Symbol("bold".into())
                     ]),
                     Value::T,
+                    Value::T,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_gnus_complete_character_category_owner() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(list
+                     (category-docstring ?l)
+                     (aref (char-category-set ?h) ?a)
+                     (aref (char-category-set ?h) ?l)
+                     (string-match-p "\\cl" "h")
+                     (with-temp-buffer
+                       (insert "h")
+                       (goto-char (point-min))
+                       (looking-at "\\cl")))"#,
+            )
+            .read_all()
+            .expect("read character category startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate character category startup probe"),
+                Value::list([
+                    Value::String("Latin".into()),
+                    Value::T,
+                    Value::T,
+                    Value::Integer(0),
                     Value::T,
                 ])
             );
@@ -1651,6 +1833,47 @@ mod tests {
                     .eval(&form, &mut Vec::new())
                     .expect("evaluate Compile startup probe"),
                 Value::list([Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_uses_the_complete_files_auto_mode_registry() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(list
+                     (featurep 'files)
+                     (> (length auto-mode-alist) 100)
+                     (eq (cdr (assoc "\\.css\\'" auto-mode-alist))
+                         'css-mode)
+                     (with-temp-buffer
+                       (setq buffer-file-name "/tmp/emaxx-auto-mode.css")
+                       (normal-mode)
+                       (list (eq major-mode 'css-mode)
+                             (eq indent-line-function 'smie-indent-line))))"#,
+            )
+            .read_all()
+            .expect("read files.el startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate files.el startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::list([Value::T, Value::T]),
+                ])
             );
         });
     }
@@ -1939,6 +2162,51 @@ mod tests {
                     .eval(&form, &mut Vec::new())
                     .expect("evaluate isearch startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_complete_tab_bar_owner() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'tab-bar)\
+                       (fboundp 'tab-bar-tabs-set)\
+                       (fboundp 'tab-bar-close-other-tabs)\
+                       (fboundp 'tab-new)\
+                       (fboundp 'tab-rename)\
+                       (fboundp 'tab-undo)\
+                       (boundp 'tab-bar-mode)\
+                       tab-bar-mode\
+                       (boundp 'tab-bar-closed-tabs))",
+            )
+            .read_all()
+            .expect("read tab-bar startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate tab-bar startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::Nil,
+                    Value::T,
+                ])
             );
         });
     }

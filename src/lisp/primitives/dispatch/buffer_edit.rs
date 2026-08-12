@@ -660,6 +660,33 @@ define_dispatch!(
                 }
                 let text: String = std::iter::repeat_n(ch, count).collect();
                 insert_text_with_hooks(interp, &text, &[], true, false, env)?;
+
+                let auto_fill_character = match interp.lookup_var("auto-fill-chars", env) {
+                    Some(Value::CharTable(table_id)) => interp
+                        .char_table_get(table_id, ch as u32)
+                        .is_some_and(|value| value.is_truthy()),
+                    _ => matches!(ch, ' ' | '\n'),
+                };
+                if auto_fill_character
+                    && interp
+                        .lookup_var("auto-fill-function", env)
+                        .is_some_and(|value| value.is_truthy())
+                {
+                    // cmds.c calls the dumped Elisp orchestration function,
+                    // not the mode-specific callback directly.  For a newly
+                    // inserted newline it temporarily visits the preceding
+                    // line so filling sees the completed line boundary.
+                    if ch == '\n' {
+                        let point = interp.buffer.point();
+                        interp.buffer.goto_char(point.saturating_sub(1));
+                    }
+                    let function = interp.lookup_function("internal-auto-fill", env)?;
+                    interp.call_function_value(function, Some("internal-auto-fill"), &[], env)?;
+                    if ch == '\n' && interp.buffer.point() < interp.buffer.point_max() {
+                        let point = interp.buffer.point();
+                        interp.buffer.goto_char(point + 1);
+                    }
+                }
                 run_named_hooks(
                     interp,
                     "post-self-insert-hook",

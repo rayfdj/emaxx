@@ -6712,6 +6712,44 @@ fn native_xfaces_lisp_face_registry_family_matches_gnu() {
 }
 
 #[test]
+fn native_internal_lisp_face_p_is_a_total_predicate() {
+    let program = r#"
+        (let ((name 'emaxx-internal-face-p)
+              (alias 'emaxx-internal-face-p-alias))
+          (internal-make-lisp-face name nil)
+          (put alias 'face-alias name)
+          (list (internal-lisp-face-p nil)
+                (internal-lisp-face-p 7)
+                (internal-lisp-face-p '(x))
+                (and (internal-lisp-face-p name) t)
+                (and (internal-lisp-face-p "emaxx-internal-face-p") t)
+                (and (internal-lisp-face-p alias) t)
+                (internal-lisp-face-p 'emaxx-no-such-face)))
+    "#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil nil nil t t t nil)");
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("internal-lisp-face-p contract should parse")
+        .expect("internal-lisp-face-p contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("internal-lisp-face-p contract should evaluate"),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn native_xfaces_frame_table_and_resource_boundary_match_gnu() {
     let program = r#"
         (let* ((name 'emaxx-frame-table-face)
@@ -8936,6 +8974,10 @@ fn font_lock_mode_enables_minimal_jit_lock_state() {
     assert_eq!(
         interp.buffer_local_value(buffer_id, "jit-lock-functions"),
         Some(Value::list([Value::Symbol("ignore".into())]))
+    );
+    assert_eq!(
+        interp.buffer_local_value(buffer_id, "font-lock-fontified"),
+        Some(Value::Nil)
     );
 }
 

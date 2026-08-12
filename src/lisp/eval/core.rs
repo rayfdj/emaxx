@@ -775,7 +775,22 @@ impl Interpreter {
                             NativeForm::InsertBeforeMarkersAndInherit => {
                                 return self.sf_insert_function(&items, env, true, true);
                             }
-                            NativeForm::DefineMode | NativeForm::EmaxxDefineDerivedMode => {
+                            NativeForm::DefineMode => {
+                                // derived.el owns major-mode inheritance once its
+                                // autoload can be resolved.  Keep the native executor
+                                // only as the file-less/bootstrap fallback; otherwise
+                                // it would shadow GNU's activation-time keymap,
+                                // syntax-table, and abbrev-table parent wiring.
+                                if name != "define-derived-mode"
+                                    || !{
+                                        self.ensure_autoloaded_macro_loaded(name);
+                                        self.has_macro_binding(name)
+                                    }
+                                {
+                                    return self.sf_define_mode(&items, env);
+                                }
+                            }
+                            NativeForm::EmaxxDefineDerivedMode => {
                                 return self.sf_define_mode(&items, env);
                             }
                             NativeForm::Defclass => return self.sf_defclass(&items),

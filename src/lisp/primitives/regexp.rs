@@ -79,7 +79,7 @@ enum RegexClassAtom {
 }
 
 pub(super) fn translate_elisp_regex(pattern: &str) -> String {
-    translate_elisp_regex_with_point(pattern, "", r"\A", None, false)
+    translate_elisp_regex_with_point(pattern, "", r"\A", None, false, None, None)
 }
 
 fn contains_point_assertion(pattern: &str) -> bool {
@@ -90,6 +90,134 @@ fn contains_point_assertion(pattern: &str) -> bool {
         }
     }
     false
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RegexpCategoryScope {
+    Standard,
+    CurrentBuffer,
+}
+
+impl RegexpCategoryScope {
+    fn table_id(self, interp: &Interpreter) -> Option<u64> {
+        match self {
+            Self::Standard => interp.initialized_standard_category_table_id(),
+            Self::CurrentBuffer => interp.initialized_current_category_table_id(),
+        }
+    }
+}
+
+fn pattern_depends_on_category_table(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => {}
+            Some('c' | 'C') if chars.next().is_some() => return true,
+            Some(_) | None => {}
+        }
+    }
+    false
+}
+
+fn category_set_contains(interp: &Interpreter, value: &Value, category: char) -> bool {
+    match value {
+        Value::String(text) => text.chars().any(|member| member == category),
+        Value::Record(id) => interp.find_record(*id).is_some_and(|record| {
+            record.type_name == "bool-vector"
+                && record
+                    .slots
+                    .get(category as usize)
+                    .is_some_and(Value::is_truthy)
+        }),
+        _ => false,
+    }
+}
+
+fn category_regex_ranges(interp: &Interpreter, table_id: u64, category: char) -> Vec<(u32, u32)> {
+    const SCALAR_END: u32 = char::MAX as u32 + 1;
+    let mut boundaries = vec![0, 0xd800, 0xe000, SCALAR_END];
+    let mut table = Some(table_id);
+    let mut seen = HashSet::new();
+    while let Some(id) = table {
+        if !seen.insert(id) {
+            break;
+        }
+        let Some(state) = interp.find_char_table(id) else {
+            break;
+        };
+        for entry in &state.entries {
+            if entry.start < SCALAR_END {
+                boundaries.push(entry.start);
+            }
+            if entry.end < char::MAX as u32 {
+                boundaries.push(entry.end + 1);
+            }
+        }
+        table = state.parent;
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut ranges = Vec::<(u32, u32)>::new();
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1] - 1;
+        if char::from_u32(start).is_none()
+            || !interp
+                .char_table_get(table_id, start)
+                .is_some_and(|value| category_set_contains(interp, &value, category))
+        {
+            continue;
+        }
+        if let Some((_, previous_end)) = ranges.last_mut()
+            && previous_end.saturating_add(1) == start
+        {
+            *previous_end = end;
+        } else {
+            ranges.push((start, end));
+        }
+    }
+    ranges
+}
+
+fn category_regex_fragment(
+    interp: Option<&Interpreter>,
+    table_id: Option<u64>,
+    category: char,
+    negated: bool,
+) -> String {
+    let ranges = interp
+        .zip(table_id)
+        .map(|(interp, table_id)| category_regex_ranges(interp, table_id, category))
+        .unwrap_or_default();
+    if ranges.is_empty() {
+        return if negated {
+            r"[\s\S]".to_string()
+        } else {
+            "(?!)".to_string()
+        };
+    }
+
+    let members = ranges
+        .into_iter()
+        .map(|(start, end)| {
+            if start == end {
+                format!(r"\x{{{start:x}}}")
+            } else {
+                format!(r"\x{{{start:x}}}-\x{{{end:x}}}")
+            }
+        })
+        .collect::<String>();
+    let class = if negated {
+        format!("[^{members}]")
+    } else {
+        format!("[{members}]")
+    };
+    // Category membership is independent of `case-fold-search'.
+    format!("(?-i:{class})")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,6 +298,8 @@ fn translate_elisp_regex_with_point(
     absolute_start_assertion: &str,
     encoding: Option<&SyntaxPropertyEncoding>,
     case_fold: bool,
+    interp: Option<&Interpreter>,
+    category_table_id: Option<u64>,
 ) -> String {
     let symbol_boundary_class = boundary_character_class(REGEX_SYMBOL_CLASS, encoding, &['w', '_']);
     let property_newline_sentinels = encoding
@@ -302,6 +432,18 @@ fn translate_elisp_regex_with_point(
                 }
                 Some('S') => {
                     translated.push_str(&regex_syntax_class(&mut chars, true, encoding));
+                    at_branch_start = false;
+                    can_repeat_previous = true;
+                    last_was_quantifier = false;
+                }
+                Some(category_escape @ ('c' | 'C')) => {
+                    let category = chars.next().unwrap_or('\0');
+                    translated.push_str(&category_regex_fragment(
+                        interp,
+                        category_table_id,
+                        category,
+                        category_escape == 'C',
+                    ));
                     at_branch_start = false;
                     can_repeat_previous = true;
                     last_was_quantifier = false;
@@ -1363,6 +1505,11 @@ pub(super) fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
                         return Err(invalid_regexp_error("Unmatched \\{"));
                     }
                 }
+                Some('c' | 'C') => {
+                    if chars.next().is_none() {
+                        return Err(invalid_regexp_error("Premature end of regular expression"));
+                    }
+                }
                 Some(_) => {}
                 None => return Err(invalid_regexp_error("Trailing backslash")),
             },
@@ -1567,6 +1714,7 @@ struct CompiledElispRegexKey {
     pattern: String,
     syntax_word_class: String,
     syntax_property_sentinels: Vec<SyntaxPropertySentinel>,
+    category_translation: String,
     point_assertion: String,
     at_absolute_start: bool,
     case_fold: bool,
@@ -1759,6 +1907,7 @@ pub(super) fn compile_elisp_regex(
         point_assertion,
         at_absolute_start,
         None,
+        RegexpCategoryScope::Standard,
     )
 }
 
@@ -1769,6 +1918,7 @@ fn compile_elisp_regex_with_syntax_properties(
     point_assertion: &str,
     at_absolute_start: bool,
     encoding: Option<&SyntaxPropertyEncoding>,
+    category_scope: RegexpCategoryScope,
 ) -> Result<CompiledElispRegex, LispError> {
     // GNU resolves syntax atoms against the current buffer's syntax table.
     // The rewritten pattern doubles as the cache key, so changing tables
@@ -1789,6 +1939,20 @@ fn compile_elisp_regex_with_syntax_properties(
     let case_fold = interp
         .lookup_var("case-fold-search", env)
         .is_some_and(|value| value.is_truthy());
+    let category_table_id = category_scope.table_id(interp);
+    let category_translation = if pattern_depends_on_category_table(&pattern_text) {
+        translate_elisp_regex_with_point(
+            &pattern_text,
+            point_assertion,
+            if at_absolute_start { r"\A" } else { r"(?!)" },
+            encoding,
+            case_fold,
+            Some(interp),
+            category_table_id,
+        )
+    } else {
+        String::new()
+    };
     let key = CompiledElispRegexKey {
         pattern: pattern_text.clone(),
         syntax_word_class: syntax_word_class.clone(),
@@ -1800,6 +1964,7 @@ fn compile_elisp_regex_with_syntax_properties(
         syntax_property_sentinels: encoding
             .map(|encoding| encoding.sentinels.clone())
             .unwrap_or_default(),
+        category_translation: category_translation.clone(),
         point_assertion: point_assertion.to_string(),
         at_absolute_start,
         case_fold,
@@ -1810,13 +1975,19 @@ fn compile_elisp_regex_with_syntax_properties(
 
     validate_elisp_regex(&pattern.text)?;
     enforce_elisp_repeat_limit(&pattern.text)?;
-    let translated = translate_elisp_regex_with_point(
-        &pattern_text,
-        point_assertion,
-        if at_absolute_start { r"\A" } else { r"(?!)" },
-        encoding,
-        case_fold,
-    )
+    let translated = if category_translation.is_empty() {
+        translate_elisp_regex_with_point(
+            &pattern_text,
+            point_assertion,
+            if at_absolute_start { r"\A" } else { r"(?!)" },
+            encoding,
+            case_fold,
+            Some(interp),
+            category_table_id,
+        )
+    } else {
+        category_translation
+    }
     .replace(
         TABLE_WORD_CLASS_MARKER,
         &format!("(?-i:{syntax_word_class})"),
@@ -1946,6 +2117,7 @@ enum SearchPointBoundary {
     None,
     Start,
     End,
+    EndBeforeTrailingContext,
 }
 
 impl SearchPointBoundary {
@@ -1954,6 +2126,24 @@ impl SearchPointBoundary {
             Self::None => "",
             Self::Start => r"\A",
             Self::End => r"\z",
+            // Backward searches retain the character immediately after the
+            // search point so `$' and boundary assertions see real buffer
+            // context.  `\=' still denotes the search point, one scalar
+            // before the delegate haystack ends.
+            Self::EndBeforeTrailingContext => r"(?=[\s\S]\z)",
+        }
+    }
+
+    fn boundary_byte(self, haystack: &str) -> Option<usize> {
+        match self {
+            Self::None => None,
+            Self::Start => Some(0),
+            Self::End => Some(haystack.len()),
+            Self::EndBeforeTrailingContext => haystack
+                .char_indices()
+                .next_back()
+                .map(|(byte, _)| byte)
+                .or(Some(0)),
         }
     }
 
@@ -1961,13 +2151,17 @@ impl SearchPointBoundary {
         self,
         match_start_byte: usize,
         candidate_end_byte: usize,
-        haystack_len: usize,
+        boundary_byte: Option<usize>,
     ) -> &'static str {
         match self {
             Self::None => "",
-            Self::Start if match_start_byte == 0 => r"\A",
-            Self::End if candidate_end_byte == haystack_len => r"\z",
-            Self::Start | Self::End => r"(?!)",
+            Self::Start if Some(match_start_byte) == boundary_byte => r"\A",
+            Self::End | Self::EndBeforeTrailingContext
+                if Some(candidate_end_byte) == boundary_byte =>
+            {
+                r"\z"
+            }
+            Self::Start | Self::End | Self::EndBeforeTrailingContext => r"(?!)",
         }
     }
 }
@@ -1984,6 +2178,7 @@ struct PosixMatchContext<'a> {
     position_base: usize,
     point_boundary: SearchPointBoundary,
     haystack_at_absolute_start: bool,
+    category_scope: RegexpCategoryScope,
     env: &'a Env,
 }
 
@@ -1998,88 +2193,111 @@ fn posix_longest_match(
     search_offset: usize,
     context: PosixMatchContext<'_>,
 ) -> Result<Option<PosixMatch>, LispError> {
-    let ordinary = compile_elisp_regex(
+    let ordinary = compile_elisp_regex_with_syntax_properties(
         interp,
         pattern,
         context.env,
         context.point_boundary.ordinary_assertion(),
         context.haystack_at_absolute_start,
+        None,
+        context.category_scope,
     )?;
-    let Some(first) = ordinary
-        .captures_from_pos(haystack, search_offset)
-        .map_err(|error| LispError::Signal(error.to_string()))?
-    else {
-        return Ok(None);
-    };
-    let Some(first_match) = first.get(0) else {
-        return Ok(None);
-    };
-    let match_start_byte = first_match.start();
-    let match_start_chars = haystack[..match_start_byte].chars().count();
-    let remainder = &haystack[match_start_byte..];
     let end_anchored_pattern = StringLike {
         text: format!(r"\(?:{}\)\'", pattern.text),
         props: pattern.props.clone(),
         multibyte: pattern.multibyte,
     };
-    let mut candidate_ends = std::iter::once(0)
-        .chain(
-            remainder
-                .char_indices()
-                .map(|(byte, ch)| byte + ch.len_utf8()),
-        )
-        .collect::<Vec<_>>();
-    candidate_ends.reverse();
+    let boundary_byte = context.point_boundary.boundary_byte(haystack);
+    let maximum_match_end = match context.point_boundary {
+        SearchPointBoundary::End | SearchPointBoundary::EndBeforeTrailingContext => {
+            boundary_byte.unwrap_or(haystack.len())
+        }
+        SearchPointBoundary::None | SearchPointBoundary::Start => haystack.len(),
+    };
+    let mut ordinary_search_offset = search_offset;
 
-    for candidate_end in candidate_ends {
-        let absolute_candidate_end = match_start_byte + candidate_end;
-        let candidate = &remainder[..candidate_end];
-        let exact = compile_elisp_regex(
-            interp,
-            &end_anchored_pattern,
-            context.env,
-            context.point_boundary.candidate_assertion(
-                match_start_byte,
-                absolute_candidate_end,
-                haystack.len(),
-            ),
-            context.haystack_at_absolute_start && match_start_byte == 0,
-        )?;
-        let Some(captures) = exact
-            .captures(candidate)
+    while ordinary_search_offset <= maximum_match_end {
+        let Some(first) = ordinary
+            .captures_from_pos(haystack, ordinary_search_offset)
             .map_err(|error| LispError::Signal(error.to_string()))?
         else {
-            continue;
+            return Ok(None);
         };
-        let Some(matched) = captures.get(0) else {
-            continue;
+        let Some(first_match) = first.get(0) else {
+            return Ok(None);
         };
-        if matched.start() != 0 || matched.end() != candidate.len() {
-            continue;
+        let match_start_byte = first_match.start();
+        if match_start_byte > maximum_match_end {
+            return Ok(None);
         }
-        let match_position_base = context.position_base + match_start_chars;
-        let match_data = match_data_from_captures(
-            match_position_base,
-            candidate,
-            &captures,
-            exact.capture_mapping(),
-        );
-        let Some((start_position, end_position)) = match_data.first().and_then(|entry| *entry)
-        else {
-            continue;
+        let match_start_chars = haystack[..match_start_byte].chars().count();
+        let remainder = &haystack[match_start_byte..maximum_match_end];
+        let mut candidate_ends = std::iter::once(0)
+            .chain(
+                remainder
+                    .char_indices()
+                    .map(|(byte, ch)| byte + ch.len_utf8()),
+            )
+            .collect::<Vec<_>>();
+        candidate_ends.reverse();
+
+        for candidate_end in candidate_ends {
+            let absolute_candidate_end = match_start_byte + candidate_end;
+            let candidate = &remainder[..candidate_end];
+            let exact = compile_elisp_regex_with_syntax_properties(
+                interp,
+                &end_anchored_pattern,
+                context.env,
+                context.point_boundary.candidate_assertion(
+                    match_start_byte,
+                    absolute_candidate_end,
+                    boundary_byte,
+                ),
+                context.haystack_at_absolute_start && match_start_byte == 0,
+                None,
+                context.category_scope,
+            )?;
+            let Some(captures) = exact
+                .captures(candidate)
+                .map_err(|error| LispError::Signal(error.to_string()))?
+            else {
+                continue;
+            };
+            let Some(matched) = captures.get(0) else {
+                continue;
+            };
+            if matched.start() != 0 || matched.end() != candidate.len() {
+                continue;
+            }
+            let match_position_base = context.position_base + match_start_chars;
+            let match_data = match_data_from_captures(
+                match_position_base,
+                candidate,
+                &captures,
+                exact.capture_mapping(),
+            );
+            let Some((start_position, end_position)) = match_data.first().and_then(|entry| *entry)
+            else {
+                continue;
+            };
+            return Ok(Some(PosixMatch {
+                start_byte: match_start_byte,
+                end_byte: absolute_candidate_end,
+                start_position,
+                end_position,
+                match_data,
+            }));
+        }
+
+        // Retaining right context can expose an ordinary match that crosses
+        // the backward-search point.  It is not a candidate, but a later
+        // start may still produce one, so advance by one scalar and retry.
+        let Some(next) = haystack[match_start_byte..].chars().next() else {
+            return Ok(None);
         };
-        return Ok(Some(PosixMatch {
-            start_byte: match_start_byte,
-            end_byte: absolute_candidate_end,
-            start_position,
-            end_position,
-            match_data,
-        }));
+        ordinary_search_offset = match_start_byte + next.len_utf8();
     }
 
-    // The ordinary search succeeded, so a full prefix must match too.  Keep
-    // delegate disagreement on the ordinary Lisp boundary instead of
-    // exposing an internal assertion.
     Ok(None)
 }
 
@@ -2176,6 +2394,7 @@ pub(super) fn posix_string_match_impl(
             position_base: start,
             point_boundary: SearchPointBoundary::None,
             haystack_at_absolute_start: start == 0,
+            category_scope: RegexpCategoryScope::Standard,
             env,
         },
     )? {
@@ -2580,6 +2799,7 @@ pub(super) fn looking_at_impl(
                 position_base: pos,
                 point_boundary: SearchPointBoundary::Start,
                 haystack_at_absolute_start: pos == interp.buffer.point_min(),
+                category_scope: RegexpCategoryScope::CurrentBuffer,
                 env,
             },
         )?
@@ -2618,6 +2838,7 @@ pub(super) fn looking_at_impl(
         point_assertion,
         pos == interp.buffer.point_min(),
         syntax_encoding.as_ref(),
+        RegexpCategoryScope::CurrentBuffer,
     )?;
     let haystack = syntax_encoding
         .as_ref()
@@ -2680,6 +2901,7 @@ pub(super) fn looking_back_impl(
         "",
         limit == interp.buffer.point_min(),
         syntax_encoding.as_ref(),
+        RegexpCategoryScope::CurrentBuffer,
     )?;
     let haystack = syntax_encoding
         .as_ref()
@@ -2867,6 +3089,7 @@ pub(super) fn buffer_regex_search(
             r"\A",
             interp.buffer.point() == interp.buffer.point_min(),
             syntax_encoding.as_ref(),
+            RegexpCategoryScope::CurrentBuffer,
         )?;
         let haystack = syntax_encoding
             .as_ref()
@@ -2890,6 +3113,7 @@ pub(super) fn buffer_regex_search(
                         position_base: haystack_start,
                         point_boundary: SearchPointBoundary::Start,
                         haystack_at_absolute_start: haystack_start == interp.buffer.point_min(),
+                        category_scope: RegexpCategoryScope::CurrentBuffer,
                         env,
                     },
                 )?
@@ -3034,8 +3258,21 @@ pub(super) fn buffer_regex_search(
             return Ok(Value::Integer(interp.buffer.point() as i64));
         }
         for _ in 0..count {
+            let search_point = interp.buffer.point();
             let absolute_start = interp.buffer.point_min();
-            let prefix = buffer_regexp_haystack(interp, absolute_start, interp.buffer.point())?;
+            // A backward match must end at or before SEARCH_POINT, but the
+            // regexp engine still needs the following character to decide
+            // line-end, word/symbol-boundary, and absolute-end assertions.
+            // Truncating the delegate haystack at point made its artificial
+            // end look like a real `$' (for example, a nonblank line looked
+            // blank when point was at its beginning).
+            let context_end = if search_point < interp.buffer.point_max() {
+                search_point + 1
+            } else {
+                search_point
+            };
+            let has_trailing_context = context_end > search_point;
+            let prefix = buffer_regexp_haystack(interp, absolute_start, context_end)?;
             let syntax_encoding = (!posix)
                 .then(|| {
                     encode_syntax_property_haystack(
@@ -3047,13 +3284,19 @@ pub(super) fn buffer_regex_search(
                     )
                 })
                 .flatten();
+            let point_boundary = if has_trailing_context {
+                SearchPointBoundary::EndBeforeTrailingContext
+            } else {
+                SearchPointBoundary::End
+            };
             let regex = compile_elisp_regex_with_syntax_properties(
                 interp,
                 &pattern,
                 env,
-                r"\z",
+                point_boundary.ordinary_assertion(),
                 true,
                 syntax_encoding.as_ref(),
+                RegexpCategoryScope::CurrentBuffer,
             )?;
             let prefix = syntax_encoding
                 .as_ref()
@@ -3061,7 +3304,8 @@ pub(super) fn buffer_regex_search(
                 .unwrap_or(prefix);
             let empty_line_pattern = pattern.text == "^$";
             if empty_line_pattern
-                && let Some(pos) = last_empty_line_match_position(absolute_start, &prefix, limit)
+                && let Some(pos) =
+                    last_empty_line_match_position(absolute_start, &prefix, limit, search_point)
             {
                 interp.last_match_data = Some(vec![Some((pos, pos))]);
                 interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
@@ -3079,8 +3323,9 @@ pub(super) fn buffer_regex_search(
                         search_byte,
                         PosixMatchContext {
                             position_base: absolute_start,
-                            point_boundary: SearchPointBoundary::End,
+                            point_boundary,
                             haystack_at_absolute_start: true,
+                            category_scope: RegexpCategoryScope::CurrentBuffer,
                             env,
                         },
                     )?
@@ -3089,6 +3334,7 @@ pub(super) fn buffer_regex_search(
                     };
                     let selected_start_byte = selected.start_byte;
                     if selected.start_position >= limit
+                        && selected.end_position <= search_point
                         && best_match.as_ref().is_none_or(|best: &PosixMatch| {
                             selected.start_position > best.start_position
                                 || (selected.start_position == best.start_position
@@ -3149,6 +3395,7 @@ pub(super) fn buffer_regex_search(
                     break;
                 };
                 if match_start >= limit
+                    && match_end <= search_point
                     && best_match.is_none_or(|(best_start, best_end, _)| {
                         match_start > best_start
                             || (match_start == best_start && match_end > best_end)
@@ -3304,8 +3551,9 @@ fn last_empty_line_match_position(
     absolute_start: usize,
     haystack: &str,
     limit: usize,
+    search_point: usize,
 ) -> Option<usize> {
-    if haystack.is_empty() && absolute_start >= limit {
+    if haystack.is_empty() && absolute_start >= limit && absolute_start <= search_point {
         return Some(absolute_start);
     }
 
@@ -3314,7 +3562,7 @@ fn last_empty_line_match_position(
     for (char_offset, ch) in haystack.chars().enumerate() {
         if ch == '\n' && previous_was_newline {
             let pos = absolute_start + char_offset;
-            if pos >= limit {
+            if pos >= limit && pos <= search_point {
                 best = Some(pos);
             }
         }

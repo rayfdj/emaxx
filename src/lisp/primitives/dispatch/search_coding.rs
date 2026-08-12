@@ -419,7 +419,11 @@ define_dispatch!(
             "set-match-data" => {
                 need_arg_range(name, args, 1, 2)?;
                 if args[0].is_nil() {
-                    interp.last_match_data = None;
+                    // GNU clears every allocated search register but keeps
+                    // the register state established.  `match-data' still
+                    // returns nil, while `match-beginning'/'match-end' return
+                    // nil rather than reporting that no search ever ran.
+                    interp.last_match_data = Some(vec![None]);
                     interp.last_match_data_buffer_id = None;
                     return Ok(Value::Nil);
                 }

@@ -349,6 +349,10 @@ impl Interpreter {
             "pre-redisplay-function" => Some(Value::Symbol("ignore".into())),
             // GNU startup.el defvar; bytecomp reads it.
             "startup-redirect-eln-cache" => Some(Value::Nil),
+            // GNU startup.el defcustom.  Its declared special binding is
+            // observable by separately loaded lexical libraries such as
+            // time-stamp.el, even when the user leaves the value nil.
+            "mail-host-address" => Some(Value::Nil),
             // GNU tramp defcustom (preloaded via tramp-loaddefs);
             // directory-files-recursively let-binds it.
             "tramp-mode" => Some(Value::T),
@@ -360,6 +364,27 @@ impl Interpreter {
             "dir-locals-file" => Some(Value::String(".dir-locals.el".into())),
             // GNU xdisp.c defvar; tests let-bind it around noisy calls.
             "inhibit-message" => Some(Value::Nil),
+            // GNU frame.c defines this value cell before tab-bar.el is
+            // preloaded.  The Lisp owner deliberately uses `:variable' in
+            // define-minor-mode because the host already owns the default.
+            "tab-bar-mode" => Some(Value::Nil),
+            // GNU xdisp.c publishes the tab/tool-bar resize and hover policy
+            // controls as one native variable cluster before their Elisp
+            // command layers are preloaded.
+            "auto-resize-tab-bars"
+            | "auto-raise-tab-bar-buttons"
+            | "auto-resize-tool-bars"
+            | "auto-raise-tool-bar-buttons" => Some(Value::T),
+            "tab-bar-border" | "tool-bar-border" => {
+                Some(Value::Symbol("internal-border-width".into()))
+            }
+            "tab-bar-button-margin" | "tab-bar-button-relief" | "tool-bar-button-relief" => {
+                Some(Value::Integer(1))
+            }
+            "tool-bar-button-margin" => Some(Value::Integer(4)),
+            // GNU minibuf.c publishes this before minibuffer.el; tab restore
+            // policy consults it without requiring another Lisp library.
+            "read-minibuffer-restore-windows" => Some(Value::T),
             // GNU's dumped image leaves automatic mini-window resizing at
             // its user-facing default and exposes textprop.c's point-motion
             // guard before any Lisp library is loaded.
@@ -422,7 +447,6 @@ impl Interpreter {
             "minor-mode-overriding-map-alist" => Some(Value::Nil),
             "standard-input" => Some(Value::T),
             "temporary-file-directory" => Some(Value::String(temp_directory_name().into())),
-            "auto-mode-alist" => Some(builtin_auto_mode_alist()),
             "auto-compression-mode" => Some(Value::T),
             "command-switch-alist" => Some(Value::Nil),
             "command-line-args-left" => Some(Value::Nil),
@@ -626,6 +650,11 @@ impl Interpreter {
             )),
             "user-login-name" => Some(Value::String(
                 primitives::current_user_login_name()
+                    .unwrap_or_else(|| "user".into())
+                    .into(),
+            )),
+            "user-real-login-name" => Some(Value::String(
+                primitives::current_real_user_login_name()
                     .unwrap_or_else(|| "user".into())
                     .into(),
             )),

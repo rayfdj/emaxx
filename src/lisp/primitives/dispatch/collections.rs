@@ -52,7 +52,11 @@ fn category_table_arg(
 
 fn category_character_range(value: &Value) -> Result<(u32, u32), LispError> {
     let checked = |code: i64| {
-        if (0..=char::MAX as i64).contains(&code) {
+        // GNU category tables cover Emacs's complete internal character
+        // space, including legacy/raw character identities above Unicode.
+        // The table stores integer ranges, so it must not inherit Rust
+        // `char's narrower scalar ceiling.
+        if (0..=0x3f_ffff).contains(&code) {
             Ok(code as u32)
         } else {
             Err(LispError::Signal("Args out of range".into()))

@@ -740,17 +740,9 @@ define_dispatch!(
             "face-list" => {
                 need_args(name, args, 0)?;
                 let mut faces = interp
-                    .known_symbol_names()
-                    .into_iter()
-                    .filter(|symbol| face_exists(interp, symbol))
-                    .map(|value| Value::Symbol(value.into()))
+                    .lisp_face_names()
+                    .map(Value::symbol)
                     .collect::<Vec<_>>();
-                if !faces
-                    .iter()
-                    .any(|face| face == &Value::Symbol("default".into()))
-                {
-                    faces.push(Value::Symbol("default".into()));
-                }
                 faces.sort_by_key(|value| value.to_string());
                 Ok(Value::list(faces))
             }
