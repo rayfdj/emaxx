@@ -1135,6 +1135,13 @@ impl Buffer {
         self.invalidate_undo_list_view();
     }
 
+    /// Drop recorded undo history while leaving undo recording enabled,
+    /// GNU's `(setq buffer-undo-list nil)'.
+    pub fn clear_undo(&mut self) {
+        self.undo_list.clear();
+        self.invalidate_undo_list_view();
+    }
+
     pub fn undo_entries(&self) -> &[UndoEntry] {
         &self.undo_list
     }

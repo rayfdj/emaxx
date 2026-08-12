@@ -4104,11 +4104,24 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, Value::Nil);
         }
-        for name in ["mode-line-in-non-selected-windows", "auto-window-vscroll"] {
+        for name in [
+            "mode-line-in-non-selected-windows",
+            "auto-window-vscroll",
+            // xdisp.c dumps this on; simple.el's line-move consults it on
+            // every interactive vertical motion.
+            "auto-hscroll-mode",
+        ] {
             interp.define_special_variable(name, Value::T);
         }
+        // keyboard.c's dumped translation table default; simple.el reads it
+        // during interactive input handling.
+        interp.define_special_variable("keyboard-translate-table", Value::Nil);
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
+            // xdisp.c dumped horizontal-scroll defaults consulted by
+            // simple.el's interactive vertical motion.
+            ("hscroll-margin", Value::Integer(5)),
+            ("hscroll-step", Value::Integer(0)),
             ("recenter-redisplay", Value::Symbol("tty".into())),
             (
                 "window-combination-limit",

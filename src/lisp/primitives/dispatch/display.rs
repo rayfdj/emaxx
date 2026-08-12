@@ -2693,16 +2693,31 @@ define_dispatch!(
                 let start = window_start(interp, window)?;
                 let first_visible = start.max(point_min);
                 let visible_line = line_distance_in_buffer(interp, buffer_id, first_visible, pos);
-                Ok(
-                    if pos >= first_visible
-                        && pos <= point_max
-                        && visible_line < DEFAULT_SELECTED_WINDOW_HEIGHT
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                let visible = pos >= first_visible
+                    && pos <= point_max
+                    && visible_line < DEFAULT_SELECTED_WINDOW_HEIGHT;
+                if !visible {
+                    return Ok(Value::Nil);
+                }
+                // With PARTIALLY non-nil GNU answers a list (X Y [RTOP RBOT
+                // ROWH VPOS]) — two elements for a fully visible position.
+                // Text-terminal frames measure pixels in character cells, so
+                // X is the display column and Y the window row; simple.el's
+                // line-move-partial consumes exactly this shape.
+                if args.get(2).is_some_and(Value::is_truthy) {
+                    let saved = interp.buffer.point();
+                    interp.buffer.goto_char(pos);
+                    let x = super::call(interp, "current-column", &[], env)
+                        .ok()
+                        .and_then(|value| value.as_integer().ok())
+                        .unwrap_or(0);
+                    interp.buffer.goto_char(saved);
+                    return Ok(Value::list([
+                        Value::Integer(x),
+                        Value::Integer(visible_line as i64),
+                    ]));
+                }
+                Ok(Value::T)
             }
             "window-width" | "window-total-width" => {
                 need_arg_range(name, args, 0, 2)?;
