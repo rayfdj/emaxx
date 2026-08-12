@@ -296,12 +296,8 @@ pub(crate) fn translate_region_with_table(
 ) -> Result<Value, LispError> {
     let source = (from..to)
         .map(|position| {
-            interp
-                .buffer
-                .text_property_at(position, "emaxx-raw-char")
-                .and_then(|value| value.as_integer().ok())
+            public_buffer_char_code_at(interp, position)
                 .and_then(|value| u32::try_from(value).ok())
-                .or_else(|| interp.buffer.char_at(position).map(u32::from))
                 .unwrap_or_default()
         })
         .collect::<Vec<_>>();
@@ -310,6 +306,7 @@ pub(crate) fn translate_region_with_table(
         TranslationTable::CharTable(_) => None,
     };
     let mut translated = String::new();
+    let mut translated_props = Vec::new();
     let mut changed = 0i64;
     let mut index = 0usize;
     while index < source.len() {
@@ -341,15 +338,15 @@ pub(crate) fn translate_region_with_table(
             Some(replacement) => {
                 changed += replacement.len() as i64;
                 for character in replacement {
-                    if let Some(character) = char::from_u32(character) {
-                        translated.push(character);
-                    }
+                    append_public_buffer_character(
+                        &mut translated,
+                        &mut translated_props,
+                        character,
+                    );
                 }
             }
             None => {
-                if let Some(character) = char::from_u32(source_char) {
-                    translated.push(character);
-                }
+                append_public_buffer_character(&mut translated, &mut translated_props, source_char);
             }
         }
         index += consumed;
@@ -359,7 +356,35 @@ pub(crate) fn translate_region_with_table(
         .map_err(|e| LispError::Signal(e.to_string()))?;
     interp.buffer.goto_char(from);
     interp.insert_current_buffer(&translated);
+    for span in translated_props {
+        interp
+            .buffer
+            .set_text_properties(from + span.start, from + span.end, &span.props);
+    }
     Ok(Value::Integer(changed))
+}
+
+fn append_public_buffer_character(
+    text: &mut String,
+    props: &mut Vec<TextPropertySpan>,
+    character: u32,
+) {
+    if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&character) {
+        text.push(raw_byte_regex_char((character - RAW_BYTE8_BASE) as u8));
+    } else if let Some(character) = char::from_u32(character) {
+        text.push(character);
+    } else if character <= 0x3f_ffff {
+        let offset = text.chars().count();
+        text.push(RAW_CHAR_SENTINEL);
+        props.push(TextPropertySpan {
+            start: offset,
+            end: offset + 1,
+            props: vec![(
+                "emaxx-raw-char".into(),
+                Value::Integer(i64::from(character)),
+            )],
+        });
+    }
 }
 
 fn translation_characters(value: &Value) -> Option<Vec<u32>> {

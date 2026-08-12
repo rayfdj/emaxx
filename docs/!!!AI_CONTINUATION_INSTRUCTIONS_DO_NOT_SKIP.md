@@ -18,6 +18,67 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-12 DATA-THROUGH-FILEIO CHECKPOINT: the exact contiguous frontier is
+  **6,450/7,080**, leaving **630** selectors.  The final-source atomic replay
+  covers selectors 6,316-6,450: all **135/135** selected outcomes match GNU
+  (124 passes, the same one expected failure, and the same ten skips), with no
+  timeout, unilateral skip, or changed status.  NEXT is selector **6,451**,
+  `filelock-tests-detect-external-change`, in
+  `test/src/filelock-tests.el` (six selected outcomes).
+
+  Canonical artifact:
+  `target/compat/regression-add-1786557526761415000-3644`.  Subject-source
+  fingerprint is
+  `cfcbbece20318801a61935e304553779ab6d6cd7816243e7ccc60c231e69a04f`,
+  release binary hash is
+  `b77a132ac4093cbb989fdcbd1bef0c08348cf404a026b39d63b083adf845d20a`,
+  harness hash is
+  `7cc7218868e036c88187db007edae563fbfabccc4b0de52561677b6a9974fb4c`,
+  and pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+  The replay covers Data 57, Decompress 1, Doc 5, Editfns 23, Emacs 7, Eval
+  26, and Fileio 16.  Matching non-passes are Editfns' expected before/after
+  change failure, Emacs' seven platform/sandbox skips, and Fileio's three
+  platform skips.
+
+  Post-bootstrap GNU/Emaxx bodies are 70/481, 7/1, 7/21, 69/544, 8/5,
+  1,788/8,593, and 37/40 ms in owner order.  Data and Editfns cross the 2x
+  diagnostic but remain below the simultaneous +1-second intervention rule.
+  Eval launches three fresh child editors inside its test body, so most of
+  its 6.8-second delta is repeated reconstructed startup and remains part of
+  dumped-image issue #11; its ratio is 4.805x.  Setup is separately 216-234
+  ms GNU versus 2,347-2,708 ms Emaxx.
+
+  Shared fixes remain at native boundaries.  `zlib-decompress-region` uses
+  the existing `flate2` backend with GNU's unibyte, partial-output,
+  transactional, hook, and result contracts.  Region translation reads and
+  writes public Emacs character codes without leaking Rust Unicode
+  placeholders.  Float printing grows precision until it round-trips and
+  uses GNU-compatible scientific notation where Rust's default fixed form
+  would be reread as a bignum.  Nested deletion follows GNU `del_range_1` and
+  `signal_before_change`: preserve the relocated start, retain the original
+  range length, and keep all three temporary markers live for undo riders.
+  Unhandled batch errors retain the deepest evaluator frames and the dynamic
+  `backtrace-on-error-noninteractive` decision at the signal site; handled
+  source and bytecode conditions clear stale snapshots.  The file-handler
+  registry now classifies only a symlink's link name as a path; its target is
+  opaque stored data, matching `fileio.c`.
+
+  Cross-platform audit: the downloaded `makefilemodefix.patch` is stale and
+  intentionally unapplied.  Commit `86ce515` did introduce a Mac-derived
+  hardcoded Semantic expectation, but `e4f8805` already replaced it with the
+  shared `gnu_default_makefile_mode` policy used by both runtime preload and
+  tests.  Its GNU-system decision table covers Darwin/Berkeley Unix versus
+  GNU Make elsewhere, including DragonFly through the system-type mapping;
+  both the table test and loaded Semantic test pass.  Current local HEAD and
+  `origin/main` were identical at `090de4e`, so there was no incoming merge.
+
+  Final-source evidence is green: format/diff, strict all-target/all-feature
+  Clippy, focused float/zlib/backtrace/translation/delete/symlink suites, the
+  Makefile decision-table and loaded Semantic tests, and the exact 135-outcome
+  replay.  All seven owners are recorded in
+  `compat/compat_regressions.json`.  Protected `.DS_Store` and scratch files
+  remain untouched and uncommitted.
+
 - 2026-08-12 CALLINT-THROUGH-CODING CHECKPOINT: the exact contiguous frontier
   is **6,315/7,080**, leaving **765** selectors.  The final-source atomic replay
   covers selectors 6,280-6,315: all **36/36** selected outcomes match GNU (33

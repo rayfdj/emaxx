@@ -65,6 +65,7 @@ impl Interpreter {
                 let condition = error.condition_type();
                 let condition_list = self.error_condition_names(&condition);
                 if Self::clause_head_matches(&items[1], &condition, &condition_list) {
+                    self.clear_batch_error_backtrace();
                     Ok(Value::Nil)
                 } else {
                     Err(error)
@@ -157,6 +158,7 @@ impl Interpreter {
                     if !Self::clause_head_matches(&parts[0], &condition, &condition_list) {
                         continue;
                     }
+                    self.clear_batch_error_backtrace();
                     if let Some(ref var_name) = var {
                         Self::push_marked_frame(
                             env,

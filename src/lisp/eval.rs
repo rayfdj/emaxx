@@ -1188,6 +1188,12 @@ struct BacktraceFrame {
     debug_on_exit: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct BatchErrorBacktrace {
+    pub(crate) enabled: bool,
+    pub(crate) frames: Vec<(bool, Value, Vec<Value>, bool)>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BufferDisposition {
     Default,
@@ -2310,6 +2316,7 @@ pub struct Interpreter {
     active_thread_id: u64,
     last_thread_error: Option<Value>,
     backtrace_frames: Vec<BacktraceFrame>,
+    batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
     /// Dynamically active `catch' tags.  GNU's `throw' signals `no-catch'
     /// immediately when no `eq' tag is live, allowing condition handlers to
@@ -3086,6 +3093,7 @@ impl Interpreter {
             active_thread_id: main_thread_id,
             last_thread_error: None,
             backtrace_frames: Vec::new(),
+            batch_error_backtrace: None,
             active_handlers: Vec::new(),
             active_catch_tags: Vec::new(),
             handler_dispatch_depth: 0,

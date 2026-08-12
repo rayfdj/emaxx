@@ -2378,6 +2378,169 @@ fn loaded_coding_registry_preserves_native_bounds_bom_and_error_contracts() {
     );
 }
 
+#[test]
+fn zlib_decompress_region_uses_unibyte_octets_and_is_transactional() {
+    let gzip = "'(31 139 8 8 204 39 9 82 0 3 115 109 97 108 108 0 75 203 207 231 2 0 168 101 50 126 4 0 0 0)";
+    assert_eq!(
+        eval_str(&format!(
+            r#"(let ((bytes {gzip}))
+                  (list
+                   (with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert (apply #'unibyte-string bytes))
+                     (list (zlib-decompress-region (point-min) (point-max))
+                           (buffer-string)))
+                   (with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert (apply #'unibyte-string (butlast bytes 4)))
+                     (let ((original (buffer-string)))
+                       (list (zlib-decompress-region (point-min) (point-max))
+                             (equal original (buffer-string)))))
+                   (with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert (apply #'unibyte-string (butlast bytes 4)))
+                     (list (zlib-decompress-region (point-min) (point-max) t)
+                           (buffer-string)))
+                   (with-temp-buffer
+                     (condition-case err
+                         (zlib-decompress-region (point-min) (point-max))
+                       (error (car err))))))"#
+        )),
+        Value::list([
+            Value::list([Value::T, Value::String("foo\n".into())]),
+            Value::list([Value::Nil, Value::T]),
+            Value::list([Value::Integer(0), Value::String("foo\n".into())]),
+            Value::Symbol("error".into()),
+        ])
+    );
+}
+
+#[test]
+fn editfns_edge_contracts_preserve_float_character_and_undo_semantics() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((value 18446744073709551616.0))
+                  (list (number-to-string value)
+                        (prin1-to-string value)
+                        (= value (read (format "%s" value)))))"#,
+        ),
+        Value::list([
+            Value::String("1.8446744073709552e+19".into()),
+            Value::String("1.8446744073709552e+19".into()),
+            Value::T,
+        ])
+    );
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (let ((table (make-char-table 'translation-table)))
+                 (aset table #x3fffff ?*)
+                 (insert #x3fffff)
+                 (list (translate-region-internal (point-min) (point-max) table)
+                       (buffer-string))))",
+        ),
+        Value::list([Value::Integer(1), Value::String("*".into())])
+    );
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"1234567890\")
+               (setq buffer-undo-list nil)
+               (let ((before-change-functions
+                      (list (lambda (beg end)
+                              (delete-region (1- beg) (1+ end))))))
+                 (delete-region 2 5))
+               (list (buffer-string)
+                     (mapcar (lambda (entry) (type-of (car entry)))
+                             buffer-undo-list)))",
+        ),
+        Value::list([
+            Value::String("90".into()),
+            Value::list([
+                Value::Symbol("string".into()),
+                Value::Symbol("string".into()),
+                Value::Symbol("marker".into()),
+                Value::Symbol("marker".into()),
+                Value::Symbol("marker".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn batch_error_snapshot_keeps_deep_frames_and_signal_site_policy() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let form = Reader::new(
+        "(progn
+           (defun batch-error-snapshot-inner () (error \"Boo\"))
+           (let ((backtrace-on-error-noninteractive nil))
+             (batch-error-snapshot-inner)))",
+    )
+    .read_all()
+    .unwrap()
+    .pop()
+    .unwrap();
+    assert!(interp.eval(&form, &mut env).is_err());
+    let snapshot = interp
+        .take_batch_error_backtrace()
+        .expect("unhandled evaluation keeps its deepest frame snapshot");
+    assert!(!snapshot.enabled);
+    assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
+        matches!(function, Value::Symbol(name) if name == "batch-error-snapshot-inner")
+    }));
+
+    let form = Reader::new(
+        "(progn
+           (defun batch-error-snapshot-first () (error \"first\"))
+           (defun batch-error-snapshot-second () (error \"second\"))
+           (condition-case nil (batch-error-snapshot-first) (error nil))
+           (batch-error-snapshot-second))",
+    )
+    .read_all()
+    .unwrap()
+    .pop()
+    .unwrap();
+    assert!(interp.eval(&form, &mut env).is_err());
+    let snapshot = interp
+        .take_batch_error_backtrace()
+        .expect("a handled error cannot mask the later unhandled snapshot");
+    assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
+        matches!(function, Value::Symbol(name) if name == "batch-error-snapshot-second")
+    }));
+    assert!(!snapshot.frames.iter().any(|(_, function, _, _)| {
+        matches!(function, Value::Symbol(name) if name == "batch-error-snapshot-first")
+    }));
+}
+
+#[cfg(unix)]
+#[test]
+fn local_symlink_targets_are_data_not_file_name_handler_candidates() {
+    run_with_large_stack(|| {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-symlink-target-data-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let link = root.join("link");
+        let expression = format!(
+            "(progn
+               (require 'files)
+               (make-symbolic-link \"/:\" {:?})
+               (file-symlink-p {:?}))",
+            link.display().to_string(),
+            link.display().to_string(),
+        );
+        let actual = eval_str_with_upstream_batch(&expression);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(actual, Value::String("/:".into()));
+    });
+}
+
 #[cfg(unix)]
 #[test]
 fn call_process_region_can_delete_entire_buffer() {

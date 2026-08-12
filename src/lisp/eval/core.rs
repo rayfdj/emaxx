@@ -471,11 +471,19 @@ impl Interpreter {
     }
 
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        let outermost = self.lisp_eval_depth == 0;
+        if outermost {
+            self.clear_batch_error_backtrace();
+        }
         if let Some(termination) = self.pending_termination().cloned() {
             return Err(LispError::Terminate(termination));
         }
         if !matches!(expr, Value::Cons(_)) {
-            return self.eval_inner(expr, env);
+            let result = self.eval_inner(expr, env);
+            if outermost && result.is_ok() {
+                self.clear_batch_error_backtrace();
+            }
+            return result;
         }
         self.lisp_eval_depth += 1;
         if self.lisp_eval_depth > 800 * Self::LISP_EVAL_DEPTH_SCALE
@@ -488,6 +496,9 @@ impl Interpreter {
         }
         let result = self.eval_inner(expr, env);
         self.lisp_eval_depth -= 1;
+        if outermost && result.is_ok() {
+            self.clear_batch_error_backtrace();
+        }
         result
     }
 
@@ -1484,6 +1495,9 @@ impl Interpreter {
             Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
             Err(error) => self.dispatch_handler_bindings(error, env),
         };
+        if let Err(error) = &result {
+            self.capture_batch_error_backtrace(error, env);
+        }
         self.pop_backtrace_frame();
         result
     }
@@ -1579,6 +1593,9 @@ impl Interpreter {
                     Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
                     Err(error) => self.dispatch_handler_bindings(error, env),
                 };
+                if let Err(error) = &result {
+                    self.capture_batch_error_backtrace(error, env);
+                }
                 self.pop_backtrace_frame();
                 result
             }
@@ -1846,6 +1863,9 @@ impl Interpreter {
                 self.leave_activation(previous_activation);
                 if call_capture_override.is_some() {
                     self.pop_lambda_capture_override();
+                }
+                if let Err(error) = &result {
+                    self.capture_batch_error_backtrace(error, env);
                 }
                 self.pop_backtrace_frame();
                 result

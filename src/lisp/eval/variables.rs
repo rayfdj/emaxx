@@ -1483,6 +1483,34 @@ impl Interpreter {
             .collect()
     }
 
+    pub(super) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {
+        if matches!(error, LispError::Throw(_, _) | LispError::Terminate(_)) {
+            return;
+        }
+        let frames = self.backtrace_frames_snapshot();
+        if self
+            .batch_error_backtrace
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.frames.len() >= frames.len())
+        {
+            return;
+        }
+        self.batch_error_backtrace = Some(BatchErrorBacktrace {
+            enabled: self
+                .lookup_var("backtrace-on-error-noninteractive", env)
+                .is_some_and(|value| value.is_truthy()),
+            frames,
+        });
+    }
+
+    pub(crate) fn take_batch_error_backtrace(&mut self) -> Option<BatchErrorBacktrace> {
+        self.batch_error_backtrace.take()
+    }
+
+    pub(crate) fn clear_batch_error_backtrace(&mut self) {
+        self.batch_error_backtrace = None;
+    }
+
     pub fn backtrace_frame_locals_snapshot(&self, index: usize) -> Option<Vec<(String, Value)>> {
         self.backtrace_frames
             .iter()

@@ -338,7 +338,23 @@
       "selector": "t"
     },
     {
+      "path": "test/src/decompress-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/doc-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/editfns-tests.el",
+      "selector": "t"
+    },
+    {
       "path": "test/src/emacs-module-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/emacs-tests.el",
       "selector": "t"
     },
     {

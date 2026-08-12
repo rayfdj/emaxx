@@ -146,11 +146,7 @@ pub fn run_batch_with_actions(
                         Ok(_) => {}
                         Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                         Err(error) => {
-                            // GNU's noninteractive command loop reports an
-                            // unhandled Lisp condition directly, without
-                            // decorating it with the command-line form, and
-                            // terminates with the conventional fatal status.
-                            eprintln!("{error}");
+                            emit_unhandled_batch_error(&mut interpreter, &error);
                             return Ok(BatchRunOutcome::Exit(255));
                         }
                     }
@@ -165,7 +161,7 @@ pub fn run_batch_with_actions(
                     Ok(_) => {}
                     Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                     Err(error) => {
-                        eprintln!("{error}");
+                        emit_unhandled_batch_error(&mut interpreter, &error);
                         return Ok(BatchRunOutcome::Exit(255));
                     }
                 }
@@ -250,6 +246,45 @@ pub fn run_batch_with_actions(
     } else {
         Ok(BatchRunOutcome::Exit(1))
     }
+}
+
+fn emit_unhandled_batch_error(interpreter: &mut Interpreter, error: &LispError) {
+    eprintln!("{error}");
+    let Some(backtrace) = interpreter.take_batch_error_backtrace() else {
+        return;
+    };
+    if !backtrace.enabled {
+        return;
+    }
+    let condition = lisp::eval::error_condition_value(error);
+    let rendered_condition = match condition.to_vec() {
+        Ok(items) if !items.is_empty() => {
+            let kind = items[0].to_string();
+            let data = Value::list(items.into_iter().skip(1));
+            format!("{kind} {data}")
+        }
+        _ => condition.to_string(),
+    };
+    eprintln!("\nError: {rendered_condition}");
+    for (evald, function, args, _) in backtrace.frames {
+        if evald {
+            let args = args
+                .into_iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!("  {function}({args})");
+        } else {
+            let args = args
+                .into_iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let separator = if args.is_empty() { "" } else { " " };
+            eprintln!("  ({function}{separator}{args})");
+        }
+    }
+    eprintln!("  normal-top-level()");
 }
 
 fn run_ert_for_batch_report(
