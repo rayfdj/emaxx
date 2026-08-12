@@ -4797,6 +4797,29 @@ fn delq_destructively_removes_non_leading_list_cells() {
 }
 
 #[test]
+fn delq_and_delete_share_gnu_cycle_and_dotted_list_contracts() {
+    assert_eq!(
+        eval_str(
+            "(let ((items (list 'keep 'remove 'tail)))
+               (list (eq (delq 'remove items) items)
+                     (condition-case err
+                         (let ((cycle (list 'remove)))
+                           (setcdr cycle cycle)
+                           (delq 'remove cycle))
+                       (circular-list (car err)))
+                     (condition-case err
+                         (delete 'missing '(keep . tail))
+                       (wrong-type-argument (car err)))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Symbol("circular-list".into()),
+            Value::Symbol("wrong-type-argument".into()),
+        ])
+    );
+}
+
+#[test]
 fn dnd_multiple_url_handlers_prefer_earlier_equal_precedence_handler() {
     let mut interp = Interpreter::new();
     interp.set_load_path(

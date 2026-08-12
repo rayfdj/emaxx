@@ -6235,6 +6235,21 @@ fn should_error_checks_error_type() {
 }
 
 #[test]
+fn value_less_enforces_its_gnu_max_arity() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        r#"
+            (ert-deftest over_arity_error ()
+              (should-error (value< 1 2 :ignored t)))
+            "#,
+    );
+    let summary = interp.run_ert_tests_with_selector(None);
+    assert_eq!(summary.passed, 1);
+    assert_eq!(summary.failed, 0);
+}
+
+#[test]
 fn should_not_failures_report_ert_test_failed() {
     let mut interp = Interpreter::new();
     eval_str_with(

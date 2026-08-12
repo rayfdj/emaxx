@@ -2762,6 +2762,13 @@ fn backquote_template_code_at_depth(template: &Value, depth: usize) -> Value {
     let mut chunk: Vec<Value> = Vec::new();
     let mut tail = template.clone();
     loop {
+        // A record, vector, char-table, or quote form in dotted-tail
+        // position is one reader object, not the remaining list spine.
+        // The direct evaluator has the same boundary; preserve it here when
+        // macroexpansion lowers backquote to list/append constructor code.
+        if (!chunk.is_empty() || !segments.is_empty()) && is_backquote_atomic_cons_tail(&tail) {
+            break;
+        }
         if let Some((kind, inner)) = backquote_unquote_form(&tail) {
             // Dotted unquote tail: `(a . ,x)
             if depth == 0 && kind == "comma" {

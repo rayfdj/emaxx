@@ -3168,6 +3168,19 @@ fn backquote_preserves_record_literal_dotted_pair_tails() {
 }
 
 #[test]
+fn macroexpanded_backquote_preserves_record_literal_dotted_pair_tails() {
+    let mut interp = Interpreter::new();
+    let value = eval_str_with(
+        &mut interp,
+        r#"(eval (macroexpand '`((#s(a 1) . #s(b 2)))))"#,
+    );
+    let pair = value.car().expect("backquoted list element");
+    let (left, right) = pair.cons_values().expect("dotted record pair");
+    assert!(matches!(left, Value::Record(_)));
+    assert!(matches!(right, Value::Record(_)));
+}
+
+#[test]
 fn backquote_materializes_record_literals() {
     let mut interp = Interpreter::new();
     let value = eval_str_with(&mut interp, r#"`(#s(a b) #s(#s(c d) e))"#);
