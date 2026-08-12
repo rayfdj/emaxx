@@ -108,7 +108,12 @@ Quoted data and function bodies are not executable initializer calls."
                                    rendered)))
                     (puthash name rendered functions))))
                ((and (consp form)
-                     (memq (car form) '(defvar defconst))
+                     ;; Generated `defcustom' forms are dumped value cells
+                     ;; too.  Their Custom metadata remains owned by the
+                     ;; following `custom-autoload' form; this manifest only
+                     ;; preserves the evaluated startup value, exactly as it
+                     ;; already does for `defvar' and `defconst'.
+                     (memq (car form) '(defvar defconst defcustom))
                      (symbolp (nth 1 form))
                      (>= (length form) 3))
                 (condition-case nil

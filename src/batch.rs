@@ -285,6 +285,11 @@ pub(crate) fn initialize_batch_interpreter(
     options: &BatchRunOptions,
 ) -> Result<Interpreter, String> {
     let mut interpreter = Interpreter::new();
+    let before_init_time =
+        lisp::primitives::system_time_list_value(std::time::SystemTime::now())
+            .map_err(|error| format!("record batch initialization start: {error}"))?;
+    interpreter.define_special_variable("before-init-time", before_init_time);
+    interpreter.define_special_variable("after-init-time", Value::Nil);
     interpreter.set_load_path(effective_batch_load_path(options)?);
     // GNU starts batch evaluation in *scratch*, whose buffer-local
     // `lexical-binding' is t while the default remains nil.  File cookies
@@ -314,6 +319,9 @@ pub(crate) fn initialize_batch_interpreter(
     initialize_batch_documentation(&mut interpreter)?;
     complete_delayed_custom_initialization(&mut interpreter)?;
     initialize_batch_locale_environment(&mut interpreter)?;
+    let after_init_time = lisp::primitives::system_time_list_value(std::time::SystemTime::now())
+        .map_err(|error| format!("record batch initialization end: {error}"))?;
+    interpreter.set_global_binding("after-init-time", after_init_time);
     Ok(interpreter)
 }
 
@@ -1327,6 +1335,30 @@ mod tests {
         assert_eq!(
             interpreter.lookup_var("command-line-args-left", &Vec::new()),
             Some(Value::Nil)
+        );
+    }
+
+    #[test]
+    fn batch_runtime_records_ordered_initialization_times() {
+        let options = BatchRunOptions::default();
+        let mut interpreter =
+            initialize_batch_interpreter(&options).expect("init batch interpreter");
+
+        for name in ["before-init-time", "after-init-time"] {
+            let value = interpreter
+                .lookup_var(name, &Vec::new())
+                .unwrap_or_else(|| panic!("{name} is bound"));
+            assert_eq!(value.to_vec().expect("old-style time list").len(), 4);
+        }
+        let ordered = Reader::new("(not (time-less-p after-init-time before-init-time))")
+            .read()
+            .expect("read time ordering probe")
+            .expect("time ordering probe");
+        assert_eq!(
+            interpreter
+                .eval(&ordered, &mut Vec::new())
+                .expect("compare startup times"),
+            Value::T
         );
     }
 

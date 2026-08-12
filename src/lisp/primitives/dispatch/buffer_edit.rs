@@ -1338,6 +1338,7 @@ define_dispatch!(
                 };
                 let noerror = args.get(2).is_some_and(Value::is_truthy);
                 let move_on_failure = search_noerror_moves(args.get(2));
+                let original_point = interp.buffer.point();
                 // GNU repeats the search COUNT times; a negative COUNT searches
                 // in the opposite direction (viper's `F' calls search-forward
                 // with -1).
@@ -1410,15 +1411,20 @@ define_dispatch!(
                         Ok(Value::Integer(point as i64))
                     }
                     None if noerror => {
-                        if move_on_failure {
-                            interp.buffer.goto_char(limit);
-                        }
+                        interp.buffer.goto_char(if move_on_failure {
+                            limit
+                        } else {
+                            original_point
+                        });
                         Ok(Value::Nil)
                     }
-                    None => Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("search-failed".into()),
-                        Value::String(needle.into()),
-                    ]))),
+                    None => {
+                        interp.buffer.goto_char(original_point);
+                        Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("search-failed".into()),
+                            Value::String(needle.into()),
+                        ])))
+                    }
                 }
             }
             "re-search-forward" | "search-forward-regexp" => {
@@ -2136,9 +2142,8 @@ define_dispatch!(
                     && let Value::Buffer(buffer) = &args[0]
                 {
                     return Ok(interp
-                        .resolve_buffer_id(&args[0])
-                        .ok()
-                        .map(|_| Value::String(buffer.name.clone()))
+                        .get_buffer_by_id(buffer.id)
+                        .map(|buffer| Value::String(buffer.name.clone().into()))
                         .unwrap_or(Value::Nil));
                 }
                 Ok(Value::String(interp.buffer.name.clone().into()))

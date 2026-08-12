@@ -220,6 +220,7 @@ pub(crate) fn preloaded_eval_defun() -> Value {
 }
 
 pub(crate) fn builtin_auto_mode_alist() -> Value {
+    let makefile_mode = primitives::gnu_default_makefile_mode();
     Value::list([
         Value::cons(
             Value::String("\\.\\(?:tar\\(?:\\.gz\\)?\\|tgz\\)\\'".into()),
@@ -265,11 +266,11 @@ pub(crate) fn builtin_auto_mode_alist() -> Value {
         ),
         Value::cons(
             Value::String("\\.mk\\'".into()),
-            Value::Symbol("makefile-bsdmake-mode".into()),
+            Value::Symbol(makefile_mode.into()),
         ),
         Value::cons(
             Value::String("\\(?:^\\|/\\)Makefile\\'".into()),
-            Value::Symbol("makefile-bsdmake-mode".into()),
+            Value::Symbol(makefile_mode.into()),
         ),
         Value::cons(
             Value::String("\\.texi\\'".into()),

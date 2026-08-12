@@ -25,14 +25,13 @@ use crate::lisp::types::{Env, LispError, Value};
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
 fn debug_log(message: &str) {
-    if let Some(path) = std::env::var_os("EMAXX_TTY_LOG") {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
+    if let Some(path) = std::env::var_os("EMAXX_TTY_LOG")
+        && let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-        {
-            let _ = writeln!(file, "{message}");
-        }
+    {
+        let _ = writeln!(file, "{message}");
     }
 }
 
@@ -229,12 +228,7 @@ fn resolve_pending(interpreter: &mut Interpreter, env: &mut Env, pending: &[Valu
     let key_vector = Value::list(
         std::iter::once(Value::Symbol("vector-literal".into())).chain(pending.iter().cloned()),
     );
-    let binding = match call(
-        interpreter,
-        env,
-        "key-binding",
-        &[key_vector, Value::T],
-    ) {
+    let binding = match call(interpreter, env, "key-binding", &[key_vector, Value::T]) {
         Ok(binding) => binding,
         Err(_) => Value::Nil,
     };
@@ -309,7 +303,13 @@ fn execute_binding(
     // GNU's command_execute is a thin wrapper over call-interactively
     // (prefix-arg bookkeeping, kbd-macro expansion); the runtime does not
     // define it yet, so drive the interactive call directly.
-    let result = call(interpreter, env, "call-interactively", &[binding.clone()]).map(|_| ());
+    let result = call(
+        interpreter,
+        env,
+        "call-interactively",
+        std::slice::from_ref(&binding),
+    )
+    .map(|_| ());
     interpreter.set_variable("last-command", binding, env);
     result
 }
@@ -682,7 +682,10 @@ mod tests {
             vec![Value::Integer(27), Value::Integer(120)]
         );
         assert_eq!(
-            encode_key(key(KeyCode::Char('w'), KeyModifiers::ALT | KeyModifiers::CONTROL)),
+            encode_key(key(
+                KeyCode::Char('w'),
+                KeyModifiers::ALT | KeyModifiers::CONTROL
+            )),
             vec![Value::Integer(27), Value::Integer(23)]
         );
     }
@@ -793,11 +796,7 @@ mod tests {
         };
         assert_eq!(command, Value::Symbol("save-buffer".into()));
 
-        let undefined = resolve_pending(
-            &mut interpreter,
-            &mut env,
-            &[Value::Symbol("f35".into())],
-        );
+        let undefined = resolve_pending(&mut interpreter, &mut env, &[Value::Symbol("f35".into())]);
         assert!(matches!(undefined, Resolution::Undefined));
     }
 

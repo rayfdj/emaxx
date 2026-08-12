@@ -12661,7 +12661,10 @@ fn tty_event_reader_feeds_interactive_event_reads() {
     set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(121)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
-    assert_eq!(event.expect("tty reader supplies the event"), Value::Integer(121));
+    assert_eq!(
+        event.expect("tty reader supplies the event"),
+        Value::Integer(121)
+    );
 }
 
 #[test]
@@ -12749,7 +12752,10 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
             vec![Value::Integer(24), Value::Integer(3)],
             "save-buffers-kill-emacs",
         ),
-        (vec![Value::Integer(24), Value::Integer(98)], "switch-to-buffer"),
+        (
+            vec![Value::Integer(24), Value::Integer(98)],
+            "switch-to-buffer",
+        ),
         (vec![Value::Integer(24), Value::Integer(107)], "kill-buffer"),
         (vec![Value::Integer(24), Value::Integer(117)], "undo"),
         (vec![Value::Integer(127)], "backward-delete-char-untabify"),
@@ -12760,13 +12766,21 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
         (vec![Value::Symbol("right".into())], "forward-char"),
         (vec![Value::Symbol("home".into())], "move-beginning-of-line"),
         (vec![Value::Symbol("end".into())], "move-end-of-line"),
-        (vec![Value::Symbol("deletechar".into())], "delete-forward-char"),
+        (
+            vec![Value::Symbol("deletechar".into())],
+            "delete-forward-char",
+        ),
     ] {
         let key_vector = Value::list(
             std::iter::once(Value::Symbol("vector-literal".into())).chain(keys.iter().cloned()),
         );
-        let binding = call(&mut interp, "key-binding", &[key_vector, Value::T], &mut env)
-            .expect("key-binding resolves dumped defaults");
+        let binding = call(
+            &mut interp,
+            "key-binding",
+            &[key_vector, Value::T],
+            &mut env,
+        )
+        .expect("key-binding resolves dumped defaults");
         assert_eq!(
             binding,
             Value::Symbol(expected.into()),

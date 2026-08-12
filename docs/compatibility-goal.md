@@ -42,12 +42,89 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
-- The 2026-08-12 Tab-Bar-through-Time-Stamp checkpoint advances the exact
-  contiguous frontier to **5,513/7,080**, leaving **1,567** selectors.  The
-  final-source canonical replay covers selectors 5,185-5,513: all **329/329**
+- The 2026-08-12 Time-through-Diff-Mode checkpoint advances the exact
+  contiguous frontier to **5,752/7,080**, leaving **1,328** selectors.  The
+  final-source canonical replay covers selectors 5,510-5,752: all **243/243**
   selected outcomes match GNU, with no timeout, unilateral skip, or changed
-  status.  NEXT is selector **5,514**, `time-tests-display-time-file-nonempty-p`,
-  in `test/lisp/time-tests.el` (eight selected outcomes in the file).
+  status.  This is 241 matching passes plus the same two Uniquify fixture
+  failures on both runtimes.  NEXT is selector **5,753**,
+  `ediff-diff-tests--ediff-exec-process--nil`, in
+  `test/lisp/vc/ediff-diff-tests.el` (two selected outcomes in the file).
+
+  This checkpoint also corrects a progress-accounting error in published
+  commit `86ce515`: its subject says 5,513, but a fresh count of the ordered
+  manifest puts Time Stamp's last selector at **5,509**.  The new numerator is
+  counted directly from manifest entries rather than carrying that +4 error
+  forward.
+
+  All 16 canonical artifacts use subject-source fingerprint
+  `07d87e9b6a69a905a64f3912c6d73e2f5e0f2582252f99f2ab2ac569d93173e3`,
+  release subject binary
+  `5e28f8806bdbf342e3e1dc928538ea4abbca9856de0ed06fe331fdd09b34a044`,
+  and separate 180-second setup/body budgets:
+
+  | Selection | Result | Artifact | GNU/Emaxx setup ms | GNU/Emaxx body ms |
+  | --- | ---: | --- | ---: | ---: |
+  | Time | 8/8 | `target/compat/run-1786513243579202000-42511` | 446/3,021 | 24/17 |
+  | Timezone | 15/15 | `target/compat/run-1786513353236270000-42695` | 238/2,647 | 8/8 |
+  | Uniquify | 7/7 | `target/compat/run-1786513362957274000-42823` | 273/2,659 | 1,166/2,284 |
+  | URL Auth | 8/8 | `target/compat/run-1786513376653531000-43016` | 283/2,766 | 99/21 |
+  | URL Domsuf | 2/2 | `target/compat/run-1786513387473765000-43143` | 229/2,607 | 8/1 |
+  | URL Expand | 4/4 | `target/compat/run-1786513398028247000-43271` | 241/2,710 | 66/202 |
+  | URL File | 1/1 | `target/compat/run-1786513408515596000-43409` | 285/2,712 | 17/25 |
+  | URL Future | 1/1 | `target/compat/run-1786513419310402000-43533` | 230/2,619 | 7/1 |
+  | URL Handlers | 5/5 | `target/compat/run-1786513428962022000-43657` | 252/2,735 | 231/233 |
+  | URL Misc | 1/1 | `target/compat/run-1786513440264984000-43783` | 255/2,669 | 14/24 |
+  | URL Parse | 8/8 | `target/compat/run-1786513450808278000-43907` | 240/2,679 | 5/11 |
+  | URL Tramp | 2/2 | `target/compat/run-1786513461164772000-44031` | 428/2,858 | 24/39 |
+  | URL Util | 4/4 | `target/compat/run-1786513472117640000-44157` | 238/2,699 | 24/500 |
+  | Use Package | 166/166 | `target/compat/run-1786513483191015000-44281` | 280/2,907 | 48/144 |
+  | Add Log | 4/4 | `target/compat/run-1786513494194854000-44405` | 226/2,632 | 28/141 |
+  | Diff Mode | 7/7 | `target/compat/run-1786513505024235000-44531` | 241/2,710 | 276/2,335 |
+
+  Diff Mode's cold 8.458x/+2,059 ms body includes source-library loading.  An
+  immediate warm split measured GNU/Emaxx at about 42/145 ms (3.45x/+103 ms),
+  so the large cold delta remains part of dumped/preloaded-startup issue #11.
+  URL Util is 20.818x but only +476 ms; every other diagnostic is also below
+  the simultaneous 5x/+1-second compatibility-march interruption gate.
+
+  Shared repairs preserve GNU's ownership boundary.  Generated dumped values
+  now include `defcustom` value cells while Custom metadata remains Elisp;
+  batch startup records ordered before/after initialization times and the
+  native `load-average` result shape follows GNU.  Live buffer handles resolve
+  renamed names, and `rename-buffer` reaches the loaded Uniquify Elisp owner.
+  Preferred native fallbacks can delegate to a loaded GNU URL owner, while
+  `byte-to-string` preserves unibyte octets.  Spelled `(backquote ...)` data no
+  longer becomes reader backquote syntax.  Counted search failure is
+  transactional, and overlay enumeration follows GNU's observable interval
+  order.
+
+  A cross-platform audit prompted by the Makefile-mode test found both a
+  Mac-derived assertion and an older compact-runtime fallback.  One native
+  mapping now publishes GNU `system-type` spellings (`darwin`, `gnu/linux`,
+  `berkeley-unix`, and `windows-nt`) and derives the compact Makefile fallback
+  from that value.  Normal batch mode continues to load and obey GNU
+  `files.el`; the small Rust decision table is confined to the pre-existing
+  file-less fallback rather than replacing the Elisp owner.
+
+  Focused publication evidence is green: formatting and diff checks;
+  all-target/all-feature check; strict Clippy; generated validation **13/13**;
+  exact platform-policy, file-less mode, loaded Semantic mode, and loaded
+  Files registry tests; and the complete compatibility replay above.  The
+  elevated `cargo test --all-targets --all-features` gate is also green:
+  library **2,007 passed, 0 failed, 1 intentionally ignored** in 1,661.91
+  seconds, `compat-harness` 33/33, `perf-harness` 1/1, CLI 10/10, and ERT
+  runner 3/3.  Real network, TLS, PTY, serial, subprocess, scheduler, terminal,
+  loaded Semantic, and file-less mode coverage ran without sandbox or isolated
+  substitution.
+
+- The 2026-08-12 Tab-Bar-through-Time-Stamp checkpoint's published subject
+  reports 5,513, but the audited contiguous frontier is **5,509/7,080**,
+  leaving **1,571** selectors.  The final-source canonical replay covers
+  selectors 5,181-5,509: all **329/329** selected outcomes match GNU, with no
+  timeout, unilateral skip, or changed status.  The corrected next selector is
+  **5,510**, `time-tests-display-time-file-nonempty-p`, in
+  `test/lisp/time-tests.el` (eight selected outcomes in the file).
 
   All 24 canonical artifacts use subject-source fingerprint
   `083e77b1cb9cd26e4df90e421e269bc1ed64d2d5c77dd4304285e65ffa7d0e30`,

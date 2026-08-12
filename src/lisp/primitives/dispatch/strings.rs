@@ -1620,11 +1620,9 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let n = args[0].as_integer()?;
                 if !(0..=255).contains(&n) {
-                    return Err(LispError::Signal("Byte value out of range".into()));
+                    return Err(LispError::Signal("Invalid byte".into()));
                 }
-                let c = char::from_u32(n as u32)
-                    .ok_or_else(|| LispError::Signal(format!("Invalid byte: {}", n)))?;
-                Ok(Value::String(c.to_string().into()))
+                Ok(bytes_to_unibyte_value(&[n as u8]))
             }
             "make-char" => {
                 need_arg_range(name, args, 1, 2)?;
