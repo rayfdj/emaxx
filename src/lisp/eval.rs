@@ -2073,6 +2073,14 @@ pub struct Interpreter {
     /// (see bytecode::vm).
     pub(crate) bytecode_program_cache:
         Vec<Option<std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>>,
+    /// Materialized, ordered keymap bindings per keymap record, invalidated
+    /// exactly like the byte-code cache: `find_record_mut' is the only
+    /// mutation door for records, so `define-key' drops the slot.  Key
+    /// lookup walks every active map per keystroke; re-parsing each map's
+    /// string entries per lookup made `key-binding' cost milliseconds.
+    pub(crate) keymap_bindings_cache: std::cell::RefCell<
+        Vec<Option<crate::lisp::primitives::CachedKeymapIndex>>,
+    >,
     /// Recycled operand stacks for the byte-code VM: one Vec per active
     /// nesting level, reused across calls to avoid per-call allocation.
     pub(crate) vm_stack_pool: Vec<Vec<Value>>,
@@ -2937,6 +2945,7 @@ impl Interpreter {
             ]),
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
+            keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),
             vm_stack_pool: Vec::new(),
             backtrace_args_pool: Vec::new(),
             treesit_queries: Vec::new(),

@@ -2431,10 +2431,17 @@ impl Interpreter {
 
     pub fn find_record_mut(&mut self, id: u64) -> Option<&mut RecordState> {
         // The caller may rewrite the slots, so a decoded byte-code program
-        // for this record can no longer be trusted (see bytecode::vm).
+        // or materialized keymap index for this record can no longer be
+        // trusted (see bytecode::vm and primitives::keymap_direct_bindings).
         if let Some(slot) = (id as usize)
             .checked_sub(1)
             .and_then(|index| self.bytecode_program_cache.get_mut(index))
+        {
+            *slot = None;
+        }
+        if let Some(slot) = (id as usize)
+            .checked_sub(1)
+            .and_then(|index| self.keymap_bindings_cache.get_mut().get_mut(index))
         {
             *slot = None;
         }

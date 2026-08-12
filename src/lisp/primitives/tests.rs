@@ -12788,3 +12788,36 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
         );
     }
 }
+
+#[test]
+fn command_remapping_finds_fresh_remap_bindings() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((map (make-keymap)))
+           (define-key map \"x\" 'foo)
+           (define-key map \"y\" 'bar)
+           (define-key map [remap foo] 'bar)
+           map)",
+    )
+    .read()
+    .expect("read keymap fixture")
+    .expect("keymap fixture form");
+    let map = interp.eval(&form, &mut env).expect("build keymap fixture");
+    let remapped = call(
+        &mut interp,
+        "command-remapping",
+        &[Value::Symbol("foo".into()), Value::Nil, map.clone()],
+        &mut env,
+    )
+    .expect("command-remapping resolves");
+    assert_eq!(remapped, Value::Symbol("bar".into()));
+    let where_is = call(
+        &mut interp,
+        "where-is-internal",
+        &[Value::Symbol("foo".into()), map, Value::T],
+        &mut env,
+    )
+    .expect("where-is-internal resolves");
+    assert_eq!(format!("{where_is}"), "[121]");
+}
