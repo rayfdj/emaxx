@@ -265,6 +265,22 @@ fn run_ert_for_batch_report(
     (discovered_tests, summary)
 }
 
+/// Bootstrap the full Lisp runtime for an interactive terminal session.
+///
+/// The dumped-image reconstruction is identical to batch startup; only the
+/// session mode differs, and the caller flips `noninteractive' once the
+/// terminal owns the frame.
+pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
+    let mut options = BatchRunOptions::default();
+    // GNU's init_lread honors EMACSLOADPATH verbatim in every session
+    // mode; interactive commands autoload their dumped Lisp owners
+    // (`save-buffer' pulls in files.el) through this path.
+    if let Ok(paths) = env::var("EMACSLOADPATH") {
+        options.load_path = env::split_paths(&paths).collect();
+    }
+    initialize_batch_interpreter(&options)
+}
+
 pub(crate) fn initialize_batch_interpreter(
     options: &BatchRunOptions,
 ) -> Result<Interpreter, String> {

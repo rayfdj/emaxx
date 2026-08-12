@@ -12652,3 +12652,125 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
         .expect("delete process query target");
     }
 }
+
+#[test]
+fn tty_event_reader_feeds_interactive_event_reads() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(121)))));
+    let event = call(&mut interp, "read-event", &[], &mut env);
+    set_tty_event_reader(None);
+    assert_eq!(event.expect("tty reader supplies the event"), Value::Integer(121));
+}
+
+#[test]
+fn tty_event_reader_quit_signals_gnu_quit() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    set_tty_event_reader(Some(Box::new(|| None)));
+    let event = call(&mut interp, "read-event", &[], &mut env);
+    set_tty_event_reader(None);
+    let Err(LispError::SignalValue(data)) = event else {
+        panic!("C-g from the tty reader must signal, got {event:?}");
+    };
+    assert_eq!(data, Value::Symbol("quit".into()));
+}
+
+#[test]
+fn tty_event_reader_does_not_preempt_queued_events() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable(
+        "unread-command-events",
+        Value::list([Value::Integer(97)]),
+        &mut env,
+    );
+    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(98)))));
+    let event = call(&mut interp, "read-event", &[], &mut env);
+    set_tty_event_reader(None);
+    assert_eq!(
+        event.expect("queued events win over the terminal"),
+        Value::Integer(97)
+    );
+}
+
+#[test]
+fn tty_minibuffer_reader_answers_interactive_prompts() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    set_tty_minibuffer_reader(Some(Box::new(|prompt, initial| {
+        assert_eq!(prompt, "File: ");
+        assert_eq!(initial, "");
+        Some("answer.txt".into())
+    })));
+    let result = call(
+        &mut interp,
+        "read-string",
+        &[Value::String("File: ".into())],
+        &mut env,
+    );
+    set_tty_minibuffer_reader(None);
+    assert_eq!(
+        result.expect("tty reader answers the prompt"),
+        Value::String("answer.txt".into())
+    );
+}
+
+#[test]
+fn tty_minibuffer_reader_quit_signals_gnu_quit() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    set_tty_minibuffer_reader(Some(Box::new(|_, _| None)));
+    let result = call(
+        &mut interp,
+        "read-string",
+        &[Value::String("File: ".into())],
+        &mut env,
+    );
+    set_tty_minibuffer_reader(None);
+    let Err(LispError::SignalValue(data)) = result else {
+        panic!("C-g from the minibuffer reader must signal, got {result:?}");
+    };
+    assert_eq!(data, Value::Symbol("quit".into()));
+}
+
+#[test]
+fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for (keys, expected) in [
+        (vec![Value::Integer(24), Value::Integer(19)], "save-buffer"),
+        (
+            vec![Value::Integer(24), Value::Integer(3)],
+            "save-buffers-kill-emacs",
+        ),
+        (vec![Value::Integer(24), Value::Integer(98)], "switch-to-buffer"),
+        (vec![Value::Integer(24), Value::Integer(107)], "kill-buffer"),
+        (vec![Value::Integer(24), Value::Integer(117)], "undo"),
+        (vec![Value::Integer(127)], "backward-delete-char-untabify"),
+        (vec![Value::Integer(31)], "undo"),
+        (vec![Value::Symbol("up".into())], "previous-line"),
+        (vec![Value::Symbol("down".into())], "next-line"),
+        (vec![Value::Symbol("left".into())], "backward-char"),
+        (vec![Value::Symbol("right".into())], "forward-char"),
+        (vec![Value::Symbol("home".into())], "move-beginning-of-line"),
+        (vec![Value::Symbol("end".into())], "move-end-of-line"),
+        (vec![Value::Symbol("deletechar".into())], "delete-forward-char"),
+    ] {
+        let key_vector = Value::list(
+            std::iter::once(Value::Symbol("vector-literal".into())).chain(keys.iter().cloned()),
+        );
+        let binding = call(&mut interp, "key-binding", &[key_vector, Value::T], &mut env)
+            .expect("key-binding resolves dumped defaults");
+        assert_eq!(
+            binding,
+            Value::Symbol(expected.into()),
+            "binding for {keys:?}"
+        );
+    }
+}

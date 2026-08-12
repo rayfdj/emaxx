@@ -348,6 +348,25 @@ pub(crate) fn parse_interactive_string(
     Ok(values)
 }
 
+// Terminal-driven event input, installed by the tty frontend for the
+// duration of an interactive session.  The reader blocks on the terminal
+// and returns one key event, or `None' for C-g; without a reader the
+// queued-events contract below is unchanged.
+thread_local! {
+    static TTY_EVENT_READER: std::cell::RefCell<Option<TtyEventReader>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) type TtyEventReader = Box<dyn FnMut() -> Option<Value>>;
+
+pub(crate) fn set_tty_event_reader(reader: Option<TtyEventReader>) {
+    TTY_EVENT_READER.with_borrow_mut(|slot| *slot = reader);
+}
+
+fn read_via_tty_event_reader() -> Option<Option<Value>> {
+    TTY_EVENT_READER.with_borrow_mut(|slot| slot.as_mut().map(|reader| reader()))
+}
+
 pub(crate) fn pop_unread_command_event_value(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -370,6 +389,15 @@ pub(crate) fn pop_unread_command_event_value(
                 env,
             );
             return Ok(event);
+        }
+        if let Some(read) = read_via_tty_event_reader() {
+            return match read {
+                Some(event) => {
+                    record_external_input_event(interp, &event);
+                    Ok(event)
+                }
+                None => Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+            };
         }
         return Err(LispError::Signal(
             "No unread-command-events available for interactive input".into(),
