@@ -56,7 +56,6 @@ mod completion;
 mod dispatch;
 mod file_io;
 mod generated_builtin_arities;
-#[cfg(test)]
 mod generated_gnu_c_primitives;
 mod hash_insert;
 mod hooks_overlays;

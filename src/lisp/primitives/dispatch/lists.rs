@@ -1378,8 +1378,8 @@ define_dispatch!(
             }
             "car" => {
                 need_args(name, args, 1)?;
-                if let Some(items) = keymap_list_items(interp, &args[0])? {
-                    Ok(items.into_iter().next().unwrap_or(Value::Nil))
+                if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
+                    view.car()
                 } else {
                     args[0]
                         .car()
@@ -1409,8 +1409,8 @@ define_dispatch!(
             }
             "cdr" => {
                 need_args(name, args, 1)?;
-                if let Some(items) = keymap_list_items(interp, &args[0])? {
-                    Ok(Value::list(items.into_iter().skip(1)))
+                if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
+                    view.cdr()
                 } else {
                     args[0]
                         .cdr()
@@ -1421,8 +1421,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(match &args[0] {
                     Value::Cons(cell) => cell.car.borrow().clone(),
-                    value => keymap_list_items(interp, value)?
-                        .and_then(|items| items.into_iter().next())
+                    value => runtime_keymap_public_view(interp, value)
+                        .and_then(|view| view.car().ok())
                         .unwrap_or(Value::Nil),
                 })
             }
@@ -1430,8 +1430,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(match &args[0] {
                     Value::Cons(cell) => cell.cdr.borrow().clone(),
-                    value => keymap_list_items(interp, value)?
-                        .map(|items| Value::list(items.into_iter().skip(1)))
+                    value => runtime_keymap_public_view(interp, value)
+                        .and_then(|view| view.cdr().ok())
                         .unwrap_or(Value::Nil),
                 })
             }
@@ -3172,37 +3172,24 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 2)?;
                 ensure_interaction_allowed(interp, env)?;
                 let disable_fallbacks = args.get(1).is_some_and(Value::is_truthy);
-                loop {
-                    let event = if let Some(decoded) = read_decoded_input_event(interp, env)? {
+                let event = if disable_fallbacks {
+                    if let Some(decoded) = read_decoded_input_event(interp, env)? {
                         decoded
                     } else {
                         normalize_key_event_value(pop_unread_command_event_value(interp, env)?)?
-                    };
-                    if !disable_fallbacks && is_mouse_down_event(&event) {
-                        continue;
                     }
+                } else {
+                    read_key_sequence_event(interp, env)?
+                };
+                if disable_fallbacks {
                     interp.set_variable("last-input-event", event.clone(), env);
-                    return Ok(event);
                 }
+                Ok(event)
             }
             "read-key-sequence" | "read-key-sequence-vector" => {
                 need_arg_range(name, args, 1, 6)?;
                 ensure_interaction_allowed(interp, env)?;
-                let event = loop {
-                    let event = read_key_sequence_event(interp, env)?;
-                    if is_mouse_down_event(&event) {
-                        let key = input_event_symbol(&event)
-                            .expect("a mouse-down event has a symbolic head");
-                        if key_binding(interp, &key, true, true, env)?.is_nil() {
-                            // keyboard.c discards an unbound button-down event
-                            // and continues with the click/release that follows.
-                            // A [t] binding, as used by `read-key' when its
-                            // fallbacks are disabled, deliberately keeps it.
-                            continue;
-                        }
-                    }
-                    break event;
-                };
+                let event = read_key_sequence_event(interp, env)?;
                 let events = vec![event];
                 set_command_key_state(interp, events.clone(), events.clone(), env);
                 Ok(event_array(&events, name == "read-key-sequence-vector"))

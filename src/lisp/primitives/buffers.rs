@@ -42,9 +42,17 @@ pub(crate) fn highest_priority_overlay_property(
     pos: usize,
     prop: &str,
     at_insertion_position: bool,
+    window_id: Option<u64>,
 ) -> Option<Value> {
-    highest_priority_overlay_property_with_id(interp, buffer, pos, prop, at_insertion_position)
-        .map(|(value, _)| value)
+    highest_priority_overlay_property_with_id(
+        interp,
+        buffer,
+        pos,
+        prop,
+        at_insertion_position,
+        window_id,
+    )
+    .map(|(value, _)| value)
 }
 
 pub(crate) fn highest_priority_overlay_property_with_id(
@@ -53,12 +61,23 @@ pub(crate) fn highest_priority_overlay_property_with_id(
     pos: usize,
     prop: &str,
     at_insertion_position: bool,
+    window_id: Option<u64>,
 ) -> Option<(Value, u64)> {
     let mut overlays: Vec<&crate::overlay::Overlay> = buffer
         .overlays
         .iter()
         .filter(|overlay| {
-            !overlay.is_dead() && overlay_covers_position(overlay, pos, at_insertion_position)
+            !overlay.is_dead()
+                && overlay_covers_position(overlay, pos, at_insertion_position)
+                && window_id.is_none_or(|window_id| {
+                    // GNU's `overlay_matches_window' treats a `window'
+                    // property as restrictive only when its value is a
+                    // window.  Other values leave the overlay visible in
+                    // every window.
+                    overlay_property_with_category(interp, overlay, "window")
+                        .and_then(|window| window_record_id_from_value(interp, &window))
+                        .is_none_or(|overlay_window_id| overlay_window_id == window_id)
+                })
         })
         .collect();
     overlays.sort_by(|a, b| {

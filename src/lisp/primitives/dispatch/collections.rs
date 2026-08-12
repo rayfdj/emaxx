@@ -1217,10 +1217,17 @@ define_dispatch!(
 
             "setcar" => {
                 need_args(name, args, 2)?;
-                let Value::Cons(_) = &args[0] else {
+                let owners = interp.keymap_public_cons_owner_ids(&args[0]);
+                if matches!(&args[0], Value::Cons(_)) {
+                    args[0].set_car(args[1].clone())?;
+                } else if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
+                    view.set_car(args[1].clone())?;
+                } else {
                     return Err(wrong_type_argument("consp", args[0].clone()));
-                };
-                args[0].set_car(args[1].clone())?;
+                }
+                for owner in owners {
+                    sync_runtime_keymap_from_public_view(interp, owner)?;
+                }
                 // A cons may be the live plist cell of a symbol.  Conservatively
                 // invalidate macro metadata caches for arbitrary cons mutation;
                 // GNU exposes no detached copy at `symbol-plist'.
@@ -1230,10 +1237,14 @@ define_dispatch!(
 
             "setcdr" => {
                 need_args(name, args, 2)?;
+                let owners = interp.keymap_public_cons_owner_ids(&args[0]);
                 if matches!(&args[0], Value::Cons(_)) {
                     args[0].set_cdr(args[1].clone())?;
                 } else if !replace_runtime_keymap_tail(interp, &args[0], &args[1])? {
                     return Err(wrong_type_argument("consp", args[0].clone()));
+                }
+                for owner in owners {
+                    sync_runtime_keymap_from_public_view(interp, owner)?;
                 }
                 interp.note_definition_changed();
                 Ok(args[1].clone())
@@ -1477,8 +1488,16 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let n = n as usize;
+                // GNU keymaps are ordinary cons lists.  Emaxx keeps an
+                // identity-bearing record behind that public surface, so
+                // list primitives must operate on the live view rather than
+                // leaking the record to source owners such as subr.el's
+                // `butlast' (which delegates to `take').
+                let keymap_id = keymap_record_id(interp, &args[1]);
+                let list =
+                    runtime_keymap_public_view(interp, &args[1]).unwrap_or_else(|| args[1].clone());
                 if name == "take" {
-                    let mut current = args[1].clone();
+                    let mut current = list;
                     let mut items = Vec::new();
                     let mut remaining = n;
                     while remaining > 0 {
@@ -1498,7 +1517,7 @@ define_dispatch!(
                     }
                     Ok(Value::list(items))
                 } else {
-                    let head = args[1].clone();
+                    let head = list;
                     let mut current = head.clone();
                     let mut remaining = n;
                     while remaining > 1 {
@@ -1533,6 +1552,9 @@ define_dispatch!(
                             let _ = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
                             *cdr.borrow_mut() = Value::Nil;
+                            if let Some(keymap_id) = keymap_id {
+                                sync_runtime_keymap_from_public_view(interp, keymap_id)?;
+                            }
                             Ok(head)
                         }
                         value => Err(LispError::TypeError("list".into(), value.type_name())),

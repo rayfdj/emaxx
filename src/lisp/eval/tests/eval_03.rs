@@ -1439,6 +1439,32 @@ fn read_key_returns_unread_event_objects() {
 }
 
 #[test]
+fn read_key_discards_only_unbound_mouse_down_events() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((unread-command-events
+                       '((S-down-mouse-2 nil 1) (S-mouse-2 nil 1))))
+                  (car (read-key)))
+                "#,
+        ),
+        Value::Symbol("S-mouse-2".into())
+    );
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((map (make-sparse-keymap))
+                      (unread-command-events '((down-mouse-1 nil 1))))
+                  (define-key map [down-mouse-1] 'ignore)
+                  (let ((overriding-local-map map))
+                    (car (read-key))))
+                "#,
+        ),
+        Value::Symbol("down-mouse-1".into())
+    );
+}
+
+#[test]
 fn cl_lib_compat_preload_seeds_proclaim_state() {
     let interp = Interpreter::new();
     assert!(is_compat_preloaded_feature("cl-lib"));
@@ -1504,10 +1530,10 @@ fn keymap_list_helpers_cover_grep_tool_bar_setup() {
                   (define-key map "b" 'self-insert-command)
                   (list
                    (keymapp (butlast map))
-                   (equal (car (car (last map))) "b")))
+                   (keymapp (take (1- (length map)) map))))
                 "#,
         ),
-        Value::list([Value::T, Value::Nil])
+        Value::list([Value::T, Value::T])
     );
 }
 
@@ -6247,6 +6273,14 @@ fn value_less_enforces_its_gnu_max_arity() {
     let summary = interp.run_ert_tests_with_selector(None);
     assert_eq!(summary.passed, 1);
     assert_eq!(summary.failed, 0);
+}
+
+#[test]
+fn configured_out_gnu_primitives_keep_native_routes_without_becoming_fbound() {
+    assert_eq!(eval_str("(fboundp 'imagemagick-types)"), Value::Nil);
+    assert!(crate::lisp::primitives::has_dispatch_handler(
+        "imagemagick-types"
+    ));
 }
 
 #[test]

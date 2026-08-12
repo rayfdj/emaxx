@@ -2474,6 +2474,61 @@ impl Interpreter {
         }
     }
 
+    pub(crate) fn register_keymap_public_cons_owners(&mut self, keymap_id: u64, view: &Value) {
+        if let Some(old_ids) = self.keymap_public_cons_ids.remove(&keymap_id) {
+            for cell_id in old_ids {
+                let mut remove = false;
+                if let Some(owners) = self.keymap_public_cons_owners.get_mut(&cell_id) {
+                    owners.retain(|owner| *owner != keymap_id);
+                    remove = owners.is_empty();
+                }
+                if remove {
+                    self.keymap_public_cons_owners.remove(&cell_id);
+                }
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut owned_ids = Vec::new();
+        let mut tail = view.clone();
+        while let Value::Cons(cell) = tail {
+            let cell_id = crate::lisp::types::ConsCell::identity(&cell);
+            if !seen.insert(cell_id) {
+                break;
+            }
+            owned_ids.push(cell_id);
+            self.keymap_public_cons_owners
+                .entry(cell_id)
+                .or_default()
+                .push(keymap_id);
+
+            // A binding pair is itself mutable keymap structure.  Do not
+            // claim arbitrary binding definitions or included keymap roots;
+            // those either are not structure or have their own owner.
+            let entry = cell.car.borrow().clone();
+            if let Value::Cons(entry_cell) = &entry
+                && !matches!(entry.car(), Ok(Value::Symbol(ref name)) if name == "keymap")
+            {
+                let entry_id = crate::lisp::types::ConsCell::identity(entry_cell);
+                owned_ids.push(entry_id);
+                self.keymap_public_cons_owners
+                    .entry(entry_id)
+                    .or_default()
+                    .push(keymap_id);
+            }
+            tail = cell.cdr.borrow().clone();
+        }
+        self.keymap_public_cons_ids.insert(keymap_id, owned_ids);
+    }
+
+    pub(crate) fn keymap_public_cons_owner_ids(&self, value: &Value) -> Vec<u64> {
+        value
+            .cons_id()
+            .and_then(|id| self.keymap_public_cons_owners.get(&id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub(crate) fn create_treesit_query(&mut self, language: Value, source: Value) -> Value {
         let query = self.create_record("tree-sitter-compiled-query", Vec::new());
         let Value::Record(record_id) = query else {

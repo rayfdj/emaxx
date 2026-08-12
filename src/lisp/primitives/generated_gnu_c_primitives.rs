@@ -2,6 +2,7 @@
 // Source contract: GNU Emacs 30.2 src/*.c DEFUN declarations.
 // Regenerate when the compatibility oracle version/configuration changes.
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GnuCPrimitiveContract {
     pub(crate) name: &'static str,
@@ -1700,5 +1701,14 @@ pub(crate) const GNU_C_PRIMITIVES: &[GnuCPrimitiveContract] = &[
     GnuCPrimitiveContract { name: "zlib-decompress-region", arity: Some((2, 3)), command: false, special_form: false, origins: "decompress.c" },
 ];
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const GNU_C_PRIMITIVE_SOURCE_COUNT: usize = 1685;
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const GNU_C_PRIMITIVE_AVAILABLE_COUNT: usize = 1420;
+
+pub(crate) fn generated_gnu_c_primitive_available(name: &str) -> Option<bool> {
+    let index = GNU_C_PRIMITIVES
+        .binary_search_by_key(&name, |contract| contract.name)
+        .ok()?;
+    Some(GNU_C_PRIMITIVES[index].arity.is_some())
+}

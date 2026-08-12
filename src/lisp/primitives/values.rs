@@ -2174,16 +2174,22 @@ pub(crate) const KEYMAP_RECORD_TYPE: &str = "keymap";
 pub(crate) const KEYMAP_PARENT_SLOT: usize = 1;
 pub(crate) const KEYMAP_BINDINGS_SLOT: usize = 2;
 pub(crate) const KEYMAP_CHAR_TABLE_SLOT: usize = 3;
+pub(crate) const KEYMAP_PUBLIC_VIEW_SLOT: usize = 4;
 
 pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
-    interp.create_record(
+    let keymap = interp.create_record(
         KEYMAP_RECORD_TYPE,
         vec![
             name.map(Value::string).unwrap_or(Value::Nil),
             Value::Nil,
             Value::Nil,
         ],
-    )
+    );
+    if let Value::Record(id) = keymap {
+        refresh_runtime_keymap_public_view(interp, id)
+            .expect("new runtime keymap has a valid public view");
+    }
+    keymap
 }
 
 pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
@@ -2198,7 +2204,126 @@ pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, name: Option<&s
         }
         record.slots[KEYMAP_CHAR_TABLE_SLOT] = char_table;
     }
+    refresh_runtime_keymap_public_view(interp, id)
+        .expect("new full keymap has a valid public view");
     keymap
+}
+
+pub(crate) fn runtime_keymap_public_view(interp: &Interpreter, keymap: &Value) -> Option<Value> {
+    let id = keymap_record_id(interp, keymap)?;
+    interp
+        .find_record(id)
+        .and_then(|record| record.slots.get(KEYMAP_PUBLIC_VIEW_SLOT))
+        .cloned()
+}
+
+pub(crate) fn public_keymap_value(interp: &Interpreter, value: &Value) -> Value {
+    fn project(interp: &Interpreter, value: &Value, seen: &mut HashSet<usize>) -> Value {
+        if let Some(view) = runtime_keymap_public_view(interp, value) {
+            return view;
+        }
+        let Some((car, cdr)) = value.cons_cells() else {
+            return value.clone();
+        };
+        let id = car.cell_id();
+        if !seen.insert(id) {
+            return value.clone();
+        }
+        let original_car = car.borrow().clone();
+        let original_cdr = cdr.borrow().clone();
+        let projected_car = project(interp, &original_car, seen);
+        let projected_cdr = project(interp, &original_cdr, seen);
+        seen.remove(&id);
+        if values_eql(&projected_car, &original_car) && values_eql(&projected_cdr, &original_cdr) {
+            value.clone()
+        } else {
+            Value::cons(projected_car, projected_cdr)
+        }
+    }
+
+    project(interp, value, &mut HashSet::new())
+}
+
+pub(crate) fn refresh_runtime_keymap_public_view(
+    interp: &mut Interpreter,
+    keymap_id: u64,
+) -> Result<(), LispError> {
+    let (name, parent, char_table, bindings, existing) = {
+        let Some(record) = interp.find_record(keymap_id) else {
+            return Ok(());
+        };
+        (
+            record.slots.first().cloned().unwrap_or(Value::Nil),
+            record
+                .slots
+                .get(KEYMAP_PARENT_SLOT)
+                .cloned()
+                .unwrap_or(Value::Nil),
+            keymap_char_table(record),
+            keymap_bindings(record)?,
+            record.slots.get(KEYMAP_PUBLIC_VIEW_SLOT).cloned(),
+        )
+    };
+
+    let mut items = Vec::new();
+    let has_char_table = char_table.is_some();
+    if let Some(char_table) = char_table {
+        items.push(char_table);
+    }
+    let has_name = !name.is_nil();
+    if has_name {
+        items.push(name);
+    }
+    items.extend(
+        bindings
+            .iter()
+            .filter(|binding| !binding.after_prompt)
+            .map(|binding| {
+                Value::cons(
+                    keymap_entry_key_value(&binding_key_parts(binding), &binding.key),
+                    public_keymap_value(interp, &binding.value),
+                )
+            }),
+    );
+    if has_name {
+        // Pre-prompt bindings precede the prompt in GNU's public list.
+        let prompt = items.remove(has_char_table as usize);
+        let index = has_char_table as usize
+            + bindings
+                .iter()
+                .filter(|binding| !binding.after_prompt)
+                .count();
+        items.insert(index, prompt);
+    }
+    items.extend(
+        bindings
+            .iter()
+            .filter(|binding| binding.after_prompt)
+            .map(|binding| {
+                Value::cons(
+                    keymap_entry_key_value(&binding_key_parts(binding), &binding.key),
+                    public_keymap_value(interp, &binding.value),
+                )
+            }),
+    );
+    if !parent.is_nil() {
+        items.push(public_keymap_value(interp, &parent));
+    }
+
+    let view = if let Some(existing @ Value::Cons(_)) = existing {
+        existing.set_car(Value::Symbol("keymap".into()))?;
+        existing.set_cdr(Value::list(items))?;
+        existing
+    } else {
+        Value::cons(Value::Symbol("keymap".into()), Value::list(items))
+    };
+    let Some(record) = interp.find_record_mut(keymap_id) else {
+        return Ok(());
+    };
+    record.slots.resize(KEYMAP_PUBLIC_VIEW_SLOT + 1, Value::Nil);
+    record.slots[KEYMAP_PUBLIC_VIEW_SLOT] = view.clone();
+    interp.register_keymap_public_cons_owners(keymap_id, &view);
+    Ok(())
 }
 
 pub(crate) fn is_keymap_placeholder(value: &Value) -> bool {
@@ -2383,6 +2508,25 @@ pub(crate) fn replace_runtime_keymap_tail(
     let Some(id) = keymap_record_id(interp, keymap) else {
         return Ok(false);
     };
+    if let Some(view) = runtime_keymap_public_view(interp, keymap) {
+        view.set_cdr(tail.clone())?;
+    }
+    sync_runtime_keymap_from_public_view(interp, id)?;
+    Ok(true)
+}
+
+pub(crate) fn sync_runtime_keymap_from_public_view(
+    interp: &mut Interpreter,
+    keymap_id: u64,
+) -> Result<(), LispError> {
+    let Some(view) = interp
+        .find_record(keymap_id)
+        .and_then(|record| record.slots.get(KEYMAP_PUBLIC_VIEW_SLOT))
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let tail = view.cdr()?;
     let items = tail
         .to_vec()
         .map_err(|_| wrong_type_argument("listp", tail.clone()))?;
@@ -2417,20 +2561,19 @@ pub(crate) fn replace_runtime_keymap_tail(
         }
     }
 
-    // Record storage keeps pre-prompt entries in definition order, while the
-    // public keymap list exposes those entries in reverse insertion order.
-    before_prompt.reverse();
     before_prompt.extend(after_prompt);
 
-    let Some(record) = interp.find_record_mut(id) else {
-        return Ok(false);
+    let Some(record) = interp.find_record_mut(keymap_id) else {
+        return Ok(());
     };
-    record.slots.resize(KEYMAP_CHAR_TABLE_SLOT + 1, Value::Nil);
+    record.slots.resize(KEYMAP_PUBLIC_VIEW_SLOT + 1, Value::Nil);
     record.slots[0] = name;
     record.slots[KEYMAP_PARENT_SLOT] = parent;
     record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(before_prompt);
     record.slots[KEYMAP_CHAR_TABLE_SLOT] = char_table;
-    Ok(true)
+    record.slots[KEYMAP_PUBLIC_VIEW_SLOT] = view.clone();
+    interp.register_keymap_public_cons_owners(keymap_id, &view);
+    Ok(())
 }
 
 pub(crate) fn keymap_parent_values(interp: &Interpreter, keymap: &Value) -> Vec<Value> {
@@ -2600,6 +2743,7 @@ pub(crate) fn keymap_define_binding_with_placement(
         record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
     record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
+    refresh_runtime_keymap_public_view(interp, id)?;
     Ok(())
 }
 
@@ -2650,6 +2794,7 @@ pub(crate) fn keymap_define_binding_after(
         record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
     record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
+    refresh_runtime_keymap_public_view(interp, id)?;
     Ok(())
 }
 
@@ -2673,6 +2818,7 @@ pub(crate) fn keymap_remove_binding(
                 record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
             }
             record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
+            refresh_runtime_keymap_public_view(interp, id)?;
             return Ok(());
         }
     }
@@ -2700,6 +2846,7 @@ pub(crate) fn keymap_remove_binding(
         record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
     record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
+    refresh_runtime_keymap_public_view(interp, id)?;
     Ok(())
 }
 

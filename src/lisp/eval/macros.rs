@@ -2738,6 +2738,7 @@ fn backquote_template_code_at_depth(template: &Value, depth: usize) -> Value {
     if depth == 0
         && let Ok(elements) = template.to_vec()
         && !backquote_spine_has_unquote_tail(template)
+        && !backquote_spine_has_atomic_tail(template)
         && let Some(last_dynamic) = elements.iter().rposition(template_tree_unquotes)
         && last_dynamic + 1 < elements.len()
         && elements[..=last_dynamic].iter().all(|element| {
@@ -2767,6 +2768,13 @@ fn backquote_template_code_at_depth(template: &Value, depth: usize) -> Value {
         // The direct evaluator has the same boundary; preserve it here when
         // macroexpansion lowers backquote to list/append constructor code.
         if (!chunk.is_empty() || !segments.is_empty()) && is_backquote_atomic_cons_tail(&tail) {
+            let mut constructed_tail = backquote_template_code_at_depth(&tail, depth);
+            for element in chunk.drain(..).rev() {
+                constructed_tail =
+                    Value::list([Value::Symbol("cons".into()), element, constructed_tail]);
+            }
+            segments.push(constructed_tail);
+            tail = Value::Nil;
             break;
         }
         if let Some((kind, inner)) = backquote_unquote_form(&tail) {
@@ -2849,6 +2857,21 @@ fn backquote_spine_has_unquote_tail(form: &Value) -> bool {
     let mut tail = form.clone();
     while let Some((_, cdr)) = tail.cons_values() {
         if backquote_unquote_form(&cdr).is_some() {
+            return true;
+        }
+        tail = cdr;
+    }
+    false
+}
+
+// Emaxx represents reader vectors as a tagged cons tree.  A vector in dotted
+// tail position is therefore structurally traversable, but it remains one
+// vector object for backquote purposes and must not be flattened into the
+// surrounding list by the constant-suffix optimization.
+fn backquote_spine_has_atomic_tail(form: &Value) -> bool {
+    let mut tail = form.clone();
+    while let Some((_, cdr)) = tail.cons_values() {
+        if is_backquote_atomic_cons_tail(&cdr) {
             return true;
         }
         tail = cdr;

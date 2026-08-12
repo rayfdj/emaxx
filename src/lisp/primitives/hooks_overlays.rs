@@ -68,6 +68,12 @@ pub(crate) fn run_change_hooks(
     if hooks.is_empty() {
         return Ok(());
     }
+    // insdel.c dynamically inhibits recursive modification hooks while the
+    // callbacks run.  Its unwind record also clears the active before/after
+    // hook variable on every nonlocal exit, preventing a broken global or
+    // local hook from poisoning subsequent edits.
+    let inhibit_restore =
+        interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
     interp.enter_change_hooks();
     let mut result = Ok(());
     for hook in hooks {
@@ -77,7 +83,23 @@ pub(crate) fn run_change_hooks(
         }
     }
     interp.leave_change_hooks();
-    result
+    if result.is_err()
+        && matches!(
+            hook_name,
+            "before-change-functions" | "after-change-functions"
+        )
+    {
+        let local_buffer_id = interp.assignment_buffer_id(hook_name);
+        interp.set_variable(hook_name, Value::Nil, env);
+        if let Some(buffer_id) = local_buffer_id {
+            interp.remove_buffer_local_hook(buffer_id, hook_name);
+        }
+    }
+    let restore_result = interp.restore_special_dynamic(inhibit_restore, env);
+    match (result, restore_result) {
+        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 pub(crate) fn flush_combined_after_change(

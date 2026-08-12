@@ -78,10 +78,6 @@
       "selector": "t"
     },
     {
-      "path": "test/lisp/follow-tests.el",
-      "selector": "t"
-    },
-    {
       "path": "test/lisp/font-lock-tests.el",
       "selector": "t"
     },
@@ -174,10 +170,6 @@
       "selector": "t"
     },
     {
-      "path": "test/lisp/savehist-tests.el",
-      "selector": "t"
-    },
-    {
       "path": "test/lisp/saveplace-tests.el",
       "selector": "t"
     },
@@ -255,10 +247,6 @@
     },
     {
       "path": "test/lisp/wid-edit-tests.el",
-      "selector": "t"
-    },
-    {
-      "path": "test/lisp/winner-tests.el",
       "selector": "t"
     },
     {
@@ -375,6 +363,26 @@
     },
     {
       "path": "test/src/fns-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/font-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/image-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/indent-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/inotify-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/json-tests.el",
       "selector": "t"
     },
     {

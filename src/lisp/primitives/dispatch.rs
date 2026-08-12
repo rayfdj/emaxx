@@ -144,12 +144,17 @@ define_dispatch_modules! {
 
 fn compute_name_facts(name: &str) -> NameFacts {
     let module = DispatchModule::for_name(name);
+    let available_in_oracle =
+        crate::lisp::primitives::generated_gnu_c_primitives::generated_gnu_c_primitive_available(
+            name,
+        )
+        .unwrap_or(true);
     NameFacts {
         // A callable native route is the builtin contract.  Keeping a
         // second list of the same names made every new primitive require
         // two coordinated edits and allowed function lookup to drift from
         // dispatch.
-        builtin: module != DispatchModule::None,
+        builtin: module != DispatchModule::None && available_in_oracle,
         special_form: crate::lisp::primitives::is_special_form_name(name),
         prefer_override: module.prefer_builtin(name),
         resets_undo: module.resets_undo(name),

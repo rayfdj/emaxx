@@ -702,7 +702,7 @@ pub(crate) fn buffer_char_property_at_with_overlay_id(
     prop: &str,
 ) -> (Value, Option<u64>) {
     if let Some((value, overlay_id)) =
-        highest_priority_overlay_property_with_id(interp, buffer, pos, prop, false)
+        highest_priority_overlay_property_with_id(interp, buffer, pos, prop, false, None)
     {
         return (value, Some(overlay_id));
     }
