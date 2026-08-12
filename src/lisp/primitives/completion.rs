@@ -1484,44 +1484,6 @@ pub(crate) fn interactive_list_form_items(form: &Value) -> Option<Vec<Value>> {
         .then(|| items[1..].to_vec())
 }
 
-pub(crate) fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
-    let Value::Lambda(lambda) = func else {
-        return Vec::new();
-    };
-    let body = &lambda.body;
-    let mut overrides = Vec::new();
-    for form in body.iter() {
-        if matches!(form, Value::String(_) | Value::StringObject(_)) {
-            continue;
-        }
-        if !is_declare_form(form) {
-            break;
-        }
-        let Ok(items) = form.to_vec() else {
-            continue;
-        };
-        for decl in &items[1..] {
-            let Ok(parts) = decl.to_vec() else {
-                continue;
-            };
-            if !matches!(parts.first(), Some(Value::Symbol(name)) if name == "interactive-args") {
-                continue;
-            }
-            for arg in &parts[1..] {
-                let Ok(entry) = arg.to_vec() else {
-                    continue;
-                };
-                if entry.len() >= 2
-                    && let Value::Symbol(name) = &entry[0]
-                {
-                    overrides.push((name.to_string(), entry[1].clone()));
-                }
-            }
-        }
-    }
-    overrides
-}
-
 // Whether COLLECTION is a programmed completion table (a function).
 pub(crate) fn completion_table_is_function(_interp: &Interpreter, collection: &Value) -> bool {
     match collection {

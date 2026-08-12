@@ -732,9 +732,12 @@ pub(crate) fn is_declare_form(form: &Value) -> bool {
 }
 
 pub(crate) fn invalid_interactive_control_letter(ch: char) -> LispError {
-    let code = ch as u32;
+    let code = raw_byte_from_regex_char(ch)
+        .map(u32::from)
+        .unwrap_or(ch as u32);
+    let display = char::from_u32(code).unwrap_or(ch);
     LispError::Signal(format!(
-        "Invalid control letter `{ch}' (#o{code:03o}, #x{code:04x}) in interactive calling string"
+        "Invalid control letter `{display}' (#o{code:03o}, #x{code:04x}) in interactive calling string"
     ))
 }
 

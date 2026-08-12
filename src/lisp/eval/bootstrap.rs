@@ -644,6 +644,17 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             }
         };
         let mut plist = coding.plist.to_vec().unwrap_or_default();
+        match coding.kind.as_str() {
+            "utf-8-with-signature" => plist.extend([Value::Symbol(":bom".into()), Value::T]),
+            "utf-8-auto" => plist.extend([
+                Value::Symbol(":bom".into()),
+                Value::cons(
+                    Value::Symbol("utf-8-with-signature".into()),
+                    Value::Symbol("utf-8".into()),
+                ),
+            ]),
+            _ => {}
+        }
         let charset_list = match coding.kind.as_str() {
             "utf-8" | "utf-8-with-signature" | "utf-8-auto" => {
                 Some(Value::list([Value::Symbol("unicode".into())]))

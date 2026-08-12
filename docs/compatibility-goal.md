@@ -42,6 +42,56 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-12 Callint-through-Coding checkpoint advances the exact
+  contiguous frontier to **6,315/7,080**, leaving **765** selectors.  The
+  final-source atomic replay covers selectors 6,280-6,315: all **36/36**
+  selected outcomes match GNU (33 passes and the same three skips), with no
+  timeout, unilateral skip, failure, or changed status.  The matching skips
+  are Callproc's two platform cases and Casefiddle's locale case.  NEXT is
+  selector **6,316**, `binding-test-defvar-bool`, in
+  `test/src/data-tests.el` (57 selected outcomes in the file); the intervening
+  `test/src/comp-tests.el` entry has the canonical oracle load error and
+  contributes no selected outcome to the 7,080 denominator.
+
+  The canonical eight-owner replay is
+  `target/compat/regression-add-1786553591031637000-98862`.  It uses
+  subject-source fingerprint
+  `afff9f7a6680934482b47a3c64174fcff17ebf96b59e6332c29350cd06964eff`,
+  release subject binary
+  `0c0c8b4488d2686277bf578f1b62ba6d4be462489453b1b4de86fb40a55cd205`,
+  harness hash
+  `51087d9ff0111b6361be31a476a29428e8665e57d7ac0ad4efe207fd61e73fbc`,
+  pinned GNU commit `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, and separate
+  180-second setup/body budgets.  The owner totals are Callint 4, Callproc 3,
+  Casefiddle 11, Character 1, Charset 1, Chartab 5, Cmds 2, and Coding 9.
+
+  Post-bootstrap bodies are Callint 10/1 ms GNU/Emaxx, Callproc 180/42,
+  Casefiddle 97/98, Character 7/1, Charset 8/0, Chartab 7/2, Cmds 7/0, and
+  Coding 49/61.  None crosses even the diagnostic 2x-slower boundary.  Setup
+  remains the separately tracked dumped-startup gap: GNU is 223-234 ms while
+  Emaxx is 2,338-2,904 ms here.
+
+  Shared repairs follow GNU's host contracts while leaving Elisp owners in
+  Elisp.  Defun declarations now publish GNU-shaped indexed
+  `interactive-args` metadata, and command-history consumes that one property
+  instead of reparsing lambda bodies through a second mini-parser.  Raw-byte
+  interactive control-letter errors display the external byte.  String and
+  region casing share one Unicode special-case mapping with character
+  properties.  The coding registry now enforces native ASCII/Latin-1 bounds,
+  supplies the `coding-system-error` hierarchy, derives BOM policy from the
+  loaded coding plist, honors dynamic `inhibit-eol-conversion` in both encode
+  and decode paths, and uses a visiting buffer's coding tag for writes.
+  Bootstrap coding metadata carries the same BOM properties as GNU's
+  `mule-conf.el`, so file-less and loaded paths share the policy rather than
+  relying on stale internal kind names.
+
+  Final-source gates are green: formatting/diff, strict all-target/all-feature
+  Clippy, 9 call-interactively tests, 81 case-related tests, 37 coding tests,
+  the separately permitted loopback network-coding test, generated validation
+  13/13 in 13.23 seconds, and the exact 36-outcome replay above.  All eight
+  owners are recorded in
+  `compat/compat_regressions.json`.
+
 - The 2026-08-12 Ediff-through-Buffer checkpoint advances the exact contiguous
   frontier to **6,279/7,080**, leaving **801** selectors.  The final-source
   replay covers selectors 5,753-6,279: all **527/527** selected outcomes match

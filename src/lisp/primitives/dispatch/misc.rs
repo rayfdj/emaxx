@@ -379,7 +379,15 @@ define_dispatch!(
                 let text = md5_source_text(interp, &args[0], args.get(1), args.get(2))?;
                 let bytes = match args.get(3) {
                     Some(coding) if !coding.is_nil() => {
-                        encode_text_bytes(interp, &text, &checked_coding_symbol(interp, coding)?)?
+                        let inhibit_eol_conversion = interp
+                            .lookup_var("inhibit-eol-conversion", env)
+                            .is_some_and(|value| value.is_truthy());
+                        encode_text_bytes(
+                            interp,
+                            &text,
+                            &checked_coding_symbol(interp, coding)?,
+                            inhibit_eol_conversion,
+                        )?
                     }
                     _ => text.into_bytes(),
                 };

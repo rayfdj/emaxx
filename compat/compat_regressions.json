@@ -302,7 +302,31 @@
       "selector": "t"
     },
     {
+      "path": "test/src/callint-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/callproc-tests.el",
+      "selector": "t"
+    },
+    {
       "path": "test/src/casefiddle-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/character-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/charset-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/chartab-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/cmds-tests.el",
       "selector": "t"
     },
     {
