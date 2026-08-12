@@ -4567,33 +4567,82 @@ define_dispatch!(
                 Ok(Value::list(locales))
             }
             "zlib-decompress-region" => {
-                need_args(name, args, 2)?;
+                need_arg_range(name, args, 2, 3)?;
                 let start = position_from_value(interp, &args[0])?;
                 let end = position_from_value(interp, &args[1])?;
+                if interp.buffer.is_multibyte() {
+                    return Err(LispError::Signal(
+                        "This function can be called only in unibyte buffers".into(),
+                    ));
+                }
                 let compressed = interp
                     .buffer
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
-                let input = compressed
-                    .chars()
-                    .map(|ch| {
-                        u8::try_from(ch as u32).map_err(|_| {
-                            LispError::Signal("Invalid byte in compressed data".into())
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let mut decoder = GzDecoder::new(&input[..]);
-                let mut output = Vec::new();
-                std::io::Read::read_to_end(&mut decoder, &mut output)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                let input = encode_raw_text_bytes(&compressed)?;
                 ensure_region_modifiable(interp, start, end, env)?;
-                delete_region_with_hooks(interp, start, end, env)?;
-                let text = output
-                    .iter()
-                    .map(|byte| char::from(*byte))
-                    .collect::<String>();
-                insert_text_with_hooks(interp, &text, &[], false, false, env)?;
-                Ok(Value::Nil)
+                ensure_no_supersession_threat(interp, env)?;
+                let overlay_calls = overlay_change_hook_calls(&interp.buffer, start, end, start);
+                run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+                run_change_hooks(
+                    interp,
+                    "before-change-functions",
+                    &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                    env,
+                )?;
+
+                let mut output = Vec::new();
+                let (complete, remaining) = if input.starts_with(&[0x1f, 0x8b]) {
+                    let mut decoder = flate2::bufread::GzDecoder::new(&input[..]);
+                    let result = std::io::Read::read_to_end(&mut decoder, &mut output);
+                    (result.is_ok(), decoder.get_ref().len())
+                } else {
+                    let mut decoder = flate2::bufread::ZlibDecoder::new(&input[..]);
+                    let result = std::io::Read::read_to_end(&mut decoder, &mut output);
+                    (result.is_ok(), decoder.get_ref().len())
+                };
+                let old_length = end - start;
+                if !complete && args.get(2).is_none_or(Value::is_nil) {
+                    run_change_hooks(
+                        interp,
+                        "after-change-functions",
+                        &[
+                            Value::Integer(start as i64),
+                            Value::Integer(end as i64),
+                            Value::Integer(old_length as i64),
+                        ],
+                        env,
+                    )?;
+                    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+                    return Ok(Value::Nil);
+                }
+
+                let saved_point = interp.buffer.point();
+                interp
+                    .delete_region_current_buffer(start, end)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                interp.buffer.goto_char(start);
+                let text = decode_raw_text_bytes(&output);
+                interp.insert_current_buffer(&text);
+                interp
+                    .buffer
+                    .goto_char(saved_point.min(interp.buffer.point_max()));
+                run_change_hooks(
+                    interp,
+                    "after-change-functions",
+                    &[
+                        Value::Integer(start as i64),
+                        Value::Integer((start + output.len()) as i64),
+                        Value::Integer(old_length as i64),
+                    ],
+                    env,
+                )?;
+                run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+                if complete {
+                    Ok(Value::T)
+                } else {
+                    Ok(Value::Integer(remaining as i64))
+                }
             }
             "libxml-parse-xml-region" | "libxml-parse-html-region" => {
                 need_arg_range(name, args, 0, 4)?;

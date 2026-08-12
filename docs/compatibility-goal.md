@@ -42,6 +42,75 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-12 Data-through-Fileio checkpoint advances the exact contiguous
+  frontier to **6,450/7,080**, leaving **630** selectors.  The final-source
+  atomic replay covers selectors 6,316-6,450: all **135/135** outcomes match
+  GNU (124 passes, the same one expected failure, and the same ten skips),
+  with no timeout, unilateral skip, or changed status.  NEXT is selector
+  **6,451**, `filelock-tests-detect-external-change`, in
+  `test/src/filelock-tests.el` (six selected outcomes).
+
+  The canonical seven-owner replay is
+  `target/compat/regression-add-1786557526761415000-3644`.  It uses
+  subject-source fingerprint
+  `cfcbbece20318801a61935e304553779ab6d6cd7816243e7ccc60c231e69a04f`,
+  release subject binary
+  `b77a132ac4093cbb989fdcbd1bef0c08348cf404a026b39d63b083adf845d20a`,
+  harness hash
+  `7cc7218868e036c88187db007edae563fbfabccc4b0de52561677b6a9974fb4c`,
+  pinned GNU commit `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, and separate
+  180-second setup/body budgets.  Owner totals are Data 57, Decompress 1,
+  Doc 5, Editfns 23, Emacs 7, Eval 26, and Fileio 16.  Matching non-passes
+  are Editfns' expected before/after-change failure, all seven platform or
+  sandbox skips in Emacs, and Fileio's three platform skips.
+
+  Post-bootstrap GNU/Emaxx bodies are Data 70/481 ms, Decompress 7/1, Doc
+  7/21, Editfns 69/544, Emacs 8/5, Eval 1,788/8,593, and Fileio 37/40.  Data
+  and Editfns exceed the 2x diagnostic but add less than one second.  Eval's
+  body deliberately launches three fresh editor subprocesses; the repeated
+  reconstructed startup explains most of its +6.8-second delta and belongs
+  to dumped-image issue #11 rather than an Eval-local algorithm.  It remains
+  below 5x at 4.805x.  Separate setup is GNU 216-234 ms versus Emaxx
+  2,347-2,708 ms.
+
+  Repairs are shared and follow GNU's native contracts without taking policy
+  from Elisp.  The existing `flate2` backend now implements the complete
+  `zlib-decompress-region` boundary: unibyte input, gzip/zlib recognition,
+  all-or-nothing default behavior, optional partial output, exact result
+  values, and one before/after hook pair.  Translation consumes and emits
+  public Emacs character codes, preserving raw byte8 and non-Unicode
+  characters through the centralized internal representation.  Float
+  printing uses GNU-style significant-digit growth and notation so large
+  floats reread as the same float instead of a nearby bignum.  Nested delete
+  preparation mirrors `del_range_1`/`signal_before_change`, preserving the
+  relocated start plus original length and keeping its three undo-visible
+  markers alive during callbacks.
+
+  Batch evaluation now snapshots the deepest propagating frame set and the
+  dynamic `backtrace-on-error-noninteractive` value before unwinding; both
+  source and VM condition handlers discard handled snapshots, and the batch
+  boundary renders the unhandled trace including `normal-top-level`.  Lisp
+  still owns debugger policy.  The centralized file-name-handler operation
+  table now marks only LINKNAME in `make-symbolic-link` as a file path.  The
+  target remains opaque link data, as in `fileio.c`, so strings such as `/:`
+  are stored verbatim instead of being accidentally unquoted.
+
+  The supplied `makefilemodefix.patch` was reviewed but not applied because
+  it targets an already-repaired revision.  `86ce515` introduced the
+  Mac-specific hardcoded Semantic expectation; `e4f8805` already replaced it
+  with one shared GNU `system-type` policy used by runtime preload and tests,
+  plus a cross-platform decision table.  That implementation is more
+  complete than the patch's compile-target conditional and covers DragonFly
+  through the Berkeley-Unix mapping.  The table regression and loaded
+  Semantic test pass.  A fresh fetch found local HEAD and `origin/main`
+  identical at `090de4e`, so no merge was required.
+
+  Final-source gates are green: formatting/diff; strict all-target/all-feature
+  Clippy; focused float, zlib, backtrace, translation, deletion, and symlink
+  suites; Makefile policy and loaded Semantic coverage; and the exact
+  135-outcome replay.  All seven owners are recorded in
+  `compat/compat_regressions.json`.
+
 - The 2026-08-12 Callint-through-Coding checkpoint advances the exact
   contiguous frontier to **6,315/7,080**, leaving **765** selectors.  The
   final-source atomic replay covers selectors 6,280-6,315: all **36/36**

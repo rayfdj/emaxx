@@ -1444,6 +1444,9 @@ fn run_with_stack(
                         }
                     };
                     if let Some(value) = matched_value {
+                        if matches!(handler.kind, HandlerKind::ConditionCase(_)) {
+                            interp.clear_batch_error_backtrace();
+                        }
                         while unwinds.len() > handler.unwind_len {
                             match unwinds.pop() {
                                 Some(entry) => unwind_one(interp, entry, env)?,

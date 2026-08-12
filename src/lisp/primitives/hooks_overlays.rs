@@ -523,6 +523,7 @@ pub(crate) fn delete_region_with_hooks(
     if from >= to {
         return Ok(String::new());
     }
+    let range_length = to - from;
     let overlay_calls = overlay_change_hook_calls(&interp.buffer, from, to, from);
     run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
     let has_before_hooks = interp
@@ -535,6 +536,9 @@ pub(crate) fn delete_region_with_hooks(
         })
         .unwrap_or(false);
     let preserved_bounds = if has_before_hooks {
+        let Value::Marker(preserve_id) = interp.make_marker() else {
+            unreachable!("make_marker returns a marker")
+        };
         let Value::Marker(start_id) = interp.make_marker() else {
             unreachable!("make_marker returns a marker")
         };
@@ -542,9 +546,10 @@ pub(crate) fn delete_region_with_hooks(
             unreachable!("make_marker returns a marker")
         };
         let buffer_id = interp.current_buffer_id();
+        let _ = interp.set_marker(preserve_id, Some(from), Some(buffer_id));
         let _ = interp.set_marker(start_id, Some(from), Some(buffer_id));
         let _ = interp.set_marker(end_id, Some(to), Some(buffer_id));
-        Some((start_id, end_id))
+        Some((preserve_id, start_id, end_id))
     } else {
         None
     };
@@ -554,16 +559,17 @@ pub(crate) fn delete_region_with_hooks(
         &[Value::Integer(from as i64), Value::Integer(to as i64)],
         env,
     );
-    let (from, to) = if let Some((start_id, end_id)) = preserved_bounds {
-        let start = interp.marker_position(start_id).unwrap_or(from);
-        let end = interp.marker_position(end_id).unwrap_or(to);
+    let (from, to) = if let Some((preserve_id, start_id, end_id)) = preserved_bounds {
+        // GNU's del_range_1 preserves the start through Lisp callbacks and
+        // then reapplies the original range length.  The start/end markers
+        // belong to signal_before_change itself and must remain live while a
+        // nested edit records its undo marker riders.
+        let start = interp.marker_position(preserve_id).unwrap_or(from);
+        let end = (start + range_length).min(interp.buffer.point_max());
+        let _ = interp.set_marker(preserve_id, None, None);
         let _ = interp.set_marker(start_id, None, None);
         let _ = interp.set_marker(end_id, None, None);
-        if start <= end {
-            (start, end)
-        } else {
-            (end, start)
-        }
+        (start, end)
     } else {
         (from, to)
     };
