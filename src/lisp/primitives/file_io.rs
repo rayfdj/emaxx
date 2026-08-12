@@ -1476,6 +1476,11 @@ pub(crate) fn insert_file_contents(
         interp.buffer.file_truename = Some(canonical_file_name(&path));
         interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
         interp.buffer.set_unmodified();
+        // GNU restores the pre-read undo list when visiting (fileio.c keeps
+        // it aside around the insertion), so the very first interactive undo
+        // must not remove the file's own contents.
+        interp.buffer.clear_undo();
+        interp.reset_undo_sequence();
     }
     set_last_coding_system_used(interp, &detected, env);
     let inserted = finish_insert_file_contents(interp, env, inserted_chars, &args[1..])?;

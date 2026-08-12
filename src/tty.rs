@@ -232,6 +232,13 @@ fn command_loop(
                     }
                     Err(error) => {
                         debug_log(&format!("command error: {error:?}"));
+                        if std::env::var_os("EMAXX_TTY_LOG").is_some() {
+                            for (_, function, args, _) in
+                                interpreter.backtrace_frames_snapshot().iter().take(12)
+                            {
+                                debug_log(&format!("  frame: {function} nargs={}", args.len()));
+                            }
+                        }
                         state.echo = command_error_text(&error);
                     }
                 }
@@ -373,12 +380,16 @@ fn encode_key(key: KeyEvent) -> Vec<Value> {
                     ' ' | '@' => Some(Value::Integer(0)),
                     'a'..='z' => Some(Value::Integer((c as u8 - b'a' + 1) as i64)),
                     'A'..='Z' => Some(Value::Integer((c as u8 - b'A' + 1) as i64)),
-                    '[' => Some(Value::Integer(27)),
-                    '\\' => Some(Value::Integer(28)),
-                    ']' => Some(Value::Integer(29)),
-                    '^' => Some(Value::Integer(30)),
-                    '_' | '/' => Some(Value::Integer(31)),
-                    '?' => Some(Value::Integer(127)),
+                    '[' | '3' => Some(Value::Integer(27)),
+                    '\\' | '4' => Some(Value::Integer(28)),
+                    ']' | '5' => Some(Value::Integer(29)),
+                    '^' | '6' => Some(Value::Integer(30)),
+                    // Terminals send C-_ as 0x1f, which parsers report as
+                    // Ctrl plus any of these; C-2..C-8 follow xterm's
+                    // control-digit convention.
+                    '_' | '/' | '7' => Some(Value::Integer(31)),
+                    '?' | '8' => Some(Value::Integer(127)),
+                    '2' => Some(Value::Integer(0)),
                     _ => Some(Value::Integer(c as i64)),
                 }
             } else {
