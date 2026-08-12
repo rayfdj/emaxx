@@ -103,6 +103,9 @@ pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32
     let canonical = interp.charset_canonical_name(charset)?;
     match canonical.as_str() {
         "ascii" if code <= 0x7f => return Some(code),
+        "ascii" => return None,
+        "iso-8859-1" if code <= 0xff => return Some(code),
+        "iso-8859-1" => return None,
         "unicode" if code <= 0x10_ffff => return Some(code),
         "emacs" if code <= 0x3f_ffff => return Some(code),
         "eight-bit" if (0x80..=0xff).contains(&code) => {
@@ -130,6 +133,9 @@ pub(crate) fn encode_charset_char(
     let canonical = interp.charset_canonical_name(charset)?;
     match canonical.as_str() {
         "ascii" if character <= 0x7f => return Some(character),
+        "ascii" => return None,
+        "iso-8859-1" if character <= 0xff => return Some(character),
+        "iso-8859-1" => return None,
         "unicode" if character <= 0x10_ffff => return Some(character),
         "emacs" if character <= 0x3f_ffff => return Some(character),
         "eight-bit"
@@ -160,8 +166,18 @@ fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) ->
     })
 }
 
-fn coding_system_has_bom(interp: &Interpreter, coding: &str) -> bool {
-    coding_system_property(interp, coding, ":bom").is_some_and(|value| !value.is_nil())
+fn coding_system_requires_bom(interp: &Interpreter, coding: &str) -> bool {
+    coding_system_property(interp, coding, ":bom")
+        .is_some_and(|value| !value.is_nil() && value.cons_values().is_none())
+}
+
+pub(crate) fn coding_system_auto_detects_bom(interp: &Interpreter, coding: &str) -> bool {
+    coding_system_property(interp, coding, ":bom")
+        .is_some_and(|value| value.cons_values().is_some())
+}
+
+fn coding_system_consumes_bom(interp: &Interpreter, coding: &str) -> bool {
+    coding_system_requires_bom(interp, coding) || coding_system_auto_detects_bom(interp, coding)
 }
 
 fn coding_system_is_ascii_compatible(interp: &Interpreter, coding: &str) -> bool {
@@ -972,6 +988,7 @@ pub(crate) fn encode_text_bytes(
     interp: &Interpreter,
     text: &str,
     coding: &str,
+    inhibit_eol_conversion: bool,
 ) -> Result<Vec<u8>, LispError> {
     let canonical = interp
         .coding_system_canonical_name(coding)
@@ -979,14 +996,16 @@ pub(crate) fn encode_text_bytes(
     let kind = interp
         .coding_system_kind_name(&canonical)
         .unwrap_or_else(|| canonical.clone());
-    let eol_type = interp.coding_system_eol_type_value(&canonical);
+    let eol_type = (!inhibit_eol_conversion)
+        .then(|| interp.coding_system_eol_type_value(&canonical))
+        .flatten();
     let text = encode_text_with_eol(text, eol_type);
     if let Some(encoding) = legacy_single_byte_encoding(interp, &canonical) {
         return encode_legacy_single_byte_bytes(encoding, &text);
     }
     match kind.as_str() {
         "utf-8" | "prefer-utf-8" | "utf-8-auto" => {
-            encode_utf8_bytes(&text, coding_system_has_bom(interp, &canonical))
+            encode_utf8_bytes(&text, coding_system_requires_bom(interp, &canonical))
         }
         "utf-8-with-signature" => encode_utf8_bytes(&text, true),
         "utf-16" => {
@@ -1205,7 +1224,7 @@ pub(crate) fn decode_text_bytes(
     }
     match kind.as_str() {
         "utf-8" | "prefer-utf-8" | "utf-8-auto" => {
-            let bytes = if coding_system_has_bom(interp, &canonical) {
+            let bytes = if coding_system_consumes_bom(interp, &canonical) {
                 strip_utf8_bom(bytes).1
             } else {
                 bytes
@@ -1278,8 +1297,13 @@ pub(crate) fn string_identity_for_coding(
     coding: &str,
     interp: &Interpreter,
     encode: bool,
+    inhibit_eol_conversion: bool,
 ) -> bool {
-    let eol_type = interp.coding_system_eol_type_value(coding);
+    let eol_type = if inhibit_eol_conversion {
+        None
+    } else {
+        interp.coding_system_eol_type_value(coding)
+    };
     let kind = interp
         .coding_system_kind_name(coding)
         .unwrap_or_else(|| coding.to_string());
@@ -1290,7 +1314,7 @@ pub(crate) fn string_identity_for_coding(
             return false;
         }
         if kind == "utf-8-with-signature"
-            || (kind == "utf-8" && coding_system_has_bom(interp, coding))
+            || (kind == "utf-8" && coding_system_requires_bom(interp, coding))
             || matches!(kind.as_str(), "utf-16" | "utf-16be" | "utf-16le")
         {
             return false;
@@ -1306,7 +1330,7 @@ pub(crate) fn string_identity_for_coding(
         || (single_byte_translation && text.chars().any(is_raw_byte_regex_char))
         || matches!(kind.as_str(), "utf-16" | "utf-16be" | "utf-16le")
         || ((kind == "utf-8" || kind == "utf-8-with-signature")
-            && coding_system_has_bom(interp, coding))
+            && coding_system_consumes_bom(interp, coding))
     {
         return false;
     }
@@ -1695,11 +1719,19 @@ pub(crate) fn encode_coding_value(
         coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted_text = run_coding_conversion(interp, &string.text, &pre_write, true, env)?;
     let conversion_ran = !pre_write.is_nil();
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
     if interp
         .coding_system(&canonical)
         .is_some_and(|coding| coding.kind == "raw-text")
     {
-        let text = decode_raw_text_bytes(&encode_text_bytes(interp, &converted_text, &canonical)?);
+        let text = decode_raw_text_bytes(&encode_text_bytes(
+            interp,
+            &converted_text,
+            &canonical,
+            inhibit_eol_conversion,
+        )?);
         return Ok(make_shared_string_value_with_multibyte(
             text,
             string.props,
@@ -1716,11 +1748,18 @@ pub(crate) fn encode_coding_value(
             interp,
             &substituted,
             &canonical,
+            inhibit_eol_conversion,
         )?));
     }
     if nocopy
         && !conversion_ran
-        && string_identity_for_coding(&string.text, &canonical, interp, true)
+        && string_identity_for_coding(
+            &string.text,
+            &canonical,
+            interp,
+            true,
+            inhibit_eol_conversion,
+        )
     {
         Ok(value.clone())
     } else {
@@ -1728,6 +1767,7 @@ pub(crate) fn encode_coding_value(
             interp,
             &converted_text,
             &canonical,
+            inhibit_eol_conversion,
         )?))
     }
 }
@@ -1761,6 +1801,9 @@ pub(crate) fn decode_coding_text(
             None
         };
     let detected_undecided = undecided_bytes.is_some();
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
     let actual_coding = if let Some((detected, _)) = &undecided_bytes {
         detected.clone()
     } else if interp.coding_system_eol_type_value(&canonical).is_none()
@@ -1777,6 +1820,8 @@ pub(crate) fn decode_coding_text(
     set_last_coding_system_used(interp, &actual_coding, env);
     let text = if let Some((_, normalized)) = undecided_bytes {
         decode_text_bytes(interp, &normalized, &actual_coding)?
+    } else if inhibit_eol_conversion {
+        string.text.clone()
     } else {
         match interp.coding_system_eol_type_value(&canonical) {
             Some(1) if string.text.contains('\r') => string.text.replace("\r\n", "\n"),
@@ -1820,7 +1865,13 @@ pub(crate) fn decode_coding_text(
     if nocopy
         && !conversion_ran
         && text == string.text
-        && string_identity_for_coding(&string.text, &canonical, interp, false)
+        && string_identity_for_coding(
+            &string.text,
+            &canonical,
+            interp,
+            false,
+            inhibit_eol_conversion,
+        )
     {
         Ok(value.clone())
     } else {

@@ -18,6 +18,48 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-12 CALLINT-THROUGH-CODING CHECKPOINT: the exact contiguous frontier
+  is **6,315/7,080**, leaving **765** selectors.  The final-source atomic replay
+  covers selectors 6,280-6,315: all **36/36** selected outcomes match GNU (33
+  passes and the same three skips), with no timeout, unilateral skip, failure,
+  or changed status.  NEXT is selector **6,316**, `binding-test-defvar-bool`,
+  in `test/src/data-tests.el` (57 selected outcomes).  The intervening Comp
+  entry has the canonical oracle load error and contributes no selected test.
+
+  Canonical artifact:
+  `target/compat/regression-add-1786553591031637000-98862`.  Subject-source
+  fingerprint is
+  `afff9f7a6680934482b47a3c64174fcff17ebf96b59e6332c29350cd06964eff`,
+  release binary hash is
+  `0c0c8b4488d2686277bf578f1b62ba6d4be462489453b1b4de86fb40a55cd205`,
+  harness hash is
+  `51087d9ff0111b6361be31a476a29428e8665e57d7ac0ad4efe207fd61e73fbc`,
+  and pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+  The replay covers Callint 4, Callproc 3, Casefiddle 11, Character 1, Charset
+  1, Chartab 5, Cmds 2, and Coding 9.  Matching skips are Callproc's two
+  platform cases and Casefiddle's locale case.
+
+  Post-bootstrap GNU/Emaxx bodies are 10/1, 180/42, 97/98, 7/1, 8/0, 7/2,
+  7/0, and 49/61 ms in owner order; no body crosses the diagnostic 2x-slower
+  boundary.  Setup remains dumped-startup issue #11 at 223-234 ms GNU versus
+  2,338-2,904 ms Emaxx.
+
+  Shared fixes: defun declarations publish indexed GNU `interactive-args`
+  metadata and command history reads that property without a duplicate lambda
+  parser; raw-byte control-letter errors display the external byte; string,
+  region, and character-property Unicode special casing share one mapping;
+  ASCII/Latin-1 charset bounds no longer fall through to offsets; and the
+  coding registry owns BOM behavior, coding-system error hierarchy, dynamic
+  EOL suppression, and visiting-write coding selection.  Bootstrap BOM
+  properties mirror GNU `mule-conf.el`, while loaded Elisp continues to own
+  the full coding definitions.
+
+  Final-source gates are green: format/diff, strict all-target/all-feature
+  Clippy, focused and broadened Callint/case/coding tests (the one loopback
+  socket test passes with sandbox permission), generated validation 13/13 in
+  13.23 seconds, and the exact 36-outcome replay.  The eight owners are
+  recorded in `compat/compat_regressions.json`.
+
 - 2026-08-12 EDIFF-THROUGH-BUFFER CHECKPOINT: the exact contiguous frontier is
   **6,279/7,080**, leaving **801** selectors.  The final-source replay covers
   selectors 5,753-6,279: all **527/527** selected outcomes match GNU (521

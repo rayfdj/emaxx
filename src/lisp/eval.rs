@@ -760,6 +760,11 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             &["invalid-regexp", "error"],
             "Invalid regexp",
         ),
+        (
+            "coding-system-error",
+            &["coding-system-error", "error"],
+            "Invalid coding system",
+        ),
         ("scan-error", &["scan-error", "error"], "Scan error"),
         (
             "module-load-failed",

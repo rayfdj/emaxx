@@ -2266,9 +2266,15 @@ fn call_interactively_records_declared_history_arguments() {
         eval_str_with(
             &mut interp,
             "(let ((history-length 1) (command-history ())) \
-                   (list (call-interactively 'callint-test-int-args t) command-history))"
+                   (list (function-get 'callint-test-int-args 'interactive-args) \
+                         (call-interactively 'callint-test-int-args t) \
+                         command-history))"
         ),
         Value::list([
+            Value::list([
+                Value::cons(Value::Integer(1), Value::Integer(10)),
+                Value::cons(Value::Integer(2), Value::Integer(11)),
+            ]),
             Value::Integer(3),
             Value::list([Value::list([
                 Value::Symbol("callint-test-int-args".into()),
@@ -2284,6 +2290,12 @@ fn call_interactively_records_declared_history_arguments() {
 fn call_interactively_rejects_invalid_control_letters() {
     assert_eq!(
         eval_str("(cdr (should-error (call-interactively (lambda () (interactive \"ÿ\")))))"),
+        Value::list([Value::String(
+            "Invalid control letter `ÿ' (#o377, #x00ff) in interactive calling string".into(),
+        )])
+    );
+    assert_eq!(
+        eval_str(r#"(cdr (should-error (call-interactively (lambda () (interactive "\xFF")))))"#),
         Value::list([Value::String(
             "Invalid control letter `ÿ' (#o377, #x00ff) in interactive calling string".into(),
         )])
@@ -2306,6 +2318,63 @@ fn call_interactively_follows_symbol_aliases_for_interactive_specs() {
     assert_eq!(
         eval_str_with(&mut interp, "(call-interactively 'sample-callint-alias)"),
         Value::Integer(7)
+    );
+}
+
+#[test]
+fn string_and_region_upcase_share_unicode_special_case_mappings() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                  (insert "Straße ﬁsh")
+                  (let ((string (upcase (buffer-string))))
+                    (upcase-region (point-min) (point-max))
+                    (list string
+                          (buffer-string)
+                          (get-char-code-property ?ß 'special-uppercase))))"#
+        ),
+        Value::list([
+            Value::String("STRASSE FISH".into()),
+            Value::String("STRASSE FISH".into()),
+            Value::String("SS".into()),
+        ])
+    );
+}
+
+#[test]
+fn loaded_coding_registry_preserves_native_bounds_bom_and_error_contracts() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(list
+                 (check-coding-systems-region
+                  "aåbγc" nil '(utf-8 iso-latin-1 us-ascii))
+                 (encode-char ?γ 'iso-8859-1)
+                 (condition-case err
+                     (let ((coding-system-for-read 'bogus))
+                       (insert-file-contents "/definitely/missing/emaxx")
+                       'no-error)
+                   (error (car err)))
+                 (let ((inhibit-eol-conversion t))
+                   (equal (encode-coding-string "a\nb" 'utf-8-dos)
+                          "a\nb"))
+                 (let* ((string (apply #'string (number-sequence 0 127)))
+                        (inhibit-eol-conversion t))
+                   (eq (decode-coding-string string 'us-ascii t) string)))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::list([Value::Symbol("iso-latin-1".into()), Value::Integer(3),]),
+                Value::list([
+                    Value::Symbol("us-ascii".into()),
+                    Value::Integer(1),
+                    Value::Integer(3),
+                ]),
+            ]),
+            Value::Nil,
+            Value::Symbol("coding-system-error".into()),
+            Value::T,
+            Value::T,
+        ])
     );
 }
 
