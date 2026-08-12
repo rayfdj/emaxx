@@ -7378,7 +7378,12 @@ fn delegate_to_lisp_function(
     if !interp.has_lisp_function(name) {
         return Ok(None);
     }
-    let Ok(function) = interp.lookup_function(name, env) else {
+    // A file-less fallback can be marked `builtin_override', so ordinary
+    // execution lookup intentionally resolves NAME back to that native arm.
+    // Delegation instead needs the logical Lisp function cell installed by
+    // the loaded owner; this is the same distinction `symbol-function' and
+    // advice metadata observe.
+    let Some(function) = interp.logical_function_binding(name, env) else {
         return Ok(None);
     };
     if matches!(&function, Value::BuiltinFunc(builtin) if builtin == name) {

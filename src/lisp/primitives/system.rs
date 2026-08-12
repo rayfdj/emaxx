@@ -361,6 +361,39 @@ pub(crate) fn default_directory() -> String {
     path_to_directory_string(&cwd)
 }
 
+/// Return GNU Emacs's `system-type' spelling for a Rust target OS.
+///
+/// GNU derives this value in configure.ac rather than exposing the platform's
+/// raw name. Keep that translation here so native startup values and compact
+/// file-less fallbacks cannot acquire independent platform policies.
+pub(crate) fn gnu_system_type_for_target(target_os: &str) -> &str {
+    match target_os {
+        "macos" | "ios" => "darwin",
+        "linux" => "gnu/linux",
+        "freebsd" | "netbsd" | "openbsd" | "dragonfly" => "berkeley-unix",
+        "windows" => "windows-nt",
+        "solaris" | "illumos" => "usg-unix-v",
+        "hurd" => "gnu",
+        other => other,
+    }
+}
+
+pub(crate) fn gnu_system_type() -> &'static str {
+    gnu_system_type_for_target(std::env::consts::OS)
+}
+
+/// `files.el' selects BSD Make syntax only for Darwin and Berkeley Unix.
+pub(crate) fn gnu_default_makefile_mode_for_system_type(system_type: &str) -> &'static str {
+    match system_type {
+        "darwin" | "berkeley-unix" => "makefile-bsdmake-mode",
+        _ => "makefile-gmake-mode",
+    }
+}
+
+pub(crate) fn gnu_default_makefile_mode() -> &'static str {
+    gnu_default_makefile_mode_for_system_type(gnu_system_type())
+}
+
 pub(crate) fn default_system_configuration() -> String {
     let machine = uname_value("-m").unwrap_or_else(|| std::env::consts::ARCH.to_string());
     match std::env::consts::OS {
@@ -621,6 +654,37 @@ mod process_inventory_tests {
             1,
             "single-PID refresh must not become an all-process snapshot"
         );
+    }
+
+    #[test]
+    fn rust_targets_map_to_gnu_system_types_and_makefile_policy() {
+        for (target, expected) in [
+            ("macos", "darwin"),
+            ("linux", "gnu/linux"),
+            ("freebsd", "berkeley-unix"),
+            ("netbsd", "berkeley-unix"),
+            ("openbsd", "berkeley-unix"),
+            ("dragonfly", "berkeley-unix"),
+            ("windows", "windows-nt"),
+            ("solaris", "usg-unix-v"),
+            ("hurd", "gnu"),
+            ("android", "android"),
+        ] {
+            assert_eq!(gnu_system_type_for_target(target), expected, "{target}");
+        }
+        for (system_type, expected) in [
+            ("darwin", "makefile-bsdmake-mode"),
+            ("berkeley-unix", "makefile-bsdmake-mode"),
+            ("gnu/linux", "makefile-gmake-mode"),
+            ("windows-nt", "makefile-gmake-mode"),
+            ("android", "makefile-gmake-mode"),
+        ] {
+            assert_eq!(
+                gnu_default_makefile_mode_for_system_type(system_type),
+                expected,
+                "{system_type}"
+            );
+        }
     }
 }
 

@@ -1647,7 +1647,7 @@ fn normal_mode_prefers_loaded_lisp_mode_over_the_native_fallback() {
 fn normal_mode_dispatches_semantic_resource_modes() {
     for (path, mode) in [
         ("/tmp/Sample.java", "java-mode"),
-        ("/tmp/test.mk", "makefile-bsdmake-mode"),
+        ("/tmp/test.mk", gnu_default_makefile_mode()),
         ("/tmp/test.texi", "texinfo-mode"),
         ("/tmp/test.wy", "wisent-grammar-mode"),
         ("/tmp/test.srt", "srecode-template-mode"),

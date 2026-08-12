@@ -18,11 +18,63 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- 2026-08-12 TAB-BAR-THROUGH-TIME-STAMP CHECKPOINT: the exact contiguous
-  frontier is **5,513/7,080**, leaving **1,567** selectors.  The final-source
-  replay covers selectors 5,185-5,513: all **329/329** selected outcomes match
-  GNU.  NEXT is selector **5,514**, `time-tests-display-time-file-nonempty-p`,
-  in `test/lisp/time-tests.el` (eight selected outcomes).
+- 2026-08-12 TIME-THROUGH-DIFF-MODE CHECKPOINT: the exact contiguous frontier
+  is **5,752/7,080**, leaving **1,328** selectors.  The final-source replay
+  covers selectors 5,510-5,752: all **243/243** selected outcomes match GNU
+  (241 matching passes and the same two Uniquify fixture failures).  There are
+  no mismatched files, timeouts, unilateral skips, or changed statuses.  NEXT
+  is selector **5,753**, `ediff-diff-tests--ediff-exec-process--nil`, in
+  `test/lisp/vc/ediff-diff-tests.el` (two selected outcomes).
+
+  Published commit `86ce515` has a +4 subject-line accounting error: the
+  ordered manifest ends Time Stamp at 5,509, not 5,513.  Do not propagate that
+  number.  This checkpoint resumes at 5,510 and derives 5,752 directly from
+  manifest entries.
+
+  Canonical subject-source fingerprint is
+  `07d87e9b6a69a905a64f3912c6d73e2f5e0f2582252f99f2ab2ac569d93173e3` and
+  release binary hash is
+  `5e28f8806bdbf342e3e1dc928538ea4abbca9856de0ed06fe331fdd09b34a044`.
+  The 16 final artifacts and setup/body timings are recorded in
+  `docs/compatibility-goal.md`, from Time
+  `target/compat/run-1786513243579202000-42511` through Diff Mode
+  `target/compat/run-1786513505024235000-44531`.
+
+  Diff Mode's cold body is 276/2,335 ms, but the immediate warm split is about
+  42/145 ms.  Treat the cold loading delta as dumped/preloaded-startup issue
+  #11, not as a local Diff optimization.  URL Util is 24/500 ms; no comparable
+  post-bootstrap body crosses the simultaneous 5x/+1-second interruption gate.
+
+  Shared work: generated `defcustom` dumped values while Custom policy stays
+  Elisp-owned; real before/after initialization times; GNU-shaped
+  `load-average`; live renamed buffer handles and Uniquify's Elisp rename
+  callback; delegation from preferred fallbacks to loaded GNU URL owners;
+  unibyte `byte-to-string`; correct spelled-out backquote data; transactional
+  counted-search failure; and GNU-observable overlay order.
+
+  The Makefile-mode audit found a Mac-derived assertion plus an older compact
+  fallback.  Preserve the single native GNU-platform authority: Rust target
+  names map to GNU `system-type`, and the compact Makefile fallback derives
+  from it.  Loaded batch mode continues to use GNU `files.el`, which owns the
+  platform policy.  The mapping and both file-less/loaded paths have direct
+  coverage.
+
+  Focused gates are green: format/diff, all-target/all-feature check, strict
+  Clippy, generated validation 13/13, platform mapping, compact mode dispatch,
+  loaded Semantic mode, loaded Files registry, and the 243-outcome canonical
+  replay.  The elevated complete gate is green: library 2,007 passed, 0 failed,
+  1 intentionally ignored in 1,661.91 seconds, `compat-harness` 33/33,
+  `perf-harness` 1/1, CLI 10/10, and ERT runner 3/3.  Real network, TLS, PTY,
+  serial, subprocess, scheduler, terminal, loaded Semantic, and file-less mode
+  coverage ran without sandbox or isolated substitution.
+
+- 2026-08-12 TAB-BAR-THROUGH-TIME-STAMP CHECKPOINT: published commit
+  `86ce515` says 5,513, but the audited exact contiguous frontier is
+  **5,509/7,080**, leaving **1,571** selectors.  The final-source replay covers
+  selectors 5,181-5,509: all **329/329** selected outcomes match GNU.  The
+  corrected NEXT is selector **5,510**,
+  `time-tests-display-time-file-nonempty-p`, in `test/lisp/time-tests.el`
+  (eight selected outcomes).
 
   Canonical subject-source fingerprint is
   `083e77b1cb9cd26e4df90e421e269bc1ed64d2d5c77dd4304285e65ffa7d0e30` and

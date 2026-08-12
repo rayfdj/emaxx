@@ -469,8 +469,10 @@ impl Interpreter {
             "features" => Some(self.features_value()),
             "selection-converter-alist" => Some(Value::Nil),
             "early-init-file" => Some(Value::Nil),
-            "before-init-time" => Some(Value::Nil),
-            "after-init-time" => Some(Value::T),
+            // emacs.c defines both cells as nil.  Batch startup records the
+            // real before/after values around reconstructed initialization,
+            // matching startup.el's lifecycle rather than using sentinels.
+            "before-init-time" | "after-init-time" => Some(Value::Nil),
             "init-file-user" => Some(Value::Nil),
             "site-run-file" => Some(Value::Nil),
             "user-init-file" => Some(Value::Nil),
@@ -736,9 +738,7 @@ impl Interpreter {
             "mounted-file-systems" => Some(Value::String(
                 r"^\(?:/\(?:afs/\|m\(?:edia/\|nt\)\|\(?:ne\|tmp_mn\)t/\)\)".into(),
             )),
-            "system-type" => Some(Value::Symbol(
-                std::env::consts::OS.replace("macos", "darwin").into(),
-            )),
+            "system-type" => Some(Value::Symbol(primitives::gnu_system_type().into())),
             "system-configuration" => {
                 Some(Value::String(primitives::system_configuration().into()))
             }

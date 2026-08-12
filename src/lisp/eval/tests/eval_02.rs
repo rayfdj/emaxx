@@ -6258,6 +6258,46 @@ fn list_buffers_keeps_file_visiting_internal_names_addressable() {
 }
 
 #[test]
+fn buffer_name_reads_the_live_name_from_an_existing_buffer_object() {
+    assert_eq!(
+        eval_str(
+            "(let ((buffer (generate-new-buffer \"emaxx-old-name\")))
+               (unwind-protect
+                   (progn
+                     (with-current-buffer buffer
+                       (rename-buffer \"emaxx-new-name\"))
+                     (let ((live-name (buffer-name buffer)))
+                       (kill-buffer buffer)
+                       (list live-name (buffer-name buffer))))
+                 (when (buffer-live-p buffer)
+                   (kill-buffer buffer))))"
+        ),
+        Value::list([Value::String("emaxx-new-name".into()), Value::Nil])
+    );
+}
+
+#[test]
+fn rename_buffer_notifies_the_preloaded_uniquify_owner() {
+    assert_eq!(
+        eval_str(
+            "(let (notification)
+               (defun uniquify--rename-buffer-advice (requested unique)
+                 (setq notification (list requested unique)))
+               (with-temp-buffer
+                 (list (rename-buffer \"emaxx-renamed\" 'unique)
+                       notification)))"
+        ),
+        Value::list([
+            Value::String("emaxx-renamed".into()),
+            Value::list([
+                Value::String("emaxx-renamed".into()),
+                Value::Symbol("unique".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn load_target_prefers_files_over_same_named_directories() {
     let root = std::env::temp_dir().join(format!(
         "emaxx-load-target-{}",

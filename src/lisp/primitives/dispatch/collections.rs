@@ -753,7 +753,17 @@ define_dispatch!(
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                Err(LispError::Signal("load-average not implemented".into()))
+                let average = sysinfo::System::load_average();
+                let values = [average.one, average.five, average.fifteen];
+                if args.first().is_some_and(Value::is_truthy) {
+                    Ok(Value::list(values.map(Value::Float)))
+                } else {
+                    // GNU multiplies the host values by 100 and truncates the
+                    // resulting positive doubles to integers.
+                    Ok(Value::list(
+                        values.map(|value| Value::Integer((value * 100.0) as i64)),
+                    ))
+                }
             }
             "locale-info" => {
                 need_args(name, args, 1)?;

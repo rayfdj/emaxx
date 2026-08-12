@@ -2547,6 +2547,83 @@ fn nested_backquote_preserves_inner_unquote() {
 }
 
 #[test]
+fn spelled_out_backquote_is_ordinary_data_inside_a_template() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((definition '(foo bar)))
+                 `(apply (backquote ,definition)))"#,
+        ),
+        Value::list([
+            Value::Symbol("apply".into()),
+            Value::list([
+                Value::Symbol("backquote".into()),
+                Value::list([Value::Symbol("foo".into()), Value::Symbol("bar".into())]),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn failed_counted_searches_restore_point_unless_noerror_requests_the_bound() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "x x")
+                 (list
+                  (progn (goto-char 1) (search-forward "x" nil t 3) (point))
+                  (progn (goto-char 1) (re-search-forward "x" nil t 3) (point))
+                  (progn
+                    (goto-char 1)
+                    (condition-case nil (search-forward "x" nil nil 3)
+                      (search-failed nil))
+                    (point))
+                  (progn
+                    (goto-char 1)
+                    (condition-case nil (re-search-forward "x" nil nil 3)
+                      (search-failed nil))
+                    (point))
+                  (progn (goto-char 1) (search-forward "x" nil 'move 3) (point))
+                  (progn (goto-char 1) (re-search-forward "x" nil 'move 3) (point))))"#,
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(4),
+            Value::Integer(4),
+        ])
+    );
+}
+
+#[test]
+fn overlay_enumeration_matches_gnu_interval_tree_order() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "abcdef")
+                 (let ((a (make-overlay 3 5))
+                       (b (make-overlay 1 4))
+                       (c (make-overlay 2 6))
+                       (d (make-overlay 1 3))
+                       (e (make-overlay 1 5)))
+                   (mapc (lambda (pair) (overlay-put (car pair) 'name (cdr pair)))
+                         (list (cons a 'a) (cons b 'b) (cons c 'c)
+                               (cons d 'd) (cons e 'e)))
+                   (mapcar (lambda (overlay) (overlay-get overlay 'name))
+                           (overlays-in 1 6))))"#,
+        ),
+        Value::list([
+            Value::Symbol("e".into()),
+            Value::Symbol("d".into()),
+            Value::Symbol("b".into()),
+            Value::Symbol("c".into()),
+            Value::Symbol("a".into()),
+        ])
+    );
+}
+
+#[test]
 fn nested_backquote_decrements_unquote_depth() {
     let expected = Reader::new("`(,1)")
         .read()
@@ -4471,10 +4548,30 @@ fn native_comp_capability_probes_are_honest() {
 }
 
 #[test]
-fn startup_time_variables_are_bound_in_batch_runtime() {
+fn native_startup_time_cells_are_nil_before_batch_initialization() {
     assert_eq!(
         eval_str("(list (boundp 'before-init-time) (boundp 'after-init-time) after-init-time)"),
-        Value::list([Value::T, Value::T, Value::T])
+        Value::list([Value::T, Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn load_average_matches_gnu_integer_and_float_result_contracts() {
+    assert_eq!(
+        eval_str(
+            "(let ((integers (load-average))
+                   (floats (load-average t)))
+               (list (length integers)
+                     (mapcar #'integerp integers)
+                     (length floats)
+                     (mapcar #'floatp floats)))"
+        ),
+        Value::list([
+            Value::Integer(3),
+            Value::list([Value::T, Value::T, Value::T]),
+            Value::Integer(3),
+            Value::list([Value::T, Value::T, Value::T]),
+        ])
     );
 }
 

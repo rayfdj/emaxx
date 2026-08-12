@@ -2982,6 +2982,7 @@ pub(super) fn buffer_regex_search(
     let pattern = regex_pattern_with_search_spaces(interp, &pattern, env);
     let noerror = args.get(2).is_some_and(Value::is_truthy);
     let move_on_failure = search_noerror_moves(args.get(2));
+    let original_point = interp.buffer.point();
     if forward {
         let start = interp.buffer.point();
         let limit = match args.get(1) {
@@ -3026,17 +3027,14 @@ pub(super) fn buffer_regex_search(
                     negated,
                     syntax_class,
                 ) else {
-                    return if noerror {
-                        if move_on_failure {
-                            interp.buffer.goto_char(limit);
-                        }
-                        Ok(Value::Nil)
-                    } else {
-                        Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("search-failed".into()),
-                            Value::String(pattern.text.clone().into()),
-                        ])))
-                    };
+                    return buffer_regex_search_failure(
+                        interp,
+                        &pattern.text,
+                        original_point,
+                        limit,
+                        noerror,
+                        move_on_failure,
+                    );
                 };
                 let match_end = match_start + 1;
                 interp.last_match_data = Some(vec![Some((match_start, match_end))]);
@@ -3046,17 +3044,14 @@ pub(super) fn buffer_regex_search(
             return Ok(Value::Integer(interp.buffer.point() as i64));
         }
         if limit < start {
-            return if noerror {
-                if move_on_failure {
-                    interp.buffer.goto_char(limit);
-                }
-                Ok(Value::Nil)
-            } else {
-                Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("search-failed".into()),
-                    Value::String(pattern.text.clone().into()),
-                ])))
-            };
+            return buffer_regex_search_failure(
+                interp,
+                &pattern.text,
+                original_point,
+                limit,
+                noerror,
+                move_on_failure,
+            );
         }
         // GNU `\=' asserts the buffer position where this search began,
         // wherever it occurs in the regexp (often in an alternative).  Make
@@ -3118,17 +3113,14 @@ pub(super) fn buffer_regex_search(
                     },
                 )?
                 else {
-                    return if noerror {
-                        if move_on_failure {
-                            interp.buffer.goto_char(limit);
-                        }
-                        Ok(Value::Nil)
-                    } else {
-                        Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("search-failed".into()),
-                            Value::String(pattern.text.clone().into()),
-                        ])))
-                    };
+                    return buffer_regex_search_failure(
+                        interp,
+                        &pattern.text,
+                        original_point,
+                        limit,
+                        noerror,
+                        move_on_failure,
+                    );
                 };
                 interp.last_match_data = Some(selected.match_data);
                 interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
@@ -3148,17 +3140,14 @@ pub(super) fn buffer_regex_search(
                 .captures_from_pos(&haystack, search_offset)
                 .map_err(|error| LispError::Signal(error.to_string()))?
             else {
-                return if noerror {
-                    if move_on_failure {
-                        interp.buffer.goto_char(limit);
-                    }
-                    Ok(Value::Nil)
-                } else {
-                    Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("search-failed".into()),
-                        Value::String(pattern.text.clone().into()),
-                    ])))
-                };
+                return buffer_regex_search_failure(
+                    interp,
+                    &pattern.text,
+                    original_point,
+                    limit,
+                    noerror,
+                    move_on_failure,
+                );
             };
             let Some(matched) = captures.get(0) else {
                 break;
@@ -3214,17 +3203,14 @@ pub(super) fn buffer_regex_search(
         };
         let limit = limit.max(interp.buffer.point_min());
         if limit > interp.buffer.point() {
-            return if noerror {
-                if move_on_failure {
-                    interp.buffer.goto_char(limit);
-                }
-                Ok(Value::Nil)
-            } else {
-                Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("search-failed".into()),
-                    Value::String(pattern.text.clone().into()),
-                ])))
-            };
+            return buffer_regex_search_failure(
+                interp,
+                &pattern.text,
+                original_point,
+                limit,
+                noerror,
+                move_on_failure,
+            );
         }
         if let Some((line_anchored, negated, syntax_class)) =
             single_syntax_class_pattern(&pattern.text)
@@ -3239,17 +3225,14 @@ pub(super) fn buffer_regex_search(
                     negated,
                     syntax_class,
                 ) else {
-                    return if noerror {
-                        if move_on_failure {
-                            interp.buffer.goto_char(limit);
-                        }
-                        Ok(Value::Nil)
-                    } else {
-                        Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("search-failed".into()),
-                            Value::String(pattern.text.clone().into()),
-                        ])))
-                    };
+                    return buffer_regex_search_failure(
+                        interp,
+                        &pattern.text,
+                        original_point,
+                        limit,
+                        noerror,
+                        move_on_failure,
+                    );
                 };
                 interp.last_match_data = Some(vec![Some((match_start, match_start + 1))]);
                 interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
@@ -3354,17 +3337,14 @@ pub(super) fn buffer_regex_search(
                     interp.buffer.goto_char(selected.start_position);
                     continue;
                 }
-                return if noerror {
-                    if move_on_failure {
-                        interp.buffer.goto_char(limit);
-                    }
-                    Ok(Value::Nil)
-                } else {
-                    Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("search-failed".into()),
-                        Value::String(pattern.text.clone().into()),
-                    ])))
-                };
+                return buffer_regex_search_failure(
+                    interp,
+                    &pattern.text,
+                    original_point,
+                    limit,
+                    noerror,
+                    move_on_failure,
+                );
             }
             let mut best_match: Option<(usize, usize, usize)> = None;
             let mut search_byte = 0usize;
@@ -3434,19 +3414,42 @@ pub(super) fn buffer_regex_search(
                 interp.buffer.goto_char(match_start);
                 continue;
             }
-            return if noerror {
-                if move_on_failure {
-                    interp.buffer.goto_char(limit);
-                }
-                Ok(Value::Nil)
-            } else {
-                Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("search-failed".into()),
-                    Value::String(pattern.text.clone().into()),
-                ])))
-            };
+            return buffer_regex_search_failure(
+                interp,
+                &pattern.text,
+                original_point,
+                limit,
+                noerror,
+                move_on_failure,
+            );
         }
         Ok(Value::Integer(interp.buffer.point() as i64))
+    }
+}
+
+fn buffer_regex_search_failure(
+    interp: &mut Interpreter,
+    pattern: &str,
+    original_point: usize,
+    limit: usize,
+    noerror: bool,
+    move_on_failure: bool,
+) -> Result<Value, LispError> {
+    // GNU's search_buffer is transactional across COUNT repetitions: a later
+    // miss does not leave point at an earlier partial match.  Only a non-t,
+    // non-nil NOERROR asks search_command to move point to the bound.
+    interp.buffer.goto_char(if move_on_failure {
+        limit
+    } else {
+        original_point
+    });
+    if noerror {
+        Ok(Value::Nil)
+    } else {
+        Err(LispError::SignalValue(Value::list([
+            Value::Symbol("search-failed".into()),
+            Value::String(pattern.into()),
+        ])))
     }
 }
 

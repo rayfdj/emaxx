@@ -644,7 +644,21 @@ define_dispatch!(
                 }
                 interp.buffer.last_name = Some(old_name);
                 interp.buffer.name = final_name.clone();
-                Ok(Value::String(final_name.into()))
+                run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+                // GNU buffer.c calls the preloaded Elisp owner directly
+                // after installing the provisional name.  Uniquify uses
+                // that boundary to replace a generated `<N>' suffix with
+                // directory-derived policy; keep that policy in uniquify.el.
+                if interp.has_lisp_function("uniquify--rename-buffer-advice") {
+                    let callback = interp.lookup_function("uniquify--rename-buffer-advice", env)?;
+                    interp.call_function_value(
+                        callback,
+                        Some("uniquify--rename-buffer-advice"),
+                        &[args[0].clone(), args.get(1).cloned().unwrap_or(Value::Nil)],
+                        env,
+                    )?;
+                }
+                Ok(Value::String(interp.buffer.name.clone().into()))
             }
             "other-buffer" => {
                 let exclude = if !args.is_empty() {

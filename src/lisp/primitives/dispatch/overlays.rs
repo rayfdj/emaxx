@@ -317,12 +317,16 @@ define_dispatch!(
             "overlays-at" => {
                 need_args(name, args, 1)?;
                 let pos = position_from_value(interp, &args[0])?;
-                let result: Vec<Value> = interp
+                let mut overlays = interp
                     .buffer
                     .overlays
                     .iter()
                     .filter(|ov| !ov.is_dead() && ov.beg <= pos && pos < ov.end)
-                    .map(|ov| Value::Overlay(ov.id))
+                    .collect::<Vec<_>>();
+                overlays.sort_by_key(|overlay| std::cmp::Reverse(overlay.id));
+                let result: Vec<Value> = overlays
+                    .into_iter()
+                    .map(|overlay| Value::Overlay(overlay.id))
                     .collect();
                 Ok(Value::list(result))
             }
@@ -333,7 +337,7 @@ define_dispatch!(
                 let end = position_from_value(interp, &args[1])?;
                 // Z is the un-narrowed buffer end (1-based).
                 let z = interp.buffer.size_total() + 1;
-                let result: Vec<Value> = interp
+                let mut overlays = interp
                     .buffer
                     .overlays
                     .iter()
@@ -352,7 +356,15 @@ define_dispatch!(
                         // Non-empty overlay: include if it overlaps [beg, end)
                         ov.beg < end && ov.end > beg
                     })
-                    .map(|ov| Value::Overlay(ov.id))
+                    .collect::<Vec<_>>();
+                // GNU's interval tree enumerates ascending start positions
+                // and, for equal starts, newest overlays first.  The public
+                // order is documented as arbitrary but remains observable to
+                // stable Lisp sorts such as diff-mode's overlay report.
+                overlays.sort_by_key(|overlay| (overlay.beg, std::cmp::Reverse(overlay.id)));
+                let result: Vec<Value> = overlays
+                    .into_iter()
+                    .map(|overlay| Value::Overlay(overlay.id))
                     .collect();
                 Ok(Value::list(result))
             }

@@ -5198,7 +5198,11 @@ fn backquote_unquote_form(value: &Value) -> Option<(&'static str, Value)> {
 fn nested_backquote_body(value: &Value) -> Option<Value> {
     let items = value.to_vec().ok()?;
     match items.as_slice() {
-        [Value::Symbol(symbol), body] if is_backquote_head(symbol) => Some(body.clone()),
+        // GNU's reader represents backquote syntax with the raw `\`` symbol.
+        // The spelled-out `(backquote ...)' inside another template is an
+        // ordinary list, so commas within it still belong to the surrounding
+        // backquote level (use-package's :custom-face handler relies on this).
+        [Value::Symbol(symbol), body] if symbol == "`" => Some(body.clone()),
         _ => None,
     }
 }

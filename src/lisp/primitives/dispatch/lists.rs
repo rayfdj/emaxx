@@ -598,9 +598,8 @@ pub(crate) fn set_tty_minibuffer_reader(reader: Option<TtyMinibufferReader>) {
 }
 
 fn read_via_tty_minibuffer(prompt: &str, initial: &str) -> Option<Option<String>> {
-    TTY_MINIBUFFER_READER.with_borrow_mut(|slot| {
-        slot.as_mut().map(|reader| reader(prompt, initial))
-    })
+    TTY_MINIBUFFER_READER
+        .with_borrow_mut(|slot| slot.as_mut().map(|reader| reader(prompt, initial)))
 }
 
 fn read_minibuffer_text_without_queued_events(

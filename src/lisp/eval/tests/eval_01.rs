@@ -1155,6 +1155,26 @@ fn url_scheme_get_property_reports_standard_default_ports() {
 }
 
 #[test]
+fn preferred_native_fallback_delegates_to_loaded_gnu_url_owner() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(progn
+                 (require 'url-expand)
+                 (list
+                  (url-scheme-get-property "file" 'expand-file-name)
+                  (featurep 'url-file)
+                  (url-expand-file-name "bar.html"
+                                        "file:///a/b/c/foo.html")))"#,
+        ),
+        Value::list([
+            Value::Symbol("url-file-expand-file-name".into()),
+            Value::T,
+            Value::String("file:///a/b/c/bar.html".into()),
+        ])
+    );
+}
+
+#[test]
 fn assoc_matches_strings_bound_in_lexical_variables() {
     assert_eq!(
         eval_str(
@@ -1640,6 +1660,34 @@ fn unibyte_string_sequences_return_byte_values() {
     assert_eq!(
         eval_str("(let ((s (unibyte-string 225 16))) (string-to-list s))"),
         Value::list([Value::Integer(225), Value::Integer(16)])
+    );
+}
+
+#[test]
+fn byte_to_string_preserves_octets_as_unibyte_strings() {
+    assert_eq!(
+        eval_str(
+            r#"(list
+                 (mapcar (lambda (byte)
+                           (let ((string (byte-to-string byte)))
+                             (list (multibyte-string-p string)
+                                   (length string)
+                                   (aref string 0))))
+                         '(0 127 128 195 255))
+                 (decode-coding-string
+                  (concat (byte-to-string 195) (byte-to-string 167))
+                  'utf-8))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::list([Value::Nil, Value::Integer(1), Value::Integer(0)]),
+                Value::list([Value::Nil, Value::Integer(1), Value::Integer(127)]),
+                Value::list([Value::Nil, Value::Integer(1), Value::Integer(128)]),
+                Value::list([Value::Nil, Value::Integer(1), Value::Integer(195)]),
+                Value::list([Value::Nil, Value::Integer(1), Value::Integer(255)]),
+            ]),
+            Value::String("ç".into()),
+        ])
     );
 }
 
@@ -5368,19 +5416,27 @@ fn startup_does_not_claim_lisp_owned_url_features() {
 }
 
 #[test]
-fn generated_dumped_variable_defaults_include_image_file_extensions() {
+fn generated_dumped_variable_defaults_include_loaddefs_value_cells() {
     assert_eq!(
         eval_str(
             "(list (car image-file-name-extensions)
                    (member \"webp\" image-file-name-extensions)
                    image-file-name-regexps
-                   (special-variable-p 'mail-personal-alias-file))"
+                   (special-variable-p 'mail-personal-alias-file)
+                   package-user-dir
+                   package-directory-list
+                   package-quickstart-file
+                   rmail-spool-directory)"
         ),
         Value::list([
             Value::String("png".into()),
             Value::list([Value::String("webp".into())]),
             Value::Nil,
             Value::T,
+            Value::String("~/.emacs.d/elpa".into()),
+            Value::Nil,
+            Value::String("~/.emacs.d/package-quickstart.el".into()),
+            Value::String("/var/mail/".into()),
         ])
     );
 }
