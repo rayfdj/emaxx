@@ -42,6 +42,75 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-12 Ediff-through-Buffer checkpoint advances the exact contiguous
+  frontier to **6,279/7,080**, leaving **801** selectors.  The final-source
+  replay covers selectors 5,753-6,279: all **527/527** selected outcomes match
+  GNU (521 passes, the same two failures, and the same four skips), with no
+  timeout, unilateral skip, or changed status.  NEXT is selector **6,280**,
+  `call-interactively-prune-command-history`, in
+  `test/src/callint-tests.el` (four selected outcomes in the file).
+
+  The canonical 21-owner replay is
+  `target/compat/regression-add-1786550235882459000-91922`.  It uses
+  subject-source fingerprint
+  `520db5ba0e197f4bd62225aaabdb0e35ed16a91e5918f1dae76af70655d8bc07`,
+  release subject binary
+  `3780c7da89454f8bb012f173f864aa9301d1178241db180b0281a55778962806`,
+  harness hash
+  `51087d9ff0111b6361be31a476a29428e8665e57d7ac0ad4efe207fd61e73fbc`,
+  pinned GNU commit `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, and separate
+  180-second setup/body budgets.  The owner totals are Ediff Diff 2, Ediff
+  Ptch 2, Log Edit 8, Smerge 1, VC Bzr 3, VC CVS 13, VC Git 8, VC Hg 4, VC 7,
+  Version 1, Wdired 7, Which Key 9, Whitespace 10, Wid Edit 26, X DND 2, XDG
+  4, XML 5, XT Mouse 3, Yank Media 1, Alloc 5, and Buffer 406.
+
+  The diagnostic post-bootstrap warnings are Log Edit 11/283 ms
+  (24.701x), Whitespace 20/166 ms (8.140x), Wid Edit 10/36 ms (3.615x), X DND
+  39/94 ms (2.415x), and Buffer 192/3,843 ms (19.954x).  Only Buffer crosses
+  the simultaneous 5x/+1-second interruption rule.  Profiling assigns its
+  time to the already-tracked systemic source-interpreter/value-traffic theme
+  in GitHub issue #12, not to a Buffer-local algorithm; retain the evidence
+  and continue the ordered frontier.  Reconstructed setup remains separate:
+  GNU setup spans 223-455 ms while Emaxx spans 2,319-3,144 ms here, under
+  dumped-startup issue #11.
+
+  Shared repairs preserve the C-versus-Elisp ownership boundary.  Batch
+  startup loads GNU's complete `select.el`; XTerm mouse input discards only an
+  unbound button-down event; bounded recursive `require` follows GNU's loader
+  stack; and native ERT publishes real result records without taking over ERT
+  policy.  Rust host contracts now cover syntax-property-aware regexp atoms
+  and POSIX word classes, Lisp-identity overlay keys and accessible endpoints,
+  marker-backed labeled restrictions across interpreted and bytecode unwind,
+  indirect-buffer clone hooks, internal character strings, local-socket path
+  validation, allocator/keyboard/window state cells, and GNU's complete
+  `kill-buffer` query/interactive-save/autosave/lock ordering.  Loaded
+  `remove-overlays`, `with-restriction`, and `without-restriction` remain
+  Elisp-owned; their native routes are file-less bootstrap fallbacks only.
+
+  The compatibility harness now treats the 2x performance signal as a
+  diagnostic rather than a semantic failure.  `regressions add` accepts
+  repeated `--file` arguments and validates/records them atomically after one
+  subject build, avoiding a redundant release rebuild per owner while keeping
+  isolated GNU/Emaxx comparisons and exact provenance.  All 21 repaired
+  owners are now in `compat/compat_regressions.json`.
+
+  Publication evidence on the final source is green: formatting and
+  diff checks; all-target/all-feature check; strict Clippy; generated
+  validation **13/13** in 13.30 seconds; focused kill/query/lock tests; and the
+  exact 527-outcome replay above.  The first elevated full-suite run exposed
+  and prevented a real noninteractive `kill-buffer` prompt regression (2,024
+  passed, one failed, one intentionally ignored); GNU `buffer.c` confirmed
+  the missing `INTERACTIVE` guard, and the unchanged real file-lock lifecycle
+  test passes after the shared fix.  The corrected complete gate passed:
+  **2,026 passed, zero failed, one intentionally ignored** in 1,770.08 seconds,
+  followed by compat-harness **35/35**, perf-harness **1/1**, CLI **10/10**,
+  and ERT-runner **3/3**.  Incoming main commit `6fcf6fb` was then integrated
+  without conflicts.  Its two overlapping files touched separate hunks; two
+  strict-Clippy findings in its TTY path were repaired, and the combined
+  source passes format, all-target/all-feature check, strict Clippy, focused
+  TTY/minibuffer/message/quit tests, and the final 527-outcome replay recorded
+  above.
+
 - The 2026-08-12 Time-through-Diff-Mode checkpoint advances the exact
   contiguous frontier to **5,752/7,080**, leaving **1,328** selectors.  The
   final-source canonical replay covers selectors 5,510-5,752: all **243/243**

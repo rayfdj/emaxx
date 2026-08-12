@@ -710,6 +710,18 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .map_err(|error| format!("preload frame: {error}"))?;
     }
 
+    // GNU loadup dumps select.el after frame.el (and the display-specific
+    // mouse/scroll-bar owners) and before the timer/menu cluster.  Its public
+    // GUI selection API is portable Elisp policy over backend primitives;
+    // callers such as x-dnd.el legitimately use it without requiring the
+    // feature.  Reconstruct the complete owner instead of providing a native
+    // gui-set-selection shortcut or teaching individual clients about it.
+    if !interpreter.has_feature("select") && interpreter.resolve_load_target("select").is_some() {
+        interpreter
+            .load_target("select")
+            .map_err(|error| format!("preload select: {error}"))?;
+    }
+
     // GNU loadup dumps easymenu.el after frame.el and before isearch.el.
     // Packages such as EUDC call its menu constructors without requiring the
     // feature, so preserve the complete Lisp-owned menu policy at startup.
@@ -2210,6 +2222,109 @@ mod tests {
                     .eval(&form, &mut Vec::new())
                     .expect("evaluate isearch startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_complete_selection_owner() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'select)\
+                       (fboundp 'gui-set-selection)\
+                       (not (subrp (symbol-function 'gui-set-selection)))\
+                       (boundp 'selection-converter-alist)\
+                       (gui-set-selection 'PRIMARY \"payload\")\
+                       (condition-case error-data\
+                           (gui-set-selection 'PRIMARY '(invalid))\
+                         (error error-data)))",
+            )
+            .read_all()
+            .expect("read selection startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate selection startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::String("payload".into()),
+                    Value::list([
+                        Value::Symbol("error".into()),
+                        Value::String("invalid selection".into()),
+                        Value::list([Value::Symbol("invalid".into())]),
+                    ]),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn xt_mouse_read_key_discards_the_unbound_down_event() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(progn
+                     (require 'xt-mouse)
+                     (require 'cl-lib)
+                     (let ((width (frame-width))
+                           (height (frame-height)))
+                       (unwind-protect
+                           (progn
+                             (set-frame-width nil (max width 2000))
+                             (set-frame-height nil (max height 2000))
+                             (cl-letf (((terminal-parameter nil 'xterm-mouse-x) nil)
+                                       ((terminal-parameter nil 'xterm-mouse-y) nil)
+                                       ((terminal-parameter nil 'xterm-mouse-last-down) nil)
+                                       ((terminal-parameter nil 'xterm-mouse-last-click) nil))
+                               (unless xterm-mouse-mode
+                                 (cl-letf (((symbol-function 'terminal-name)
+                                            (lambda (&optional _) "fake-terminal")))
+                                   (xterm-mouse-mode)))
+                               (unwind-protect
+                                   (let* ((unread-command-events
+                                           (append "\e[M%\xD9\x81"
+                                                   "\e[M'\xD9\x81" nil))
+                                          (key (read-key)))
+                                     (list (car key)
+                                           (nth 2 (cadr key))
+                                           unread-command-events))
+                                 (xterm-mouse-mode 0))))
+                         (set-frame-width nil width)
+                         (set-frame-height nil height))))"#,
+            )
+            .read_all()
+            .expect("read XTerm mouse stage probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("read the translated XTerm mouse event"),
+                Value::list([
+                    Value::Symbol("S-mouse-2".into()),
+                    Value::cons(Value::Integer(184), Value::Integer(95)),
+                    Value::Nil,
+                ])
             );
         });
     }

@@ -218,6 +218,36 @@ impl Interpreter {
         Ok(test.clone())
     }
 
+    fn set_ert_test_most_recent_result(&mut self, test: &Value, result: Value) {
+        let Value::Record(record_id) = test else {
+            return;
+        };
+        let Some(record) = self.find_record_mut(*record_id) else {
+            return;
+        };
+        debug_assert_eq!(record.type_name, "ert-test");
+        debug_assert!(record.slots.len() > 3);
+        if record.type_name == "ert-test" && record.slots.len() > 3 {
+            record.slots[3] = result;
+        }
+    }
+
+    fn make_ert_test_result(
+        &mut self,
+        type_name: &str,
+        error: Option<&LispError>,
+        duration: std::time::Duration,
+    ) -> Value {
+        // These are the inherited ert-test-result slots: messages,
+        // should-forms, and duration.  Condition-bearing subclasses append
+        // condition, backtrace, and infos in that order.
+        let mut slots = vec![Value::Nil, Value::Nil, Value::Float(duration.as_secs_f64())];
+        if let Some(error) = error {
+            slots.extend([error_condition_value(error), Value::Nil, Value::Nil]);
+        }
+        self.create_record(type_name, slots)
+    }
+
     pub(super) fn sf_should(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Err(LispError::WrongNumberOfArgs("should".into(), 0));
@@ -387,10 +417,15 @@ impl Interpreter {
             let test_struct = self
                 .get_symbol_property(&test.name, "ert--test")
                 .unwrap_or(Value::Nil);
+            self.set_ert_test_most_recent_result(&test_struct, Value::Nil);
             let previous_running = self
                 .lookup_var("ert--running-tests", &env)
                 .unwrap_or(Value::Nil);
-            self.set_variable("ert--running-tests", Value::list([test_struct]), &mut env);
+            self.set_variable(
+                "ert--running-tests",
+                Value::list([test_struct.clone()]),
+                &mut env,
+            );
             // GNU's ert--run-test-internal gives each test its own temp
             // buffer ("For now, each test gets its own temp buffer ...
             // just to be safe"); erc's helpers rely on starting in one.
@@ -422,6 +457,7 @@ impl Interpreter {
             // of being rejected early as an unhandled `no-catch'.
             self.active_catch_tags
                 .push(Value::Symbol("ert--pass".into()));
+            let test_started = std::time::Instant::now();
             let mut result = match (stats_restore.as_ref(), lexical_restore.as_ref()) {
                 (Ok(_), Ok(_)) => self.call_function_value(test.body.clone(), None, &[], &mut env),
                 (Err(error), _) | (_, Err(error)) => Err(error.clone()),
@@ -486,6 +522,9 @@ impl Interpreter {
                         condition_type: None,
                         message: None,
                     });
+                    let result =
+                        self.make_ert_test_result("ert-test-passed", None, test_started.elapsed());
+                    self.set_ert_test_most_recent_result(&test_struct, result);
                 }
                 Err(e) => {
                     // `ert-skip' signals ert-test-skipped directly.
@@ -510,12 +549,20 @@ impl Interpreter {
                         }
                         TestStatus::Skipped => summary.skipped += 1,
                     }
+                    let result_type = match &status {
+                        TestStatus::Skipped => "ert-test-skipped",
+                        TestStatus::Failed => "ert-test-failed",
+                        TestStatus::Passed => unreachable!("errors cannot produce passed results"),
+                    };
                     self.test_results.push(TestOutcome {
                         name: test.name.clone(),
                         status,
                         condition_type: Some(e.condition_type()),
                         message: Some(e.to_string()),
                     });
+                    let result =
+                        self.make_ert_test_result(result_type, Some(&e), test_started.elapsed());
+                    self.set_ert_test_most_recent_result(&test_struct, result);
                 }
             }
             // Give children created by this test the same boundary delivery

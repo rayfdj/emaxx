@@ -406,6 +406,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Value::Float(a), Value::Float(b)) => a == b,
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
+        (Value::String(left), Value::String(right)) => left.ptr_eq(right),
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => {
@@ -446,10 +447,11 @@ pub(crate) fn values_eq_in_env(
         (Value::Float(a), Value::Float(b)) => a == b,
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
+        (Value::String(left), Value::String(right)) => left.ptr_eq(right),
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
-        (Value::String(_), Value::String(_))
-        | (Value::String(_), Value::StringObject(_))
-        | (Value::StringObject(_), Value::String(_)) => false,
+        (Value::String(_), Value::StringObject(_)) | (Value::StringObject(_), Value::String(_)) => {
+            false
+        }
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => {
             left.params == right.params

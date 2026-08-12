@@ -4085,7 +4085,6 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 4)?;
                 let x = args[0].as_integer()?;
                 let y = args[1].as_integer()?;
-                let pos_y = if y > 0 { y - 1 } else { y };
                 let window = args
                     .get(2)
                     .filter(|value| is_window_value(interp, value))
@@ -4094,7 +4093,7 @@ define_dispatch!(
                 Ok(Value::list([
                     window,
                     Value::Nil,
-                    Value::cons(Value::Integer(x), Value::Integer(pos_y)),
+                    Value::cons(Value::Integer(x), Value::Integer(y)),
                     Value::Integer(0),
                 ]))
             }

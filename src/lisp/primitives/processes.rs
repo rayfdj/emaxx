@@ -1362,6 +1362,11 @@ pub(crate) fn make_network_process(
         let path = service_path.ok_or_else(|| {
             LispError::Signal("make-network-process: local family needs a :service path".into())
         })?;
+        let sun_path_capacity = std::mem::size_of::<libc::sockaddr_un>()
+            - std::mem::offset_of!(libc::sockaddr_un, sun_path);
+        if path.len() >= sun_path_capacity {
+            return Err(LispError::Signal("Service name too long".into()));
+        }
         if is_server {
             let listener = std::os::unix::net::UnixListener::bind(&path)
                 .map_err(|error| network_server_error(&error))?;

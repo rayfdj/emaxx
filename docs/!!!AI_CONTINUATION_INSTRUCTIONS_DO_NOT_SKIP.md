@@ -18,6 +18,66 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-12 EDIFF-THROUGH-BUFFER CHECKPOINT: the exact contiguous frontier is
+  **6,279/7,080**, leaving **801** selectors.  The final-source replay covers
+  selectors 5,753-6,279: all **527/527** selected outcomes match GNU (521
+  passes, the same two failures, and the same four skips), with no timeout,
+  unilateral skip, or changed status.  NEXT is selector **6,280**,
+  `call-interactively-prune-command-history`, in
+  `test/src/callint-tests.el` (four selected outcomes).
+
+  Canonical artifact:
+  `target/compat/regression-add-1786550235882459000-91922`.  Subject-source
+  fingerprint is
+  `520db5ba0e197f4bd62225aaabdb0e35ed16a91e5918f1dae76af70655d8bc07`,
+  release binary hash is
+  `3780c7da89454f8bb012f173f864aa9301d1178241db180b0281a55778962806`,
+  harness hash is
+  `51087d9ff0111b6361be31a476a29428e8665e57d7ac0ad4efe207fd61e73fbc`,
+  and the pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+  The one atomic run covers Ediff Diff/Ptch, Log Edit, Smerge, VC
+  Bzr/CVS/Git/Hg/core, Version, Wdired, Which Key, Whitespace, Wid Edit, X DND,
+  XDG, XML, XT Mouse, Yank Media, Alloc, and Buffer.
+
+  Performance evidence: Log Edit body 11/283 ms, Whitespace 20/166, Wid Edit
+  10/36, X DND 39/94, and Buffer 192/3,843 are the 2x diagnostics.  Buffer is
+  the only simultaneous 5x/+1-second case; its profile is the systemic source
+  evaluator/value-traffic problem already tracked in issue #12, so do not
+  detour into a Buffer-local optimization.  GNU/Emaxx setup spans 223-455 ms
+  versus 2,319-3,144 ms and remains dumped-startup issue #11.
+
+  Shared work keeps upstream Elisp owners intact: complete `select.el` is
+  preloaded; loaded `remove-overlays`, `with-restriction`, and
+  `without-restriction` supersede their file-less native fallbacks.  Runtime
+  fixes cover bounded recursive `require`, ERT result records, XTerm mouse
+  down/click translation, syntax-property-aware regexps and POSIX word
+  classes, arbitrary identity-keyed overlay plists, accessible overlay
+  endpoints, marker-backed labeled restrictions across source/bytecode
+  unwind, indirect clone hooks, internal-character strings, local socket path
+  limits, allocator/keyboard/window startup cells, and GNU `kill-buffer`
+  query/interactive-save/autosave/lock ordering.
+
+  Harness invariant: a 2x timing warning is diagnostic and no longer makes a
+  behavior-identical run exit nonzero.  `regressions add` accepts repeated
+  `--file` arguments and records them atomically after one subject build.  The
+  21 owners above are in `compat/compat_regressions.json`.
+
+  Final-source gates are green: format/diff, all-target/all-feature check,
+  strict Clippy,
+  generated validation 13/13 in 13.30 seconds, focused kill/query/lock tests,
+  and the 527-outcome canonical replay are green.  The first elevated complete
+  run found one real noninteractive kill prompt regression after 2,024 passes;
+  the missing GNU `INTERACTIVE` guard is fixed and the unchanged file-lock
+  lifecycle regression now passes.  The corrected complete gate passed:
+  2,026 passed, zero failed, one intentionally ignored in 1,770.08 seconds,
+  followed by compat-harness 35/35, perf-harness 1/1, CLI 10/10, and ERT-runner
+  3/3.  Main then advanced to `6fcf6fb`; it integrated without conflicts and
+  its overlaps were separate hunks.  Repair its two strict-Clippy findings in
+  `src/tty.rs` rather than reverting the shared-event/echo-area work.  The
+  combined source passes format, all-target/all-feature check, strict Clippy,
+  focused TTY/minibuffer/message/quit tests, and the final 527-outcome replay
+  above.
+
 - 2026-08-12 TIME-THROUGH-DIFF-MODE CHECKPOINT: the exact contiguous frontier
   is **5,752/7,080**, leaving **1,328** selectors.  The final-source replay
   covers selectors 5,510-5,752: all **243/243** selected outcomes match GNU
