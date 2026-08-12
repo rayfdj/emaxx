@@ -264,11 +264,38 @@ impl Interpreter {
         // eager compile-time require reaches the latter path.
         if target == "cl-macs"
             && self.lookup_function("cl-copy-list", &Env::new()).is_err()
-            && !self.loading_features.iter().any(|name| name == "cl-lib")
+            && !self.require_nesting.iter().any(|name| name == "cl-lib")
         {
             self.load_target("cl-lib")?;
         }
         Ok(())
+    }
+
+    fn with_require_nesting<T>(
+        &mut self,
+        feature: &str,
+        load: impl FnOnce(&mut Self) -> Result<T, LispError>,
+    ) -> Result<T, LispError> {
+        // GNU permits the same feature to re-enter four active `require'
+        // loads.  The fifth call sees four existing entries and signals.
+        // Legitimate libraries use this bounded recursion with an early
+        // `provide' to break dependency cycles.
+        let nesting = self
+            .require_nesting
+            .iter()
+            .filter(|nested| nested.as_str() == feature)
+            .count();
+        if nesting > 3 {
+            return Err(LispError::Signal(format!(
+                "Recursive `require' for feature `{feature}'"
+            )));
+        }
+
+        self.require_nesting.push(feature.to_string());
+        let result = load(self);
+        let popped = self.require_nesting.pop();
+        debug_assert_eq!(popped.as_deref(), Some(feature));
+        result
     }
 
     pub(crate) fn require_feature_with_target(
@@ -281,7 +308,7 @@ impl Interpreter {
         // already.  `file-dependents' and `unload-feature' derive their
         // dependency graph from these entries.
         self.record_require_in_load_history(feature);
-        if self.has_feature(feature) || self.loading_features.iter().any(|name| name == feature) {
+        if self.has_feature(feature) {
             return Ok(Value::Symbol(feature.to_string().into()));
         }
         // GNU does not preload map.el; its cl-generic definitions
@@ -314,16 +341,16 @@ impl Interpreter {
             }
         }
         let load_target = target.unwrap_or(feature);
-        self.materialize_cl_macs_runtime_dependency(load_target)?;
-        let Some(path) =
-            crate::lisp::primitives::resolve_load_target_in_env(self, load_target, env)
-        else {
-            return Err(load_file_missing_error(load_target));
-        };
-        self.loading_features.push(feature.to_string());
-        let load_result = self.load_resolved_path(&path, env, true).map(|_| ());
-        self.loading_features.pop();
-        load_result?;
+        self.with_require_nesting(feature, |interp| {
+            interp.materialize_cl_macs_runtime_dependency(load_target)?;
+            let Some(path) =
+                crate::lisp::primitives::resolve_load_target_in_env(interp, load_target, env)
+            else {
+                return Err(load_file_missing_error(load_target));
+            };
+            interp.load_resolved_path(&path, env, true)?;
+            Ok(())
+        })?;
         if (feature == "semantic/symref" || load_target == "semantic/symref")
             && let Some(grep_path) = self.resolve_load_target("semantic/symref/grep")
         {
@@ -1727,6 +1754,8 @@ impl Interpreter {
         }
         self.buffer_locals.remove(&id);
         self.buffer_local_hooks.remove(&id);
+        self.labeled_restrictions
+            .retain(|restriction| restriction.buffer_id != id);
         self.indirect_buffers
             .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if id == self.current_buffer_id {

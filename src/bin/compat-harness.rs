@@ -186,8 +186,9 @@ struct RegressionRunArgs {
 
 #[derive(Debug, Args)]
 struct RegressionAddArgs {
-    #[arg(long)]
-    file: String,
+    /// Files to validate and record atomically.  Repeat for multiple owners.
+    #[arg(long, required = true)]
+    file: Vec<String>,
     #[arg(long, default_value = "check-all")]
     selector: String,
     /// Per setup and test phase (default 180 seconds each).
@@ -1237,7 +1238,11 @@ fn run_regressions_audit(args: RegressionRunArgs) -> Result<u8, String> {
 fn add_regression(args: RegressionAddArgs) -> Result<u8, String> {
     let context = load_context()?;
     let selector = compat::resolve_selector(&context.lock, &args.selector)?;
-    let file = resolve_manifest_path_from_cli(&context.local.emacs_repo, &args.file)?;
+    let files = args
+        .file
+        .iter()
+        .map(|file| resolve_manifest_path_from_cli(&context.local.emacs_repo, file))
+        .collect::<Result<Vec<_>, _>>()?;
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let artifact_root = make_artifact_root("regression-add")?;
     let subject = ensure_emaxx_binary(None)?;
@@ -1249,7 +1254,7 @@ fn add_regression(args: RegressionAddArgs) -> Result<u8, String> {
             mode: "regression-add",
             scope: "TrackedRegressions".into(),
             selector: &selector,
-            files: vec![file.clone()],
+            files: files.clone(),
             name_filter: None,
             name_filter_expression: None,
             artifact_root: &artifact_root,
@@ -1259,24 +1264,31 @@ fn add_regression(args: RegressionAddArgs) -> Result<u8, String> {
         },
     )?;
     if status != 0 {
-        return Err(format!(
-            "refusing to record `{}` because oracle and emaxx do not match yet",
-            compat::relative_test_path(&context.local.emacs_repo, &file)?
-        ));
+        return Err(
+            "refusing to record requested files because oracle and emaxx do not match yet".into(),
+        );
     }
 
     let mut manifest = CompatibilityRegressionManifest::load_or_default()?;
     canonicalize_manifest_selectors(&mut manifest, &context.lock)?;
-    manifest.insert(CompatibilityRegressionEntry {
-        path: compat::relative_test_path(&context.local.emacs_repo, &file)?,
-        selector,
-    });
+    let relative_files = files
+        .iter()
+        .map(|file| compat::relative_test_path(&context.local.emacs_repo, file))
+        .collect::<Result<Vec<_>, _>>()?;
+    for path in &relative_files {
+        manifest.insert(CompatibilityRegressionEntry {
+            path: path.clone(),
+            selector: selector.clone(),
+        });
+    }
     manifest.save()?;
-    println!(
-        "Recorded {} in {}",
-        compat::relative_test_path(&context.local.emacs_repo, &file)?,
-        compat::compat_path(COMPAT_REGRESSION_MANIFEST_PATH).display()
-    );
+    for path in relative_files {
+        println!(
+            "Recorded {} in {}",
+            path,
+            compat::compat_path(COMPAT_REGRESSION_MANIFEST_PATH).display()
+        );
+    }
     Ok(0)
 }
 
@@ -1444,11 +1456,11 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         "aggregate summary",
     )?;
 
-    if aggregate.mismatching_files == 0 && aggregate.performance_regressions.is_empty() {
-        Ok(0)
-    } else {
-        Ok(1)
-    }
+    Ok(compatibility_exit_status(&aggregate))
+}
+
+fn compatibility_exit_status(aggregate: &AggregateReport) -> u8 {
+    u8::from(aggregate.mismatching_files != 0)
 }
 
 fn duration_millis(duration: Duration) -> u64 {
@@ -2743,6 +2755,28 @@ fn cargo_profile_for_binary_directory(bin_dir: &Path) -> Result<String, String> 
 mod tests {
     use super::*;
 
+    #[test]
+    fn regression_add_accepts_multiple_files() {
+        let cli = Cli::try_parse_from([
+            "compat-harness",
+            "regressions",
+            "add",
+            "--file",
+            "test/lisp/a-tests.el",
+            "--file",
+            "test/src/b-tests.el",
+        ])
+        .unwrap();
+
+        let Commands::Regressions(RegressionArgs {
+            command: RegressionCommand::Add(args),
+        }) = cli.command
+        else {
+            panic!("expected regressions add command");
+        };
+        assert_eq!(args.file, ["test/lisp/a-tests.el", "test/src/b-tests.el"]);
+    }
+
     fn git_ok(root: &Path, args: &[&str]) {
         let status = Command::new("git")
             .args(args)
@@ -2817,6 +2851,17 @@ mod tests {
             performance_regressions: Vec::new(),
             provenance: test_provenance(),
         }
+    }
+
+    #[test]
+    fn performance_warnings_do_not_fail_semantic_compatibility() {
+        let mut summary = test_summary();
+        summary.performance_regressions.push("a.el".into());
+
+        assert_eq!(compatibility_exit_status(&summary), 0);
+
+        summary.mismatching_files = 1;
+        assert_eq!(compatibility_exit_status(&summary), 1);
     }
 
     #[test]

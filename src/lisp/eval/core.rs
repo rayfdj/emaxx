@@ -990,10 +990,14 @@ impl Interpreter {
                                 }
                             }
                             NativeForm::WithRestriction => {
-                                return self.sf_with_restriction(&items, env);
+                                if !self.has_macro_binding("with-restriction") {
+                                    return self.sf_with_restriction(&items, env);
+                                }
                             }
                             NativeForm::WithoutRestriction => {
-                                return self.sf_without_restriction(&items, env);
+                                if !self.has_macro_binding("without-restriction") {
+                                    return self.sf_without_restriction(&items, env);
+                                }
                             }
                             // GNU nadvice.el's macro handles this (autoloading
                             // it if needed); the native arm is the file-less

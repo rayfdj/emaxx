@@ -32,7 +32,7 @@ define_dispatch!(
                     return Err(LispError::Signal("Wrong type argument: natnump".into()));
                 }
                 let init = args[1].as_integer()?;
-                let c = char::from_u32(init as u32).unwrap_or('\0');
+                let c = char_for_codepoint(init)?;
                 let s: String = std::iter::repeat_n(c, length as usize).collect();
                 let multibyte = s
                     .chars()

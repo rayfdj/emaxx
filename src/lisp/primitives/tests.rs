@@ -366,6 +366,188 @@ fn subr_frontier_aset_promotes_ascii_unibyte_strings_like_gnu() {
 }
 
 #[test]
+fn make_string_and_aset_share_the_internal_character_encoding() {
+    assert_upstream_primitive_contract(
+        "(let ((s (make-string 1 ?a)) (c (max-char)))\
+           (aset s 0 c)\
+           (prin1 (list (equal s (make-string 1 c)) (aref s 0))))",
+        "(t 4194303)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((s (make-string 1 ?a)) (c (max-char)))\
+           (aset s 0 c)\
+           (list (equal s (make-string 1 c)) (aref s 0)))",
+    )
+    .read_all()
+    .expect("read internal-character string contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("construct and mutate the same internal character"),
+        Value::list([Value::T, Value::Integer(0x3f_ffff)]),
+    );
+}
+
+#[test]
+fn overlay_properties_accept_nil_keys_and_accessible_endpoints() {
+    assert_upstream_primitive_contract(
+        "(with-temp-buffer\
+           (insert \"foo\")\
+           (let ((end (make-overlay (point-max) (point-max)))\
+                 (middle (make-overlay 2 2)))\
+             (overlay-put middle nil 4)\
+             (narrow-to-region 1 2)\
+             (prin1 (list (overlay-get middle nil)\
+                          (length (overlays-in 2 2))\
+                          (length (overlays-in 4 4))))))",
+        "(4 1 0)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(with-temp-buffer\
+           (insert \"foo\")\
+           (let ((end (make-overlay (point-max) (point-max)))\
+                 (middle (make-overlay 2 2)))\
+             (overlay-put middle nil 4)\
+             (narrow-to-region 1 2)\
+             (list (overlay-get middle nil)\
+                   (length (overlays-in 2 2))\
+                   (length (overlays-in 4 4)))))",
+    )
+    .read_all()
+    .expect("read overlay endpoint contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("query nil overlay property and accessible endpoint"),
+        Value::list([Value::Integer(4), Value::Integer(1), Value::Integer(0)]),
+    );
+}
+
+#[test]
+fn overlay_property_keys_use_lisp_identity() {
+    assert_upstream_primitive_contract(
+        "(with-temp-buffer
+           (let* ((overlay (make-overlay 1 1))
+                  (key (copy-sequence \"key\"))
+                  (equal-key (copy-sequence key)))
+             (overlay-put overlay key 4)
+             (prin1 (list (overlay-get overlay key)
+                          (overlay-get overlay equal-key)))))",
+        "(4 nil)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(with-temp-buffer
+           (let* ((overlay (make-overlay 1 1))
+                  (key (copy-sequence \"key\"))
+                  (equal-key (copy-sequence key)))
+             (overlay-put overlay key 4)
+             (list (overlay-get overlay key)
+                   (overlay-get overlay equal-key))))",
+    )
+    .read_all()
+    .expect("read overlay property-key identity contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("preserve overlay property-key identity"),
+        Value::list([Value::Integer(4), Value::Nil]),
+    );
+}
+
+#[test]
+fn kill_buffer_queries_before_the_interactive_modified_prompt() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((victim (get-buffer-create \" kill-query-order\")) events)\
+           (with-current-buffer victim\
+             (setq buffer-file-name \"visited\")\
+             (insert \"changed\")\
+             (add-hook 'kill-buffer-query-functions\
+                       (lambda () (push 'query events) t) nil t))\
+           (cl-letf (((symbol-function 'kill-buffer--possibly-save)\
+                      (lambda (_) (push 'modified events) t)))\
+             (call-interactively\
+              (lambda () (interactive) (kill-buffer victim))))\
+           (nreverse events))",
+    )
+    .read_all()
+    .expect("read kill-buffer query ordering contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("query hooks precede the modified-buffer prompt"),
+        Value::list([
+            Value::Symbol("query".into()),
+            Value::Symbol("modified".into()),
+        ]),
+    );
+}
+
+#[test]
+fn noninteractive_kill_buffer_does_not_prompt_for_a_modified_file() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((victim (get-buffer-create \" kill-no-prompt\")) prompted)\
+           (with-current-buffer victim\
+             (setq buffer-file-name \"visited\")\
+             (insert \"changed\"))\
+           (cl-letf (((symbol-function 'kill-buffer--possibly-save)\
+                      (lambda (_) (setq prompted t) nil)))\
+             (list (kill-buffer victim) prompted (buffer-live-p victim))))",
+    )
+    .read_all()
+    .expect("read noninteractive kill-buffer contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("kill a modified file buffer without an interactive prompt"),
+        Value::list([Value::T, Value::Nil, Value::Nil]),
+    );
+}
+
+#[test]
+fn kill_buffer_restores_the_current_buffer_when_a_query_signals() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((caller (current-buffer))
+               (victim (get-buffer-create \" kill-query-error\")))
+           (with-current-buffer victim
+             (add-hook 'kill-buffer-query-functions
+                       (lambda () (error \"query failed\")) nil t))
+           (condition-case nil
+               (kill-buffer victim)
+             (error nil))
+           (list (eq (current-buffer) caller) (buffer-live-p victim)))",
+    )
+    .read_all()
+    .expect("read kill-buffer error-unwind contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("restore caller after a kill query signals"),
+        Value::list([Value::T, Value::T]),
+    );
+}
+
+#[test]
 fn subr_frontier_replace_match_distinguishes_string_and_buffer_escapes() {
     let contract = r#"(let ((source "aba"))
              (string-match "a" source)
@@ -12171,6 +12353,39 @@ fn native_network_socket_errors_preserve_gnu_file_conditions() {
             .contains("(os error")
     );
     assert_eq!(&client[3..], args.as_slice());
+}
+
+#[cfg(unix)]
+#[test]
+fn local_network_process_rejects_overlong_service_before_host_bind() {
+    let program = r#"(condition-case err
+                         (make-network-process
+                          :name "overlong-local-socket"
+                          :family 'local
+                          :server t
+                          :service
+                          (make-string 200 ?x))
+                       (error (list (car err) (cadr err))))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "(error \"Service name too long\")",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("overlong local socket contract should parse")
+        .expect("overlong local socket contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("condition-case should catch overlong service"),
+        Value::list([
+            Value::symbol("error"),
+            Value::string("Service name too long"),
+        ])
+    );
 }
 
 #[test]

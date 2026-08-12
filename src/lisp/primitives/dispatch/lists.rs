@@ -1837,10 +1837,17 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let want_car = name == "assq";
                 let key = &args[0];
+                let projected;
+                let alist = if let Some(items) = keymap_list_items(interp, &args[1])? {
+                    projected = Value::list(items);
+                    &projected
+                } else {
+                    &args[1]
+                };
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 // Walk by cons cells rather than by cloned Values: one Rc
                 // bump per step and no whole-Value churn.
-                let mut cell = match &args[1] {
+                let mut cell = match alist {
                     Value::Nil => return Ok(Value::Nil),
                     Value::Cons(cell) => Rc::clone(cell),
                     other => {
@@ -3181,7 +3188,21 @@ define_dispatch!(
             "read-key-sequence" | "read-key-sequence-vector" => {
                 need_arg_range(name, args, 1, 6)?;
                 ensure_interaction_allowed(interp, env)?;
-                let event = read_key_sequence_event(interp, env)?;
+                let event = loop {
+                    let event = read_key_sequence_event(interp, env)?;
+                    if is_mouse_down_event(&event) {
+                        let key = input_event_symbol(&event)
+                            .expect("a mouse-down event has a symbolic head");
+                        if key_binding(interp, &key, true, true, env)?.is_nil() {
+                            // keyboard.c discards an unbound button-down event
+                            // and continues with the click/release that follows.
+                            // A [t] binding, as used by `read-key' when its
+                            // fallbacks are disabled, deliberately keeps it.
+                            continue;
+                        }
+                    }
+                    break event;
+                };
                 let events = vec![event];
                 set_command_key_state(interp, events.clone(), events.clone(), env);
                 Ok(event_array(&events, name == "read-key-sequence-vector"))

@@ -380,7 +380,7 @@ pub(crate) fn overlay_hook_functions(
     overlay: &crate::overlay::Overlay,
     property: &str,
 ) -> Vec<Value> {
-    match overlay.get_prop(property) {
+    match overlay.get_prop(&Value::Symbol(property.into())) {
         Some(value) => value
             .to_vec()
             .unwrap_or_else(|_| vec![value.clone()])

@@ -7,7 +7,7 @@
 //! The dispatch match is exhaustive over the decoded opcode set, so the
 //! compiler proves every GNU 30.2 opcode has an execution arm.
 
-use super::super::eval::Interpreter;
+use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
 use super::super::types::{Env, LispError, Value};
 use super::{ArgSpec, ByteCodeObject, Instr, Op};
@@ -28,6 +28,7 @@ enum UnwindEntry {
     /// Bsave_restriction on a wide buffer: re-widen on exit.
     RestrictionWide {
         buffer_id: u64,
+        labeled: Vec<LabeledRestriction>,
     },
     /// Bsave_restriction on a narrowed buffer: marker-tracked bounds.
     Restriction {
@@ -36,6 +37,7 @@ enum UnwindEntry {
         end_id: u64,
         saved_begv: usize,
         saved_zv: usize,
+        labeled: Vec<LabeledRestriction>,
     },
     /// Bunwind_protect: a handler function (24.4+) or list of forms.
     Protect(Value),
@@ -71,7 +73,7 @@ fn unwind_one(
             }
             Ok(())
         }
-        UnwindEntry::RestrictionWide { buffer_id } => {
+        UnwindEntry::RestrictionWide { buffer_id, labeled } => {
             let final_buffer_id = interp.current_buffer_id();
             if interp.has_buffer_id(buffer_id) {
                 if final_buffer_id != buffer_id {
@@ -79,6 +81,7 @@ fn unwind_one(
                 }
                 let full_end = interp.buffer.size_total() + 1;
                 interp.buffer.restore_restriction(1, full_end);
+                interp.restore_labeled_restrictions(buffer_id, labeled);
                 if final_buffer_id != buffer_id && interp.has_buffer_id(final_buffer_id) {
                     let _ = interp.set_current_buffer_id(final_buffer_id);
                 }
@@ -91,6 +94,7 @@ fn unwind_one(
             end_id,
             saved_begv,
             saved_zv,
+            labeled,
         } => {
             let final_buffer_id = interp.current_buffer_id();
             let restore_begv = interp.marker_position(beg_id).unwrap_or(saved_begv);
@@ -100,6 +104,7 @@ fn unwind_one(
                     let _ = interp.set_current_buffer_id(buffer_id);
                 }
                 interp.buffer.restore_restriction(restore_begv, restore_zv);
+                interp.restore_labeled_restrictions(buffer_id, labeled);
                 if final_buffer_id != buffer_id && interp.has_buffer_id(final_buffer_id) {
                     let _ = interp.set_current_buffer_id(final_buffer_id);
                 }
@@ -827,11 +832,12 @@ fn run_with_stack(
                     let buffer_id = interp.current_buffer_id();
                     let saved_begv = interp.buffer.point_min();
                     let saved_zv = interp.buffer.point_max();
+                    let labeled = interp.labeled_restrictions_snapshot(buffer_id);
                     // Mirrors sf_save_restriction: a wide buffer records "no
                     // restriction" (marker-tracking would spuriously
                     // re-narrow after edits at BEGV).
                     if saved_begv == 1 && saved_zv == interp.buffer.size_total() + 1 {
-                        unwinds.push(UnwindEntry::RestrictionWide { buffer_id });
+                        unwinds.push(UnwindEntry::RestrictionWide { buffer_id, labeled });
                     } else {
                         let Value::Marker(beg_id) = interp.make_marker() else {
                             unreachable!("make_marker returns a marker")
@@ -848,6 +854,7 @@ fn run_with_stack(
                             end_id,
                             saved_begv,
                             saved_zv,
+                            labeled,
                         });
                     }
                 }

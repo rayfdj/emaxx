@@ -1016,20 +1016,14 @@ impl Interpreter {
         let mut body_index = 3;
         let label = if matches!(items.get(3), Some(Value::Symbol(s)) if s == ":label") {
             body_index = 5;
-            match items.get(4) {
-                Some(Value::Symbol(symbol)) => symbol.to_string(),
-                Some(Value::Cons(_)) => {
-                    let quoted = items[4].to_vec()?;
-                    quoted
-                        .get(1)
-                        .ok_or_else(|| LispError::Signal("Invalid with-restriction label".into()))?
-                        .as_symbol()?
-                        .to_string()
-                }
-                _ => "default".into(),
-            }
+            self.eval(
+                items
+                    .get(4)
+                    .ok_or_else(|| LispError::Signal("Invalid with-restriction label".into()))?,
+                env,
+            )?
         } else {
-            "default".into()
+            Value::Symbol("default".into())
         };
         let saved = (self.buffer.point_min(), self.buffer.point_max());
         // The outer bounds must survive edits inside the body the way GNU's
@@ -1055,11 +1049,11 @@ impl Interpreter {
             .effective_labeled_restriction(self.current_buffer_id(), None)
             .unwrap_or(saved);
         let effective = (start.max(current.0), end.min(current.1));
-        self.labeled_restrictions
-            .push((self.current_buffer_id(), label, effective.0, effective.1));
+        let saved_labeled = self.labeled_restrictions_snapshot(saved_buffer_id);
+        self.push_labeled_restriction(saved_buffer_id, label, effective.0, effective.1, saved)?;
         self.buffer.narrow_to_region(effective.0, effective.1);
         let result = self.sf_progn(&items[body_index..], env);
-        self.labeled_restrictions.pop();
+        self.restore_labeled_restrictions(saved_buffer_id, saved_labeled);
         match markers {
             None => self.buffer.widen(),
             Some((beg_id, end_id)) => {
@@ -1082,42 +1076,25 @@ impl Interpreter {
         let mut body_index = 1;
         let label = if matches!(items.get(1), Some(Value::Symbol(s)) if s == ":label") {
             body_index = 3;
-            match items.get(2) {
-                Some(Value::Symbol(symbol)) => symbol.to_string(),
-                Some(Value::Cons(_)) => {
-                    let quoted = items[2].to_vec()?;
-                    quoted
-                        .get(1)
-                        .ok_or_else(|| {
-                            LispError::Signal("Invalid without-restriction label".into())
-                        })?
-                        .as_symbol()?
-                        .to_string()
-                }
-                _ => "default".into(),
-            }
+            self.eval(
+                items
+                    .get(2)
+                    .ok_or_else(|| LispError::Signal("Invalid without-restriction label".into()))?,
+                env,
+            )?
         } else {
-            "default".into()
+            Value::Symbol("default".into())
         };
         let saved = (self.buffer.point_min(), self.buffer.point_max());
-        let pos = self
-            .labeled_restrictions
-            .iter()
-            .rposition(|(buffer_id, active_label, _, _)| {
-                *buffer_id == self.current_buffer_id() && *active_label == label
-            });
-        let removed = pos.map(|index| self.labeled_restrictions.remove(index));
-        if let Some((start, end)) =
-            self.effective_labeled_restriction(self.current_buffer_id(), None)
-        {
+        let saved_buffer_id = self.current_buffer_id();
+        let saved_labeled = self.labeled_restrictions_snapshot(saved_buffer_id);
+        if let Some((start, end)) = self.pop_labeled_restriction(saved_buffer_id, &label) {
             self.buffer.narrow_to_region(start, end);
         } else {
             self.buffer.widen();
         }
         let result = self.sf_progn(&items[body_index..], env);
-        if let Some(entry) = removed {
-            self.labeled_restrictions.push(entry);
-        }
+        self.restore_labeled_restrictions(saved_buffer_id, saved_labeled);
         self.buffer.restore_restriction(saved.0, saved.1);
         result
     }
@@ -1261,6 +1238,7 @@ impl Interpreter {
         let saved_buffer_id = self.current_buffer_id();
         let saved_begv = self.buffer.point_min();
         let saved_zv = self.buffer.point_max();
+        let saved_labeled = self.labeled_restrictions_snapshot(saved_buffer_id);
         // GNU save-restriction-save: a wide buffer is saved as "no
         // restriction" and simply re-widened on exit; tracking the old
         // bounds with markers would spuriously re-narrow after edits
@@ -1278,6 +1256,7 @@ impl Interpreter {
                 if final_buffer_id != saved_buffer_id && self.has_buffer_id(final_buffer_id) {
                     let _ = self.set_current_buffer_id(final_buffer_id);
                 }
+                self.restore_labeled_restrictions(saved_buffer_id, saved_labeled);
             }
             return result;
         }
@@ -1303,6 +1282,7 @@ impl Interpreter {
                 let _ = self.set_current_buffer_id(saved_buffer_id);
             }
             self.buffer.restore_restriction(restore_begv, restore_zv);
+            self.restore_labeled_restrictions(saved_buffer_id, saved_labeled);
             if final_buffer_id != saved_buffer_id && self.has_buffer_id(final_buffer_id) {
                 let _ = self.set_current_buffer_id(final_buffer_id);
             }

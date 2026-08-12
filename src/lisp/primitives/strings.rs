@@ -717,7 +717,20 @@ pub(crate) fn overlay_property_with_category(
     overlay: &crate::overlay::Overlay,
     prop: &str,
 ) -> Option<Value> {
-    property_from_props_with_category(interp, &overlay.plist, prop)
+    let direct = overlay
+        .plist
+        .iter()
+        .find(|(name, _)| matches!(name, Value::Symbol(name) if name == prop))
+        .map(|(_, value)| value.clone());
+    if direct.is_some() || prop == "category" {
+        return direct;
+    }
+    let category = overlay
+        .plist
+        .iter()
+        .find(|(name, _)| matches!(name, Value::Symbol(name) if name == "category"))
+        .and_then(|(_, value)| value.as_symbol().ok())?;
+    interp.get_symbol_property(category, prop)
 }
 
 pub(crate) fn string_property_at(value: &Value, pos: usize, prop: &str) -> Option<Value> {

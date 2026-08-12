@@ -202,7 +202,59 @@
       "selector": "t"
     },
     {
+      "path": "test/lisp/vc/ediff-diff-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/ediff-ptch-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/log-edit-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/smerge-mode-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-bzr-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-cvs-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-git-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-hg-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-tests.el",
+      "selector": "t"
+    },
+    {
       "path": "test/lisp/version-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/wdired-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/which-key-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/whitespace-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/wid-edit-tests.el",
       "selector": "t"
     },
     {
@@ -215,6 +267,10 @@
     },
     {
       "path": "test/lisp/xdg-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/xml-tests.el",
       "selector": "t"
     },
     {
@@ -235,6 +291,14 @@
     },
     {
       "path": "test/misc/test-custom-noloads.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/alloc-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/buffer-tests.el",
       "selector": "t"
     },
     {

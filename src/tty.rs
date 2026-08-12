@@ -25,14 +25,13 @@ use crate::lisp::types::{Env, LispError, Value};
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
 fn debug_log(message: &str) {
-    if let Some(path) = std::env::var_os("EMAXX_TTY_LOG") {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
+    if let Some(path) = std::env::var_os("EMAXX_TTY_LOG")
+        && let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-        {
-            let _ = writeln!(file, "{message}");
-        }
+    {
+        let _ = writeln!(file, "{message}");
     }
 }
 
@@ -335,7 +334,13 @@ fn execute_binding(
     // GNU's command_execute is a thin wrapper over call-interactively
     // (prefix-arg bookkeeping, kbd-macro expansion); the runtime does not
     // define it yet, so drive the interactive call directly.
-    let result = call(interpreter, env, "call-interactively", &[binding.clone()]).map(|_| ());
+    let result = call(
+        interpreter,
+        env,
+        "call-interactively",
+        std::slice::from_ref(&binding),
+    )
+    .map(|_| ());
     interpreter.set_variable("last-command", binding, env);
     result
 }

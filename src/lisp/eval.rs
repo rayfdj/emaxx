@@ -1288,6 +1288,19 @@ pub(crate) struct CombinedAfterChangeState {
     pub(crate) changes: Vec<(i64, i64, i64)>,
 }
 
+/// One marker-tracked entry in editfns.c's labeled restriction stack.
+///
+/// The sentinel is represented structurally because GNU uses an uninterned
+/// symbol for it; ordinary labels retain their Lisp identity and are compared
+/// with `eq', not by their printed names.
+#[derive(Clone)]
+pub(crate) struct LabeledRestriction {
+    buffer_id: u64,
+    label: Option<Value>,
+    beg_marker_id: u64,
+    end_marker_id: u64,
+}
+
 /// A memoized funcall resolution for a symbol callee (see
 /// `function_resolution_cache`).
 #[derive(Clone)]
@@ -2112,8 +2125,8 @@ pub struct Interpreter {
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
-    /// Active labeled restrictions keyed by (buffer id, label, start, end).
-    labeled_restrictions: Vec<(u64, String, usize, usize)>,
+    /// Marker-tracked labeled restrictions, with the innermost entry last.
+    labeled_restrictions: Vec<LabeledRestriction>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
     indirect_buffers: Vec<(u64, u64)>,
     /// Prevent recursive before/after-change hook re-entry.
@@ -2250,7 +2263,10 @@ pub struct Interpreter {
     /// Prefer GNU bytecode artifacts after the source-based bootstrap has
     /// established the dumped Lisp runtime expected by compiled libraries.
     prefer_compiled_loads: bool,
-    loading_features: Vec<String>,
+    /// Features whose `require' loads are active, innermost last.  This is
+    /// GNU's `require_nesting_list', not an alternate source of provided
+    /// features: bounded recursive requires are part of the loader contract.
+    require_nesting: Vec<String>,
     lambda_capture_overrides: Vec<bool>,
     lambda_trim_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
@@ -3030,7 +3046,7 @@ impl Interpreter {
             undo_sequence: None,
             load_path: Vec::new(),
             prefer_compiled_loads: false,
-            loading_features: Vec::new(),
+            require_nesting: Vec::new(),
             lambda_capture_overrides: Vec::new(),
             lambda_trim_overrides: Vec::new(),
             thread_states: vec![ThreadState {
@@ -3097,6 +3113,25 @@ impl Interpreter {
         // sentinel and the native logging default from startup onward.
         interp.define_special_variable("libgnutls-version", Value::Integer(-1));
         interp.define_special_variable("gnutls-log-level", Value::Integer(0));
+        // alloc.c exposes the allocator's emergency state before jit-lock.el
+        // and every fontification client.  JIT lock only reads this native
+        // cell; its policy remains in the upstream Lisp owner.
+        interp.define_special_variable("memory-full", Value::Nil);
+        interp.define_special_variable(
+            "memory-signal-data",
+            Value::list([
+                Value::symbol("error"),
+                Value::String(
+                    "Memory exhausted--use M-x save-some-buffers then exit and restart Emacs"
+                        .into(),
+                ),
+            ]),
+        );
+        // xdisp.c's horizontal scrolling controls are host-owned value cells
+        // read by the upstream simple.el motion commands.
+        interp.define_special_variable("auto-hscroll-mode", Value::T);
+        interp.define_special_variable("hscroll-margin", Value::Integer(5));
+        interp.define_special_variable("hscroll-step", Value::Integer(0));
         interp.define_special_variable("fringe-bitmaps", fringe_bitmaps);
         for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
             interp.put_symbol_property(name, "fringe", Value::Integer((index + 1) as i64));
@@ -3794,6 +3829,7 @@ impl Interpreter {
         // subr.el's prompt policy is let-bound by callers and consumed by
         // separately defined save commands.
         interp.define_special_variable("use-dialog-box", Value::Nil);
+        interp.define_special_variable("use-short-answers", Value::Nil);
         // fileio.c exposes this as a dynamically scoped DEFVAR_LISP.  Temp
         // helpers are defined separately and must observe callers' let-bindings.
         interp.mark_special_variable("temporary-file-directory");
@@ -3975,23 +4011,33 @@ impl Interpreter {
         // like Lisp `defvar': a lexical `let' around a call must be visible
         // inside the separately defined callee.  Keep this as one coherent
         // group so new command clients do not each need a compatibility shim.
-        for name in [
-            "last-command",
-            "real-last-command",
-            "last-repeatable-command",
-            "this-command",
-            "real-this-command",
-            "current-minibuffer-command",
-            "this-command-keys-shift-translated",
-            "this-original-command",
+        for (name, value) in [
+            ("last-command", Value::Nil),
+            ("real-last-command", Value::Nil),
+            ("last-repeatable-command", Value::Nil),
+            ("this-command", Value::Nil),
+            ("real-this-command", Value::Nil),
+            ("current-minibuffer-command", Value::Nil),
+            ("this-command-keys-shift-translated", Value::Nil),
+            ("this-original-command", Value::Nil),
+            ("auto-save-interval", Value::Integer(300)),
+            ("auto-save-no-message", Value::Nil),
+            ("auto-save-timeout", Value::Integer(30)),
+            ("echo-keystrokes", Value::Integer(1)),
+            ("echo-keystrokes-help", Value::T),
+            ("polling-period", Value::Float(2.0)),
+            ("double-click-time", Value::Integer(500)),
+            ("double-click-fuzz", Value::Integer(3)),
+            ("num-input-keys", Value::Integer(0)),
+            ("num-nonmacro-input-events", Value::Integer(0)),
+            ("last-event-frame", Value::Nil),
+            ("last-event-device", Value::Nil),
+            ("help-char", Value::Integer(8)),
+            ("help-event-list", Value::Nil),
+            ("help-form", Value::Nil),
+            ("prefix-help-command", Value::Nil),
         ] {
-            interp.define_special_variable(name, Value::Nil);
-        }
-        // keyboard.c's integer command-loop counters are ordinary special
-        // variables at the Lisp boundary.  Keyboard-macro playback updates
-        // the active dynamic binding once for every complete key sequence.
-        for name in ["num-input-keys", "num-nonmacro-input-events"] {
-            interp.define_special_variable(name, Value::Integer(0));
+            interp.define_special_variable(name, value);
         }
         // eval.c defines the debugger controls before loading dumped Lisp.
         // Their special declarations are part of the evaluator boundary:

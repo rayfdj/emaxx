@@ -1564,14 +1564,13 @@ impl Interpreter {
                         }
                     };
                     let prop = self.eval(prop_expr, env)?;
-                    let prop_name = prop.as_symbol()?.to_string();
                     let Some(existing) = self.find_overlay_mut(overlay_id) else {
                         return Err(LispError::TypeError(
                             "overlay".into(),
                             format!("overlay<{overlay_id}>"),
                         ));
                     };
-                    existing.put_prop(&prop_name, value);
+                    existing.put_prop(prop, value);
                     Ok(())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "get") {
                     let Some(symbol_expr) = items.get(1) else {

@@ -249,6 +249,10 @@ impl SharedText {
         self.0.as_str()
     }
 
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
     pub fn into_string(self) -> String {
         Rc::try_unwrap(self.0).unwrap_or_else(|text| text.as_ref().clone())
     }
