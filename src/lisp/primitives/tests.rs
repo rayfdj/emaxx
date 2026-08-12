@@ -1401,7 +1401,7 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .iter()
         .filter(|contract| contract.arity.is_some())
         .collect::<Vec<_>>();
-    let is_native_mirror = |name: &str| is_builtin(name) || is_special_form_name(name);
+    let is_native_mirror = |name: &str| has_dispatch_handler(name) || is_special_form_name(name);
     let missing = available
         .iter()
         .copied()
@@ -10712,6 +10712,49 @@ fn native_combined_after_change_merges_ranges_before_running_hooks() {
 }
 
 #[test]
+fn change_hook_nonlocal_exits_clear_the_active_hook_value() {
+    let program = r#"(progn
+                       (define-error 'emaxx-change-hook-error "change hook error")
+                       (defun emaxx-change-hook-signal (&rest _)
+                         (signal 'emaxx-change-hook-error nil))
+                       (defun emaxx-change-hook-throw (&rest _)
+                         (throw 'emaxx-change-hook-tag 'thrown))
+                       (setq after-change-functions nil)
+                       (condition-case nil
+                           (with-temp-buffer
+                             (add-hook 'after-change-functions
+                                       #'emaxx-change-hook-signal 90)
+                             (insert "a"))
+                         (emaxx-change-hook-error nil))
+                       (let ((after-signal after-change-functions))
+                         (setq after-change-functions nil)
+                         (catch 'emaxx-change-hook-tag
+                           (with-temp-buffer
+                             (add-hook 'after-change-functions
+                                       #'emaxx-change-hook-throw 90)
+                             (insert "b")))
+                         (list after-signal after-change-functions)))"#;
+    let expected = "(nil nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("change-hook cleanup contract should parse")
+        .expect("change-hook cleanup contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("change-hook cleanup contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("change-hook cleanup result should parse")
+            .expect("change-hook cleanup result should exist")
+    );
+}
+
+#[test]
 fn combine_change_calls_coalesces_hooks_and_tracks_the_updated_end() {
     let program = r#"(progn
                        (defun emaxx-test-combine-before (begin end)
@@ -10959,6 +11002,11 @@ fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
             "([f5] [f5] [f5] [f5] [f5])",
         ),
         (
+            r#"(let ((unread-command-events '((down-mouse-1 nil 1))))
+                 (car-safe (aref (read-key-sequence nil) 0)))"#,
+            "down-mouse-1",
+        ),
+        (
             r#"(let ((last-kbd-macro [old])
                      (unread-command-events '(97)))
                  (start-kbd-macro t t)
@@ -11007,6 +11055,47 @@ fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
             "keyboard-input contract diverged: {program}"
         );
     }
+}
+
+#[test]
+fn char_property_primitives_accept_windows_and_filter_window_overlays() {
+    let program = r#"(let* ((window (selected-window))
+                            (old-buffer (window-buffer window))
+                            (buffer (generate-new-buffer " *char-property-window*")))
+                       (unwind-protect
+                           (progn
+                             (set-window-buffer window buffer)
+                             (with-current-buffer buffer
+                               (insert "x")
+                               (put-text-property 1 2 'face 'text-face)
+                               (let ((overlay (make-overlay 1 2 buffer)))
+                                 (overlay-put overlay 'face 'window-face)
+                                 (overlay-put overlay 'window window)
+                                 (let ((pair (get-char-property-and-overlay
+                                              1 'face window)))
+                                   (list (get-char-property 1 'face window)
+                                         (car pair)
+                                         (overlayp (cdr pair)))))))
+                         (set-window-buffer window old-buffer)
+                         (kill-buffer buffer)))"#;
+    let expected = "(window-face window-face t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("window char-property contract should parse")
+        .expect("window char-property contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("window char-property contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("window char-property result should parse")
+            .expect("window char-property result should exist")
+    );
 }
 
 #[test]

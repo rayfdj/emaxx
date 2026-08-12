@@ -745,8 +745,18 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
             .map_err(|error| format!("preload frame: {error}"))?;
     }
 
-    // GNU loadup dumps select.el after frame.el (and the display-specific
-    // mouse/scroll-bar owners) and before the timer/menu cluster.  Its public
+    // GNU loadup dumps mouse.el after frame/font-lock and before select.el.
+    // Context-menu construction, mouse translations, and their defcustom
+    // declarations are Elisp policy; reconstruct the complete dumped owner
+    // rather than relying on the file-less native fallbacks during batch use.
+    if !interpreter.has_feature("mouse") && interpreter.resolve_load_target("mouse").is_some() {
+        interpreter
+            .load_target("mouse")
+            .map_err(|error| format!("preload mouse: {error}"))?;
+    }
+
+    // GNU loadup dumps select.el after frame.el (and the mouse/scroll-bar
+    // owners) and before the timer/menu cluster.  Its public
     // GUI selection API is portable Elisp policy over backend primitives;
     // callers such as x-dnd.el legitimately use it without requiring the
     // feature.  Reconstruct the complete owner instead of providing a native
@@ -2302,6 +2312,39 @@ mod tests {
                         Value::list([Value::Symbol("invalid".into())]),
                     ]),
                 ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_mouse_owner_and_dynamic_context_menu_policy() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'mouse)\
+                       (special-variable-p 'context-menu-functions)\
+                       (special-variable-p 'context-menu-filter-function)\
+                       (not (subrp (symbol-function 'context-menu-map)))\
+                       (let ((context-menu-functions nil))\
+                         (equal (context-menu-map)\
+                                '(keymap \"Context Menu\"))))",
+            )
+            .read_all()
+            .expect("read mouse startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate mouse startup probe"),
+                Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
             );
         });
     }

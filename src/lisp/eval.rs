@@ -805,6 +805,40 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             &["sqlite-locked-error", "sqlite-error", "error"],
             "Database locked",
         ),
+        // json.c installs these native condition symbols independently of
+        // json.el.  Parsers signal the leaf condition and generic consumers
+        // such as `condition-case' and ERT match through this hierarchy.
+        ("json-error", &["json-error", "error"], "generic JSON error"),
+        (
+            "json-parse-error",
+            &["json-parse-error", "json-error", "error"],
+            "could not parse JSON stream",
+        ),
+        (
+            "json-end-of-file",
+            &[
+                "json-end-of-file",
+                "json-parse-error",
+                "json-error",
+                "error",
+            ],
+            "end of JSON stream",
+        ),
+        (
+            "json-trailing-content",
+            &[
+                "json-trailing-content",
+                "json-parse-error",
+                "json-error",
+                "error",
+            ],
+            "trailing content after JSON stream",
+        ),
+        (
+            "json-utf8-decode-error",
+            &["json-utf8-decode-error", "json-error", "error"],
+            "invalid utf-8 encoding",
+        ),
         // cl-generic is dumped in GNU and native/preprovided in Emaxx.
         ("cl-no-method", &["cl-no-method", "error"], "No method"),
         (
@@ -1985,6 +2019,14 @@ pub struct Interpreter {
     /// Keymap selected by `use-global-map'.  GNU keeps this independently
     /// from the Lisp variable `global-map'.
     current_global_map: Option<Value>,
+    /// Runtime keymaps keep stable record identity internally while exposing
+    /// GNU's mutable cons-list surface to Lisp.  This reverse index makes a
+    /// nested `setcar'/`setcdr' on that surface update its owning record at
+    /// the mutation door instead of requiring read-side rescans.
+    keymap_public_cons_owners: HashMap<usize, Vec<u64>>,
+    /// Forward half of `keymap_public_cons_owners', used to unregister one
+    /// refreshed keymap without scanning every live public cons view.
+    keymap_public_cons_ids: HashMap<u64, Vec<usize>>,
     /// The ID of the current buffer.
     current_buffer_id: u64,
     /// The currently selected window record.
@@ -2776,6 +2818,8 @@ impl Interpreter {
             variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
             current_global_map: None,
+            keymap_public_cons_owners: HashMap::new(),
+            keymap_public_cons_ids: HashMap::new(),
             current_buffer_id: 0,
             selected_window_id: 0,
             window_cursor_visibility: HashMap::new(),

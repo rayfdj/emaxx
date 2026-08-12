@@ -42,6 +42,65 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-13 Font-through-JSON checkpoint advances the exact contiguous
+  frontier to **6,601/7,080**, leaving **479** selectors.  Selectors
+  6,567-6,601 all match GNU: Font 2, Image 5, Indent 3, Inotify 2, and JSON 23.
+  Matching non-passes are Image's headless display skip and Inotify's two
+  platform skips.  NEXT is selector **6,602**, `keyboard-lossage-size`, in
+  `test/src/keyboard-tests.el` (two outcomes).
+
+  The canonical final-source replay is
+  `target/compat/regression-add-1786575010490490000-36030`.  It includes the
+  five frontier owners plus Mouse, XT Mouse, and Find Cmd: all **47/47**
+  outcomes match (43 passes and four matching skips).  Source fingerprint is
+  `4b0fe6134d1b3ed04485bba24cdbb0335d732e1631e737549eec2a000fb65f1e`,
+  release binary hash is
+  `71212e99e704fa8dd8acc99f5b4115f6d508e2d0b9658be19af174bb580586ae`,
+  harness hash is
+  `7cc7218868e036c88187db007edae563fbfabccc4b0de52561677b6a9974fb4c`,
+  and GNU is pinned at `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  The native-primitive manifest now distinguishes source-declared primitives
+  unavailable in the oracle build, keeping optional Rust routes from
+  advertising false Lisp bindings.  JSON's recursion, sentinel, error, and
+  key-symbol contracts match GNU.  Change-hook cleanup survives nonlocal exit,
+  and backquote keeps dotted record tails intact.  A single live public keymap
+  cons graph now adapts the Rust identity record to GNU's mutable list surface;
+  nested Lisp mutation, native mutation, list traversal, embedded prefix maps,
+  and parent changes all share that adapter.  Mouse remains an Elisp owner in
+  the preload order, while native window-property and keyboard boundaries now
+  match GNU's overlay filtering and bound-versus-unbound mouse-down behavior.
+  Shared diagnostics now quote `search-failed` string payloads and print
+  integral floats with GNU's canonical `.0` suffix.
+
+  Comparable post-bootstrap bodies are Font 8/6, Image 8/1, Indent 8/1,
+  Inotify 7/0, and JSON 15/12 ms GNU/Emaxx.  The additional regressions are
+  Mouse 10/4, XT Mouse 1,291/1,284, and Find Cmd 8/1 ms.  No body crosses the
+  2x diagnostic.  Separate reconstructed setup is 217-418 ms GNU versus
+  2,449-3,046 ms Emaxx under issue #11.
+
+  The immutable 104-file audit in
+  `target/compat/regressions-1786575240097606000-36480` matches 98 files and
+  leaves exactly six known later-frontier mismatches: Emacs Module, Keymap,
+  Lread, Minibuf, Print, and Regex Emacs.  Find Cmd and XT Mouse were genuine
+  adapter regressions found and fixed by the earlier audit; the final-source
+  replay confirms Mouse and the former Custom timeout still pass.  Existing
+  material body gaps (including Emacsclient, Align, Buffer, Eval,
+  Htmlfontify, and Newcomment) remain the systemic source-interpreter work in
+  issue #12, not a new correctness or keymap regression.
+
+  Final publication gates are green on this exact source: formatting, diff,
+  all-target/all-feature check, strict Clippy, exact generated native-manifest
+  regeneration, 2,047 library tests (one ignored), 35 compatibility-harness
+  tests, one performance-harness test, 10 CLI tests, and three ERT integration
+  tests.  The localhost-capable run was required for the socket/TLS tests.
+
+  `makefilemodefix.patch` was reviewed but not applied.  Its diagnosis of the
+  old Mac-only expectation in `86ce515` is correct, but `e4f8805` already
+  replaced it with a shared GNU `system-type` decision table used by runtime
+  preload and tests.  The current table and loaded Semantic test are green on
+  this checkout.
+
 - The 2026-08-13 Filelock-through-Fns checkpoint advances the exact contiguous
   frontier to **6,566/7,080**, leaving **514** selectors.  Its final-source
   atomic replay covers selectors 6,451-6,566: all **116/116** outcomes match

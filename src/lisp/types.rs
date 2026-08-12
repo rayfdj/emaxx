@@ -987,6 +987,9 @@ pub(crate) fn format_float(value: f64) -> String {
                 } else {
                     let precision = (significant - exponent - 1).max(0) as usize;
                     format!("{value:.precision$}")
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_string()
                 };
                 candidate
                     .parse::<f64>()
@@ -1474,6 +1477,18 @@ impl fmt::Display for LispError {
             LispError::Signal(msg) => write!(f, "{}", msg),
             LispError::SignalValue(value) => match value.to_vec() {
                 Ok(items)
+                    if items.len() >= 2
+                        && matches!(items.first(), Some(Value::Symbol(kind)) if kind == "search-failed") =>
+                {
+                    match &items[1] {
+                        Value::String(text) => write!(f, "{text:?}"),
+                        Value::StringObject(object) => {
+                            write!(f, "{:?}", std::cell::RefCell::borrow(object.as_ref()).text)
+                        }
+                        value => write!(f, "{value}"),
+                    }
+                }
+                Ok(items)
                     if items.len() >= 4
                         && matches!(items.first(), Some(Value::Symbol(kind)) if kind == "file-error" || kind == "file-missing") =>
                 {
@@ -1826,5 +1841,12 @@ mod tests {
             .to_string(),
             "Boo"
         );
+    }
+
+    #[test]
+    fn integral_floats_print_with_one_fractional_digit() {
+        assert_eq!(Value::Float(1.0).to_string(), "1.0");
+        assert_eq!(Value::Float(-10.0).to_string(), "-10.0");
+        assert_eq!(Value::Float(1.25).to_string(), "1.25");
     }
 }

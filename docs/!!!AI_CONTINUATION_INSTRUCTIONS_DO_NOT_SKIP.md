@@ -18,6 +18,68 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-13 FONT-THROUGH-JSON CHECKPOINT: the exact contiguous frontier is
+  **6,601/7,080**, leaving **479** selectors.  Selectors 6,567-6,601 are exact:
+  Font 2/2, Image 5/5 (four passes plus GNU's same headless skip), Indent 3/3,
+  Inotify 2/2 (the same two platform skips), and JSON 23/23.  NEXT is selector
+  **6,602**, `keyboard-lossage-size`, in `test/src/keyboard-tests.el` (two
+  selected outcomes).
+
+  Canonical final-source artifact:
+  `target/compat/regression-add-1786575010490490000-36030`.  It also replays
+  Mouse 6/6, XT Mouse 3/3, and Find Cmd 3/3, for **47/47** matching outcomes
+  (43 passes and the same four skips).  Subject-source fingerprint is
+  `4b0fe6134d1b3ed04485bba24cdbb0335d732e1631e737549eec2a000fb65f1e`,
+  release binary hash is
+  `71212e99e704fa8dd8acc99f5b4115f6d508e2d0b9658be19af174bb580586ae`,
+  harness hash is
+  `7cc7218868e036c88187db007edae563fbfabccc4b0de52561677b6a9974fb4c`,
+  and pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  Shared repairs preserve ownership boundaries.  Generated native metadata
+  now records source-level C primitives excluded by the oracle build, so a
+  compiled-out primitive such as `imagemagick-types` can keep its Rust route
+  without falsely becoming `fboundp`.  JSON enforces GNU's recursion limit,
+  sentinel identity, native error hierarchy, and uninterned object-key names.
+  Change hooks restore their running state on nonlocal exit, and backquote
+  preserves record literals in dotted vector tails.  Runtime keymaps expose
+  one live GNU-shaped cons view: nested Lisp `setcar`/`setcdr` changes sync to
+  the identity-bearing Rust record, `take`/`butlast` consume the same surface,
+  embedded prefix maps project recursively, and native mutations refresh the
+  view.  Mouse is preloaded at GNU's Elisp boundary; window-aware character
+  properties filter overlays by window; keyboard fallback drops a mouse-down
+  only when the active maps leave it unbound.  Shared diagnostics quote
+  `search-failed` strings like GNU and keep the `.0` suffix when printing an
+  integral float.
+
+  The broad immutable audit in
+  `target/compat/regressions-1786575240097606000-36480` is honest at 98/104
+  matching files.  It repaired new Find Cmd and XT Mouse regressions before
+  publication; the final-source replay leaves only the six already-recorded
+  later-frontier owners:
+  Emacs Module, Keymap, Lread, Minibuf, Print, and Regex Emacs.  Mouse and the
+  former Custom timeout now pass.  Comparable new-owner bodies are Font 8/6,
+  Image 8/1, Indent 8/1, Inotify 7/0, and JSON 15/12 ms GNU/Emaxx; Mouse is
+  10/4, XT Mouse 1,291/1,284, and Find Cmd 8/1 ms.  No checkpoint body crosses
+  2x.  Setup remains dumped-startup issue #11 at 217-418 ms GNU versus
+  2,449-3,046 ms Emaxx.  Material broad body gaps in Emacsclient, Align,
+  Buffer, Eval, Htmlfontify, Newcomment, and related owners remain the
+  source-interpreter work in issue #12, not new correctness regressions.
+
+  Final gates on this exact source are green: formatting and diff checks;
+  all-target/all-feature check; strict Clippy; exact generated native-manifest
+  regeneration; 2,047 library tests with one ignored; 35 compatibility-harness,
+  one performance-harness, 10 CLI, and three ERT integration tests.  Run the
+  socket/TLS cases with localhost permission rather than treating sandbox
+  denials as product failures.
+
+  The downloaded `makefilemodefix.patch` is intentionally unapplied.  It
+  correctly identifies the Mac-only expectation introduced by `86ce515`, but
+  current `main` already contains the more complete `e4f8805` fix: one shared
+  GNU system-type decision table drives both runtime preload and tests, with
+  Darwin/Berkeley Unix selecting BSD Make and other targets selecting GNU
+  Make.  The loaded Semantic regression passes.
+
 - 2026-08-13 FILELOCK-THROUGH-FNS CHECKPOINT: the exact contiguous frontier
   is **6,566/7,080**, leaving **514** selectors.  The final-source atomic
   replay covers selectors 6,451-6,566: all **116/116** outcomes match GNU

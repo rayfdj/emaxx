@@ -3199,7 +3199,12 @@ define_dispatch!(
                         .unwrap_or(Value::Nil));
                 }
                 let pos = position_from_value(interp, &args[0])?;
+                let window_id = args
+                    .get(2)
+                    .and_then(|object| window_record_id_from_value(interp, object));
                 let buffer_id = match args.get(2) {
+                    Some(object) if window_id.is_some() => window_buffer_id(interp, object)
+                        .ok_or_else(|| wrong_type_argument("window-live-p", object.clone()))?,
                     Some(object) if !object.is_nil() => interp.resolve_buffer_id(object)?,
                     _ => interp.current_buffer_id(),
                 };
@@ -3219,6 +3224,7 @@ define_dispatch!(
                     pos,
                     &prop,
                     name == "get-pos-property",
+                    window_id,
                 )
                 .or_else(|| {
                     if name == "get-pos-property" {
@@ -3247,16 +3253,21 @@ define_dispatch!(
                     return Ok(Value::cons(value, Value::Nil));
                 }
                 let pos = position_from_value(interp, &args[0])?;
+                let window_id = args
+                    .get(2)
+                    .and_then(|object| window_record_id_from_value(interp, object));
                 let buffer_id = match args.get(2) {
+                    Some(object) if window_id.is_some() => window_buffer_id(interp, object)
+                        .ok_or_else(|| wrong_type_argument("window-live-p", object.clone()))?,
                     Some(object) if !object.is_nil() => interp.resolve_buffer_id(object)?,
                     _ => interp.current_buffer_id(),
                 };
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-                if let Some((value, overlay_id)) =
-                    highest_priority_overlay_property_with_id(interp, buffer, pos, &prop, false)
-                {
+                if let Some((value, overlay_id)) = highest_priority_overlay_property_with_id(
+                    interp, buffer, pos, &prop, false, window_id,
+                ) {
                     return Ok(Value::cons(value, Value::Overlay(overlay_id)));
                 }
                 let value = buffer_property_at_with_category(interp, buffer, pos, &prop)
