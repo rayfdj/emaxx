@@ -18,6 +18,40 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-12 TAB-BAR-THROUGH-TIME-STAMP CHECKPOINT: the exact contiguous
+  frontier is **5,513/7,080**, leaving **1,567** selectors.  The final-source
+  replay covers selectors 5,185-5,513: all **329/329** selected outcomes match
+  GNU.  NEXT is selector **5,514**, `time-tests-display-time-file-nonempty-p`,
+  in `test/lisp/time-tests.el` (eight selected outcomes).
+
+  Canonical subject-source fingerprint is
+  `083e77b1cb9cd26e4df90e421e269bc1ed64d2d5c77dd4304285e65ffa7d0e30` and
+  release binary hash is
+  `b24f341054c834dc192cc35aab8239d1a991111a1c21261cb3562ad853eb94fd`.
+  The 24 final artifacts are recorded in `docs/compatibility-goal.md`, from
+  Tab Bar `target/compat/run-1786501245697492000-25006` through Time Stamp
+  `target/compat/run-1786501571576260000-28082`.
+
+  No comparable body crosses the simultaneous 5x/+1-second interruption
+  gate.  Thingatpt's cold 69/1,193 ms body is source-library loading (warm
+  Emaxx is about 16 ms), tracked with dumped/compiled loading rather than as a
+  body regression.  Other ratio warnings are below +1 second; Time Stamp is
+  faster in Emaxx.
+
+  Shared work includes complete GNU Elisp ownership for Tab Bar, Faces, Font
+  Lock, Files auto-mode, Fill, and RefTeX; backward regexp context and syntax
+  properties; category/fill and match-data state; time formatting; and exact
+  mail/user/UID contracts.  `face-list` now reads the native face registry,
+  and GNU `faces.el` owns `face-set-after-frame-default` instead of an obsolete
+  preferred native no-op.  Upstream theme enable/disable behavior has direct
+  coverage.
+
+  Final gates are green: format/diff, all-target/all-feature check, strict
+  Clippy, generated validation 13/13 in 13.23 seconds, and elevated full tests
+  with library 1,985/1,985 in 1,645.53 seconds, `compat-harness` 33/33,
+  `perf-harness` 1/1, CLI 10/10, and ERT runner 3/3.  Real network, TLS, PTY,
+  serial, process, and scheduler coverage ran without sandbox substitution.
+
 - 2026-08-12 SORT-THROUGH-SUBR CHECKPOINT: implementation is at
   `7df0499a36619aef7899328fabb357a2dd56a575`.  The final-source replay covers
   selectors 5,115-5,184: all **70/70** selected outcomes match GNU, advancing

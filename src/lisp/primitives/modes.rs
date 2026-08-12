@@ -96,8 +96,15 @@ define_dispatch!(
                 );
                 Ok(result)
             }
-            // GNU js.el makes `javascript-mode' a defalias for `js-mode'.
-            "javascript-mode" => call(interp, "js-mode"),
+            // GNU's generated loaddefs makes `javascript-mode' an alias for
+            // `js-mode'.  Resolve the live function cell so loading js.el
+            // replaces the file-less native fallback for both names.
+            "javascript-mode" => call_function_value(
+                interp,
+                &Value::Symbol("js-mode".into()),
+                &[],
+                &mut Vec::new(),
+            ),
             "ruby-mode" => {
                 derived_mode_set_parent(interp, "ruby-mode", Some("prog-mode"));
                 activate_ruby_mode(interp)
@@ -512,7 +519,10 @@ fn activate_c_family_mode_with_semantic(
             Value::list([Value::Symbol("ignore".into())]),
         );
     }
-    interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::T);
+    // Enabling a major mode does not mean its text has already been
+    // fontified.  GNU's loaded font-lock owner uses this flag to decide
+    // whether `font-lock-ensure' must call the region function.
+    interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::Nil);
     let Value::CharTable(syntax_table_id) =
         interp.make_char_table(Some("syntax-table".into()), Value::Nil)
     else {

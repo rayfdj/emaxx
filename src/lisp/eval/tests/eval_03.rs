@@ -2399,7 +2399,7 @@ fn loaded_gnu_file_modes_run_semantic_parser_setup() {
             actual,
             Value::list([
                 Value::list([Value::Symbol("python-mode".into()), Value::T, Value::T,]),
-                Value::list([Value::Symbol("html-mode".into()), Value::T, Value::T,]),
+                Value::list([Value::Symbol("mhtml-mode".into()), Value::T, Value::T,]),
                 Value::list([
                     Value::Symbol("makefile-bsdmake-mode".into()),
                     Value::T,

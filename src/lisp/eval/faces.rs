@@ -39,6 +39,12 @@ impl Interpreter {
         self.lisp_face_state_index(name).is_some()
     }
 
+    pub(crate) fn lisp_face_names(&self) -> impl Iterator<Item = &str> {
+        self.lisp_face_states
+            .iter()
+            .map(|state| state.name.as_str())
+    }
+
     pub(crate) fn lisp_face_vector(&self, name: &str, global: bool) -> Option<Value> {
         let state = self
             .lisp_face_state_index(name)

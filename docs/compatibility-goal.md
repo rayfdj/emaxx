@@ -42,6 +42,70 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-12 Tab-Bar-through-Time-Stamp checkpoint advances the exact
+  contiguous frontier to **5,513/7,080**, leaving **1,567** selectors.  The
+  final-source canonical replay covers selectors 5,185-5,513: all **329/329**
+  selected outcomes match GNU, with no timeout, unilateral skip, or changed
+  status.  NEXT is selector **5,514**, `time-tests-display-time-file-nonempty-p`,
+  in `test/lisp/time-tests.el` (eight selected outcomes in the file).
+
+  All 24 canonical artifacts use subject-source fingerprint
+  `083e77b1cb9cd26e4df90e421e269bc1ed64d2d5c77dd4304285e65ffa7d0e30`,
+  release subject binary
+  `b24f341054c834dc192cc35aab8239d1a991111a1c21261cb3562ad853eb94fd`,
+  and separate 180-second setup/body budgets:
+
+  | Selection | Result | Artifact | GNU/Emaxx setup ms | GNU/Emaxx body ms |
+  | --- | ---: | --- | ---: | ---: |
+  | Tab Bar | 2/2 | `target/compat/run-1786501245697492000-25006` | 224/2,607 | 10/28 |
+  | Tabify | 4/4 | `target/compat/run-1786501271844355000-25138` | 219/2,609 | 8/1 |
+  | Tar | 3/3 | `target/compat/run-1786501281610377000-25264` | 297/2,649 | 641/1,138 |
+  | Tempo | 23/23 | `target/compat/run-1786501292954070000-25430` | 234/2,643 | 64/14 |
+  | TTY Colors | 1/1 | `target/compat/run-1786501303471364000-25556` | 232/2,632 | 7/1 |
+  | Term | 12/12 | `target/compat/run-1786501313517512000-25681` | 305/2,748 | 138/215 |
+  | BibTeX | 2/2 | `target/compat/run-1786501324204999000-25904` | 237/2,648 | 8/7 |
+  | Conf Mode | 11/11 | `target/compat/run-1786501333006174000-26028` | 237/2,615 | 8/26 |
+  | CSS Mode | 38/38 | `target/compat/run-1786501372727397000-26171` | 612/3,609 | 275/883 |
+  | DNS Mode | 3/3 | `target/compat/run-1786501392769722000-26318` | 258/2,609 | 10/7 |
+  | Emacs News Mode | 1/1 | `target/compat/run-1786501403333455000-26442` | 257/2,668 | 9/16 |
+  | Fill | 5/5 | `target/compat/run-1786501413345266000-26566` | 236/2,608 | 15/28 |
+  | MHTML Mode | 4/4 | `target/compat/run-1786501423498495000-26690` | 513/4,625 | 11/94 |
+  | Page | 6/6 | `target/compat/run-1786501440692734000-26818` | 237/2,604 | 8/4 |
+  | Paragraphs | 16/16 | `target/compat/run-1786501450699523000-26942` | 230/2,618 | 267/685 |
+  | PO | 2/2 | `target/compat/run-1786501471438426000-27079` | 232/2,610 | 8/1 |
+  | RefTeX | 10/10 | `target/compat/run-1786501480871552000-27204` | 244/2,692 | 127/315 |
+  | SGML Mode | 10/10 | `target/compat/run-1786501497582727000-27329` | 250/2,685 | 11/72 |
+  | Texinfo | 1/1 | `target/compat/run-1786501512252017000-27457` | 247/2,792 | 8/17 |
+  | Tildify | 18/18 | `target/compat/run-1786501522514312000-27581` | 248/2,619 | 202/417 |
+  | Underline | 2/2 | `target/compat/run-1786501537318430000-27709` | 241/2,813 | 10/1 |
+  | Thingatpt | 17/17 | `target/compat/run-1786501546680005000-27833` | 235/2,620 | 69/1,193 |
+  | Thread | 3/3 | `target/compat/run-1786501562348104000-27958` | 233/2,607 | 34/52 |
+  | Time Stamp | 135/135 | `target/compat/run-1786501571576260000-28082` | 305/2,759 | 1,398/401 |
+
+  No comparable body meets the simultaneous 5x/+1-second interruption gate.
+  Thingatpt's cold 17.290x/+1,124 ms result is source-library loading: an
+  immediate warm Emaxx body is about 16 ms, so it remains under the separate
+  dumped/compiled-loading issue rather than a test-body optimization detour.
+  The other ratio warnings are below +1 second; Time Stamp is faster in Emaxx.
+
+  Shared repairs keep GNU's ownership boundaries: complete Tab Bar, Faces,
+  Font Lock, Files auto-mode, Fill, and RefTeX Elisp owners are loaded rather
+  than reimplemented in Rust.  Rust host contracts now cover backward regexp
+  end context and syntax properties, category/fill state, match-data clearing,
+  time formatting, startup mail/identity values, and exact UID inputs.  The
+  native face registry is the one authority for `face-list`, and the obsolete
+  preferred native `face-set-after-frame-default` no-op no longer bypasses
+  GNU `faces.el`; the complete upstream theme enable/disable lifecycle is
+  covered directly.
+
+  Final publication evidence is green: format and diff checks; all-target,
+  all-feature check; strict Clippy; generated validation **13/13** in 13.23
+  seconds; and elevated `cargo test --all-targets --all-features` with library
+  **1,985/1,985** in 1,645.53 seconds, `compat-harness` 33/33,
+  `perf-harness` 1/1, CLI 10/10, and ERT runner 3/3.  Real network, TLS, PTY,
+  serial, subprocess, and scheduler coverage passed with no sandbox-denied or
+  isolated-rerun substitution.
+
 - The 2026-08-12 Sort-through-Subr implementation checkpoint is at
   `7df0499a36619aef7899328fabb357a2dd56a575`.  The final-source canonical
   replay covers selectors 5,115-5,184: all **70/70** selected outcomes match

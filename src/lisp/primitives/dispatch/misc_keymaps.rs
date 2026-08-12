@@ -1003,15 +1003,37 @@ define_dispatch!(
                         .into(),
                 ))
             }
-            "user-login-name" | "user-real-login-name" => {
+            "user-login-name" => {
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                Ok(Value::String(
-                    current_user_login_name()
-                        .unwrap_or_else(|| "user".into())
-                        .into(),
-                ))
+                if args.first().is_none_or(Value::is_nil) {
+                    return Ok(interp
+                        .lookup_var("user-login-name", env)
+                        .unwrap_or_else(|| {
+                            Value::String(
+                                current_user_login_name()
+                                    .unwrap_or_else(|| "user".into())
+                                    .into(),
+                            )
+                        }));
+                }
+                let uid = legacy_unsigned_id(&args[0])?;
+                Ok(user_name_from_uid(uid)
+                    .map(|value| Value::String(value.into()))
+                    .unwrap_or(Value::Nil))
+            }
+            "user-real-login-name" => {
+                need_args(name, args, 0)?;
+                Ok(interp
+                    .lookup_var("user-real-login-name", env)
+                    .unwrap_or_else(|| {
+                        Value::String(
+                            current_real_user_login_name()
+                                .unwrap_or_else(|| "user".into())
+                                .into(),
+                        )
+                    }))
             }
             "system-name" => {
                 if !args.is_empty() {
@@ -1023,14 +1045,26 @@ define_dispatch!(
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let requested = args.first().and_then(|value| {
-                    if value.is_nil() {
-                        None
-                    } else {
-                        string_text(value).ok()
+                let Some(requested) = args.first().filter(|value| !value.is_nil()) else {
+                    return Ok(interp.lookup_var("user-full-name", env).unwrap_or_else(|| {
+                        Value::String(
+                            current_user_full_name()
+                                .unwrap_or_else(|| "unknown".into())
+                                .into(),
+                        )
+                    }));
+                };
+                let full_name = match requested {
+                    Value::Integer(_) | Value::BigInteger(_) | Value::Float(_) => {
+                        user_full_name_from_uid(legacy_unsigned_id(requested)?)
                     }
-                });
-                Ok(user_full_name(requested.as_deref())
+                    Value::String(_) | Value::StringObject(_) => {
+                        let login = string_text(requested)?;
+                        user_full_name(Some(&login))
+                    }
+                    _ => return Err(LispError::Signal("Invalid UID specification".into())),
+                };
+                Ok(full_name
                     .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
@@ -1090,12 +1124,14 @@ define_dispatch!(
             "group-real-gid" => Ok(Value::Integer(current_real_group_id()? as i64)),
             "group-name" => {
                 need_args(name, args, 1)?;
-                let gid = match &args[0] {
-                    Value::Integer(value) => *value,
-                    Value::Float(value) => *value as i64,
-                    _ => return Err(LispError::Signal("Invalid GID specification".into())),
-                };
-                Ok(group_name_from_gid(gid)?
+                if !matches!(
+                    args[0],
+                    Value::Integer(_) | Value::BigInteger(_) | Value::Float(_) | Value::Cons(_)
+                ) {
+                    return Err(LispError::Signal("Invalid GID specification".into()));
+                }
+                let gid = legacy_unsigned_id(&args[0])?;
+                Ok(group_name_from_gid(i64::from(gid))?
                     .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }

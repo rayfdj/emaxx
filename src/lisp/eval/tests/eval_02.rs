@@ -59,6 +59,56 @@ fn define_derived_mode_preserves_a_predefined_abbrev_table() {
 }
 
 #[test]
+fn loaded_derived_mode_owner_wires_parent_mode_tables_at_activation() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (define-derived-mode sample-parent-mode fundamental-mode "Parent"
+                   (modify-syntax-entry ?% "<"))
+                 (define-derived-mode sample-child-mode sample-parent-mode "Child")
+                 (with-temp-buffer
+                   (sample-child-mode)
+                   (insert "x % comment\ny")
+                   (list
+                    (featurep 'derived)
+                    (eq (char-table-parent sample-child-mode-syntax-table)
+                        sample-parent-mode-syntax-table)
+                    (eq (keymap-parent sample-child-mode-map)
+                        sample-parent-mode-map)
+                    (eq (car (abbrev-table-get
+                              sample-child-mode-abbrev-table :parents))
+                        sample-parent-mode-abbrev-table)
+                    (progn
+                      (goto-char 8)
+                      (nth 4 (syntax-ppss))))))"#,
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn source_loaded_tex_mode_inherits_its_parent_syntax_table() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(progn
+                 (require 'tex-mode)
+                 (with-temp-buffer
+                   (latex-mode)
+                   (insert "x % \\cite{ignored}\ny")
+                   (list
+                    (featurep 'derived)
+                    (eq (char-table-parent latex-mode-syntax-table)
+                        tex-mode-syntax-table)
+                    (eq (car (syntax-after 3)) 11)
+                    (progn
+                      (goto-char 10)
+                      (nth 4 (syntax-ppss))))))"#,
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn eager_define_derived_mode_lowering_replaces_its_search_stub_with_the_real_mode() {
     assert_eq!(
         eval_str(
@@ -2954,6 +3004,123 @@ fn re_search_backward_respects_line_end_anchors() {
 }
 
 #[test]
+fn re_search_backward_preserves_context_after_the_search_point() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (list
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 3)
+                    (list (re-search-backward "^[ \t]*$" nil t)
+                          (point)))
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 3)
+                    (list (re-search-backward "$" nil t)
+                          (point)
+                          (match-beginning 0)
+                          (match-end 0)))
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 3)
+                    (list (re-search-backward "\\'" nil t)
+                          (point)))
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 3)
+                    (list (re-search-backward "\\=" nil t)
+                          (point)
+                          (match-beginning 0)
+                          (match-end 0)))
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 3)
+                    (list (re-search-backward "\\=b" nil t)
+                          (point)))
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 4)
+                    (list (re-search-backward "b\\=" nil t)
+                          (point)
+                          (match-beginning 0)
+                          (match-end 0)))
+                  (with-temp-buffer
+                    (insert "@defun x\nText")
+                    (goto-char 10)
+                    (let ((regexp
+                           "\\(@[a-zA-Z]+\\)[ \t\n]\\|^[ \t]*$\\|\f"))
+                      (list (re-search-backward regexp nil t)
+                            (match-beginning 0)
+                            (match-end 0))))
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 3)
+                    (list (posix-search-backward "^[ \t]*$" nil t)
+                          (point)))
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 3)
+                    (list (posix-search-backward "$" nil t)
+                          (point)
+                          (match-beginning 0)
+                          (match-end 0)))
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 3)
+                    (list (posix-search-backward "\\'" nil t)
+                          (point)))
+                  (with-temp-buffer
+                    (insert "a\nb")
+                    (goto-char 3)
+                    (list (posix-search-backward "\\=" nil t)
+                          (point)
+                          (match-beginning 0)
+                          (match-end 0))))
+                "#,
+        ),
+        Value::list([
+            Value::list([Value::Nil, Value::Integer(3)]),
+            Value::list([
+                Value::Integer(2),
+                Value::Integer(2),
+                Value::Integer(2),
+                Value::Integer(2),
+            ]),
+            Value::list([Value::Nil, Value::Integer(3)]),
+            Value::list([
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(3),
+            ]),
+            Value::list([Value::Nil, Value::Integer(3)]),
+            Value::list([
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(4),
+            ]),
+            Value::list([Value::Integer(1), Value::Integer(1), Value::Integer(8)]),
+            Value::list([Value::Nil, Value::Integer(3)]),
+            Value::list([
+                Value::Integer(2),
+                Value::Integer(2),
+                Value::Integer(2),
+                Value::Integer(2),
+            ]),
+            Value::list([Value::Nil, Value::Integer(3)]),
+            Value::list([
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(3),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn re_search_backward_empty_line_with_bound_returns_line_start() {
     assert_eq!(
         eval_str(
@@ -3041,6 +3208,19 @@ fn unmatched_explicit_duplicate_capture_keeps_prior_match() {
                 "#
         ),
         Value::list([Value::T, Value::Integer(0), Value::Integer(1),])
+    );
+}
+
+#[test]
+fn clearing_match_data_leaves_unmatched_register_queries_defined() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (string-match \"a\" \"a\")
+               (set-match-data nil)
+               (list (match-data) (match-beginning 0) (match-end 0)))"
+        ),
+        Value::list([Value::Nil, Value::Nil, Value::Nil])
     );
 }
 
@@ -3995,6 +4175,81 @@ fn format_time_string_supports_date_and_time_aliases() {
             "2004-09-17T05:09:10+0000",
         );
     });
+}
+
+#[test]
+fn format_time_string_supports_case_flags_widths_and_calendar_fields() {
+    run_with_large_stack(|| {
+        assert_string_value(
+            eval_str(
+                r#"(let ((time (encode-time 5 4 15 2 1 2006 nil nil 0)))
+                     (mapconcat
+                      (lambda (format)
+                        (format-time-string format time t))
+                      '("%^A" "%#A" "%#p" "%#Z"
+                        "%5a" "%05a" "%-5a" "%_5a"
+                        "%3m" "%_3m" "%-3m"
+                        "%U" "%W" "%V" "%G" "%g" "%q" "%k" "%l"
+                        "%Ec" "%Od")
+                      "|"))"#,
+            ),
+            "MONDAY|MONDAY|pm|utc|  Mon|00Mon|Mon|  Mon|001|  1|1|\
+             01|01|01|2006|06|1|15| 3|Mon Jan  2 15:04:05 2006|02",
+        );
+    });
+}
+
+#[test]
+fn startup_mail_host_address_is_a_special_nil_binding() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((read-mail-host (lambda () mail-host-address)))
+                 (list mail-host-address
+                       (let ((mail-host-address "mail.example"))
+                         (funcall read-mail-host))
+                       mail-host-address))"#,
+        ),
+        Value::list([Value::Nil, Value::String("mail.example".into()), Value::Nil,])
+    );
+}
+
+#[test]
+fn user_identity_primitives_honor_dynamic_cells_and_gnu_uid_inputs() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((read-current-identities
+                       (lambda ()
+                         (list (user-full-name) (user-full-name nil)
+                               (user-login-name) (user-login-name nil)
+                               (user-real-login-name)))))
+                 (list
+                  (let ((user-full-name "Full Name")
+                        (user-login-name "login")
+                        (user-real-login-name "real"))
+                    (funcall read-current-identities))
+                  (equal (user-login-name 0) (user-login-name 0.0))
+                  (equal (user-login-name 0) (user-login-name '(0 . 0)))
+                  (condition-case error
+                      (user-login-name 1.5)
+                    (error (error-message-string error)))
+                  (condition-case error
+                      (user-full-name 'not-a-uid)
+                    (error (error-message-string error)))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::String("Full Name".into()),
+                Value::String("Full Name".into()),
+                Value::String("login".into()),
+                Value::String("login".into()),
+                Value::String("real".into()),
+            ]),
+            Value::T,
+            Value::T,
+            Value::String("Not an in-range integer, integral float, or cons of integers".into()),
+            Value::String("Invalid UID specification".into()),
+        ])
+    );
 }
 
 #[test]
@@ -6799,6 +7054,21 @@ fn compiled_interactive_metadata_is_shared_by_command_queries() {
 #[test]
 fn native_face_variables_exist_before_lisp_libraries_load() {
     let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (internal-get-lisp-face-attribute 'default :foreground nil)
+                   (internal-get-lisp-face-attribute 'default :background nil)
+                   (internal-get-lisp-face-attribute 'default :foreground t)
+                   (internal-get-lisp-face-attribute 'default :background t))"
+        ),
+        Value::list([
+            Value::String("unspecified-fg".into()),
+            Value::String("unspecified-bg".into()),
+            Value::Symbol("unspecified".into()),
+            Value::Symbol("unspecified".into()),
+        ])
+    );
     assert_eq!(
         eval_str_with(
             &mut interp,

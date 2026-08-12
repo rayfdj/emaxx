@@ -56,6 +56,10 @@ impl BuiltinMacroForm {
             _ => return None,
         })
     }
+
+    fn yields_to_loaded_elisp_owner(self) -> bool {
+        matches!(self, Self::DefineDerivedMode)
+    }
 }
 
 /// Native behavior that must still run even after global lookup has proved a
@@ -698,6 +702,22 @@ impl Interpreter {
                 })
                 .map(Some);
         }
+
+        // The built-in define-derived-mode expander is only a file-less
+        // bootstrap substrate.  Once derived.el has materialized its macro
+        // function cell, use that owner instead of lowering through Emaxx's
+        // internal executor.
+        let native_probe = match native_probe {
+            Some(NativeMacroProbe::Builtin(form)) if form.yields_to_loaded_elisp_owner() => {
+                self.ensure_autoloaded_macro_loaded(name);
+                if self.has_macro_binding(name) {
+                    None
+                } else {
+                    Some(NativeMacroProbe::Builtin(form))
+                }
+            }
+            probe => probe,
+        };
 
         // Backquote evaluation is native (the reader encodes unquotes as
         // `comma'/`comma-at' markers that GNU backquote.el's `\`' macro does

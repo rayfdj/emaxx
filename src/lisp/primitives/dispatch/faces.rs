@@ -452,6 +452,12 @@ define_dispatch!(
             }
             "internal-lisp-face-p" => {
                 need_arg_range(name, args, 1, 2)?;
+                if !matches!(
+                    &args[0],
+                    Value::Symbol(_) | Value::String(_) | Value::StringObject(_)
+                ) {
+                    return Ok(Value::Nil);
+                }
                 let face = resolve_face_name(interp, &args[0])?;
                 Ok(interp
                     .lisp_face_vector(&face, args.get(1).is_none_or(Value::is_nil))

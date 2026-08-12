@@ -451,6 +451,19 @@ impl Interpreter {
         id
     }
 
+    pub(crate) fn initialized_standard_category_table_id(&self) -> Option<u64> {
+        self.standard_category_table_id
+    }
+
+    pub(crate) fn initialized_current_category_table_id(&self) -> Option<u64> {
+        self.buffer_local_value(self.current_buffer_id(), "category-table")
+            .and_then(|value| match value {
+                Value::CharTable(id) => Some(id),
+                _ => None,
+            })
+            .or(self.standard_category_table_id)
+    }
+
     pub fn ensure_standard_case_table(&mut self) -> u64 {
         if let Some(id) = self.standard_case_table_id {
             return id;

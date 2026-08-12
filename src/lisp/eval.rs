@@ -1841,6 +1841,15 @@ fn empty_lisp_face_vector() -> Value {
     )
 }
 
+fn tty_default_lisp_face_vector() -> Value {
+    let mut attributes =
+        std::iter::repeat_n(Value::symbol("unspecified"), LFACE_VECTOR_SIZE).collect::<Vec<_>>();
+    attributes[0] = Value::symbol("face");
+    attributes[9] = Value::String("unspecified-fg".into());
+    attributes[10] = Value::String("unspecified-bg".into());
+    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(attributes))
+}
+
 type OrderedBindings = LinkedHashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>;
 
 fn ordered_bindings(entries: impl IntoIterator<Item = (String, Value)>) -> OrderedBindings {
@@ -2525,6 +2534,10 @@ impl Interpreter {
                 ("kbd-macro-termination-hook".into(), Value::Nil),
                 ("last-kbd-macro".into(), Value::Nil),
                 ("file-name-handler-alist".into(), Value::Nil),
+                // File-less embeddings need a compact mode-selection
+                // fallback.  Keep it as removable provisional state so GNU
+                // files.el can replace it atomically during batch startup.
+                ("auto-mode-alist".into(), builtin_auto_mode_alist()),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
                 ("inhibit-file-name-operation".into(), Value::Nil),
                 ("inhibit-read-only".into(), Value::Nil),
@@ -2992,7 +3005,7 @@ impl Interpreter {
                 name: "default".into(),
                 id: Some(0),
                 global: Some(empty_lisp_face_vector()),
-                selected_frame: Some(empty_lisp_face_vector()),
+                selected_frame: Some(tty_default_lisp_face_vector()),
             }],
             selected_frame_face_hash_table: None,
             next_lisp_face_id: 1,

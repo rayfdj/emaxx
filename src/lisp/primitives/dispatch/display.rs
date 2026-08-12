@@ -2103,7 +2103,9 @@ define_dispatch!(
                             Value::list([Value::Symbol("ignore".into())]),
                         );
                     }
-                    interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::T);
+                    // JIT registration enables future fontification; it does
+                    // not make the current buffer contents fontified.
+                    interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::Nil);
                     font_lock_mode_run_mode_function(interp, buffer_id, Value::T, env)?;
                     Ok(Value::T)
                 } else {
@@ -2285,7 +2287,6 @@ define_dispatch!(
                 font_lock_ensure_region(interp, start, end, env)?;
                 Ok(Value::Nil)
             }
-            #[dispatch(builtin_override)]
             "font-lock-ensure" | "font-lock-fontify-region" => {
                 // font-lock-fontify-region also takes GNU's optional LOUDLY.
                 if name == "font-lock-ensure" {
@@ -3821,7 +3822,6 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 Ok(interp.selected_frame_value())
             }
-            #[dispatch(builtin_override)]
             "face-set-after-frame-default" => {
                 need_arg_range(name, args, 1, 2)?;
                 Ok(Value::Nil)

@@ -4126,6 +4126,18 @@ fn builtin_startup_defaults_are_intrinsically_special() {
         "max-mini-window-height",
         "inhibit-point-motion-hooks",
         "inhibit-x-resources",
+        "tab-bar-mode",
+        "auto-resize-tab-bars",
+        "auto-raise-tab-bar-buttons",
+        "auto-resize-tool-bars",
+        "auto-raise-tool-bar-buttons",
+        "tab-bar-border",
+        "tab-bar-button-margin",
+        "tab-bar-button-relief",
+        "tool-bar-border",
+        "tool-bar-button-margin",
+        "tool-bar-button-relief",
+        "read-minibuffer-restore-windows",
     ] {
         assert!(
             interp.builtin_var_value(name).is_some(),
@@ -4141,14 +4153,44 @@ fn builtin_startup_defaults_are_intrinsically_special() {
             "(progn
                (defun emaxx-test-native-startup-bindings ()
                  (list resize-mini-windows max-mini-window-height
-                       inhibit-point-motion-hooks inhibit-x-resources))
+                       inhibit-point-motion-hooks inhibit-x-resources
+                       tab-bar-mode))
                (let ((resize-mini-windows nil)
                      (max-mini-window-height 7)
                      (inhibit-point-motion-hooks nil)
-                     (inhibit-x-resources nil))
+                     (inhibit-x-resources nil)
+                     (tab-bar-mode t))
                  (emaxx-test-native-startup-bindings)))"
         ),
-        Value::list([Value::Nil, Value::Integer(7), Value::Nil, Value::Nil])
+        Value::list([
+            Value::Nil,
+            Value::Integer(7),
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+        ])
+    );
+    assert_eq!(
+        eval_str(
+            "(list auto-resize-tab-bars auto-raise-tab-bar-buttons
+                   auto-resize-tool-bars auto-raise-tool-bar-buttons
+                   tab-bar-border tab-bar-button-margin tab-bar-button-relief
+                   tool-bar-border tool-bar-button-margin tool-bar-button-relief
+                   read-minibuffer-restore-windows)"
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Symbol("internal-border-width".into()),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Symbol("internal-border-width".into()),
+            Value::Integer(4),
+            Value::Integer(1),
+            Value::T,
+        ])
     );
 }
 
@@ -4425,6 +4467,9 @@ fn category_primitives_honor_gnu_optional_tables_ranges_and_reset() {
                (modify-category-entry ?B ?y)
                ;; A range update must retain the narrower pre-existing value.
                (modify-category-entry '(?A . ?C) ?x)
+               ;; Category tables span GNU's complete internal character
+               ;; range, not only Unicode scalar values.
+               (modify-category-entry #x200020 ?x)
                ;; Nil TABLE also means the current buffer's table.
                (modify-category-entry ?B ?x nil t)
                (list (category-docstring ?x)
@@ -4433,6 +4478,7 @@ fn category_primitives_honor_gnu_optional_tables_ranges_and_reset() {
                         (let ((set (char-category-set character)))
                           (list (aref set ?x) (aref set ?y))))
                       '(?A ?B ?C))
+                     (aref (char-category-set #x200020) ?x)
                      (category-table-p (copy-category-table))))"
         ),
         Value::list([
@@ -4443,6 +4489,66 @@ fn category_primitives_honor_gnu_optional_tables_ranges_and_reset() {
                 Value::list([Value::T, Value::Nil]),
             ]),
             Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn regexp_category_atoms_use_live_buffer_and_standard_category_tables() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (let ((table (make-category-table))
+                       (case-fold-search t))
+                   (define-category ?x "category x" table)
+                   (set-category-table table)
+                   (insert "A")
+                   (goto-char (point-min))
+                   (list
+                    (looking-at "\\cx")
+                    (progn
+                      (modify-category-entry ?A ?x)
+                      (looking-at "\\cx"))
+                    (progn
+                      (modify-category-entry ?A ?x nil t)
+                      (looking-at "\\Cx"))
+                    ;; String matching uses the standard category table,
+                    ;; not this buffer's replacement table.
+                    (string-match-p "\\cx" "A"))))"#,
+        ),
+        Value::list([Value::Nil, Value::T, Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn self_insert_calls_internal_auto_fill_only_for_configured_characters() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (setq emaxx-test-auto-fill-calls nil)
+                 (fset 'internal-auto-fill
+                       (lambda ()
+                         (setq emaxx-test-auto-fill-calls
+                               (cons (list (point) (buffer-string))
+                                     emaxx-test-auto-fill-calls))
+                         t))
+                 (with-temp-buffer
+                   (setq-local auto-fill-function 'ignore)
+                   (self-insert-command 1 ?x)
+                   (self-insert-command 1 ?\s)
+                   (self-insert-command 1 ?\n)
+                   (list (nreverse emaxx-test-auto-fill-calls)
+                         (point)
+                         (buffer-string))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::list([Value::Integer(3), Value::String("x ".into())]),
+                Value::list([Value::Integer(3), Value::String("x \n".into())]),
+            ]),
+            Value::Integer(4),
+            Value::String("x \n".into()),
         ])
     );
 }
@@ -5526,6 +5632,23 @@ fn face_list_includes_defined_faces() {
                    (and (memq 'default (face-list))
                         (memq 'sample-listed-face (face-list))
                         t))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn face_list_uses_the_native_face_registry_for_runtime_faces() {
+    assert_eq!(
+        eval_str(
+            "(let ((define-runtime-face
+                    (lambda (name)
+                      (eval (list 'defface name
+                                  ''((t :extend t)) \"doc\")))))
+               (funcall define-runtime-face 'sample-runtime-face)
+               (and (facep 'sample-runtime-face)
+                    (memq 'sample-runtime-face (face-list))
+                    t))"
         ),
         Value::T
     );

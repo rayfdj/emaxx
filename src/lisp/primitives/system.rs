@@ -132,31 +132,172 @@ pub(crate) fn current_real_user_id() -> Result<u32, LispError> {
 }
 
 #[cfg(unix)]
-pub(crate) fn user_name_from_uid(uid: u32) -> Option<String> {
-    let mut passwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut result = std::ptr::null_mut();
-    // getpwuid_r uses caller-owned scratch storage and no process-global
-    // passwd cursor, so concurrent interpreters cannot disturb this lookup.
-    let mut scratch = vec![0_i8; 16 * 1024];
-    // SAFETY: all pointers refer to appropriately sized caller-owned storage
-    // for the duration of this reentrant libc call.
-    if unsafe {
-        libc::getpwuid_r(
-            uid as libc::uid_t,
-            passwd.as_mut_ptr(),
-            scratch.as_mut_ptr(),
-            scratch.len(),
-            &mut result,
-        )
-    } != 0
-        || result.is_null()
-    {
-        return None;
+#[derive(Clone, Copy)]
+enum UserAccountQuery<'a> {
+    Uid(u32),
+    Name(&'a std::ffi::CStr),
+}
+
+#[cfg(unix)]
+struct UserAccount {
+    login: String,
+    full_name: Option<String>,
+}
+
+#[cfg(unix)]
+fn user_account(query: UserAccountQuery<'_>) -> Option<UserAccount> {
+    let mut scratch_len = 16 * 1024;
+    loop {
+        let mut passwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result = std::ptr::null_mut();
+        let mut scratch = vec![0_i8; scratch_len];
+        // getpwuid_r/getpwnam_r use caller-owned storage, so concurrent
+        // interpreters cannot invalidate the returned account fields while
+        // this lookup copies them.
+        // SAFETY: every pointer refers to appropriately sized caller-owned
+        // storage for the duration of the reentrant libc call.
+        let status = unsafe {
+            match query {
+                UserAccountQuery::Uid(uid) => libc::getpwuid_r(
+                    uid as libc::uid_t,
+                    passwd.as_mut_ptr(),
+                    scratch.as_mut_ptr(),
+                    scratch.len(),
+                    &mut result,
+                ),
+                UserAccountQuery::Name(name) => libc::getpwnam_r(
+                    name.as_ptr(),
+                    passwd.as_mut_ptr(),
+                    scratch.as_mut_ptr(),
+                    scratch.len(),
+                    &mut result,
+                ),
+            }
+        };
+        if status == 0 {
+            if result.is_null() {
+                return None;
+            }
+            // SAFETY: a successful lookup initialized RESULT and its strings
+            // point into SCRATCH until this iteration ends.
+            let account = unsafe { &*result };
+            if account.pw_name.is_null() {
+                return None;
+            }
+            // SAFETY: libc passwd string fields are NUL-terminated when
+            // present, and the backing storage remains alive in this scope.
+            let login = unsafe { std::ffi::CStr::from_ptr(account.pw_name) }
+                .to_string_lossy()
+                .into_owned();
+            let full_name = if account.pw_gecos.is_null() {
+                None
+            } else {
+                // GNU ignores the comma-separated non-name GECOS fields.
+                let raw = unsafe { std::ffi::CStr::from_ptr(account.pw_gecos) }.to_string_lossy();
+                let mut full = raw.split(',').next().unwrap_or_default().to_string();
+                // Systems configured with AMPERSAND_FULL_NAME substitute the
+                // login at the first ampersand and capitalize its first byte.
+                if let Some(index) = full.find('&') {
+                    let mut expanded_login = login.clone();
+                    if let Some(first) = expanded_login.get_mut(..1) {
+                        first.make_ascii_uppercase();
+                    }
+                    full.replace_range(index..=index, &expanded_login);
+                }
+                Some(full)
+            };
+            return Some(UserAccount { login, full_name });
+        }
+        if status != libc::ERANGE || scratch_len >= 1024 * 1024 {
+            return None;
+        }
+        scratch_len *= 2;
     }
-    // SAFETY: successful getpwuid_r initialized passwd, whose name points
-    // into scratch until this function returns.
-    let name = unsafe { std::ffi::CStr::from_ptr((*passwd.as_ptr()).pw_name) };
-    Some(name.to_string_lossy().into_owned())
+}
+
+#[cfg(unix)]
+pub(crate) fn user_name_from_uid(uid: u32) -> Option<String> {
+    user_account(UserAccountQuery::Uid(uid)).map(|account| account.login)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn user_name_from_uid(uid: u32) -> Option<String> {
+    (current_user_id().ok() == Some(uid))
+        .then(current_user_login_name)
+        .flatten()
+}
+
+#[cfg(unix)]
+pub(crate) fn user_full_name_from_uid(uid: u32) -> Option<String> {
+    user_account(UserAccountQuery::Uid(uid)).and_then(|account| account.full_name)
+}
+
+#[cfg(unix)]
+pub(crate) fn user_full_name_from_login(login: &str) -> Option<String> {
+    let login = std::ffi::CString::new(login).ok()?;
+    user_account(UserAccountQuery::Name(&login)).and_then(|account| account.full_name)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn user_full_name_from_uid(_uid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(not(unix))]
+pub(crate) fn user_full_name_from_login(login: &str) -> Option<String> {
+    (current_user_login_name().as_deref() == Some(login)).then(|| {
+        std::env::var("EMAXX_USER_FULL_NAME")
+            .or_else(|_| std::env::var("NAME"))
+            .unwrap_or_else(|_| login.to_string())
+    })
+}
+
+/// Decode the legacy unsigned-ID representation accepted by GNU's
+/// CONS_TO_INTEGER boundary: an integer, an integral float, or the obsolete
+/// high/low cons form.  User and group primitives share this one contract.
+pub(crate) fn legacy_unsigned_id(value: &Value) -> Result<u32, LispError> {
+    fn integer_part(value: &Value) -> Option<u64> {
+        match value {
+            Value::Integer(value) => u64::try_from(*value).ok(),
+            Value::BigInteger(value) => value.to_u64(),
+            _ => None,
+        }
+    }
+
+    let decoded = match value {
+        Value::Integer(_) | Value::BigInteger(_) => integer_part(value),
+        Value::Float(value)
+            if value.is_finite()
+                && *value >= 0.0
+                && *value <= f64::from(u32::MAX)
+                && value.fract() == 0.0 =>
+        {
+            Some(*value as u64)
+        }
+        Value::Cons(_) => (|| {
+            let (high, rest) = value.cons_values().expect("matched cons");
+            let high = integer_part(&high)?;
+            if let Some((middle, low)) = rest.cons_values()
+                && high <= u64::from(u32::MAX) >> 40
+                && integer_part(&middle).is_some_and(|part| part < 1 << 24)
+                && integer_part(&low).is_some_and(|part| part < 1 << 16)
+            {
+                Some((high << 40) | (integer_part(&middle)? << 16) | integer_part(&low)?)
+            } else {
+                let low = rest.cons_values().map_or(rest, |(car, _)| car);
+                (high <= u64::from(u32::MAX) >> 16)
+                    .then(|| integer_part(&low).filter(|part| *part < 1 << 16))
+                    .flatten()
+                    .map(|low| (high << 16) | low)
+            }
+        })(),
+        _ => None,
+    };
+    decoded
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| {
+            LispError::Signal("Not an in-range integer, integral float, or cons of integers".into())
+        })
 }
 
 #[cfg(unix)]
@@ -833,10 +974,33 @@ pub(crate) fn expand_home_prefix_with_home(path: &str, home: Option<&str>) -> St
 }
 
 pub(crate) fn current_user_login_name() -> Option<String> {
-    std::env::var("LOGNAME")
+    let configured = std::env::var("LOGNAME")
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var("USER").ok().filter(|value| !value.is_empty()))
+        .or_else(|| std::env::var("USER").ok().filter(|value| !value.is_empty()));
+    #[cfg(unix)]
+    {
+        configured.or_else(|| current_user_id().ok().and_then(user_name_from_uid))
+    }
+    #[cfg(not(unix))]
+    {
+        configured.or_else(|| {
+            std::env::var("USERNAME")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+    }
+}
+
+pub(crate) fn current_real_user_login_name() -> Option<String> {
+    #[cfg(unix)]
+    {
+        current_real_user_id().ok().and_then(user_name_from_uid)
+    }
+    #[cfg(not(unix))]
+    {
+        current_user_login_name()
+    }
 }
 
 pub(crate) fn system_name_value() -> String {
@@ -859,7 +1023,13 @@ pub(crate) fn current_user_full_name() -> Option<String> {
     std::env::var("EMAXX_USER_FULL_NAME")
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(current_user_login_name)
+        .or_else(|| std::env::var("NAME").ok().filter(|value| !value.is_empty()))
+        .or_else(|| {
+            current_user_login_name()
+                .as_deref()
+                .and_then(user_full_name_from_login)
+        })
+        .or_else(|| current_user_id().ok().and_then(user_full_name_from_uid))
 }
 
 pub(crate) fn emacs_version_value() -> String {
@@ -905,14 +1075,23 @@ pub(crate) fn emacs_version_description() -> String {
 }
 
 pub(crate) fn user_exists(name: &str) -> bool {
-    current_user_login_name().is_some_and(|login| login == name)
+    #[cfg(unix)]
+    {
+        std::ffi::CString::new(name)
+            .ok()
+            .and_then(|name| user_account(UserAccountQuery::Name(&name)))
+            .is_some()
+    }
+    #[cfg(not(unix))]
+    {
+        current_user_login_name().is_some_and(|login| login == name)
+    }
 }
 
 pub(crate) fn user_full_name(name: Option<&str>) -> Option<String> {
     match name {
         None | Some("") => current_user_full_name(),
-        Some(name) if user_exists(name) => current_user_full_name(),
-        _ => None,
+        Some(name) => user_full_name_from_login(name),
     }
 }
 

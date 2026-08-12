@@ -1422,13 +1422,26 @@ pub(crate) fn strip_leading_zeros(text: &str) -> String {
     }
 }
 
-pub(crate) fn parse_time_format_spec(
-    spec: &[char],
-    index: &mut usize,
-) -> (bool, char, usize, Option<usize>, char) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TimeFormatSpec {
+    minimal: bool,
+    pad: Option<char>,
+    colons: usize,
+    width: Option<usize>,
+    uppercase: bool,
+    opposite_case: bool,
+    force_sign: bool,
+    modifier: Option<char>,
+    conversion: char,
+}
+
+pub(crate) fn parse_time_format_spec(spec: &[char], index: &mut usize) -> TimeFormatSpec {
     let mut minimal = false;
-    let mut pad = '0';
+    let mut pad = None;
     let mut colons = 0usize;
+    let mut uppercase = false;
+    let mut opposite_case = false;
+    let mut force_sign = false;
     while *index < spec.len() {
         match spec[*index] {
             '-' => {
@@ -1436,7 +1449,23 @@ pub(crate) fn parse_time_format_spec(
                 *index += 1;
             }
             '_' => {
-                pad = ' ';
+                pad = Some(' ');
+                *index += 1;
+            }
+            '0' => {
+                pad = Some('0');
+                *index += 1;
+            }
+            '+' => {
+                force_sign = true;
+                *index += 1;
+            }
+            '^' => {
+                uppercase = true;
+                *index += 1;
+            }
+            '#' => {
+                opposite_case = true;
                 *index += 1;
             }
             ':' => {
@@ -1459,8 +1488,87 @@ pub(crate) fn parse_time_format_spec(
     } else {
         None
     };
-    let conv = spec.get(*index).copied().unwrap_or('%');
-    (minimal, pad, colons, width, conv)
+    let modifier = spec
+        .get(*index)
+        .copied()
+        .filter(|ch| matches!(ch, 'E' | 'O'));
+    if modifier.is_some() {
+        *index += 1;
+    }
+    let conversion = spec.get(*index).copied().unwrap_or('%');
+    TimeFormatSpec {
+        minimal,
+        pad,
+        colons,
+        width,
+        uppercase,
+        opposite_case,
+        force_sign,
+        modifier,
+        conversion,
+    }
+}
+
+fn pad_time_field(mut field: String, width: usize, pad: char) -> String {
+    if field.len() >= width {
+        return field;
+    }
+    let padding = width - field.len();
+    if pad == '0' && matches!(field.as_bytes().first(), Some(b'+' | b'-')) {
+        let sign = field.remove(0);
+        format!("{sign}{}{field}", "0".repeat(padding))
+    } else {
+        format!("{}{field}", pad.to_string().repeat(padding))
+    }
+}
+
+fn numeric_time_field(
+    value: i64,
+    default_width: usize,
+    default_pad: char,
+    spec: TimeFormatSpec,
+) -> String {
+    let field = value.to_string();
+    if spec.minimal {
+        field
+    } else {
+        pad_time_field(
+            field,
+            spec.width.unwrap_or(default_width),
+            spec.pad.unwrap_or(default_pad),
+        )
+    }
+}
+
+fn year_time_field(year: i32, spec: TimeFormatSpec) -> String {
+    let field = if spec.force_sign && year > 9_999 {
+        format!("+{year}")
+    } else {
+        year.to_string()
+    };
+    if spec.minimal {
+        field
+    } else {
+        pad_time_field(field, spec.width.unwrap_or(4), spec.pad.unwrap_or('0'))
+    }
+}
+
+fn present_time_field(mut field: String, spec: TimeFormatSpec) -> String {
+    if spec.uppercase {
+        field = field.to_uppercase();
+    } else if spec.opposite_case {
+        field = if field.chars().any(char::is_lowercase) {
+            field.to_uppercase()
+        } else {
+            field.to_lowercase()
+        };
+    }
+    if !spec.minimal
+        && let Some(width) = spec.width
+    {
+        field = pad_time_field(field, width, spec.pad.unwrap_or(' '));
+    }
+    field
 }
 
 pub(crate) fn format_zone_offset(
@@ -1585,6 +1693,7 @@ pub(crate) fn format_time_string_value(
             index += 1;
             continue;
         }
+        let format_start = index;
         index += 1;
         if index >= chars.len() {
             break;
@@ -1594,47 +1703,63 @@ pub(crate) fn format_time_string_value(
             index += 1;
             continue;
         }
-        let (minimal, pad, colons, width, conv) = parse_time_format_spec(&chars, &mut index);
-        let field = match conv {
-            'Y' => datetime.year().to_string(),
+        let spec = parse_time_format_spec(&chars, &mut index);
+        if index >= chars.len() {
+            result.extend(chars[format_start..].iter());
+            break;
+        }
+        // Alternative locale representations collapse to the ordinary C
+        // locale representation used by the compatibility harness.  Parsing
+        // the modifier is nevertheless essential so E/O are not mistaken
+        // for conversion characters.
+        let _modifier = spec.modifier;
+        let field = match spec.conversion {
+            'Y' => year_time_field(datetime.year(), spec),
+            'G' => year_time_field(datetime.iso_week().year(), spec),
+            'g' => numeric_time_field(
+                datetime.iso_week().year().rem_euclid(100) as i64,
+                2,
+                '0',
+                spec,
+            ),
             'F' => format!(
                 "{:04}-{:02}-{:02}",
                 datetime.year(),
                 datetime.month(),
                 datetime.day()
             ),
-            'm' => {
-                let width = width.unwrap_or(2);
-                let digits = datetime.month().to_string();
-                if minimal {
-                    strip_leading_zeros(&digits)
-                } else if digits.len() >= width {
-                    digits
-                } else {
-                    let fill = if pad == ' ' { ' ' } else { '0' };
-                    format!(
-                        "{}{}",
-                        fill.to_string().repeat(width - digits.len()),
-                        digits
-                    )
-                }
-            }
-            'd' => format!("{:02}", datetime.day()),
-            'e' => format!("{:2}", datetime.day()),
+            'm' => numeric_time_field(datetime.month() as i64, 2, '0', spec),
+            'd' => numeric_time_field(datetime.day() as i64, 2, '0', spec),
+            'e' => numeric_time_field(datetime.day() as i64, 2, ' ', spec),
             'a' => weekday_name(&datetime, true),
             'A' => weekday_name(&datetime, false),
             'b' | 'h' => month_name(&datetime, true),
             'B' => month_name(&datetime, false),
-            'y' => format!("{:02}", datetime.year().rem_euclid(100)),
-            'C' => format!("{:02}", datetime.year().div_euclid(100)),
-            'j' => format!("{:03}", chrono::Datelike::ordinal(&datetime)),
+            'y' => numeric_time_field(datetime.year().rem_euclid(100) as i64, 2, '0', spec),
+            'C' => numeric_time_field(datetime.year().div_euclid(100) as i64, 2, '0', spec),
+            'j' => numeric_time_field(chrono::Datelike::ordinal(&datetime) as i64, 3, '0', spec),
             'u' => {
                 let n = chrono::Datelike::weekday(&datetime).num_days_from_sunday();
-                (if n == 0 { 7 } else { n }).to_string()
+                numeric_time_field(if n == 0 { 7 } else { n } as i64, 1, '0', spec)
             }
-            'w' => chrono::Datelike::weekday(&datetime)
-                .num_days_from_sunday()
-                .to_string(),
+            'w' => numeric_time_field(
+                chrono::Datelike::weekday(&datetime).num_days_from_sunday() as i64,
+                1,
+                '0',
+                spec,
+            ),
+            'U' => {
+                let week =
+                    (datetime.ordinal0() + 7 - datetime.weekday().num_days_from_sunday()) / 7;
+                numeric_time_field(week as i64, 2, '0', spec)
+            }
+            'W' => {
+                let week =
+                    (datetime.ordinal0() + 7 - datetime.weekday().num_days_from_monday()) / 7;
+                numeric_time_field(week as i64, 2, '0', spec)
+            }
+            'V' => numeric_time_field(datetime.iso_week().week() as i64, 2, '0', spec),
+            'q' => numeric_time_field(((datetime.month() - 1) / 3 + 1) as i64, 1, '0', spec),
             'D' => format!(
                 "{:02}/{:02}/{:02}",
                 datetime.month(),
@@ -1654,8 +1779,8 @@ pub(crate) fn format_time_string_value(
                 datetime.second()
             ),
             'R' => format!("{:02}:{:02}", datetime.hour(), datetime.minute()),
-            'I' => format!("{:02}", twelve_hour(datetime.hour())),
-            'l' => format!("{:2}", twelve_hour(datetime.hour())),
+            'I' => numeric_time_field(twelve_hour(datetime.hour()) as i64, 2, '0', spec),
+            'l' => numeric_time_field(twelve_hour(datetime.hour()) as i64, 2, ' ', spec),
             'p' => if datetime.hour() < 12 { "AM" } else { "PM" }.to_string(),
             'P' => if datetime.hour() < 12 { "am" } else { "pm" }.to_string(),
             'r' => format!(
@@ -1681,9 +1806,10 @@ pub(crate) fn format_time_string_value(
             }
             'n' => "\n".to_string(),
             't' => "\t".to_string(),
-            'H' => format!("{:02}", datetime.hour()),
-            'M' => format!("{:02}", datetime.minute()),
-            'S' => format!("{:02}", datetime.second()),
+            'H' => numeric_time_field(datetime.hour() as i64, 2, '0', spec),
+            'k' => numeric_time_field(datetime.hour() as i64, 2, ' ', spec),
+            'M' => numeric_time_field(datetime.minute() as i64, 2, '0', spec),
+            'S' => numeric_time_field(datetime.second() as i64, 2, '0', spec),
             'T' => format!(
                 "{:02}:{:02}:{:02}",
                 datetime.hour(),
@@ -1691,13 +1817,19 @@ pub(crate) fn format_time_string_value(
                 datetime.second()
             ),
             'Z' => zone.abbreviation.clone(),
-            'z' => format_zone_offset(zone.offset_seconds, colons, minimal, pad, width),
+            'z' => format_zone_offset(
+                zone.offset_seconds,
+                spec.colons,
+                spec.minimal,
+                spec.pad.unwrap_or('0'),
+                spec.width,
+            ),
             'N' => {
-                let width = width.unwrap_or(9);
+                let width = spec.width.unwrap_or(9);
                 let digits = format_fraction_digits(&picoseconds, width);
-                if minimal {
+                if spec.minimal {
                     trim_trailing_zeros(&digits)
-                } else if pad == ' ' {
+                } else if spec.pad == Some(' ') {
                     let trimmed = trim_trailing_zeros(&digits);
                     format!(
                         "{}{}",
@@ -1708,14 +1840,13 @@ pub(crate) fn format_time_string_value(
                     digits
                 }
             }
-            other => {
-                result.push('%');
-                result.push(other);
+            _ => {
+                result.extend(chars[format_start..=index].iter());
                 index += 1;
                 continue;
             }
         };
-        result.push_str(&field);
+        result.push_str(&present_time_field(field, spec));
         index += 1;
     }
     Ok(result)
