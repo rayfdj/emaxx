@@ -25,13 +25,14 @@ use crate::lisp::types::{Env, LispError, Value};
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
 fn debug_log(message: &str) {
-    if let Some(path) = std::env::var_os("EMAXX_TTY_LOG")
-        && let Ok(mut file) = std::fs::OpenOptions::new()
+    if let Some(path) = std::env::var_os("EMAXX_TTY_LOG") {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-    {
-        let _ = writeln!(file, "{message}");
+        {
+            let _ = writeln!(file, "{message}");
+        }
     }
 }
 
@@ -58,9 +59,9 @@ struct TtyState {
     top_line: usize,
     /// Events of the in-progress (multi-key) sequence.
     pending: Vec<Value>,
-    /// Echo-area contents and the *Messages* size they were derived from.
+    /// Frontend-owned echo text (key-sequence progress, command errors);
+    /// when empty, the session's `message' echo line shows instead.
     echo: String,
-    messages_seen: usize,
 }
 
 pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
@@ -90,23 +91,28 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     }
 
     let guard = TerminalGuard::enter().map_err(|error| error.to_string())?;
+    let queue = SharedEventQueue::default();
     crate::lisp::primitives::set_tty_minibuffer_reader(Some(Box::new(read_minibuffer_line)));
-    crate::lisp::primitives::set_tty_event_reader(Some(make_event_reader()));
-    let code = command_loop(&mut interpreter, &mut env);
+    crate::lisp::primitives::set_tty_event_reader(Some(make_event_reader(queue.clone())));
+    let code = command_loop(&mut interpreter, &mut env, &queue);
     crate::lisp::primitives::set_tty_event_reader(None);
     crate::lisp::primitives::set_tty_minibuffer_reader(None);
     drop(guard);
     code
 }
 
-/// Blocking single-event reader for command code that pulls events itself
-/// (`y-or-n-p', `read-event').  Multi-event encodings (the meta ESC
-/// prefix) queue their tail for the next pull; C-g answers `None' and
-/// becomes GNU's `quit' signal at the consuming primitive.
-fn make_event_reader() -> Box<dyn FnMut() -> Option<Value>> {
-    let mut queue: std::collections::VecDeque<Value> = std::collections::VecDeque::new();
-    Box::new(move || {
-        if let Some(event) = queue.pop_front() {
+/// The session's single event stream, shared between the command loop and
+/// command code that pulls events itself (`y-or-n-p', `read-event').  One
+/// queue means an event decoded for either consumer is never lost to the
+/// other, matching GNU's single keyboard buffer.
+#[derive(Clone, Default)]
+struct SharedEventQueue(std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<Value>>>);
+
+impl SharedEventQueue {
+    /// Pop the next event, blocking on the terminal when empty.  Returns
+    /// `None' only on terminal loss.
+    fn next_event(&self) -> Option<Value> {
+        if let Some(event) = self.0.borrow_mut().pop_front() {
             return Some(event);
         }
         loop {
@@ -118,15 +124,46 @@ fn make_event_reader() -> Box<dyn FnMut() -> Option<Value>> {
                 if events.is_empty() {
                     continue;
                 }
-                if events == [Value::Integer(7)] {
-                    return None;
-                }
                 let first = events.remove(0);
-                queue.extend(events);
+                self.0.borrow_mut().extend(events);
                 return Some(first);
             }
         }
+    }
+}
+
+/// Blocking single-event reader for command code that pulls events itself.
+/// The echo area is repainted before blocking so a prompt just issued with
+/// `message' (y-or-n-p's protocol) is visible while the terminal waits.
+/// C-g answers `None' and becomes GNU's `quit' signal at the consuming
+/// primitive.
+fn make_event_reader(queue: SharedEventQueue) -> Box<dyn FnMut() -> Option<Value>> {
+    Box::new(move || {
+        draw_echo_row();
+        let event = queue.next_event()?;
+        if event == Value::Integer(7) {
+            return None;
+        }
+        Some(event)
     })
+}
+
+/// Paint the live echo-area line without interpreter access; the message
+/// text lives in session state exactly so blocking readers can show it.
+fn draw_echo_row() {
+    let Ok((cols, rows)) = terminal::size() else {
+        return;
+    };
+    let mut text = crate::lisp::primitives::echo_area_message().unwrap_or_default();
+    text.truncate(cols.max(10) as usize);
+    let mut out = io::stdout();
+    let _ = queue!(
+        out,
+        cursor::MoveTo(0, rows.saturating_sub(1)),
+        terminal::Clear(terminal::ClearType::CurrentLine),
+        style::Print(&text),
+    );
+    let _ = out.flush();
 }
 
 fn visit_file_directly(interpreter: &mut Interpreter, env: &mut Env, path: &str) {
@@ -152,30 +189,27 @@ fn visit_file_directly(interpreter: &mut Interpreter, env: &mut Env, path: &str)
     );
 }
 
-fn command_loop(interpreter: &mut Interpreter, env: &mut Env) -> Result<i32, String> {
+fn command_loop(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    queue: &SharedEventQueue,
+) -> Result<i32, String> {
     let mut state = TtyState {
         top_line: 1,
         pending: Vec::new(),
         echo: String::new(),
-        messages_seen: messages_len(interpreter),
     };
 
     loop {
         redraw(interpreter, &mut state).map_err(|error| error.to_string())?;
-        let event = event::read().map_err(|error| error.to_string())?;
-        let events = match event {
-            Event::Key(key) => encode_key(key),
-            Event::Resize(_, _) => continue,
-            _ => continue,
+        let Some(event) = queue.next_event() else {
+            return Ok(0);
         };
-        if events.is_empty() {
-            continue;
-        }
 
         if state.pending.is_empty() {
             state.echo.clear();
         }
-        state.pending.extend(events);
+        state.pending.push(event);
 
         let resolution = resolve_pending(interpreter, env, &state.pending);
         debug_log(&format!(
@@ -199,13 +233,11 @@ fn command_loop(interpreter: &mut Interpreter, env: &mut Env) -> Result<i32, Str
                     Err(error) => {
                         debug_log(&format!("command error: {error:?}"));
                         state.echo = command_error_text(&error);
-                        state.messages_seen = messages_len(interpreter);
                     }
                 }
                 if let Some(termination) = interpreter.take_pending_termination() {
                     return Ok(termination.exit_code);
                 }
-                sync_echo_with_messages(interpreter, &mut state);
             }
             Resolution::Prefix => {
                 state.echo = format!("{}-", describe_keys(&state.pending));
@@ -303,13 +335,7 @@ fn execute_binding(
     // GNU's command_execute is a thin wrapper over call-interactively
     // (prefix-arg bookkeeping, kbd-macro expansion); the runtime does not
     // define it yet, so drive the interactive call directly.
-    let result = call(
-        interpreter,
-        env,
-        "call-interactively",
-        std::slice::from_ref(&binding),
-    )
-    .map(|_| ());
+    let result = call(interpreter, env, "call-interactively", &[binding.clone()]).map(|_| ());
     interpreter.set_variable("last-command", binding, env);
     result
 }
@@ -422,35 +448,6 @@ fn describe_char(code: i64, meta: bool) -> String {
         _ => char::from_u32(code as u32)
             .map(|c| format!("{prefix}{c}"))
             .unwrap_or_else(|| format!("{prefix}#{code}")),
-    }
-}
-
-// ── Echo area ───────────────────────────────────────────────────────────
-
-fn messages_len(interpreter: &Interpreter) -> usize {
-    interpreter
-        .buffer_list
-        .iter()
-        .find(|(_, name)| name == "*Messages*")
-        .and_then(|(id, _)| interpreter.get_buffer_by_id(*id))
-        .map(|buffer| buffer.point_max())
-        .unwrap_or(0)
-}
-
-fn sync_echo_with_messages(interpreter: &mut Interpreter, state: &mut TtyState) {
-    let len = messages_len(interpreter);
-    if len != state.messages_seen {
-        state.messages_seen = len;
-        if let Some(last) = interpreter
-            .buffer_list
-            .iter()
-            .find(|(_, name)| name == "*Messages*")
-            .and_then(|(id, _)| interpreter.get_buffer_by_id(*id))
-            .map(|buffer| buffer.full_buffer_string())
-            .and_then(|contents| contents.lines().next_back().map(str::to_string))
-        {
-            state.echo = last;
-        }
     }
 }
 
@@ -569,8 +566,13 @@ fn redraw(interpreter: &mut Interpreter, state: &mut TtyState) -> io::Result<()>
         style::SetAttribute(style::Attribute::Reset),
     )?;
 
-    // Echo area.
-    let mut echo = state.echo.clone();
+    // Echo area: frontend echo (key progress, errors) wins; otherwise the
+    // session's live `message' line shows, GNU's echo-area behavior.
+    let mut echo = if state.echo.is_empty() {
+        crate::lisp::primitives::echo_area_message().unwrap_or_default()
+    } else {
+        state.echo.clone()
+    };
     echo.truncate(cols);
     queue!(
         out,

@@ -1,6 +1,24 @@
 use super::*;
 use crate::lisp::primitives::processes::wait_pumping_processes;
 
+// The live echo-area line of an interactive session.  GNU keeps this in
+// the echo buffer that redisplay paints; the terminal frontend reads it
+// after every command and inside blocking event reads so prompts appear
+// before input is consumed.  Batch sessions never write it — their
+// `message' contract (stderr + *Messages*) is unchanged.
+thread_local! {
+    static ECHO_AREA_MESSAGE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn set_echo_area_message(text: Option<String>) {
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = text);
+}
+
+pub(crate) fn echo_area_message() -> Option<String> {
+    ECHO_AREA_MESSAGE.with_borrow(|slot| slot.clone())
+}
+
 fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
     let Ok(items) = spec.to_vec() else {
         return false;
@@ -1257,6 +1275,19 @@ define_dispatch!(
                 if capturable {
                     interp.append_message_capture(&text, true, env);
                 }
+                // An interactive session shows the message in the echo area
+                // (an empty or nil MESSAGE clears it, GNU's documented way
+                // to wipe the echo line).
+                if interp
+                    .lookup_var("noninteractive", env)
+                    .is_none_or(|value| value.is_nil())
+                {
+                    set_echo_area_message(if text.is_empty() {
+                        None
+                    } else {
+                        Some(text.clone())
+                    });
+                }
                 // There is no echo area in batch mode.  GNU writes messages to
                 // the process stderr instead, including the newline used to
                 // clear an empty message.  Message capture remains independent
@@ -1357,21 +1388,11 @@ define_dispatch!(
                 {
                     return Ok(Value::Nil);
                 }
-                let buffer_name = interp
-                    .lookup_var("messages-buffer-name", env)
-                    .and_then(|value| string_like(&value).map(|string| string.text))
-                    .unwrap_or_else(|| "*Messages*".into());
-                let Some((buffer_id, _)) = interp.find_buffer(&buffer_name) else {
-                    return Ok(Value::Nil);
-                };
-                let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
-                    return Ok(Value::Nil);
-                };
-                Ok(buffer
-                    .buffer_string()
-                    .lines()
-                    .next_back()
-                    .map(|line| Value::String(line.to_string().into()))
+                // The interactive echo area is authoritative: unlike the
+                // *Messages* tail it reflects `(message nil)' clears and
+                // messages suppressed from the log by `message-log-max'.
+                Ok(echo_area_message()
+                    .map(|text| Value::String(text.into()))
                     .unwrap_or(Value::Nil))
             }
             "error-message-string" => {
