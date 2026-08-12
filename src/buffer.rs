@@ -631,6 +631,24 @@ impl Buffer {
         self.text.to_string()
     }
 
+    /// Text of up to COUNT lines starting at 1-based LINE, one string per
+    /// line without its terminator.  The rope resolves each line seek in
+    /// O(log n), so a redisplay window costs the window — never the file.
+    pub fn lines_from(&self, line: usize, count: usize) -> Vec<String> {
+        let total = self.text.len_lines();
+        let start = line.saturating_sub(1).min(total);
+        let end = start.saturating_add(count).min(total);
+        (start..end)
+            .map(|index| {
+                let mut text = self.text.line(index).to_string();
+                while text.ends_with(['\n', '\r']) {
+                    text.pop();
+                }
+                text
+            })
+            .collect()
+    }
+
     pub fn position_bytes(&self, pos: usize) -> Option<usize> {
         let char_len = self.text.len_chars();
         if pos == 0 || pos > char_len + 1 {

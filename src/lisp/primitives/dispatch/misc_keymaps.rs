@@ -41,14 +41,14 @@ fn map_keymap_direct_value(
     let bindings = keymap_direct_bindings(interp, keymap)?;
     let mut character_bindings = Vec::new();
     let mut sparse_bindings = Vec::new();
-    for binding in bindings {
+    for binding in bindings.iter() {
         let event = keymap_entry_key_value(&binding_key_parts(&binding), &binding.key);
         if full_table.is_some()
             && let Value::Integer(code) = event
         {
-            character_bindings.push((code, binding.value));
+            character_bindings.push((code, binding.value.clone()));
         } else {
-            sparse_bindings.push((event, binding.value));
+            sparse_bindings.push((event, binding.value.clone()));
         }
     }
     character_bindings.sort_by_key(|(code, _)| *code);

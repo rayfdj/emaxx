@@ -62,6 +62,13 @@ struct TtyState {
     /// Frontend-owned echo text (key-sequence progress, command errors);
     /// when empty, the session's `message' echo line shows instead.
     echo: String,
+    /// The frame as last painted: rendered text rows, mode line, echo row,
+    /// and the terminal size they were painted for.  Redraw emits only rows
+    /// that differ — GNU's dispnew current-matrix idea, one line deep.
+    painted_rows: Vec<String>,
+    painted_mode_line: String,
+    painted_echo: String,
+    painted_size: (usize, usize),
 }
 
 pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
@@ -198,6 +205,10 @@ fn command_loop(
         top_line: 1,
         pending: Vec::new(),
         echo: String::new(),
+        painted_rows: Vec::new(),
+        painted_mode_line: String::new(),
+        painted_echo: String::new(),
+        painted_size: (0, 0),
     };
 
     loop {
@@ -245,6 +256,9 @@ fn command_loop(
                 if let Some(termination) = interpreter.take_pending_termination() {
                     return Ok(termination.exit_code);
                 }
+                // A blocking reader may have painted the echo row outside
+                // the matrix; repaint it against fresh state next frame.
+                state.painted_echo = String::from("\u{0}");
             }
             Resolution::Prefix => {
                 state.echo = format!("{}-", describe_keys(&state.pending));
@@ -282,22 +296,16 @@ fn resolve_pending(interpreter: &mut Interpreter, env: &mut Env, pending: &[Valu
     }
     // A prefix can answer as the keymap itself or as a prefix command
     // symbol (`Control-X-prefix') whose function cell holds the keymap;
-    // GNU resolves through the indirection before dispatching.
-    let resolved = if matches!(binding, Value::Symbol(_)) {
-        call(
-            interpreter,
-            env,
-            "indirect-function",
-            std::slice::from_ref(&binding),
-        )
-        .unwrap_or_else(|_| binding.clone())
+    // GNU resolves through the indirection before dispatching.  Native
+    // probes here: this classification runs once per keystroke.
+    let resolved = if let Value::Symbol(name) = &binding {
+        interpreter
+            .lookup_function(name, env)
+            .unwrap_or_else(|_| binding.clone())
     } else {
         binding.clone()
     };
-    let is_keymap = call(interpreter, env, "keymapp", std::slice::from_ref(&resolved))
-        .map(|value| value.is_truthy())
-        .unwrap_or(false);
-    if is_keymap {
+    if crate::lisp::primitives::is_keymap_value(interpreter, &resolved) {
         Resolution::Prefix
     } else {
         Resolution::Command(binding)
@@ -518,38 +526,52 @@ fn redraw(interpreter: &mut Interpreter, state: &mut TtyState) -> io::Result<()>
     let point = buffer.point();
     let point_line = buffer.line_number_at_pos(point); // 1-based
     let line_start = buffer.line_start_at(point);
-    let contents = buffer.full_buffer_string();
 
     // Keep point visible; recenter on a jump like GNU's default scrolling.
     if point_line < state.top_line || point_line >= state.top_line + text_rows {
         state.top_line = point_line.saturating_sub(text_rows / 2).max(1);
     }
 
+    // Fetch only the window: redisplay cost must follow the screen size,
+    // never the buffer size.
+    let lines = buffer.lines_from(state.top_line, text_rows);
+
+    // Render off-screen first, then emit only rows that changed since the
+    // last paint (dispnew's current-matrix idea, one line deep): a
+    // self-insert repaints one text row, not the frame.
+    let full_repaint = state.painted_size != (cols, rows);
+    if full_repaint {
+        state.painted_rows = vec![String::from("\u{0}"); text_rows];
+        state.painted_mode_line = String::from("\u{0}");
+        state.painted_echo = String::from("\u{0}");
+        state.painted_size = (cols, rows);
+    }
+    state.painted_rows.resize(text_rows, String::from("\u{0}"));
+
     let mut out = io::stdout();
-    queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
+    queue!(out, cursor::Hide)?;
 
     let mut cursor_position = (0u16, 0u16);
-    let mut lines = contents.split('\n');
-    // Skip to the top of the window.
-    for _ in 1..state.top_line {
-        if lines.next().is_none() {
-            break;
-        }
-    }
     for row in 0..text_rows {
-        queue!(
-            out,
-            cursor::MoveTo(0, row as u16),
-            terminal::Clear(terminal::ClearType::CurrentLine)
-        )?;
         let buffer_line = state.top_line + row;
-        if let Some(line) = lines.next() {
-            let rendered = render_line(line, cols);
-            queue!(out, style::Print(&rendered))?;
-            if buffer_line == point_line {
-                let column = display_column(line, point - line_start);
-                cursor_position = (column.min(cols - 1) as u16, row as u16);
-            }
+        let rendered = lines
+            .get(row)
+            .map(|line| render_line(line, cols))
+            .unwrap_or_default();
+        if let Some(line) = lines.get(row)
+            && buffer_line == point_line
+        {
+            let column = display_column(line, point - line_start);
+            cursor_position = (column.min(cols - 1) as u16, row as u16);
+        }
+        if state.painted_rows[row] != rendered {
+            queue!(
+                out,
+                cursor::MoveTo(0, row as u16),
+                terminal::Clear(terminal::ClearType::CurrentLine),
+                style::Print(&rendered),
+            )?;
+            state.painted_rows[row] = rendered;
         }
     }
 
@@ -568,14 +590,17 @@ fn redraw(interpreter: &mut Interpreter, state: &mut TtyState) -> io::Result<()>
         mode_line.extend(std::iter::repeat_n('-', cols - mode_line.len()));
     }
     mode_line.truncate(cols);
-    queue!(
-        out,
-        cursor::MoveTo(0, text_rows as u16),
-        terminal::Clear(terminal::ClearType::CurrentLine),
-        style::SetAttribute(style::Attribute::Reverse),
-        style::Print(&mode_line),
-        style::SetAttribute(style::Attribute::Reset),
-    )?;
+    if state.painted_mode_line != mode_line {
+        queue!(
+            out,
+            cursor::MoveTo(0, text_rows as u16),
+            terminal::Clear(terminal::ClearType::CurrentLine),
+            style::SetAttribute(style::Attribute::Reverse),
+            style::Print(&mode_line),
+            style::SetAttribute(style::Attribute::Reset),
+        )?;
+        state.painted_mode_line = mode_line;
+    }
 
     // Echo area: frontend echo (key progress, errors) wins; otherwise the
     // session's live `message' line shows, GNU's echo-area behavior.
@@ -585,14 +610,16 @@ fn redraw(interpreter: &mut Interpreter, state: &mut TtyState) -> io::Result<()>
         state.echo.clone()
     };
     echo.truncate(cols);
-    queue!(
-        out,
-        cursor::MoveTo(0, (text_rows + 1) as u16),
-        terminal::Clear(terminal::ClearType::CurrentLine),
-        style::Print(&echo),
-        cursor::MoveTo(cursor_position.0, cursor_position.1),
-        cursor::Show,
-    )?;
+    if state.painted_echo != echo {
+        queue!(
+            out,
+            cursor::MoveTo(0, (text_rows + 1) as u16),
+            terminal::Clear(terminal::ClearType::CurrentLine),
+            style::Print(&echo),
+        )?;
+        state.painted_echo = echo;
+    }
+    queue!(out, cursor::MoveTo(cursor_position.0, cursor_position.1), cursor::Show)?;
     out.flush()
 }
 
