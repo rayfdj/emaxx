@@ -3804,6 +3804,28 @@ pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> 
         "C-x 4 d" => Some("dired-other-window"),
         "C-x 5 d" => Some("dired-other-frame"),
         "C-x 5 C-o" => Some("display-buffer-other-frame"),
+        // bindings.el / simple.el dumped defaults consumed by the terminal
+        // frontend.  Three retarget onto the nearest live command until the
+        // GNU-named owner exists: DEL (GNU `delete-backward-char'),
+        // C-x C-c (GNU `save-buffers-kill-terminal'), and the horizontal
+        // arrows (GNU `right-char'/`left-char').
+        "DEL" => Some("backward-delete-char-untabify"),
+        "C-_" => Some("undo"),
+        "C-x C-s" => Some("save-buffer"),
+        "C-x C-w" => Some("write-file"),
+        "C-x C-c" => Some("save-buffers-kill-emacs"),
+        "C-x b" => Some("switch-to-buffer"),
+        "C-x k" => Some("kill-buffer"),
+        "C-x h" => Some("mark-whole-buffer"),
+        "C-x u" => Some("undo"),
+        // Symbol events spell as their bare names in binding-part form.
+        "up" => Some("previous-line"),
+        "down" => Some("next-line"),
+        "left" => Some("backward-char"),
+        "right" => Some("forward-char"),
+        "home" => Some("move-beginning-of-line"),
+        "end" => Some("move-end-of-line"),
+        "deletechar" => Some("delete-forward-char"),
         key if key.chars().count() == 1 => Some("self-insert-command"),
         _ => None,
     }

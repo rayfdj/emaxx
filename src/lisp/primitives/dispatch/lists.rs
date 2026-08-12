@@ -582,6 +582,27 @@ fn read_minibuffer_text_from_batch_stdin(prompt: &str) -> Result<String, LispErr
 // returns the current contents for an interactive embedding).  GNU runs
 // `minibuffer-setup-hook' in that state, and a hook may nonlocally exit before
 // any input source is touched.
+// Terminal-driven minibuffer input, installed by the tty frontend for the
+// duration of an interactive session.  The reader returns `Some(text)` for
+// a submitted line and `None` when the user quit (C-g); with no reader
+// installed the interactive branch keeps its queued-events behavior.
+thread_local! {
+    static TTY_MINIBUFFER_READER: std::cell::RefCell<Option<TtyMinibufferReader>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) type TtyMinibufferReader = Box<dyn FnMut(&str, &str) -> Option<String>>;
+
+pub(crate) fn set_tty_minibuffer_reader(reader: Option<TtyMinibufferReader>) {
+    TTY_MINIBUFFER_READER.with_borrow_mut(|slot| *slot = reader);
+}
+
+fn read_via_tty_minibuffer(prompt: &str, initial: &str) -> Option<Option<String>> {
+    TTY_MINIBUFFER_READER.with_borrow_mut(|slot| {
+        slot.as_mut().map(|reader| reader(prompt, initial))
+    })
+}
+
 fn read_minibuffer_text_without_queued_events(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -596,6 +617,12 @@ fn read_minibuffer_text_without_queued_events(
             .is_some_and(|value| value.is_truthy())
         {
             read_minibuffer_text_from_batch_stdin(prompt)
+        } else if let Some(read) = read_via_tty_minibuffer(prompt, initial) {
+            match read {
+                Some(text) => Ok(text),
+                // C-g during minibuffer input is GNU's `quit' signal.
+                None => Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+            }
         } else {
             active_minibuffer_text(interp, env)
         }

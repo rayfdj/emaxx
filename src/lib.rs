@@ -10,12 +10,10 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod batch;
 pub mod buffer;
-pub mod command;
 pub mod compat;
-pub mod display;
-pub mod keymap;
 pub mod lisp;
 pub mod overlay;
+pub mod tty;
 pub mod perf;
 
 #[cfg(test)]
