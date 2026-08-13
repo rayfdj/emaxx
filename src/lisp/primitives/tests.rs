@@ -3977,6 +3977,51 @@ fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
 }
 
 #[test]
+fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+
+    regexp::reset_regexp_syntax_class_render_count();
+    for pattern in ["\\w", "\\W", "[[:word:]]", "\\sw"] {
+        call(
+            &mut interp,
+            "string-match-p",
+            &[Value::String(pattern.into()), Value::String("word!".into())],
+            &mut env,
+        )
+        .expect("match a syntax-table-dependent regexp");
+    }
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        1,
+        "different patterns must share one current-table word-class rendering"
+    );
+
+    call(
+        &mut interp,
+        "modify-syntax-entry",
+        &[Value::Integer('!' as i64), Value::String("w".into())],
+        &mut env,
+    )
+    .expect("mutate the current syntax table");
+    assert_eq!(
+        call(
+            &mut interp,
+            "string-match-p",
+            &[Value::String("\\w".into()), Value::String("!".into())],
+            &mut env,
+        )
+        .expect("match through the updated syntax table"),
+        Value::Integer(0)
+    );
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        2,
+        "any table mutation must invalidate the derived rendering"
+    );
+}
+
+#[test]
 fn equal_string_hash_tables_scale_without_losing_public_semantics() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -13034,45 +13079,177 @@ fn tty_event_reader_does_not_preempt_queued_events() {
 }
 
 #[test]
-fn tty_minibuffer_reader_answers_interactive_prompts() {
+fn tty_events_answer_interactive_minibuffer_prompts() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_minibuffer_reader(Some(Box::new(|prompt, initial| {
-        assert_eq!(prompt, "File: ");
-        assert_eq!(initial, "");
-        Some("answer.txt".into())
-    })));
+    // The terminal feeds "answer.txt" then RET into the minibuffer loop.
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "answer.txt\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-string",
         &[Value::String("File: ".into())],
         &mut env,
     );
-    set_tty_minibuffer_reader(None);
+    set_tty_event_reader(None);
     assert_eq!(
-        result.expect("tty reader answers the prompt"),
+        result.expect("tty events answer the prompt"),
         Value::String("answer.txt".into())
     );
 }
 
 #[test]
-fn tty_minibuffer_reader_quit_signals_gnu_quit() {
+fn tty_minibuffer_edits_complete_and_recall_history() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_minibuffer_reader(Some(Box::new(|_, _| None)));
+    interp.set_variable(
+        "minibuffer-history",
+        Value::list([Value::String("older-entry".into())]),
+        &mut env,
+    );
+    // Type "zebraX", delete the X, recall history with M-p, come back
+    // with M-n, then submit the edited fresh input.
+    let keys = "zebraX\u{7f}\u{1b}p\u{1b}n\r";
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            keys.chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[
+            Value::String("Input: ".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol("minibuffer-history".into()),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        result.expect("edited input submits"),
+        Value::String("zebra".into())
+    );
+    // The submission lands at the head of the history variable.
+    let history = interp
+        .lookup_var("minibuffer-history", &env)
+        .expect("history variable");
+    assert_eq!(
+        history,
+        Value::list([
+            Value::String("zebra".into()),
+            Value::String("older-entry".into())
+        ])
+    );
+}
+
+#[test]
+fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable(
+        "minibuffer-history",
+        Value::list([Value::String("recalled".into())]),
+        &mut env,
+    );
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "\u{1b}p\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[
+            Value::String("Input: ".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol("minibuffer-history".into()),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        result.expect("history recall submits"),
+        Value::String("recalled".into())
+    );
+}
+
+#[test]
+fn tty_minibuffer_quit_signals_gnu_quit() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    // The frontend's reader answers None for C-g; the loop signals quit.
+    set_tty_event_reader(Some(Box::new(|| None)));
     let result = call(
         &mut interp,
         "read-string",
         &[Value::String("File: ".into())],
         &mut env,
     );
-    set_tty_minibuffer_reader(None);
+    set_tty_event_reader(None);
     let Err(LispError::SignalValue(data)) = result else {
-        panic!("C-g from the minibuffer reader must signal, got {result:?}");
+        panic!("C-g from the minibuffer loop must signal, got {result:?}");
     };
     assert_eq!(data, Value::Symbol("quit".into()));
+}
+
+#[test]
+fn tty_completing_read_completes_with_tab() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "forw\t\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "completing-read",
+        &[
+            Value::String("Command: ".into()),
+            Value::list([
+                Value::String("forward-char".into()),
+                Value::String("backward-char".into()),
+            ]),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        result.expect("TAB completes the unique prefix"),
+        Value::String("forward-char".into())
+    );
 }
 
 #[test]

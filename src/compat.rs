@@ -1255,4 +1255,13 @@ mod tests {
         assert!(helper.contains("(delete-directory eln-dir t)"));
         assert!(helper.contains("emaxx-compat--call-with-batch-environment"));
     }
+
+    #[test]
+    fn oracle_reporter_preserves_erts_per_test_printer_cleanup() {
+        let helper = include_str!("../compat/emacs_compat_runner.el");
+
+        assert!(helper.contains("emaxx-compat--test-listener"));
+        assert!(helper.contains("(ignore-errors (prin1-to-string nil))"));
+        assert!(helper.contains("(listener #'emaxx-compat--test-listener)"));
+    }
 }

@@ -577,37 +577,13 @@ fn read_minibuffer_text_from_batch_stdin(prompt: &str) -> Result<String, LispErr
     Ok(line)
 }
 
-// With no queued events or executing keyboard macro, the native file-less
-// fallback still enters the minibuffer before it consults batch stdin (or
-// returns the current contents for an interactive embedding).  GNU runs
-// `minibuffer-setup-hook' in that state, and a hook may nonlocally exit before
-// any input source is touched.
-// Terminal-driven minibuffer input, installed by the tty frontend for the
-// duration of an interactive session.  The reader returns `Some(text)` for
-// a submitted line and `None` when the user quit (C-g); with no reader
-// installed the interactive branch keeps its queued-events behavior.
-thread_local! {
-    static TTY_MINIBUFFER_READER: std::cell::RefCell<Option<TtyMinibufferReader>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-pub(crate) type TtyMinibufferReader = Box<dyn FnMut(&str, &str) -> Option<String>>;
-
-pub(crate) fn set_tty_minibuffer_reader(reader: Option<TtyMinibufferReader>) {
-    TTY_MINIBUFFER_READER.with_borrow_mut(|slot| *slot = reader);
-}
-
-fn read_via_tty_minibuffer(prompt: &str, initial: &str) -> Option<Option<String>> {
-    TTY_MINIBUFFER_READER
-        .with_borrow_mut(|slot| slot.as_mut().map(|reader| reader(prompt, initial)))
-}
-
 fn read_minibuffer_text_without_queued_events(
     interp: &mut Interpreter,
     env: &mut Env,
     prompt: &str,
     initial: &str,
     local_map: &Value,
+    history: Value,
 ) -> Result<String, LispError> {
     let minibuffer = activate_minibuffer(interp, prompt, initial, local_map.clone(), env)?;
     run_active_minibuffer(interp, env, minibuffer, |interp, env| {
@@ -616,12 +592,10 @@ fn read_minibuffer_text_without_queued_events(
             .is_some_and(|value| value.is_truthy())
         {
             read_minibuffer_text_from_batch_stdin(prompt)
-        } else if let Some(read) = read_via_tty_minibuffer(prompt, initial) {
-            match read {
-                Some(text) => Ok(text),
-                // C-g during minibuffer input is GNU's `quit' signal.
-                None => Err(LispError::SignalValue(Value::Symbol("quit".into()))),
-            }
+        } else if crate::lisp::primitives::has_tty_event_reader() {
+            // A live terminal reads through the interactive minibuffer
+            // loop (C-g inside it signals GNU's `quit').
+            crate::lisp::primitives::interactive_minibuffer_read(interp, env, initial, &history)
         } else {
             active_minibuffer_text(interp, env)
         }
@@ -3301,8 +3275,16 @@ define_dispatch!(
                     )?;
                 }
                 if contents.is_none() {
+                    // HIST sits at a different position per reader:
+                    // read-from-minibuffer's KEYMAP shifts it to arg 4,
+                    // read-string keeps GNU's arg 2.
+                    let history = match name {
+                        "read-from-minibuffer" => args.get(4).cloned().unwrap_or(Value::Nil),
+                        "read-string" => args.get(2).cloned().unwrap_or(Value::Nil),
+                        _ => Value::T,
+                    };
                     contents = Some(read_minibuffer_text_without_queued_events(
-                        interp, env, &prompt, &initial, &local_map,
+                        interp, env, &prompt, &initial, &local_map, history,
                     )?);
                 }
                 if let Some(contents) = contents {
