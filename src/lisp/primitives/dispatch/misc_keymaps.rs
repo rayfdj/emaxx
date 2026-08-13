@@ -1136,7 +1136,6 @@ define_dispatch!(
                     .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil))
             }
-            #[dispatch(resets_undo)]
             "save-buffer" => {
                 let Some(path) = interp.buffer.file.clone() else {
                     return Ok(Value::Nil);

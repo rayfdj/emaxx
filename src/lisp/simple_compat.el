@@ -4958,6 +4958,41 @@ If NO-TMM is non-nil, leave `transient-mark-mode' alone."
         (setq-local transient-mark-mode 'lambda))
       (run-hooks 'activate-mark-hook))))
 
+;; GNU simple.el owns the public mark commands.  Rust owns marker storage and
+;; movement only; activation and mark-ring policy stays at the Elisp boundary.
+(defun set-mark (pos)
+  "Set this buffer's mark to POS."
+  (if pos
+      (progn
+        (set-marker (mark-marker) pos (current-buffer))
+        (activate-mark 'no-tmm))
+    (deactivate-mark t)
+    (setq mark-active nil)
+    (set-marker (mark-marker) nil)))
+
+(defun push-mark (&optional location nomsg activate)
+  "Set mark at LOCATION (point, by default) and push old mark on mark ring."
+  (when (mark t)
+    (let ((old (nth mark-ring-max mark-ring))
+          (history-delete-duplicates nil))
+      (add-to-history 'mark-ring (copy-marker (mark-marker)) mark-ring-max t)
+      (when old
+        (set-marker old nil))))
+  (set-marker (mark-marker) (or location (point)) (current-buffer))
+  (unless (and global-mark-ring
+               (eq (marker-buffer (car global-mark-ring)) (current-buffer)))
+    (let ((old (nth global-mark-ring-max global-mark-ring))
+          (history-delete-duplicates nil))
+      (add-to-history
+       'global-mark-ring (copy-marker (mark-marker)) global-mark-ring-max t)
+      (when old
+        (set-marker old nil))))
+  (or nomsg executing-kbd-macro (> (minibuffer-depth) 0)
+      (message "Mark set"))
+  (if (or activate (not transient-mark-mode))
+      (set-mark (mark t)))
+  nil)
+
 (defmacro with-buffer-unmodified-if-unchanged (&rest body)
   "Like `progn', but change buffer-modified status only if buffer text changes.
 If the buffer was unmodified before execution of BODY, and

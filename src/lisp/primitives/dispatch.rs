@@ -43,7 +43,6 @@ pub(crate) struct NameFacts {
     pub(crate) builtin: bool,
     pub(crate) special_form: bool,
     pub(crate) prefer_override: bool,
-    resets_undo: bool,
     file_name_handler: Option<FileNameHandlerOperation>,
     /// Whether `builtin_autoload_function' has an entry for this name, so
     /// function lookup only walks its match tables when one exists.
@@ -82,13 +81,6 @@ macro_rules! define_dispatch_modules {
             fn prefer_builtin(self, name: &str) -> bool {
                 match self {
                     $(Self::$variant => $module::prefer_builtin(name),)+
-                    Self::ComposedAccessor | Self::None => false,
-                }
-            }
-
-            fn resets_undo(self, name: &str) -> bool {
-                match self {
-                    $(Self::$variant => $module::resets_undo(name),)+
                     Self::ComposedAccessor | Self::None => false,
                 }
             }
@@ -160,7 +152,6 @@ fn compute_name_facts(name: &str) -> NameFacts {
         builtin: module != DispatchModule::None && available_in_oracle,
         special_form: crate::lisp::primitives::is_special_form_name(name),
         prefer_override: module.prefer_builtin(name),
-        resets_undo: module.resets_undo(name),
         file_name_handler: file_name_handler_operation(name),
         autoloadable: crate::lisp::eval::builtin_autoload_function(name).is_some(),
         module,
@@ -245,10 +236,6 @@ pub(crate) fn call_with_facts(
         && let Some(result) = dispatch_file_name_handler(interp, env, name, specification, args)?
     {
         return Ok(result);
-    }
-
-    if facts.resets_undo {
-        interp.reset_undo_sequence();
     }
 
     facts.module.call(interp, name, args, env)

@@ -40,18 +40,6 @@ macro_rules! dispatch_select_builtin_override {
     };
 }
 
-macro_rules! dispatch_select_resets_undo {
-    ($name:ident, $pattern:pat =>) => {
-        false
-    };
-    ($name:ident, $pattern:pat => resets_undo $(, $rest:ident)*) => {
-        matches!($name, $pattern)
-    };
-    ($name:ident, $pattern:pat => $other:ident $(, $rest:ident)*) => {
-        dispatch_select_resets_undo!($name, $pattern => $($rest),*)
-    };
-}
-
 macro_rules! dispatch_property {
     ($selector:ident, $name:ident;) => {
         false
@@ -161,11 +149,6 @@ macro_rules! define_dispatch {
         $visibility fn prefer_builtin(name: &str) -> bool {
             let _ = name;
             dispatch_property!(dispatch_select_builtin_override, name; $($arms)*)
-        }
-
-        $visibility fn resets_undo(name: &str) -> bool {
-            let _ = name;
-            dispatch_property!(dispatch_select_resets_undo, name; $($arms)*)
         }
 
         $(#[$attribute])*

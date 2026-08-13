@@ -736,7 +736,6 @@ pub(crate) fn font_lock_add_text_property(
         font_lock_put_buffer_property(interp, buffer_id, cursor, next, &prop, updated)?;
         cursor = next;
     }
-    font_lock_push_buffer_undo_entry(interp, buffer_id)?;
     Ok(Value::Nil)
 }
 
@@ -786,7 +785,6 @@ pub(crate) fn add_face_text_property(
         font_lock_put_buffer_property(interp, buffer_id, cursor, next, "face", updated)?;
         cursor = next;
     }
-    font_lock_push_buffer_undo_entry(interp, buffer_id)?;
     Ok(Value::Nil)
 }
 
@@ -805,7 +803,6 @@ pub(crate) fn clear_font_lock_faces_in_current_buffer(
         end,
         &["face".to_string(), "font-lock-face".to_string()],
     );
-    font_lock_push_buffer_undo_entry(interp, interp.current_buffer_id())?;
     Ok(())
 }
 
@@ -833,7 +830,6 @@ pub(crate) fn font_lock_ensure_region(
         font_lock_apply_hi_lock_keyword(interp, &keyword, start, end, env)?;
     }
     interp.set_buffer_local_value(interp.current_buffer_id(), "font-lock-fontified", Value::T);
-    font_lock_push_buffer_undo_entry(interp, interp.current_buffer_id())?;
     Ok(())
 }
 
@@ -1769,25 +1765,6 @@ pub(crate) fn font_lock_put_buffer_property(
     } else {
         buffer.put_text_property(start, end, prop, value);
     }
-    Ok(())
-}
-
-pub(crate) fn font_lock_push_buffer_undo_entry(
-    interp: &mut Interpreter,
-    buffer_id: u64,
-) -> Result<(), LispError> {
-    let entry = crate::buffer::UndoEntry::Combined {
-        display: Value::Nil,
-        entries: Vec::new(),
-    };
-    if buffer_id == interp.current_buffer_id() {
-        interp.buffer.push_undo_entry(entry);
-        return Ok(());
-    }
-    let buffer = interp
-        .get_buffer_by_id_mut(buffer_id)
-        .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-    buffer.push_undo_entry(entry);
     Ok(())
 }
 

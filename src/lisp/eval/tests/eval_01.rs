@@ -5375,7 +5375,11 @@ fn deactivate_mark_clears_active_region() {
             r#"(let ((transient-mark-mode t))
                   (with-temp-buffer
                     (insert "abc")
-                    (set-mark 1)
+                    ;; This bare interpreter fixture does not preload GNU
+                    ;; simple.el.  Install the mark through native marker
+                    ;; storage; `deactivate-mark' is the behavior under test.
+                    (set-marker (mark-marker) 1 (current-buffer))
+                    (setq mark-active t)
                     (goto-char 3)
                     (list (region-active-p)
                           (deactivate-mark)

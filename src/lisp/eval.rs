@@ -1214,14 +1214,6 @@ pub struct CodingSystemState {
     pub plist: Value,
 }
 
-#[derive(Clone, Debug, Default)]
-struct UndoSequenceState {
-    original_groups: Vec<Vec<crate::buffer::UndoEntry>>,
-    undone_count: usize,
-    redo_groups: Vec<Vec<crate::buffer::UndoEntry>>,
-    had_error: bool,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SpecialBindingScope {
     Global,
@@ -2375,7 +2367,6 @@ pub struct Interpreter {
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
     syntax_word_chars: Vec<u32>,
     standard_syntax_table_id: u64,
-    undo_sequence: Option<UndoSequenceState>,
     load_path: Vec<PathBuf>,
     /// Prefer GNU bytecode artifacts after the source-based bootstrap has
     /// established the dumped Lisp runtime expected by compiled libraries.
@@ -3169,7 +3160,6 @@ impl Interpreter {
             builtin_doc_offsets: HashMap::new(),
             syntax_word_chars: Vec::new(),
             standard_syntax_table_id,
-            undo_sequence: None,
             load_path: Vec::new(),
             prefer_compiled_loads: false,
             require_nesting: Vec::new(),
@@ -5055,14 +5045,13 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
                     len: (end - beg) as usize,
                 }
             }
-            Some((Value::String(text), Value::Integer(pos))) if pos >= 0 => {
-                crate::buffer::UndoEntry::Delete {
-                    pos: pos as usize,
-                    text: text.to_string(),
-                    props: Vec::new(),
-                    markers: Vec::new(),
-                }
-            }
+            Some((Value::String(text), Value::Integer(pos))) => crate::buffer::UndoEntry::Delete {
+                pos: pos.unsigned_abs() as usize,
+                point_after: pos < 0,
+                text: text.to_string(),
+                props: Vec::new(),
+                markers: Vec::new(),
+            },
             _ => crate::buffer::UndoEntry::Opaque(value.clone()),
         },
         _ => crate::buffer::UndoEntry::Opaque(value.clone()),
@@ -5089,80 +5078,22 @@ fn undo_entry_display(entry: &crate::buffer::UndoEntry) -> Value {
             Value::Integer(*pos as i64),
             Value::Integer((*pos + *len) as i64),
         ),
-        crate::buffer::UndoEntry::Delete { pos, text, .. } => Value::cons(
+        crate::buffer::UndoEntry::Delete {
+            pos,
+            point_after,
+            text,
+            ..
+        } => Value::cons(
             Value::String(text.clone().into()),
-            Value::Integer(*pos as i64),
+            Value::Integer(if *point_after {
+                -(*pos as i64)
+            } else {
+                *pos as i64
+            }),
         ),
         crate::buffer::UndoEntry::Combined { display, .. }
         | crate::buffer::UndoEntry::Opaque(display) => display.clone(),
         crate::buffer::UndoEntry::Boundary => Value::Nil,
-    }
-}
-
-fn latest_generated_undo_group(
-    entries: &[crate::buffer::UndoEntry],
-) -> Vec<crate::buffer::UndoEntry> {
-    entries
-        .iter()
-        .filter(|entry| !matches!(entry, crate::buffer::UndoEntry::Boundary))
-        .cloned()
-        .collect()
-}
-
-fn render_undo_value(value: &Value) -> String {
-    match value {
-        Value::Nil => "nil".into(),
-        Value::T => "t".into(),
-        Value::Integer(n) => n.to_string(),
-        Value::BigInteger(n) => n.to_string(),
-        Value::Float(n) => {
-            if n.fract() == 0.0 {
-                format!("{n:.1}")
-            } else {
-                n.to_string()
-            }
-        }
-        Value::String(s) => format!("\"{}\"", s),
-        Value::StringObject(state) => format!("\"{}\"", state.borrow().text),
-        Value::Symbol(s) => s.to_string(),
-        Value::Cons(_) => {
-            let mut rendered = String::from("(");
-            let mut current = value.clone();
-            let mut first = true;
-            loop {
-                match current {
-                    Value::Cons(cons_cell) => {
-                        let car = &cons_cell.car;
-                        let cdr = &cons_cell.cdr;
-                        if !first {
-                            rendered.push(' ');
-                        }
-                        rendered.push_str(&render_undo_value(&car.borrow()));
-                        first = false;
-                        current = cdr.borrow().clone();
-                    }
-                    Value::Nil => break,
-                    other => {
-                        rendered.push_str(" . ");
-                        rendered.push_str(&render_undo_value(&other));
-                        break;
-                    }
-                }
-            }
-            rendered.push(')');
-            rendered
-        }
-        Value::BuiltinFunc(name) => format!("#<builtin {name}>"),
-        Value::Lambda(lambda) => format!("#<lambda ({})>", lambda.params.join(" ")),
-        Value::Buffer(buffer) => format!("#<buffer {}>", buffer.name),
-        Value::Marker(id) => format!("#<marker id:{id}>"),
-        Value::Overlay(id) => format!("#<overlay id:{id}>"),
-        Value::CharTable(id) => format!("#<char-table id:{id}>"),
-        Value::Frame(id) => format!("#<frame id:{id}>"),
-        Value::Terminal(id) => format!("#<terminal id:{id}>"),
-        Value::Record(id) => format!("#<record id:{id}>"),
-        Value::Finalizer(id) => format!("#<finalizer id:{id}>"),
-        Value::Unbound => "#<unbound>".into(),
     }
 }
 
