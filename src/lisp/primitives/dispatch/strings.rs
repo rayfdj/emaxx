@@ -1643,8 +1643,15 @@ define_dispatch!(
             }
             "char-syntax" => {
                 need_args(name, args, 1)?;
-                let code = u32::try_from(args[0].as_integer()?)
+                let mut code = u32::try_from(args[0].as_integer()?)
                     .map_err(|_| LispError::Signal("Invalid character".into()))?;
+                // GNU syntax.c promotes a raw byte to its byte8 character
+                // before consulting the current table in a unibyte buffer.
+                // This keeps entries installed with
+                // `unibyte-char-to-multibyte' visible to `char-syntax'.
+                if !interp.buffer.is_multibyte() && (0x80..=0xFF).contains(&code) {
+                    code += RAW_BYTE8_BASE;
+                }
                 let class =
                     syntax::syntax_entry_for_code(interp, interp.current_syntax_table_id(), code)
                         .class;
