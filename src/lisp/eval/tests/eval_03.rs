@@ -65,6 +65,21 @@ fn prin1_to_string_matches_upstream_integer_character_cases() {
 }
 
 #[test]
+fn princ_matches_upstream_integer_character_cases() {
+    assert_string_value(
+        eval_str(
+            r#"
+                (let ((print-integers-as-characters t))
+                  (with-output-to-string
+                    (mapc #'princ '(?? ?\; ?\( ?\) ?\{ ?\} ?\[ ?\] ?\" ?\' ?\\
+                                    ?x 32 ?\n ?\r ?\t ?\b ?\f 7 11 27 127))))
+                "#,
+        ),
+        "???;?(?)?{?}?[?]?\"?'?\\?x?\\s?\\n?\\r?\\t?\\b?\\f71127127",
+    );
+}
+
+#[test]
 fn prin1_to_string_escapes_leading_dot_symbols() {
     assert_string_value(eval_str(r#"(prin1-to-string '.foo)"#), r#"\.foo"#);
     assert_string_value(eval_str(r#"(prin1-to-string '.foo.)"#), r#"\.foo."#);
@@ -105,6 +120,45 @@ fn cl_prin1_respects_charset_text_property_modes() {
                     "##
             ),
             Value::list([Value::T, Value::T, Value::T, Value::T])
+        );
+    });
+}
+
+#[test]
+fn native_prin1_respects_dynamic_charset_text_property_modes() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                r##"
+                    (defun emaxx-test--native-prints-charset-p (text charset)
+                      (if (string-match
+                           "charset"
+                           (prin1-to-string
+                            (propertize text 'charset charset)))
+                          t nil))
+                    (list
+                     (special-variable-p 'print-charset-text-property)
+                     print-charset-text-property
+                     (let ((print-charset-text-property nil))
+                       (emaxx-test--native-prints-charset-p "ö" 'ascii))
+                     (let ((print-charset-text-property 'default))
+                       (list
+                        (emaxx-test--native-prints-charset-p "ö" 'ascii)
+                        (emaxx-test--native-prints-charset-p "ö" 'unicode)
+                        (emaxx-test--native-prints-charset-p "a" 'unicode)))
+                     (let ((print-charset-text-property t))
+                       (list
+                        (emaxx-test--native-prints-charset-p "ö" 'unicode)
+                        (emaxx-test--native-prints-charset-p "a" 'unicode))))
+                    "##,
+            ),
+            Value::list([
+                Value::T,
+                Value::Symbol("default".into()),
+                Value::Nil,
+                Value::list([Value::T, Value::Nil, Value::Nil]),
+                Value::list([Value::T, Value::T]),
+            ])
         );
     });
 }
@@ -380,6 +434,55 @@ fn princ_and_terpri_respect_output_streams() {
         Value::list([
             Value::String("abc\nxyz".into()),
             Value::String("seedabc\n".into()),
+        ])
+    );
+}
+
+#[test]
+fn terpri_ensure_tracks_batch_standard_output_and_rejects_functions() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (list
+                 (let ((standard-output t)
+                       (noninteractive t))
+                   (message nil)
+                   (list
+                    (terpri nil t)
+                    (terpri nil t)
+                    (progn (princ 'abc) (terpri nil t))
+                    (terpri nil t)
+                    (progn (princ "bulk") (terpri nil t))
+                    (progn (princ 123) (terpri nil t))
+                    (progn (prin1 "quoted") (terpri nil t))
+                    (terpri nil t)
+                    (progn (write-char ?x) (terpri nil t))
+                    (let ((print-integers-as-characters t))
+                      (princ ?x)
+                      (terpri nil t))))
+                 (condition-case err
+                     (terpri (lambda (_char) nil) t)
+                   (error (list (car err) (cadr err) (functionp (caddr err))))))
+                "#,
+        ),
+        Value::list([
+            Value::list([
+                Value::T,
+                Value::Nil,
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::T,
+                Value::Nil,
+                Value::T,
+                Value::T,
+            ]),
+            Value::list([
+                Value::Symbol("error".into()),
+                Value::String("Unsupported function argument".into()),
+                Value::T,
+            ]),
         ])
     );
 }

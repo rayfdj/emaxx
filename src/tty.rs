@@ -120,11 +120,9 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
 
     let guard = TerminalGuard::enter().map_err(|error| error.to_string())?;
     let queue = SharedEventQueue::default();
-    crate::lisp::primitives::set_tty_minibuffer_reader(Some(Box::new(read_minibuffer_line)));
     crate::lisp::primitives::set_tty_event_reader(Some(make_event_reader(queue.clone())));
     let code = command_loop(&mut interpreter, &mut env, &queue);
     crate::lisp::primitives::set_tty_event_reader(None);
-    crate::lisp::primitives::set_tty_minibuffer_reader(None);
     crate::lisp::primitives::set_interactive_window_metrics(None);
     drop(guard);
     code
@@ -316,6 +314,10 @@ fn command_loop(
                 // Any dispatched command consumes the prefix chain, even
                 // one entered through a non-character key like an arrow.
                 state.prefix_active = false;
+                // The sequence resolved: its key echo is done (GNU erases
+                // the echo when dispatch begins), and a command error may
+                // replace it below.
+                state.echo.clear();
                 let keys = std::mem::take(&mut state.pending);
                 let last_event = keys.last().cloned().unwrap_or(Value::Nil);
                 match execute_binding(interpreter, env, binding, &keys, last_event) {
@@ -596,50 +598,6 @@ fn describe_char(code: i64, meta: bool) -> String {
         _ => char::from_u32(code as u32)
             .map(|c| format!("{prefix}{c}"))
             .unwrap_or_else(|| format!("{prefix}#{code}")),
-    }
-}
-
-// ── Minibuffer line editor ──────────────────────────────────────────────
-
-/// Read one line in the echo area.  RET submits, C-g cancels, DEL edits;
-/// this is the terminal's raw input path so it must not touch the
-/// interpreter (which is re-entrantly executing the prompting command).
-fn read_minibuffer_line(prompt: &str, initial: &str) -> Option<String> {
-    let mut text = initial.to_string();
-    loop {
-        let (cols, rows) = terminal::size().unwrap_or((80, 24));
-        let mut line = format!("{prompt}{text}");
-        line.truncate(cols as usize);
-        let mut out = io::stdout();
-        let _ = queue!(
-            out,
-            cursor::MoveTo(0, rows.saturating_sub(1)),
-            terminal::Clear(terminal::ClearType::CurrentLine),
-            style::Print(&line),
-        );
-        let _ = out.flush();
-        let Ok(event) = event::read() else {
-            return None;
-        };
-        let Event::Key(key) = event else { continue };
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('g') => return None,
-                KeyCode::Char('m') => return Some(text),
-                KeyCode::Char('u') => text.clear(),
-                _ => {}
-            }
-            continue;
-        }
-        match key.code {
-            KeyCode::Enter => return Some(text),
-            KeyCode::Esc => return None,
-            KeyCode::Backspace => {
-                text.pop();
-            }
-            KeyCode::Char(c) => text.push(c),
-            _ => {}
-        }
     }
 }
 

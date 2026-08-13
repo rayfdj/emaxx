@@ -2051,6 +2051,68 @@ fn string_match_treats_incomplete_posix_class_openers_as_literal_members() {
 }
 
 #[test]
+fn string_match_rejects_complete_malformed_posix_classes() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (list
+                 (string-match "[[:alpha:]]" "a")
+                 (string-match "[x[:y]]" "x]")
+                 (condition-case err
+                     (string-match "[[:unknown:]]" "x")
+                   (invalid-regexp (list (car err) (cadr err))))
+                 (condition-case err
+                     (string-match "a[[:]:]]b" "ab")
+                   (invalid-regexp (list (car err) (cadr err)))))
+                "#,
+        ),
+        Value::list([
+            Value::Integer(0),
+            Value::Integer(0),
+            Value::list([
+                Value::Symbol("invalid-regexp".into()),
+                Value::String("Invalid character class name".into()),
+            ]),
+            Value::list([
+                Value::Symbol("invalid-regexp".into()),
+                Value::String("Invalid character class name".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn string_match_reports_ascii_and_multibyte_capture_positions_in_characters() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (list
+             (progn
+               (string-match "\\(b+\\)" "aaabbb")
+               (match-data))
+             (progn
+               (string-match "\\(β+\\)" "ééββ")
+               (match-data)))
+            "#,
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(3),
+                Value::Integer(6),
+                Value::Integer(3),
+                Value::Integer(6),
+            ]),
+            Value::list([
+                Value::Integer(2),
+                Value::Integer(4),
+                Value::Integer(2),
+                Value::Integer(4),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn newline_inserts_requested_line_breaks() {
     assert_string_value(
         eval_str(r#"(with-temp-buffer (insert "a") (newline 2) (insert "b") (buffer-string))"#),

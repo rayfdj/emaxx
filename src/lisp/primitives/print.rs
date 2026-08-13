@@ -860,7 +860,7 @@ pub(crate) fn symbol_name_looks_like_number(name: &str) -> bool {
         || crate::lisp::reader::parse_special_float_token(name).is_some()
 }
 
-pub(crate) fn render_prin1_integer_as_character(value: &Value) -> Option<String> {
+fn render_integer_as_character(value: &Value, escape: bool) -> Option<String> {
     let code = match value {
         Value::Integer(value) => *value,
         Value::BigInteger(value) => value.to_i64()?,
@@ -876,8 +876,9 @@ pub(crate) fn render_prin1_integer_as_character(value: &Value) -> Option<String>
         '\t' => "\\t".into(),
         '\u{0008}' => "\\b".into(),
         '\u{000C}' => "\\f".into(),
-        '\'' => "\\'".into(),
-        '"' | '\\' | ';' | '(' | ')' | '{' | '}' | '[' | ']' => format!("\\{ch}"),
+        '\'' | '"' | '\\' | ';' | '(' | ')' | '{' | '}' | '[' | ']' if escape => {
+            format!("\\{ch}")
+        }
         _ => {
             if matches!(code, 7 | 11 | 27 | 127) {
                 return None;
@@ -891,6 +892,14 @@ pub(crate) fn render_prin1_integer_as_character(value: &Value) -> Option<String>
         }
     };
     Some(format!("?{body}"))
+}
+
+pub(crate) fn render_prin1_integer_as_character(value: &Value) -> Option<String> {
+    render_integer_as_character(value, true)
+}
+
+pub(crate) fn render_princ_integer_as_character(value: &Value) -> Option<String> {
+    render_integer_as_character(value, false)
 }
 
 pub(crate) fn render_prin1_symbol(symbol: &str, options: PrintOptions) -> String {

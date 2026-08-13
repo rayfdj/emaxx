@@ -46,6 +46,17 @@
            (symbol-name (ert-test-name left))
            (symbol-name (ert-test-name right))))))
 
+(defun emaxx-compat--test-listener (event-type &rest _ignored)
+  "Preserve the per-test printer cleanup performed by GNU's batch listener.
+
+The normal ERT batch listener formats a progress line after every test.  In
+doing so it calls `prin1-to-string', which erases that primitive's reusable
+scratch buffer after a test unwinds out of a recursive print.  The structured
+runner emits no progress text, but must retain that cleanup or a circular
+printing test can contaminate the next test's first `prin1-to-string' result."
+  (when (eq event-type 'test-ended)
+    (ignore-errors (prin1-to-string nil))))
+
 (defun emaxx-compat--run-tests (selector)
   (let* ((discovered (cl-remove-if
                       (lambda (test)
@@ -54,7 +65,7 @@
                       (ert-select-tests t t)))
          (selected (ert-select-tests selector discovered))
          (stats (ert--make-stats selected selector))
-         (listener (lambda (&rest _ignored))))
+         (listener #'emaxx-compat--test-listener))
     (setf (ert--stats-start-time stats) (current-time))
     (dolist (test selected)
       (ert-run-or-rerun-test stats test listener))

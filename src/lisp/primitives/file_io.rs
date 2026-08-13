@@ -824,15 +824,63 @@ pub(crate) fn write_printer_output(
     }
 }
 
+/// Record output that GNU's printer sends through `printchar'.
+///
+/// Its batch `terpri' state is deliberately narrower than the last byte
+/// written to stdout: bulk `strout' paths (notably plain strings and numbers)
+/// do not update it.  Callers therefore opt in only for character-wise paths.
+pub(crate) fn record_batch_standard_output_char(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &Env,
+    ch: char,
+) {
+    if stream.is_some_and(|value| matches!(value, Value::T))
+        && interp
+            .lookup_var("noninteractive", env)
+            .is_some_and(|value| value.is_truthy())
+    {
+        interp.batch_standard_output_last_char = Some(ch);
+    }
+}
+
+/// Whether native `print' emits the final character of VALUE through GNU's
+/// character-wise printer rather than its bulk string path.
+pub(crate) fn native_print_updates_batch_last_char(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+    escaped: bool,
+) -> bool {
+    match value {
+        Value::Integer(integer) => {
+            interp
+                .lookup_var("print-integers-as-characters", env)
+                .is_some_and(|value| value.is_truthy())
+                && render_princ_integer_as_character(&Value::Integer(*integer)).is_some()
+        }
+        Value::BigInteger(_) | Value::Float(_) => false,
+        Value::String(_) | Value::StringObject(_) => escaped,
+        Value::Symbol(name) => !name.is_empty(),
+        _ => true,
+    }
+}
+
 pub(crate) fn printer_stream_value(
     interp: &Interpreter,
     env: &Env,
     explicit: Option<&Value>,
 ) -> Option<Value> {
-    match explicit {
+    let resolved = match explicit {
         Some(Value::Nil) => interp.lookup_var("standard-output", env),
         Some(value) => Some(value.clone()),
         None => interp.lookup_var("standard-output", env),
+    };
+    match resolved {
+        // GNU's `print_prepare' turns a nil effective stream into t after
+        // resolving `standard-output'.
+        Some(Value::Nil) => Some(Value::T),
+        other => other,
     }
 }
 
@@ -981,6 +1029,21 @@ pub(crate) fn render_princ(value: &Value) -> String {
         Value::Buffer(buffer) => buffer.name.to_string(),
         _ => value.to_string(),
     }
+}
+
+pub(crate) fn render_native_princ(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+) -> Result<String, LispError> {
+    if interp
+        .lookup_var("print-integers-as-characters", env)
+        .is_some_and(|setting| setting.is_truthy())
+        && matches!(value, Value::Integer(_) | Value::BigInteger(_))
+    {
+        return Ok(render_princ_integer_as_character(value).unwrap_or_else(|| value.to_string()));
+    }
+    Ok(render_princ(value))
 }
 
 #[derive(Clone, Debug)]

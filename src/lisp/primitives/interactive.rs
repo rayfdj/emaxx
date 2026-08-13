@@ -367,6 +367,12 @@ fn read_via_tty_event_reader() -> Option<Option<Value>> {
     TTY_EVENT_READER.with_borrow_mut(|slot| slot.as_mut().map(|reader| reader()))
 }
 
+/// Whether a terminal frontend is feeding events this session; the
+/// minibuffer reads through its own event loop when one is.
+pub(crate) fn has_tty_event_reader() -> bool {
+    TTY_EVENT_READER.with_borrow(|slot| slot.is_some())
+}
+
 pub(crate) fn pop_unread_command_event_value(
     interp: &mut Interpreter,
     env: &mut Env,

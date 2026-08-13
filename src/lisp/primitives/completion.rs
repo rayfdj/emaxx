@@ -1293,6 +1293,14 @@ fn completing_read_contents(
     {
         return Ok(Value::String(contents.into()));
     }
+    // A live terminal reads through the interactive minibuffer loop.
+    if crate::lisp::primitives::has_tty_event_reader()
+        && interp
+            .lookup_var("noninteractive", env)
+            .is_some_and(|value| value.is_nil())
+    {
+        return interactive_completing_read(interp, args, env);
+    }
     if let Some(initial_input) = initial_input {
         return Ok(Value::String(initial_input.into()));
     }
@@ -1689,6 +1697,373 @@ fn partial_completion_expand(
     Ok(Some(common_prefix(&prefixes)))
 }
 
+/// One submission attempt for minibuffer contents: RET's require-match
+/// validation and blank-input default handling (GNU's
+/// `minibuffer-complete-and-exit' contract).  `None' means the input was
+/// rejected and the minibuffer keeps reading.
+fn minibuffer_submission(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    contents: &[char],
+    collection: &Value,
+    predicate: Option<&Value>,
+    require_match: bool,
+    default: Option<&String>,
+) -> Result<Option<String>, LispError> {
+    let used_default = contents.is_empty() && default.is_some();
+    let entered = if used_default {
+        default.cloned().unwrap_or_default()
+    } else {
+        contents.iter().collect()
+    };
+    // GNU accepts DEFAULT on blank input even when REQUIRE-MATCH
+    // and PREDICATE would otherwise reject that default.
+    if require_match && !used_default {
+        let ignore_case = completion_ignores_case(interp, env);
+        let matches = filtered_completion_matches(interp, &entered, collection, predicate, env)?;
+        if !matches
+            .iter()
+            .any(|candidate| completion_strings_equal(&candidate.name, &entered, ignore_case))
+        {
+            return Ok(None);
+        }
+    }
+    Ok(Some(entered))
+}
+
+/// TAB in a completing minibuffer: delegate to the loaded Lisp completion
+/// engine when present, else extend by the native common prefix (with the
+/// trailing-slash and partial-completion fallbacks the simulated reader
+/// always had).
+fn apply_minibuffer_completion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    contents: &mut Vec<char>,
+    cursor: &mut usize,
+    collection: &Value,
+    predicate: Option<&Value>,
+) -> Result<(), LispError> {
+    let current: String = contents.iter().collect();
+    // GNU's minibuffer TAB command delegates to the Lisp
+    // completion-style engine.  Use that same boundary when it
+    // is loaded: programmed tables may return a completion base
+    // separate from their candidate strings, which cannot be
+    // reconstructed from `all-completions' alone.
+    if interp
+        .lookup_function("completion-try-completion", env)
+        .is_ok()
+    {
+        let result = call_function_value(
+            interp,
+            &Value::Symbol("completion-try-completion".into()),
+            &[
+                Value::String(current.into()),
+                collection.clone(),
+                predicate.cloned().unwrap_or(Value::Nil),
+                Value::Integer(*cursor as i64),
+            ],
+            env,
+        )?;
+        if let Some((completed, completed_point)) = result.cons_values()
+            && let Some(completed) = string_like(&completed)
+            && let Value::Integer(completed_point) = completed_point
+        {
+            *contents = completed.text.chars().collect();
+            *cursor = usize::try_from(completed_point)
+                .unwrap_or(contents.len())
+                .min(contents.len());
+        }
+        return Ok(());
+    }
+    let matches = filtered_completion_matches(interp, &current, collection, predicate, env)?;
+    if !matches.is_empty() {
+        let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
+        let lcp = common_prefix(&names);
+        if lcp.chars().count() > contents.len() {
+            *contents = lcp.chars().collect();
+            *cursor = contents.len();
+        }
+    } else if let Some(trimmed) = current.strip_suffix('/') {
+        // "dir-prefix/" — complete the component before the
+        // trailing slash (partial-completion's trailing case).
+        let matches = filtered_completion_matches(interp, trimmed, collection, predicate, env)?;
+        if !matches.is_empty() {
+            let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
+            let lcp = common_prefix(&names);
+            if lcp.chars().count() > trimmed.chars().count() {
+                *contents = lcp.chars().collect();
+                *cursor = contents.len();
+            }
+        }
+    } else if let Some(expanded) =
+        partial_completion_expand(interp, &current, collection, predicate, env)?
+    {
+        *contents = expanded.chars().collect();
+        *cursor = contents.len();
+    }
+    Ok(())
+}
+
+/// A plain editing key applied to minibuffer contents: the cursor-motion,
+/// deletion, and self-insertion subset every minibuffer keymap shares.
+fn apply_minibuffer_edit_key(contents: &mut Vec<char>, cursor: &mut usize, ch: char) {
+    match ch {
+        '\u{1}' => *cursor = 0,                        // C-a
+        '\u{2}' => *cursor = cursor.saturating_sub(1), // C-b
+        '\u{4}' if *cursor < contents.len() => {
+            contents.remove(*cursor); // C-d
+        }
+        '\u{5}' => *cursor = contents.len(), // C-e
+        '\u{6}' => *cursor = (*cursor + 1).min(contents.len()), // C-f
+        '\u{8}' | '\u{7f}' if *cursor > 0 => {
+            *cursor -= 1;
+            contents.remove(*cursor);
+        }
+        '\u{b}' => contents.truncate(*cursor), // C-k
+        '\u{15}' => {
+            contents.clear(); // C-u
+            *cursor = 0;
+        }
+        _ => {
+            contents.insert(*cursor, ch);
+            *cursor += 1;
+        }
+    }
+}
+
+/// The history variable a minibuffer read records into: HIST arg shapes
+/// are SYMBOL, (SYMBOL . STARTPOS), nil (the default
+/// `minibuffer-history'), and t (no recording).
+fn history_variable_name(spec: &Value) -> Option<String> {
+    match spec {
+        Value::Nil => Some("minibuffer-history".to_string()),
+        Value::Symbol(name) if name == "t" => None,
+        Value::Symbol(name) => Some(name.to_string()),
+        Value::Cons(_) => match spec.car() {
+            Ok(Value::Symbol(name)) if name == "t" => None,
+            Ok(Value::Symbol(name)) => Some(name.to_string()),
+            _ => Some("minibuffer-history".to_string()),
+        },
+        _ => Some("minibuffer-history".to_string()),
+    }
+}
+
+/// Record submitted minibuffer input, GNU's add_to_history: skip empty
+/// input and an immediate duplicate, honor `history-length'.
+fn push_minibuffer_history(interp: &mut Interpreter, env: &mut Env, variable: &str, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let current = interp.lookup_var(variable, env).unwrap_or(Value::Nil);
+    let mut items = current.to_vec().unwrap_or_default();
+    if items
+        .first()
+        .and_then(string_like)
+        .is_some_and(|entry| entry.text == text)
+    {
+        return;
+    }
+    items.insert(0, Value::String(text.into()));
+    let limit = interp
+        .lookup_var("history-length", env)
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(100);
+    if limit >= 0 {
+        items.truncate(limit as usize);
+    }
+    interp.set_variable(variable, Value::list(items), env);
+}
+
+/// The strings currently in a history variable, newest first.
+fn history_entries(interp: &Interpreter, env: &Env, variable: &str) -> Vec<String> {
+    interp
+        .lookup_var(variable, env)
+        .and_then(|value| value.to_vec().ok())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(string_like)
+                .map(|entry| entry.text)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Drive the active minibuffer with terminal events: a native rendition
+/// of GNU's minibuffer command loop over the dumped keymaps' core —
+/// self-insertion and editing motion, TAB completion against the
+/// installed table, M-p/M-n history recall, RET submission with
+/// require-match, C-g quit.  The echo area shows the live prompt and
+/// contents while the loop runs; the frontend's event reader paints it
+/// before blocking for each key.
+#[allow(clippy::too_many_arguments)]
+fn drive_interactive_minibuffer(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    collection: Option<&Value>,
+    predicate: Option<&Value>,
+    require_match: bool,
+    default: Option<&String>,
+    history_spec: &Value,
+    initial: &str,
+) -> Result<String, LispError> {
+    let prompt = interp
+        .lookup_var("emaxx--minibuffer-prompt", env)
+        .as_ref()
+        .and_then(string_like)
+        .map(|text| text.text)
+        .unwrap_or_default();
+    let history_variable = history_variable_name(history_spec);
+    let mut contents: Vec<char> = initial.chars().collect();
+    let mut cursor = contents.len();
+    // 0 = editing fresh input; N = showing the Nth newest history entry.
+    let mut history_position = 0usize;
+    let mut stashed_input: Vec<char> = Vec::new();
+    let submitted = loop {
+        let live: String = contents.iter().collect();
+        super::set_echo_area_message(Some(format!("{prompt}{live}")));
+        let event = match crate::lisp::primitives::pop_unread_command_event_value(interp, env) {
+            Ok(event) => event,
+            Err(error) => {
+                super::set_echo_area_message(None);
+                return Err(error);
+            }
+        };
+        let Some(ch) = crate::lisp::primitives::translated_unread_event_char(&event) else {
+            continue;
+        };
+        match ch {
+            '\r' | '\n' => {
+                let accepted = match collection {
+                    Some(collection) => minibuffer_submission(
+                        interp,
+                        env,
+                        &contents,
+                        collection,
+                        predicate,
+                        require_match,
+                        default,
+                    )?,
+                    None => Some(contents.iter().collect()),
+                };
+                if let Some(text) = accepted {
+                    break text;
+                }
+            }
+            '\t' if collection.is_some() => {
+                if let Some(collection) = collection {
+                    apply_minibuffer_completion(
+                        interp,
+                        env,
+                        &mut contents,
+                        &mut cursor,
+                        collection,
+                        predicate,
+                    )?;
+                }
+            }
+            '\u{1b}' => {
+                // A meta key arrives as the ESC prefix plus its base
+                // character (the frontend's key encoding).
+                let follow =
+                    match crate::lisp::primitives::pop_unread_command_event_value(interp, env) {
+                        Ok(event) => event,
+                        Err(error) => {
+                            super::set_echo_area_message(None);
+                            return Err(error);
+                        }
+                    };
+                let follow = crate::lisp::primitives::translated_unread_event_char(&follow);
+                if let Some(variable) = history_variable.as_deref() {
+                    let entries = history_entries(interp, env, variable);
+                    match follow {
+                        // M-p: previous (older) history element.
+                        Some('p') if history_position < entries.len() => {
+                            if history_position == 0 {
+                                stashed_input = contents.clone();
+                            }
+                            history_position += 1;
+                            contents = entries[history_position - 1].chars().collect();
+                            cursor = contents.len();
+                        }
+                        // M-n: next (newer), back down to the fresh input.
+                        Some('n') if history_position > 0 => {
+                            history_position -= 1;
+                            contents = if history_position == 0 {
+                                stashed_input.clone()
+                            } else {
+                                entries[history_position - 1].chars().collect()
+                            };
+                            cursor = contents.len();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            other => apply_minibuffer_edit_key(&mut contents, &mut cursor, other),
+        }
+    };
+    super::set_echo_area_message(None);
+    if let Some(variable) = history_variable.as_deref() {
+        push_minibuffer_history(interp, env, variable, &submitted);
+    }
+    Ok(submitted)
+}
+
+/// `completing-read' driven by live terminal events.
+pub(crate) fn interactive_completing_read(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let collection = args.get(1).cloned().unwrap_or(Value::Nil);
+    let predicate = args.get(2).filter(|value| !value.is_nil()).cloned();
+    let require_match = args.get(3).is_some_and(Value::is_truthy);
+    let default = args.get(6).and_then(string_like).map(|string| string.text);
+    let history_spec = args.get(5).cloned().unwrap_or(Value::Nil);
+    let initial = completing_read_initial_input(args).unwrap_or_default();
+    let text = drive_interactive_minibuffer(
+        interp,
+        env,
+        Some(&collection),
+        predicate.as_ref(),
+        require_match,
+        default.as_ref(),
+        &history_spec,
+        &initial,
+    )?;
+    Ok(Value::String(text.into()))
+}
+
+/// A minibuffer read driven by live terminal events: read-string and
+/// read-from-minibuffer's interactive path.  When Lisp bound a live
+/// completion context around the read (`completing-read-default' lets
+/// `minibuffer-completion-table' before calling `read-from-minibuffer'),
+/// TAB completes against it, GNU's keymap-selected behavior.
+pub(crate) fn interactive_minibuffer_read(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    initial: &str,
+    history_spec: &Value,
+) -> Result<String, LispError> {
+    let collection = interp
+        .lookup_var("minibuffer-completion-table", env)
+        .filter(|table| !table.is_nil());
+    let predicate = interp
+        .lookup_var("minibuffer-completion-predicate", env)
+        .filter(|predicate| !predicate.is_nil());
+    drive_interactive_minibuffer(
+        interp,
+        env,
+        collection.as_ref(),
+        predicate.as_ref(),
+        false,
+        None,
+        history_spec,
+        initial,
+    )
+}
+
 fn simulated_completing_read(
     interp: &mut Interpreter,
     args: &[Value],
@@ -1707,128 +2082,30 @@ fn simulated_completing_read(
         };
         match ch {
             '\r' | '\n' => {
-                let used_default = contents.is_empty() && default.is_some();
-                let entered = if used_default {
-                    default.clone().unwrap_or_default()
-                } else {
-                    contents.iter().collect()
-                };
-                // GNU accepts DEFAULT on blank input even when REQUIRE-MATCH
-                // and PREDICATE would otherwise reject that default.
-                if require_match && !used_default {
-                    let ignore_case = completion_ignores_case(interp, env);
-                    let matches = filtered_completion_matches(
-                        interp,
-                        &entered,
-                        &collection,
-                        predicate.as_ref(),
-                        env,
-                    )?;
-                    if !matches.iter().any(|candidate| {
-                        completion_strings_equal(&candidate.name, &entered, ignore_case)
-                    }) {
-                        continue;
-                    }
+                if let Some(entered) = minibuffer_submission(
+                    interp,
+                    env,
+                    &contents,
+                    &collection,
+                    predicate.as_ref(),
+                    require_match,
+                    default.as_ref(),
+                )? {
+                    accepted = Some(entered);
+                    break;
                 }
-                accepted = Some(entered);
-                break;
             }
             '\t' => {
-                let current: String = contents.iter().collect();
-                // GNU's minibuffer TAB command delegates to the Lisp
-                // completion-style engine.  Use that same boundary when it
-                // is loaded: programmed tables may return a completion base
-                // separate from their candidate strings, which cannot be
-                // reconstructed from `all-completions' alone.
-                if interp
-                    .lookup_function("completion-try-completion", env)
-                    .is_ok()
-                {
-                    let result = call_function_value(
-                        interp,
-                        &Value::Symbol("completion-try-completion".into()),
-                        &[
-                            Value::String(current.into()),
-                            collection.clone(),
-                            predicate.clone().unwrap_or(Value::Nil),
-                            Value::Integer(cursor as i64),
-                        ],
-                        env,
-                    )?;
-                    if let Some((completed, completed_point)) = result.cons_values()
-                        && let Some(completed) = string_like(&completed)
-                        && let Value::Integer(completed_point) = completed_point
-                    {
-                        contents = completed.text.chars().collect();
-                        cursor = usize::try_from(completed_point)
-                            .unwrap_or(contents.len())
-                            .min(contents.len());
-                    }
-                } else {
-                    let matches = filtered_completion_matches(
-                        interp,
-                        &current,
-                        &collection,
-                        predicate.as_ref(),
-                        env,
-                    )?;
-                    if !matches.is_empty() {
-                        let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
-                        let lcp = common_prefix(&names);
-                        if lcp.chars().count() > contents.len() {
-                            contents = lcp.chars().collect();
-                            cursor = contents.len();
-                        }
-                    } else if let Some(trimmed) = current.strip_suffix('/') {
-                        // "dir-prefix/" — complete the component before the
-                        // trailing slash (partial-completion's trailing case).
-                        let matches = filtered_completion_matches(
-                            interp,
-                            trimmed,
-                            &collection,
-                            predicate.as_ref(),
-                            env,
-                        )?;
-                        if !matches.is_empty() {
-                            let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
-                            let lcp = common_prefix(&names);
-                            if lcp.chars().count() > trimmed.chars().count() {
-                                contents = lcp.chars().collect();
-                                cursor = contents.len();
-                            }
-                        }
-                    } else if let Some(expanded) = partial_completion_expand(
-                        interp,
-                        &current,
-                        &collection,
-                        predicate.as_ref(),
-                        env,
-                    )? {
-                        contents = expanded.chars().collect();
-                        cursor = contents.len();
-                    }
-                }
+                apply_minibuffer_completion(
+                    interp,
+                    env,
+                    &mut contents,
+                    &mut cursor,
+                    &collection,
+                    predicate.as_ref(),
+                )?;
             }
-            '\u{1}' => cursor = 0,                        // C-a
-            '\u{2}' => cursor = cursor.saturating_sub(1), // C-b
-            '\u{4}' if cursor < contents.len() => {
-                contents.remove(cursor); // C-d
-            }
-            '\u{5}' => cursor = contents.len(), // C-e
-            '\u{6}' => cursor = (cursor + 1).min(contents.len()), // C-f
-            '\u{8}' | '\u{7f}' if cursor > 0 => {
-                cursor -= 1;
-                contents.remove(cursor);
-            }
-            '\u{b}' => contents.truncate(cursor), // C-k
-            '\u{15}' => {
-                contents.clear(); // C-u
-                cursor = 0;
-            }
-            _ => {
-                contents.insert(cursor, ch);
-                cursor += 1;
-            }
+            other => apply_minibuffer_edit_key(&mut contents, &mut cursor, other),
         }
     }
     Ok(Value::String(

@@ -33,6 +33,7 @@ import fcntl
 import termios
 
 ROWS, COLS = 24, 80
+FIXTURE_PATH = "/tmp/emaxxff-fixture.dat"
 
 
 class Vt100Screen:
@@ -448,6 +449,36 @@ SCENARIOS = [
         "alpha\nbeta\ngamma\n",
         [b"\x1b>", b"\x10"],
     ),
+    # M-x completes a unique command prefix with TAB.
+    (
+        "mx-tab-completion",
+        "alpha\n",
+        [b"\x1bxforward-ch\t\r", b"X"],
+    ),
+    # M-p in M-x recalls the previously executed command.
+    (
+        "mx-history-recall",
+        "alpha\n",
+        [b"\x1bxforward-char\r", b"\x1bx\x1bp\r", b"Z"],
+    ),
+    # C-x C-f opens a typed absolute path.
+    (
+        "find-file-typed",
+        "original\n",
+        [b"\x18\x06", FIXTURE_PATH.encode() + b"\r"],
+    ),
+    # TAB completes the fixture's file name in the C-x C-f prompt.
+    (
+        "find-file-tab",
+        "original\n",
+        [b"\x18\x06", FIXTURE_PATH[:-7].encode() + b"\t\r"],
+    ),
+    # The C-x C-f prompt itself: GNU preloads the default directory.
+    (
+        "find-file-prompt",
+        "original\n",
+        [b"\x18\x06"],
+    ),
 ]
 
 
@@ -467,6 +498,8 @@ def main():
         [lisp_dir] + sorted(e.path for e in os.scandir(lisp_dir) if e.is_dir())
     )
 
+    with open(FIXTURE_PATH, "w") as fixture:
+        fixture.write("fixture line one\nfixture line two\n")
     failures = 0
     for name, contents, keys in SCENARIOS:
         handle, path = tempfile.mkstemp(suffix=".dat", prefix=f"ttydiff-{name}-")

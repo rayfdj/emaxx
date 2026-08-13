@@ -900,6 +900,13 @@ fn rendered_table_word_classes(
     interp: &Interpreter,
     encoding: Option<&SyntaxPropertyEncoding>,
 ) -> (String, String) {
+    let table_id = interp.current_syntax_table_id();
+    if encoding.is_none()
+        && let Some(word) = interp.cached_regexp_syntax_word_class(table_id)
+    {
+        let non_word = format!("(?!{word})[\\s\\S]");
+        return (word, non_word);
+    }
     #[cfg(test)]
     REGEXP_SYNTAX_CLASS_RENDER_COUNT.with(|count| count.set(count.get() + 1));
     #[derive(Clone, Copy, Eq, PartialEq)]
@@ -910,17 +917,28 @@ fn rendered_table_word_classes(
     }
 
     const SCALAR_END: u32 = char::MAX as u32 + 1;
-    let table_id = interp.current_syntax_table_id();
     let mut boundaries = vec![0, 0xd800, 0xe000, SCALAR_END];
     let mut current = Some(table_id);
     let mut seen = HashSet::new();
+    let mut cacheable = encoding.is_none();
     while let Some(id) = current {
         if !seen.insert(id) {
             break;
         }
         let Some(table) = interp.find_char_table(id) else {
+            cacheable = false;
             break;
         };
+        // GNU character-table entries are ordinary live Lisp objects.  An
+        // in-place mutation of a cons or mutable string does not pass through
+        // Emaxx's character-table mutation door, so never retain a rendering
+        // derived from either representation.  Ordinary modify-syntax-entry
+        // strings are immutable SharedText and take the cached path.
+        cacheable &= !matches!(table.default, Value::Cons(_) | Value::StringObject(_))
+            && table
+                .entries
+                .iter()
+                .all(|entry| !matches!(entry.value, Value::Cons(_) | Value::StringObject(_)));
         for entry in &table.entries {
             if entry.start < SCALAR_END {
                 boundaries.push(entry.start);
@@ -1009,6 +1027,9 @@ fn rendered_table_word_classes(
     } else {
         format!("(?:{})", branches.join("|"))
     };
+    if cacheable {
+        interp.cache_regexp_syntax_word_class(table_id, word.clone());
+    }
     let non_word = format!("(?!{word})[\\s\\S]");
     (word, non_word)
 }
@@ -1158,11 +1179,15 @@ fn regex_posix_class_fragment(name: &str) -> Option<&'static str> {
     }
 }
 
-fn consume_posix_class_name(
-    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
-) -> Option<String> {
+enum PosixClassParse {
+    Literal,
+    Named(String),
+    Malformed,
+}
+
+fn consume_posix_class(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> PosixClassParse {
     if chars.peek() != Some(&':') {
-        return None;
+        return PosixClassParse::Literal;
     }
     let mut preview = chars.clone();
     preview.next();
@@ -1171,14 +1196,22 @@ fn consume_posix_class_name(
         if ch == ':' && preview.peek() == Some(&']') {
             preview.next();
             *chars = preview;
-            return Some(name);
+            return PosixClassParse::Named(name);
         }
         if ch == ']' {
-            return None;
+            // A bare `]' normally means the `[:' opener was literal.  If it
+            // is itself followed by `:]', however, GNU treats the complete
+            // class-like construct (notably `[[:]:]]') as a malformed POSIX
+            // class name rather than as literal bracket members.
+            return if preview.next() == Some(':') && preview.peek() == Some(&']') {
+                PosixClassParse::Malformed
+            } else {
+                PosixClassParse::Literal
+            };
         }
         name.push(ch);
     }
-    None
+    PosixClassParse::Literal
 }
 
 fn translate_bracket_expression(
@@ -1456,10 +1489,10 @@ fn consume_regex_class_atom(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
 ) -> Option<RegexClassAtom> {
     match chars.next()? {
-        '[' => Some(
-            consume_posix_class_name(chars)
-                .map_or(RegexClassAtom::Char('['), RegexClassAtom::Posix),
-        ),
+        '[' => Some(match consume_posix_class(chars) {
+            PosixClassParse::Named(name) => RegexClassAtom::Posix(name),
+            PosixClassParse::Literal | PosixClassParse::Malformed => RegexClassAtom::Char('['),
+        }),
         '\\' => Some(RegexClassAtom::Char('\\')),
         ch => Some(RegexClassAtom::Char(ch)),
     }
@@ -1576,13 +1609,15 @@ pub(super) fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
     while let Some(ch) = chars.next() {
         if in_class {
             match ch {
-                '[' => {
-                    if let Some(name) = consume_posix_class_name(&mut chars)
-                        && regex_posix_class_fragment(&name).is_none()
-                    {
-                        return Err(invalid_regexp_error("Invalid character class"));
+                '[' => match consume_posix_class(&mut chars) {
+                    PosixClassParse::Named(name) if regex_posix_class_fragment(&name).is_none() => {
+                        return Err(invalid_regexp_error("Invalid character class name"));
                     }
-                }
+                    PosixClassParse::Malformed => {
+                        return Err(invalid_regexp_error("Invalid character class name"));
+                    }
+                    PosixClassParse::Literal | PosixClassParse::Named(_) => {}
+                },
                 ']' => in_class = false,
                 _ => {}
             }
@@ -2198,12 +2233,23 @@ pub(super) fn match_data_from_captures(
     capture_mapping: &[usize],
 ) -> Vec<Option<(usize, usize)>> {
     let mut match_data = vec![None; capture_mapping.iter().copied().max().unwrap_or(0) + 1];
+    let ascii = haystack.is_ascii();
     for index in 0..captures.len() {
         let Some(matched) = captures.get(index) else {
             continue;
         };
-        let start = start_pos + haystack[..matched.start()].chars().count();
-        let end = start_pos + haystack[..matched.end()].chars().count();
+        let start = start_pos
+            + if ascii {
+                matched.start()
+            } else {
+                haystack[..matched.start()].chars().count()
+            };
+        let end = start_pos
+            + if ascii {
+                matched.end()
+            } else {
+                haystack[..matched.end()].chars().count()
+            };
         let target_index = if index == 0 {
             0
         } else {
@@ -2464,7 +2510,12 @@ pub(super) fn string_match_impl(
     if let Some(captures) = captures
         && let Some(matched) = captures.get(0)
     {
-        let match_start = start + tail[..matched.start()].chars().count();
+        let match_start = start
+            + if tail.is_ascii() {
+                matched.start()
+            } else {
+                tail[..matched.start()].chars().count()
+            };
         if update_match_data && !args.get(3).is_some_and(Value::is_truthy) {
             set_match_data(
                 interp,

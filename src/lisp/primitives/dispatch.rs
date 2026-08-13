@@ -24,7 +24,6 @@ pub(crate) use display::{echo_area_message, set_echo_area_message};
 pub(crate) use lists::{
     next_digit_prefix, next_negative_prefix, next_universal_prefix,
     prepare_kbd_macro_minibuffer_entry, read_minibuffer_text_from_kbd_macro_inner,
-    set_tty_minibuffer_reader,
 };
 pub(crate) use misc_keymaps::oclosure_type_of;
 mod overlays;
