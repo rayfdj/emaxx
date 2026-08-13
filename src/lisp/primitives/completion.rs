@@ -156,11 +156,16 @@ pub(crate) fn resolve_buffer_menu_source(
 
 pub(crate) fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
     matches!(value, Value::Symbol(symbol) if symbol == "window")
-        || matches!(value, Value::Record(id) if interp.find_record(*id).is_some_and(|record| record.type_name == "window"))
+        || matches!(value, Value::Record(id) if interp.find_record(*id).is_some_and(|record|
+            record.kind == crate::lisp::eval::RecordKind::Window))
 }
 
 pub(crate) fn make_obarray(interp: &mut Interpreter) -> Value {
-    interp.create_record(OBARRAY_RECORD_TYPE, vec![Value::Nil])
+    interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Obarray,
+        OBARRAY_RECORD_TYPE,
+        vec![Value::Nil],
+    )
 }
 
 pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result<Value, LispError> {
@@ -195,12 +200,9 @@ pub(crate) fn is_obarray_like_value(interp: &Interpreter, value: &Value) -> bool
     let Value::Record(id) = value else {
         return false;
     };
-    interp.find_record(*id).is_some_and(|record| {
-        matches!(
-            record.type_name.as_str(),
-            OBARRAY_RECORD_TYPE | ABBREV_TABLE_RECORD_TYPE
-        )
-    })
+    interp
+        .find_record(*id)
+        .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Obarray)
 }
 
 pub(crate) fn obarray_symbols(
@@ -1387,7 +1389,7 @@ pub(crate) fn callable_interactive_form_items(
     }
     if let Value::Record(id) = func
         && let Some(record) = interp.find_record(*id)
-        && record.type_name == "byte-code-function"
+        && record.kind == crate::lisp::eval::RecordKind::Closure
         && let Ok(Some(object)) = crate::lisp::bytecode::ByteCodeObject::from_slots(&record.slots)
         && let Some(spec) = object.interactive
         && !spec.is_nil()

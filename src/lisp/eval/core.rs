@@ -384,6 +384,7 @@ pub(super) enum SourceLiteralKind {
     Vector,
     BoolVector,
     CharTable,
+    Closure,
     Record,
 }
 
@@ -431,6 +432,9 @@ impl Interpreter {
                 "vector-literal" => SourceLiteralKind::Vector,
                 "bool-vector-literal" => SourceLiteralKind::BoolVector,
                 CHAR_TABLE_LITERAL_SYMBOL => SourceLiteralKind::CharTable,
+                CLOSURE_LITERAL_SYMBOL if items[1..].iter().all(is_record_literal_slot_form) => {
+                    SourceLiteralKind::Closure
+                }
                 RECORD_LITERAL_SYMBOL if items[1..].iter().all(is_record_literal_slot_form) => {
                     SourceLiteralKind::Record
                 }
@@ -557,12 +561,19 @@ impl Interpreter {
                         return self.materialize_read_object_literals(expr.clone());
                     }
                     SourceLiteralKind::BoolVector => {
-                        return Ok(self.create_record("bool-vector", items[1..].to_vec()));
+                        return Ok(self.create_pseudovector(
+                            RecordKind::BoolVector,
+                            "bool-vector",
+                            items[1..].to_vec(),
+                        ));
                     }
                     SourceLiteralKind::CharTable => {
                         return crate::lisp::primitives::materialize_read_char_table_literals(
                             self, expr,
                         );
+                    }
+                    SourceLiteralKind::Closure => {
+                        return self.eval_closure_literal_form(&items[1..], env);
                     }
                     SourceLiteralKind::Record => {
                         return self.eval_record_literal_form(&items[1..], env);
@@ -1602,7 +1613,7 @@ impl Interpreter {
             Value::Record(id)
                 if self
                     .find_record(id)
-                    .is_some_and(|record| record.type_name == "byte-code-function") =>
+                    .is_some_and(|record| record.kind == RecordKind::Closure) =>
             {
                 let (inner, uses_dynamic_binding) = {
                     let Some(record) = self.find_record(id) else {

@@ -1645,7 +1645,8 @@ fn position_symbols_in_value(
             if matches!(tokens.front(), Some((token, _)) if token == &symbol)
                 && let Some((_, position)) = tokens.pop_front()
             {
-                interp.create_record(
+                interp.create_pseudovector(
+                    crate::lisp::eval::RecordKind::SymbolWithPos,
                     "symbol-with-pos",
                     vec![Value::Symbol(symbol), Value::Integer(position)],
                 )

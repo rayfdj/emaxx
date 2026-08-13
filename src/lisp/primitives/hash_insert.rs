@@ -123,7 +123,7 @@ pub(crate) fn hash_table_metadata_slot(
     let Some(record) = interp.find_record(*id) else {
         return Err(LispError::TypeError("hash-table".into(), table.type_name()));
     };
-    if record.type_name != "hash-table" {
+    if record.kind != crate::lisp::eval::RecordKind::HashTable {
         return Err(LispError::TypeError("hash-table".into(), table.type_name()));
     }
     Ok(record.slots.get(slot).cloned().unwrap_or(default))
@@ -367,7 +367,7 @@ pub(crate) fn set_hash_table_entries(
     };
     let Some(test) = interp
         .find_record(*id)
-        .filter(|record| record.type_name == "hash-table")
+        .filter(|record| record.kind == crate::lisp::eval::RecordKind::HashTable)
         .and_then(|record| record.slots.first())
         .and_then(|value| value.as_symbol().ok())
         .map(str::to_string)

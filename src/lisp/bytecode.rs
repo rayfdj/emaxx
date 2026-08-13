@@ -883,7 +883,7 @@ pub(crate) mod tests {
     fn collect_byte_code_slot_lists(value: &Value, found: &mut Vec<Vec<Value>>) {
         let Ok(items) = value.to_vec() else { return };
         if let [Value::Symbol(marker), kind, slots @ ..] = items.as_slice()
-            && marker == super::super::reader::RECORD_LITERAL_SYMBOL
+            && marker == super::super::reader::CLOSURE_LITERAL_SYMBOL
             && kind.to_vec().is_ok_and(|kind_items| {
                 matches!(
                     kind_items.as_slice(),

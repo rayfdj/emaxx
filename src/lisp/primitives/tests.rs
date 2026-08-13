@@ -6238,6 +6238,56 @@ fn native_mutex_name_reads_the_shared_mutex_state() {
 }
 
 #[test]
+fn native_thread_and_synchronization_handles_compare_by_identity() {
+    let program = r#"
+        (let* ((thread-1 (make-thread 'ignore))
+               (thread-2 (make-thread 'ignore))
+               (mutex-1 (make-mutex))
+               (mutex-2 (make-mutex))
+               (condition-1 (make-condition-variable mutex-1))
+               (condition-2 (make-condition-variable mutex-1))
+               (record-thread-1 (record 'thread 1))
+               (record-thread-2 (record 'thread 1))
+               (record-mutex-1 (record 'mutex 1))
+               (record-mutex-2 (record 'mutex 1)))
+          (list (recordp thread-1)
+                (recordp mutex-1)
+                (recordp condition-1)
+                (equal thread-1 thread-2)
+                (equal thread-1 thread-1)
+                (equal mutex-1 mutex-2)
+                (equal mutex-1 mutex-1)
+                (equal condition-1 condition-2)
+                (equal condition-1 condition-1)
+                (recordp record-thread-1)
+                (equal record-thread-1 record-thread-2)
+                (recordp record-mutex-1)
+                (equal record-mutex-1 record-mutex-2)
+                (threadp record-thread-1)
+                (mutexp record-mutex-1)))
+    "#;
+    let expected = "(nil nil nil nil t nil t nil t t t t t nil nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("opaque-handle equality contract should parse")
+        .expect("opaque-handle equality contract should contain a form");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("opaque-handle equality result should parse")
+        .expect("opaque-handle equality result should exist");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("opaque handles should compare by identity"),
+        expected
+    );
+}
+
+#[test]
 fn native_menu_activity_predicate_is_false_without_a_graphical_menu() {
     let program = r#"
         (list (menu-or-popup-active-p)

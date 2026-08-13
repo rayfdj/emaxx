@@ -178,6 +178,9 @@ pub(crate) fn record_equals_record_literal_form(
     let Some(record) = interp.find_record(record_id) else {
         return false;
     };
+    if record.kind != crate::lisp::eval::RecordKind::Record {
+        return false;
+    }
     let Some(items) = record_literal_items(form) else {
         return false;
     };
@@ -266,24 +269,24 @@ pub(crate) fn values_equal_recursive(
         (Value::Record(left_id), Value::Record(right_id))
             if interp
                 .find_record(*left_id)
-                .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE)
+                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap)
                 && interp
                     .find_record(*right_id)
-                    .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+                    .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
             keymap_records_equal(interp, *left_id, *right_id, seen)
         }
         (Value::Record(left_id), Value::Cons(_))
             if interp
                 .find_record(*left_id)
-                .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
             keymap_record_equals_list(interp, *left_id, right, seen)
         }
         (Value::Cons(_), Value::Record(right_id))
             if interp
                 .find_record(*right_id)
-                .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
             keymap_record_equals_list(interp, *right_id, left, seen)
         }
@@ -291,16 +294,48 @@ pub(crate) fn values_equal_recursive(
             if left_id == right_id {
                 return true;
             }
-            // GNU `equal' compares records element-wise like vectors.
-            let pair = (*left_id as usize, *right_id as usize);
-            if !seen.insert(pair) {
-                return true;
-            }
             let (Some(left_record), Some(right_record)) =
                 (interp.find_record(*left_id), interp.find_record(*right_id))
             else {
                 return false;
             };
+            if left_record.kind != right_record.kind {
+                return false;
+            }
+            // GNU only walks real records and the pseudovectors at or above
+            // PVEC_CLOSURE.  Native handles below that boundary (threads,
+            // synchronization objects, parsers, SQLite handles, and the
+            // like) are opaque and compare by identity.
+            if matches!(
+                left_record.kind,
+                crate::lisp::eval::RecordKind::Process
+                    | crate::lisp::eval::RecordKind::HashTable
+                    | crate::lisp::eval::RecordKind::Obarray
+                    | crate::lisp::eval::RecordKind::Window
+                    | crate::lisp::eval::RecordKind::WindowConfiguration
+                    | crate::lisp::eval::RecordKind::Thread
+                    | crate::lisp::eval::RecordKind::Mutex
+                    | crate::lisp::eval::RecordKind::ConditionVariable
+                    | crate::lisp::eval::RecordKind::NativeCompUnit
+                    | crate::lisp::eval::RecordKind::TreeSitterParser
+                    | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
+                    | crate::lisp::eval::RecordKind::Sqlite
+            ) {
+                return false;
+            }
+            if left_record.kind == crate::lisp::eval::RecordKind::TreeSitterNode {
+                let left = interp.treesit_node_state(left);
+                let right = interp.treesit_node_state(right);
+                return matches!((left, right), (Some(left), Some(right))
+                    if left.parser_id == right.parser_id
+                        && left.generation == right.generation
+                        && left.node_id == right.node_id);
+            }
+            // GNU `equal' compares real records element-wise like vectors.
+            let pair = (*left_id as usize, *right_id as usize);
+            if !seen.insert(pair) {
+                return true;
+            }
             left_record.type_name == right_record.type_name
                 && left_record.slots.len() == right_record.slots.len()
                 && left_record
@@ -828,25 +863,6 @@ pub(crate) fn compare_buffer_ids(interp: &Interpreter, left_id: u64, right_id: u
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RecordCompareKind {
-    Generic,
-    BoolVector,
-    Process,
-    HashTable,
-    Obarray,
-}
-
-pub(crate) fn record_compare_kind(type_name: &str) -> RecordCompareKind {
-    match type_name {
-        "bool-vector" => RecordCompareKind::BoolVector,
-        "process" => RecordCompareKind::Process,
-        "hash-table" => RecordCompareKind::HashTable,
-        "obarray" => RecordCompareKind::Obarray,
-        _ => RecordCompareKind::Generic,
-    }
-}
-
 pub(crate) fn compare_record_values(
     interp: &Interpreter,
     left: &Value,
@@ -875,14 +891,12 @@ pub(crate) fn compare_record_values(
         return Ok(Some(order_from_ordering(left_id.cmp(right_id))));
     };
 
-    let left_kind = record_compare_kind(&left_record.type_name);
-    let right_kind = record_compare_kind(&right_record.type_name);
-    if left_kind != right_kind {
+    if left_record.kind != right_record.kind {
         return Err(type_mismatch_signal(left, right));
     }
 
-    match left_kind {
-        RecordCompareKind::BoolVector => {
+    match left_record.kind {
+        crate::lisp::eval::RecordKind::BoolVector => {
             let left_bits = bool_vector_bits(interp, left)?;
             let right_bits = bool_vector_bits(interp, right)?;
             for (left_bit, right_bit) in left_bits.iter().zip(right_bits.iter()) {
@@ -896,11 +910,16 @@ pub(crate) fn compare_record_values(
                 left_bits.len().cmp(&right_bits.len()),
             )))
         }
-        RecordCompareKind::Process => Ok(Some(order_from_ordering(left_id.cmp(right_id)))),
-        RecordCompareKind::HashTable | RecordCompareKind::Obarray => {
-            Ok(Some(ValueOrder::Unordered))
-        }
-        RecordCompareKind::Generic => {
+        crate::lisp::eval::RecordKind::Process => Ok(Some(
+            match (
+                interp.process_name(*left_id),
+                interp.process_name(*right_id),
+            ) {
+                (Some(left), Some(right)) => compare_plain_symbol_names(&left, &right),
+                _ => ValueOrder::Unordered,
+            },
+        )),
+        crate::lisp::eval::RecordKind::Record | crate::lisp::eval::RecordKind::Keymap => {
             let type_order =
                 compare_plain_symbol_names(&left_record.type_name, &right_record.type_name);
             if type_order != ValueOrder::Equal {
@@ -914,6 +933,21 @@ pub(crate) fn compare_record_values(
                 seen_lists,
             )?))
         }
+        crate::lisp::eval::RecordKind::Closure
+        | crate::lisp::eval::RecordKind::Font
+        | crate::lisp::eval::RecordKind::SymbolWithPos
+        | crate::lisp::eval::RecordKind::HashTable
+        | crate::lisp::eval::RecordKind::Obarray
+        | crate::lisp::eval::RecordKind::Window
+        | crate::lisp::eval::RecordKind::WindowConfiguration
+        | crate::lisp::eval::RecordKind::Thread
+        | crate::lisp::eval::RecordKind::Mutex
+        | crate::lisp::eval::RecordKind::ConditionVariable
+        | crate::lisp::eval::RecordKind::NativeCompUnit
+        | crate::lisp::eval::RecordKind::TreeSitterParser
+        | crate::lisp::eval::RecordKind::TreeSitterNode
+        | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
+        | crate::lisp::eval::RecordKind::Sqlite => Ok(Some(ValueOrder::Unordered)),
     }
 }
 
@@ -1297,7 +1331,11 @@ pub(crate) fn copy_tree_value(
             for slot in &record.slots {
                 slots.push(copy_tree_value(interp, slot, true)?);
             }
-            Ok(interp.create_record(&record.type_name, slots))
+            if record.kind == crate::lisp::eval::RecordKind::Record {
+                Ok(interp.create_record(&record.type_name, slots))
+            } else {
+                Ok(value.clone())
+            }
         }
         _ => Ok(value.clone()),
     }
@@ -1547,6 +1585,7 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
                     Value::Symbol(symbol)
                         if symbol == "keymap"
                             || symbol == crate::lisp::reader::RECORD_LITERAL_SYMBOL
+                            || symbol == crate::lisp::reader::CLOSURE_LITERAL_SYMBOL
                 ) {
                     visiting.remove(&identity);
                     return false;
@@ -1928,8 +1967,8 @@ pub(crate) fn hash_record_equal(
         return;
     };
 
-    match record_compare_kind(&record.type_name) {
-        RecordCompareKind::BoolVector => {
+    match record.kind {
+        crate::lisp::eval::RecordKind::BoolVector => {
             hash_str(state, "bool-vector");
             if let Ok(bits) = bool_vector_bits(interp, &Value::Record(id)) {
                 hash_mix(state, bits.len() as u64);
@@ -1940,11 +1979,27 @@ pub(crate) fn hash_record_equal(
                 hash_mix(state, id);
             }
         }
-        RecordCompareKind::Process | RecordCompareKind::HashTable | RecordCompareKind::Obarray => {
+        crate::lisp::eval::RecordKind::Process
+        | crate::lisp::eval::RecordKind::HashTable
+        | crate::lisp::eval::RecordKind::Obarray
+        | crate::lisp::eval::RecordKind::Window
+        | crate::lisp::eval::RecordKind::WindowConfiguration
+        | crate::lisp::eval::RecordKind::Thread
+        | crate::lisp::eval::RecordKind::Mutex
+        | crate::lisp::eval::RecordKind::ConditionVariable
+        | crate::lisp::eval::RecordKind::NativeCompUnit
+        | crate::lisp::eval::RecordKind::SymbolWithPos
+        | crate::lisp::eval::RecordKind::TreeSitterParser
+        | crate::lisp::eval::RecordKind::TreeSitterNode
+        | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
+        | crate::lisp::eval::RecordKind::Sqlite => {
             hash_str(state, &record.type_name);
             hash_mix(state, id);
         }
-        RecordCompareKind::Generic => {
+        crate::lisp::eval::RecordKind::Record
+        | crate::lisp::eval::RecordKind::Closure
+        | crate::lisp::eval::RecordKind::Font
+        | crate::lisp::eval::RecordKind::Keymap => {
             hash_str(state, &record.type_name);
             hash_mix(state, record.slots.len() as u64);
             for slot in &record.slots {
@@ -2177,7 +2232,8 @@ pub(crate) const KEYMAP_CHAR_TABLE_SLOT: usize = 3;
 pub(crate) const KEYMAP_PUBLIC_VIEW_SLOT: usize = 4;
 
 pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
-    let keymap = interp.create_record(
+    let keymap = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Keymap,
         KEYMAP_RECORD_TYPE,
         vec![
             name.map(Value::string).unwrap_or(Value::Nil),
@@ -2338,7 +2394,7 @@ pub(crate) fn keymap_record_id(interp: &Interpreter, value: &Value) -> Option<u6
     };
     interp
         .find_record(*id)
-        .filter(|record| record.type_name == KEYMAP_RECORD_TYPE)
+        .filter(|record| record.kind == crate::lisp::eval::RecordKind::Keymap)
         .map(|_| *id)
 }
 

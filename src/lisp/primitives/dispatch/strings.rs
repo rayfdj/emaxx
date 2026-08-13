@@ -115,9 +115,9 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match &args[0] {
                     Value::Record(id)
-                        if interp
-                            .find_record(*id)
-                            .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::Keymap
+                        }) =>
                     {
                         interp.copy_record(*id)
                     }
@@ -1922,7 +1922,7 @@ fn unicode_property_uses_unsupported_bytecode(interp: &Interpreter, table: &Valu
     };
     interp
         .find_record(decoder_id)
-        .is_some_and(|record| record.type_name == "byte-code-function")
+        .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure)
 }
 
 fn decode_unicode_property_value(

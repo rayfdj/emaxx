@@ -46,12 +46,7 @@ fn font_record<'a>(
     };
     interp
         .find_record(*id)
-        .filter(|record| {
-            matches!(
-                record.type_name.as_str(),
-                "font-spec" | "font-entity" | "font-object"
-            )
-        })
+        .filter(|record| record.kind == crate::lisp::eval::RecordKind::Font)
         .ok_or_else(|| wrong_type_argument("fontp", value.clone()))
 }
 
@@ -61,7 +56,9 @@ fn font_spec_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
     };
     interp
         .find_record(*id)
-        .filter(|record| record.type_name == "font-spec")
+        .filter(|record| {
+            record.kind == crate::lisp::eval::RecordKind::Font && record.type_name == "font-spec"
+        })
         .map(|_| *id)
         .ok_or_else(|| wrong_type_argument("font-spec-p", value.clone()))
 }
@@ -867,16 +864,17 @@ define_dispatch!(
         _env: &mut Env,
     ) -> Result<Value, LispError> {
         match name {
-            "font-spec" => Ok(interp.create_record("font-spec", make_font_spec(args)?)),
+            "font-spec" => Ok(interp.create_pseudovector(
+                crate::lisp::eval::RecordKind::Font,
+                "font-spec",
+                make_font_spec(args)?,
+            )),
             "fontp" => {
                 need_arg_range(name, args, 1, 2)?;
                 let font_type = match &args[0] {
                     Value::Record(id) => interp.find_record(*id).and_then(|record| {
-                        matches!(
-                            record.type_name.as_str(),
-                            "font-spec" | "font-entity" | "font-object"
-                        )
-                        .then(|| record.type_name.clone())
+                        (record.kind == crate::lisp::eval::RecordKind::Font)
+                            .then(|| record.type_name.clone())
                     }),
                     _ => None,
                 };
