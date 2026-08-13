@@ -479,6 +479,66 @@ SCENARIOS = [
         "original\n",
         [b"\x18\x06"],
     ),
+    # C-s live search: the echo shows the accumulating search string.
+    (
+        "isearch-enter",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor"],
+    ),
+    # RET exits the search at the match end.
+    (
+        "isearch-exit-point",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\r", b"X"],
+    ),
+    # C-s repeats to the next match.
+    (
+        "isearch-repeat",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\x13", b"\r", b"Y"],
+    ),
+    # A failing search reports itself and leaves point at the origin.
+    (
+        "isearch-fail",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"zzq"],
+    ),
+    # Repeating past the last match fails, and one more C-s wraps.
+    (
+        "isearch-wrap",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\x13", b"\x13", b"\x13"],
+    ),
+    # C-g during a successful search cancels back to the origin.
+    (
+        "isearch-cancel",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\x07", b"Z"],
+    ),
+    # C-r searches backward from the end of the buffer.
+    (
+        "isearch-backward",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x1b>", b"\x12", b"wor", b"\r", b"B"],
+    ),
+    # A key outside the search map exits isearch and then runs.
+    (
+        "isearch-other-key-exit",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\x01", b"Q"],
+    ),
+    # DEL edits the search string.
+    (
+        "isearch-del-edits",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"worz", b"\x7f", b"\r", b"D"],
+    ),
+    # A match beyond the window scrolls it into view.
+    (
+        "isearch-scroll",
+        "".join(f"line {n:03}\n" for n in range(50)) + "needle here\n",
+        [b"\x13", b"needle", b"\r", b"N"],
+    ),
 ]
 
 
