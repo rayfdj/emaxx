@@ -3701,7 +3701,10 @@ fn transient_mark_mode_uses_the_gnu_batch_default_and_call_contract() {
         eval_str(
             "(with-temp-buffer
                (insert \"abcd\")
-               (set-mark 1)
+               ;; The public command is Elisp-owned; this bare fixture only
+               ;; needs an active region to exercise transient-mark-mode.
+               (set-marker (mark-marker) 1 (current-buffer))
+               (setq mark-active t)
                (goto-char 4)
                (let ((initial transient-mark-mode))
                  (list initial

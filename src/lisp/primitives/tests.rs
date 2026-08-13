@@ -13600,6 +13600,51 @@ fn undo_file_marker_records_the_visited_modtime() {
 }
 
 #[test]
+fn undo_host_records_match_gnu_save_point_property_and_multibyte_contracts() {
+    let program = r#"(progn
+      (setq contract-out
+            (with-temp-buffer
+              (buffer-enable-undo)
+              (insert "x")
+              (set-buffer-modified-p nil)
+              (put-text-property 1 2 'face 'bold)
+              (set-buffer-multibyte nil)
+              (prin1-to-string buffer-undo-list)))
+      (princ contract-out))"#;
+    let expected = "((apply set-buffer-multibyte t) (nil face nil 1 . 2) (t . 0) (1 . 2) (t . 0))";
+    assert_upstream_primitive_contract(program, expected);
+    assert_eq!(emaxx_batch_output(program), expected);
+
+    assert_upstream_primitive_contract(
+        "(condition-case e (> 1 nil) (error (prin1 e)))",
+        "(wrong-type-argument number-or-marker-p nil)",
+    );
+    assert_eq!(
+        emaxx_batch_output(
+            "(progn (setq contract-out (condition-case e (> 1 nil) (error (prin1-to-string e)))) (princ contract-out))"
+        ),
+        "(wrong-type-argument number-or-marker-p nil)"
+    );
+}
+
+#[test]
+fn push_mark_separates_marker_motion_from_transient_region_activation() {
+    let program = r#"(progn
+      (setq contract-out
+            (let ((transient-mark-mode t))
+              (with-temp-buffer
+                (insert "abc")
+                (push-mark nil t)
+                (let ((plain (list (mark t) mark-active (region-active-p))))
+                  (push-mark 2 t t)
+                  (list plain (list (mark t) mark-active (region-active-p)))))))
+      (princ (prin1-to-string contract-out)))"#;
+    let expected = "((4 nil nil) (2 t t))";
+    assert_upstream_primitive_contract(program, expected);
+    assert_eq!(emaxx_batch_output(program), expected);
+}
+
+#[test]
 fn interactive_undo_restores_the_unmodified_state() {
     // The tty command loop's per-command undo boundaries plus the
     // modtime-carrying (t . TIME) marker let simple.el's `undo' walk back

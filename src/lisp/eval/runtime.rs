@@ -1953,7 +1953,7 @@ impl Interpreter {
         {
             if buffer_id == Some(mark_buffer_id) {
                 if let Some(position) = position {
-                    buffer.set_mark(position);
+                    buffer.set_mark_position(position);
                 } else {
                     buffer.clear_mark();
                 }

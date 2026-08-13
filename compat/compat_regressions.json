@@ -440,6 +440,22 @@
     {
       "path": "test/src/treesit-tests.el",
       "selector": "t"
+    },
+    {
+      "path": "test/src/undo-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/xdisp-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/xfaces-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/xml-tests.el",
+      "selector": "t"
     }
   ]
 }
