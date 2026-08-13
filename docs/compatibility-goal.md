@@ -42,6 +42,42 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-13 Search-through-Syntax checkpoint advances the exact
+  contiguous frontier to **6,965/7,080**, leaving **115** selectors.
+  Selectors 6,853-6,965 all match GNU: Search 1/1, SQLite 12/12, and Syntax
+  100/100.  NEXT is selector **6,966**, `textprop-interval-immutability`, in
+  `test/src/textprop-tests.el` (three selected outcomes), followed by Thread
+  (32 selected outcomes).
+
+  The canonical final-source replay is
+  `target/compat/regression-add-1786626931404093000-87226`: all **113/113**
+  outcomes match with no timeout, unilateral skip, or changed status.  Source
+  fingerprint is
+  `6c020b9896e3777302359cc8525d7c94132b2f764ab698718717954337bfe127`,
+  release binary hash is
+  `9e38ad20ad7ddf8362916044065da4de9e356296186c4e79309df29f447ed6c2`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and GNU is pinned at `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  The shared syntax scanner now honors escaped line and block comment endings
+  when `comment-end-can-be-escaped` is non-nil.  Backward comment motion tests
+  a bounded complete local comment before treating an end-comment newline as
+  whitespace.  `char-syntax` follows GNU's unibyte raw-byte promotion while
+  keeping public character codes authoritative at the character-table
+  boundary.  Focused host regressions cover escaped one- and two-character
+  endings, the mixed line/nested-comment case, and both interpreted and
+  bytecompiled `char-syntax` execution.
+
+  Final-source post-bootstrap GNU/Emaxx bodies are Search 9/2 ms, SQLite
+  11/6 ms, and Syntax 281/781 ms (2.773x, +500 ms).  The Syntax ratio is
+  recorded but does not meet the active 5x-and-one-second stop rule.
+  Reconstructed setup remains separate at 268/3,299, 244/2,755, and
+  246/2,721 ms under dumped-startup issue #11.  Formatting, diff checks,
+  all-target check, strict all-target/all-feature Clippy, focused host tests,
+  and the complete 113-outcome owner replay are green.  The certified TTY
+  merge is already published as `b5702de`.
+
 - The 2026-08-13 Print-through-Regex checkpoint advances the exact contiguous
   frontier to **6,852/7,080**, leaving **228** selectors.  Selectors
   6,773-6,852 all match GNU: Print 46/46 and Regex Emacs 34/34.  NEXT is

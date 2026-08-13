@@ -6238,6 +6238,56 @@ fn native_mutex_name_reads_the_shared_mutex_state() {
 }
 
 #[test]
+fn native_thread_and_synchronization_handles_compare_by_identity() {
+    let program = r#"
+        (let* ((thread-1 (make-thread 'ignore))
+               (thread-2 (make-thread 'ignore))
+               (mutex-1 (make-mutex))
+               (mutex-2 (make-mutex))
+               (condition-1 (make-condition-variable mutex-1))
+               (condition-2 (make-condition-variable mutex-1))
+               (record-thread-1 (record 'thread 1))
+               (record-thread-2 (record 'thread 1))
+               (record-mutex-1 (record 'mutex 1))
+               (record-mutex-2 (record 'mutex 1)))
+          (list (recordp thread-1)
+                (recordp mutex-1)
+                (recordp condition-1)
+                (equal thread-1 thread-2)
+                (equal thread-1 thread-1)
+                (equal mutex-1 mutex-2)
+                (equal mutex-1 mutex-1)
+                (equal condition-1 condition-2)
+                (equal condition-1 condition-1)
+                (recordp record-thread-1)
+                (equal record-thread-1 record-thread-2)
+                (recordp record-mutex-1)
+                (equal record-mutex-1 record-mutex-2)
+                (threadp record-thread-1)
+                (mutexp record-mutex-1)))
+    "#;
+    let expected = "(nil nil nil nil t nil t nil t t t t t nil nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("opaque-handle equality contract should parse")
+        .expect("opaque-handle equality contract should contain a form");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("opaque-handle equality result should parse")
+        .expect("opaque-handle equality result should exist");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("opaque handles should compare by identity"),
+        expected
+    );
+}
+
+#[test]
 fn native_menu_activity_predicate_is_false_without_a_graphical_menu() {
     let program = r#"
         (list (menu-or-popup-active-p)
@@ -13750,4 +13800,474 @@ fn error_message_strings_match_the_oracle() {
     let answer = "Quit|Beginning of buffer|boom|Wrong type argument: listp, t|No further undo information|Opening input file: No such file, /tmp/x";
     assert_upstream_primitive_contract(program, answer);
     assert_eq!(emaxx_batch_output(program), answer);
+}
+
+#[test]
+fn tty_frame_size_shapes_the_root_and_minibuffer_windows() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_tty_frame_size(80, 24);
+    let root_edges = call(&mut interp, "window-edges", &[], &mut env).expect("window-edges");
+    assert_eq!(
+        format!("{root_edges}"),
+        "(0 0 80 23)",
+        "a 24-row tty keeps 23 root lines above the minibuffer"
+    );
+    let minibuffer = call(&mut interp, "minibuffer-window", &[], &mut env).expect("window");
+    let minibuffer_edges = call(&mut interp, "window-edges", &[minibuffer], &mut env)
+        .expect("minibuffer window-edges");
+    assert_eq!(format!("{minibuffer_edges}"), "(0 23 80 24)");
+}
+
+#[test]
+fn window_render_layout_reports_split_geometry_in_tree_order() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\ngamma\n");
+    let upper = interp.selected_window_value();
+    // C-x 2's shape on the 24-row tty: the 23-line root splits 12/11.
+    let lower = call(
+        &mut interp,
+        "split-window-internal",
+        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &mut env,
+    )
+    .expect("split-window-internal");
+    let Value::Record(lower_id) = lower else {
+        panic!("split answers the new window record");
+    };
+
+    let layout = crate::lisp::primitives::window_render_layout(&interp);
+    assert_eq!(layout.len(), 2, "two live leaves after one split");
+    let (top, bottom) = (&layout[0], &layout[1]);
+    assert_eq!(
+        (top.left, top.top, top.width, top.height),
+        (0, 0, 80, 12),
+        "the old window keeps the upper 12 lines"
+    );
+    assert!(top.selected, "the split leaves the old window selected");
+    assert_eq!(
+        (bottom.left, bottom.top, bottom.width, bottom.height),
+        (0, 12, 80, 11)
+    );
+    assert_eq!(bottom.window_id, lower_id);
+    assert!(!bottom.selected);
+    assert_eq!(
+        top.buffer_id, bottom.buffer_id,
+        "both windows show the split buffer"
+    );
+    assert_eq!(bottom.start, 1);
+    assert_eq!(bottom.point, 1);
+}
+
+#[test]
+fn window_cycling_follows_tree_order_from_the_selected_window() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\n");
+    let upper_left = interp.selected_window_value();
+    // C-x 2 then C-x 3: the bottom window exists before the upper-right
+    // one, so creation order and tree order disagree.
+    let bottom = call(
+        &mut interp,
+        "split-window-internal",
+        &[
+            upper_left.clone(),
+            Value::Integer(11),
+            Value::Nil,
+            Value::Float(0.5),
+        ],
+        &mut env,
+    )
+    .expect("split below");
+    let upper_right = call(
+        &mut interp,
+        "split-window-internal",
+        &[
+            upper_left.clone(),
+            Value::Integer(40),
+            Value::T,
+            Value::Float(0.5),
+        ],
+        &mut env,
+    )
+    .expect("split right");
+
+    let next = call(&mut interp, "next-window", &[], &mut env).expect("next-window");
+    assert_eq!(
+        next, upper_right,
+        "next-window walks the tree: upper-left, upper-right, bottom"
+    );
+    let previous = call(&mut interp, "previous-window", &[], &mut env).expect("previous-window");
+    assert_eq!(previous, bottom, "previous-window wraps to the last leaf");
+
+    let listed = call(&mut interp, "window-list", &[], &mut env).expect("window-list");
+    assert_eq!(
+        format!("{listed}"),
+        format!("({upper_left} {upper_right} {bottom})"),
+        "window-list starts at the selected window and follows tree order"
+    );
+
+    call(
+        &mut interp,
+        "select-window",
+        std::slice::from_ref(&upper_right),
+        &mut env,
+    )
+    .expect("select");
+    let listed = call(&mut interp, "window-list", &[], &mut env).expect("window-list");
+    assert_eq!(
+        format!("{listed}"),
+        format!("({upper_right} {bottom} {upper_left})"),
+        "the cyclic order rotates to keep the selected window first"
+    );
+}
+
+#[test]
+fn window_mode_lines_render_in_each_windows_own_context() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\ngamma\ndelta\n");
+    let upper = interp.selected_window_value();
+    let lower = call(
+        &mut interp,
+        "split-window-internal",
+        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &mut env,
+    )
+    .expect("split");
+    let Value::Record(lower_id) = lower.clone() else {
+        panic!("window record");
+    };
+    // The lower window shows a different buffer with its own point.
+    let other = call(
+        &mut interp,
+        "get-buffer-create",
+        &[Value::String("other.txt".into())],
+        &mut env,
+    )
+    .expect("buffer");
+    call(
+        &mut interp,
+        "set-window-buffer",
+        &[lower.clone(), other],
+        &mut env,
+    )
+    .expect("set-window-buffer");
+    {
+        let saved = interp.current_buffer_id();
+        let other = call(
+            &mut interp,
+            "get-buffer",
+            &[Value::String("other.txt".into())],
+            &mut env,
+        )
+        .expect("get-buffer");
+        call(&mut interp, "set-buffer", &[other], &mut env).expect("set-buffer");
+        interp.buffer.insert("one\ntwo\nthree\n");
+        let _ = interp.set_current_buffer_id(saved);
+    }
+    call(
+        &mut interp,
+        "set-window-point",
+        &[lower.clone(), Value::Integer(9)],
+        &mut env,
+    )
+    .expect("set-window-point");
+    // A spec exercising the per-window pieces: buffer name, the window's
+    // line number, and the dedication mark.  mode-line-format is
+    // buffer-local when set, so shape the default every buffer inherits.
+    let spec = Reader::new(
+        "(setq-default mode-line-format
+           (list \"%b L%l\"
+                 '(:eval (cond ((eq (window-dedicated-p) t) \"D\")
+                               ((window-dedicated-p) \"d\")
+                               (t \"\")))))",
+    )
+    .read()
+    .expect("spec parses")
+    .expect("a form is present");
+    interp.eval(&spec, &mut env).expect("spec installs");
+
+    let selected_before = interp.selected_window_id();
+    let buffer_before = interp.current_buffer_id();
+    let point_before = interp.buffer.point();
+    let metrics = crate::lisp::primitives::InteractiveWindowMetrics {
+        text_height: 10,
+        window_end: 14,
+    };
+    let mode_line = crate::lisp::primitives::render_window_mode_line(
+        &mut interp,
+        &mut env,
+        lower_id,
+        9,
+        metrics,
+    )
+    .expect("mode line renders");
+    assert!(
+        mode_line.contains("other.txt"),
+        "the window's own buffer names the mode line: {mode_line:?}"
+    );
+    assert!(
+        mode_line.contains("L3"),
+        "L reflects the window's point, not the selected window's: {mode_line:?}"
+    );
+    assert_eq!(
+        interp.selected_window_id(),
+        selected_before,
+        "selection restored"
+    );
+    assert_eq!(
+        interp.current_buffer_id(),
+        buffer_before,
+        "current buffer restored"
+    );
+    assert_eq!(interp.buffer.point(), point_before, "point restored");
+
+    // Dedication marks: display-buffer's weak kind shows `d', strong `D'.
+    call(
+        &mut interp,
+        "set-window-dedicated-p",
+        &[lower.clone(), Value::Symbol("soft".into())],
+        &mut env,
+    )
+    .expect("dedicate softly");
+    let softly = crate::lisp::primitives::render_window_mode_line(
+        &mut interp,
+        &mut env,
+        lower_id,
+        9,
+        metrics,
+    )
+    .expect("mode line renders");
+    assert!(softly.ends_with('d'), "weak dedication shows d: {softly:?}");
+    call(
+        &mut interp,
+        "set-window-dedicated-p",
+        &[lower, Value::T],
+        &mut env,
+    )
+    .expect("dedicate strongly");
+    let strongly = crate::lisp::primitives::render_window_mode_line(
+        &mut interp,
+        &mut env,
+        lower_id,
+        9,
+        metrics,
+    )
+    .expect("mode line renders");
+    assert!(
+        strongly.ends_with('D'),
+        "strong dedication shows D: {strongly:?}"
+    );
+}
+
+#[test]
+fn interactive_spec_i_passes_nil_without_reading_anything() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(defun emaxx-test-spec-i (a b) (interactive \"i\\np\") (setq emaxx-test-spec-args (list a b)))",
+    )
+    .read()
+    .expect("defun parses")
+    .expect("a form is present");
+    interp.eval(&form, &mut env).expect("defun evaluates");
+    call(
+        &mut interp,
+        "call-interactively",
+        &[Value::Symbol("emaxx-test-spec-i".into())],
+        &mut env,
+    )
+    .expect("call-interactively");
+    let args = interp
+        .lookup_var("emaxx-test-spec-args", &env)
+        .expect("args recorded");
+    assert_eq!(format!("{args}"), "(nil 1)");
+}
+
+#[test]
+fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\n");
+
+    // "am" TAB completes to the common prefix; the second TAB makes no
+    // progress and pops *Completions*; "1" RET submits "ambig1".
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "am\t\t1\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    // The frame-redraw hook runs once per minibuffer iteration; observing
+    // the layout there sees the pop-up while the read is still live.
+    type LayoutSnapshots = Vec<Vec<(String, usize)>>;
+    let observed: std::rc::Rc<std::cell::RefCell<LayoutSnapshots>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&observed);
+    crate::lisp::primitives::set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
+        let snapshot = crate::lisp::primitives::window_render_layout(interp)
+            .into_iter()
+            .map(|info| {
+                let name = if info.buffer_id == interp.current_buffer_id() {
+                    interp.buffer.name.clone()
+                } else {
+                    interp
+                        .get_buffer_by_id(info.buffer_id)
+                        .map(|buffer| buffer.name.clone())
+                        .unwrap_or_default()
+                };
+                (name, info.height)
+            })
+            .collect();
+        sink.borrow_mut().push(snapshot);
+    })));
+    let result = call(
+        &mut interp,
+        "completing-read",
+        &[
+            Value::String("Pick: ".into()),
+            Value::list([
+                Value::String("ambig1".into()),
+                Value::String("ambig2".into()),
+            ]),
+        ],
+        &mut env,
+    );
+    crate::lisp::primitives::set_tty_frame_redraw(None);
+    set_tty_event_reader(None);
+    assert_eq!(
+        result.expect("the minibuffer submits"),
+        Value::String("ambig1".into())
+    );
+
+    let observed = observed.borrow();
+    let popped: Vec<_> = observed
+        .iter()
+        .filter(|snapshot| snapshot.iter().any(|(name, _)| name == "*Completions*"))
+        .collect();
+    assert!(
+        !popped.is_empty(),
+        "the ambiguous TAB shows *Completions* while the read is live: {observed:?}"
+    );
+    let (_, height) = popped[0]
+        .iter()
+        .find(|(name, _)| name == "*Completions*")
+        .expect("completions window in snapshot");
+    // Content: two help lines, a blank, the count line, two candidates —
+    // six lines plus the mode line, GNU's fit-window-to-buffer answer.
+    assert_eq!(*height, 7, "the pop-up fits its candidate list");
+
+    let final_layout = crate::lisp::primitives::window_render_layout(&interp);
+    assert_eq!(
+        final_layout.len(),
+        1,
+        "submitting the minibuffer removes the *Completions* window"
+    );
+    assert_eq!(
+        final_layout[0].height, 23,
+        "the surviving window takes the frame back"
+    );
+
+    // The buffer itself carries GNU 30.2's tty help text and shape.
+    let (completions_id, _) = interp.find_buffer("*Completions*").expect("buffer exists");
+    let saved = interp.current_buffer_id();
+    interp
+        .set_current_buffer_id(completions_id)
+        .expect("switch");
+    let text = interp
+        .buffer
+        .buffer_substring(1, interp.buffer.point_max())
+        .expect("contents");
+    let _ = interp.set_current_buffer_id(saved);
+    assert_eq!(
+        text,
+        "Type M-RET on a completion to select it.\n\
+         Type M-<down> or M-<up> to move point between completions.\n\n\
+         2 possible completions:\nambig1\nambig2\n"
+    );
+}
+
+#[test]
+fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\ngamma\n");
+    interp.buffer.goto_char(7); // line 2
+    let entry_window = interp.selected_window_value();
+
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "ok\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let observed: std::rc::Rc<std::cell::RefCell<Vec<(Value, String)>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&observed);
+    crate::lisp::primitives::set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+        let selected = interp.selected_window_value();
+        let shown = call(
+            interp,
+            "window-buffer",
+            std::slice::from_ref(&selected),
+            env,
+        )
+        .ok()
+        .and_then(|buffer| {
+            call(interp, "buffer-name", &[buffer], env)
+                .ok()
+                .map(|name| format!("{name}"))
+        })
+        .unwrap_or_default();
+        sink.borrow_mut().push((selected, shown));
+    })));
+    let result = call(
+        &mut interp,
+        "read-string",
+        &[Value::String("Answer: ".into())],
+        &mut env,
+    );
+    crate::lisp::primitives::set_tty_frame_redraw(None);
+    set_tty_event_reader(None);
+    assert_eq!(result.expect("read"), Value::String("ok".into()));
+
+    let observed = observed.borrow();
+    assert!(!observed.is_empty(), "the read repainted at least once");
+    for (selected, shown) in observed.iter() {
+        assert_ne!(
+            selected, &entry_window,
+            "the read runs in the minibuffer window, not the entry window"
+        );
+        assert!(
+            shown.contains("*Minibuf-1*"),
+            "the minibuffer window shows the minibuffer buffer: {shown}"
+        );
+    }
+    assert_eq!(
+        interp.selected_window_value(),
+        entry_window,
+        "finishing the read restores the entry window"
+    );
+    assert_eq!(
+        interp.buffer.point(),
+        7,
+        "the entry buffer's point survives"
+    );
 }

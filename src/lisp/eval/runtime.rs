@@ -694,6 +694,23 @@ impl Interpreter {
         self.resize_frame_window_records();
     }
 
+    /// Adopt the terminal's real geometry: a tty frame's height counts
+    /// every screen row (GNU's FRAME_TOTAL_LINES), so the root window
+    /// keeps rows − 1 lines above the one-line minibuffer.  Batch frames
+    /// keep their dumb 80×25 shape; only the terminal frontend calls this.
+    pub fn set_tty_frame_size(&mut self, width: i64, height: i64) {
+        let width = width.max(1);
+        let height = height.max(2);
+        if let Some(frame) = self.selected_frame_state_mut() {
+            frame.width = width;
+            frame.height = height;
+            frame.text_height = height;
+            frame.parameter_width = width;
+            frame.parameter_height = height;
+        }
+        self.resize_frame_window_records();
+    }
+
     pub(crate) fn frame_text_height(&self) -> i64 {
         self.selected_frame_state()
             .map(|frame| frame.text_height)
@@ -889,7 +906,7 @@ impl Interpreter {
             window_records: self
                 .records
                 .iter()
-                .filter(|record| record.type_name == "window")
+                .filter(|record| record.kind == RecordKind::Window)
                 .map(|record| (record.id, record.slots.clone()))
                 .collect(),
             root_window: self
@@ -902,7 +919,8 @@ impl Interpreter {
 
     pub(crate) fn window_configuration_value(&mut self) -> Value {
         let snapshot = self.snapshot_window_configuration();
-        self.create_record(
+        self.create_pseudovector(
+            RecordKind::WindowConfiguration,
             "window-configuration",
             vec![
                 Value::Integer(snapshot.current_buffer_id as i64),
@@ -940,7 +958,7 @@ impl Interpreter {
         };
         let record = self
             .find_record(*id)
-            .filter(|record| record.type_name == "window-configuration")?;
+            .filter(|record| record.kind == RecordKind::WindowConfiguration)?;
         let slots = &record.slots;
         let selected_window_id = slots
             .get(1)
@@ -1034,7 +1052,7 @@ impl Interpreter {
         for record in self
             .records
             .iter_mut()
-            .filter(|record| record.type_name == "window")
+            .filter(|record| record.kind == RecordKind::Window)
         {
             if let Some(slots) = saved_windows.get(&record.id) {
                 record.slots.clone_from(slots);
@@ -1578,7 +1596,7 @@ impl Interpreter {
                 Value::BuiltinFunc(name) | Value::Symbol(name) => name == "ignore",
                 Value::Record(record_id) if seen_records.insert(*record_id) => interp
                     .find_record(*record_id)
-                    .filter(|record| record.type_name == "byte-code-function")
+                    .filter(|record| record.kind == RecordKind::Closure)
                     .and_then(|record| record.slots.first())
                     .is_some_and(|callable| {
                         resolves_to_ignore(interp, callable, ignore_function, seen_records)
@@ -2463,11 +2481,31 @@ impl Interpreter {
     }
 
     pub fn create_record(&mut self, type_name: &str, slots: Vec<Value>) -> Value {
+        self.create_record_with_kind(type_name, slots, RecordKind::Record)
+    }
+
+    pub(crate) fn create_pseudovector(
+        &mut self,
+        kind: RecordKind,
+        type_name: &str,
+        slots: Vec<Value>,
+    ) -> Value {
+        debug_assert_ne!(kind, RecordKind::Record);
+        self.create_record_with_kind(type_name, slots, kind)
+    }
+
+    fn create_record_with_kind(
+        &mut self,
+        type_name: &str,
+        slots: Vec<Value>,
+        kind: RecordKind,
+    ) -> Value {
         let id = self.alloc_record_id();
         self.records.push(RecordState {
             id,
             type_name: type_name.to_string(),
             slots,
+            kind,
         });
         self.record_ids_by_type_index
             .entry(type_name.to_string())
@@ -2567,7 +2605,11 @@ impl Interpreter {
     }
 
     pub(crate) fn create_treesit_query(&mut self, language: Value, source: Value) -> Value {
-        let query = self.create_record("tree-sitter-compiled-query", Vec::new());
+        let query = self.create_pseudovector(
+            RecordKind::TreeSitterCompiledQuery,
+            "tree-sitter-compiled-query",
+            Vec::new(),
+        );
         let Value::Record(record_id) = query else {
             unreachable!("Tree-sitter queries use opaque record identities");
         };
@@ -2671,7 +2713,7 @@ impl Interpreter {
             .and_then(|value| value.as_symbol().ok())
             .unwrap_or("eql")
             .to_string();
-        let copy = self.create_record(&record.type_name, slots);
+        let copy = self.create_record_with_kind(&record.type_name, slots, record.kind);
         if let (Some(entries), Value::Record(copy_id)) = (hash_entries, &copy) {
             self.replace_hash_table_runtime_entries(*copy_id, &test, entries);
         }
@@ -2705,6 +2747,15 @@ impl Interpreter {
                 format!("record<{id}>"),
             ));
         };
+        if self
+            .find_record(id)
+            .is_some_and(|record| record.kind != RecordKind::Record)
+        {
+            return Err(LispError::TypeError(
+                "record".into(),
+                format!("record<{id}>"),
+            ));
+        }
         if previous_type_name != type_name {
             let remove_previous_type = self
                 .record_ids_by_type_index

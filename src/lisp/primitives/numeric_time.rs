@@ -277,7 +277,7 @@ pub(crate) fn function_arity_value(
         Value::Record(id)
             if interp
                 .find_record(*id)
-                .is_some_and(|record| record.type_name == "byte-code-function") =>
+                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure) =>
         {
             let (callable, doc) = interp
                 .find_record(*id)

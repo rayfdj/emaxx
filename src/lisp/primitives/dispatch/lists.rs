@@ -2457,7 +2457,8 @@ define_dispatch!(
             "position-symbol" => {
                 need_args(name, args, 2)?;
                 let position = args[1].as_integer()?;
-                Ok(interp.create_record(
+                Ok(interp.create_pseudovector(
+                    crate::lisp::eval::RecordKind::SymbolWithPos,
                     "symbol-with-pos",
                     vec![args[0].clone(), Value::Integer(position)],
                 ))

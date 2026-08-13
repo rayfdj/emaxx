@@ -2198,8 +2198,14 @@ fn process_cpu_time_value() -> Result<Value, LispError> {
     }
     // SAFETY: the successful getrusage call initialized every field.
     let usage = unsafe { usage.assume_init() };
-    let mut seconds = usage.ru_utime.tv_sec + usage.ru_stime.tv_sec;
-    let mut micros = usage.ru_utime.tv_usec + usage.ru_stime.tv_usec;
+    fn libc_time_to_i64<T: Into<i64>>(value: T) -> i64 {
+        value.into()
+    }
+
+    let mut seconds =
+        libc_time_to_i64(usage.ru_utime.tv_sec) + libc_time_to_i64(usage.ru_stime.tv_sec);
+    let mut micros =
+        libc_time_to_i64(usage.ru_utime.tv_usec) + libc_time_to_i64(usage.ru_stime.tv_usec);
     if micros >= 1_000_000 {
         seconds += micros / 1_000_000;
         micros %= 1_000_000;

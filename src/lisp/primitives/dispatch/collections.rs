@@ -564,14 +564,14 @@ define_dispatch!(
                         let record = interp.find_record(*id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{id}>"))
                         })?;
-                        if record.type_name == "bool-vector" {
+                        if record.kind == crate::lisp::eval::RecordKind::BoolVector {
                             return record
                                 .slots
                                 .get(idx)
                                 .cloned()
                                 .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                         }
-                        if record.type_name == "byte-code-function" {
+                        if record.kind == crate::lisp::eval::RecordKind::Closure {
                             if idx == 0 {
                                 let arity = function_arity_value(interp, &args[0], env)?;
                                 let minimum = arity.car()?.as_integer()?;
@@ -1413,7 +1413,11 @@ define_dispatch!(
                         _ => {}
                     }
                 }
-                Ok(interp.create_record("bool-vector", slots))
+                Ok(interp.create_pseudovector(
+                    crate::lisp::eval::RecordKind::BoolVector,
+                    "bool-vector",
+                    slots,
+                ))
             }
 
             "copy-category-table" => {

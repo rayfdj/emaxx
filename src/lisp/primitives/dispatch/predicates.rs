@@ -254,16 +254,29 @@ define_dispatch!(
             }
             "symbolp" => {
                 need_args(name, args, 1)?;
-                Ok(if args[0].is_symbol() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                Ok(
+                    if args[0].is_symbol()
+                        || (symbols_with_pos_enabled(interp, env)
+                            && symbol_with_pos_parts(interp, &args[0]).is_some())
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "keywordp" => {
                 need_args(name, args, 1)?;
+                let positioned_keyword = symbols_with_pos_enabled(interp, env)
+                    .then(|| symbol_with_pos_parts(interp, &args[0]))
+                    .flatten()
+                    .is_some_and(|(symbol, _)| {
+                        matches!(symbol, Value::Symbol(name) if name.starts_with(':'))
+                    });
                 Ok(
-                    if matches!(&args[0], Value::Symbol(symbol) if symbol.starts_with(':')) {
+                    if matches!(&args[0], Value::Symbol(symbol) if symbol.starts_with(':'))
+                        || positioned_keyword
+                    {
                         Value::T
                     } else {
                         Value::Nil
@@ -334,7 +347,7 @@ define_dispatch!(
                 let Some(record) = interp.find_record(*id) else {
                     return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
                 };
-                if record.type_name != "byte-code-function" {
+                if record.kind != crate::lisp::eval::RecordKind::Closure {
                     return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
                 }
                 let mut slots = record.slots.clone();
@@ -357,14 +370,22 @@ define_dispatch!(
                 constants[..vars.len()].clone_from_slice(vars);
                 slots[2] =
                     Value::list(std::iter::once(Value::symbol("vector-literal")).chain(constants));
-                Ok(interp.create_record("byte-code-function", slots))
+                Ok(interp.create_pseudovector(
+                    crate::lisp::eval::RecordKind::Closure,
+                    "byte-code-function",
+                    slots,
+                ))
             }
             "make-byte-code" => {
                 // GNU Fmake_byte_code (alloc.c): the arguments become the
                 // closure's elements verbatim (arglist, code, constants,
                 // depth, docstring, interactive-spec, extras).
                 need_args(name, args, 4)?;
-                Ok(interp.create_record("byte-code-function", args.to_vec()))
+                Ok(interp.create_pseudovector(
+                    crate::lisp::eval::RecordKind::Closure,
+                    "byte-code-function",
+                    args.to_vec(),
+                ))
             }
             "byte-code" => {
                 // GNU Fbyte_code (bytecode.c): execute BYTESTR against VECTOR
@@ -1047,7 +1068,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(
                     if matches!(args[0], Value::Record(id)
-                        if interp.hash_table_runtime_entries(id).is_none())
+                        if interp.find_record(id).is_some_and(|record|
+                            record.kind == crate::lisp::eval::RecordKind::Record))
                         || record_literal_items(&args[0]).is_some()
                     {
                         Value::T

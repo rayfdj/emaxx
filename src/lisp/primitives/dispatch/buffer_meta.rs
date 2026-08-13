@@ -1040,7 +1040,8 @@ define_dispatch!(
             "subr-native-comp-unit" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::BuiltinFunc(symbol) => Ok(interp.create_record(
+                    Value::BuiltinFunc(symbol) => Ok(interp.create_pseudovector(
+                        crate::lisp::eval::RecordKind::NativeCompUnit,
                         "native-comp-unit",
                         vec![Value::String(format!("{symbol}.eln").into())],
                     )),
@@ -1058,7 +1059,7 @@ define_dispatch!(
                 let record = interp.find_record(*id).ok_or_else(|| {
                     LispError::TypeError("native-comp-unit".into(), args[0].type_name())
                 })?;
-                if record.type_name != "native-comp-unit" {
+                if record.kind != crate::lisp::eval::RecordKind::NativeCompUnit {
                     return Err(LispError::TypeError(
                         "native-comp-unit".into(),
                         args[0].type_name(),
@@ -1080,7 +1081,7 @@ define_dispatch!(
                         args[0].type_name(),
                     ));
                 };
-                if record.type_name != "native-comp-unit" {
+                if record.kind != crate::lisp::eval::RecordKind::NativeCompUnit {
                     return Err(LispError::TypeError(
                         "native-comp-unit".into(),
                         args[0].type_name(),

@@ -156,11 +156,16 @@ pub(crate) fn resolve_buffer_menu_source(
 
 pub(crate) fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
     matches!(value, Value::Symbol(symbol) if symbol == "window")
-        || matches!(value, Value::Record(id) if interp.find_record(*id).is_some_and(|record| record.type_name == "window"))
+        || matches!(value, Value::Record(id) if interp.find_record(*id).is_some_and(|record|
+            record.kind == crate::lisp::eval::RecordKind::Window))
 }
 
 pub(crate) fn make_obarray(interp: &mut Interpreter) -> Value {
-    interp.create_record(OBARRAY_RECORD_TYPE, vec![Value::Nil])
+    interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Obarray,
+        OBARRAY_RECORD_TYPE,
+        vec![Value::Nil],
+    )
 }
 
 pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result<Value, LispError> {
@@ -195,12 +200,9 @@ pub(crate) fn is_obarray_like_value(interp: &Interpreter, value: &Value) -> bool
     let Value::Record(id) = value else {
         return false;
     };
-    interp.find_record(*id).is_some_and(|record| {
-        matches!(
-            record.type_name.as_str(),
-            OBARRAY_RECORD_TYPE | ABBREV_TABLE_RECORD_TYPE
-        )
-    })
+    interp
+        .find_record(*id)
+        .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Obarray)
 }
 
 pub(crate) fn obarray_symbols(
@@ -1197,7 +1199,21 @@ pub(crate) fn activate_minibuffer(
         interp.set_buffer_local_value(buffer_id, "default-directory", default_directory);
     }
     interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::Nil);
-    interp.switch_to_buffer_id(buffer_id)?;
+    // GNU reads in the minibuffer window: the minibuffer buffer becomes
+    // current without displaying itself in the selected text window,
+    // whose glass keeps showing its own buffer during the read.  The
+    // window's point slot is saved by hand — the raw selection swap
+    // below skips select-window's bookkeeping.
+    let entry_point = interp.buffer.point();
+    if let Some(window) = interp.find_record_mut(saved_selected_window_id) {
+        if window.slots.len() <= super::WINDOW_POINT_SLOT {
+            window
+                .slots
+                .resize(super::WINDOW_POINT_SLOT + 1, Value::Nil);
+        }
+        window.slots[super::WINDOW_POINT_SLOT] = Value::Integer(entry_point as i64);
+    }
+    interp.set_current_buffer_id(buffer_id)?;
     let end = interp.buffer.point_max();
     if end > interp.buffer.point_min() {
         interp
@@ -1214,10 +1230,21 @@ pub(crate) fn activate_minibuffer(
 
     interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
 
+    // Select the minibuffer window for the read, GNU's read_minibuf: the
+    // minibuffer buffer shows there, never in the entry window.
+    if let Some(Value::Record(minibuffer_window_id)) =
+        interp.global_binding_value("emaxx-minibuffer-window")
+    {
+        interp.set_selected_window_id(minibuffer_window_id);
+        interp.set_selected_window_buffer_id(buffer_id);
+    }
+
     let active = interp
         .buffer_identity_value(buffer_id)
         .unwrap_or(Value::Nil);
     interp.set_global_binding("emaxx--active-minibuffer", active);
+    // GNU's active-minibuffer-window is the minibuffer window itself —
+    // choose-completion-string checks that its buffer is the minibuffer.
     interp.set_global_binding(
         "emaxx--active-minibuffer-window",
         interp.selected_window_value(),
@@ -1395,7 +1422,7 @@ pub(crate) fn callable_interactive_form_items(
     }
     if let Value::Record(id) = func
         && let Some(record) = interp.find_record(*id)
-        && record.type_name == "byte-code-function"
+        && record.kind == crate::lisp::eval::RecordKind::Closure
         && let Ok(Some(object)) = crate::lisp::bytecode::ByteCodeObject::from_slots(&record.slots)
         && let Some(spec) = object.interactive
         && !spec.is_nil()
@@ -1831,6 +1858,132 @@ fn apply_minibuffer_edit_key(contents: &mut Vec<char>, cursor: &mut usize, ch: c
     }
 }
 
+/// The window currently displaying *Completions*, if any.
+fn completions_window_id(interp: &Interpreter) -> Option<u64> {
+    super::window_render_layout(interp)
+        .into_iter()
+        .find(|info| {
+            let name = if info.buffer_id == interp.current_buffer_id() {
+                Some(interp.buffer.name.as_str())
+            } else {
+                interp
+                    .get_buffer_by_id(info.buffer_id)
+                    .map(|buffer| buffer.name.as_str())
+            };
+            name == Some("*Completions*")
+        })
+        .map(|info| info.window_id)
+}
+
+/// GNU's ambiguous-TAB help: fill *Completions* with the candidate list
+/// in 30.2's tty shape (the M-RET/M-<down> header, "N possible
+/// completions:", one candidate per line) and pop it up at the frame's
+/// bottom, sized to fit the list while the window above keeps GNU's
+/// four-line minimum — `minibuffer-completion-help' through
+/// `display-buffer-at-bottom' plus fit-window-to-buffer.
+fn show_completions_list(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    candidates: &[String],
+) -> Result<(), LispError> {
+    let mut content = String::from(
+        "Type M-RET on a completion to select it.\n\
+         Type M-<down> or M-<up> to move point between completions.\n\n",
+    );
+    content.push_str(&format!("{} possible completions:\n", candidates.len()));
+    for candidate in candidates {
+        content.push_str(candidate);
+        content.push('\n');
+    }
+    let line_count = content.lines().count();
+
+    let buffer = call_function_value(
+        interp,
+        &Value::Symbol("get-buffer-create".into()),
+        &[Value::String("*Completions*".into())],
+        env,
+    )?;
+    let original = call_function_value(interp, &Value::Symbol("current-buffer".into()), &[], env)?;
+    call_function_value(
+        interp,
+        &Value::Symbol("set-buffer".into()),
+        std::slice::from_ref(&buffer),
+        env,
+    )?;
+    // mode-name, major-mode, and buffer-read-only are always
+    // buffer-local: setting them here only shapes *Completions*.
+    interp.set_variable("buffer-read-only", Value::Nil, env);
+    let _ = call_function_value(interp, &Value::Symbol("erase-buffer".into()), &[], env);
+    interp.buffer.insert(&content);
+    interp.buffer.goto_char(1);
+    interp.set_variable(
+        "major-mode",
+        Value::Symbol("completion-list-mode".into()),
+        env,
+    );
+    interp.set_variable("mode-name", Value::String("Completion List".into()), env);
+    interp.set_variable("buffer-read-only", Value::T, env);
+    call_function_value(
+        interp,
+        &Value::Symbol("set-buffer".into()),
+        std::slice::from_ref(&original),
+        env,
+    )?;
+
+    if completions_window_id(interp).is_none() {
+        let layout = super::window_render_layout(interp);
+        if let Some(bottom) = layout
+            .iter()
+            .max_by_key(|info| (info.top + info.height, info.left + info.width))
+        {
+            let desired = line_count + 1; // content plus its mode line
+            let available = bottom.height.saturating_sub(4);
+            let size = desired.min(available);
+            if size >= 2 {
+                let window = call_function_value(
+                    interp,
+                    &Value::Symbol("split-window-internal".into()),
+                    &[
+                        Value::Record(bottom.window_id),
+                        Value::Integer(size as i64),
+                        Value::Nil,
+                        Value::Float(0.5),
+                    ],
+                    env,
+                )?;
+                call_function_value(
+                    interp,
+                    &Value::Symbol("set-window-buffer".into()),
+                    &[window.clone(), buffer.clone()],
+                    env,
+                )?;
+                // Weak dedication, display-buffer's kind: the mode line
+                // marks it `d' (`D' is reserved for strong dedication).
+                call_function_value(
+                    interp,
+                    &Value::Symbol("set-window-dedicated-p".into()),
+                    &[window, Value::Symbol("soft".into())],
+                    env,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Remove the *Completions* window when the minibuffer is done with it,
+/// GNU's `minibuffer-hide-completions' on exit and quit.
+fn hide_completions_window(interp: &mut Interpreter, env: &mut Env) {
+    if let Some(window_id) = completions_window_id(interp) {
+        let _ = call_function_value(
+            interp,
+            &Value::Symbol("delete-window-internal".into()),
+            &[Value::Record(window_id)],
+            env,
+        );
+    }
+}
+
 /// The history variable a minibuffer read records into: HIST arg shapes
 /// are SYMBOL, (SYMBOL . STARTPOS), nil (the default
 /// `minibuffer-history'), and t (no recording).
@@ -1919,13 +2072,20 @@ fn drive_interactive_minibuffer(
     // 0 = editing fresh input; N = showing the Nth newest history entry.
     let mut history_position = 0usize;
     let mut stashed_input: Vec<char> = Vec::new();
+    let mut completions_shown = false;
     let submitted = loop {
         let live: String = contents.iter().collect();
         super::set_echo_area_message(Some(format!("{prompt}{live}")));
+        // Window-configuration changes made mid-read (the *Completions*
+        // pop-up below) reach the glass before the next key blocks.
+        crate::lisp::primitives::run_tty_frame_redraw(interp, env);
         let event = match crate::lisp::primitives::pop_unread_command_event_value(interp, env) {
             Ok(event) => event,
             Err(error) => {
                 super::set_echo_area_message(None);
+                if completions_shown {
+                    hide_completions_window(interp, env);
+                }
                 return Err(error);
             }
         };
@@ -1952,6 +2112,7 @@ fn drive_interactive_minibuffer(
             }
             '\t' if collection.is_some() => {
                 if let Some(collection) = collection {
+                    let before: String = contents.iter().collect();
                     apply_minibuffer_completion(
                         interp,
                         env,
@@ -1960,6 +2121,24 @@ fn drive_interactive_minibuffer(
                         collection,
                         predicate,
                     )?;
+                    let after: String = contents.iter().collect();
+                    // GNU pops the completion list when TAB cannot make
+                    // progress and several candidates remain.
+                    if after == before {
+                        let matches = filtered_completion_matches(
+                            interp, &after, collection, predicate, env,
+                        )?;
+                        if matches.len() > 1 {
+                            let mut names: Vec<String> = matches
+                                .into_iter()
+                                .map(|candidate| candidate.name)
+                                .collect();
+                            names.sort();
+                            if show_completions_list(interp, env, &names).is_ok() {
+                                completions_shown = true;
+                            }
+                        }
+                    }
                 }
             }
             '\u{1b}' => {
@@ -1970,6 +2149,9 @@ fn drive_interactive_minibuffer(
                         Ok(event) => event,
                         Err(error) => {
                             super::set_echo_area_message(None);
+                            if completions_shown {
+                                hide_completions_window(interp, env);
+                            }
                             return Err(error);
                         }
                     };
@@ -2004,6 +2186,9 @@ fn drive_interactive_minibuffer(
         }
     };
     super::set_echo_area_message(None);
+    if completions_shown {
+        hide_completions_window(interp, env);
+    }
     if let Some(variable) = history_variable.as_deref() {
         push_minibuffer_history(interp, env, variable, &submitted);
     }

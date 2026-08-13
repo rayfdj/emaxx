@@ -2747,6 +2747,43 @@ fn scan_lists_backward_skips_line_comments() {
 }
 
 #[test]
+fn scan_lists_skips_escaped_line_and_block_comment_endings() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (list
+                 (with-temp-buffer
+                   (setq parse-sexp-ignore-comments t
+                         comment-end-can-be-escaped t)
+                   (modify-syntax-entry ?{ "(}")
+                   (modify-syntax-entry ?} "){")
+                   (modify-syntax-entry ?/ ". 124b")
+                   (modify-syntax-entry ?* ". 23")
+                   (modify-syntax-entry ?\n "> b")
+                   (insert "{ // x \\\n} ignored\n}")
+                   (let ((end (point-max)))
+                     (list (scan-lists 1 1 0) end)))
+                 (with-temp-buffer
+                   (setq parse-sexp-ignore-comments t
+                         comment-end-can-be-escaped t)
+                   (modify-syntax-entry ?{ "(}")
+                   (modify-syntax-entry ?} "){")
+                   (modify-syntax-entry ?/ ". 124b")
+                   (modify-syntax-entry ?* ". 23")
+                   (modify-syntax-entry ?\n "> b")
+                   (insert "{ /* x \\*/ } ignored\n*/ }")
+                   (let ((end (point-max)))
+                     (list (scan-lists 1 1 0) end))))
+                "#,
+        ),
+        Value::list([
+            Value::list([Value::Integer(21), Value::Integer(21)]),
+            Value::list([Value::Integer(26), Value::Integer(26)]),
+        ])
+    );
+}
+
+#[test]
 fn forward_list_moves_over_syntax_table_brace_lists() {
     assert_eq!(
         eval_str(
@@ -3338,6 +3375,25 @@ fn forward_comment_finds_local_nested_comment_despite_earlier_unterminated_one()
                 "#
         ),
         Value::list([Value::T, Value::Integer(11)])
+    );
+}
+
+#[test]
+fn forward_comment_finds_line_comment_before_unterminated_nested_marker() {
+    assert_eq!(
+        eval_str(
+            r##"
+                (with-temp-buffer
+                  (modify-syntax-entry ?# ". 14")
+                  (modify-syntax-entry ?| ". 23n")
+                  (modify-syntax-entry ?\; "< b")
+                  (modify-syntax-entry ?\n "> b")
+                  (insert "; #|\n")
+                  (goto-char (point-max))
+                  (list (forward-comment -1) (point)))
+                "##,
+        ),
+        Value::list([Value::T, Value::Integer(1)])
     );
 }
 
