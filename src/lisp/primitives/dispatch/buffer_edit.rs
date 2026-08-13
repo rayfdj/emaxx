@@ -1306,7 +1306,14 @@ define_dispatch!(
                         let (car, cdr) = cons.cons_values().ok_or_else(|| {
                             LispError::TypeError("cons".into(), args[0].type_name())
                         })?;
-                        (Some(car.as_integer()?.max(0) as usize), cdr.as_integer()?)
+                        // COLS may be a float (line-move-visual divides
+                        // pixels by the frame char width); GNU truncates
+                        // it to a pixel count.
+                        let goal = match &car {
+                            Value::Float(float) => float.max(0.0) as usize,
+                            other => other.as_integer()?.max(0) as usize,
+                        };
+                        (Some(goal), cdr.as_integer()?)
                     }
                     other => {
                         let big = integer_like_bigint(interp, other)?;
@@ -4283,7 +4290,7 @@ fn prefix_property_width(interp: &mut Interpreter, env: &mut Env, prop: Option<V
 /// Per-position display widths for [bol, eol): `usize::MAX` marks a TAB
 /// (resolved against the running column), 0 marks invisible or
 /// display-replaced text, and display strings count once per run.
-fn visual_char_widths(
+pub(crate) fn visual_char_widths(
     interp: &mut Interpreter,
     env: &mut Env,
     bol: usize,
@@ -4332,7 +4339,7 @@ fn visual_char_widths(
 /// Screen-line segment start positions of the logical line [bol, eol),
 /// modeling GNU's batch display: continuation at frame-width (reserving the
 /// continuation column unless word-wrapping) minus prefix widths.
-fn visual_segment_starts(
+pub(crate) fn visual_segment_starts(
     interp: &mut Interpreter,
     env: &mut Env,
     bol: usize,
@@ -4397,7 +4404,7 @@ fn visual_segment_starts(
     starts
 }
 
-fn visual_line_bounds(interp: &Interpreter, pos: usize) -> (usize, usize) {
+pub(crate) fn visual_line_bounds(interp: &Interpreter, pos: usize) -> (usize, usize) {
     let point_min = interp.buffer.point_min();
     let point_max = interp.buffer.point_max();
     let mut bol = pos.max(point_min);
@@ -4818,11 +4825,31 @@ fn visual_vertical_motion(
     }
     // GNU's batch path ignores a cons LINES's goal column: point lands at
     // the start of the target screen line (or buffer end on overshoot).
-    let _ = goal_col;
+    // An interactive session has a real window, where GNU moves to the
+    // goal column within the target screen line (line-move-visual's
+    // temporary-goal-column contract).
     let target = if exhausted_forward {
         point_max
     } else {
-        starts[index]
+        let mut target = starts[index];
+        let interactive = interp
+            .lookup_var("noninteractive", env)
+            .is_some_and(|value| value.is_nil());
+        if let Some(goal) = goal_col.filter(|&goal| goal > 0 && interactive) {
+            let seg_end = starts.get(index + 1).copied().unwrap_or(eol);
+            let widths = visual_char_widths(interp, env, bol, eol);
+            let mut col = 0usize;
+            while target < seg_end && col < goal {
+                let (raw, _) = widths[target - bol];
+                col += if raw == usize::MAX {
+                    8 - (col % 8)
+                } else {
+                    raw
+                };
+                target += 1;
+            }
+        }
+        target
     };
     interp.buffer.goto_char(target);
     Ok(moved)

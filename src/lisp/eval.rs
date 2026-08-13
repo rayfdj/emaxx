@@ -2157,6 +2157,13 @@ pub struct Interpreter {
     /// (see bytecode::vm).
     pub(crate) bytecode_program_cache:
         Vec<Option<std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>>,
+    /// Materialized, ordered keymap bindings per keymap record, invalidated
+    /// exactly like the byte-code cache: `find_record_mut' is the only
+    /// mutation door for records, so `define-key' drops the slot.  Key
+    /// lookup walks every active map per keystroke; re-parsing each map's
+    /// string entries per lookup made `key-binding' cost milliseconds.
+    pub(crate) keymap_bindings_cache:
+        std::cell::RefCell<Vec<Option<crate::lisp::primitives::CachedKeymapIndex>>>,
     /// Recycled operand stacks for the byte-code VM: one Vec per active
     /// nesting level, reused across calls to avoid per-call allocation.
     pub(crate) vm_stack_pool: Vec<Vec<Value>>,
@@ -3036,6 +3043,7 @@ impl Interpreter {
             ]),
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
+            keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),
             vm_stack_pool: Vec::new(),
             backtrace_args_pool: Vec::new(),
             treesit_queries: Vec::new(),
@@ -3217,6 +3225,15 @@ impl Interpreter {
         interp.define_special_variable("auto-hscroll-mode", Value::T);
         interp.define_special_variable("hscroll-margin", Value::Integer(5));
         interp.define_special_variable("hscroll-step", Value::Integer(0));
+        // xdisp.c: minibuffer windows scroll conservatively (bug#44070);
+        // simple.el's end-of-buffer reads this before recentering.
+        interp.define_special_variable("scroll-minibuffer-conservatively", Value::T);
+        // coding.c's end-of-line mnemonics, read by the dumped mode-line
+        // spec (mode-line-eol-desc).
+        interp.define_special_variable("eol-mnemonic-unix", Value::String(":".into()));
+        interp.define_special_variable("eol-mnemonic-dos", Value::String("(DOS)".into()));
+        interp.define_special_variable("eol-mnemonic-mac", Value::String("(Mac)".into()));
+        interp.define_special_variable("eol-mnemonic-undecided", Value::String(":".into()));
         interp.define_special_variable("fringe-bitmaps", fringe_bitmaps);
         for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
             interp.put_symbol_property(name, "fringe", Value::Integer((index + 1) as i64));
@@ -4244,11 +4261,29 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, Value::Nil);
         }
-        for name in ["mode-line-in-non-selected-windows", "auto-window-vscroll"] {
+        for name in [
+            "mode-line-in-non-selected-windows",
+            "auto-window-vscroll",
+            // xdisp.c dumps this on; simple.el's line-move consults it on
+            // every interactive vertical motion.
+            "auto-hscroll-mode",
+        ] {
             interp.define_special_variable(name, Value::T);
         }
+        // keyboard.c's dumped translation table default; simple.el reads it
+        // during interactive input handling.
+        interp.define_special_variable("keyboard-translate-table", Value::Nil);
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
+            // xdisp.c dumped horizontal-scroll defaults consulted by
+            // simple.el's interactive vertical motion.
+            ("hscroll-margin", Value::Integer(5)),
+            ("hscroll-step", Value::Integer(0)),
+            ("scroll-minibuffer-conservatively", Value::T),
+            ("eol-mnemonic-unix", Value::String(":".into())),
+            ("eol-mnemonic-dos", Value::String("(DOS)".into())),
+            ("eol-mnemonic-mac", Value::String("(Mac)".into())),
+            ("eol-mnemonic-undecided", Value::String(":".into())),
             ("recenter-redisplay", Value::Symbol("tty".into())),
             (
                 "window-combination-limit",

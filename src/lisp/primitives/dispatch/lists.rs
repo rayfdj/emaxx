@@ -295,7 +295,7 @@ fn prefix_integer(value: &Value) -> Option<BigInt> {
     }
 }
 
-fn next_universal_prefix(pending: &Value) -> Value {
+pub(crate) fn next_universal_prefix(pending: &Value) -> Value {
     match pending {
         Value::Nil => Value::list([Value::Integer(4)]),
         Value::Cons(_) => {
@@ -310,7 +310,7 @@ fn next_universal_prefix(pending: &Value) -> Value {
     }
 }
 
-fn next_negative_prefix(pending: &Value) -> Value {
+pub(crate) fn next_negative_prefix(pending: &Value) -> Value {
     if let Some(integer) = prefix_integer(pending) {
         normalize_bigint_value(-integer)
     } else if matches!(pending, Value::Symbol(minus) if minus == "-") {
@@ -320,7 +320,7 @@ fn next_negative_prefix(pending: &Value) -> Value {
     }
 }
 
-fn next_digit_prefix(pending: &Value, digit: i64) -> Value {
+pub(crate) fn next_digit_prefix(pending: &Value, digit: i64) -> Value {
     if let Some(integer) = prefix_integer(pending) {
         let negative = integer.sign() == Sign::Minus;
         let digit = BigInt::from(digit);

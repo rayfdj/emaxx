@@ -18,6 +18,49 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-13 TTY FRONTEND MERGE CHECKPOINT: `origin/tty-frontend` through
+  `39a54cc` is reconciled with the Print-through-Regex mainline at the exact
+  contiguous frontier **6,852/7,080**.  NEXT remains selector **6,853**,
+  `search-test--replace-match-update-data`, in `test/src/search-tests.el`,
+  followed by SQLite.
+
+  Keep the TTY branch's Rope-aware `Buffer::lines_from` and
+  `Buffer::line_start_of` path: redisplay extracts only visible rows and
+  reuses cached keymap projections instead of repeatedly flattening the
+  entire buffer or rebuilding bindings.  This optimization is for interactive
+  redisplay and key lookup; regexp matching still has its own flattened search
+  input and must not be credited with the TTY improvement.
+
+  The combined tree passed all 23 pseudo-terminal scenarios against GNU
+  Emacs, comparing the complete text area, cursor placement, mode line, echo
+  area, wrapping, scrolling, paging, prefix arguments, errors, and undo.  The
+  terminal decoder is now genuinely streaming across arbitrary PTY chunk and
+  UTF-8 boundaries, with byte-at-a-time regression coverage; the former
+  decoder could expose split CSI tails as text and report scheduling-dependent
+  false divergences.  Focused TTY tests are 21 passed with one intentionally
+  ignored release-binary smoke test, and all 17 newly added Rust contracts
+  pass individually.
+
+  The recorded compatibility audit is **104/105** files at
+  `target/compat/regressions-1786612631353953000-78395`; only the known GNU
+  dynamic-module load-error difference remains.  This is an improvement over
+  the pre-Print/Regex 102/105 audit, not a TTY regression.  Print is exact at
+  46/46 in `target/compat/regressions-1786612381225055000-78095` (GNU/Emaxx
+  bodies 45/309 ms; setup 343/3,608 ms), and Regex is exact at 34/34 in
+  `target/compat/regressions-1786612515244584000-78256` (bodies 147/1,392 ms;
+  setup 266/3,304 ms).  Both use subject-source fingerprint
+  `f6bbab45acc40d881b96e308df246d9f4cbf6bdd1d79e324aa82e4481be4fdd8`
+  and release binary hash
+  `b3798b568a2e220d151efe1e4a583fafc875c1fd2da1d9a1c0f3fbef4832122e`.
+
+  Final merge gates are green: format/diff, all-target/all-feature check,
+  strict Clippy, the streaming-decoder unit tests, 2,078 library cases (2,077
+  passed and one ignored), 35 compatibility-harness tests, one
+  performance-harness test, 10 CLI tests, and three ERT integration tests.
+  The exhaustive serial library run took 5,931.50 seconds; retain focused,
+  parallel-safe frontier groups for ordinary iteration and reserve this serial
+  all-target gate for publication checkpoints.
+
 - 2026-08-13 PRINT-THROUGH-REGEX CHECKPOINT: the exact contiguous frontier is
   **6,852/7,080**, leaving **228** selectors.  Selectors 6,773-6,852 are
   exact: Print 46/46 and Regex Emacs 34/34.  NEXT is selector **6,853**,
@@ -55,10 +98,8 @@ counts as the progress denominator.
   passed and one ignored), 35 compatibility-harness, one performance-harness,
   10 CLI, and three ERT integration tests.
 
-  Publish this checkpoint before touching the TTY branch.  Then reconcile and
-  merge `origin/tty-frontend`, retaining commit `3e29726`'s Rope-aware
-  visible-row redisplay and key-lookup optimization rather than duplicating
-  its buffer path.  Certify the combined tree before resuming selector 6,853.
+  This checkpoint was published as `a5d5001`; the certified TTY merge described
+  above follows it without changing the compatibility frontier.
 
 - 2026-08-13 LREAD-THROUGH-MINIBUF CHECKPOINT: the exact contiguous frontier
   is **6,772/7,080**, leaving **308** selectors.  Selectors 6,656-6,772 are

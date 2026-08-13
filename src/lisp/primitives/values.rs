@@ -2423,24 +2423,80 @@ pub(crate) fn keymap_bindings(
 /// Return the bindings directly stored in either Emaxx's identity-bearing
 /// runtime keymap or GNU's public Lisp `(keymap ...)' representation.  Lisp
 /// libraries are allowed to construct and pass the latter directly, so all
+/// One keymap record's materialized lookup state: the ordered binding
+/// projection every walker shares, plus a command-remapping index probed
+/// once per keystroke by `command-remapping'.  Cached per record and
+/// dropped by `find_record_mut' (see `keymap_bindings_cache').
+#[derive(Clone)]
+pub(crate) struct CachedKeymapIndex {
+    pub(crate) bindings: std::rc::Rc<Vec<RuntimeKeymapBinding>>,
+    /// The `<remap>' prefix keymap, when this map carries one.  Only the
+    /// LINK is cached here: the inner map is its own record with its own
+    /// independently invalidated binding cache, so later `define-key
+    /// [remap ...]' calls (which mutate the inner record, not this one)
+    /// stay visible.
+    pub(crate) remap_map: Option<Value>,
+}
+
 /// read-only keymap walkers must share this projection rather than silently
 /// treating non-record maps as empty.
 pub(crate) fn keymap_direct_bindings(
     interp: &Interpreter,
     keymap: &Value,
-) -> Result<Vec<RuntimeKeymapBinding>, LispError> {
+) -> Result<std::rc::Rc<Vec<RuntimeKeymapBinding>>, LispError> {
     if let Some(id) = keymap_record_id(interp, keymap) {
+        // Key lookup walks every active map on every keystroke; the
+        // materialized, ordered projection is cached per record and dropped
+        // by `find_record_mut' whenever anything rewrites the record
+        // (`define-key' included), the byte-code program cache's contract.
+        let index = (id as usize).saturating_sub(1);
+        if let Some(Some(cached)) = interp.keymap_bindings_cache.borrow().get(index) {
+            return Ok(std::rc::Rc::clone(&cached.bindings));
+        }
         let Some(record) = interp.find_record(id) else {
-            return Ok(Vec::new());
+            return Ok(std::rc::Rc::new(Vec::new()));
         };
-        return keymap_bindings(record);
+        // Character bindings now live in the leading char-table (lookup
+        // consults it before this sparse projection), so no enumeration
+        // order fixup is needed here anymore.
+        let mut bindings = keymap_bindings(record)?;
+        // Materialize each entry's parsed key parts while building the
+        // cached projection: lookups compare parts on every scan, and
+        // re-deriving them per probe was a measurable slice of every
+        // keystroke's `key-binding'.
+        for binding in &mut bindings {
+            if binding.parts.is_none() {
+                binding.parts = Some(approximate_key_parts(&binding.key));
+            }
+        }
+        let bindings = std::rc::Rc::new(bindings);
+        // `[remap CMD]' bindings live behind a `<remap>' prefix map;
+        // capture the link so `command-remapping' probes the inner map
+        // directly instead of a string lookup per map per keystroke.
+        let remap_map = bindings
+            .iter()
+            .find(|binding| {
+                matches!(binding.parts.as_deref(),
+                    Some([part]) if canonical_key_part(part) == "remap")
+            })
+            .map(|binding| binding.value.clone());
+        let entry = CachedKeymapIndex {
+            bindings: std::rc::Rc::clone(&bindings),
+            remap_map,
+        };
+        let mut cache = interp.keymap_bindings_cache.borrow_mut();
+        if cache.len() <= index {
+            cache.resize(index + 1, None);
+        }
+        cache[index] = Some(entry);
+        return Ok(bindings);
     }
 
     let Ok(items) = keymap.to_vec() else {
-        return Ok(Vec::new());
+        return Ok(std::rc::Rc::new(Vec::new()));
     };
     if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap") {
-        return Ok(Vec::new());
+        return Ok(std::rc::Rc::new(Vec::new()));
     }
 
     let mut bindings = Vec::new();
@@ -2453,7 +2509,7 @@ pub(crate) fn keymap_direct_bindings(
             bindings.push(binding);
         }
     }
-    Ok(bindings)
+    Ok(std::rc::Rc::new(bindings))
 }
 
 fn runtime_keymap_binding_from_public_entry(
@@ -2915,6 +2971,15 @@ pub(crate) fn binding_key_parts(binding: &RuntimeKeymapBinding) -> Vec<String> {
         .unwrap_or_else(|| approximate_key_parts(&binding.key))
 }
 
+/// `key_parts_match' against a binding without cloning its parts vector;
+/// the exact-lookup scan runs this per entry per keystroke.
+fn binding_matches_key_parts(binding: &RuntimeKeymapBinding, requested: &[String]) -> bool {
+    match &binding.parts {
+        Some(parts) => key_parts_match(parts, requested),
+        None => key_parts_match(&approximate_key_parts(&binding.key), requested),
+    }
+}
+
 pub(crate) fn canonical_key_part(part: &str) -> String {
     let part = part
         .strip_prefix('<')
@@ -3029,8 +3094,8 @@ fn keymap_lookup_direct_binding_exact_parts(
         }
     }
     let bindings = keymap_direct_bindings(interp, keymap)?;
-    for binding in &bindings {
-        if key_parts_match(&binding_key_parts(binding), key_parts) {
+    for binding in bindings.iter() {
+        if binding_matches_key_parts(binding, key_parts) {
             return Ok(binding.value.clone());
         }
     }
@@ -3074,7 +3139,7 @@ fn keymap_lookup_binding_exact_parts_bounded(
     }
     let bindings = keymap_direct_bindings(interp, keymap)?;
     for binding in bindings.iter() {
-        if key_parts_match(&binding_key_parts(binding), key_parts) {
+        if binding_matches_key_parts(binding, key_parts) {
             return Ok(binding.value.clone());
         }
     }
@@ -3434,9 +3499,10 @@ fn collect_described_keymap_bindings(
     if !visited.insert((identity, prefix_parts.join(" "))) {
         return Ok(());
     }
-    for binding in keymap_direct_bindings(interp, map)? {
+    let bindings = keymap_direct_bindings(interp, map)?;
+    for binding in bindings.iter() {
         let mut parts = prefix_parts.to_vec();
-        parts.extend(binding_key_parts(&binding));
+        parts.extend(binding_key_parts(binding));
         let key = parts.join(" ");
         let resolved = keymap_get_keyelt(interp, &binding.value, true, env)?;
         if let Some(nested) = keymap_reference_map(interp, &resolved, env) {
@@ -3557,13 +3623,13 @@ pub(crate) fn accessible_keymaps(
         if !seen_maps.insert(identity) {
             continue;
         }
-        for binding in keymap_direct_bindings(interp, &map)? {
+        for binding in keymap_direct_bindings(interp, &map)?.iter() {
             let resolved = keymap_get_keyelt(interp, &binding.value, false, env)?;
             let Some(prefix_map) = keymap_reference_map(interp, &resolved, env) else {
                 continue;
             };
             let mut sequence = prefix.clone();
-            sequence.extend(binding_key_parts(&binding));
+            sequence.extend(binding_key_parts(binding));
             queue.push((sequence, prefix_map));
         }
     }
@@ -4038,8 +4104,8 @@ pub(crate) fn collect_where_is_matches(
     if !collector.visited.insert((identity, prefix_key)) {
         return Ok(());
     }
-    for binding in keymap_direct_bindings(interp, keymap)? {
-        let parts = binding_key_parts(&binding);
+    for binding in keymap_direct_bindings(interp, keymap)?.iter() {
+        let parts = binding_key_parts(binding);
         if parts
             .iter()
             .any(|part| key_part_is_non_key_event(interp, part))
@@ -4112,6 +4178,9 @@ pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> 
         "C-x C-s" => Some("save-buffer"),
         "C-x C-w" => Some("write-file"),
         "C-x C-c" => Some("save-buffers-kill-emacs"),
+        "C-v" => Some("scroll-up-command"),
+        "M-v" => Some("scroll-down-command"),
+        "C-l" => Some("recenter-top-bottom"),
         "C-x b" => Some("switch-to-buffer"),
         "C-x k" => Some("kill-buffer"),
         "C-x h" => Some("mark-whole-buffer"),
@@ -4158,18 +4227,96 @@ pub(crate) fn command_remapping(
     let Some(command_name) = command_name_for_remapping(command) else {
         return Ok(Value::Nil);
     };
-    let remap_key = remap_key_binding_text(&command_name);
     let maps = match keymaps {
         Some(keymaps) => where_is_internal_maps(interp, Some(keymaps), env)?,
         None => current_active_maps(interp, env, None)?,
     };
+    command_remapping_in_maps(interp, &command_name, &maps)
+}
+
+/// The remap probe against already-assembled maps: record-backed keymaps
+/// answer from their cached remap index, everything else takes the string
+/// lookup path.  `key-binding' calls this once per keystroke.
+pub(crate) fn command_remapping_in_maps(
+    interp: &Interpreter,
+    command_name: &str,
+    maps: &[Value],
+) -> Result<Value, LispError> {
+    let mut remap_key = None;
     for map in maps {
-        let binding = keymap_lookup_binding(interp, &map, &remap_key)?;
-        if !binding.is_nil() {
-            return Ok(binding);
+        match remap_probe(interp, map, command_name, 32)? {
+            RemapProbe::Found(binding) => return Ok(binding),
+            RemapProbe::Absent => continue,
+            RemapProbe::NeedsFullLookup => {
+                let remap_key = remap_key
+                    .get_or_insert_with(|| remap_key_binding_text(command_name))
+                    .as_str();
+                let binding = keymap_lookup_binding(interp, map, remap_key)?;
+                if !binding.is_nil() {
+                    return Ok(binding);
+                }
+            }
         }
     }
     Ok(Value::Nil)
+}
+
+enum RemapProbe {
+    Found(Value),
+    /// The map and its whole parent chain were index-covered and hold no
+    /// remap entry — the common case for every self-inserting key.
+    Absent,
+    /// A non-record link in the chain: only the string lookup understands
+    /// list keymaps, so this map needs the slow path.
+    NeedsFullLookup,
+}
+
+/// Probe MAP's cached remap index, following record parents.  DEPTH bounds
+/// cyclic parent chains the way the bounded string lookup does.
+fn remap_probe(
+    interp: &Interpreter,
+    map: &Value,
+    command_name: &str,
+    depth: usize,
+) -> Result<RemapProbe, LispError> {
+    if depth == 0 {
+        return Ok(RemapProbe::Absent);
+    }
+    let Some(id) = keymap_record_id(interp, map) else {
+        return Ok(RemapProbe::NeedsFullLookup);
+    };
+    keymap_direct_bindings(interp, map)?;
+    let index = (id as usize).saturating_sub(1);
+    let cached = interp
+        .keymap_bindings_cache
+        .borrow()
+        .get(index)
+        .cloned()
+        .flatten();
+    let Some(cached) = cached else {
+        return Ok(RemapProbe::NeedsFullLookup);
+    };
+    if let Some(remap_map) = &cached.remap_map {
+        // The inner map's entries are one-part command names; it has few
+        // entries and its own cache slot, so a scan stays cheap and
+        // current.
+        for binding in keymap_direct_bindings(interp, remap_map)?.iter() {
+            let matches = match binding.parts.as_deref() {
+                Some([part]) => canonical_key_part(part) == command_name,
+                _ => false,
+            };
+            if matches && !binding.value.is_nil() {
+                return Ok(RemapProbe::Found(binding.value.clone()));
+            }
+        }
+    }
+    let parent = interp
+        .find_record(id)
+        .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned());
+    match parent {
+        None | Some(Value::Nil) => Ok(RemapProbe::Absent),
+        Some(parent) => remap_probe(interp, &parent, command_name, depth - 1),
+    }
 }
 
 // The keymaps consulted for command dispatch, in GNU order: the overriding
@@ -4279,7 +4426,18 @@ pub(crate) fn key_binding(
         return Ok(raw_binding);
     }
 
-    let remapped = command_remapping(interp, &raw_binding, None, env)?;
+    let remapped = match command_name_for_remapping(&raw_binding) {
+        // Reuse the maps this lookup already assembled (plus the global
+        // map, which GNU's remap pass also consults).
+        Some(command_name) => {
+            let mut remap_maps = maps;
+            if is_keymap_value(interp, &global_map) {
+                remap_maps.push(global_map);
+            }
+            command_remapping_in_maps(interp, &command_name, &remap_maps)?
+        }
+        None => Value::Nil,
+    };
     Ok(if remapped.is_nil() {
         raw_binding
     } else {
