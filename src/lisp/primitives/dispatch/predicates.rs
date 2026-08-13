@@ -574,7 +574,7 @@ define_dispatch!(
                 )
             }
             "where-is-internal" => {
-                need_arg_range(name, args, 1, 4)?;
+                need_arg_range(name, args, 1, 5)?;
                 let command = args[0].as_symbol()?;
                 let first_only = args.get(2).is_some_and(Value::is_truthy);
                 let keymaps = where_is_internal_maps(interp, args.get(1), env)?;

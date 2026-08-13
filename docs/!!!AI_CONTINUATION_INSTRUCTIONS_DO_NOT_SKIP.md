@@ -18,6 +18,52 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-13 KEYBOARD-THROUGH-LCMS CHECKPOINT: the exact contiguous frontier
+  is **6,655/7,080**, leaving **425** selectors.  Selectors 6,602-6,655 are
+  exact: Keyboard 2/2, Keymap 46/46, and LCMS 6/6.  NEXT is selector **6,656**,
+  `lread-char-empty-name`, in `test/src/lread-tests.el` (52 selected
+  outcomes).
+
+  Canonical final-source artifact:
+  `target/compat/regression-add-1786586103077482000-54189`, with **54/54**
+  matching outcomes and no timeout or unilateral skip.  Subject-source
+  fingerprint is
+  `50b4de7ef47fe429d167a1cd1a8dd6159c46e0037dd1b589946d50fe421601fe`,
+  release binary hash is
+  `1e8f1f74dd801c819709bad13fb4a215b3a2f3e699d8e0db54076fe26ed68ff9`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  The shared Keymap repair gives full maps one authoritative character-table
+  lookup layer while retaining the sparse identity/prefix index.  Ordinary
+  character writes, character ranges, sparse-map range promotion, explicit
+  nil, removal, and parent fallback now agree.  Reader control notation uses
+  GNU's actual valid ranges instead of masking all ASCII punctuation.
+  One-string key vectors decode the legacy GNU described-key spelling;
+  `where-is-internal` accepts all five arguments and observes definition
+  precedence.  Binding descriptions recurse through prefix maps and evaluate
+  menu filters.  `help--describe-vector` shares the requested output buffer,
+  partitions ranges by their real shadowing command, and does not call a
+  command shadowed by itself.  `Buffer-menu-mode-map` is a full map.  The
+  focused Rust regression covers the shared control, range, and vector-key
+  boundary; do not replace these contracts with per-test or per-mode policy.
+
+  Post-bootstrap GNU/Emaxx bodies are Keyboard 1,021/3,005 ms (2.944x and
+  +1,984 ms), Keymap 109/67 ms, and LCMS 8/2 ms.  Keyboard remains below the
+  5x march-interruption threshold.  Setup is separately 230-236 ms GNU versus
+  2,519-3,032 ms Emaxx under dumped-startup issue #11.
+
+  The immutable broad audit
+  `target/compat/regressions-1786585440604335000-49892` is **100/105**.  Keymap
+  is fixed; only the known later owners Emacs Module, Lread, Minibuf, Print,
+  and Regex Emacs mismatch.  The source-heavy performance family remains
+  issue #12.  Complete publication evidence is green: format/diff,
+  all-target/all-feature check, strict Clippy, 2,049 library cases (2,048
+  passed and one ignored), 35 compatibility-harness, one performance-harness,
+  10 CLI, and three ERT integration tests.  The complete suite ran with the
+  required localhost/socket permission and exited zero.
+
 - 2026-08-13 FONT-THROUGH-JSON CHECKPOINT: the exact contiguous frontier is
   **6,601/7,080**, leaving **479** selectors.  Selectors 6,567-6,601 are exact:
   Font 2/2, Image 5/5 (four passes plus GNU's same headless skip), Indent 3/3,

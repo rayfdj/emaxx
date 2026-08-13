@@ -307,6 +307,10 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
         for offset, (expected, actual) in enumerate(zip(gnu_text, emaxx_text)):
             if expected != actual:
                 divergences.append((offset, expected, actual))
+        # The mode line is part of the contract: same characters, same
+        # padding, same percent/line indicators.
+        if gnu_lines[gnu_mode] != emaxx_lines[emaxx_mode]:
+            divergences.append(("mode-line", gnu_lines[gnu_mode], emaxx_lines[emaxx_mode]))
 
         if divergences:
             print(f"DIVERGE [{scenario}]: {len(divergences)} text row(s) differ")
@@ -376,6 +380,47 @@ SCENARIOS = [
         "top line\n" + "wide" * 50 + "\nbottom line\n",
         [b"\x0e" * 2, b"\x06" * 3, b"\x0e", b"*"],
     ),
+    # C-v pages a near-full window forward; the typed X pins point.
+    (
+        "page-down",
+        "".join(f"line {n:03}\n" for n in range(60)),
+        [b"\x16", b"\x16", b"X"],
+    ),
+    # M-v pages back after paging forward.
+    (
+        "page-up-after-down",
+        "".join(f"line {n:03}\n" for n in range(60)),
+        [b"\x16", b"\x16", b"\x1bv", b"Y"],
+    ),
+    # Paging past the end signals; the screen keeps its last good state.
+    (
+        "page-past-end",
+        "".join(f"line {n:03}\n" for n in range(30)),
+        [b"\x16", b"\x16", b"Z"],
+    ),
+    # C-u 4 C-v scrolls exactly four lines.
+    (
+        "page-by-arg",
+        "".join(f"line {n:03}\n" for n in range(60)),
+        [b"\x15" + b"4" + b"\x16", b"X"],
+    ),
+    # C-l cycles middle, top, bottom across consecutive presses.
+    (
+        "recenter-cycle-top",
+        "".join(f"line {n:03}\n" for n in range(60)),
+        [b"\x0e" * 30, b"\x0c", b"\x0c", b"X"],
+    ),
+    (
+        "recenter-cycle-bottom",
+        "".join(f"line {n:03}\n" for n in range(60)),
+        [b"\x0e" * 30, b"\x0c", b"\x0c", b"\x0c", b"Y"],
+    ),
+    # Paging steps whole screen lines over wrapped text.
+    (
+        "page-down-wrapped",
+        ("wide" * 30 + "\n") * 12,
+        [b"\x16", b"*"],
+    ),
 ]
 
 
@@ -397,7 +442,7 @@ def main():
 
     failures = 0
     for name, contents, keys in SCENARIOS:
-        handle, path = tempfile.mkstemp(suffix=".txt", prefix=f"ttydiff-{name}-")
+        handle, path = tempfile.mkstemp(suffix=".dat", prefix=f"ttydiff-{name}-")
         with os.fdopen(handle, "w") as out:
             out.write(contents)
         try:

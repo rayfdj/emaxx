@@ -1209,8 +1209,20 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 4)?;
                 // GNU's C primitive intentionally makes formatting a no-op in
                 // noninteractive mode, before it inspects FORMAT or frame state.
-                // Emaxx currently has only this batch/noninteractive host mode.
-                Ok(Value::String(String::new().into()))
+                // An interactive session (a frontend published live window
+                // geometry) renders the construct for real.
+                if interactive_window_metrics().is_none() {
+                    return Ok(Value::String(String::new().into()));
+                }
+                let format = if args[0].is_nil() {
+                    interp
+                        .lookup_var("mode-line-format", env)
+                        .unwrap_or(Value::Nil)
+                } else {
+                    args[0].clone()
+                };
+                let text = render_mode_line_construct(interp, env, &format, 0)?;
+                Ok(Value::String(text.into()))
             }
             // ── Output ──
             "substitute-command-keys" => {
@@ -2701,7 +2713,10 @@ define_dispatch!(
                 let visible_line = line_distance_in_buffer(interp, buffer_id, first_visible, pos);
                 let visible = pos >= first_visible
                     && pos <= point_max
-                    && visible_line < selected_window_text_height();
+                    && visible_line
+                        < interactive_window_metrics()
+                            .map(|metrics| metrics.text_height)
+                            .unwrap_or(DEFAULT_SELECTED_WINDOW_HEIGHT);
                 if !visible {
                     return Ok(Value::Nil);
                 }
@@ -2961,30 +2976,31 @@ define_dispatch!(
             }
             "recenter" => {
                 need_arg_range(name, args, 0, 2)?;
-                let line = resolve_window_line(args.first(), selected_window_text_height() / 2)?;
-                let point_line = beginning_of_line_at(interp, interp.buffer.point());
-                let (new_start, _) = move_lines_from(interp, point_line, -line);
+                // A raw C-u (cons) centers, GNU's Frecenter convention.
+                let arg = args.first().filter(|value| !matches!(value, Value::Cons(_)));
+                let line = resolve_window_line(arg, selected_window_text_height() / 2)?;
+                // Walk back whole screen lines: wrapped lines occupy one
+                // row per continuation, exactly as the display counts.
+                let point = interp.buffer.point();
+                let (new_start, _) = move_screen_lines(interp, env, point, -line);
                 set_current_window_start(interp, new_start);
                 Ok(Value::Nil)
             }
-            "scroll-up" => {
+            "scroll-up" | "scroll-down" => {
                 need_arg_range(name, args, 0, 1)?;
-                let count = if let Some(value) = args.first() {
-                    prefix_numeric_value(value)?.as_integer()?
-                } else {
-                    1
-                };
-                scroll_selected_window(interp, count as isize, env)?;
-                Ok(Value::Nil)
-            }
-            "scroll-down" => {
-                need_arg_range(name, args, 0, 1)?;
-                let count = if let Some(value) = args.first() {
-                    prefix_numeric_value(value)?.as_integer()?
-                } else {
-                    1
-                };
-                scroll_selected_window(interp, -(count as isize), env)?;
+                let sign: isize = if name == "scroll-up" { 1 } else { -1 };
+                match args.first() {
+                    // nil scrolls a near-full screen.
+                    None | Some(Value::Nil) => scroll_selected_window(interp, env, None, sign)?,
+                    // `-' scrolls a near-full screen the other way.
+                    Some(Value::Symbol(minus)) if minus == "-" => {
+                        scroll_selected_window(interp, env, None, -sign)?
+                    }
+                    Some(value) => {
+                        let lines = prefix_numeric_value(value)?.as_integer()? as isize;
+                        scroll_selected_window(interp, env, Some(sign * lines), sign)?
+                    }
+                }
                 Ok(Value::Nil)
             }
             "window-text-pixel-size" => {
@@ -4588,4 +4604,420 @@ fn font_lock_mode_run_mode_function(
     }
     crate::lisp::primitives::call_function_value(interp, &function, &[mode], env)?;
     Ok(())
+}
+
+// ── Mode-line rendering (xdisp.c's display_mode_element) ───────────────
+//
+// The engine renders GNU's dumped mode-line specification to plain text:
+// faces, mouse maps, and help-echo do not change the characters a tty
+// draws.  %-constructs follow decode_mode_spec; the geometry-dependent
+// ones (%p, %P) read the live window metrics the frontend publishes.
+
+/// Render a mode-line construct to its display text.  LITERAL marks
+/// strings reached through a symbol's value, which GNU shows verbatim
+/// (%-constructs are only recognized in strings written in the spec).
+fn render_mode_line_element(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    element: &Value,
+    literal: bool,
+    glass: bool,
+    depth: usize,
+) -> Result<String, LispError> {
+    if depth > 32 {
+        return Ok(String::new());
+    }
+    match element {
+        value if value.is_string() => {
+            let text = string_text(value)?;
+            if literal {
+                Ok(text)
+            } else {
+                expand_mode_line_percent_constructs(interp, env, &text)
+            }
+        }
+        Value::Symbol(name) => {
+            if name == "t" || name == "nil" {
+                return Ok(String::new());
+            }
+            // Only a direct string value is shown verbatim; list values
+            // are full constructs whose strings carry %-specs (xdisp's
+            // display_mode_element symbol case).
+            let value = interp.lookup_var(name, env).unwrap_or(Value::Nil);
+            render_mode_line_element(interp, env, &value, value.is_string(), glass, depth + 1)
+        }
+        Value::Cons(_) => {
+            let items = element.to_vec().unwrap_or_default();
+            let Some(head) = items.first() else {
+                return Ok(String::new());
+            };
+            match head {
+                Value::Symbol(keyword) if keyword == ":eval" => {
+                    let Some(form) = items.get(1) else {
+                        return Ok(String::new());
+                    };
+                    // Mode-line evaluation never signals in GNU
+                    // (safe_eval); a broken construct renders empty.
+                    let result = crate::lisp::primitives::eval_impl(
+                        interp,
+                        std::slice::from_ref(form),
+                        env,
+                    )
+                    .unwrap_or(Value::Nil);
+                    render_mode_line_element(interp, env, &result, false, glass, depth + 1)
+                }
+                Value::Symbol(keyword) if keyword == ":propertize" => {
+                    let Some(inner) = items.get(1) else {
+                        return Ok(String::new());
+                    };
+                    let mut text =
+                        render_mode_line_element(interp, env, inner, false, glass, depth + 1)?;
+                    // display (min-width (N.0)) only affects the glass:
+                    // format-mode-line's string ignores it, while the
+                    // display engine emits a stretch glyph — one column
+                    // wide even when the span already exceeds the
+                    // minimum (produce_stretch_glyph floors width at 1).
+                    if glass {
+                        let mut properties = items[2..].chunks(2);
+                        if let Some(min_width) = properties.find_map(|pair| match pair {
+                            [Value::Symbol(key), value] if key == "display" => {
+                                mode_line_min_width(value)
+                            }
+                            _ => None,
+                        }) {
+                            let actual = text.chars().count();
+                            let pad = if actual < min_width {
+                                min_width - actual
+                            } else if actual == min_width {
+                                0
+                            } else {
+                                1
+                            };
+                            text.extend(std::iter::repeat_n(' ', pad));
+                        }
+                    }
+                    Ok(text)
+                }
+                Value::Symbol(condition) => {
+                    // (SYMBOL THEN [ELSE]): a variable-conditioned construct.
+                    let value = interp.lookup_var(condition, env).unwrap_or(Value::Nil);
+                    let branch = if value.is_truthy() {
+                        items.get(1)
+                    } else {
+                        items.get(2)
+                    };
+                    match branch {
+                        Some(branch) => {
+                            render_mode_line_element(interp, env, branch, false, glass, depth + 1)
+                        }
+                        None => Ok(String::new()),
+                    }
+                }
+                Value::Integer(width) => {
+                    // (WIDTH REST...): pad to WIDTH, or truncate to -WIDTH.
+                    let width = *width;
+                    let mut text = String::new();
+                    for item in &items[1..] {
+                        text.push_str(&render_mode_line_element(
+                            interp,
+                            env,
+                            item,
+                            false,
+                            glass,
+                            depth + 1,
+                        )?);
+                    }
+                    if width >= 0 {
+                        let width = width as usize;
+                        while text.chars().count() < width {
+                            text.push(' ');
+                        }
+                    } else {
+                        let limit = (-width) as usize;
+                        if text.chars().count() > limit {
+                            text = text.chars().take(limit).collect();
+                        }
+                    }
+                    Ok(text)
+                }
+                _ => {
+                    let mut text = String::new();
+                    for item in &items {
+                        text.push_str(&render_mode_line_element(
+                            interp,
+                            env,
+                            item,
+                            false,
+                            glass,
+                            depth + 1,
+                        )?);
+                    }
+                    Ok(text)
+                }
+            }
+        }
+        _ => Ok(String::new()),
+    }
+}
+
+pub(super) fn render_mode_line_construct(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    format: &Value,
+    depth: usize,
+) -> Result<String, LispError> {
+    render_mode_line_element(interp, env, format, false, false, depth)
+}
+
+/// The selected window's mode line as the display engine paints it:
+/// format-mode-line's text plus the glass-only stretch behavior of
+/// `min-width' display properties.
+pub(crate) fn render_mode_line_glass(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<String, LispError> {
+    let format = interp
+        .lookup_var("mode-line-format", env)
+        .unwrap_or(Value::Nil);
+    render_mode_line_element(interp, env, &format, false, true, 0)
+}
+
+/// The `(min-width (N.0))' display specification's width, if VALUE is one.
+fn mode_line_min_width(value: &Value) -> Option<usize> {
+    let items = value.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(key), width] if key == "min-width" => {
+            let widths = width.to_vec().ok()?;
+            match widths.first()? {
+                Value::Float(width) => Some(*width as usize),
+                Value::Integer(width) => Some(*width as usize),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// decode_mode_spec: expand the %-constructs of a spec string.
+fn expand_mode_line_percent_constructs(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    text: &str,
+) -> Result<String, LispError> {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let mut field = 0usize;
+        while let Some(digit) = chars.peek().and_then(|c| c.to_digit(10)) {
+            field = field * 10 + digit as usize;
+            chars.next();
+        }
+        let Some(spec) = chars.next() else {
+            break;
+        };
+        let expanded = decode_mode_line_spec(interp, env, spec)?;
+        let mut expanded = expanded;
+        while expanded.chars().count() < field {
+            expanded.push(' ');
+        }
+        out.push_str(&expanded);
+    }
+    Ok(out)
+}
+
+fn decode_mode_line_spec(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    spec: char,
+) -> Result<String, LispError> {
+    let var = |interp: &Interpreter, name: &str| -> Value {
+        interp.lookup_var(name, &Vec::new()).unwrap_or(Value::Nil)
+    };
+    Ok(match spec {
+        '%' => "%".to_string(),
+        'b' => interp.buffer.name.clone(),
+        'f' => match super::call(interp, "buffer-file-name", &[], env) {
+            Ok(path) if path.is_string() => string_text(&path)?,
+            _ => String::new(),
+        },
+        'F' => match super::call(
+            interp,
+            "frame-parameter",
+            &[Value::Nil, Value::Symbol("name".into())],
+            env,
+        ) {
+            Ok(name) if name.is_string() => string_text(&name)?,
+            _ => "F1".to_string(),
+        },
+        'l' => interp
+            .buffer
+            .line_number_at_pos(interp.buffer.point())
+            .to_string(),
+        'c' | 'C' => {
+            let column = super::call(interp, "current-column", &[], env)?
+                .as_integer()
+                .unwrap_or(0);
+            (column + i64::from(spec == 'C')).to_string()
+        }
+        'i' => (interp.buffer.point_max() - interp.buffer.point_min()).to_string(),
+        'I' => human_readable_size(interp.buffer.point_max() - interp.buffer.point_min()),
+        'p' | 'P' => window_percent_spec(interp, spec == 'P'),
+        'n' => {
+            let narrowed = interp.buffer.point_min() > 1
+                || super::call(interp, "buffer-narrowed-p", &[], env)
+                    .map(|value| value.is_truthy())
+                    .unwrap_or(false);
+            if narrowed {
+                " Narrow".to_string()
+            } else {
+                String::new()
+            }
+        }
+        '*' => {
+            if var(interp, "buffer-read-only").is_truthy() {
+                "%".to_string()
+            } else if interp.buffer.is_modified() {
+                "*".to_string()
+            } else {
+                "-".to_string()
+            }
+        }
+        '+' => {
+            if interp.buffer.is_modified() {
+                "*".to_string()
+            } else if var(interp, "buffer-read-only").is_truthy() {
+                "%".to_string()
+            } else {
+                "-".to_string()
+            }
+        }
+        '&' => {
+            if interp.buffer.is_modified() {
+                "*".to_string()
+            } else {
+                "-".to_string()
+            }
+        }
+        '@' => {
+            let remote = super::call(
+                interp,
+                "file-remote-p",
+                &[var(interp, "default-directory")],
+                env,
+            )
+            .map(|value| value.is_truthy())
+            .unwrap_or(false);
+            if remote { "@" } else { "-" }.to_string()
+        }
+        'z' | 'Z' => {
+            // Keyboard and terminal coding mnemonics (tty frames only in
+            // GNU; this renderer only runs interactively), then the
+            // buffer's; %Z appends the end-of-line mnemonic.
+            let mut text = String::new();
+            for source in ["keyboard-coding-system", "terminal-coding-system"] {
+                let coding = super::call(interp, source, &[], env).unwrap_or(Value::Nil);
+                text.push(coding_mnemonic_char(interp, env, &coding));
+            }
+            let buffer_coding = var(interp, "buffer-file-coding-system");
+            text.push(coding_mnemonic_char(interp, env, &buffer_coding));
+            if spec == 'Z' {
+                if let Ok(eol) = super::call(
+                    interp,
+                    "coding-system-eol-type-mnemonic",
+                    &[buffer_coding],
+                    env,
+                ) && eol.is_string()
+                {
+                    text.push_str(&string_text(&eol)?);
+                }
+            }
+            text
+        }
+        'm' => {
+            let mode_name = var(interp, "mode-name");
+            render_mode_line_element(interp, env, &mode_name, true, false, 0)?
+        }
+        'M' => {
+            let global = var(interp, "global-mode-string");
+            render_mode_line_element(interp, env, &global, true, false, 0)?
+        }
+        // Recursive-editing depth brackets: the frontend runs at level 0.
+        '[' | ']' => String::new(),
+        'e' => String::new(),
+        '-' => "-".repeat(256),
+        other => other.to_string(),
+    })
+}
+
+fn coding_mnemonic_char(interp: &mut Interpreter, env: &mut Env, coding: &Value) -> char {
+    match super::call(
+        interp,
+        "coding-system-mnemonic",
+        std::slice::from_ref(coding),
+        env,
+    ) {
+        Ok(Value::Integer(code)) => char::from_u32(code as u32).unwrap_or('-'),
+        _ => '-',
+    }
+}
+
+/// xdisp.c's percent99: a ceiling percentage capped at 99.
+fn percent99(n: usize, d: usize) -> usize {
+    let d = d.max(1);
+    ((d - 1 + 100 * n) / d).min(99)
+}
+
+/// %p / %P: window position within the buffer, from the live metrics
+/// (decode_mode_spec's 'p' and 'P', "%2d%%" formatting included; the
+/// spec's own -3 width truncates "Bottom" to "Bot" downstream).
+fn window_percent_spec(interp: &Interpreter, of_bottom: bool) -> String {
+    let Some(metrics) = crate::lisp::primitives::interactive_window_metrics() else {
+        return String::new();
+    };
+    let point_min = interp.buffer.point_min();
+    let point_max = interp.buffer.point_max();
+    let start = crate::lisp::primitives::current_window_start(interp).clamp(point_min, point_max);
+    let window_end = metrics.window_end.clamp(point_min, point_max);
+    if of_bottom {
+        // %P: percent of buffer above the window bottom.
+        if window_end >= point_max {
+            return if start <= point_min { "All" } else { "Bottom" }.to_string();
+        }
+        let above_top = start - point_min;
+        let percent = percent99(above_top, above_top + (point_max - window_end));
+        return format!("{percent:2}%");
+    }
+    // %p: percent of buffer above the window top.
+    if window_end >= point_max {
+        return if start <= point_min { "All" } else { "Bottom" }.to_string();
+    }
+    if start <= point_min {
+        return "Top".to_string();
+    }
+    format!(
+        "{:2}%",
+        percent99(start - point_min, point_max - point_min)
+    )
+}
+
+/// pint2hrstr: a size with k/M/G units, at most four characters.
+fn human_readable_size(size: usize) -> String {
+    if size < 10_000 {
+        return size.to_string();
+    }
+    let mut quotient = size as f64;
+    for unit in ['k', 'M', 'G'] {
+        quotient /= 1000.0;
+        if quotient < 10.0 {
+            return format!("{quotient:.1}{unit}");
+        }
+        if quotient < 1000.0 {
+            return format!("{}{unit}", quotient.round() as usize);
+        }
+    }
+    format!("{}T", (quotient / 1000.0).round() as usize)
 }

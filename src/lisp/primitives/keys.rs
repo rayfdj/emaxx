@@ -361,6 +361,18 @@ pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, L
 /// from being discoverable.  Symbolic events such as `M-<up>' remain single
 /// events, just as they do in GNU.
 pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, LispError> {
+    // A string stored inside a vector is GNU's legacy spelling for one
+    // already-described key sequence: ["C-x C-f"] names the same events as
+    // (kbd "C-x C-f"), it is not a single opaque string event.  Plain string
+    // KEY arguments remain raw character sequences in the legacy keymap API.
+    if let Ok(events) = vector_items(value)
+        && let [event] = events.as_slice()
+        && let Some(string) = string_like(event)
+    {
+        return keymap_parts_from_display_parts(key_sequence_binding_parts(&parse_kbd_sequence(
+            &string.text,
+        )?)?);
+    }
     keymap_parts_from_display_parts(key_sequence_binding_parts(value)?)
 }
 

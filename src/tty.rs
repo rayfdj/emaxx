@@ -84,6 +84,18 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     let mut interpreter = batch::initialize_interactive_interpreter()?;
     let mut env: Env = Vec::new();
     interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+    // GNU's interactive startup derives the default coding from the
+    // locale; this container runs UTF-8, so buffers with no detected
+    // coding show `U' in the mode line exactly like GNU under it.
+    let _ = call(
+        &mut interpreter,
+        &mut env,
+        "set-default",
+        &[
+            Value::Symbol("buffer-file-coding-system".into()),
+            Value::Symbol("utf-8-unix".into()),
+        ],
+    );
 
     if let Some(path) = initial_file {
         let path = path.display().to_string();
@@ -237,7 +249,7 @@ fn command_loop(
         // GNU redisplays only when the input queue is quiet; a key burst
         // paints once at the end.
         if !queue.input_pending() {
-            redraw(interpreter, &mut state).map_err(|error| error.to_string())?;
+            redraw(interpreter, env, &mut state).map_err(|error| error.to_string())?;
         }
         let Some(event) = queue.next_event() else {
             return Ok(0);
@@ -610,7 +622,7 @@ fn read_minibuffer_line(prompt: &str, initial: &str) -> Option<String> {
 
 // ── Redisplay ───────────────────────────────────────────────────────────
 
-fn redraw(interpreter: &mut Interpreter, state: &mut TtyState) -> io::Result<()> {
+fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let cols = cols.max(10) as usize;
     let rows = rows.max(4) as usize;
@@ -791,21 +803,31 @@ fn redraw(interpreter: &mut Interpreter, state: &mut TtyState) -> io::Result<()>
         }
     }
 
-    // Mode line, GNU-flavored.
-    let modified = if interpreter.buffer.is_modified() {
-        "**"
-    } else {
-        "--"
-    };
-    let mode_line = format!(
-        "-UUU:{modified}-  {}   L{point_line}   (Fundamental)",
-        interpreter.buffer.name
-    );
-    let mut mode_line = mode_line;
-    if mode_line.len() < cols {
-        mode_line.extend(std::iter::repeat_n('-', cols - mode_line.len()));
+    // Mode line: the buffer's real `mode-line-format', rendered by the
+    // interpreter's engine (the metrics published above feed %p).
+    let mut mode_line = crate::lisp::primitives::render_mode_line_glass(interpreter, env)
+        .inspect_err(|error| debug_log(&format!("mode-line render: {error:?}")))
+        .ok()
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| {
+            // A session whose spec fails to render still shows the basics.
+            let modified = if interpreter.buffer.is_modified() {
+                "**"
+            } else {
+                "--"
+            };
+            format!(
+                "-UUU:{modified}-  {}   L{point_line}   (Fundamental)",
+                interpreter.buffer.name
+            )
+        });
+    if mode_line.chars().count() < cols {
+        let missing = cols - mode_line.chars().count();
+        mode_line.extend(std::iter::repeat_n('-', missing));
     }
-    mode_line.truncate(cols);
+    if mode_line.chars().count() > cols {
+        mode_line = mode_line.chars().take(cols).collect();
+    }
     if state.painted_mode_line != mode_line {
         queue!(
             out,

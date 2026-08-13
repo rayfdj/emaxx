@@ -12626,3 +12626,221 @@ STRING non-nil means look in STRING instead of the current buffer."
                       (or (next-single-property-change pos 'composition) (point-max)))))
             (list from to t)))
         (find-composition-internal pos limit string detail-p))))
+
+;; window.el subset: the scroll and recenter commands GNU preloads.  The
+;; scroll primitives carry the window motion; these wrappers add the
+;; interactive conventions (prefix handling, scroll-error-top-bottom
+;; recovery, C-l cycling through recenter-positions).
+(defvar recenter-last-op nil
+  "Indicates the last recenter operation performed.
+Possible values: `top', `middle', `bottom', integer or float numbers.
+It can also be nil, which means the first value in `recenter-positions'.")
+
+(defcustom recenter-positions '(middle top bottom)
+  "Cycling order for `recenter-top-bottom'."
+  :type '(repeat (choice (const :tag "Top" top)
+			 (const :tag "Middle" middle)
+			 (const :tag "Bottom" bottom)
+			 (integer :tag "Line number")
+			 (float :tag "Percentage")))
+  :group 'windows)
+
+(defcustom scroll-error-top-bottom nil
+  "Move point to top/bottom of buffer before signaling a scrolling error."
+  :type 'boolean
+  :group 'windows)
+
+(defcustom goal-column nil
+  "Semipermanent goal column for vertical motion, as set by \\[set-goal-column], or nil."
+  :type '(choice integer (const :tag "None" nil))
+  :group 'editing-basics)
+(make-variable-buffer-local 'goal-column)
+
+(defun scroll-command--goto-goal-column ()
+  (when goal-column
+    ;; Move to the desired column.
+    (if (and line-move-visual
+             (not (or truncate-lines truncate-partial-width-windows)))
+        ;; Under line-move-visual, goal-column should be
+        ;; interpreted in units of the frame's canonical character
+        ;; width, which is exactly what vertical-motion does.
+        (vertical-motion (cons goal-column 0))
+      (line-move-to-column (truncate goal-column)))))
+
+(defun scroll-up-command (&optional arg)
+  "Scroll text of selected window upward ARG lines; or near full screen if no ARG."
+  (interactive "^P")
+  (prog1
+      (cond
+       ((null scroll-error-top-bottom)
+        (scroll-up arg))
+       ((eq arg '-)
+        (scroll-down-command nil))
+       ((< (prefix-numeric-value arg) 0)
+        (scroll-down-command (- (prefix-numeric-value arg))))
+       ((eobp)
+        (scroll-up arg))                ; signal error
+       (t
+        (condition-case nil
+	    (scroll-up arg)
+          (end-of-buffer
+           (if arg
+	       ;; When scrolling by ARG lines can't be done,
+	       ;; move by ARG lines instead.
+	       (forward-line arg)
+	     ;; When ARG is nil for full-screen scrolling,
+	     ;; move to the bottom of the buffer.
+	     (goto-char (point-max)))))))
+    (scroll-command--goto-goal-column)))
+(put 'scroll-up-command 'scroll-command t)
+
+(defun scroll-down-command (&optional arg)
+  "Scroll text of selected window down ARG lines; or near full screen if no ARG."
+  (interactive "^P")
+  (prog1
+      (cond
+       ((null scroll-error-top-bottom)
+        (scroll-down arg))
+       ((eq arg '-)
+        (scroll-up-command nil))
+       ((< (prefix-numeric-value arg) 0)
+        (scroll-up-command (- (prefix-numeric-value arg))))
+       ((bobp)
+        (scroll-down arg))              ; signal error
+       (t
+        (condition-case nil
+	    (scroll-down arg)
+          (beginning-of-buffer
+           (if arg
+	       ;; When scrolling by ARG lines can't be done,
+	       ;; move by ARG lines instead.
+	       (forward-line (- arg))
+	     ;; When ARG is nil for full-screen scrolling,
+	     ;; move to the top of the buffer.
+	     (goto-char (point-min)))))))
+    (scroll-command--goto-goal-column)))
+(put 'scroll-down-command 'scroll-command t)
+
+(defun recenter-top-bottom (&optional arg)
+  "Move current buffer line to the specified window line.
+With no prefix argument, successive calls place point according
+to the cycling order defined by `recenter-positions'."
+  (interactive "P")
+  (cond
+   (arg (recenter arg t))                 ; Always respect ARG.
+   (t
+    (setq recenter-last-op
+	  (if (eq this-command last-command)
+	      (car (or (cdr (member recenter-last-op recenter-positions))
+		       recenter-positions))
+	    (car recenter-positions)))
+    (let ((this-scroll-margin
+	   (min (max 0 scroll-margin)
+		(truncate (/ (window-body-height) 4.0)))))
+      (cond ((eq recenter-last-op 'middle)
+	     (recenter nil t))
+	    ((eq recenter-last-op 'top)
+	     (recenter this-scroll-margin t))
+	    ((eq recenter-last-op 'bottom)
+	     (recenter (- -1 this-scroll-margin) t))
+	    ((integerp recenter-last-op)
+	     (recenter recenter-last-op t))
+	    ((floatp recenter-last-op)
+	     (recenter (round (* recenter-last-op (window-height))) t)))))))
+
+;; bindings.el subset: the dumped mode-line specification.  Mouse maps,
+;; help-echo strings, and face properties are dropped — they do not change
+;; the characters the terminal frontend renders.  Structure, widths, and
+;; conditionals are GNU's, pinned against the oracle.
+(defvar mode-line-front-space '(:eval (if (display-graphic-p) " " "-")))
+
+(defun coding-system-eol-type-mnemonic (coding-system)
+  "Return the string indicating end-of-line format of CODING-SYSTEM."
+  (let* ((eol-type (coding-system-eol-type coding-system))
+	 (val (cond ((eq eol-type 0) eol-mnemonic-unix)
+		    ((eq eol-type 1) eol-mnemonic-dos)
+		    ((eq eol-type 2) eol-mnemonic-mac)
+		    (t eol-mnemonic-undecided))))
+    (if (stringp val) val (char-to-string val))))
+
+(defun mode-line-eol-desc ()
+  (coding-system-eol-type-mnemonic buffer-file-coding-system))
+
+(defvar mode-line-mule-info
+  '("" (current-input-method ("" current-input-method-title))
+    "%z" (:eval (mode-line-eol-desc))))
+
+(defvar mode-line-client
+  '(:eval (if (frame-parameter nil 'client) "@")))
+
+(defvar mode-line-modified '("%1*" "%1+"))
+
+(defvar mode-line-remote '("%1@"))
+
+(defun mode-line-window-control ()
+  "Compute mode line construct for window dedicated state."
+  (cond
+   ((eq (window-dedicated-p) t) "D")
+   ((window-dedicated-p) "d")
+   (t "")))
+
+(defvar mode-line-window-dedicated '(:eval (mode-line-window-control)))
+
+(defun mode-line-frame-control ()
+  "Compute mode line construct for frame identification."
+  (if (or (null window-system)
+	  (eq window-system 'pc))
+      " %F  "
+    "  "))
+
+(defvar mode-line-frame-identification '(:eval (mode-line-frame-control)))
+
+(defvar mode-line-position-line-format '(" L%l"))
+(defvar mode-line-position-column-format '(" C%c"))
+(defvar mode-line-position-column-line-format '(" (%l,%c)"))
+(defvar mode-line-percent-position '(-3 "%p"))
+(defvar column-number-indicator-zero-based t)
+(defvar current-input-method nil)
+(defvar current-input-method-title nil)
+
+(defvar mode-line-position
+  '((:propertize ("" mode-line-percent-position)
+                 display (min-width (5.0)))
+    (size-indication-mode (8 " of %I"))
+    (line-number-mode
+     (column-number-mode
+      (column-number-indicator-zero-based
+       (10 (:propertize mode-line-position-column-line-format
+                        display (min-width (10.0))))
+       (10 (:propertize
+            (:eval (string-replace "%c" "%C"
+                                   (car mode-line-position-column-line-format)))
+            display (min-width (10.0)))))
+      (6 (:propertize mode-line-position-line-format
+                      display (min-width (6.0)))))
+     (column-number-mode
+      (column-number-indicator-zero-based
+       (6 (:propertize mode-line-position-column-format
+                       display (min-width (6.0))))
+       (6 (:propertize
+           (:eval (string-replace "%c" "%C"
+                                  (car mode-line-position-column-format)))
+           display (min-width (6.0)))))))))
+
+(defvar mode-line-misc-info '((global-mode-string ("" global-mode-string))))
+
+(defvar mode-line-end-spaces '(:eval (unless (display-graphic-p) "-%-")))
+
+(setq-default mode-line-modes
+              '("%[" "(" ("" mode-name) ("" mode-line-process)
+                ("" minor-mode-alist) "%n" ")" "%]" " "))
+
+(defvar line-number-mode t
+  "Non-nil means display line number in the mode line.")
+(defvar column-number-mode nil
+  "Non-nil means display column number in the mode line.")
+(defvar size-indication-mode nil
+  "Non-nil means display the buffer size in the mode line.")
+(defvar mode-line-process nil
+  "Mode line construct for displaying info on process status.")
+(make-variable-buffer-local 'mode-line-process)
