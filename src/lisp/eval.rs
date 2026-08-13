@@ -4013,6 +4013,11 @@ impl Interpreter {
             Value::list([Value::Symbol("read-only".into()), Value::T]),
         );
         interp.define_special_variable("minibuffer-auto-raise", Value::Nil);
+        // minibuf.c defines this host boolean beside the native minibuffer
+        // state.  Its dynamic scope is observable through dumped Elisp such
+        // as subr.el's `y-or-n-p', which calls the native reader from a
+        // separately defined function.
+        interp.define_special_variable("inhibit-interaction", Value::Nil);
         // keyboard.c defines this before minibuffer.el.  Completion callers
         // dynamically shorten it, so both the native default and special
         // binding contract must exist before their lexical code is loaded.
@@ -4918,7 +4923,11 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             Value::Symbol("ert-test-failed".into()),
             Value::String(message.clone().into()),
         ]),
-        LispError::ReadError(message) | LispError::Signal(message) => Value::list([
+        LispError::ReadError(message) => Value::list([
+            Value::Symbol("invalid-read-syntax".into()),
+            Value::String(message.clone().into()),
+        ]),
+        LispError::Signal(message) => Value::list([
             Value::Symbol("error".into()),
             Value::String(message.clone().into()),
         ]),

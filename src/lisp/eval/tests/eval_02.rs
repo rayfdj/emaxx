@@ -1896,17 +1896,51 @@ fn byte_compile_file_errors_on_unescaped_character_literal_warnings() {
         source_path = source_path.display().to_string(),
         dest_path = dest_path.display().to_string(),
     );
-    let result = eval_str(&source);
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load the file-less GNU byte-run warning owner");
+    let result = eval_str_with(&mut interp, &source);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         result,
         Value::list([Value::String(
             concat!(
-                "unescaped character literals `?\"', `?(', `?)', `?;', `?[', `?]' detected, ",
-                "`?\\\"', `?\\(', `?\\)', `?\\;', `?\\[', `?\\]' expected!"
+                "unescaped character literals ‘?\"’, ‘?(’, ‘?)’, ‘?;’, ‘?[’, ‘?]’ detected, ",
+                "‘?\\\"’, ‘?\\(’, ‘?\\)’, ‘?\\;’, ‘?\\[’, ‘?\\]’ expected!"
             )
             .into()
         )])
+    );
+}
+
+#[test]
+fn read_errors_surface_as_invalid_read_syntax_with_gnu_condition_data() {
+    assert_eq!(
+        eval_str(
+            r##"(mapcar
+                 (lambda (source)
+                   (condition-case error
+                       (read source)
+                     (invalid-read-syntax error)))
+                 '("?\\N{}" "#b" "#1=#1#"))"##
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("invalid-read-syntax".into()),
+                Value::String("Empty character name".into()),
+            ]),
+            Value::list([
+                Value::Symbol("invalid-read-syntax".into()),
+                Value::String("integer, radix 2".into()),
+            ]),
+            Value::list([
+                Value::Symbol("invalid-read-syntax".into()),
+                Value::String("nonsensical self-reference".into()),
+            ]),
+        ])
     );
 }
 
