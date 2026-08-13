@@ -9623,6 +9623,35 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
 }
 
 #[test]
+fn keymap_character_contracts_share_gnu_control_and_full_map_storage() {
+    let program = r#"
+        (let ((map (make-keymap)))
+          (define-key map "(" 'literal-open)
+          (define-key map [(32 . 32)] 'space-range)
+          (list (lookup-key map "(")
+                (lookup-key map [32])
+                (lookup-key (current-global-map) ["C-x C-f"])))"#;
+    let expected = "(literal-open space-range find-file)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("keymap character contract should parse")
+        .expect("keymap character contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("keymap character contracts should match GNU"),
+        Reader::new(expected)
+            .read()
+            .expect("expected keymap character contract should parse")
+            .expect("expected keymap character contract should exist")
+    );
+}
+
+#[test]
 fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
