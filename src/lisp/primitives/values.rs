@@ -3629,7 +3629,7 @@ pub(crate) fn accessible_keymaps(
                 continue;
             };
             let mut sequence = prefix.clone();
-            sequence.extend(binding_key_parts(&binding));
+            sequence.extend(binding_key_parts(binding));
             queue.push((sequence, prefix_map));
         }
     }
@@ -4105,7 +4105,7 @@ pub(crate) fn collect_where_is_matches(
         return Ok(());
     }
     for binding in keymap_direct_bindings(interp, keymap)?.iter() {
-        let parts = binding_key_parts(&binding);
+        let parts = binding_key_parts(binding);
         if parts
             .iter()
             .any(|part| key_part_is_non_key_event(interp, part))

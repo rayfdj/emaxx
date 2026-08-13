@@ -6435,6 +6435,20 @@ If `default-directory' is already an existing directory, it's not changed."
 ;; GNU byte-run.el (verbatim): loaddefs-gen.el logs through it.  The fallback
 ;; serves file-less embeddings; reconstructed GNU batch startup keeps the
 ;; complete byte-run.el definition installed.
+(unless (fboundp 'byte-run--unescaped-character-literals-warning)
+  (defun byte-run--unescaped-character-literals-warning ()
+    "Return a warning about unescaped character literals.
+If there were any unescaped character literals in the last form
+read, return an appropriate warning message as a string.
+Otherwise, return nil.  For internal use only."
+    (if lread--unescaped-character-literals
+        (let ((sorted (sort lread--unescaped-character-literals #'<)))
+          (format "unescaped character literals %s detected, %s expected!"
+                  (mapconcat (lambda (char) (format-message "`?%c'" char))
+                             sorted ", ")
+                  (mapconcat (lambda (char) (format-message "`?\\%c'" char))
+                             sorted ", "))))))
+
 (unless (fboundp 'byte-compile-info)
   (defun byte-compile-info (string &optional message type)
     "Format STRING in a way that looks pleasing in the compilation output.

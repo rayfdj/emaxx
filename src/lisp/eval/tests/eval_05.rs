@@ -1725,12 +1725,20 @@ fn upstream_files_lisp_owns_remote_file_policy() {
                (find-file-name-handler
                 \"/ftp:who@foo.com:/whatever\" 'file-remote-p)
                (fboundp 'vc-file-getprop)
-               (mapcar
+               ;; Loading files.el may or may not emit a diagnostic depending
+               ;; on the reader warnings enabled by that source revision.
+               ;; Neither case belongs to remote-file policy.  What matters
+               ;; here is that loading it cannot dirty a save-eligible buffer;
+               ;; only the diagnostic Messages buffer may be modified.
+               (seq-every-p
                 (lambda (buffer)
-                  (list (buffer-name buffer)
-                        (buffer-local-value 'buffer-offer-save buffer)
-                        (local-variable-p 'buffer-offer-save buffer)))
-                (seq-filter #'buffer-modified-p (buffer-list)))
+                  (or (not (buffer-modified-p buffer))
+                      (and (equal (buffer-name buffer) \"*Messages*\")
+                           (not (buffer-local-value
+                                 'buffer-offer-save buffer))
+                           (not (local-variable-p
+                                 'buffer-offer-save buffer)))))
+                (buffer-list))
                (progn
                  (defun sample-remote-handler
                      (operation file &optional _identification _connected)
@@ -1755,11 +1763,7 @@ fn upstream_files_lisp_owns_remote_file_policy() {
             Value::Nil,
             Value::symbol("tramp-autoload-file-name-handler"),
             Value::T,
-            Value::list([Value::list([
-                Value::String("*Messages*".into()),
-                Value::Nil,
-                Value::Nil,
-            ])]),
+            Value::T,
             Value::list([
                 Value::String("/ftp:who@foo.com:".into()),
                 Value::String("/whatever".into()),

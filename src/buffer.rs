@@ -183,12 +183,7 @@ fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
 /// `visited-file-modtime' to restore the unmodified state.
 fn undo_file_marker(modtime: Option<FileModTime>) -> Value {
     let (high, low, usec, psec) = modtime
-        .and_then(|value| {
-            value
-                .modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-        })
+        .and_then(|value| value.modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| {
             let seconds = duration.as_secs() as i64;
             let nanoseconds = duration.subsec_nanos() as i64;
@@ -1295,7 +1290,10 @@ impl Buffer {
     }
 
     pub fn push_undo_boundary(&mut self) {
-        if !matches!(self.undo_list.last(), Some(UndoEntry::Boundary)) {
+        // GNU's Fundo_boundary: an empty list gets no boundary (nothing to
+        // group yet), and consecutive boundaries collapse.
+        if !self.undo_list.is_empty() && !matches!(self.undo_list.last(), Some(UndoEntry::Boundary))
+        {
             self.push_undo_entry(UndoEntry::Boundary);
         }
     }

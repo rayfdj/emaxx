@@ -11,7 +11,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-fn set_echo_area_message(text: Option<String>) {
+pub(crate) fn set_echo_area_message(text: Option<String>) {
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = text);
 }
 
@@ -1414,14 +1414,58 @@ define_dispatch!(
                 {
                     return Err(LispError::SignalValue(signal));
                 }
-                let items = args[0].to_vec().ok();
-                if let Some(items) = items
-                    && let Some(message) = items.get(1).and_then(string_like)
+                // print.c's print_error_message: `error'/`user-error' with
+                // a single string datum prints the string alone; otherwise
+                // the condition's error-message property leads, and data
+                // follows after ": ", comma-separated (strings princ'ed,
+                // the rest prin1'ed).
+                let Ok(items) = args[0].to_vec() else {
+                    return Ok(Value::String(args[0].to_string().into()));
+                };
+                let Some(Value::Symbol(condition)) = items.first() else {
+                    return Ok(Value::String(args[0].to_string().into()));
+                };
+                if (condition == "error" || condition == "user-error")
+                    && items.len() == 2
+                    && let Some(message) = string_like(&items[1])
                 {
-                    Ok(Value::String(message.text.into()))
-                } else {
-                    Ok(Value::String(args[0].to_string().into()))
+                    return Ok(Value::String(message.text.into()));
                 }
+                // A file-error condition promotes its first datum to the
+                // message ("Opening input file: ...").
+                let file_error = interp
+                    .get_symbol_property(condition, "error-conditions")
+                    .and_then(|conditions| conditions.to_vec().ok())
+                    .is_some_and(|conditions| {
+                        conditions.iter().any(
+                            |entry| matches!(entry, Value::Symbol(name) if name == "file-error"),
+                        )
+                    });
+                let (mut text, data) =
+                    if file_error && let Some(leading) = items.get(1).and_then(string_like) {
+                        (leading.text, &items[2..])
+                    } else {
+                        let message = interp
+                            .get_symbol_property(condition, "error-message")
+                            .as_ref()
+                            .and_then(string_like)
+                            .map(|message| message.text)
+                            .unwrap_or_else(|| "peculiar error".to_string());
+                        (message, &items[1..])
+                    };
+                if !data.is_empty() {
+                    text.push_str(": ");
+                    let rendered = data
+                        .iter()
+                        .map(|datum| match string_like(datum) {
+                            Some(datum) => datum.text,
+                            None => datum.to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    text.push_str(&rendered);
+                }
+                Ok(Value::String(text.into()))
             }
             "command-error-default-function" => {
                 need_args(name, args, 3)?;
@@ -2977,7 +3021,9 @@ define_dispatch!(
             "recenter" => {
                 need_arg_range(name, args, 0, 2)?;
                 // A raw C-u (cons) centers, GNU's Frecenter convention.
-                let arg = args.first().filter(|value| !matches!(value, Value::Cons(_)));
+                let arg = args
+                    .first()
+                    .filter(|value| !matches!(value, Value::Cons(_)));
                 let line = resolve_window_line(arg, selected_window_text_height() / 2)?;
                 // Walk back whole screen lines: wrapped lines occupy one
                 // row per continuation, exactly as the display counts.
@@ -4174,19 +4220,15 @@ define_dispatch!(
                     super::buffer_edit::visual_line_bounds(interp, start);
                 let walk_starts =
                     super::buffer_edit::visual_segment_starts(interp, env, walk_bol, walk_eol);
-                let mut walk_seg = walk_starts
-                    .iter()
-                    .rposition(|&s| s <= start)
-                    .unwrap_or(0);
+                let mut walk_seg = walk_starts.iter().rposition(|&s| s <= start).unwrap_or(0);
                 while y < metrics.text_height {
                     if walk_bol == bol {
                         y += seg_index.saturating_sub(walk_seg);
                         break;
                     }
-                    let segs = super::buffer_edit::visual_segment_starts(
-                        interp, env, walk_bol, walk_eol,
-                    )
-                    .len();
+                    let segs =
+                        super::buffer_edit::visual_segment_starts(interp, env, walk_bol, walk_eol)
+                            .len();
                     y += segs.saturating_sub(walk_seg);
                     walk_seg = 0;
                     if walk_eol >= point_max {
@@ -4658,12 +4700,9 @@ fn render_mode_line_element(
                     };
                     // Mode-line evaluation never signals in GNU
                     // (safe_eval); a broken construct renders empty.
-                    let result = crate::lisp::primitives::eval_impl(
-                        interp,
-                        std::slice::from_ref(form),
-                        env,
-                    )
-                    .unwrap_or(Value::Nil);
+                    let result =
+                        crate::lisp::primitives::eval_impl(interp, std::slice::from_ref(form), env)
+                            .unwrap_or(Value::Nil);
                     render_mode_line_element(interp, env, &result, false, glass, depth + 1)
                 }
                 Value::Symbol(keyword) if keyword == ":propertize" => {
@@ -4924,16 +4963,16 @@ fn decode_mode_line_spec(
             }
             let buffer_coding = var(interp, "buffer-file-coding-system");
             text.push(coding_mnemonic_char(interp, env, &buffer_coding));
-            if spec == 'Z' {
-                if let Ok(eol) = super::call(
+            if spec == 'Z'
+                && let Ok(eol) = super::call(
                     interp,
                     "coding-system-eol-type-mnemonic",
                     &[buffer_coding],
                     env,
-                ) && eol.is_string()
-                {
-                    text.push_str(&string_text(&eol)?);
-                }
+                )
+                && eol.is_string()
+            {
+                text.push_str(&string_text(&eol)?);
             }
             text
         }
@@ -4968,7 +5007,7 @@ fn coding_mnemonic_char(interp: &mut Interpreter, env: &mut Env, coding: &Value)
 /// xdisp.c's percent99: a ceiling percentage capped at 99.
 fn percent99(n: usize, d: usize) -> usize {
     let d = d.max(1);
-    ((d - 1 + 100 * n) / d).min(99)
+    (100 * n).div_ceil(d).min(99)
 }
 
 /// %p / %P: window position within the buffer, from the live metrics
@@ -4998,10 +5037,7 @@ fn window_percent_spec(interp: &Interpreter, of_bottom: bool) -> String {
     if start <= point_min {
         return "Top".to_string();
     }
-    format!(
-        "{:2}%",
-        percent99(start - point_min, point_max - point_min)
-    )
+    format!("{:2}%", percent99(start - point_min, point_max - point_min))
 }
 
 /// pint2hrstr: a size with k/M/G units, at most four characters.

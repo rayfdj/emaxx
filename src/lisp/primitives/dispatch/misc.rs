@@ -1575,10 +1575,6 @@ define_dispatch!(
                     .unwrap_or(Value::Nil))
             }
             "ignore" => Ok(Value::Nil),
-            "byte-run--unescaped-character-literals-warning" => {
-                need_args(name, args, 0)?;
-                Ok(Value::Nil)
-            }
             // Load-time compatibility shims for upstream Lisp helpers whose exact
             // side effects are not needed by the currently exercised batch paths.
             "purecopy" => {
@@ -2203,7 +2199,7 @@ fn process_cpu_time_value() -> Result<Value, LispError> {
     // SAFETY: the successful getrusage call initialized every field.
     let usage = unsafe { usage.assume_init() };
     let mut seconds = usage.ru_utime.tv_sec + usage.ru_stime.tv_sec;
-    let mut micros = i64::from(usage.ru_utime.tv_usec) + i64::from(usage.ru_stime.tv_usec);
+    let mut micros = usage.ru_utime.tv_usec + usage.ru_stime.tv_usec;
     if micros >= 1_000_000 {
         seconds += micros / 1_000_000;
         micros %= 1_000_000;

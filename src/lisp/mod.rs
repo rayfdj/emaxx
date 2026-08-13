@@ -211,50 +211,54 @@ fn append_message(interp: &mut eval::Interpreter, text: &str) {
     }
 }
 
-fn unescaped_char_literal_warning_parts(source: &str) -> Option<(String, String)> {
-    let pairs = [
-        ('"', "`?\"'", "`?\\\"'"),
-        ('(', "`?('", "`?\\('"),
-        (')', "`?)'", "`?\\)'"),
-        (';', "`?;'", "`?\\;'"),
-        ('[', "`?['", "`?\\['"),
-        (']', "`?]'", "`?\\]'"),
-    ];
-    let detected = pairs
-        .iter()
-        .filter(|(ch, _, _)| source.contains(&format!("?{ch}")))
-        .collect::<Vec<_>>();
-    if detected.is_empty() {
-        return None;
+fn unescaped_character_literal_value(reader: &reader::Reader<'_>) -> types::Value {
+    types::Value::list(
+        reader
+            .unescaped_character_literals()
+            .map(types::Value::Integer),
+    )
+}
+
+pub(crate) fn unescaped_character_literal_warning(
+    interp: &mut eval::Interpreter,
+    env: &mut types::Env,
+) -> Result<Option<String>, types::LispError> {
+    let Ok(function) =
+        interp.lookup_function("byte-run--unescaped-character-literals-warning", env)
+    else {
+        return Ok(None);
+    };
+    let warning = interp.call_function_value(
+        function,
+        Some("byte-run--unescaped-character-literals-warning"),
+        &[],
+        env,
+    )?;
+    if warning.is_nil() {
+        Ok(None)
+    } else {
+        primitives::string_text(&warning).map(Some)
     }
-    let actual = detected
-        .iter()
-        .map(|(_, actual, _)| *actual)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let expected = detected
-        .iter()
-        .map(|(_, _, expected)| *expected)
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some((actual, expected))
 }
 
-fn unescaped_char_literal_warning(path: &Path, source: &str) -> Option<String> {
-    let (actual, expected) = unescaped_char_literal_warning_parts(source)?;
-    Some(format!(
-        "Loading `{}': unescaped character literals {} detected, {} expected!",
-        path.display(),
-        actual,
-        expected
-    ))
-}
-
-pub(crate) fn byte_compile_unescaped_char_literal_warning(source: &str) -> Option<String> {
-    let (actual, expected) = unescaped_char_literal_warning_parts(source)?;
-    Some(format!(
-        "unescaped character literals {actual} detected, {expected} expected!"
-    ))
+fn format_loading_warning(
+    interp: &mut eval::Interpreter,
+    env: &mut types::Env,
+    path: &Path,
+    warning: String,
+) -> Result<String, types::LispError> {
+    let function = interp.lookup_function("format-message", env)?;
+    let message = interp.call_function_value(
+        function,
+        Some("format-message"),
+        &[
+            types::Value::String("Loading `%s': %s".into()),
+            types::Value::String(path.display().to_string().into()),
+            types::Value::String(warning.into()),
+        ],
+        env,
+    )?;
+    primitives::string_text(&message)
 }
 
 fn lisp_string_literal(text: &str) -> String {
@@ -612,8 +616,18 @@ pub fn read_forms(path: &Path) -> Result<Vec<types::Value>, types::LispError> {
 }
 
 pub(crate) fn read_source_forms(source: &str) -> Result<Vec<types::Value>, types::LispError> {
+    read_source_forms_with_unescaped_literals(source).map(|(forms, _)| forms)
+}
+
+pub(crate) fn read_source_forms_with_unescaped_literals(
+    source: &str,
+) -> Result<(Vec<types::Value>, types::Value), types::LispError> {
     let settings = source_settings(source)?;
-    reader::Reader::with_symbol_shorthands(source, settings.read_symbol_shorthands).read_all()
+    let mut reader =
+        reader::Reader::with_symbol_shorthands(source, settings.read_symbol_shorthands);
+    let forms = reader.read_all()?;
+    let literals = unescaped_character_literal_value(&reader);
+    Ok((forms, literals))
 }
 
 pub fn load_file_strict(
@@ -660,7 +674,6 @@ pub fn load_file_strict(
     } else {
         source
     };
-    let warning_message = unescaped_char_literal_warning(path, &source);
     let load_file = interp
         .load_source_provenance_path(path)
         .display()
@@ -671,7 +684,7 @@ pub fn load_file_strict(
     // current-file side channel is insufficient: an outer Lisp binding such
     // as `(let ((load-file-name nil)) (load ...))' must be shadowed by the
     // file being loaded, then restored on every exit path.
-    let mut dynamic_restores = Vec::with_capacity(7);
+    let mut dynamic_restores = Vec::with_capacity(8);
     for (name, value) in [
         (
             "load-file-name",
@@ -699,6 +712,7 @@ pub fn load_file_strict(
             "current-load-list",
             types::Value::list([types::Value::String(load_file.clone().into())]),
         ),
+        ("lread--unescaped-character-literals", types::Value::Nil),
     ] {
         match interp.bind_special_dynamic(name, value, &mut env) {
             Ok(restore) => dynamic_restores.push(restore),
@@ -709,12 +723,9 @@ pub fn load_file_strict(
             }
         }
     }
-    let forms = match reader::Reader::with_symbol_shorthands(
-        &source,
-        settings.read_symbol_shorthands.clone(),
-    )
-    .read_all()
-    {
+    let mut source_reader =
+        reader::Reader::with_symbol_shorthands(&source, settings.read_symbol_shorthands.clone());
+    let forms = match source_reader.read_all() {
         Ok(forms) => forms,
         Err(error) => {
             let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
@@ -722,6 +733,24 @@ pub fn load_file_strict(
             return Err(error);
         }
     };
+    interp.set_variable(
+        "lread--unescaped-character-literals",
+        unescaped_character_literal_value(&source_reader),
+        &mut env,
+    );
+    let warning_message =
+        match unescaped_character_literal_warning(interp, &mut env).and_then(|warning| {
+            warning
+                .map(|warning| format_loading_warning(interp, &mut env, path, warning))
+                .transpose()
+        }) {
+            Ok(message) => message,
+            Err(error) => {
+                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                interp.set_current_load_file(previous);
+                return Err(error);
+            }
+        };
     // Reader labels are scoped to one object returned by `read'.  Source
     // evaluation normally resolves them at `quote', but compiled top-level
     // forms also contain labels inside raw bytecode constants and defconst

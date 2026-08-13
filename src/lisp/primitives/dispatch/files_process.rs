@@ -3250,18 +3250,10 @@ define_dispatch!(
                         let info = unsafe { info.assume_init() };
                         let units = u64::from(info.mem_unit);
                         return Ok(Value::list([
-                            Value::Integer(
-                                ((info.totalram as u64).saturating_mul(units) / 1024) as i64,
-                            ),
-                            Value::Integer(
-                                ((info.freeram as u64).saturating_mul(units) / 1024) as i64,
-                            ),
-                            Value::Integer(
-                                ((info.totalswap as u64).saturating_mul(units) / 1024) as i64,
-                            ),
-                            Value::Integer(
-                                ((info.freeswap as u64).saturating_mul(units) / 1024) as i64,
-                            ),
+                            Value::Integer((info.totalram.saturating_mul(units) / 1024) as i64),
+                            Value::Integer((info.freeram.saturating_mul(units) / 1024) as i64),
+                            Value::Integer((info.totalswap.saturating_mul(units) / 1024) as i64),
+                            Value::Integer((info.freeswap.saturating_mul(units) / 1024) as i64),
                         ]));
                     }
                 }

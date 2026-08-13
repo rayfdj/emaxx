@@ -1,6 +1,4 @@
-use super::{
-    beginning_of_line_at, line_distance, prefix_numeric_value, signal_condition,
-};
+use super::{beginning_of_line_at, line_distance, prefix_numeric_value, signal_condition};
 use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, LispError, Value};
 
@@ -318,8 +316,7 @@ pub(crate) fn scroll_selected_window(
         .and_then(|value| value.as_integer().ok())
         .unwrap_or(2)
         .max(0) as isize;
-    let count = arg
-        .unwrap_or_else(|| default_sign * (text_height as isize - context).max(1));
+    let count = arg.unwrap_or_else(|| default_sign * (text_height as isize - context).max(1));
 
     // An interactive frontend keeps the displayed start synced through
     // redisplay; a batch window is never validated, so GNU derives the
@@ -349,8 +346,7 @@ pub(crate) fn scroll_selected_window(
     let point_line = beginning_of_line_at(interp, interp.buffer.point());
     if scroll_preserve_screen_position(interp, env) {
         let offset = line_distance(interp, window_start, point_line);
-        let (target, target_shortage) =
-            move_screen_lines(interp, env, new_start, offset as isize);
+        let (target, target_shortage) = move_screen_lines(interp, env, new_start, offset as isize);
         if target_shortage > 0 {
             interp.buffer.goto_char(interp.buffer.point_max());
         } else {

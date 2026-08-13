@@ -311,6 +311,9 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
         # padding, same percent/line indicators.
         if gnu_lines[gnu_mode] != emaxx_lines[emaxx_mode]:
             divergences.append(("mode-line", gnu_lines[gnu_mode], emaxx_lines[emaxx_mode]))
+        # So is the echo area: the same final message (or its absence).
+        if gnu_lines[-1] != emaxx_lines[-1]:
+            divergences.append(("echo", gnu_lines[-1], emaxx_lines[-1]))
 
         if divergences:
             print(f"DIVERGE [{scenario}]: {len(divergences)} text row(s) differ")
@@ -420,6 +423,30 @@ SCENARIOS = [
         "page-down-wrapped",
         ("wide" * 30 + "\n") * 12,
         [b"\x16", b"*"],
+    ),
+    # C-g quits with its echo message.
+    (
+        "quit-key",
+        "alpha\nbeta\n",
+        [b"\x06", b"\x07"],
+    ),
+    # An unbound key reports itself in the echo area.
+    (
+        "undefined-key",
+        "alpha\nbeta\n",
+        [b"\x18", b"j"],
+    ),
+    # Motion at the buffer edge signals, and the error message shows.
+    (
+        "edge-error-echo",
+        "alpha\nbeta\n",
+        [b"\x10"],
+    ),
+    # A command message clears when the next command runs.
+    (
+        "message-then-motion",
+        "alpha\nbeta\ngamma\n",
+        [b"\x1b>", b"\x10"],
     ),
 ]
 

@@ -13195,13 +13195,7 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
     );
 
     // Positions beyond the displayed extent answer nil, GNU's contract.
-    call(
-        &mut interp,
-        "goto-char",
-        &[Value::Integer(300)],
-        &mut env,
-    )
-    .expect("goto-char");
+    call(&mut interp, "goto-char", &[Value::Integer(300)], &mut env).expect("goto-char");
     let posn = call(&mut interp, "posn-at-point", &[], &mut env).expect("posn-at-point");
     assert_eq!(posn, Value::Nil, "off-window positions have no posn");
 
@@ -13252,7 +13246,9 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     call(
         &mut interp,
         "insert",
-        &[Value::String(format!("top\n{}\nbottom\n", "wide".repeat(50)).into())],
+        &[Value::String(
+            format!("top\n{}\nbottom\n", "wide".repeat(50)).into(),
+        )],
         &mut env,
     )
     .expect("insert seeds the buffer");
@@ -13262,7 +13258,13 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
 
     // Batch ignores the goal column, GNU's --batch behavior.
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
-    call(&mut interp, "vertical-motion", &[goal.clone()], &mut env).expect("vertical-motion");
+    call(
+        &mut interp,
+        "vertical-motion",
+        std::slice::from_ref(&goal),
+        &mut env,
+    )
+    .expect("vertical-motion");
     assert_eq!(interp.buffer.point(), 84, "batch lands at the row start");
 
     // An interactive session moves to the goal column within the row,
@@ -13275,7 +13277,11 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
 
     let float_goal = Value::cons(Value::Float(3.0), Value::Integer(-1));
     call(&mut interp, "vertical-motion", &[float_goal], &mut env).expect("vertical-motion");
-    assert_eq!(interp.buffer.point(), 8, "float goal moves back up to column 3");
+    assert_eq!(
+        interp.buffer.point(),
+        8,
+        "float goal moves back up to column 3"
+    );
 }
 
 #[test]
@@ -13325,8 +13331,8 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
 /// accumulated `contract-out' string; the same program princs it for the
 /// oracle's stdout comparison.
 fn emaxx_batch_output(program: &str) -> String {
-    let mut interp = crate::batch::initialize_interactive_interpreter()
-        .expect("batch interpreter initializes");
+    let mut interp =
+        crate::batch::initialize_interactive_interpreter().expect("batch interpreter initializes");
     let mut env = Vec::new();
     let forms = Reader::new(program).read_all().expect("program parses");
     for form in &forms {
@@ -13366,7 +13372,10 @@ const SCROLL_CONTRACT_ANSWER: &str =
 #[test]
 fn batch_scroll_semantics_match_the_oracle() {
     assert_upstream_primitive_contract(SCROLL_CONTRACT_PROGRAM, SCROLL_CONTRACT_ANSWER);
-    assert_eq!(emaxx_batch_output(SCROLL_CONTRACT_PROGRAM), SCROLL_CONTRACT_ANSWER);
+    assert_eq!(
+        emaxx_batch_output(SCROLL_CONTRACT_PROGRAM),
+        SCROLL_CONTRACT_ANSWER
+    );
 }
 
 const RECENTER_CONTRACT_PROGRAM: &str = "(progn (setq contract-out \"\")
@@ -13438,8 +13447,8 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
     }));
     let glass = crate::lisp::primitives::render_mode_line_glass(&mut interp, &mut env)
         .expect("glass render");
-    let string = call(&mut interp, "format-mode-line", &[Value::Nil], &mut env)
-        .expect("string render");
+    let string =
+        call(&mut interp, "format-mode-line", &[Value::Nil], &mut env).expect("string render");
     set_interactive_window_metrics(None);
     // The 7-column coding/modified span exceeds its min-width of 6, so
     // the glass inserts one stretch column (produce_stretch_glyph floors
@@ -13459,10 +13468,7 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
 fn undo_file_marker_records_the_visited_modtime() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    let directory = std::env::temp_dir().join(format!(
-        "emaxx-undo-marker-{}",
-        std::process::id()
-    ));
+    let directory = std::env::temp_dir().join(format!("emaxx-undo-marker-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test dir");
     let path = directory.join("marker.txt");
     std::fs::write(&path, "one\ntwo\n").expect("write fixture");
@@ -13487,13 +13493,8 @@ fn undo_file_marker_records_the_visited_modtime() {
                 .is_some_and(|head| head == Value::T)
         })
         .expect("undo list carries the (t . TIME) marker");
-    let time = call(
-        &mut interp,
-        "visited-file-modtime",
-        &[],
-        &mut env,
-    )
-    .expect("visited-file-modtime");
+    let time =
+        call(&mut interp, "visited-file-modtime", &[], &mut env).expect("visited-file-modtime");
     let marker_items = marker.to_vec().expect("marker is a list");
     assert_eq!(
         Value::list(marker_items[1..].to_vec()),
@@ -13501,4 +13502,75 @@ fn undo_file_marker_records_the_visited_modtime() {
         "the marker's TIME equals visited-file-modtime, primitive-undo's test"
     );
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn interactive_undo_restores_the_unmodified_state() {
+    // The tty command loop's per-command undo boundaries plus the
+    // modtime-carrying (t . TIME) marker let simple.el's `undo' walk back
+    // to the save point and clear the modified flags, GNU's behavior.
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize GNU-compatible batch interpreter");
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let directory = std::env::temp_dir().join(format!("emaxx-undo-clean-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create test dir");
+    let path = directory.join("clean.txt");
+    std::fs::write(&path, "one\ntwo\nthree\n").expect("write fixture");
+    call(
+        &mut interp,
+        "find-file",
+        &[Value::String(path.display().to_string().into())],
+        &mut env,
+    )
+    .expect("find-file");
+
+    let run = |interp: &mut Interpreter, env: &mut Env, source: &str| {
+        let forms = Reader::new(source).read_all().expect("form parses");
+        for form in &forms {
+            interp
+                .eval(form, env)
+                .unwrap_or_else(|error| panic!("{source}: {error:?}"));
+        }
+    };
+
+    // One command cycle: boundary, then the edit.
+    interp.buffer.push_undo_boundary();
+    run(&mut interp, &mut env, "(kill-line)");
+    assert!(interp.buffer.is_modified(), "kill-line modifies");
+
+    // Next command cycle: boundary, then undo.
+    interp.buffer.push_undo_boundary();
+    run(&mut interp, &mut env, "(undo)");
+
+    let text = interp
+        .buffer
+        .buffer_substring(1, interp.buffer.point_max())
+        .expect("buffer text");
+    let modified = interp.buffer.is_modified();
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(text, "one\ntwo\nthree\n", "undo restores the killed line");
+    assert!(
+        !modified,
+        "undoing back to the saved state clears the modified flag"
+    );
+}
+
+#[test]
+fn error_message_strings_match_the_oracle() {
+    let program = "(progn (setq contract-out (mapconcat (lambda (e) (error-message-string e))
+        (list (quote (quit)) (quote (beginning-of-buffer)) (quote (error \"boom\"))
+              (quote (wrong-type-argument listp t))
+              (quote (user-error \"No further undo information\"))
+              (quote (file-missing \"Opening input file\" \"No such file\" \"/tmp/x\")))
+        \"|\"))
+        (princ contract-out))";
+    let answer = "Quit|Beginning of buffer|boom|Wrong type argument: listp, t|No further undo information|Opening input file: No such file, /tmp/x";
+    assert_upstream_primitive_contract(program, answer);
+    assert_eq!(emaxx_batch_output(program), answer);
 }
