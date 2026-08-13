@@ -9623,6 +9623,35 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
 }
 
 #[test]
+fn keymap_character_contracts_share_gnu_control_and_full_map_storage() {
+    let program = r#"
+        (let ((map (make-keymap)))
+          (define-key map "(" 'literal-open)
+          (define-key map [(32 . 32)] 'space-range)
+          (list (lookup-key map "(")
+                (lookup-key map [32])
+                (lookup-key (current-global-map) ["C-x C-f"])))"#;
+    let expected = "(literal-open space-range find-file)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("keymap character contract should parse")
+        .expect("keymap character contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("keymap character contracts should match GNU"),
+        Reader::new(expected)
+            .read()
+            .expect("expected keymap character contract should parse")
+            .expect("expected keymap character contract should exist")
+    );
+}
+
+#[test]
 fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -13247,4 +13276,229 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     let float_goal = Value::cons(Value::Float(3.0), Value::Integer(-1));
     call(&mut interp, "vertical-motion", &[float_goal], &mut env).expect("vertical-motion");
     assert_eq!(interp.buffer.point(), 8, "float goal moves back up to column 3");
+}
+
+#[test]
+fn format_mode_line_renders_the_dumped_spec_interactively() {
+    let mut interp = crate::batch::initialize_interactive_interpreter()
+        .expect("interactive interpreter initializes");
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String("hello\n".into())],
+        &mut env,
+    )
+    .expect("insert");
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 22,
+        window_end: 7,
+    }));
+    let text = call(&mut interp, "format-mode-line", &[Value::Nil], &mut env)
+        .expect("format-mode-line renders");
+    let text = format!("{text}");
+    // Spec strings written in the format are %-expanded; symbol string
+    // values are literal; conditionals and paddings follow the spec.
+    let pieces = call(
+        &mut interp,
+        "format-mode-line",
+        &[Value::String("%l|%p|%b".into())],
+        &mut env,
+    )
+    .expect("spec string renders");
+    set_interactive_window_metrics(None);
+    assert!(
+        text.contains("(Fundamental)") && text.contains("L2") && text.contains("All"),
+        "dumped spec renders the GNU shape, got {text:?}"
+    );
+    assert!(
+        text.contains("**"),
+        "a modified buffer shows the ** flags, got {text:?}"
+    );
+    assert_eq!(format!("{pieces}"), "\"2|All|*test*\"");
+}
+
+// ── Scroll, recenter, and mode-line contracts (round: paging + mode line) ──
+
+/// Evaluate PROGRAM in an initialized emaxx interpreter and return the
+/// accumulated `contract-out' string; the same program princs it for the
+/// oracle's stdout comparison.
+fn emaxx_batch_output(program: &str) -> String {
+    let mut interp = crate::batch::initialize_interactive_interpreter()
+        .expect("batch interpreter initializes");
+    let mut env = Vec::new();
+    let forms = Reader::new(program).read_all().expect("program parses");
+    for form in &forms {
+        interp
+            .eval(form, &mut env)
+            .unwrap_or_else(|error| panic!("emaxx eval failed: {error:?}"));
+    }
+    let value = interp
+        .lookup_var("contract-out", &env)
+        .expect("program sets contract-out");
+    let Value::String(text) = value else {
+        let text = format!("{value}");
+        return text.trim_matches('"').to_string();
+    };
+    text.to_string()
+}
+
+const SCROLL_CONTRACT_PROGRAM: &str = "(progn (setq contract-out \"\")
+  (defun contract-note (text) (setq contract-out (concat contract-out text)))
+  (dotimes (n 100) (insert (format \"line %03d\\n\" n)))
+  (goto-char (point-min)) (scroll-up)
+  (contract-note (format \"A:%s,%s \" (window-start) (point)))
+  (scroll-up 5) (contract-note (format \"B:%s,%s \" (window-start) (point)))
+  (scroll-down) (contract-note (format \"C:%s,%s \" (window-start) (point)))
+  (goto-char (point-max))
+  (contract-note (format \"D:%s \" (condition-case e (progn (scroll-up) \"ok\") (error (car e)))))
+  (goto-char (point-min))
+  (contract-note (format \"E:%s \" (condition-case e (progn (scroll-down) \"ok\") (error (car e)))))
+  (contract-note (format \"F:%s \" (condition-case e (progn (scroll-up 100) \"ok\") (error (car e)))))
+  (goto-char 451) (scroll-down)
+  (contract-note (format \"G:%s,%s\" (point) (window-start)))
+  (princ contract-out))";
+
+const SCROLL_CONTRACT_ANSWER: &str =
+    "A:190,190 B:136,190 C:1,190 D:end-of-buffer E:beginning-of-buffer F:end-of-buffer G:361,163";
+
+#[test]
+fn batch_scroll_semantics_match_the_oracle() {
+    assert_upstream_primitive_contract(SCROLL_CONTRACT_PROGRAM, SCROLL_CONTRACT_ANSWER);
+    assert_eq!(emaxx_batch_output(SCROLL_CONTRACT_PROGRAM), SCROLL_CONTRACT_ANSWER);
+}
+
+const RECENTER_CONTRACT_PROGRAM: &str = "(progn (setq contract-out \"\")
+  (defun contract-note (text) (setq contract-out (concat contract-out text)))
+  (dotimes (n 100) (insert (format \"line %03d\\n\" n)))
+  (goto-char 451) (recenter -3) (contract-note (format \"A:%s \" (window-start)))
+  (recenter) (contract-note (format \"B:%s \" (window-start)))
+  (let ((this-command (quote recenter-top-bottom)) (last-command nil))
+    (recenter-top-bottom) (contract-note (format \"C:%s \" (window-start)))
+    (setq last-command (quote recenter-top-bottom))
+    (recenter-top-bottom) (contract-note (format \"D:%s \" (window-start)))
+    (recenter-top-bottom) (contract-note (format \"E:%s \" (window-start))))
+  (goto-char (point-min)) (recenter 0) (move-to-window-line nil)
+  (contract-note (format \"F:%s\" (point)))
+  (princ contract-out))";
+
+const RECENTER_CONTRACT_ANSWER: &str = "A:271 B:352 C:352 D:451 E:253 F:100";
+
+#[test]
+fn batch_recenter_cycling_matches_the_oracle() {
+    assert_upstream_primitive_contract(RECENTER_CONTRACT_PROGRAM, RECENTER_CONTRACT_ANSWER);
+    assert_eq!(
+        emaxx_batch_output(RECENTER_CONTRACT_PROGRAM),
+        RECENTER_CONTRACT_ANSWER
+    );
+}
+
+#[test]
+fn coding_system_mnemonics_match_the_oracle() {
+    let program = "(progn (setq contract-out (format \"%s\" (list (coding-system-mnemonic nil)
+                        (coding-system-mnemonic (quote utf-8))
+                        (coding-system-mnemonic (quote prefer-utf-8-unix))
+                        (coding-system-mnemonic (quote iso-latin-1))
+                        (coding-system-mnemonic (quote raw-text)))))
+                   (princ contract-out))";
+    let answer = "(61 85 45 49 116)";
+    assert_upstream_primitive_contract(program, answer);
+    assert_eq!(emaxx_batch_output(program), answer);
+}
+
+#[test]
+fn paging_keys_carry_the_gnu_bindings() {
+    let program = "(progn (setq contract-out (format \"%s\" (list (key-binding \"\\C-v\") (key-binding \"\\ev\") (key-binding \"\\C-l\"))))
+                   (princ contract-out))";
+    let answer = "(scroll-up-command scroll-down-command recenter-top-bottom)";
+    assert_upstream_primitive_contract(program, answer);
+    assert_eq!(emaxx_batch_output(program), answer);
+}
+
+#[test]
+fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
+    let mut interp = crate::batch::initialize_interactive_interpreter()
+        .expect("interactive interpreter initializes");
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    for n in 0..60 {
+        call(
+            &mut interp,
+            "insert",
+            &[Value::String(format!("line {n:03}\n").into())],
+            &mut env,
+        )
+        .expect("insert");
+    }
+    call(&mut interp, "goto-char", &[Value::Integer(1)], &mut env).expect("goto-char");
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 22,
+        window_end: 199,
+    }));
+    let glass = crate::lisp::primitives::render_mode_line_glass(&mut interp, &mut env)
+        .expect("glass render");
+    let string = call(&mut interp, "format-mode-line", &[Value::Nil], &mut env)
+        .expect("string render");
+    set_interactive_window_metrics(None);
+    // The 7-column coding/modified span exceeds its min-width of 6, so
+    // the glass inserts one stretch column (produce_stretch_glyph floors
+    // negative widths at 1); the string form has none.
+    let string = format!("{string}");
+    assert!(
+        glass.contains("-  F1  ") && string.contains("- F1  "),
+        "glass adds the stretch column: glass={glass:?} string={string:?}"
+    );
+    assert!(
+        glass.contains("Top   L1"),
+        "percent span pads to five columns on the glass, got {glass:?}"
+    );
+}
+
+#[test]
+fn undo_file_marker_records_the_visited_modtime() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let directory = std::env::temp_dir().join(format!(
+        "emaxx-undo-marker-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).expect("create test dir");
+    let path = directory.join("marker.txt");
+    std::fs::write(&path, "one\ntwo\n").expect("write fixture");
+    call(
+        &mut interp,
+        "find-file",
+        &[Value::String(path.display().to_string().into())],
+        &mut env,
+    )
+    .expect("find-file");
+    call(&mut interp, "delete-char", &[Value::Integer(3)], &mut env).expect("delete-char");
+    let undo_list = interp.buffer.undo_list_value();
+    let marker = undo_list
+        .to_vec()
+        .expect("undo list is a list")
+        .into_iter()
+        .find(|entry| {
+            entry
+                .to_vec()
+                .ok()
+                .and_then(|items| items.first().cloned())
+                .is_some_and(|head| head == Value::T)
+        })
+        .expect("undo list carries the (t . TIME) marker");
+    let time = call(
+        &mut interp,
+        "visited-file-modtime",
+        &[],
+        &mut env,
+    )
+    .expect("visited-file-modtime");
+    let marker_items = marker.to_vec().expect("marker is a list");
+    assert_eq!(
+        Value::list(marker_items[1..].to_vec()),
+        time,
+        "the marker's TIME equals visited-file-modtime, primitive-undo's test"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
 }

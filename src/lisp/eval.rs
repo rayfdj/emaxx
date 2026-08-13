@@ -3201,6 +3201,12 @@ impl Interpreter {
         // xdisp.c: minibuffer windows scroll conservatively (bug#44070);
         // simple.el's end-of-buffer reads this before recentering.
         interp.define_special_variable("scroll-minibuffer-conservatively", Value::T);
+        // coding.c's end-of-line mnemonics, read by the dumped mode-line
+        // spec (mode-line-eol-desc).
+        interp.define_special_variable("eol-mnemonic-unix", Value::String(":".into()));
+        interp.define_special_variable("eol-mnemonic-dos", Value::String("(DOS)".into()));
+        interp.define_special_variable("eol-mnemonic-mac", Value::String("(Mac)".into()));
+        interp.define_special_variable("eol-mnemonic-undecided", Value::String(":".into()));
         interp.define_special_variable("fringe-bitmaps", fringe_bitmaps);
         for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
             interp.put_symbol_property(name, "fringe", Value::Integer((index + 1) as i64));
@@ -3448,7 +3454,7 @@ impl Interpreter {
             interp.set_global_binding(name, keymap);
         }
         let buffer_menu_mode_map =
-            primitives::make_runtime_keymap(&mut interp, Some("Buffer-menu-mode-map"));
+            primitives::make_runtime_full_keymap(&mut interp, Some("Buffer-menu-mode-map"));
         interp.set_global_binding("Buffer-menu-mode-map", buffer_menu_mode_map.clone());
         let global_map = interp
             .lookup_var("global-map", &Vec::new())
@@ -4238,6 +4244,10 @@ impl Interpreter {
             ("hscroll-margin", Value::Integer(5)),
             ("hscroll-step", Value::Integer(0)),
             ("scroll-minibuffer-conservatively", Value::T),
+            ("eol-mnemonic-unix", Value::String(":".into())),
+            ("eol-mnemonic-dos", Value::String("(DOS)".into())),
+            ("eol-mnemonic-mac", Value::String("(Mac)".into())),
+            ("eol-mnemonic-undecided", Value::String(":".into())),
             ("recenter-redisplay", Value::Symbol("tty".into())),
             (
                 "window-combination-limit",

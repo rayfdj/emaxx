@@ -18,6 +18,8 @@ pub(super) mod misc;
 mod misc_keymaps;
 mod numeric;
 
+pub(crate) use buffer_edit::{visual_line_bounds, visual_segment_starts};
+pub(crate) use display::render_mode_line_glass;
 pub(crate) use display::echo_area_message;
 pub(crate) use lists::{
     next_digit_prefix, next_negative_prefix, next_universal_prefix,

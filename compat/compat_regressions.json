@@ -386,6 +386,10 @@
       "selector": "t"
     },
     {
+      "path": "test/src/keyboard-tests.el",
+      "selector": "t"
+    },
+    {
       "path": "test/src/keymap-tests.el",
       "selector": "t"
     },

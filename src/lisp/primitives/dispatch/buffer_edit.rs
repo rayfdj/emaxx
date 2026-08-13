@@ -4290,7 +4290,7 @@ fn prefix_property_width(interp: &mut Interpreter, env: &mut Env, prop: Option<V
 /// Per-position display widths for [bol, eol): `usize::MAX` marks a TAB
 /// (resolved against the running column), 0 marks invisible or
 /// display-replaced text, and display strings count once per run.
-pub(super) fn visual_char_widths(
+pub(crate) fn visual_char_widths(
     interp: &mut Interpreter,
     env: &mut Env,
     bol: usize,
@@ -4339,7 +4339,7 @@ pub(super) fn visual_char_widths(
 /// Screen-line segment start positions of the logical line [bol, eol),
 /// modeling GNU's batch display: continuation at frame-width (reserving the
 /// continuation column unless word-wrapping) minus prefix widths.
-pub(super) fn visual_segment_starts(
+pub(crate) fn visual_segment_starts(
     interp: &mut Interpreter,
     env: &mut Env,
     bol: usize,
@@ -4404,7 +4404,7 @@ pub(super) fn visual_segment_starts(
     starts
 }
 
-pub(super) fn visual_line_bounds(interp: &Interpreter, pos: usize) -> (usize, usize) {
+pub(crate) fn visual_line_bounds(interp: &Interpreter, pos: usize) -> (usize, usize) {
     let point_min = interp.buffer.point_min();
     let point_max = interp.buffer.point_max();
     let mut bol = pos.max(point_min);

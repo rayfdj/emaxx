@@ -1,5 +1,5 @@
 use super::{
-    beginning_of_line_at, line_distance, move_lines_from, prefix_numeric_value, signal_condition,
+    beginning_of_line_at, line_distance, prefix_numeric_value, signal_condition,
 };
 use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, LispError, Value};
@@ -33,11 +33,13 @@ pub(crate) fn interactive_window_metrics() -> Option<InteractiveWindowMetrics> {
 }
 
 /// Text height of the selected window: live terminal geometry when a
-/// frontend publishes it, GNU's batch default otherwise.
+/// frontend publishes it, GNU's batch default otherwise (a 24-line dumb
+/// frame keeps 23 text lines above the mode line — recenter and
+/// move-to-window-line count rows against 23, per the oracle).
 pub(crate) fn selected_window_text_height() -> usize {
     interactive_window_metrics()
         .map(|metrics| metrics.text_height)
-        .unwrap_or(DEFAULT_SELECTED_WINDOW_HEIGHT)
+        .unwrap_or(DEFAULT_SELECTED_WINDOW_HEIGHT - 1)
 }
 pub(crate) const WINDOW_BUFFER_SLOT: usize = 0;
 pub(crate) const WINDOW_START_SLOT: usize = 1;
@@ -253,31 +255,119 @@ pub(crate) fn resolve_window_line(
     })
 }
 
+/// Step COUNT screen lines from FROM (GNU's vmotion): continuation rows of
+/// wrapped lines count individually, exactly as the display walks them.
+/// Answers the landing screen-line start and the unmet distance.
+pub(crate) fn move_screen_lines(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    from: usize,
+    count: isize,
+) -> (usize, isize) {
+    use crate::lisp::primitives::dispatch::{visual_line_bounds, visual_segment_starts};
+    let point_min = interp.buffer.point_min();
+    let point_max = interp.buffer.point_max();
+    let from = from.clamp(point_min, point_max);
+    let (mut bol, mut eol) = visual_line_bounds(interp, from);
+    let mut starts = visual_segment_starts(interp, env, bol, eol);
+    let mut index = starts.iter().rposition(|&start| start <= from).unwrap_or(0);
+    let mut remaining = count;
+    while remaining > 0 {
+        if index + 1 < starts.len() {
+            index += 1;
+        } else if eol < point_max {
+            let bounds = visual_line_bounds(interp, eol + 1);
+            bol = bounds.0;
+            eol = bounds.1;
+            starts = visual_segment_starts(interp, env, bol, eol);
+            index = 0;
+        } else {
+            break;
+        }
+        remaining -= 1;
+    }
+    while remaining < 0 {
+        if index > 0 {
+            index -= 1;
+        } else if bol > point_min {
+            let bounds = visual_line_bounds(interp, bol - 1);
+            bol = bounds.0;
+            eol = bounds.1;
+            starts = visual_segment_starts(interp, env, bol, eol);
+            index = starts.len().saturating_sub(1);
+        } else {
+            break;
+        }
+        remaining += 1;
+    }
+    (starts[index], remaining)
+}
+
 pub(crate) fn scroll_selected_window(
     interp: &mut Interpreter,
-    count: isize,
-    env: &Env,
+    env: &mut Env,
+    arg: Option<isize>,
+    default_sign: isize,
 ) -> Result<(), LispError> {
-    let window_start = current_window_start(interp);
-    let point_line = beginning_of_line_at(interp, interp.buffer.point());
-    let point_offset = line_distance(interp, window_start, point_line);
-    let (new_start, shortage) = move_lines_from(interp, window_start, count);
-    if shortage != 0 {
-        return Err(if count >= 0 {
-            signal_condition("end-of-buffer")
-        } else {
-            signal_condition("beginning-of-buffer")
-        });
+    let point_min = interp.buffer.point_min();
+    let point_max = interp.buffer.point_max();
+    let metrics = interactive_window_metrics();
+    let text_height = selected_window_text_height().max(1);
+    let context = interp
+        .lookup_var("next-screen-context-lines", env)
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(2)
+        .max(0) as isize;
+    let count = arg
+        .unwrap_or_else(|| default_sign * (text_height as isize - context).max(1));
+
+    // An interactive frontend keeps the displayed start synced through
+    // redisplay; a batch window is never validated, so GNU derives the
+    // start from point, centered (window_scroll on an unvalidated start).
+    let window_start = if metrics.is_some() {
+        current_window_start(interp).clamp(point_min, point_max)
+    } else {
+        let point_line = beginning_of_line_at(interp, interp.buffer.point());
+        move_screen_lines(interp, env, point_line, -((text_height / 2) as isize)).0
+    };
+
+    // Scrolling back when the window already starts the accessible text
+    // signals; running out of text midway merely clamps there.
+    if count < 0 && window_start <= point_min {
+        return Err(signal_condition("beginning-of-buffer"));
+    }
+
+    let (new_start, shortage) = move_screen_lines(interp, env, window_start, count);
+    // Scrolling forward must land on a screen line before the buffer end:
+    // a start at ZV would show nothing, GNU's end-of-buffer condition.
+    if count > 0 && (shortage != 0 || new_start >= point_max) {
+        return Err(signal_condition("end-of-buffer"));
     }
 
     set_current_window_start(interp, new_start);
 
-    if scroll_preserve_screen_position(interp, env) || point_line < new_start {
-        let (target, target_shortage) = move_lines_from(interp, new_start, point_offset as isize);
+    let point_line = beginning_of_line_at(interp, interp.buffer.point());
+    if scroll_preserve_screen_position(interp, env) {
+        let offset = line_distance(interp, window_start, point_line);
+        let (target, target_shortage) =
+            move_screen_lines(interp, env, new_start, offset as isize);
         if target_shortage > 0 {
             interp.buffer.goto_char(interp.buffer.point_max());
         } else {
             interp.buffer.goto_char(target);
+        }
+    } else if interp.buffer.point() < new_start {
+        // Point fell above the window: GNU puts it on the new first line.
+        interp.buffer.goto_char(new_start);
+    } else {
+        // Point fell below the window: GNU puts it on the last visible
+        // screen line.
+        let (past_bottom, bottom_shortage) =
+            move_screen_lines(interp, env, new_start, text_height as isize);
+        if bottom_shortage == 0 && interp.buffer.point() >= past_bottom {
+            let (last_visible, _) =
+                move_screen_lines(interp, env, new_start, text_height as isize - 1);
+            interp.buffer.goto_char(last_visible);
         }
     }
 

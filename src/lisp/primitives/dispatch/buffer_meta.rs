@@ -1518,6 +1518,29 @@ define_dispatch!(
                 interp.set_coding_system_plist_property(&coding, key, args[2].clone())?;
                 Ok(args[2].clone())
             }
+            "coding-system-mnemonic" => {
+                need_args(name, args, 1)?;
+                // GNU keeps the mnemonic in the coding attributes vector
+                // (mule-conf.el defines them); the dumped values below are
+                // pinned against the oracle.  nil resolves to
+                // no-conversion, mnemonic `='.
+                if args[0].is_nil() {
+                    return Ok(Value::Integer('=' as i64));
+                }
+                let coding = checked_coding_symbol(interp, &args[0])?;
+                let base = interp
+                    .coding_system_base_name(&coding)
+                    .unwrap_or_else(|| coding.clone());
+                let mnemonic = match base.as_str() {
+                    "utf-8" | "utf-16" | "utf-16le" | "utf-16be" | "utf-7" => 'U',
+                    "no-conversion" | "binary" => '=',
+                    "raw-text" => 't',
+                    "iso-latin-1" | "iso-8859-1" | "latin-1" => '1',
+                    "undecided" | "prefer-utf-8" | "us-ascii" => '-',
+                    _ => '-',
+                };
+                Ok(Value::Integer(mnemonic as i64))
+            }
             "coding-system-eol-type" => {
                 need_args(name, args, 1)?;
                 if args[0].is_nil() {

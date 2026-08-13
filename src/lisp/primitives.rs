@@ -356,6 +356,7 @@ pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::oclosure_type_of;
 pub(crate) use dispatch::set_tty_minibuffer_reader;
+pub(crate) use dispatch::render_mode_line_glass;
 pub(crate) use dispatch::{next_digit_prefix, next_negative_prefix, next_universal_prefix};
 pub use dispatch::{call, is_builtin};
 
