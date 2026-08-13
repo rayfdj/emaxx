@@ -4841,7 +4841,11 @@ fn visual_vertical_motion(
             let mut col = 0usize;
             while target < seg_end && col < goal {
                 let (raw, _) = widths[target - bol];
-                col += if raw == usize::MAX { 8 - (col % 8) } else { raw };
+                col += if raw == usize::MAX {
+                    8 - (col % 8)
+                } else {
+                    raw
+                };
                 target += 1;
             }
         }

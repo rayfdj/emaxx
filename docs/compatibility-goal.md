@@ -42,6 +42,59 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-13 Lread-through-Minibuf checkpoint advances the exact
+  contiguous frontier to **6,772/7,080**, leaving **308** selectors.
+  Selectors 6,656-6,772 all match GNU: Lread 52/52 and Minibuf 65/65.  NEXT
+  is selector **6,773**, `error-message-string-circular`, in
+  `test/src/print-tests.el` (46 selected outcomes).
+
+  The canonical final-source replay is
+  `target/compat/regression-add-1786595283782581000-63636`: all **117/117**
+  outcomes match with no timeout, unilateral skip, or changed status.  Source
+  fingerprint is
+  `c315706348a716d3f8a45aea0ab899c618a6d7d448f59c7a3bd65ed79bf34e8a`,
+  release binary hash is
+  `4bf51ef656a9b68f443de5bd4b23853eafd10d3fd589c6b94c0e004f88973e76`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and GNU is pinned at `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  Lread now preserves GNU's exact invalid-read-syntax condition data for
+  malformed character names, empty radix literals, and direct circular
+  self-reference.  One Reader records actual unescaped character literals as
+  it parses, avoiding a second source grammar and false positives in strings
+  or comments.  Rust owns that reader fact; GNU's
+  `byte-run--unescaped-character-literals-warning` remains the Elisp owner of
+  warning policy and formatting for source loads and byte compilation.
+  Dynamic loader state is restored on every success and error path.  Minibuf's
+  shared fix declares native `inhibit-interaction` at the GNU special-variable
+  boundary, so GNU's Elisp `y-or-n-p` observes a caller's dynamic binding
+  without moving prompt policy into Rust.
+
+  Canonical post-bootstrap GNU/Emaxx bodies are Lread 96/334 ms (3.483x,
+  +238 ms) and Minibuf 9/15 ms (1.629x, +6 ms).  Lread crosses the diagnostic
+  2x flag but neither result approaches the 5x-and-one-second interruption
+  rule.  Separate reconstructed setup is 253/3,068 ms for Lread and 225/2,499
+  ms for Minibuf under dumped-startup issue #11.
+
+  The immutable broad audit in
+  `target/compat/regressions-1786591291920589000-57092` uses the same release
+  runtime binary and covers 105 tracked files: **102/105** match.  Lread and
+  Minibuf are newly green; the only mismatching later owners are Emacs Module,
+  Print, and Regex Emacs.  Its source fingerprint predates only the subsequent
+  test-invariant cleanup; no runtime source or release-binary byte changed.
+  The cleanup removed an incidental requirement that loading files.el must
+  dirty `*Messages*`; the regression now asserts its real remote-policy
+  invariant that no modified buffer is save-eligible, while allowing the
+  diagnostic buffer to be either clean or modified.
+
+  Final publication evidence is green: formatting and diff checks;
+  all-target/all-feature check; strict Clippy; 2,054 library cases (2,053
+  passed and one ignored), 35 compatibility-harness tests, one
+  performance-harness test, 10 CLI tests, and three ERT integration tests.
+  The complete suite ran with localhost/socket permission and exited
+  successfully.
+
 - The 2026-08-13 Keyboard-through-LCMS checkpoint advances the exact
   contiguous frontier to **6,655/7,080**, leaving **425** selectors.
   Selectors 6,602-6,655 all match GNU: Keyboard 2/2, Keymap 46/46, and LCMS

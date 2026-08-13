@@ -5024,6 +5024,27 @@ fn inhibited_interaction_uses_expected_condition_type() {
 }
 
 #[test]
+fn inhibited_interaction_is_dynamic_across_separately_defined_prompt_helpers() {
+    let mut interp = Interpreter::new();
+    let form = Reader::new(
+        r#"(progn
+              (defun emaxx-test-read-string-indirectly ()
+                (read-string "foo: "))
+              (let ((inhibit-interaction t))
+                (condition-case error
+                    (emaxx-test-read-string-indirectly)
+                  (inhibited-interaction (car error)))))"#,
+    )
+    .read_all()
+    .unwrap()
+    .remove(0);
+    assert_eq!(
+        interp.eval(&form, &mut Vec::new()).unwrap(),
+        Value::Symbol("inhibited-interaction".into())
+    );
+}
+
+#[test]
 fn native_comp_capability_probes_are_honest() {
     assert_eq!(eval_str("(featurep 'emacs)"), Value::T);
     assert_eq!(eval_str("(native-comp-available-p)"), Value::Nil);

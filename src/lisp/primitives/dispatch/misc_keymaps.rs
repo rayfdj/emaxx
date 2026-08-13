@@ -42,7 +42,7 @@ fn map_keymap_direct_value(
     let mut character_bindings = Vec::new();
     let mut sparse_bindings = Vec::new();
     for binding in bindings.iter() {
-        let event = keymap_entry_key_value(&binding_key_parts(&binding), &binding.key);
+        let event = keymap_entry_key_value(&binding_key_parts(binding), &binding.key);
         if full_table.is_some()
             && let Value::Integer(code) = event
         {
@@ -10869,11 +10869,20 @@ fn byte_compile_file_body(
             "Warning: file has no `lexical-binding' directive on its first line",
         )?;
     }
-    if let Some(warning) = crate::lisp::byte_compile_unescaped_char_literal_warning(source) {
+    let (forms, unescaped_literals) =
+        crate::lisp::read_source_forms_with_unescaped_literals(source)?;
+    let unescaped_restore = interp.bind_special_variable(
+        "lread--unescaped-character-literals",
+        unescaped_literals,
+        env,
+    )?;
+    let warning = crate::lisp::unescaped_character_literal_warning(interp, env);
+    let restore_result = interp.restore_special_binding(unescaped_restore, env);
+    let warning = warning?;
+    restore_result?;
+    if let Some(warning) = warning {
         byte_compile_log_warning(interp, env, &warning)?;
     }
-
-    let forms = crate::lisp::read_source_forms(source)?;
     for form in &forms {
         interp.intern_symbols_in_value(form);
     }

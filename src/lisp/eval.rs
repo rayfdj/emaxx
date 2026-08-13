@@ -2144,9 +2144,8 @@ pub struct Interpreter {
     /// mutation door for records, so `define-key' drops the slot.  Key
     /// lookup walks every active map per keystroke; re-parsing each map's
     /// string entries per lookup made `key-binding' cost milliseconds.
-    pub(crate) keymap_bindings_cache: std::cell::RefCell<
-        Vec<Option<crate::lisp::primitives::CachedKeymapIndex>>,
-    >,
+    pub(crate) keymap_bindings_cache:
+        std::cell::RefCell<Vec<Option<crate::lisp::primitives::CachedKeymapIndex>>>,
     /// Recycled operand stacks for the byte-code VM: one Vec per active
     /// nesting level, reused across calls to avoid per-call allocation.
     pub(crate) vm_stack_pool: Vec<Vec<Value>>,
@@ -4031,6 +4030,11 @@ impl Interpreter {
             Value::list([Value::Symbol("read-only".into()), Value::T]),
         );
         interp.define_special_variable("minibuffer-auto-raise", Value::Nil);
+        // minibuf.c defines this host boolean beside the native minibuffer
+        // state.  Its dynamic scope is observable through dumped Elisp such
+        // as subr.el's `y-or-n-p', which calls the native reader from a
+        // separately defined function.
+        interp.define_special_variable("inhibit-interaction", Value::Nil);
         // keyboard.c defines this before minibuffer.el.  Completion callers
         // dynamically shorten it, so both the native default and special
         // binding contract must exist before their lexical code is loaded.
@@ -4954,7 +4958,11 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             Value::Symbol("ert-test-failed".into()),
             Value::String(message.clone().into()),
         ]),
-        LispError::ReadError(message) | LispError::Signal(message) => Value::list([
+        LispError::ReadError(message) => Value::list([
+            Value::Symbol("invalid-read-syntax".into()),
+            Value::String(message.clone().into()),
+        ]),
+        LispError::Signal(message) => Value::list([
             Value::Symbol("error".into()),
             Value::String(message.clone().into()),
         ]),

@@ -332,7 +332,7 @@ fn command_loop(
                                 debug_log(&format!("  frame: {function} nargs={}", args.len()));
                             }
                         }
-                        state.echo = command_error_text(&error);
+                        state.echo = command_error_text(interpreter, env, &error);
                     }
                 }
                 if let Some(termination) = interpreter.take_pending_termination() {
@@ -420,6 +420,13 @@ fn execute_binding(
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
+    // GNU's command loop separates each command into its own undo group
+    // (undo-auto--add-boundary after every command); `undo' relies on the
+    // boundary to skip before replaying the previous group.
+    interpreter.buffer.push_undo_boundary();
+    // A lingering echo-area message belongs to the previous command; GNU
+    // clears it when the next command runs (its own `message' then shows).
+    crate::lisp::primitives::set_echo_area_message(None);
     interpreter.set_variable("last-command-event", last_event, env);
     interpreter.set_variable(
         "this-command-keys-vector",
@@ -461,15 +468,31 @@ fn append_prefix_echo(echo: &str, key: &str) -> String {
     }
 }
 
-fn command_error_text(error: &LispError) -> String {
+/// The echo-area text for a command's error, GNU's
+/// `error-message-string' rendering ("Quit", "Beginning of buffer", a
+/// user-error's own message).
+fn command_error_text(interpreter: &mut Interpreter, env: &mut Env, error: &LispError) -> String {
     let text = match error {
         LispError::SignalValue(data) => {
-            if matches!(data, Value::Symbol(name) if name == "quit") {
-                "Quit".to_string()
+            let data = if matches!(data, Value::Symbol(_)) {
+                Value::list([data.clone()])
             } else {
-                format!("{data}")
-            }
+                data.clone()
+            };
+            call(
+                interpreter,
+                env,
+                "error-message-string",
+                std::slice::from_ref(&data),
+            )
+            .ok()
+            .and_then(|value| match value {
+                Value::String(text) => Some(text.to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| format!("{data}"))
         }
+        LispError::Signal(text) => text.clone(),
         other => format!("{other:?}"),
     };
     text.replace(['\n', '\r'], " ").chars().take(200).collect()
@@ -857,7 +880,11 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         )?;
         state.painted_echo = echo;
     }
-    queue!(out, cursor::MoveTo(cursor_position.0, cursor_position.1), cursor::Show)?;
+    queue!(
+        out,
+        cursor::MoveTo(cursor_position.0, cursor_position.1),
+        cursor::Show
+    )?;
     out.flush()
 }
 

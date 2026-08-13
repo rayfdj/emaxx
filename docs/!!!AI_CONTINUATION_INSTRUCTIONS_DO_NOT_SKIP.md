@@ -18,6 +18,53 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-13 LREAD-THROUGH-MINIBUF CHECKPOINT: the exact contiguous frontier
+  is **6,772/7,080**, leaving **308** selectors.  Selectors 6,656-6,772 are
+  exact: Lread 52/52 and Minibuf 65/65.  NEXT is selector **6,773**,
+  `error-message-string-circular`, in `test/src/print-tests.el` (46 selected
+  outcomes).
+
+  Canonical final-source artifact:
+  `target/compat/regression-add-1786595283782581000-63636`, with **117/117**
+  matching outcomes and no timeout or unilateral skip.  Subject-source
+  fingerprint is
+  `c315706348a716d3f8a45aea0ab899c618a6d7d448f59c7a3bd65ed79bf34e8a`,
+  release binary hash is
+  `4bf51ef656a9b68f443de5bd4b23853eafd10d3fd589c6b94c0e004f88973e76`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  One Reader is the sole source grammar and records only deprecated unescaped
+  character literals actually parsed, not matching text inside strings or
+  comments.  GNU host reader behavior is native Rust: malformed named
+  characters, empty radix literals, direct circular self-reference, and their
+  condition data now match.  Warning wording and policy stay in GNU-owned
+  Elisp through `byte-run--unescaped-character-literals-warning`; load and
+  byte-compile paths bind its reader fact dynamically and restore state on
+  every exit.  Minibuf declares native `inhibit-interaction` as a special
+  variable at the shared host boundary, making its dynamic binding visible to
+  GNU's Elisp prompt owner across separately defined function calls.
+
+  Post-bootstrap GNU/Emaxx bodies are Lread 96/334 ms (3.483x and +238 ms)
+  and Minibuf 9/15 ms (1.629x and +6 ms).  Lread triggers only the 2x
+  diagnostic; neither reaches the agreed performance-interruption rule.
+  Setup is separately 253/3,068 and 225/2,499 ms under dumped-startup issue
+  #11.
+
+  The broad audit
+  `target/compat/regressions-1786591291920589000-57092` is **102/105** against
+  the same release runtime binary.  Only Emacs Module, Print, and Regex Emacs
+  mismatch.  Its fingerprint predates a test-only cleanup: the files.el
+  remote-policy regression no longer requires an incidental startup warning
+  to dirty `*Messages*`; it requires the actual invariant that no modified
+  buffer is save-eligible and permits the diagnostic buffer to be clean.
+  Final publication evidence is green: format/diff, all-target/all-feature
+  check, strict Clippy, 2,054 library cases (2,053 passed and one ignored), 35
+  compatibility-harness tests, one performance-harness test, 10 CLI tests,
+  and three ERT integration tests.  The complete localhost-capable run exited
+  zero.
+
 - 2026-08-13 KEYBOARD-THROUGH-LCMS CHECKPOINT: the exact contiguous frontier
   is **6,655/7,080**, leaving **425** selectors.  Selectors 6,602-6,655 are
   exact: Keyboard 2/2, Keymap 46/46, and LCMS 6/6.  NEXT is selector **6,656**,
