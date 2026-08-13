@@ -480,7 +480,7 @@ fn contains_gnu_byte_code_literal(value: &types::Value) -> bool {
         }
         let head = car.borrow().clone();
         let tail = cdr.borrow().clone();
-        if matches!(&head, types::Value::Symbol(name) if name == reader::RECORD_LITERAL_SYMBOL)
+        if matches!(&head, types::Value::Symbol(name) if name == reader::CLOSURE_LITERAL_SYMBOL)
             && let types::Value::Cons(cell) = &tail
             && quoted_byte_code_function(&cell.car.borrow())
         {

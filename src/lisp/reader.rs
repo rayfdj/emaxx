@@ -18,6 +18,7 @@ const HASH_TABLE_LITERAL_SYMBOL: &str = "emaxx--hash-table-literal";
 pub(crate) const CHAR_TABLE_LITERAL_SYMBOL: &str = "emaxx--char-table-literal";
 pub(crate) const SUB_CHAR_TABLE_LITERAL_SYMBOL: &str = "emaxx--sub-char-table-literal";
 pub(crate) const RECORD_LITERAL_SYMBOL: &str = "emaxx--record-literal";
+pub(crate) const CLOSURE_LITERAL_SYMBOL: &str = "emaxx--closure-literal";
 const BOOL_VECTOR_LITERAL_SYMBOL: &str = "bool-vector-literal";
 static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -52,6 +53,7 @@ fn structure_slot_eval_form(value: Value) -> Value {
                             || symbol == CHAR_TABLE_LITERAL_SYMBOL
                             || symbol == SUB_CHAR_TABLE_LITERAL_SYMBOL
                             || symbol == RECORD_LITERAL_SYMBOL
+                            || symbol == CLOSURE_LITERAL_SYMBOL
                             || symbol == "quote"
                 )
             {
@@ -293,7 +295,8 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                         && (symbol == CIRCULAR_READ_SYNTAX_SYMBOL
                             || symbol == HASH_TABLE_LITERAL_SYMBOL
                             || symbol == CHAR_TABLE_LITERAL_SYMBOL
-                            || symbol == RECORD_LITERAL_SYMBOL)
+                            || symbol == RECORD_LITERAL_SYMBOL
+                            || symbol == CLOSURE_LITERAL_SYMBOL)
                     {
                         return true;
                     }
@@ -1343,7 +1346,7 @@ impl<'a> Reader<'a> {
                     ));
                 }
                 Ok(Some(Value::list(
-                    std::iter::once(Value::symbol(RECORD_LITERAL_SYMBOL))
+                    std::iter::once(Value::symbol(CLOSURE_LITERAL_SYMBOL))
                         .chain(std::iter::once(structure_slot_eval_form(Value::symbol(
                             if interpreted {
                                 "interpreted-function"
@@ -2055,7 +2058,7 @@ mod tests {
         assert!(matches!(
             items.as_slice(),
             [Value::Symbol(marker), kind, ..]
-                if marker == RECORD_LITERAL_SYMBOL
+                if marker == CLOSURE_LITERAL_SYMBOL
                     && kind.to_vec().ok().is_some_and(|quoted| matches!(
                         quoted.as_slice(),
                         [Value::Symbol(quote), Value::Symbol(name)]

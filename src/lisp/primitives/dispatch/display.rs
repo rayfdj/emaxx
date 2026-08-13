@@ -678,7 +678,8 @@ fn split_window_tree(
     } else {
         INTERNAL_VERTICAL_WINDOW_KIND
     };
-    let parent = interp.create_record(
+    let parent = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Window,
         "window",
         window_record_slots(
             None,
@@ -690,7 +691,8 @@ fn split_window_tree(
     let Value::Record(parent_id) = parent else {
         unreachable!("window records use Value::Record");
     };
-    let new = interp.create_record(
+    let new = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Window,
         "window",
         window_record_slots(Some(buffer_id), start, Value::Nil, new_geometry),
     );

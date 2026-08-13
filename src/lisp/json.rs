@@ -604,7 +604,7 @@ pub(crate) fn is_hash_table(interp: &Interpreter, value: &Value) -> bool {
     match value {
         Value::Record(id) => interp
             .find_record(*id)
-            .is_some_and(|record| record.type_name == HASH_TABLE_RECORD_TYPE),
+            .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::HashTable),
         _ => false,
     }
 }
@@ -614,7 +614,8 @@ pub(crate) fn make_hash_table(
     test: &str,
     entries: Vec<(Value, Value)>,
 ) -> Value {
-    let table = interp.create_record(
+    let table = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::HashTable,
         HASH_TABLE_RECORD_TYPE,
         vec![
             Value::Symbol(test.to_string().into()),
@@ -637,7 +638,7 @@ pub(crate) fn hash_table_entries(
         return None;
     };
     let record = interp.find_record(*id)?;
-    if record.type_name != HASH_TABLE_RECORD_TYPE {
+    if record.kind != crate::lisp::eval::RecordKind::HashTable {
         return None;
     }
     let test = record

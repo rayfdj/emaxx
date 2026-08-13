@@ -2100,7 +2100,8 @@ pub(super) fn parse_forward(
 // candidate check is needed only when that parse points into an earlier
 // unterminated/nested construct or an overlapping delimiter.
 fn find_complete_comment_ending_at(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
+    env: &Env,
     table_id: u64,
     chars: &[char],
     point: usize,
@@ -2114,7 +2115,9 @@ fn find_complete_comment_ending_at(
     let mut best_start = None;
     let mut idx = point.saturating_sub(2).min(chars.len().saturating_sub(1));
     loop {
-        if let Some(start) = comment_start_at(interp, table_id, chars, idx) {
+        if let Some(start) = comment_start_at(interp, table_id, chars, idx)
+            && !position_is_in_string(interp, env, idx + 1)
+        {
             let (end, closed) = skip_comment_with_status(
                 interp,
                 table_id,
@@ -2147,6 +2150,7 @@ fn find_complete_comment_ending_at(
         let mut idx = point.saturating_sub(2).min(chars.len().saturating_sub(1));
         loop {
             if let Some(start) = comment_start_at(interp, table_id, chars, idx)
+                && !position_is_in_string(interp, env, idx + 1)
                 && let CommentKind::Block {
                     end_first: candidate_end_first,
                     end_second: candidate_end_second,
@@ -2168,6 +2172,30 @@ fn find_complete_comment_ending_at(
     }
 
     None
+}
+
+// The bounded backward fallback above exists for malformed and overlapping
+// comments, where a single parse from point-min cannot authoritatively select
+// the comment opener.  It must still use that parser as the grammar owner for
+// strings: a comment-looking character inside a string is never a candidate.
+fn position_is_in_string(interp: &mut Interpreter, env: &Env, position: usize) -> bool {
+    let saved_point = interp.buffer.point();
+    let state = parse_forward(
+        interp,
+        interp.buffer.point_min(),
+        position,
+        None,
+        false,
+        None,
+        CommentStop::No,
+        env,
+    );
+    interp.buffer.goto_char(saved_point);
+    state
+        .ok()
+        .and_then(|value| value.to_vec().ok())
+        .and_then(|items| items.get(3).cloned())
+        .is_some_and(|value| value.is_truthy())
 }
 
 fn syntax_entry_class_matches(entry: SyntaxEntry, class: char) -> bool {
@@ -2589,6 +2617,7 @@ pub(super) fn forward_comment_impl(
                 if !quoted
                     && let Some(start_pos) = find_complete_comment_ending_at(
                         interp,
+                        env,
                         table_id,
                         &chars,
                         point,

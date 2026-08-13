@@ -544,9 +544,9 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match &args[0] {
                     Value::Record(id)
-                        if interp
-                            .find_record(*id)
-                            .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::Keymap
+                        }) =>
                     {
                         Ok(interp
                             .find_record(*id)
@@ -560,7 +560,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 if let Value::Record(id) = &args[0]
                     && let Some(record) = interp.find_record_mut(*id)
-                    && record.type_name == KEYMAP_RECORD_TYPE
+                    && record.kind == crate::lisp::eval::RecordKind::Keymap
                 {
                     if record.slots.len() <= KEYMAP_PARENT_SLOT {
                         record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
@@ -1564,7 +1564,7 @@ define_dispatch!(
                         args[0].type_name(),
                     ));
                 };
-                if record.type_name != "hash-table" {
+                if record.kind != crate::lisp::eval::RecordKind::HashTable {
                     return Err(LispError::TypeError(
                         "hash-table".into(),
                         args[0].type_name(),
@@ -2182,7 +2182,11 @@ define_dispatch!(
                     let callable = resolve_callable(interp, &compile_target, env)?;
                     let slots =
                         byte_code_function_slots(interp, Some(symbol), callable, None, false);
-                    return Ok(interp.create_record("byte-code-function", slots));
+                    return Ok(interp.create_pseudovector(
+                        crate::lisp::eval::RecordKind::Closure,
+                        "byte-code-function",
+                        slots,
+                    ));
                 }
                 if is_lambda_value(&compile_target) {
                     validate_lambda_form(&compile_target)?;
@@ -2196,12 +2200,20 @@ define_dispatch!(
                     )?;
                     let slots =
                         byte_code_function_slots(interp, None, callable, lap, !capture_lexical);
-                    return Ok(interp.create_record("byte-code-function", slots));
+                    return Ok(interp.create_pseudovector(
+                        crate::lisp::eval::RecordKind::Closure,
+                        "byte-code-function",
+                        slots,
+                    ));
                 }
                 if matches!(compile_target, Value::Lambda(_)) {
                     let slots =
                         byte_code_function_slots(interp, None, compile_target.clone(), None, false);
-                    return Ok(interp.create_record("byte-code-function", slots));
+                    return Ok(interp.create_pseudovector(
+                        crate::lisp::eval::RecordKind::Closure,
+                        "byte-code-function",
+                        slots,
+                    ));
                 }
                 Ok(compile_target)
             }
@@ -10586,7 +10598,11 @@ pub(super) fn materialize_preloaded_lisp_function(
         None,
         false,
     );
-    let wrapper = interp.create_record("byte-code-function", slots);
+    let wrapper = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Closure,
+        "byte-code-function",
+        slots,
+    );
     interp.set_function_binding(symbol, Some(wrapper.clone()));
     Some(wrapper)
 }
