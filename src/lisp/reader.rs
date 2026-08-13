@@ -4,7 +4,11 @@ use super::types::{
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, HashMap},
+    rc::Rc,
+};
 use unicode_names2::character as unicode_character;
 
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
@@ -100,6 +104,10 @@ fn invalid_circular_read_syntax() -> LispError {
     LispError::ReadError("invalid-read-syntax".into())
 }
 
+fn nonsensical_circular_self_reference() -> LispError {
+    LispError::ReadError("nonsensical self-reference".into())
+}
+
 pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
     if circular_read_ref_form(value).is_some() || circular_read_label_form(value).is_some() {
         return true;
@@ -190,7 +198,7 @@ fn resolve_circular_read_syntax_inner(
             return Err(invalid_circular_read_syntax());
         }
         if circular_read_ref_form(&template) == Some(id) {
-            return Err(invalid_circular_read_syntax());
+            return Err(nonsensical_circular_self_reference());
         }
 
         let placeholder = if let Ok(items) = template.to_vec() {
@@ -329,6 +337,7 @@ pub struct Reader<'a> {
     symbol_shorthands: Vec<(String, String)>,
     backquote_depth: usize,
     raw_quote_symbols: bool,
+    unescaped_character_literals: BTreeSet<u8>,
 }
 
 impl<'a> Reader<'a> {
@@ -349,6 +358,7 @@ impl<'a> Reader<'a> {
             // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
             // registered under those names.
             raw_quote_symbols: true,
+            unescaped_character_literals: BTreeSet::new(),
         }
     }
 
@@ -360,6 +370,13 @@ impl<'a> Reader<'a> {
 
     pub fn position(&self) -> usize {
         self.pos
+    }
+
+    pub(crate) fn unescaped_character_literals(&self) -> impl Iterator<Item = i64> + '_ {
+        self.unescaped_character_literals
+            .iter()
+            .copied()
+            .map(i64::from)
     }
 
     fn peek(&self) -> Option<u8> {
@@ -1042,6 +1059,9 @@ impl<'a> Reader<'a> {
             }
             Some(ch) if ch < 0x80 => {
                 self.advance();
+                if matches!(ch, b'(' | b')' | b'[' | b']' | b'"' | b';') {
+                    self.unescaped_character_literals.insert(ch);
+                }
                 Ok(Some(Value::Integer(ch as i64)))
             }
             Some(_) => {
@@ -1180,9 +1200,21 @@ impl<'a> Reader<'a> {
                 let name = std::str::from_utf8(&self.input[start..self.pos])
                     .map_err(|error| LispError::ReadError(error.to_string()))?;
                 self.advance(); // consume '}'
-                return resolve_named_character_code(name).ok_or_else(|| {
-                    LispError::ReadError(format!("unknown character name {{{name}}}"))
-                });
+                if name.len() > 200 {
+                    return Err(LispError::ReadError("Character name too long".into()));
+                }
+                if let Some(ch) = name.chars().find(|ch| !ch.is_ascii()) {
+                    return Err(LispError::ReadError(format!(
+                        "Invalid character U+{:04X} in character name",
+                        ch as u32
+                    )));
+                }
+                let normalized = normalize_named_character_name(name);
+                if normalized.is_empty() {
+                    return Err(LispError::ReadError("Empty character name".into()));
+                }
+                return resolve_named_character_code(&normalized)
+                    .ok_or_else(|| LispError::ReadError(format!("\\N{{{normalized}}}")));
             }
             self.advance();
         }
@@ -1192,7 +1224,7 @@ impl<'a> Reader<'a> {
     fn read_hash(&mut self) -> Result<Option<Value>, LispError> {
         self.advance(); // consume '#'
         match self.peek() {
-            None => Err(LispError::ReadError("invalid-read-syntax".into())),
+            None => Err(LispError::ReadError("#".into())),
             Some(b'#') => {
                 self.advance();
                 Ok(Some(Value::Symbol("".into())))
@@ -1463,7 +1495,7 @@ impl<'a> Reader<'a> {
                     }
                 }
                 if !any {
-                    return Err(LispError::ReadError("no digits after #x".into()));
+                    return Err(LispError::ReadError("integer, radix 16".into()));
                 }
                 if neg {
                     val = -val;
@@ -1489,7 +1521,7 @@ impl<'a> Reader<'a> {
                     }
                 }
                 if !any {
-                    return Err(LispError::ReadError("no digits after #o".into()));
+                    return Err(LispError::ReadError("integer, radix 8".into()));
                 }
                 if neg {
                     val = -val;
@@ -1515,7 +1547,7 @@ impl<'a> Reader<'a> {
                     }
                 }
                 if !any {
-                    return Err(LispError::ReadError("no digits after #b".into()));
+                    return Err(LispError::ReadError("integer, radix 2".into()));
                 }
                 if neg {
                     val = -val;
@@ -1835,12 +1867,25 @@ fn valid_unicode_scalar(value: u32) -> bool {
     value <= 0x10_FFFF && !(0xD800..=0xDFFF).contains(&value)
 }
 
+fn normalize_named_character_name(name: &str) -> String {
+    let mut normalized = String::with_capacity(name.len());
+    let mut previous_was_whitespace = false;
+    for ch in name.chars() {
+        if ch.is_ascii_whitespace() {
+            if !previous_was_whitespace {
+                normalized.push(' ');
+            }
+            previous_was_whitespace = true;
+        } else {
+            normalized.push(ch);
+            previous_was_whitespace = false;
+        }
+    }
+    normalized
+}
+
 fn resolve_named_character_code(name: &str) -> Option<u32> {
-    let trimmed = name.trim_matches(|ch: char| ch.is_ascii_whitespace());
-    if let Some(hex) = trimmed
-        .strip_prefix("U+")
-        .or_else(|| trimmed.strip_prefix("u+"))
-    {
+    if let Some(hex) = name.strip_prefix("U+").or_else(|| name.strip_prefix("u+")) {
         if hex.is_empty() || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
             return None;
         }
@@ -1848,7 +1893,7 @@ fn resolve_named_character_code(name: &str) -> Option<u32> {
         return valid_unicode_scalar(value).then_some(value);
     }
 
-    unicode_character(trimmed).map(|ch| ch as u32)
+    unicode_character(name).map(|ch| ch as u32)
 }
 
 fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
@@ -1859,7 +1904,7 @@ fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
         .strip_prefix('-')
         .map_or((false, token), |rest| (true, rest));
     if digits.is_empty() {
-        return Err(LispError::ReadError("missing radix digits".into()));
+        return Err(LispError::ReadError(format!("integer, radix {base}")));
     }
     let mut value = BigInt::from(0u8);
     for ch in digits.chars() {
@@ -2066,6 +2111,10 @@ mod tests {
     fn reads_named_unicode_character_escapes() {
         assert_eq!(read_one("?\\N{SNOWFLAKE}"), Value::Integer('❄' as i64));
         assert_eq!(read_one("?\\N{U+A817}"), Value::Integer(0xA817));
+        assert_eq!(
+            read_one("?\\N{SYLOTI  NAGRI LETTER \n DHO}"),
+            Value::Integer(0xA817)
+        );
     }
 
     #[test]
@@ -2076,6 +2125,33 @@ mod tests {
         let state = state.borrow();
         assert_eq!(state.text, "❄");
         assert!(state.multibyte);
+    }
+
+    #[test]
+    fn named_character_errors_preserve_gnu_invalid_syntax_data() {
+        for (source, expected) in [
+            ("?\\N{}", "Empty character name"),
+            ("?\\N{U+110000}", "\\N{U+110000}"),
+            (
+                "?\\N{LATIN CAPITAL LETTER Ø}",
+                "Invalid character U+00D8 in character name",
+            ),
+        ] {
+            assert!(matches!(
+                Reader::new(source).read(),
+                Err(LispError::ReadError(message)) if message == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn reader_tracks_only_actual_unescaped_character_literals() {
+        let mut reader = Reader::new("?) ?\\( \"?[\" ; ?] in comment\n?;");
+        reader.read_all().unwrap();
+        assert_eq!(
+            reader.unescaped_character_literals().collect::<Vec<_>>(),
+            [41, 59]
+        );
     }
 
     #[test]
@@ -2177,6 +2253,22 @@ mod tests {
     #[test]
     fn reads_hash_radix_integers() {
         assert_eq!(read_one("#16r3FFFFF"), Value::Integer(0x3F_FFFF));
+    }
+
+    #[test]
+    fn empty_integer_literals_preserve_gnu_invalid_syntax_data() {
+        for (source, expected) in [
+            ("#", "#"),
+            ("#b", "integer, radix 2"),
+            ("#o", "integer, radix 8"),
+            ("#x", "integer, radix 16"),
+            ("#24r", "integer, radix 24"),
+        ] {
+            assert!(matches!(
+                Reader::new(source).read(),
+                Err(LispError::ReadError(message)) if message == expected
+            ));
+        }
     }
 
     #[test]

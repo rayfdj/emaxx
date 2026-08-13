@@ -1516,22 +1516,21 @@ pub(crate) fn render_prin1_ephemeral(
 }
 
 pub(crate) fn read_one_form_in_env(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     text: &str,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<(Value, usize), LispError> {
-    read_one_form_with_symbol_shorthands(text, read_symbol_shorthands_in_env(interp, env)?)
-}
-
-fn read_one_form_with_symbol_shorthands(
-    text: &str,
-    symbol_shorthands: Vec<(String, String)>,
-) -> Result<(Value, usize), LispError> {
+    let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
     let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(text, symbol_shorthands);
     let value = match reader.read()? {
         Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
         None => return Err(LispError::EndOfInput),
     };
+    interp.set_variable(
+        "lread--unescaped-character-literals",
+        Value::list(reader.unescaped_character_literals().map(Value::Integer)),
+        env,
+    );
     let consumed = text[..reader.position()].chars().count();
     Ok((value, consumed))
 }
@@ -1615,7 +1614,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
 
 fn read_one_positioned_form(
     interp: &mut Interpreter,
-    env: &Env,
+    env: &mut Env,
     text: &str,
     base_position: i64,
 ) -> Result<(Value, usize), LispError> {

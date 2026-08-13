@@ -1575,10 +1575,6 @@ define_dispatch!(
                     .unwrap_or(Value::Nil))
             }
             "ignore" => Ok(Value::Nil),
-            "byte-run--unescaped-character-literals-warning" => {
-                need_args(name, args, 0)?;
-                Ok(Value::Nil)
-            }
             // Load-time compatibility shims for upstream Lisp helpers whose exact
             // side effects are not needed by the currently exercised batch paths.
             "purecopy" => {
