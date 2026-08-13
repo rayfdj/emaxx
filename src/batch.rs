@@ -313,7 +313,17 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
     if let Ok(paths) = env::var("EMACSLOADPATH") {
         options.load_path = env::split_paths(&paths).collect();
     }
-    initialize_batch_interpreter(&options)
+    let mut interpreter = initialize_batch_interpreter(&options)?;
+    // GNU dumps isearch.el into the image; an interactive session must
+    // have C-s ready before the first keystroke.  A load-path without
+    // the real Lisp tree (unit tests) simply leaves C-s unbound, exactly
+    // like the batch runtime.
+    if interpreter.resolve_load_target("isearch").is_some() {
+        interpreter
+            .load_target("isearch")
+            .map_err(|error| format!("preload isearch: {error}"))?;
+    }
+    Ok(interpreter)
 }
 
 pub(crate) fn initialize_batch_interpreter(

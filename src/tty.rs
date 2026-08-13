@@ -430,6 +430,10 @@ fn execute_binding(
     // clears it when the next command runs (its own `message' then shows).
     crate::lisp::primitives::set_echo_area_message(None);
     interpreter.set_variable("last-command-event", last_event, env);
+    // The canonical key-state channel: this-command-keys,
+    // this-single-command-keys, and their raw variants all read it
+    // (isearch's pre-command-hook indexes the vector).
+    crate::lisp::primitives::set_command_key_state(interpreter, keys.to_vec(), keys.to_vec(), env);
     interpreter.set_variable(
         "this-command-keys-vector",
         Value::list(
@@ -446,6 +450,20 @@ fn execute_binding(
         .unwrap_or(Value::Nil);
     interpreter.set_variable("current-prefix-arg", prefix.clone(), env);
     interpreter.set_variable("prefix-arg", Value::Nil, env);
+    // pre-command-hook may rewrite `this-command' (isearch's exit path
+    // does); GNU executes whatever the hook left there.
+    let buffer_id = interpreter.current_buffer_id();
+    crate::lisp::primitives::safe_run_named_hooks(
+        interpreter,
+        "pre-command-hook",
+        env,
+        Some(buffer_id),
+    )
+    .unwrap_or(());
+    let dispatched = interpreter
+        .lookup_var("this-command", env)
+        .filter(|command| !command.is_nil())
+        .unwrap_or_else(|| binding.clone());
     // GNU's command_execute is a thin wrapper over call-interactively
     // (prefix-arg bookkeeping, kbd-macro expansion); the runtime does not
     // define it yet, so drive the interactive call directly.
@@ -453,10 +471,18 @@ fn execute_binding(
         interpreter,
         env,
         "call-interactively",
-        std::slice::from_ref(&binding),
+        std::slice::from_ref(&dispatched),
     )
     .map(|_| ());
-    interpreter.set_variable("last-command", binding, env);
+    let buffer_id = interpreter.current_buffer_id();
+    crate::lisp::primitives::safe_run_named_hooks(
+        interpreter,
+        "post-command-hook",
+        env,
+        Some(buffer_id),
+    )
+    .unwrap_or(());
+    interpreter.set_variable("last-command", dispatched, env);
     interpreter.set_variable("last-prefix-arg", prefix, env);
     result
 }
@@ -1156,6 +1182,87 @@ mod tests {
         assert_eq!(display_column("a\tb", 1), 1);
         assert_eq!(display_column("a\tb", 2), 8);
         assert_eq!(display_column("a\tb", 3), 9);
+    }
+
+    #[test]
+    fn isearch_dispatches_through_the_overriding_map_and_exits_on_other_keys() {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(
+                &crate::compat::project_root().join("../emacs"),
+            )
+            .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interpreter =
+            crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
+        let mut env: Env = Vec::new();
+        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter
+            .load_target("isearch")
+            .expect("isearch.el loads");
+        interpreter.buffer.insert(
+            "alpha one
+beta word two
+gamma word three
+",
+        );
+        interpreter.buffer.goto_char(1);
+
+        let send = |interpreter: &mut Interpreter, env: &mut Env, code: i64| {
+            let event = Value::Integer(code);
+            let resolution = resolve_pending(interpreter, env, std::slice::from_ref(&event));
+            let Resolution::Command(binding) = resolution else {
+                panic!("event {code} must resolve to a command, got a prefix/undefined");
+            };
+            let described = format!("{binding}");
+            execute_binding(
+                interpreter,
+                env,
+                binding,
+                std::slice::from_ref(&event),
+                event.clone(),
+            )
+            .expect("command executes");
+            described
+        };
+
+        // C-s enters isearch; printing characters dispatch through the
+        // overriding isearch-mode-map.
+        assert_eq!(send(&mut interpreter, &mut env, 0x13), "isearch-forward");
+        assert_eq!(
+            send(&mut interpreter, &mut env, i64::from(b'w')),
+            "isearch-printing-char"
+        );
+        assert_eq!(
+            send(&mut interpreter, &mut env, i64::from(b'o')),
+            "isearch-printing-char"
+        );
+        assert_eq!(
+            send(&mut interpreter, &mut env, i64::from(b'r')),
+            "isearch-printing-char"
+        );
+        // The first match ends after "wor" on the second line
+        // ("beta word": w=16, o=17, r=18, end=19).
+        assert_eq!(interpreter.buffer.point(), 19);
+
+        // C-a is not an isearch key: the pre-command-hook exits the
+        // search and the key's own command runs.
+        assert_eq!(
+            send(&mut interpreter, &mut env, 0x01),
+            "move-beginning-of-line"
+        );
+        assert_eq!(
+            interpreter.buffer.point(),
+            11,
+            "point at the match line's start"
+        );
+        let overriding = interpreter
+            .lookup_var("overriding-terminal-local-map", &env)
+            .unwrap_or(Value::Nil);
+        assert!(
+            overriding.is_nil(),
+            "leaving isearch removes the overriding map"
+        );
     }
 
     #[test]
