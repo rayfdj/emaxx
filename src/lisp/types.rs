@@ -249,6 +249,10 @@ impl SharedText {
         self.0.as_str()
     }
 
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
     pub fn into_string(self) -> String {
         Rc::try_unwrap(self.0).unwrap_or_else(|text| text.as_ref().clone())
     }
@@ -946,7 +950,55 @@ pub(crate) fn interned_symbol_value(symbol: String) -> Value {
 }
 
 pub(crate) fn format_float(value: f64) -> String {
-    let mut rendered = value.to_string();
+    if value.is_infinite() {
+        return if value.is_sign_positive() {
+            "1.0e+INF".into()
+        } else {
+            "-1.0e+INF".into()
+        };
+    }
+    if value.is_nan() {
+        return if value.is_sign_negative() {
+            "-0.0e+NaN".into()
+        } else {
+            "0.0e+NaN".into()
+        };
+    }
+
+    // GNU's dtoastr starts at DBL_DIG significant digits and grows only
+    // until parsing reproduces the same f64.  Rust's Display instead prefers
+    // fixed notation for many large integral values, which changes `read'
+    // from float to bignum and breaks numeric round trips.
+    let abs = value.abs();
+    let mut rendered = if abs == 0.0 {
+        value.to_string()
+    } else {
+        let exponent = abs.log10().floor() as i32;
+        (15..=17)
+            .find_map(|significant| {
+                let scientific = exponent < -4 || exponent >= significant;
+                let candidate = if scientific {
+                    let precision = (significant - 1) as usize;
+                    let rendered = format!("{value:.precision$e}");
+                    let (mantissa, exponent) = rendered.split_once('e')?;
+                    let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
+                    let exponent = exponent.parse::<i32>().ok()?;
+                    format!("{mantissa}e{exponent:+}")
+                } else {
+                    let precision = (significant - exponent - 1).max(0) as usize;
+                    format!("{value:.precision$}")
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_string()
+                };
+                candidate
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|parsed| parsed.to_bits() == value.to_bits())
+                    .map(|_| candidate)
+            })
+            .unwrap_or_else(|| value.to_string())
+    };
     if !rendered.contains(['.', 'e', 'E']) {
         rendered.push_str(".0");
     }
@@ -1425,6 +1477,18 @@ impl fmt::Display for LispError {
             LispError::Signal(msg) => write!(f, "{}", msg),
             LispError::SignalValue(value) => match value.to_vec() {
                 Ok(items)
+                    if items.len() >= 2
+                        && matches!(items.first(), Some(Value::Symbol(kind)) if kind == "search-failed") =>
+                {
+                    match &items[1] {
+                        Value::String(text) => write!(f, "{text:?}"),
+                        Value::StringObject(object) => {
+                            write!(f, "{:?}", std::cell::RefCell::borrow(object.as_ref()).text)
+                        }
+                        value => write!(f, "{value}"),
+                    }
+                }
+                Ok(items)
                     if items.len() >= 4
                         && matches!(items.first(), Some(Value::Symbol(kind)) if kind == "file-error" || kind == "file-missing") =>
                 {
@@ -1442,7 +1506,13 @@ impl fmt::Display for LispError {
                     };
                     write!(f, "{}: {}, {}", message, detail, path)
                 }
-                Ok(items) if items.len() >= 2 => write!(f, "{}", items[1]),
+                Ok(items) if items.len() >= 2 => match &items[1] {
+                    Value::String(text) => write!(f, "{text}"),
+                    Value::StringObject(object) => {
+                        write!(f, "{}", std::cell::RefCell::borrow(object.as_ref()).text)
+                    }
+                    value => write!(f, "{value}"),
+                },
                 _ => write!(f, "{}", value),
             },
             LispError::ErtTestFailed(msg) => write!(f, "{}", msg),
@@ -1759,5 +1829,24 @@ mod tests {
             LispError::VoidFunction("(setf gv-test-foo)".into()).to_string(),
             r"Symbol's function definition is void: \(setf\ gv-test-foo\)"
         );
+    }
+
+    #[test]
+    fn signaled_string_messages_print_without_lisp_quotes() {
+        assert_eq!(
+            LispError::SignalValue(Value::list([
+                Value::Symbol("error".into()),
+                Value::String("Boo".into()),
+            ]))
+            .to_string(),
+            "Boo"
+        );
+    }
+
+    #[test]
+    fn integral_floats_print_with_one_fractional_digit() {
+        assert_eq!(Value::Float(1.0).to_string(), "1.0");
+        assert_eq!(Value::Float(-10.0).to_string(), "-10.0");
+        assert_eq!(Value::Float(1.25).to_string(), "1.25");
     }
 }

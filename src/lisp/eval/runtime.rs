@@ -264,11 +264,38 @@ impl Interpreter {
         // eager compile-time require reaches the latter path.
         if target == "cl-macs"
             && self.lookup_function("cl-copy-list", &Env::new()).is_err()
-            && !self.loading_features.iter().any(|name| name == "cl-lib")
+            && !self.require_nesting.iter().any(|name| name == "cl-lib")
         {
             self.load_target("cl-lib")?;
         }
         Ok(())
+    }
+
+    fn with_require_nesting<T>(
+        &mut self,
+        feature: &str,
+        load: impl FnOnce(&mut Self) -> Result<T, LispError>,
+    ) -> Result<T, LispError> {
+        // GNU permits the same feature to re-enter four active `require'
+        // loads.  The fifth call sees four existing entries and signals.
+        // Legitimate libraries use this bounded recursion with an early
+        // `provide' to break dependency cycles.
+        let nesting = self
+            .require_nesting
+            .iter()
+            .filter(|nested| nested.as_str() == feature)
+            .count();
+        if nesting > 3 {
+            return Err(LispError::Signal(format!(
+                "Recursive `require' for feature `{feature}'"
+            )));
+        }
+
+        self.require_nesting.push(feature.to_string());
+        let result = load(self);
+        let popped = self.require_nesting.pop();
+        debug_assert_eq!(popped.as_deref(), Some(feature));
+        result
     }
 
     pub(crate) fn require_feature_with_target(
@@ -281,7 +308,7 @@ impl Interpreter {
         // already.  `file-dependents' and `unload-feature' derive their
         // dependency graph from these entries.
         self.record_require_in_load_history(feature);
-        if self.has_feature(feature) || self.loading_features.iter().any(|name| name == feature) {
+        if self.has_feature(feature) {
             return Ok(Value::Symbol(feature.to_string().into()));
         }
         // GNU does not preload map.el; its cl-generic definitions
@@ -314,16 +341,16 @@ impl Interpreter {
             }
         }
         let load_target = target.unwrap_or(feature);
-        self.materialize_cl_macs_runtime_dependency(load_target)?;
-        let Some(path) =
-            crate::lisp::primitives::resolve_load_target_in_env(self, load_target, env)
-        else {
-            return Err(load_file_missing_error(load_target));
-        };
-        self.loading_features.push(feature.to_string());
-        let load_result = self.load_resolved_path(&path, env, true).map(|_| ());
-        self.loading_features.pop();
-        load_result?;
+        self.with_require_nesting(feature, |interp| {
+            interp.materialize_cl_macs_runtime_dependency(load_target)?;
+            let Some(path) =
+                crate::lisp::primitives::resolve_load_target_in_env(interp, load_target, env)
+            else {
+                return Err(load_file_missing_error(load_target));
+            };
+            interp.load_resolved_path(&path, env, true)?;
+            Ok(())
+        })?;
         if (feature == "semantic/symref" || load_target == "semantic/symref")
             && let Some(grep_path) = self.resolve_load_target("semantic/symref/grep")
         {
@@ -1727,6 +1754,8 @@ impl Interpreter {
         }
         self.buffer_locals.remove(&id);
         self.buffer_local_hooks.remove(&id);
+        self.labeled_restrictions
+            .retain(|restriction| restriction.buffer_id != id);
         self.indirect_buffers
             .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if id == self.current_buffer_id {
@@ -2450,6 +2479,61 @@ impl Interpreter {
             Some(record) if record.id == id => self.records.get_mut(index),
             _ => self.records.iter_mut().find(|record| record.id == id),
         }
+    }
+
+    pub(crate) fn register_keymap_public_cons_owners(&mut self, keymap_id: u64, view: &Value) {
+        if let Some(old_ids) = self.keymap_public_cons_ids.remove(&keymap_id) {
+            for cell_id in old_ids {
+                let mut remove = false;
+                if let Some(owners) = self.keymap_public_cons_owners.get_mut(&cell_id) {
+                    owners.retain(|owner| *owner != keymap_id);
+                    remove = owners.is_empty();
+                }
+                if remove {
+                    self.keymap_public_cons_owners.remove(&cell_id);
+                }
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut owned_ids = Vec::new();
+        let mut tail = view.clone();
+        while let Value::Cons(cell) = tail {
+            let cell_id = crate::lisp::types::ConsCell::identity(&cell);
+            if !seen.insert(cell_id) {
+                break;
+            }
+            owned_ids.push(cell_id);
+            self.keymap_public_cons_owners
+                .entry(cell_id)
+                .or_default()
+                .push(keymap_id);
+
+            // A binding pair is itself mutable keymap structure.  Do not
+            // claim arbitrary binding definitions or included keymap roots;
+            // those either are not structure or have their own owner.
+            let entry = cell.car.borrow().clone();
+            if let Value::Cons(entry_cell) = &entry
+                && !matches!(entry.car(), Ok(Value::Symbol(ref name)) if name == "keymap")
+            {
+                let entry_id = crate::lisp::types::ConsCell::identity(entry_cell);
+                owned_ids.push(entry_id);
+                self.keymap_public_cons_owners
+                    .entry(entry_id)
+                    .or_default()
+                    .push(keymap_id);
+            }
+            tail = cell.cdr.borrow().clone();
+        }
+        self.keymap_public_cons_ids.insert(keymap_id, owned_ids);
+    }
+
+    pub(crate) fn keymap_public_cons_owner_ids(&self, value: &Value) -> Vec<u64> {
+        value
+            .cons_id()
+            .and_then(|id| self.keymap_public_cons_owners.get(&id))
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub(crate) fn create_treesit_query(&mut self, language: Value, source: Value) -> Value {

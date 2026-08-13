@@ -605,7 +605,7 @@ define_dispatch!(
                 Ok(Value::T)
             }
             "value<" => {
-                need_args(name, args, 2)?;
+                need_arg_range(name, args, 2, 2)?;
                 Ok(if value_less(interp, &args[0], &args[1], env)? {
                     Value::T
                 } else {

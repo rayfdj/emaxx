@@ -279,8 +279,25 @@ pub(crate) fn case_word_char(interp: &Interpreter, ch: char, case_symbols_as_wor
     syntax::current_syntax_word_char(interp, normalize_case_key(ch as u32), case_symbols_as_words)
 }
 
+/// GNU's unconditional Unicode special-casing tables.  Keep the small native
+/// bootstrap fallback in one place so `get-char-code-property' and the
+/// string/region casers cannot disagree about one-to-many mappings.
+pub(crate) fn unicode_special_case_mapping(code: u32, property: &str) -> Option<&'static str> {
+    match (normalize_case_key(code), property) {
+        (0x00DF, "special-uppercase") => Some("SS"),
+        (0x00DF, "special-titlecase") => Some("Ss"),
+        (0x0130, "special-lowercase") => Some("i\u{307}"),
+        (0xFB01, "special-uppercase") => Some("FI"),
+        (0xFB01, "special-titlecase") => Some("Fi"),
+        _ => None,
+    }
+}
+
 pub(crate) fn full_upcase_string(interp: &Interpreter, up_table: u64, ch: char) -> String {
     let code = ch as u32;
+    if let Some(mapped) = unicode_special_case_mapping(code, "special-uppercase") {
+        return mapped.to_string();
+    }
     if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
         return char::from_u32(denormalize_case_key(code, mapped))
             .unwrap_or(ch)
@@ -299,6 +316,9 @@ pub(crate) fn full_downcase_string(
     final_sigma: bool,
 ) -> String {
     let code = ch as u32;
+    if let Some(mapped) = unicode_special_case_mapping(code, "special-lowercase") {
+        return mapped.to_string();
+    }
     if let Some(mapped) = explicit_case_table_mapping(interp, down_table, code) {
         return char::from_u32(denormalize_case_key(code, mapped))
             .unwrap_or(ch)
@@ -315,14 +335,15 @@ pub(crate) fn full_downcase_string(
 
 pub(crate) fn full_titlecase_string(interp: &Interpreter, up_table: u64, ch: char) -> String {
     let code = ch as u32;
+    if let Some(mapped) = unicode_special_case_mapping(code, "special-titlecase") {
+        return mapped.to_string();
+    }
     if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
         return char::from_u32(denormalize_case_key(code, mapped))
             .unwrap_or(ch)
             .to_string();
     }
     match code {
-        0x00DF => "Ss".into(),
-        0xFB01 => "Fi".into(),
         0x01C4..=0x01C6 => '\u{01C5}'.to_string(),
         _ if is_raw_like_byte_char(code) => ch.to_string(),
         _ => char::from_u32(denormalize_case_key(code, simple_titlecase_char(code)))

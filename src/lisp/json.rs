@@ -1,6 +1,8 @@
 use super::eval::Interpreter;
-use super::primitives::{make_shared_string_value_with_multibyte, string_like, vector_items};
-use super::types::{LispError, Value};
+use super::primitives::{
+    make_shared_string_value_with_multibyte, string_like, values_eql, vector_items,
+};
+use super::types::{LispError, Value, visible_symbol_name};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
@@ -9,6 +11,7 @@ pub(crate) const CIRCULAR_READ_SYNTAX_SYMBOL: &str = "emaxx--circular-read-synta
 pub(crate) const HASH_TABLE_LITERAL_SYMBOL: &str = "emaxx--hash-table-literal";
 const HASH_TABLE_RECORD_TYPE: &str = "hash-table";
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
+const JSON_SERIALIZATION_MAX_DEPTH: usize = 50;
 
 #[derive(Clone, Debug)]
 pub(crate) enum JsonObjectType {
@@ -583,7 +586,7 @@ pub(crate) fn serialize(
         null_object,
         false_object,
     };
-    let text = serialize_value(interp, value, &options)?;
+    let text = serialize_value(interp, value, &options, JSON_SERIALIZATION_MAX_DEPTH)?;
     let bytes_text = utf8_bytes_to_unibyte_text(text.as_bytes());
     let bytes_value = if bytes_text == text {
         Value::String(bytes_text.clone().into())
@@ -769,11 +772,14 @@ fn serialize_value(
     interp: &mut Interpreter,
     value: &Value,
     options: &SerializeOptions<'_>,
+    depth: usize,
 ) -> Result<String, LispError> {
-    if value == options.null_object {
+    // json.c uses EQ for the configurable sentinel objects.  Structural
+    // equality would turn a distinct equal string/list into null or false.
+    if values_eql(value, options.null_object) {
         return Ok("null".into());
     }
-    if value == options.false_object {
+    if values_eql(value, options.false_object) {
         return Ok("false".into());
     }
     match value {
@@ -788,21 +794,21 @@ fn serialize_value(
             1,
         )),
         Value::Record(_) if is_hash_table(interp, value) => {
-            serialize_hash_table(interp, value, options)
+            serialize_hash_table(interp, value, options, depth)
         }
         Value::Cons(_) => {
-            if let Some(rendered) = serialize_hash_table_literal(interp, value, options)? {
+            if let Some(rendered) = serialize_hash_table_literal(interp, value, options, depth)? {
                 return Ok(rendered);
             }
             if let Ok(items) = vector_items(value)
                 && matches!(value.to_vec().ok().and_then(|v| v.first().cloned()), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
             {
-                return serialize_array(interp, &items, options);
+                return serialize_array(interp, &items, options, depth);
             }
             if string_like(value).is_some() {
                 return serialize_string(value);
             }
-            serialize_list_object(interp, value, options)
+            serialize_list_object(interp, value, options, depth)
         }
         _ if string_like(value).is_some() => serialize_string(value),
         _ => Err(LispError::TypeError("json-value".into(), value.type_name())),
@@ -813,10 +819,12 @@ fn serialize_array(
     interp: &mut Interpreter,
     items: &[Value],
     options: &SerializeOptions<'_>,
+    depth: usize,
 ) -> Result<String, LispError> {
+    let depth = json_nested_depth(depth)?;
     let mut rendered = Vec::with_capacity(items.len());
     for item in items {
-        rendered.push(serialize_value(interp, item, options)?);
+        rendered.push(serialize_value(interp, item, options, depth)?);
     }
     Ok(format!("[{}]", rendered.join(",")))
 }
@@ -854,7 +862,9 @@ fn serialize_hash_table(
     interp: &mut Interpreter,
     value: &Value,
     options: &SerializeOptions<'_>,
+    depth: usize,
 ) -> Result<String, LispError> {
+    let depth = json_nested_depth(depth)?;
     let Some((_, entries)) = hash_table_entries(interp, value) else {
         return Err(LispError::TypeError("hash-table".into(), value.type_name()));
     };
@@ -866,6 +876,7 @@ fn serialize_hash_table(
             .collect::<Result<Vec<_>, LispError>>()?,
         options,
         false,
+        depth,
     )
 }
 
@@ -873,6 +884,7 @@ fn serialize_hash_table_literal(
     interp: &mut Interpreter,
     value: &Value,
     options: &SerializeOptions<'_>,
+    depth: usize,
 ) -> Result<Option<String>, LispError> {
     let items = value.to_vec().ok();
     let Some(items) = items else {
@@ -882,6 +894,7 @@ fn serialize_hash_table_literal(
     {
         return Ok(None);
     }
+    let depth = json_nested_depth(depth)?;
     let mut test = "eql".to_string();
     let mut data = Vec::new();
     let mut index = 1usize;
@@ -906,6 +919,7 @@ fn serialize_hash_table_literal(
             .collect::<Result<Vec<_>, LispError>>()?,
         options,
         false,
+        depth,
     )
     .map(Some)
 }
@@ -914,7 +928,9 @@ fn serialize_list_object(
     interp: &mut Interpreter,
     value: &Value,
     options: &SerializeOptions<'_>,
+    depth: usize,
 ) -> Result<String, LispError> {
+    let depth = json_nested_depth(depth)?;
     let items = value.to_vec()?;
     if items.is_empty() {
         return Ok("{}".into());
@@ -934,6 +950,7 @@ fn serialize_list_object(
                 .collect(),
             options,
             true,
+            depth,
         );
     }
     if items.len().is_multiple_of(2)
@@ -956,6 +973,7 @@ fn serialize_list_object(
                 .collect(),
             options,
             true,
+            depth,
         );
     }
     Err(LispError::TypeError(
@@ -969,6 +987,7 @@ fn serialize_object_entries(
     entries: Vec<(String, &Value)>,
     options: &SerializeOptions<'_>,
     skip_duplicates: bool,
+    depth: usize,
 ) -> Result<String, LispError> {
     let mut seen = Vec::new();
     let mut rendered = Vec::new();
@@ -980,10 +999,16 @@ fn serialize_object_entries(
         rendered.push(format!(
             "{}:{}",
             serialize_string(&Value::String(key.into()))?,
-            serialize_value(interp, value, options)?
+            serialize_value(interp, value, options, depth)?
         ));
     }
     Ok(format!("{{{}}}", rendered.join(",")))
+}
+
+fn json_nested_depth(depth: usize) -> Result<usize, LispError> {
+    depth
+        .checked_sub(1)
+        .ok_or_else(|| LispError::Signal("Maximum JSON serialization depth exceeded".into()))
 }
 
 fn is_alist_entry(value: &Value) -> bool {
@@ -998,7 +1023,9 @@ fn alist_entry_parts(entry: &Value) -> Result<(Value, Value), LispError> {
 
 fn object_key_string(value: &Value) -> Result<String, LispError> {
     let symbol = value.as_symbol()?;
-    Ok(symbol.trim_start_matches(':').to_string())
+    Ok(visible_symbol_name(symbol)
+        .trim_start_matches(':')
+        .to_string())
 }
 
 fn hash_table_key_string(value: &Value) -> Result<String, LispError> {
@@ -1099,6 +1126,107 @@ mod tests {
                 .chars()
                 .any(|ch| raw_byte_from_regex_char(ch).is_some())
         );
+    }
+
+    #[test]
+    fn serializer_bounds_nested_circular_objects_without_recursing_the_rust_stack() {
+        let mut interp = Interpreter::new();
+        let cycle = Value::list([Value::symbol("a"), Value::Nil]);
+        cycle
+            .cdr()
+            .expect("cycle second cell")
+            .set_car(cycle.clone())
+            .expect("close nested alist cycle");
+        let error = serialize(
+            &mut interp,
+            &Value::list([cycle]),
+            &Value::Symbol(":null".into()),
+            &Value::Symbol(":false".into()),
+        )
+        .expect_err("nested cycle should hit GNU's serialization-depth limit");
+        assert_eq!(error.condition_type(), "error");
+    }
+
+    #[test]
+    fn serializer_custom_sentinels_use_identity_not_structural_equality() {
+        let mut interp = Interpreter::new();
+        let value = Value::String("same text".into());
+        let distinct_equal_null = Value::String("same text".into());
+        let serialized = serialize(
+            &mut interp,
+            &value,
+            &distinct_equal_null,
+            &Value::Symbol(":false".into()),
+        )
+        .expect("distinct equal string is ordinary JSON data");
+        assert_eq!(serialized.text, "\"same text\"");
+    }
+
+    #[test]
+    fn serializer_uses_the_visible_name_of_uninterned_object_keys() {
+        let mut interp = Interpreter::new();
+        let uninterned = Value::Symbol("key\u{1f}123".into());
+        let serialized = serialize(
+            &mut interp,
+            &Value::list([Value::cons(uninterned, Value::Integer(1))]),
+            &Value::Symbol(":null".into()),
+            &Value::Symbol(":false".into()),
+        )
+        .expect("uninterned symbol should be a JSON object key");
+        assert_eq!(serialized.text, "{\"key\":1}");
+    }
+
+    #[test]
+    fn native_json_error_symbols_follow_json_c_hierarchy() {
+        let interp = Interpreter::new();
+        for (name, conditions, message) in [
+            (
+                "json-error",
+                &["json-error", "error"][..],
+                "generic JSON error",
+            ),
+            (
+                "json-parse-error",
+                &["json-parse-error", "json-error", "error"][..],
+                "could not parse JSON stream",
+            ),
+            (
+                "json-end-of-file",
+                &[
+                    "json-end-of-file",
+                    "json-parse-error",
+                    "json-error",
+                    "error",
+                ][..],
+                "end of JSON stream",
+            ),
+            (
+                "json-trailing-content",
+                &[
+                    "json-trailing-content",
+                    "json-parse-error",
+                    "json-error",
+                    "error",
+                ][..],
+                "trailing content after JSON stream",
+            ),
+            (
+                "json-utf8-decode-error",
+                &["json-utf8-decode-error", "json-error", "error"][..],
+                "invalid utf-8 encoding",
+            ),
+        ] {
+            assert_eq!(
+                interp.get_symbol_property(name, "error-conditions"),
+                Some(Value::list(
+                    conditions.iter().map(|name| Value::symbol(name))
+                ))
+            );
+            assert_eq!(
+                interp.get_symbol_property(name, "error-message"),
+                Some(Value::String(message.into()))
+            );
+        }
     }
 
     #[test]

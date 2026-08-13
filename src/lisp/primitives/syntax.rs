@@ -508,9 +508,7 @@ pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u
             class: SyntaxClass::Whitespace,
             ..SyntaxEntry::default()
         },
-        value => string_like(value)
-            .and_then(|value| parse_syntax_spec(&value.text))
-            .unwrap_or_else(|| default_syntax_entry(ch)),
+        value => syntax_entry_from_value(value).unwrap_or_else(|| default_syntax_entry(ch)),
     }
 }
 
@@ -555,11 +553,15 @@ fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
             entry.matching = matching;
             Some(entry)
         }
-        _ => value
-            .to_vec()
-            .ok()
-            .and_then(|items| items.first().cloned())
-            .and_then(|item| syntax_entry_from_value(&item)),
+        _ => string_like(value)
+            .and_then(|value| parse_syntax_spec(&value.text))
+            .or_else(|| {
+                value
+                    .to_vec()
+                    .ok()
+                    .and_then(|items| items.first().cloned())
+                    .and_then(|item| syntax_entry_from_value(&item))
+            }),
     }
 }
 

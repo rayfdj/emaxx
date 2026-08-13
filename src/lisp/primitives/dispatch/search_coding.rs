@@ -889,48 +889,36 @@ define_dispatch!(
 
             "internal--labeled-narrow-to-region" => {
                 need_args(name, args, 3)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                let label = args[2].as_symbol()?.to_string();
-                let state = Value::list([
-                    Value::Integer(interp.buffer.point_min() as i64),
-                    Value::Integer(interp.buffer.point_max() as i64),
-                ]);
-                interp.set_variable(
-                    &format!("__emaxx-labeled-restriction-{label}"),
-                    state,
-                    &mut env.clone(),
-                );
-                interp.set_variable(
-                    "__emaxx-active-labeled-restriction",
-                    Value::list([Value::Integer(start as i64), Value::Integer(end as i64)]),
-                    &mut env.clone(),
-                );
+                let mut start = position_from_value(interp, &args[0])?;
+                let mut end = position_from_value(interp, &args[1])?;
+                let label = args[2].clone();
+                if start > end {
+                    std::mem::swap(&mut start, &mut end);
+                }
+                let outermost = (interp.buffer.point_min(), interp.buffer.point_max());
+                if let Some((clamp_start, clamp_end)) =
+                    interp.effective_labeled_restriction(interp.current_buffer_id(), None)
+                {
+                    start = start.clamp(clamp_start, clamp_end);
+                    end = end.clamp(clamp_start, clamp_end);
+                }
+                interp.push_labeled_restriction(
+                    interp.current_buffer_id(),
+                    label,
+                    start,
+                    end,
+                    outermost,
+                )?;
                 interp.buffer.narrow_to_region(start, end);
                 Ok(Value::Nil)
             }
 
             "internal--labeled-widen" => {
                 need_args(name, args, 1)?;
-                let label = args[0].as_symbol()?.to_string();
-                interp.set_variable(
-                    "__emaxx-active-labeled-restriction",
-                    Value::Nil,
-                    &mut env.clone(),
-                );
-                if let Some(state) =
-                    interp.lookup_var(&format!("__emaxx-labeled-restriction-{label}"), env)
+                let label = &args[0];
+                if let Some((start, end)) =
+                    interp.pop_labeled_restriction(interp.current_buffer_id(), label)
                 {
-                    let values = state.to_vec()?;
-                    let start = values
-                        .first()
-                        .and_then(|v| v.as_integer().ok())
-                        .unwrap_or(1) as usize;
-                    let end = values
-                        .get(1)
-                        .and_then(|v| v.as_integer().ok())
-                        .unwrap_or((interp.buffer.size_total() + 1) as i64)
-                        as usize;
                     interp.buffer.narrow_to_region(start, end);
                 } else {
                     interp.buffer.widen();

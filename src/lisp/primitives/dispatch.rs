@@ -18,11 +18,12 @@ pub(super) mod misc;
 mod misc_keymaps;
 mod numeric;
 
+pub(crate) use display::echo_area_message;
 pub(crate) use lists::{
+    next_digit_prefix, next_negative_prefix, next_universal_prefix,
     prepare_kbd_macro_minibuffer_entry, read_minibuffer_text_from_kbd_macro_inner,
     set_tty_minibuffer_reader,
 };
-pub(crate) use display::echo_area_message;
 pub(crate) use misc_keymaps::oclosure_type_of;
 mod overlays;
 mod predicates;
@@ -144,12 +145,17 @@ define_dispatch_modules! {
 
 fn compute_name_facts(name: &str) -> NameFacts {
     let module = DispatchModule::for_name(name);
+    let available_in_oracle =
+        crate::lisp::primitives::generated_gnu_c_primitives::generated_gnu_c_primitive_available(
+            name,
+        )
+        .unwrap_or(true);
     NameFacts {
         // A callable native route is the builtin contract.  Keeping a
         // second list of the same names made every new primitive require
         // two coordinated edits and allowed function lookup to drift from
         // dispatch.
-        builtin: module != DispatchModule::None,
+        builtin: module != DispatchModule::None && available_in_oracle,
         special_form: crate::lisp::primitives::is_special_form_name(name),
         prefer_override: module.prefer_builtin(name),
         resets_undo: module.resets_undo(name),

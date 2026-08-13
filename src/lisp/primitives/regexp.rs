@@ -326,7 +326,7 @@ fn translate_elisp_regex_with_point(
         }
         if ch == '[' {
             translated.push_str(&translate_bracket_expression(
-                &mut chars, encoding, case_fold,
+                &mut chars, encoding, case_fold, interp,
             ));
             at_branch_start = false;
             can_repeat_previous = true;
@@ -764,6 +764,14 @@ fn translate_zero_width_assertion(
 // entries; symbol and string constituents must include mode-specific ASCII
 // assignments such as Ruby's single-quote string delimiter.
 pub(super) fn pattern_depends_on_syntax_table(pattern: &str) -> bool {
+    // POSIX `word' is the bracket-expression spelling of the same current
+    // syntax-table predicate as `\w'.  This conservative text probe may do
+    // unnecessary table work for an escaped literal, but cannot change its
+    // meaning; the bracket grammar below remains the authority that decides
+    // whether the token is actually an atom.
+    if pattern.contains("[:word:]") {
+        return true;
+    }
     let mut chars = pattern.chars();
     while let Some(ch) = chars.next() {
         if ch != '\\' {
@@ -894,51 +902,115 @@ fn rendered_table_word_classes(
 ) -> (String, String) {
     #[cfg(test)]
     REGEXP_SYNTAX_CLASS_RENDER_COUNT.with(|count| count.set(count.get() + 1));
-    let ascii_word = super::syntax::syntax_class_ascii_chars(interp, 'w');
-    let class_for_ascii = |select_word: bool| {
-        let members = (0..=0x7f)
-            .filter_map(char::from_u32)
-            .filter(|ch| ascii_word.contains(ch) == select_word)
-            .map(|ch| format!(r"\x{{{:x}}}", ch as u32))
-            .collect::<String>();
-        format!("[{members}]")
-    };
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    enum WordSegment {
+        Word,
+        StandardDefault,
+        NonWord,
+    }
 
-    // Outside ASCII, retain the existing Unicode/category approximation.  A
-    // zero-width non-ASCII guard keeps explicit ASCII table overrides out of
-    // that broad category class; the linear prefilter removes this guard
-    // while the anchored exact matcher enforces it.
-    let non_ascii = r"(?=[^\x00-\x7F])";
+    const SCALAR_END: u32 = char::MAX as u32 + 1;
+    let table_id = interp.current_syntax_table_id();
+    let mut boundaries = vec![0, 0xd800, 0xe000, SCALAR_END];
+    let mut current = Some(table_id);
+    let mut seen = HashSet::new();
+    while let Some(id) = current {
+        if !seen.insert(id) {
+            break;
+        }
+        let Some(table) = interp.find_char_table(id) else {
+            break;
+        };
+        for entry in &table.entries {
+            if entry.start < SCALAR_END {
+                boundaries.push(entry.start);
+            }
+            if entry.end < char::MAX as u32 {
+                boundaries.push(entry.end + 1);
+            }
+        }
+        current = table.parent;
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut segments = Vec::<(u32, u32, WordSegment)>::new();
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1] - 1;
+        if char::from_u32(start).is_none() {
+            continue;
+        }
+        let Some((explicit, terminal)) = interp.char_table_explicit_or_terminal(table_id, start)
+        else {
+            continue;
+        };
+        let kind = if explicit.is_none()
+            && terminal.id == interp.standard_syntax_table_id()
+            && terminal.default.is_nil()
+        {
+            WordSegment::StandardDefault
+        } else if super::syntax::syntax_entry_for_code(interp, table_id, start).class
+            == super::syntax::SyntaxClass::Word
+        {
+            WordSegment::Word
+        } else {
+            WordSegment::NonWord
+        };
+        if let Some((_, previous_end, previous_kind)) = segments.last_mut()
+            && *previous_kind == kind
+            && previous_end.saturating_add(1) == start
+        {
+            *previous_end = end;
+        } else {
+            segments.push((start, end, kind));
+        }
+    }
+
+    let range_members = |start: u32, end: u32| {
+        if start == end {
+            format!(r"\x{{{start:x}}}")
+        } else {
+            format!(r"\x{{{start:x}}}-\x{{{end:x}}}")
+        }
+    };
+    let explicit_word_members = segments
+        .iter()
+        .filter(|(_, _, kind)| *kind == WordSegment::Word)
+        .map(|(start, end, _)| range_members(*start, *end))
+        .collect::<String>();
+    let mut branches = Vec::new();
+    if !explicit_word_members.is_empty() {
+        branches.push(format!("[{explicit_word_members}]"));
+    }
+    branches.extend(
+        segments
+            .iter()
+            .filter(|(_, _, kind)| *kind == WordSegment::StandardDefault)
+            .map(|(start, end, _)| {
+                format!(
+                    "(?=[{}])(?:{REGEX_WORD_CLASS}|[$%])",
+                    range_members(*start, *end)
+                )
+            }),
+    );
     let word_sentinels = encoding
         .map(|encoding| encoding.class_sentinels('w'))
         .unwrap_or_default();
-    let sentinel_fragment = || {
+    if !word_sentinels.is_empty() {
         let members = word_sentinels
             .iter()
             .map(|ch| format!(r"\x{{{:x}}}", *ch as u32))
             .collect::<String>();
-        if members.is_empty() {
-            "(?!)".to_string()
-        } else {
-            format!("[{members}]")
-        }
-    };
-    let non_word_unicode = if word_sentinels.is_empty() {
-        format!("{non_ascii}{REGEX_NON_WORD_CLASS}")
+        branches.push(format!("[{members}]"));
+    }
+    let word = if branches.is_empty() {
+        "(?!)".to_string()
     } else {
-        format!(
-            "(?!{}){non_ascii}{REGEX_NON_WORD_CLASS}",
-            sentinel_fragment()
-        )
+        format!("(?:{})", branches.join("|"))
     };
-    (
-        format!(
-            "(?:{}|{non_ascii}{REGEX_WORD_CLASS}|{})",
-            class_for_ascii(true),
-            sentinel_fragment()
-        ),
-        format!("(?:{}|{non_word_unicode})", class_for_ascii(false)),
-    )
+    let non_word = format!("(?!{word})[\\s\\S]");
+    (word, non_word)
 }
 
 fn regex_syntax_class(
@@ -1113,10 +1185,13 @@ fn translate_bracket_expression(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
     encoding: Option<&SyntaxPropertyEncoding>,
     case_fold: bool,
+    interp: Option<&Interpreter>,
 ) -> String {
     let mut translated = String::from("[");
     let mut saw_atom = false;
     let mut emitted_atom = false;
+    let mut emitted_delegate_atom = false;
+    let mut has_table_word_class = false;
     let mut negated = false;
     let mut sentinel_original_members = encoding
         .map(|encoding| vec![false; encoding.sentinels.len()])
@@ -1137,7 +1212,29 @@ fn translate_bracket_expression(
                     "(?!)".into()
                 };
             }
-            translated.push(']');
+            let translated = if has_table_word_class {
+                let ordinary = if emitted_delegate_atom {
+                    if negated {
+                        translated.remove(1);
+                    }
+                    translated.push(']');
+                    Some(translated)
+                } else {
+                    None
+                };
+                let positive = ordinary.map_or_else(
+                    || TABLE_WORD_CLASS_MARKER.to_string(),
+                    |ordinary| format!("(?:{ordinary}|{TABLE_WORD_CLASS_MARKER})"),
+                );
+                if negated {
+                    format!("(?!{positive})[\\s\\S]")
+                } else {
+                    positive
+                }
+            } else {
+                translated.push(']');
+                translated
+            };
             return preserve_bracket_membership_for_sentinels(
                 translated,
                 negated,
@@ -1165,6 +1262,7 @@ fn translate_bracket_expression(
                 *chars = preview;
                 saw_atom = true;
                 emitted_atom = true;
+                emitted_delegate_atom = true;
                 continue;
             }
         }
@@ -1188,6 +1286,7 @@ fn translate_bracket_expression(
                     &mut sentinel_original_members,
                 );
                 emitted_atom = true;
+                emitted_delegate_atom = true;
             } else if is_empty_unicode_raw_range(*start, *end) {
                 if !negated {
                     return "(?!)".into();
@@ -1206,15 +1305,27 @@ fn translate_bracket_expression(
             saw_atom = true;
             continue;
         }
-        if let Some(fragment) = regex_class_atom_fragment(&atom) {
+        if matches!(&atom, RegexClassAtom::Posix(name) if name == "word") && interp.is_some() {
+            has_table_word_class = true;
+            record_sentinel_atom_members(
+                &atom,
+                encoding,
+                case_fold,
+                interp,
+                &mut sentinel_original_members,
+            );
+            emitted_atom = true;
+        } else if let Some(fragment) = regex_class_atom_fragment(&atom) {
             translated.push_str(&fragment);
             record_sentinel_atom_members(
                 &atom,
                 encoding,
                 case_fold,
+                interp,
                 &mut sentinel_original_members,
             );
             emitted_atom = true;
+            emitted_delegate_atom = true;
         } else {
             return "[".into();
         }
@@ -1228,6 +1339,7 @@ fn record_sentinel_atom_members(
     atom: &RegexClassAtom,
     encoding: Option<&SyntaxPropertyEncoding>,
     case_fold: bool,
+    interp: Option<&Interpreter>,
     members: &mut [bool],
 ) {
     let Some(encoding) = encoding else {
@@ -1242,13 +1354,22 @@ fn record_sentinel_atom_members(
                 chars_equal_for_regexp(entry.original, *ch, case_fold) || entry.sentinel == *ch
             }
             RegexClassAtom::Posix(class) => {
-                skip_char_matches_class(entry.original, class)
-                    || (case_fold
-                        && entry
-                            .original
-                            .to_lowercase()
-                            .chain(entry.original.to_uppercase())
-                            .any(|candidate| skip_char_matches_class(candidate, class)))
+                (if class == "word" && interp.is_some() {
+                    entry.class == 'w'
+                } else {
+                    skip_char_matches_class(entry.original, class)
+                }) || (case_fold
+                    && entry
+                        .original
+                        .to_lowercase()
+                        .chain(entry.original.to_uppercase())
+                        .any(|candidate| {
+                            if class == "word" && interp.is_some() {
+                                entry.class == 'w'
+                            } else {
+                                skip_char_matches_class(candidate, class)
+                            }
+                        }))
             }
         };
         *member |= matches;
@@ -1930,7 +2051,8 @@ fn compile_elisp_regex_with_syntax_properties(
     // large key strings.  Keep that work in the dependent-pattern path; an
     // empty component is a complete cache key for table-independent forms.
     let uses_table_word_class = pattern_text.contains(TABLE_WORD_CLASS_MARKER)
-        || pattern_text.contains(TABLE_NON_WORD_CLASS_MARKER);
+        || pattern_text.contains(TABLE_NON_WORD_CLASS_MARKER)
+        || pattern_text.contains("[:word:]");
     let (syntax_word_class, syntax_non_word_class) = if uses_table_word_class {
         rendered_table_word_classes(interp, encoding)
     } else {

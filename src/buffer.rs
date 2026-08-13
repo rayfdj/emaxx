@@ -1340,6 +1340,13 @@ impl Buffer {
         self.text.char_to_line(pos0) + 1
     }
 
+    /// Start position (1-based) of the 1-based LINE, clamped to the text.
+    pub fn line_start_of(&self, line: usize) -> usize {
+        let total = self.text.len_lines();
+        let index = line.saturating_sub(1).min(total.saturating_sub(1));
+        self.text.line_to_char(index) + 1
+    }
+
     /// Current column (0-based) of point.
     pub fn current_column(&self) -> usize {
         let idx0 = self.pt - 1;

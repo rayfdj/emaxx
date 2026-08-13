@@ -15,6 +15,56 @@ fn args_out_of_range(sequence: &Value, index: &Value) -> LispError {
     ]))
 }
 
+#[derive(Clone, Copy)]
+enum DeleteListComparison {
+    Eq,
+    Equal,
+}
+
+fn delete_from_list(
+    interp: &mut Interpreter,
+    elt: &Value,
+    list: &Value,
+    env: &Env,
+    comparison: DeleteListComparison,
+) -> Result<Value, LispError> {
+    let mut head = list.clone();
+    let mut previous: Option<Value> = None;
+    let mut tail = list.clone();
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    loop {
+        match tail.clone() {
+            Value::Nil => return Ok(head),
+            Value::Cons(cell) => {
+                if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        Value::String("Circular list".into()),
+                    ])));
+                }
+                let next = cell.cdr.borrow().clone();
+                let matches = match comparison {
+                    DeleteListComparison::Eq => {
+                        values_eq_in_env(interp, &cell.car.borrow(), elt, env)
+                    }
+                    DeleteListComparison::Equal => values_equal(interp, elt, &cell.car.borrow()),
+                };
+                if matches {
+                    if let Some(previous) = &previous {
+                        previous.set_cdr(next.clone())?;
+                    } else {
+                        head = next.clone();
+                    }
+                } else {
+                    previous = Some(tail.clone());
+                }
+                tail = next;
+            }
+            _ => return Err(wrong_type_argument("listp", head)),
+        }
+    }
+}
+
 fn current_category_table_id(interp: &mut Interpreter) -> u64 {
     interp
         .buffer_local_value(interp.current_buffer_id(), "category-table")
@@ -1167,10 +1217,17 @@ define_dispatch!(
 
             "setcar" => {
                 need_args(name, args, 2)?;
-                let Value::Cons(_) = &args[0] else {
+                let owners = interp.keymap_public_cons_owner_ids(&args[0]);
+                if matches!(&args[0], Value::Cons(_)) {
+                    args[0].set_car(args[1].clone())?;
+                } else if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
+                    view.set_car(args[1].clone())?;
+                } else {
                     return Err(wrong_type_argument("consp", args[0].clone()));
-                };
-                args[0].set_car(args[1].clone())?;
+                }
+                for owner in owners {
+                    sync_runtime_keymap_from_public_view(interp, owner)?;
+                }
                 // A cons may be the live plist cell of a symbol.  Conservatively
                 // invalidate macro metadata caches for arbitrary cons mutation;
                 // GNU exposes no detached copy at `symbol-plist'.
@@ -1180,10 +1237,14 @@ define_dispatch!(
 
             "setcdr" => {
                 need_args(name, args, 2)?;
+                let owners = interp.keymap_public_cons_owner_ids(&args[0]);
                 if matches!(&args[0], Value::Cons(_)) {
                     args[0].set_cdr(args[1].clone())?;
                 } else if !replace_runtime_keymap_tail(interp, &args[0], &args[1])? {
                     return Err(wrong_type_argument("consp", args[0].clone()));
+                }
+                for owner in owners {
+                    sync_runtime_keymap_from_public_view(interp, owner)?;
                 }
                 interp.note_definition_changed();
                 Ok(args[1].clone())
@@ -1427,8 +1488,16 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let n = n as usize;
+                // GNU keymaps are ordinary cons lists.  Emaxx keeps an
+                // identity-bearing record behind that public surface, so
+                // list primitives must operate on the live view rather than
+                // leaking the record to source owners such as subr.el's
+                // `butlast' (which delegates to `take').
+                let keymap_id = keymap_record_id(interp, &args[1]);
+                let list =
+                    runtime_keymap_public_view(interp, &args[1]).unwrap_or_else(|| args[1].clone());
                 if name == "take" {
-                    let mut current = args[1].clone();
+                    let mut current = list;
                     let mut items = Vec::new();
                     let mut remaining = n;
                     while remaining > 0 {
@@ -1448,7 +1517,7 @@ define_dispatch!(
                     }
                     Ok(Value::list(items))
                 } else {
-                    let head = args[1].clone();
+                    let head = list;
                     let mut current = head.clone();
                     let mut remaining = n;
                     while remaining > 1 {
@@ -1483,6 +1552,9 @@ define_dispatch!(
                             let _ = &cons_cell.car;
                             let cdr = &cons_cell.cdr;
                             *cdr.borrow_mut() = Value::Nil;
+                            if let Some(keymap_id) = keymap_id {
+                                sync_runtime_keymap_from_public_view(interp, keymap_id)?;
+                            }
                             Ok(head)
                         }
                         value => Err(LispError::TypeError("list".into(), value.type_name())),
@@ -1492,32 +1564,7 @@ define_dispatch!(
 
             "delq" => {
                 need_args(name, args, 2)?;
-                let elt = &args[0];
-                let mut head = args[1].clone();
-                while let Value::Cons(cell) = head.clone() {
-                    if values_eq_in_env(interp, &cell.car.borrow(), elt, env) {
-                        head = cell.cdr.borrow().clone();
-                    } else {
-                        break;
-                    }
-                }
-                let mut current = head.clone();
-                while let Value::Cons(cell) = current.clone() {
-                    let next = cell.cdr.borrow().clone();
-                    match next {
-                        Value::Cons(cons_cell) => {
-                            let next_car = &cons_cell.car;
-                            let next_cdr = &cons_cell.cdr;
-                            if values_eq_in_env(interp, &next_car.borrow(), elt, env) {
-                                *cell.cdr.borrow_mut() = next_cdr.borrow().clone();
-                            } else {
-                                current = Value::Cons(cons_cell);
-                            }
-                        }
-                        _ => break,
-                    }
-                }
-                Ok(head)
+                delete_from_list(interp, &args[0], &args[1], env, DeleteListComparison::Eq)
             }
 
             "delete" => {
@@ -1531,36 +1578,7 @@ define_dispatch!(
                 // observable through eq and is what subr.el's destructive
                 // delete-dups relies on; rebuilding a filtered list silently
                 // changes both APIs' contracts.
-                let mut head = args[1].clone();
-                let mut previous: Option<Value> = None;
-                let mut tail = args[1].clone();
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                loop {
-                    match tail.clone() {
-                        Value::Nil => break,
-                        Value::Cons(cell) => {
-                            if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-                                return Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("circular-list".into()),
-                                    Value::String("Circular list".into()),
-                                ])));
-                            }
-                            let next = cell.cdr.borrow().clone();
-                            if values_equal(interp, elt, &cell.car.borrow()) {
-                                if let Some(previous) = &previous {
-                                    previous.set_cdr(next.clone())?;
-                                } else {
-                                    head = next.clone();
-                                }
-                            } else {
-                                previous = Some(tail.clone());
-                            }
-                            tail = next;
-                        }
-                        other => return Err(wrong_type_argument("listp", other)),
-                    }
-                }
-                Ok(head)
+                delete_from_list(interp, elt, &args[1], env, DeleteListComparison::Equal)
             }
 
             "remq" => {

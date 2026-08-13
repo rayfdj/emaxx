@@ -1908,8 +1908,11 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
         | "file-name-all-completions"
         | "file-name-completion"
         | "file-newer-than-file-p"
-        | "make-symbolic-link"
         | "rename-file" => FileNameHandlerOperation::new(&[0, 1], RelativeArgument),
+        // The symlink target is stored data, not a file to access.  GNU's
+        // Fmake_symbolic_link consults handlers only for LINKNAME; when that
+        // handler runs it still receives TARGET unchanged as an argument.
+        "make-symbolic-link" => FileNameHandlerOperation::new(&[1], RelativeArgument),
         "write-region" => FileNameHandlerOperation::new(&[2, 5], RelativeArgument),
         "start-file-process" => FileNameHandlerOperation::new(&[2], Always),
         "process-file" => FileNameHandlerOperation::new(&[0], Always),

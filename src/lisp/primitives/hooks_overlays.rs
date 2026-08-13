@@ -68,6 +68,12 @@ pub(crate) fn run_change_hooks(
     if hooks.is_empty() {
         return Ok(());
     }
+    // insdel.c dynamically inhibits recursive modification hooks while the
+    // callbacks run.  Its unwind record also clears the active before/after
+    // hook variable on every nonlocal exit, preventing a broken global or
+    // local hook from poisoning subsequent edits.
+    let inhibit_restore =
+        interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
     interp.enter_change_hooks();
     let mut result = Ok(());
     for hook in hooks {
@@ -77,7 +83,23 @@ pub(crate) fn run_change_hooks(
         }
     }
     interp.leave_change_hooks();
-    result
+    if result.is_err()
+        && matches!(
+            hook_name,
+            "before-change-functions" | "after-change-functions"
+        )
+    {
+        let local_buffer_id = interp.assignment_buffer_id(hook_name);
+        interp.set_variable(hook_name, Value::Nil, env);
+        if let Some(buffer_id) = local_buffer_id {
+            interp.remove_buffer_local_hook(buffer_id, hook_name);
+        }
+    }
+    let restore_result = interp.restore_special_dynamic(inhibit_restore, env);
+    match (result, restore_result) {
+        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 pub(crate) fn flush_combined_after_change(
@@ -380,7 +402,7 @@ pub(crate) fn overlay_hook_functions(
     overlay: &crate::overlay::Overlay,
     property: &str,
 ) -> Vec<Value> {
-    match overlay.get_prop(property) {
+    match overlay.get_prop(&Value::Symbol(property.into())) {
         Some(value) => value
             .to_vec()
             .unwrap_or_else(|_| vec![value.clone()])
@@ -523,6 +545,7 @@ pub(crate) fn delete_region_with_hooks(
     if from >= to {
         return Ok(String::new());
     }
+    let range_length = to - from;
     let overlay_calls = overlay_change_hook_calls(&interp.buffer, from, to, from);
     run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
     let has_before_hooks = interp
@@ -535,6 +558,9 @@ pub(crate) fn delete_region_with_hooks(
         })
         .unwrap_or(false);
     let preserved_bounds = if has_before_hooks {
+        let Value::Marker(preserve_id) = interp.make_marker() else {
+            unreachable!("make_marker returns a marker")
+        };
         let Value::Marker(start_id) = interp.make_marker() else {
             unreachable!("make_marker returns a marker")
         };
@@ -542,9 +568,10 @@ pub(crate) fn delete_region_with_hooks(
             unreachable!("make_marker returns a marker")
         };
         let buffer_id = interp.current_buffer_id();
+        let _ = interp.set_marker(preserve_id, Some(from), Some(buffer_id));
         let _ = interp.set_marker(start_id, Some(from), Some(buffer_id));
         let _ = interp.set_marker(end_id, Some(to), Some(buffer_id));
-        Some((start_id, end_id))
+        Some((preserve_id, start_id, end_id))
     } else {
         None
     };
@@ -554,16 +581,17 @@ pub(crate) fn delete_region_with_hooks(
         &[Value::Integer(from as i64), Value::Integer(to as i64)],
         env,
     );
-    let (from, to) = if let Some((start_id, end_id)) = preserved_bounds {
-        let start = interp.marker_position(start_id).unwrap_or(from);
-        let end = interp.marker_position(end_id).unwrap_or(to);
+    let (from, to) = if let Some((preserve_id, start_id, end_id)) = preserved_bounds {
+        // GNU's del_range_1 preserves the start through Lisp callbacks and
+        // then reapplies the original range length.  The start/end markers
+        // belong to signal_before_change itself and must remain live while a
+        // nested edit records its undo marker riders.
+        let start = interp.marker_position(preserve_id).unwrap_or(from);
+        let end = (start + range_length).min(interp.buffer.point_max());
+        let _ = interp.set_marker(preserve_id, None, None);
         let _ = interp.set_marker(start_id, None, None);
         let _ = interp.set_marker(end_id, None, None);
-        if start <= end {
-            (start, end)
-        } else {
-            (end, start)
-        }
+        (start, end)
     } else {
         (from, to)
     };

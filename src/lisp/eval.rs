@@ -760,6 +760,11 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             &["invalid-regexp", "error"],
             "Invalid regexp",
         ),
+        (
+            "coding-system-error",
+            &["coding-system-error", "error"],
+            "Invalid coding system",
+        ),
         ("scan-error", &["scan-error", "error"], "Scan error"),
         (
             "module-load-failed",
@@ -799,6 +804,40 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             "sqlite-locked-error",
             &["sqlite-locked-error", "sqlite-error", "error"],
             "Database locked",
+        ),
+        // json.c installs these native condition symbols independently of
+        // json.el.  Parsers signal the leaf condition and generic consumers
+        // such as `condition-case' and ERT match through this hierarchy.
+        ("json-error", &["json-error", "error"], "generic JSON error"),
+        (
+            "json-parse-error",
+            &["json-parse-error", "json-error", "error"],
+            "could not parse JSON stream",
+        ),
+        (
+            "json-end-of-file",
+            &[
+                "json-end-of-file",
+                "json-parse-error",
+                "json-error",
+                "error",
+            ],
+            "end of JSON stream",
+        ),
+        (
+            "json-trailing-content",
+            &[
+                "json-trailing-content",
+                "json-parse-error",
+                "json-error",
+                "error",
+            ],
+            "trailing content after JSON stream",
+        ),
+        (
+            "json-utf8-decode-error",
+            &["json-utf8-decode-error", "json-error", "error"],
+            "invalid utf-8 encoding",
         ),
         // cl-generic is dumped in GNU and native/preprovided in Emaxx.
         ("cl-no-method", &["cl-no-method", "error"], "No method"),
@@ -1183,6 +1222,12 @@ struct BacktraceFrame {
     debug_on_exit: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct BatchErrorBacktrace {
+    pub(crate) enabled: bool,
+    pub(crate) frames: Vec<(bool, Value, Vec<Value>, bool)>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BufferDisposition {
     Default,
@@ -1286,6 +1331,19 @@ pub(crate) struct CombinedAfterChangeState {
     pub(crate) buffer_id: u64,
     /// (unchanged chars before, unchanged chars after, inserted - deleted)
     pub(crate) changes: Vec<(i64, i64, i64)>,
+}
+
+/// One marker-tracked entry in editfns.c's labeled restriction stack.
+///
+/// The sentinel is represented structurally because GNU uses an uninterned
+/// symbol for it; ordinary labels retain their Lisp identity and are compared
+/// with `eq', not by their printed names.
+#[derive(Clone)]
+pub(crate) struct LabeledRestriction {
+    buffer_id: u64,
+    label: Option<Value>,
+    beg_marker_id: u64,
+    end_marker_id: u64,
 }
 
 /// A memoized funcall resolution for a symbol callee (see
@@ -1961,6 +2019,14 @@ pub struct Interpreter {
     /// Keymap selected by `use-global-map'.  GNU keeps this independently
     /// from the Lisp variable `global-map'.
     current_global_map: Option<Value>,
+    /// Runtime keymaps keep stable record identity internally while exposing
+    /// GNU's mutable cons-list surface to Lisp.  This reverse index makes a
+    /// nested `setcar'/`setcdr' on that surface update its owning record at
+    /// the mutation door instead of requiring read-side rescans.
+    keymap_public_cons_owners: HashMap<usize, Vec<u64>>,
+    /// Forward half of `keymap_public_cons_owners', used to unregister one
+    /// refreshed keymap without scanning every live public cons view.
+    keymap_public_cons_ids: HashMap<u64, Vec<usize>>,
     /// The ID of the current buffer.
     current_buffer_id: u64,
     /// The currently selected window record.
@@ -2120,8 +2186,8 @@ pub struct Interpreter {
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
-    /// Active labeled restrictions keyed by (buffer id, label, start, end).
-    labeled_restrictions: Vec<(u64, String, usize, usize)>,
+    /// Marker-tracked labeled restrictions, with the innermost entry last.
+    labeled_restrictions: Vec<LabeledRestriction>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
     indirect_buffers: Vec<(u64, u64)>,
     /// Prevent recursive before/after-change hook re-entry.
@@ -2258,7 +2324,10 @@ pub struct Interpreter {
     /// Prefer GNU bytecode artifacts after the source-based bootstrap has
     /// established the dumped Lisp runtime expected by compiled libraries.
     prefer_compiled_loads: bool,
-    loading_features: Vec<String>,
+    /// Features whose `require' loads are active, innermost last.  This is
+    /// GNU's `require_nesting_list', not an alternate source of provided
+    /// features: bounded recursive requires are part of the loader contract.
+    require_nesting: Vec<String>,
     lambda_capture_overrides: Vec<bool>,
     lambda_trim_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
@@ -2297,6 +2366,7 @@ pub struct Interpreter {
     active_thread_id: u64,
     last_thread_error: Option<Value>,
     backtrace_frames: Vec<BacktraceFrame>,
+    batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
     /// Dynamically active `catch' tags.  GNU's `throw' signals `no-catch'
     /// immediately when no `eq' tag is live, allowing condition handlers to
@@ -2756,6 +2826,8 @@ impl Interpreter {
             variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
             current_global_map: None,
+            keymap_public_cons_owners: HashMap::new(),
+            keymap_public_cons_ids: HashMap::new(),
             current_buffer_id: 0,
             selected_window_id: 0,
             window_cursor_visibility: HashMap::new(),
@@ -3039,7 +3111,7 @@ impl Interpreter {
             undo_sequence: None,
             load_path: Vec::new(),
             prefer_compiled_loads: false,
-            loading_features: Vec::new(),
+            require_nesting: Vec::new(),
             lambda_capture_overrides: Vec::new(),
             lambda_trim_overrides: Vec::new(),
             thread_states: vec![ThreadState {
@@ -3074,6 +3146,7 @@ impl Interpreter {
             active_thread_id: main_thread_id,
             last_thread_error: None,
             backtrace_frames: Vec::new(),
+            batch_error_backtrace: None,
             active_handlers: Vec::new(),
             active_catch_tags: Vec::new(),
             handler_dispatch_depth: 0,
@@ -3106,6 +3179,28 @@ impl Interpreter {
         // sentinel and the native logging default from startup onward.
         interp.define_special_variable("libgnutls-version", Value::Integer(-1));
         interp.define_special_variable("gnutls-log-level", Value::Integer(0));
+        // alloc.c exposes the allocator's emergency state before jit-lock.el
+        // and every fontification client.  JIT lock only reads this native
+        // cell; its policy remains in the upstream Lisp owner.
+        interp.define_special_variable("memory-full", Value::Nil);
+        interp.define_special_variable(
+            "memory-signal-data",
+            Value::list([
+                Value::symbol("error"),
+                Value::String(
+                    "Memory exhausted--use M-x save-some-buffers then exit and restart Emacs"
+                        .into(),
+                ),
+            ]),
+        );
+        // xdisp.c's horizontal scrolling controls are host-owned value cells
+        // read by the upstream simple.el motion commands.
+        interp.define_special_variable("auto-hscroll-mode", Value::T);
+        interp.define_special_variable("hscroll-margin", Value::Integer(5));
+        interp.define_special_variable("hscroll-step", Value::Integer(0));
+        // xdisp.c: minibuffer windows scroll conservatively (bug#44070);
+        // simple.el's end-of-buffer reads this before recentering.
+        interp.define_special_variable("scroll-minibuffer-conservatively", Value::T);
         interp.define_special_variable("fringe-bitmaps", fringe_bitmaps);
         for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
             interp.put_symbol_property(name, "fringe", Value::Integer((index + 1) as i64));
@@ -3803,6 +3898,7 @@ impl Interpreter {
         // subr.el's prompt policy is let-bound by callers and consumed by
         // separately defined save commands.
         interp.define_special_variable("use-dialog-box", Value::Nil);
+        interp.define_special_variable("use-short-answers", Value::Nil);
         // fileio.c exposes this as a dynamically scoped DEFVAR_LISP.  Temp
         // helpers are defined separately and must observe callers' let-bindings.
         interp.mark_special_variable("temporary-file-directory");
@@ -3984,23 +4080,33 @@ impl Interpreter {
         // like Lisp `defvar': a lexical `let' around a call must be visible
         // inside the separately defined callee.  Keep this as one coherent
         // group so new command clients do not each need a compatibility shim.
-        for name in [
-            "last-command",
-            "real-last-command",
-            "last-repeatable-command",
-            "this-command",
-            "real-this-command",
-            "current-minibuffer-command",
-            "this-command-keys-shift-translated",
-            "this-original-command",
+        for (name, value) in [
+            ("last-command", Value::Nil),
+            ("real-last-command", Value::Nil),
+            ("last-repeatable-command", Value::Nil),
+            ("this-command", Value::Nil),
+            ("real-this-command", Value::Nil),
+            ("current-minibuffer-command", Value::Nil),
+            ("this-command-keys-shift-translated", Value::Nil),
+            ("this-original-command", Value::Nil),
+            ("auto-save-interval", Value::Integer(300)),
+            ("auto-save-no-message", Value::Nil),
+            ("auto-save-timeout", Value::Integer(30)),
+            ("echo-keystrokes", Value::Integer(1)),
+            ("echo-keystrokes-help", Value::T),
+            ("polling-period", Value::Float(2.0)),
+            ("double-click-time", Value::Integer(500)),
+            ("double-click-fuzz", Value::Integer(3)),
+            ("num-input-keys", Value::Integer(0)),
+            ("num-nonmacro-input-events", Value::Integer(0)),
+            ("last-event-frame", Value::Nil),
+            ("last-event-device", Value::Nil),
+            ("help-char", Value::Integer(8)),
+            ("help-event-list", Value::Nil),
+            ("help-form", Value::Nil),
+            ("prefix-help-command", Value::Nil),
         ] {
-            interp.define_special_variable(name, Value::Nil);
-        }
-        // keyboard.c's integer command-loop counters are ordinary special
-        // variables at the Lisp boundary.  Keyboard-macro playback updates
-        // the active dynamic binding once for every complete key sequence.
-        for name in ["num-input-keys", "num-nonmacro-input-events"] {
-            interp.define_special_variable(name, Value::Integer(0));
+            interp.define_special_variable(name, value);
         }
         // eval.c defines the debugger controls before loading dumped Lisp.
         // Their special declarations are part of the evaluator boundary:
@@ -4131,6 +4237,7 @@ impl Interpreter {
             // simple.el's interactive vertical motion.
             ("hscroll-margin", Value::Integer(5)),
             ("hscroll-step", Value::Integer(0)),
+            ("scroll-minibuffer-conservatively", Value::T),
             ("recenter-redisplay", Value::Symbol("tty".into())),
             (
                 "window-combination-limit",

@@ -4666,6 +4666,61 @@ fn gnu_lread_c_variables_are_declared_special() {
 }
 
 #[test]
+fn gnu_keyboard_c_startup_policy_has_one_bound_special_value_cell() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (defun emaxx-read-echo-keystrokes () echo-keystrokes)
+               (list
+                echo-keystrokes
+                echo-keystrokes-help
+                polling-period
+                double-click-time
+                double-click-fuzz
+                (let ((echo-keystrokes 0))
+                  (emaxx-read-echo-keystrokes))
+                (special-variable-p 'echo-keystrokes)))"
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::T,
+            Value::Float(2.0),
+            Value::Integer(500),
+            Value::Integer(3),
+            Value::Integer(0),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn gnu_allocator_emergency_state_exists_before_jit_lock_loads() {
+    assert_eq!(
+        eval_str(
+            "(list
+               memory-full
+               memory-signal-data
+               (special-variable-p 'memory-full)
+               (special-variable-p 'memory-signal-data))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::list([
+                Value::symbol("error"),
+                Value::String(
+                    "Memory exhausted--use M-x save-some-buffers then exit and restart Emacs"
+                        .into(),
+                ),
+            ]),
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn gnu_emacs_c_locale_variables_exist_before_lisp_startup_policy_runs() {
     let interp = Interpreter::new();
     for name in GNU_EMACS_LOCALE_SPECIAL_VARIABLES {

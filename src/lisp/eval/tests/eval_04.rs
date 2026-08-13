@@ -683,6 +683,167 @@ fn require_uses_current_load_path_binding() {
 }
 
 #[test]
+fn require_allows_early_provide_cycles_to_finish_defining_their_api() {
+    run_with_large_stack(|| {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-require-early-provide-cycle-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("create require cycle directory");
+        fs::write(
+            root.join("emaxx-cycle-a.el"),
+            "(require 'emaxx-cycle-b)\n\
+             (defmacro emaxx-cycle-mark ()\n\
+               '(setq emaxx-cycle-result 'expanded))\n\
+             (provide 'emaxx-cycle-a)\n",
+        )
+        .expect("write cycle A");
+        fs::write(
+            root.join("emaxx-cycle-b.el"),
+            "(provide 'emaxx-cycle-b)\n\
+             (require 'emaxx-cycle-a)\n\
+             (emaxx-cycle-mark)\n",
+        )
+        .expect("write cycle B");
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![root.clone()]);
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn\n\
+                   (require 'emaxx-cycle-a)\n\
+                   (list (featurep 'emaxx-cycle-a)\n\
+                         (featurep 'emaxx-cycle-b)\n\
+                         (macrop 'emaxx-cycle-mark)\n\
+                         emaxx-cycle-result))"
+            ),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::Symbol("expanded".into()),
+            ])
+        );
+
+        fs::remove_dir_all(root).expect("remove require cycle directory");
+    });
+}
+
+#[test]
+fn require_bounds_recursive_cycles_and_restores_nesting_after_error() {
+    run_with_large_stack(|| {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-recursive-require-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("create recursive require directory");
+        let path = root.join("emaxx-recursive-require.el");
+        fs::write(
+            &path,
+            "(require 'emaxx-recursive-require)\n\
+             (provide 'emaxx-recursive-require)\n",
+        )
+        .expect("write recursive require");
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![root.clone()]);
+        let mut env = Env::new();
+        let form = Reader::new("(require 'emaxx-recursive-require)")
+            .read_all()
+            .expect("read recursive require")
+            .remove(0);
+        let error = interp
+            .eval(&form, &mut env)
+            .expect_err("unbounded require must fail");
+        assert_eq!(
+            error.to_string(),
+            "Recursive `require' for feature `emaxx-recursive-require'"
+        );
+
+        fs::write(&path, "(provide 'emaxx-recursive-require)\n").expect("repair recursive require");
+        assert_eq!(
+            interp.eval(&form, &mut env).expect("require after repair"),
+            Value::Symbol("emaxx-recursive-require".into())
+        );
+        fs::remove_dir_all(root).expect("remove recursive require directory");
+    });
+}
+
+#[test]
+fn source_loaded_ediff_uses_the_shared_early_provide_cycle_contract() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                "(progn\n\
+                   (require 'ediff-diff)\n\
+                   (list (featurep 'ediff-diff)\n\
+                         (featurep 'ediff-init)\n\
+                         (featurep 'ediff-util)\n\
+                         (macrop 'ediff-defvar-local)\n\
+                         (fboundp 'ediff-exec-process)))"
+            ),
+            Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+        );
+    });
+}
+
+#[test]
+fn native_ert_runner_publishes_each_tests_gnu_result_record() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize GNU-compatible batch interpreter");
+        interp
+            .load_target("ert")
+            .expect("load GNU ERT before defining result-chain tests");
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (ert-deftest result-chain-00-pass () t)
+               (ert-deftest result-chain-01-observe-pass ()
+                 (should
+                  (eq (type-of
+                       (aref (ert-get-test 'result-chain-00-pass) 4))
+                      'ert-test-passed)))
+               (ert-deftest result-chain-02-fail ()
+                 :expected-result :failed
+                 (should nil))
+               (ert-deftest result-chain-03-observe-fail ()
+                 (should
+                  (eq (type-of
+                       (aref (ert-get-test 'result-chain-02-fail) 4))
+                      'ert-test-failed)))
+               (ert-deftest result-chain-04-skip ()
+                 (skip-unless nil))
+               (ert-deftest result-chain-05-observe-skip ()
+                 (should
+                  (eq (type-of
+                       (aref (ert-get-test 'result-chain-04-skip) 4))
+                      'ert-test-skipped))))",
+        );
+
+        let selector = Value::String("^result-chain-".into());
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+        assert_eq!(summary.total, 6, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 4, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.skipped, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.unexpected, 0, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
 fn skip_unless_records_skip_in_summary() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -1598,6 +1759,39 @@ fn make_indirect_buffer_clone_copies_buffer_local_modes() {
 }
 
 #[test]
+fn make_indirect_buffer_runs_local_clone_hooks_in_the_new_buffer() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((base (get-buffer-create " indirect-hook-base")))
+                 (unwind-protect
+                     (with-current-buffer base
+                       (setq-local sample-clone-marker (point-min-marker))
+                       (add-hook
+                        'clone-indirect-buffer-hook
+                        (lambda ()
+                          (setq-local
+                           sample-clone-marker
+                           (copy-marker
+                            (marker-position sample-clone-marker))))
+                        nil t)
+                       (let ((cloned
+                              (make-indirect-buffer
+                               base " indirect-hook-clone" 'clone)))
+                         (unwind-protect
+                             (list
+                              (eq (marker-buffer sample-clone-marker) base)
+                              (with-current-buffer cloned
+                                (eq (marker-buffer sample-clone-marker)
+                                    cloned))
+                              (eq (current-buffer) base))
+                           (kill-buffer cloned))))
+                   (kill-buffer base)))"#
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn make_indirect_buffer_preserves_text_point_and_restriction() {
     assert_eq!(
         eval_str(
@@ -2072,9 +2266,15 @@ fn call_interactively_records_declared_history_arguments() {
         eval_str_with(
             &mut interp,
             "(let ((history-length 1) (command-history ())) \
-                   (list (call-interactively 'callint-test-int-args t) command-history))"
+                   (list (function-get 'callint-test-int-args 'interactive-args) \
+                         (call-interactively 'callint-test-int-args t) \
+                         command-history))"
         ),
         Value::list([
+            Value::list([
+                Value::cons(Value::Integer(1), Value::Integer(10)),
+                Value::cons(Value::Integer(2), Value::Integer(11)),
+            ]),
             Value::Integer(3),
             Value::list([Value::list([
                 Value::Symbol("callint-test-int-args".into()),
@@ -2090,6 +2290,12 @@ fn call_interactively_records_declared_history_arguments() {
 fn call_interactively_rejects_invalid_control_letters() {
     assert_eq!(
         eval_str("(cdr (should-error (call-interactively (lambda () (interactive \"ÿ\")))))"),
+        Value::list([Value::String(
+            "Invalid control letter `ÿ' (#o377, #x00ff) in interactive calling string".into(),
+        )])
+    );
+    assert_eq!(
+        eval_str(r#"(cdr (should-error (call-interactively (lambda () (interactive "\xFF")))))"#),
         Value::list([Value::String(
             "Invalid control letter `ÿ' (#o377, #x00ff) in interactive calling string".into(),
         )])
@@ -2113,6 +2319,226 @@ fn call_interactively_follows_symbol_aliases_for_interactive_specs() {
         eval_str_with(&mut interp, "(call-interactively 'sample-callint-alias)"),
         Value::Integer(7)
     );
+}
+
+#[test]
+fn string_and_region_upcase_share_unicode_special_case_mappings() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                  (insert "Straße ﬁsh")
+                  (let ((string (upcase (buffer-string))))
+                    (upcase-region (point-min) (point-max))
+                    (list string
+                          (buffer-string)
+                          (get-char-code-property ?ß 'special-uppercase))))"#
+        ),
+        Value::list([
+            Value::String("STRASSE FISH".into()),
+            Value::String("STRASSE FISH".into()),
+            Value::String("SS".into()),
+        ])
+    );
+}
+
+#[test]
+fn loaded_coding_registry_preserves_native_bounds_bom_and_error_contracts() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(list
+                 (check-coding-systems-region
+                  "aåbγc" nil '(utf-8 iso-latin-1 us-ascii))
+                 (encode-char ?γ 'iso-8859-1)
+                 (condition-case err
+                     (let ((coding-system-for-read 'bogus))
+                       (insert-file-contents "/definitely/missing/emaxx")
+                       'no-error)
+                   (error (car err)))
+                 (let ((inhibit-eol-conversion t))
+                   (equal (encode-coding-string "a\nb" 'utf-8-dos)
+                          "a\nb"))
+                 (let* ((string (apply #'string (number-sequence 0 127)))
+                        (inhibit-eol-conversion t))
+                   (eq (decode-coding-string string 'us-ascii t) string)))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::list([Value::Symbol("iso-latin-1".into()), Value::Integer(3),]),
+                Value::list([
+                    Value::Symbol("us-ascii".into()),
+                    Value::Integer(1),
+                    Value::Integer(3),
+                ]),
+            ]),
+            Value::Nil,
+            Value::Symbol("coding-system-error".into()),
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn zlib_decompress_region_uses_unibyte_octets_and_is_transactional() {
+    let gzip = "'(31 139 8 8 204 39 9 82 0 3 115 109 97 108 108 0 75 203 207 231 2 0 168 101 50 126 4 0 0 0)";
+    assert_eq!(
+        eval_str(&format!(
+            r#"(let ((bytes {gzip}))
+                  (list
+                   (with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert (apply #'unibyte-string bytes))
+                     (list (zlib-decompress-region (point-min) (point-max))
+                           (buffer-string)))
+                   (with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert (apply #'unibyte-string (butlast bytes 4)))
+                     (let ((original (buffer-string)))
+                       (list (zlib-decompress-region (point-min) (point-max))
+                             (equal original (buffer-string)))))
+                   (with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert (apply #'unibyte-string (butlast bytes 4)))
+                     (list (zlib-decompress-region (point-min) (point-max) t)
+                           (buffer-string)))
+                   (with-temp-buffer
+                     (condition-case err
+                         (zlib-decompress-region (point-min) (point-max))
+                       (error (car err))))))"#
+        )),
+        Value::list([
+            Value::list([Value::T, Value::String("foo\n".into())]),
+            Value::list([Value::Nil, Value::T]),
+            Value::list([Value::Integer(0), Value::String("foo\n".into())]),
+            Value::Symbol("error".into()),
+        ])
+    );
+}
+
+#[test]
+fn editfns_edge_contracts_preserve_float_character_and_undo_semantics() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((value 18446744073709551616.0))
+                  (list (number-to-string value)
+                        (prin1-to-string value)
+                        (= value (read (format "%s" value)))))"#,
+        ),
+        Value::list([
+            Value::String("1.8446744073709552e+19".into()),
+            Value::String("1.8446744073709552e+19".into()),
+            Value::T,
+        ])
+    );
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (let ((table (make-char-table 'translation-table)))
+                 (aset table #x3fffff ?*)
+                 (insert #x3fffff)
+                 (list (translate-region-internal (point-min) (point-max) table)
+                       (buffer-string))))",
+        ),
+        Value::list([Value::Integer(1), Value::String("*".into())])
+    );
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"1234567890\")
+               (setq buffer-undo-list nil)
+               (let ((before-change-functions
+                      (list (lambda (beg end)
+                              (delete-region (1- beg) (1+ end))))))
+                 (delete-region 2 5))
+               (list (buffer-string)
+                     (mapcar (lambda (entry) (type-of (car entry)))
+                             buffer-undo-list)))",
+        ),
+        Value::list([
+            Value::String("90".into()),
+            Value::list([
+                Value::Symbol("string".into()),
+                Value::Symbol("string".into()),
+                Value::Symbol("marker".into()),
+                Value::Symbol("marker".into()),
+                Value::Symbol("marker".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn batch_error_snapshot_keeps_deep_frames_and_signal_site_policy() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let form = Reader::new(
+        "(progn
+           (defun batch-error-snapshot-inner () (error \"Boo\"))
+           (let ((backtrace-on-error-noninteractive nil))
+             (batch-error-snapshot-inner)))",
+    )
+    .read_all()
+    .unwrap()
+    .pop()
+    .unwrap();
+    assert!(interp.eval(&form, &mut env).is_err());
+    let snapshot = interp
+        .take_batch_error_backtrace()
+        .expect("unhandled evaluation keeps its deepest frame snapshot");
+    assert!(!snapshot.enabled);
+    assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
+        matches!(function, Value::Symbol(name) if name == "batch-error-snapshot-inner")
+    }));
+
+    let form = Reader::new(
+        "(progn
+           (defun batch-error-snapshot-first () (error \"first\"))
+           (defun batch-error-snapshot-second () (error \"second\"))
+           (condition-case nil (batch-error-snapshot-first) (error nil))
+           (batch-error-snapshot-second))",
+    )
+    .read_all()
+    .unwrap()
+    .pop()
+    .unwrap();
+    assert!(interp.eval(&form, &mut env).is_err());
+    let snapshot = interp
+        .take_batch_error_backtrace()
+        .expect("a handled error cannot mask the later unhandled snapshot");
+    assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
+        matches!(function, Value::Symbol(name) if name == "batch-error-snapshot-second")
+    }));
+    assert!(!snapshot.frames.iter().any(|(_, function, _, _)| {
+        matches!(function, Value::Symbol(name) if name == "batch-error-snapshot-first")
+    }));
+}
+
+#[cfg(unix)]
+#[test]
+fn local_symlink_targets_are_data_not_file_name_handler_candidates() {
+    run_with_large_stack(|| {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-symlink-target-data-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let link = root.join("link");
+        let expression = format!(
+            "(progn
+               (require 'files)
+               (make-symbolic-link \"/:\" {:?})
+               (file-symlink-p {:?}))",
+            link.display().to_string(),
+            link.display().to_string(),
+        );
+        let actual = eval_str_with_upstream_batch(&expression);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(actual, Value::String("/:".into()));
+    });
 }
 
 #[cfg(unix)]
@@ -2742,6 +3168,19 @@ fn backquote_preserves_record_literal_dotted_pair_tails() {
 }
 
 #[test]
+fn macroexpanded_backquote_preserves_record_literal_dotted_pair_tails() {
+    let mut interp = Interpreter::new();
+    let value = eval_str_with(
+        &mut interp,
+        r#"(eval (macroexpand '`((#s(a 1) . #s(b 2)))))"#,
+    );
+    let pair = value.car().expect("backquoted list element");
+    let (left, right) = pair.cons_values().expect("dotted record pair");
+    assert!(matches!(left, Value::Record(_)));
+    assert!(matches!(right, Value::Record(_)));
+}
+
+#[test]
 fn backquote_materializes_record_literals() {
     let mut interp = Interpreter::new();
     let value = eval_str_with(&mut interp, r#"`(#s(a b) #s(#s(c d) e))"#);
@@ -3206,19 +3645,67 @@ fn overlay_complex_insert_2_regions() {
 }
 
 #[test]
-fn remove_overlays_matches_string_properties_by_equal() {
+fn initialized_remove_overlays_uses_subr_el_and_eq_property_matching() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
-                   (insert \"abc\")
-                   (let ((ov-a (make-overlay 1 2))
-                         (ov-b (make-overlay 2 3)))
-                     (overlay-put ov-a 'tag (copy-sequence \"a\"))
-                     (overlay-put ov-b 'tag \"b\")
-                     (remove-overlays nil nil 'tag \"a\")
-                     (length (overlays-in (point-min) (point-max)))))"
+               (insert \"abc\")
+               (let* ((needle (copy-sequence \"a\"))
+                      (equal-but-not-eq (copy-sequence needle))
+                      (ov (make-overlay 1 2)))
+                 (overlay-put ov nil 4)
+                 (overlay-put ov 'tag needle)
+                 (remove-overlays nil nil 'tag equal-but-not-eq)
+                 (list (not (subrp (symbol-function 'remove-overlays)))
+                       (overlay-get ov nil)
+                       (length (overlays-in (point-min) (point-max))))))"
         ),
-        Value::Integer(1)
+        Value::list([Value::T, Value::Integer(4), Value::Integer(1)])
+    );
+}
+
+#[test]
+fn loaded_with_restriction_uses_the_shared_labeled_restriction_stack() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(with-temp-buffer
+               (insert (make-string 500 ?a))
+               (let ((label (list 'outer)))
+                 (with-restriction 100 500 :label label
+                   (let ((initial (list (point-min) (point-max))))
+                     (goto-char (point-max))
+                     (insert \"x\")
+                     (widen)
+                     (let ((wide (list (point-min) (point-max))))
+                       (narrow-to-region 50 150)
+                       (let ((narrow (list (point-min) (point-max))))
+                         (without-restriction :label label
+                           (list initial wide narrow
+                                 (list (point-min) (point-max))))))))))"
+        ),
+        Value::list([
+            Value::list([Value::Integer(100), Value::Integer(500)]),
+            Value::list([Value::Integer(100), Value::Integer(501)]),
+            Value::list([Value::Integer(100), Value::Integer(150)]),
+            Value::list([Value::Integer(1), Value::Integer(502)]),
+        ]),
+    );
+}
+
+#[test]
+fn loaded_with_restriction_restores_labeled_state_after_an_error() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(with-temp-buffer
+               (insert (make-string 20 ?a))
+               (condition-case nil
+                   (with-restriction 5 15 :label (list 'private)
+                     (error \"boom\"))
+                 (error nil))
+               (widen)
+               (list (point-min) (point-max)))"
+        ),
+        Value::list([Value::Integer(1), Value::Integer(21)]),
     );
 }
 
@@ -5050,6 +5537,36 @@ fn regexp_word_atoms_follow_the_current_syntax_table_without_cache_leakage() {
                 Value::Nil,
             ]),
             Value::list([Value::Integer(0), Value::Integer(0)]),
+        ])
+    );
+}
+
+#[test]
+fn regexp_posix_word_class_uses_wide_current_syntax_table_ranges() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (let ((table (make-char-table 'syntax-table '(3))))
+              (modify-syntax-entry '(#xC0 . #xD6) "w" table)
+              (modify-syntax-entry '(#x10000 . #xEFFFF) "w" table)
+              (with-syntax-table table
+                (mapcar
+                 (lambda (character)
+                   (let ((text (string character)))
+                     (list (char-syntax character)
+                           (not (null (string-match-p "[[:word:]_.]" text)))
+                           (not (null (string-match-p "[^[:word:]_.]" text))))))
+                 '(?A ?_ ?. ?! #xC0 #xEFFFF #xF0000))))
+            "#,
+        ),
+        Value::list([
+            Value::list([Value::Integer('_' as i64), Value::Nil, Value::T]),
+            Value::list([Value::Integer('_' as i64), Value::T, Value::Nil]),
+            Value::list([Value::Integer('_' as i64), Value::T, Value::Nil]),
+            Value::list([Value::Integer('_' as i64), Value::Nil, Value::T]),
+            Value::list([Value::Integer('w' as i64), Value::T, Value::Nil]),
+            Value::list([Value::Integer('w' as i64), Value::T, Value::Nil]),
+            Value::list([Value::Integer('_' as i64), Value::Nil, Value::T]),
         ])
     );
 }

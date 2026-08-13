@@ -2023,6 +2023,30 @@ fn macroexpanded_backquote_preserves_vector_templates() {
 }
 
 #[test]
+fn macroexpanded_backquote_preserves_a_dynamic_dotted_vector_tail() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(let ((thingy '(1 2 3)))
+               (eval
+                (macroexpand-all
+                 '(let ((thingy '(1 2 3)))
+                    `((abc . [9 ,thingy]) (def))))))"
+        ),
+        Value::list([
+            Value::cons(
+                Value::symbol("abc"),
+                Value::list([
+                    Value::symbol("vector-literal"),
+                    Value::Integer(9),
+                    Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3),]),
+                ]),
+            ),
+            Value::list([Value::symbol("def")]),
+        ])
+    );
+}
+
+#[test]
 fn find_file_noselect_runs_find_file_hook_when_semantic_init_hook_is_nil() {
     assert_eq!(
         eval_str(
@@ -4793,6 +4817,29 @@ fn delq_destructively_removes_non_leading_list_cells() {
                items)"
         ),
         Value::list([Value::Symbol("keep".into()), Value::Symbol("tail".into())])
+    );
+}
+
+#[test]
+fn delq_and_delete_share_gnu_cycle_and_dotted_list_contracts() {
+    assert_eq!(
+        eval_str(
+            "(let ((items (list 'keep 'remove 'tail)))
+               (list (eq (delq 'remove items) items)
+                     (condition-case err
+                         (let ((cycle (list 'remove)))
+                           (setcdr cycle cycle)
+                           (delq 'remove cycle))
+                       (circular-list (car err)))
+                     (condition-case err
+                         (delete 'missing '(keep . tail))
+                       (wrong-type-argument (car err)))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Symbol("circular-list".into()),
+            Value::Symbol("wrong-type-argument".into()),
+        ])
     );
 }
 

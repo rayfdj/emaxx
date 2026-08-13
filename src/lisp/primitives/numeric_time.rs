@@ -2644,7 +2644,7 @@ pub(crate) fn number_to_string(value: &Value) -> Result<String, LispError> {
     match value {
         Value::Integer(n) => Ok(n.to_string()),
         Value::BigInteger(n) => Ok(n.to_string()),
-        Value::Float(f) => Ok(f.to_string()),
+        Value::Float(f) => Ok(crate::lisp::types::format_float(*f)),
         _ => Err(LispError::TypeError("number".into(), value.type_name())),
     }
 }

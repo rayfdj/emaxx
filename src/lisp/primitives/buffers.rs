@@ -42,9 +42,17 @@ pub(crate) fn highest_priority_overlay_property(
     pos: usize,
     prop: &str,
     at_insertion_position: bool,
+    window_id: Option<u64>,
 ) -> Option<Value> {
-    highest_priority_overlay_property_with_id(interp, buffer, pos, prop, at_insertion_position)
-        .map(|(value, _)| value)
+    highest_priority_overlay_property_with_id(
+        interp,
+        buffer,
+        pos,
+        prop,
+        at_insertion_position,
+        window_id,
+    )
+    .map(|(value, _)| value)
 }
 
 pub(crate) fn highest_priority_overlay_property_with_id(
@@ -53,12 +61,23 @@ pub(crate) fn highest_priority_overlay_property_with_id(
     pos: usize,
     prop: &str,
     at_insertion_position: bool,
+    window_id: Option<u64>,
 ) -> Option<(Value, u64)> {
     let mut overlays: Vec<&crate::overlay::Overlay> = buffer
         .overlays
         .iter()
         .filter(|overlay| {
-            !overlay.is_dead() && overlay_covers_position(overlay, pos, at_insertion_position)
+            !overlay.is_dead()
+                && overlay_covers_position(overlay, pos, at_insertion_position)
+                && window_id.is_none_or(|window_id| {
+                    // GNU's `overlay_matches_window' treats a `window'
+                    // property as restrictive only when its value is a
+                    // window.  Other values leave the overlay visible in
+                    // every window.
+                    overlay_property_with_category(interp, overlay, "window")
+                        .and_then(|window| window_record_id_from_value(interp, &window))
+                        .is_none_or(|overlay_window_id| overlay_window_id == window_id)
+                })
         })
         .collect();
     overlays.sort_by(|a, b| {
@@ -296,12 +315,8 @@ pub(crate) fn translate_region_with_table(
 ) -> Result<Value, LispError> {
     let source = (from..to)
         .map(|position| {
-            interp
-                .buffer
-                .text_property_at(position, "emaxx-raw-char")
-                .and_then(|value| value.as_integer().ok())
+            public_buffer_char_code_at(interp, position)
                 .and_then(|value| u32::try_from(value).ok())
-                .or_else(|| interp.buffer.char_at(position).map(u32::from))
                 .unwrap_or_default()
         })
         .collect::<Vec<_>>();
@@ -310,6 +325,7 @@ pub(crate) fn translate_region_with_table(
         TranslationTable::CharTable(_) => None,
     };
     let mut translated = String::new();
+    let mut translated_props = Vec::new();
     let mut changed = 0i64;
     let mut index = 0usize;
     while index < source.len() {
@@ -341,15 +357,15 @@ pub(crate) fn translate_region_with_table(
             Some(replacement) => {
                 changed += replacement.len() as i64;
                 for character in replacement {
-                    if let Some(character) = char::from_u32(character) {
-                        translated.push(character);
-                    }
+                    append_public_buffer_character(
+                        &mut translated,
+                        &mut translated_props,
+                        character,
+                    );
                 }
             }
             None => {
-                if let Some(character) = char::from_u32(source_char) {
-                    translated.push(character);
-                }
+                append_public_buffer_character(&mut translated, &mut translated_props, source_char);
             }
         }
         index += consumed;
@@ -359,7 +375,35 @@ pub(crate) fn translate_region_with_table(
         .map_err(|e| LispError::Signal(e.to_string()))?;
     interp.buffer.goto_char(from);
     interp.insert_current_buffer(&translated);
+    for span in translated_props {
+        interp
+            .buffer
+            .set_text_properties(from + span.start, from + span.end, &span.props);
+    }
     Ok(Value::Integer(changed))
+}
+
+fn append_public_buffer_character(
+    text: &mut String,
+    props: &mut Vec<TextPropertySpan>,
+    character: u32,
+) {
+    if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&character) {
+        text.push(raw_byte_regex_char((character - RAW_BYTE8_BASE) as u8));
+    } else if let Some(character) = char::from_u32(character) {
+        text.push(character);
+    } else if character <= 0x3f_ffff {
+        let offset = text.chars().count();
+        text.push(RAW_CHAR_SENTINEL);
+        props.push(TextPropertySpan {
+            start: offset,
+            end: offset + 1,
+            props: vec![(
+                "emaxx-raw-char".into(),
+                Value::Integer(i64::from(character)),
+            )],
+        });
+    }
 }
 
 fn translation_characters(value: &Value) -> Option<Vec<u32>> {

@@ -125,7 +125,7 @@ pub(crate) fn call_interactively_impl(
     if args.get(1).is_some_and(Value::is_truthy)
         && let Some(function_name) = callable_name(&args[0], &func)
     {
-        let history_args = history_args_for_call(interp, &func, &interactive_args, env)?;
+        let history_args = history_args_for_call(interp, &args[0], &interactive_args);
         record_command_history(interp, &function_name, history_args, env);
     }
     Ok(result)
@@ -825,29 +825,33 @@ pub(crate) fn locate_file_access_matches(mask: i64, candidate: &str) -> bool {
 }
 
 pub(crate) fn history_args_for_call(
-    interp: &mut Interpreter,
-    func: &Value,
+    interp: &Interpreter,
+    command: &Value,
     actual_args: &[Value],
-    env: &mut Env,
-) -> Result<Vec<Value>, LispError> {
+) -> Vec<Value> {
     let mut recorded = actual_args.to_vec();
-    let Value::Lambda(lambda) = func else {
-        return Ok(recorded);
+    let Value::Symbol(command) = command else {
+        return recorded;
     };
-    let positional_params = lambda
-        .params
-        .iter()
-        .filter(|param| *param != "&optional" && *param != "&rest")
-        .cloned()
-        .collect::<Vec<_>>();
-    for (name, form) in interactive_args_overrides(func) {
-        if let Some(index) = positional_params.iter().position(|param| param == &name) {
-            let value = eval_callable_metadata_form(interp, func, &form, env)?;
-            if index >= recorded.len() {
-                recorded.resize(index + 1, Value::Nil);
-            }
+    let Some(replacements) = interp.get_symbol_property(command, "interactive-args") else {
+        return recorded;
+    };
+    let Ok(replacements) = replacements.to_vec() else {
+        return recorded;
+    };
+    for replacement in replacements {
+        let Some((index, value)) = replacement.cons_values() else {
+            continue;
+        };
+        let Value::Integer(index) = index else {
+            continue;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            continue;
+        };
+        if index < recorded.len() {
             recorded[index] = value;
         }
     }
-    Ok(recorded)
+    recorded
 }
