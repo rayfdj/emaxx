@@ -3977,6 +3977,51 @@ fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
 }
 
 #[test]
+fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+
+    regexp::reset_regexp_syntax_class_render_count();
+    for pattern in ["\\w", "\\W", "[[:word:]]", "\\sw"] {
+        call(
+            &mut interp,
+            "string-match-p",
+            &[Value::String(pattern.into()), Value::String("word!".into())],
+            &mut env,
+        )
+        .expect("match a syntax-table-dependent regexp");
+    }
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        1,
+        "different patterns must share one current-table word-class rendering"
+    );
+
+    call(
+        &mut interp,
+        "modify-syntax-entry",
+        &[Value::Integer('!' as i64), Value::String("w".into())],
+        &mut env,
+    )
+    .expect("mutate the current syntax table");
+    assert_eq!(
+        call(
+            &mut interp,
+            "string-match-p",
+            &[Value::String("\\w".into()), Value::String("!".into())],
+            &mut env,
+        )
+        .expect("match through the updated syntax table"),
+        Value::Integer(0)
+    );
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        2,
+        "any table mutation must invalidate the derived rendering"
+    );
+}
+
+#[test]
 fn equal_string_hash_tables_scale_without_losing_public_semantics() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

@@ -1538,6 +1538,11 @@ define_dispatch!(
                 };
                 let stream = printer_stream_value(interp, env, args.get(1));
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+                if native_print_updates_batch_last_char(interp, &args[0], env, true)
+                    && let Some(last) = rendered.chars().last()
+                {
+                    record_batch_standard_output_char(interp, stream.as_ref(), env, last);
+                }
                 Ok(args[0].clone())
             }
             #[dispatch(builtin_override)]
@@ -1561,9 +1566,14 @@ define_dispatch!(
                 if args.is_empty() {
                     return Ok(Value::Nil);
                 }
-                let rendered = render_princ(&args[0]);
+                let rendered = render_native_princ(interp, &args[0], env)?;
                 let stream = printer_stream_value(interp, env, args.get(1));
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+                if native_print_updates_batch_last_char(interp, &args[0], env, false)
+                    && let Some(last) = rendered.chars().last()
+                {
+                    record_batch_standard_output_char(interp, stream.as_ref(), env, last);
+                }
                 Ok(args[0].clone())
             }
             "print" => {
@@ -1573,24 +1583,49 @@ define_dispatch!(
                 let rendered = format!("\n{}\n", render_prin1(interp, &args[0], env)?);
                 let stream = printer_stream_value(interp, env, args.get(1));
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+                record_batch_standard_output_char(interp, stream.as_ref(), env, '\n');
                 Ok(args[0].clone())
             }
             "terpri" => {
                 need_arg_range(name, args, 0, 2)?;
                 let stream = printer_stream_value(interp, env, args.first());
-                if args.get(1).is_some_and(Value::is_truthy)
-                    && printer_stream_at_line_start(interp, stream.as_ref())?
-                {
-                    return Ok(Value::Nil);
+                if args.get(1).is_some_and(Value::is_truthy) {
+                    if let Some(function) = stream.as_ref()
+                        && super::call(interp, "functionp", std::slice::from_ref(function), env)?
+                            .is_truthy()
+                    {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("error".into()),
+                            Value::String("Unsupported function argument".into()),
+                            function.clone(),
+                        ])));
+                    }
+                    let noninteractive_stdout = interp
+                        .lookup_var("noninteractive", env)
+                        .is_some_and(|value| value.is_truthy())
+                        && stream
+                            .as_ref()
+                            .is_some_and(|value| matches!(value, Value::T));
+                    let at_line_start = if noninteractive_stdout {
+                        interp.batch_standard_output_last_char == Some('\n')
+                    } else {
+                        printer_stream_at_line_start(interp, stream.as_ref())?
+                    };
+                    if at_line_start {
+                        return Ok(Value::Nil);
+                    }
                 }
                 write_printer_output(interp, "\n", stream.as_ref(), env)?;
+                record_batch_standard_output_char(interp, stream.as_ref(), env, '\n');
                 Ok(Value::T)
             }
             "prin1-to-string" => {
                 need_arg_range(name, args, 1, 3)?;
                 // NOESCAPE non-nil prints like `princ' (no quoting).
                 if args.get(1).is_some_and(|value| value.is_truthy()) {
-                    return Ok(Value::String(render_princ(&args[0]).into()));
+                    return Ok(Value::String(
+                        render_native_princ(interp, &args[0], env)?.into(),
+                    ));
                 }
                 if matches!(args.get(2), None | Some(Value::Nil)) {
                     return Ok(Value::String(render_prin1(interp, &args[0], env)?.into()));
@@ -1637,6 +1672,9 @@ define_dispatch!(
                 let rendered = format_char_conversion(&args[0])?;
                 let stream = printer_stream_value(interp, env, args.get(1));
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+                if let Some(last) = rendered.chars().last() {
+                    record_batch_standard_output_char(interp, stream.as_ref(), env, last);
+                }
                 Ok(args[0].clone())
             }
             "redirect-debugging-output" => {

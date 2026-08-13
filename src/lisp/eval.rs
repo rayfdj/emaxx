@@ -1041,6 +1041,13 @@ pub struct CharTableEntry {
     pub value: Value,
 }
 
+#[derive(Clone, Debug)]
+struct RegexpSyntaxWordClassCache {
+    table_id: u64,
+    char_table_generation: u64,
+    rendered: String,
+}
+
 impl CharTableState {
     pub(crate) fn new(id: u64, subtype: Option<String>, default: Value) -> Self {
         Self::with_entries(id, subtype, default, None, Vec::new())
@@ -2080,6 +2087,17 @@ pub struct Interpreter {
     buffer_mark_marker_ids: HashMap<u64, u64>,
     /// Char tables allocated by the interpreter.
     char_tables: Vec<CharTableState>,
+    /// Monotonic stamp for every mutable character-table access.  Regexp
+    /// syntax-class rendering is derived from a whole parent chain, so a
+    /// single generation owned by the character-table mutation door avoids
+    /// duplicating descendant invalidation logic at every Lisp operation.
+    char_table_mutation_generation: u64,
+    /// The rendered current-table `\\w' class is expensive to derive and is
+    /// reused by many different compiled patterns.  This one-entry cache is
+    /// stamped with both table identity and the mutation generation; regexp
+    /// code declines to populate it for tables containing mutable Lisp
+    /// entry objects whose in-place changes bypass the table mutation door.
+    regexp_syntax_word_class_cache: RefCell<Option<RegexpSyntaxWordClassCache>>,
     /// Stable lazy tables returned by `unicode-property-table-internal'.
     /// GNU caches these in `char-code-property-alist'; recreating a table on
     /// every character lookup makes Unicode-wide scans catastrophically
@@ -2262,6 +2280,13 @@ pub struct Interpreter {
     pub profiler_cpu_running: bool,
     pub profiler_cpu_log_pending: bool,
     pub message_capture_stack: Vec<MessageCapture>,
+    /// Last character written to the batch `standard-output' stream.
+    ///
+    /// GNU's `terpri' keeps this process-local printer state so ENSURE can
+    /// decide whether stdout is already at the beginning of a line.  Keep it
+    /// interpreter-local because Rust tests run independent interpreters in
+    /// parallel inside one host process.
+    pub(crate) batch_standard_output_last_char: Option<char>,
     /// Identity of the function activation currently being evaluated, plus
     /// recently captured closure environments keyed by activation.  Sibling
     /// lambdas captured in one activation with an unchanged lexical
@@ -2916,6 +2941,8 @@ impl Interpreter {
                     }],
                 ),
             ],
+            char_table_mutation_generation: 0,
+            regexp_syntax_word_class_cache: RefCell::new(None),
             unicode_property_table_ids: HashMap::new(),
             equal_hash_tables: HashMap::default(),
             charset_aliases: Vec::new(),
@@ -3062,6 +3089,7 @@ impl Interpreter {
             profiler_cpu_running: false,
             profiler_cpu_log_pending: false,
             message_capture_stack: Vec::new(),
+            batch_standard_output_last_char: None,
             current_activation_id: 0,
             next_activation_id: 0,
             closure_capture_cache: Vec::new(),
@@ -3905,6 +3933,10 @@ impl Interpreter {
             ("print-continuous-numbering", Value::Nil),
             ("print-gensym", Value::Nil),
             ("print-integers-as-characters", Value::Nil),
+            (
+                "print-charset-text-property",
+                Value::Symbol("default".into()),
+            ),
             ("print-length", Value::Nil),
             ("print-level", Value::Nil),
             ("print-quoted", Value::T),
