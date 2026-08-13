@@ -18,6 +18,48 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-13 PRINT-THROUGH-REGEX CHECKPOINT: the exact contiguous frontier is
+  **6,852/7,080**, leaving **228** selectors.  Selectors 6,773-6,852 are
+  exact: Print 46/46 and Regex Emacs 34/34.  NEXT is selector **6,853**,
+  `search-test--replace-match-update-data`, in `test/src/search-tests.el`
+  (one selected outcome), followed by SQLite (12 selected outcomes).
+
+  Canonical final-source artifact:
+  `target/compat/regression-add-1786606094685004000-74424`, with **80/80**
+  matching outcomes and no timeout or unilateral skip.  Subject-source
+  fingerprint is
+  `da064fe59d714c3d7ce2e4d3709f72642c5a3736a51618bb025031370b471a2c`,
+  release binary hash is
+  `774d1647add1066fbb6703c19c9de00ab43da3f4e6d9fe0a86c42a2e902c1448`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  Print's shared host repairs cover default/special charset-property policy,
+  one integer-character renderer, GNU's batch printer line state, and the
+  structured runner's ERT-owned per-test printer cleanup.  Regex has one
+  POSIX class parser and exact malformed-class conditions.  Its current-table
+  word class uses one generation-stamped derived cache invalidated at the
+  character-table mutation door; mutable Lisp entry objects are intentionally
+  not cached.  ASCII match offsets bypass redundant character counting while
+  multibyte offsets retain character semantics.  Do not resurrect the tested
+  second capture representation or Rope snapshot: full-file measurements did
+  not improve.  Native sampling put Rope flattening below one percent of the
+  Regex body and found capture tracking in regex-automata's PikeVM dominant.
+
+  Post-bootstrap GNU/Emaxx bodies are Print 39/270 ms (6.895x and +231 ms)
+  and Regex 125/1,163 ms (9.248x and +1,038 ms).  Setup remains separate at
+  283/2,821 and 228/2,501 ms under dumped-startup issue #11.  The complete
+  localhost-capable publication gate is green: format/diff,
+  all-target/all-feature check, strict Clippy, 2,062 library cases (2,061
+  passed and one ignored), 35 compatibility-harness, one performance-harness,
+  10 CLI, and three ERT integration tests.
+
+  Publish this checkpoint before touching the TTY branch.  Then reconcile and
+  merge `origin/tty-frontend`, retaining commit `3e29726`'s Rope-aware
+  visible-row redisplay and key-lookup optimization rather than duplicating
+  its buffer path.  Certify the combined tree before resuming selector 6,853.
+
 - 2026-08-13 LREAD-THROUGH-MINIBUF CHECKPOINT: the exact contiguous frontier
   is **6,772/7,080**, leaving **308** selectors.  Selectors 6,656-6,772 are
   exact: Lread 52/52 and Minibuf 65/65.  NEXT is selector **6,773**,

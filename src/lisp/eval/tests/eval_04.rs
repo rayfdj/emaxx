@@ -5563,6 +5563,30 @@ fn regexp_word_atoms_follow_the_current_syntax_table_without_cache_leakage() {
 }
 
 #[test]
+fn regexp_word_class_does_not_cache_mutable_syntax_table_entries() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (let* ((table (make-syntax-table))
+                   (entry (list 2)))
+              (set-char-table-range table ?! entry)
+              (with-syntax-table table
+                (list (char-syntax ?!)
+                      (string-match-p "\\w" "!")
+                      (progn (setcar entry 1) (char-syntax ?!))
+                      (string-match-p "\\w" "!"))))
+            "#,
+        ),
+        Value::list([
+            Value::Integer('w' as i64),
+            Value::Integer(0),
+            Value::Integer('.' as i64),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn regexp_posix_word_class_uses_wide_current_syntax_table_ranges() {
     assert_eq!(
         eval_str(

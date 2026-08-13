@@ -2197,9 +2197,39 @@ impl Interpreter {
 
     pub fn find_char_table_mut(&mut self, id: u64) -> Option<&mut CharTableState> {
         let index = usize::try_from(id.checked_sub(1)?).ok()?;
+        if self
+            .char_tables
+            .get(index)
+            .is_none_or(|table| table.id != id)
+        {
+            return None;
+        }
+        // This is the sole native door to mutable table contents.  Bump one
+        // shared generation here so derived views over parent chains cannot
+        // survive a write through an otherwise unrelated public operation.
+        self.char_table_mutation_generation = self.char_table_mutation_generation.wrapping_add(1);
         self.char_tables
             .get_mut(index)
             .filter(|table| table.id == id)
+    }
+
+    pub(crate) fn cached_regexp_syntax_word_class(&self, table_id: u64) -> Option<String> {
+        self.regexp_syntax_word_class_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| {
+                cache.table_id == table_id
+                    && cache.char_table_generation == self.char_table_mutation_generation
+            })
+            .map(|cache| cache.rendered.clone())
+    }
+
+    pub(crate) fn cache_regexp_syntax_word_class(&self, table_id: u64, rendered: String) {
+        *self.regexp_syntax_word_class_cache.borrow_mut() = Some(RegexpSyntaxWordClassCache {
+            table_id,
+            char_table_generation: self.char_table_mutation_generation,
+            rendered,
+        });
     }
 
     pub fn char_table_set(&mut self, id: u64, key: u32, value: Value) -> Result<(), LispError> {

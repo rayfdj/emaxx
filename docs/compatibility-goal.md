@@ -42,6 +42,57 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-13 Print-through-Regex checkpoint advances the exact contiguous
+  frontier to **6,852/7,080**, leaving **228** selectors.  Selectors
+  6,773-6,852 all match GNU: Print 46/46 and Regex Emacs 34/34.  NEXT is
+  selector **6,853**, `search-test--replace-match-update-data`, in
+  `test/src/search-tests.el` (one selected outcome), followed by SQLite
+  (12 selected outcomes).
+
+  The canonical final-source replay is
+  `target/compat/regression-add-1786606094685004000-74424`: all **80/80**
+  outcomes match with no timeout, unilateral skip, or changed status.  Source
+  fingerprint is
+  `da064fe59d714c3d7ce2e4d3709f72642c5a3736a51618bb025031370b471a2c`,
+  release binary hash is
+  `774d1647add1066fbb6703c19c9de00ab43da3f4e6d9fe0a86c42a2e902c1448`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and GNU is pinned at `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  Print now follows GNU's native/default charset-property policy, shares one
+  integer-as-character renderer between `prin1` and `princ`, and preserves
+  GNU's deliberately narrow batch `terpri` line-state contract.  The
+  structured ERT listener retains the real per-test printer cleanup without
+  copying ERT policy into Rust.  Regex now has one POSIX-class grammar owner
+  for literal, named, and malformed forms and reports GNU's exact invalid
+  class-name condition.  Current-syntax-table word classes share one
+  generation-stamped rendering across compiled patterns, invalidated at the
+  central mutable character-table door; live cons and mutable-string entries
+  remain uncached because they can mutate in place.  ASCII match positions
+  avoid redundant character recounting while multibyte positions remain
+  character based.
+
+  Canonical post-bootstrap GNU/Emaxx bodies are Print 39/270 ms (6.895x,
+  +231 ms) and Regex 125/1,163 ms (9.248x, +1,038 ms).  Print is only a
+  millisecond-scale diagnostic.  Native sampling attributes Regex chiefly to
+  capture tracking in regex-automata's PikeVM, with the remaining short-test
+  cost in source-interpreted ERT traffic; Rope flattening is below one percent
+  there.  A second capture representation and a shared Rope snapshot were
+  both measured and rejected because neither improved the complete file.
+  Reconstructed setup remains separate at 283/2,821 ms for Print and
+  228/2,501 ms for Regex under dumped-startup issue #11.
+
+  Final publication evidence is green: formatting and diff checks;
+  all-target/all-feature check; strict Clippy; 2,062 library cases (2,061
+  passed and one ignored), 35 compatibility-harness tests, one
+  performance-harness test, 10 CLI tests, and three ERT integration tests.
+  The complete suite ran with localhost/socket permission and exited
+  successfully.  After publishing this clean checkpoint, reconcile and merge
+  `origin/tty-frontend`; retain its Rope-aware visible-row redisplay and
+  key-lookup work instead of creating a competing buffer path, then certify
+  the combined tree before resuming selector 6,853.
+
 - The 2026-08-13 Lread-through-Minibuf checkpoint advances the exact
   contiguous frontier to **6,772/7,080**, leaving **308** selectors.
   Selectors 6,656-6,772 all match GNU: Lread 52/52 and Minibuf 65/65.  NEXT
