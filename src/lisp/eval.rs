@@ -3436,7 +3436,7 @@ impl Interpreter {
             interp.set_global_binding(name, keymap);
         }
         let buffer_menu_mode_map =
-            primitives::make_runtime_keymap(&mut interp, Some("Buffer-menu-mode-map"));
+            primitives::make_runtime_full_keymap(&mut interp, Some("Buffer-menu-mode-map"));
         interp.set_global_binding("Buffer-menu-mode-map", buffer_menu_mode_map.clone());
         let global_map = interp
             .lookup_var("global-map", &Vec::new())

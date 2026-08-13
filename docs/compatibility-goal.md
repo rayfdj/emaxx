@@ -42,6 +42,59 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-13 Keyboard-through-LCMS checkpoint advances the exact
+  contiguous frontier to **6,655/7,080**, leaving **425** selectors.
+  Selectors 6,602-6,655 all match GNU: Keyboard 2/2, Keymap 46/46, and LCMS
+  6/6.  NEXT is selector **6,656**, `lread-char-empty-name`, in
+  `test/src/lread-tests.el` (52 selected outcomes).
+
+  The canonical final-source replay is
+  `target/compat/regression-add-1786586103077482000-54189`: all **54/54**
+  outcomes match with no timeout, unilateral skip, or changed status.  Source
+  fingerprint is
+  `50b4de7ef47fe429d167a1cd1a8dd6159c46e0037dd1b589946d50fe421601fe`,
+  release binary hash is
+  `1e8f1f74dd801c819709bad13fb4a215b3a2f3e699d8e0db54076fe26ed68ff9`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and GNU is pinned at `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  The Keymap repair follows the shared GNU host contract rather than test
+  policy.  Full keymaps now use their character table as the authoritative
+  character lookup layer, mirror ordinary character definitions into it,
+  support range definitions on sparse maps, preserve explicit unbinding, and
+  keep the identity-bearing sparse prefix index coherent.  GNU's reader
+  control-character decision table no longer misclassifies ordinary ASCII
+  punctuation.  One-string vectors use GNU's legacy described-key spelling;
+  `where-is-internal` exposes its fifth argument and preserves binding
+  precedence.  Buffer-binding descriptions recurse through prefix maps and
+  execute menu filters, while `help--describe-vector` writes through the
+  caller's output buffer and distinguishes genuine shadowing from the same
+  command.  `Buffer-menu-mode-map` is initialized as the full keymap GNU
+  expects.  The focused Rust regression covers the shared control-character,
+  range-storage, and vector-key contracts.
+
+  Canonical post-bootstrap GNU/Emaxx bodies are Keyboard 1,021/3,005 ms
+  (2.944x, +1,984 ms), Keymap 109/67 ms, and LCMS 8/2 ms.  Keyboard is above
+  the 2x diagnostic but below the agreed 5x interruption threshold.  Separate
+  reconstructed setup is 230-236 ms GNU versus 2,519-3,032 ms Emaxx under
+  dumped-startup issue #11.
+
+  The final immutable audit in
+  `target/compat/regressions-1786585440604335000-49892` covers 105 tracked
+  files: **100/105** match.  Keymap is newly green, and the only mismatching
+  later-frontier owners are Emacs Module, Lread, Minibuf, Print, and Regex
+  Emacs.  Repeated body gaps in Emacsclient, Align, Buffer, Htmlfontify,
+  Newcomment, and related source-heavy owners remain the systemic
+  source-interpreter work tracked by issue #12.
+
+  Final publication evidence is green on the exact source: formatting and
+  diff checks; all-target/all-feature check; strict Clippy; 2,049 library
+  cases (2,048 passed and one ignored), 35 compatibility-harness tests, one
+  performance-harness test, 10 CLI tests, and three ERT integration tests.
+  The complete test command ran with localhost/socket permission and exited
+  successfully.
+
 - The 2026-08-13 Font-through-JSON checkpoint advances the exact contiguous
   frontier to **6,601/7,080**, leaving **479** selectors.  Selectors
   6,567-6,601 all match GNU: Font 2, Image 5, Indent 3, Inotify 2, and JSON 23.
