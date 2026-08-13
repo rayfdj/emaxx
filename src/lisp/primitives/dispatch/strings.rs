@@ -32,7 +32,7 @@ define_dispatch!(
                     return Err(LispError::Signal("Wrong type argument: natnump".into()));
                 }
                 let init = args[1].as_integer()?;
-                let c = char::from_u32(init as u32).unwrap_or('\0');
+                let c = char_for_codepoint(init)?;
                 let s: String = std::iter::repeat_n(c, length as usize).collect();
                 let multibyte = s
                     .chars()
@@ -1944,6 +1944,9 @@ fn decode_unicode_property_value(
 }
 
 fn native_char_code_property(ch: u32, property: &str) -> Value {
+    if let Some(mapping) = unicode_special_case_mapping(ch, property) {
+        return Value::String(mapping.into());
+    }
     match property {
         "name" => unicode_character_name(ch)
             .map(|value| Value::String(value.into()))
@@ -1989,15 +1992,10 @@ fn native_char_code_property(ch: u32, property: &str) -> Value {
                     }
                 }
             }
-            (0x00DF, "special-uppercase") => Value::String("SS".into()),
-            (0x00DF, "special-titlecase") => Value::String("Ss".into()),
             (0x00DF, "special-lowercase") => Value::Nil,
             (0x00DF, _) => Value::Nil,
             (0x00CF, _) | (0x00EF, _) | (0x00FF, _) => Value::Nil,
-            (0x0130, "special-lowercase") => Value::String("i\u{307}".into()),
             (0x0130, _) => Value::Nil,
-            (0xFB01, "special-uppercase") => Value::String("FI".into()),
-            (0xFB01, "special-titlecase") => Value::String("Fi".into()),
             (0xFB01, _) => Value::Nil,
             _ => Value::Nil,
         },

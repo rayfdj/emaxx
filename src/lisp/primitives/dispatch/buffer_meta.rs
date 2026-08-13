@@ -587,6 +587,7 @@ define_dispatch!(
                 interp.register_indirect_buffer(new_id, base_id);
                 if clone {
                     interp.clone_buffer_local_state(base_id, new_id);
+                    interp.run_clone_indirect_buffer_hook(new_id, env)?;
                 }
                 if !inhibit_hooks {
                     run_named_hooks(interp, "buffer-list-update-hook", env, None)?;

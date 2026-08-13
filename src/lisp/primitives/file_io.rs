@@ -495,8 +495,14 @@ pub(crate) fn write_region_value_with_logical_path(
             .buffer_substring(start, end)
             .map_err(|error| LispError::Signal(error.to_string()))?
     };
-    let coding = current_write_coding(interp, env, &text, false)?;
-    let bytes = encode_text_bytes(interp, &text, &coding)?;
+    let visiting = args
+        .get(4)
+        .is_some_and(|visit| matches!(visit, Value::T) || string_like(visit).is_some());
+    let coding = current_write_coding(interp, env, &text, visiting)?;
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
+    let bytes = encode_text_bytes(interp, &text, &coding, inhibit_eol_conversion)?;
     if let Some(mustbenew) = args.get(6).filter(|value| value.is_truthy())
         && fs::symlink_metadata(&path).is_ok()
     {
@@ -639,7 +645,10 @@ pub(crate) fn write_file_value(
     }
     let text = interp.buffer.buffer_string();
     let coding = current_write_coding(interp, env, &text, true)?;
-    let bytes = encode_text_bytes(interp, &text, &coding)?;
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
+    let bytes = encode_text_bytes(interp, &text, &coding, inhibit_eol_conversion)?;
     fs::write(&path, &bytes).map_err(|error| LispError::Signal(error.to_string()))?;
     let visiting_new_file = interp.buffer.file.as_deref() != Some(path.as_str());
     interp.buffer.file = Some(path.clone());
@@ -1269,7 +1278,7 @@ pub(crate) fn decode_file_contents(
             let (detected, normalized) = auto_detect_coding(interp, bytes);
             return Ok((decode_text_bytes(interp, &normalized, &detected)?, detected));
         }
-        if interp.coding_system_kind_name(&requested).as_deref() == Some("utf-8-auto") {
+        if coding_system_auto_detects_bom(interp, &requested) {
             let actual_eol = detect_eol_type(bytes);
             let normalized = decode_bytes_with_explicit_eol(bytes, actual_eol);
             let (has_bom, bomless) = strip_utf8_bom(&normalized);

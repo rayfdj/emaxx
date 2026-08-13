@@ -4567,33 +4567,82 @@ define_dispatch!(
                 Ok(Value::list(locales))
             }
             "zlib-decompress-region" => {
-                need_args(name, args, 2)?;
+                need_arg_range(name, args, 2, 3)?;
                 let start = position_from_value(interp, &args[0])?;
                 let end = position_from_value(interp, &args[1])?;
+                if interp.buffer.is_multibyte() {
+                    return Err(LispError::Signal(
+                        "This function can be called only in unibyte buffers".into(),
+                    ));
+                }
                 let compressed = interp
                     .buffer
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
-                let input = compressed
-                    .chars()
-                    .map(|ch| {
-                        u8::try_from(ch as u32).map_err(|_| {
-                            LispError::Signal("Invalid byte in compressed data".into())
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let mut decoder = GzDecoder::new(&input[..]);
-                let mut output = Vec::new();
-                std::io::Read::read_to_end(&mut decoder, &mut output)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                let input = encode_raw_text_bytes(&compressed)?;
                 ensure_region_modifiable(interp, start, end, env)?;
-                delete_region_with_hooks(interp, start, end, env)?;
-                let text = output
-                    .iter()
-                    .map(|byte| char::from(*byte))
-                    .collect::<String>();
-                insert_text_with_hooks(interp, &text, &[], false, false, env)?;
-                Ok(Value::Nil)
+                ensure_no_supersession_threat(interp, env)?;
+                let overlay_calls = overlay_change_hook_calls(&interp.buffer, start, end, start);
+                run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+                run_change_hooks(
+                    interp,
+                    "before-change-functions",
+                    &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                    env,
+                )?;
+
+                let mut output = Vec::new();
+                let (complete, remaining) = if input.starts_with(&[0x1f, 0x8b]) {
+                    let mut decoder = flate2::bufread::GzDecoder::new(&input[..]);
+                    let result = std::io::Read::read_to_end(&mut decoder, &mut output);
+                    (result.is_ok(), decoder.get_ref().len())
+                } else {
+                    let mut decoder = flate2::bufread::ZlibDecoder::new(&input[..]);
+                    let result = std::io::Read::read_to_end(&mut decoder, &mut output);
+                    (result.is_ok(), decoder.get_ref().len())
+                };
+                let old_length = end - start;
+                if !complete && args.get(2).is_none_or(Value::is_nil) {
+                    run_change_hooks(
+                        interp,
+                        "after-change-functions",
+                        &[
+                            Value::Integer(start as i64),
+                            Value::Integer(end as i64),
+                            Value::Integer(old_length as i64),
+                        ],
+                        env,
+                    )?;
+                    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+                    return Ok(Value::Nil);
+                }
+
+                let saved_point = interp.buffer.point();
+                interp
+                    .delete_region_current_buffer(start, end)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                interp.buffer.goto_char(start);
+                let text = decode_raw_text_bytes(&output);
+                interp.insert_current_buffer(&text);
+                interp
+                    .buffer
+                    .goto_char(saved_point.min(interp.buffer.point_max()));
+                run_change_hooks(
+                    interp,
+                    "after-change-functions",
+                    &[
+                        Value::Integer(start as i64),
+                        Value::Integer((start + output.len()) as i64),
+                        Value::Integer(old_length as i64),
+                    ],
+                    env,
+                )?;
+                run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+                if complete {
+                    Ok(Value::T)
+                } else {
+                    Ok(Value::Integer(remaining as i64))
+                }
             }
             "libxml-parse-xml-region" | "libxml-parse-html-region" => {
                 need_arg_range(name, args, 0, 4)?;
@@ -4741,71 +4790,95 @@ define_dispatch!(
                     interp.current_buffer_id()
                 };
                 let inhibit_hooks = interp.buffer_hooks_inhibited(id);
-                let auto_save = interp.buffer_local_value(id, "buffer-auto-save-file-name");
-                let auto_save_path = auto_save.as_ref().and_then(|value| string_text(value).ok());
-                // GNU only asks about a modified buffer when it VISITS a file
-                // (Fkill_buffer checks BVAR (b, filename)); scratch buffers
-                // filled via insert-file-contents die silently.
-                let modified = interp
-                    .get_buffer_by_id(id)
-                    .map(|buffer| buffer.is_modified() && buffer.file.is_some())
-                    .unwrap_or(false);
-                if modified {
-                    let answer = call_named_function(
-                        interp,
-                        "yes-or-no-p",
-                        &[Value::String("Buffer modified; kill anyway?".into())],
-                        env,
-                    )?;
-                    if answer.is_nil() {
-                        return Ok(Value::Nil);
-                    }
-                    if let Some(path) = auto_save_path.as_ref()
-                        && fs::metadata(path).is_ok()
-                        && interp
-                            .lookup_var("kill-buffer-delete-auto-save-files", env)
-                            .is_some_and(|value| value.is_truthy())
-                    {
-                        let delete = call_named_function(
-                            interp,
-                            "yes-or-no-p",
-                            &[Value::String("Delete auto-save file?".into())],
-                            env,
-                        )?;
-                        if delete.is_truthy() {
-                            let _ = fs::remove_file(path);
-                        }
-                    }
+                let saved = interp.current_buffer_id();
+                let switched = saved != id;
+                if switched {
+                    interp.set_current_buffer_id(id)?;
                 }
-                if !inhibit_hooks {
-                    // The kill hooks run with the dying buffer current, as in
-                    // GNU (auto-revert's rm-watch reads its buffer-locals there).
-                    let saved = interp.current_buffer_id();
-                    // Fkill_buffer temporarily makes the dying buffer current
-                    // for its hooks; it does not display that buffer.  Current
-                    // buffer and selected-window buffer may legitimately differ
-                    // after `set-buffer' (Dabbrev does this while operating from
-                    // the minibuffer), so using the display-switching path here
-                    // corrupts the selected window with a soon-to-be-dead buffer.
-                    let switched = saved != id && interp.set_current_buffer_id(id).is_ok();
-                    let hooks_result: Result<bool, LispError> = (|| {
+                let consultation = (|| -> Result<bool, LispError> {
+                    if !inhibit_hooks {
                         for hook in
                             hook_values(interp, "kill-buffer-query-functions", env, Some(id))
                         {
-                            let result = call_function_value(interp, &hook, &[], env)?;
-                            if result.is_nil() {
+                            if call_function_value(interp, &hook, &[], env)?.is_nil() {
                                 return Ok(false);
                             }
                         }
+                    }
+                    let mut modified = interp
+                        .get_buffer_by_id(id)
+                        .map(|buffer| buffer.is_modified() && buffer.file.is_some())
+                        .unwrap_or(false);
+                    if modified && interp.in_interactive_call() {
+                        let answer = call_named_function(
+                            interp,
+                            "kill-buffer--possibly-save",
+                            &[Value::buffer(id, interp.buffer.name.clone())],
+                            env,
+                        )?;
+                        if answer.is_nil() {
+                            return Ok(false);
+                        }
+                        // The interactive helper can save the buffer.  GNU
+                        // rechecks BUF_MODIFF after it returns before deciding
+                        // whether a recent auto-save is disposable.
+                        modified = interp
+                            .get_buffer_by_id(id)
+                            .map(|buffer| buffer.is_modified() && buffer.file.is_some())
+                            .unwrap_or(false);
+                    }
+                    if modified {
+                        let auto_save_path = interp
+                            .buffer_local_value(id, "buffer-auto-save-file-name")
+                            .as_ref()
+                            .and_then(|value| string_text(value).ok());
+                        let visited_path = interp
+                            .get_buffer_by_id(id)
+                            .and_then(|buffer| buffer.file.as_ref())
+                            .cloned();
+                        if let Some(path) = auto_save_path.as_ref()
+                            && fs::metadata(path).is_ok()
+                            && visited_path.as_ref() != Some(path)
+                            && interp
+                                .lookup_var("kill-buffer-delete-auto-save-files", env)
+                                .is_some_and(|value| value.is_truthy())
+                            && interp
+                                .lookup_var("delete-auto-save-files", env)
+                                .is_some_and(|value| value.is_truthy())
+                            && interp
+                                .get_buffer_by_id(id)
+                                .is_some_and(|buffer| buffer.is_autosaved())
+                        {
+                            let delete = call_named_function(
+                                interp,
+                                "yes-or-no-p",
+                                &[Value::String("Delete auto-save file? ".into())],
+                                env,
+                            )?;
+                            if delete.is_truthy() {
+                                let _ = fs::remove_file(path);
+                            }
+                        }
+                    }
+                    if !inhibit_hooks {
+                        // The kill hooks run with the dying buffer current, as
+                        // in GNU (auto-revert's rm-watch reads its locals).
                         run_named_hooks(interp, "kill-buffer-hook", env, Some(id))?;
-                        Ok(true)
-                    })();
-                    if switched {
-                        let _ = interp.set_current_buffer_id(saved);
                     }
-                    if !hooks_result? {
-                        return Ok(Value::Nil);
-                    }
+                    Ok(true)
+                })();
+                let restore = if switched && interp.has_buffer_id(saved) {
+                    interp.set_current_buffer_id(saved)
+                } else {
+                    Ok(())
+                };
+                let proceed = match (consultation, restore) {
+                    (Err(error), _) => return Err(error),
+                    (Ok(_), Err(error)) => return Err(error),
+                    (Ok(proceed), Ok(())) => proceed,
+                };
+                if !proceed {
+                    return Ok(Value::Nil);
                 }
                 if !interp.allow_kill_buffer_for_threads(id) {
                     return Ok(Value::Nil);

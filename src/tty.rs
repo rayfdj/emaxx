@@ -25,14 +25,13 @@ use crate::lisp::types::{Env, LispError, Value};
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
 fn debug_log(message: &str) {
-    if let Some(path) = std::env::var_os("EMAXX_TTY_LOG") {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
+    if let Some(path) = std::env::var_os("EMAXX_TTY_LOG")
+        && let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-        {
-            let _ = writeln!(file, "{message}");
-        }
+    {
+        let _ = writeln!(file, "{message}");
     }
 }
 
@@ -57,6 +56,16 @@ impl Drop for TerminalGuard {
 struct TtyState {
     /// 1-based buffer line shown on the first text row.
     top_line: usize,
+    /// Continuation segment of `top_line' shown first: a window can start
+    /// mid-line when long lines wrap, like GNU's window-start position.
+    top_seg: usize,
+    /// The window-start position last agreed with the interpreter's
+    /// window model; a differing value there means a command (recenter,
+    /// scroll) moved the window and the frontend adopts it.
+    synced_start: usize,
+    /// A `C-u' sequence is accumulating: digits and `-' extend the prefix
+    /// argument instead of dispatching (GNU's universal-argument--mode).
+    prefix_active: bool,
     /// Events of the in-progress (multi-key) sequence.
     pending: Vec<Value>,
     /// Frontend-owned echo text (key-sequence progress, command errors);
@@ -104,6 +113,7 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     let code = command_loop(&mut interpreter, &mut env, &queue);
     crate::lisp::primitives::set_tty_event_reader(None);
     crate::lisp::primitives::set_tty_minibuffer_reader(None);
+    crate::lisp::primitives::set_interactive_window_metrics(None);
     drop(guard);
     code
 }
@@ -116,6 +126,15 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
 struct SharedEventQueue(std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<Value>>>);
 
 impl SharedEventQueue {
+    /// Whether an event can be delivered without blocking.  Redisplay is
+    /// skipped while input is pending, GNU's redisplay preemption: a burst
+    /// of keys paints once at the end, and scrolling recenters against the
+    /// final point, not each intermediate one.
+    fn input_pending(&self) -> bool {
+        !self.0.borrow().is_empty()
+            || event::poll(std::time::Duration::from_millis(0)).unwrap_or(false)
+    }
+
     /// Pop the next event, blocking on the terminal when empty.  Returns
     /// `None' only on terminal loss.
     fn next_event(&self) -> Option<Value> {
@@ -203,6 +222,9 @@ fn command_loop(
 ) -> Result<i32, String> {
     let mut state = TtyState {
         top_line: 1,
+        top_seg: 0,
+        synced_start: 0,
+        prefix_active: false,
         pending: Vec::new(),
         echo: String::new(),
         painted_rows: Vec::new(),
@@ -212,10 +234,55 @@ fn command_loop(
     };
 
     loop {
-        redraw(interpreter, &mut state).map_err(|error| error.to_string())?;
+        // GNU redisplays only when the input queue is quiet; a key burst
+        // paints once at the end.
+        if !queue.input_pending() {
+            redraw(interpreter, &mut state).map_err(|error| error.to_string())?;
+        }
         let Some(event) = queue.next_event() else {
             return Ok(0);
         };
+
+        // `C-u' and its follow-up digits accumulate a prefix argument
+        // before ordinary dispatch, GNU's universal-argument machinery.
+        // The runtime does not define the prefix commands, so the state
+        // transitions run natively, exactly as the kbd-macro engine does.
+        if state.pending.is_empty()
+            && let Value::Integer(code) = &event
+        {
+            let code = *code;
+            let pending_prefix = interpreter
+                .lookup_var("prefix-arg", env)
+                .unwrap_or(Value::Nil);
+            if code == 21 {
+                let next = crate::lisp::primitives::next_universal_prefix(&pending_prefix);
+                interpreter.set_variable("prefix-arg", next, env);
+                state.echo = if state.prefix_active {
+                    append_prefix_echo(&state.echo, "C-u")
+                } else {
+                    String::from("C-u-")
+                };
+                state.prefix_active = true;
+                continue;
+            }
+            if state.prefix_active {
+                if (48..=57).contains(&code) {
+                    let next =
+                        crate::lisp::primitives::next_digit_prefix(&pending_prefix, code - 48);
+                    interpreter.set_variable("prefix-arg", next, env);
+                    state.echo =
+                        append_prefix_echo(&state.echo, &char::from(code as u8).to_string());
+                    continue;
+                }
+                if code == i64::from(b'-') && pending_prefix.is_truthy() {
+                    let next = crate::lisp::primitives::next_negative_prefix(&pending_prefix);
+                    interpreter.set_variable("prefix-arg", next, env);
+                    state.echo = append_prefix_echo(&state.echo, "-");
+                    continue;
+                }
+                state.prefix_active = false;
+            }
+        }
 
         if state.pending.is_empty() {
             state.echo.clear();
@@ -234,6 +301,9 @@ fn command_loop(
         ));
         match resolution {
             Resolution::Command(binding) => {
+                // Any dispatched command consumes the prefix chain, even
+                // one entered through a non-character key like an arrow.
+                state.prefix_active = false;
                 let keys = std::mem::take(&mut state.pending);
                 let last_event = keys.last().cloned().unwrap_or(Value::Nil);
                 match execute_binding(interpreter, env, binding, &keys, last_event) {
@@ -347,12 +417,36 @@ fn execute_binding(
         env,
     );
     interpreter.set_variable("this-command", binding.clone(), env);
+    // GNU's command loop hands the accumulated prefix to the command:
+    // current-prefix-arg takes prefix-arg's value and prefix-arg clears
+    // before the call; last-prefix-arg keeps it for the next cycle.
+    let prefix = interpreter
+        .lookup_var("prefix-arg", env)
+        .unwrap_or(Value::Nil);
+    interpreter.set_variable("current-prefix-arg", prefix.clone(), env);
+    interpreter.set_variable("prefix-arg", Value::Nil, env);
     // GNU's command_execute is a thin wrapper over call-interactively
     // (prefix-arg bookkeeping, kbd-macro expansion); the runtime does not
     // define it yet, so drive the interactive call directly.
-    let result = call(interpreter, env, "call-interactively", &[binding.clone()]).map(|_| ());
+    let result = call(
+        interpreter,
+        env,
+        "call-interactively",
+        std::slice::from_ref(&binding),
+    )
+    .map(|_| ());
     interpreter.set_variable("last-command", binding, env);
+    interpreter.set_variable("last-prefix-arg", prefix, env);
     result
+}
+
+/// Extend the echoed `C-u' sequence: "C-u-" then "C-u 8-", GNU's prefix
+/// echo shape.
+fn append_prefix_echo(echo: &str, key: &str) -> String {
+    match echo.strip_suffix('-') {
+        Some(base) if !base.is_empty() => format!("{base} {key}-"),
+        _ => format!("{key}-"),
+    }
 }
 
 fn command_error_text(error: &LispError) -> String {
@@ -521,25 +615,158 @@ fn redraw(interpreter: &mut Interpreter, state: &mut TtyState) -> io::Result<()>
     let cols = cols.max(10) as usize;
     let rows = rows.max(4) as usize;
     let text_rows = rows - 2; // mode line + echo area
+    // Continued rows reserve the last column for the `\' marker, so a
+    // logical line wraps whenever its display width exceeds cols - 1
+    // (GNU wraps even an exactly-cols-wide line).
+    let usable = cols - 1;
 
     let buffer = &interpreter.buffer;
     let point = buffer.point();
     let point_line = buffer.line_number_at_pos(point); // 1-based
     let line_start = buffer.line_start_at(point);
+    let point_line_text = buffer
+        .lines_from(point_line, 1)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let point_dcol = display_column(&point_line_text, point - line_start);
+    let point_segs = segment_count(display_width(&point_line_text), usable);
+    let point_seg = (point_dcol / usable).min(point_segs - 1);
+    let cursor_col = point_dcol - point_seg * usable;
 
-    // Keep point visible; recenter on a jump like GNU's default scrolling.
-    if point_line < state.top_line || point_line >= state.top_line + text_rows {
-        state.top_line = point_line.saturating_sub(text_rows / 2).max(1);
+    // A command that owns its scrolling (recenter, scroll-up) moved the
+    // interpreter's window-start; adopt it as the frontend's top before
+    // deciding whether point needs recentering.
+    let commanded_start = crate::lisp::primitives::current_window_start(interpreter)
+        .clamp(buffer.point_min(), buffer.point_max());
+    if commanded_start != state.synced_start {
+        let start_line = buffer.line_number_at_pos(commanded_start);
+        let start_text = buffer
+            .lines_from(start_line, 1)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let start_dcol = display_column(
+            &start_text,
+            commanded_start - buffer.line_start_at(commanded_start),
+        );
+        state.top_line = start_line;
+        state.top_seg = start_dcol / usable;
+    }
+
+    // A resize changes the wrap geometry under top_seg; recenter rather
+    // than interpret a stale segment index.
+    let full_repaint = state.painted_size != (cols, rows);
+
+    // Keep point visible, counting visual rows (wrapped lines span
+    // several); recenter on a jump like GNU's default scrolling.
+    let mut recenter = full_repaint
+        || point_line < state.top_line
+        || (point_line == state.top_line && point_seg < state.top_seg);
+    let mut point_row = 0usize;
+    if !recenter {
+        if point_line == state.top_line {
+            point_row = point_seg - state.top_seg;
+        } else if point_line - state.top_line >= text_rows {
+            // Every line fills at least one row: certainly off-screen.
+            recenter = true;
+        } else {
+            let span = point_line - state.top_line;
+            let mut rows_before = 0usize;
+            for (index, line) in buffer.lines_from(state.top_line, span).iter().enumerate() {
+                let segs = segment_count(display_width(line), usable);
+                let skipped = if index == 0 { state.top_seg } else { 0 };
+                rows_before += segs.saturating_sub(skipped);
+                if rows_before > text_rows {
+                    break;
+                }
+            }
+            point_row = rows_before.saturating_add(point_seg);
+        }
+        if point_row >= text_rows {
+            recenter = true;
+        }
+    }
+    if recenter {
+        // Walk back half a window of visual rows from point, GNU's
+        // recentering target.
+        let mut budget = text_rows / 2;
+        let (mut line, mut seg) = (point_line, point_seg);
+        let mut stepped = 0usize;
+        while budget > 0 {
+            if seg > 0 {
+                let step = seg.min(budget);
+                seg -= step;
+                budget -= step;
+                stepped += step;
+            } else if line > 1 {
+                let previous = buffer
+                    .lines_from(line - 1, 1)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default();
+                line -= 1;
+                seg = segment_count(display_width(&previous), usable) - 1;
+                budget -= 1;
+                stepped += 1;
+            } else {
+                break;
+            }
+        }
+        state.top_line = line;
+        state.top_seg = seg;
+        point_row = stepped;
     }
 
     // Fetch only the window: redisplay cost must follow the screen size,
-    // never the buffer size.
+    // never the buffer size.  Each line yields at least one visual row,
+    // so text_rows lines always cover the window.
     let lines = buffer.lines_from(state.top_line, text_rows);
+    let mut rendered_rows: Vec<String> = Vec::with_capacity(text_rows);
+    // First row past the window, as (line, segment): the window's end.
+    let mut past_window: Option<(usize, usize)> = None;
+    'fill: for (index, line) in lines.iter().enumerate() {
+        let segments = wrap_segments(line, cols);
+        let from = if index == 0 {
+            state.top_seg.min(segments.len() - 1)
+        } else {
+            0
+        };
+        for (seg_index, segment) in segments.iter().enumerate().skip(from) {
+            rendered_rows.push(segment.clone());
+            if rendered_rows.len() == text_rows {
+                past_window = Some(if seg_index + 1 < segments.len() {
+                    (state.top_line + index, seg_index + 1)
+                } else {
+                    (state.top_line + index + 1, 0)
+                });
+                break 'fill;
+            }
+        }
+    }
+    rendered_rows.resize(text_rows, String::new());
+
+    // Publish the displayed geometry to the interpreter's window model:
+    // window-end and recenter answer from live glass state, and the next
+    // redraw can detect a command-moved window-start.
+    let top_pos = position_of_visual_row(buffer, state.top_line, state.top_seg, usable);
+    let window_end = match past_window {
+        Some((line, seg)) => position_of_visual_row(buffer, line, seg, usable),
+        None => buffer.point_max(),
+    };
+    let text_height = text_rows;
+    crate::lisp::primitives::set_current_window_start(interpreter, top_pos);
+    crate::lisp::primitives::set_interactive_window_metrics(Some(
+        crate::lisp::primitives::InteractiveWindowMetrics {
+            text_height,
+            window_end,
+        },
+    ));
+    state.synced_start = top_pos;
 
     // Render off-screen first, then emit only rows that changed since the
     // last paint (dispnew's current-matrix idea, one line deep): a
     // self-insert repaints one text row, not the frame.
-    let full_repaint = state.painted_size != (cols, rows);
     if full_repaint {
         state.painted_rows = vec![String::from("\u{0}"); text_rows];
         state.painted_mode_line = String::from("\u{0}");
@@ -551,19 +778,8 @@ fn redraw(interpreter: &mut Interpreter, state: &mut TtyState) -> io::Result<()>
     let mut out = io::stdout();
     queue!(out, cursor::Hide)?;
 
-    let mut cursor_position = (0u16, 0u16);
-    for row in 0..text_rows {
-        let buffer_line = state.top_line + row;
-        let rendered = lines
-            .get(row)
-            .map(|line| render_line(line, cols))
-            .unwrap_or_default();
-        if let Some(line) = lines.get(row)
-            && buffer_line == point_line
-        {
-            let column = display_column(line, point - line_start);
-            cursor_position = (column.min(cols - 1) as u16, row as u16);
-        }
+    let cursor_position = (cursor_col.min(cols - 1) as u16, point_row as u16);
+    for (row, rendered) in rendered_rows.into_iter().enumerate() {
         if state.painted_rows[row] != rendered {
             queue!(
                 out,
@@ -623,27 +839,97 @@ fn redraw(interpreter: &mut Interpreter, state: &mut TtyState) -> io::Result<()>
     out.flush()
 }
 
-/// Render a buffer line for the glass: expand tabs to 8-column stops and
-/// clip to the window width.
-fn render_line(line: &str, cols: usize) -> String {
-    let mut rendered = String::with_capacity(line.len());
-    let mut column = 0usize;
-    for c in line.chars() {
-        if column >= cols {
+/// Buffer position (1-based) where the visual row (LINE, SEG) begins
+/// under the current wrap geometry.
+fn position_of_visual_row(
+    buffer: &crate::buffer::Buffer,
+    line: usize,
+    seg: usize,
+    usable: usize,
+) -> usize {
+    let start = buffer.line_start_of(line);
+    if seg == 0 {
+        return start;
+    }
+    let text = buffer
+        .lines_from(line, 1)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let target = seg * usable;
+    let mut col = 0usize;
+    let mut offset = 0usize;
+    for c in text.chars() {
+        if col >= target {
             break;
         }
+        col += if c == '\t' { 8 - (col % 8) } else { 1 };
+        offset += 1;
+    }
+    start + offset
+}
+
+/// A buffer line's display form: tabs expanded to 8-column stops.
+fn expand_tabs(line: &str) -> String {
+    let mut expanded = String::with_capacity(line.len());
+    let mut column = 0usize;
+    for c in line.chars() {
         if c == '\t' {
             let next_stop = (column / 8 + 1) * 8;
-            while column < next_stop.min(cols) {
-                rendered.push(' ');
+            while column < next_stop {
+                expanded.push(' ');
                 column += 1;
             }
         } else {
-            rendered.push(c);
+            expanded.push(c);
             column += 1;
         }
     }
-    rendered
+    expanded
+}
+
+/// Display width of a buffer line under tab expansion.
+fn display_width(line: &str) -> usize {
+    let mut column = 0usize;
+    for c in line.chars() {
+        if c == '\t' {
+            column = (column / 8 + 1) * 8;
+        } else {
+            column += 1;
+        }
+    }
+    column
+}
+
+/// Number of visual rows a line of display width WIDTH occupies when each
+/// continued row holds USABLE columns.  Every line fills at least one row.
+fn segment_count(width: usize, usable: usize) -> usize {
+    width.div_ceil(usable).max(1)
+}
+
+/// Render a buffer line as visual rows: continuation rows carry
+/// `usable' (= cols - 1) columns plus GNU's trailing `\' marker; the
+/// final row holds the remainder.  A line wraps exactly when its display
+/// width exceeds usable — even an exactly-cols-wide line continues, as
+/// on a GNU tty.
+fn wrap_segments(line: &str, cols: usize) -> Vec<String> {
+    let usable = cols.saturating_sub(1).max(1);
+    let expanded = expand_tabs(line);
+    let width = expanded.chars().count();
+    if width <= usable {
+        return vec![expanded];
+    }
+    let chars: Vec<char> = expanded.chars().collect();
+    let mut segments = Vec::with_capacity(width.div_ceil(usable));
+    let mut start = 0usize;
+    while width - start > usable {
+        let mut segment: String = chars[start..start + usable].iter().collect();
+        segment.push('\\');
+        segments.push(segment);
+        start += usable;
+    }
+    segments.push(chars[start..].iter().collect());
+    segments
 }
 
 /// Display column of a character offset within LINE under tab expansion.
@@ -793,15 +1079,68 @@ mod tests {
 
     #[test]
     fn rendered_lines_expand_tabs_to_eight_column_stops() {
-        assert_eq!(render_line("a\tb", 80), "a       b");
-        assert_eq!(render_line("\t\t", 80), "                ");
-        assert_eq!(render_line("12345678\tx", 80), "12345678        x");
+        assert_eq!(wrap_segments("a\tb", 80), vec!["a       b"]);
+        assert_eq!(wrap_segments("\t\t", 80), vec!["                "]);
+        assert_eq!(wrap_segments("12345678\tx", 80), vec!["12345678        x"]);
+    }
+
+    // The wrap geometry below is pinned against observed GNU 30.2 tty
+    // behavior at 80 columns: continued rows carry 79 columns plus a
+    // trailing backslash, and a line continues whenever its width
+    // exceeds 79 — an exactly-80-column line becomes 79 + "\" then 1.
+    #[test]
+    fn long_lines_wrap_exactly_like_a_gnu_tty() {
+        let of = |n: usize| "A".repeat(n);
+
+        assert_eq!(wrap_segments(&of(79), 80), vec![of(79)]);
+        assert_eq!(wrap_segments(&of(80), 80), vec![of(79) + "\\", of(1)]);
+        assert_eq!(
+            wrap_segments(&of(159), 80),
+            vec![of(79) + "\\", of(79) + "\\", of(1)]
+        );
+        assert_eq!(wrap_segments(&of(158), 80), vec![of(79) + "\\", of(79)]);
+        assert_eq!(
+            wrap_segments(&of(200), 80),
+            vec![of(79) + "\\", of(79) + "\\", of(42)]
+        );
     }
 
     #[test]
-    fn rendered_lines_clip_to_the_window_width() {
-        assert_eq!(render_line("abcdefgh", 4), "abcd");
-        assert_eq!(render_line("a\tb", 5), "a    ");
+    fn segment_counts_follow_the_wrap_geometry() {
+        assert_eq!(segment_count(0, 79), 1);
+        assert_eq!(segment_count(79, 79), 1);
+        assert_eq!(segment_count(80, 79), 2);
+        assert_eq!(segment_count(158, 79), 2);
+        assert_eq!(segment_count(159, 79), 3);
+        for width in [0, 1, 79, 80, 158, 159, 200] {
+            assert_eq!(
+                segment_count(width, 79),
+                wrap_segments(&"A".repeat(width), 80).len(),
+                "count and rendering disagree at width {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn visual_row_positions_follow_wrap_geometry() {
+        let mut interpreter = Interpreter::new();
+        interpreter
+            .buffer
+            .insert(&format!("top\n{}\nbottom\n", "wide".repeat(50)));
+        let buffer = &interpreter.buffer;
+        assert_eq!(position_of_visual_row(buffer, 1, 0, 79), 1);
+        assert_eq!(position_of_visual_row(buffer, 2, 0, 79), 5);
+        assert_eq!(position_of_visual_row(buffer, 2, 1, 79), 84);
+        assert_eq!(position_of_visual_row(buffer, 2, 2, 79), 163);
+        assert_eq!(position_of_visual_row(buffer, 3, 0, 79), 206);
+    }
+
+    #[test]
+    fn prefix_echo_accumulates_like_gnu() {
+        assert_eq!(append_prefix_echo("", "C-u"), "C-u-");
+        assert_eq!(append_prefix_echo("C-u-", "8"), "C-u 8-");
+        assert_eq!(append_prefix_echo("C-u 8-", "2"), "C-u 8 2-");
+        assert_eq!(append_prefix_echo("C-u-", "C-u"), "C-u C-u-");
     }
 
     #[test]

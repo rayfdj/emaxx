@@ -42,6 +42,288 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-13 Font-through-JSON checkpoint advances the exact contiguous
+  frontier to **6,601/7,080**, leaving **479** selectors.  Selectors
+  6,567-6,601 all match GNU: Font 2, Image 5, Indent 3, Inotify 2, and JSON 23.
+  Matching non-passes are Image's headless display skip and Inotify's two
+  platform skips.  NEXT is selector **6,602**, `keyboard-lossage-size`, in
+  `test/src/keyboard-tests.el` (two outcomes).
+
+  The canonical final-source replay is
+  `target/compat/regression-add-1786575010490490000-36030`.  It includes the
+  five frontier owners plus Mouse, XT Mouse, and Find Cmd: all **47/47**
+  outcomes match (43 passes and four matching skips).  Source fingerprint is
+  `4b0fe6134d1b3ed04485bba24cdbb0335d732e1631e737549eec2a000fb65f1e`,
+  release binary hash is
+  `71212e99e704fa8dd8acc99f5b4115f6d508e2d0b9658be19af174bb580586ae`,
+  harness hash is
+  `7cc7218868e036c88187db007edae563fbfabccc4b0de52561677b6a9974fb4c`,
+  and GNU is pinned at `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  The native-primitive manifest now distinguishes source-declared primitives
+  unavailable in the oracle build, keeping optional Rust routes from
+  advertising false Lisp bindings.  JSON's recursion, sentinel, error, and
+  key-symbol contracts match GNU.  Change-hook cleanup survives nonlocal exit,
+  and backquote keeps dotted record tails intact.  A single live public keymap
+  cons graph now adapts the Rust identity record to GNU's mutable list surface;
+  nested Lisp mutation, native mutation, list traversal, embedded prefix maps,
+  and parent changes all share that adapter.  Mouse remains an Elisp owner in
+  the preload order, while native window-property and keyboard boundaries now
+  match GNU's overlay filtering and bound-versus-unbound mouse-down behavior.
+  Shared diagnostics now quote `search-failed` string payloads and print
+  integral floats with GNU's canonical `.0` suffix.
+
+  Comparable post-bootstrap bodies are Font 8/6, Image 8/1, Indent 8/1,
+  Inotify 7/0, and JSON 15/12 ms GNU/Emaxx.  The additional regressions are
+  Mouse 10/4, XT Mouse 1,291/1,284, and Find Cmd 8/1 ms.  No body crosses the
+  2x diagnostic.  Separate reconstructed setup is 217-418 ms GNU versus
+  2,449-3,046 ms Emaxx under issue #11.
+
+  The immutable 104-file audit in
+  `target/compat/regressions-1786575240097606000-36480` matches 98 files and
+  leaves exactly six known later-frontier mismatches: Emacs Module, Keymap,
+  Lread, Minibuf, Print, and Regex Emacs.  Find Cmd and XT Mouse were genuine
+  adapter regressions found and fixed by the earlier audit; the final-source
+  replay confirms Mouse and the former Custom timeout still pass.  Existing
+  material body gaps (including Emacsclient, Align, Buffer, Eval,
+  Htmlfontify, and Newcomment) remain the systemic source-interpreter work in
+  issue #12, not a new correctness or keymap regression.
+
+  Final publication gates are green on this exact source: formatting, diff,
+  all-target/all-feature check, strict Clippy, exact generated native-manifest
+  regeneration, 2,047 library tests (one ignored), 35 compatibility-harness
+  tests, one performance-harness test, 10 CLI tests, and three ERT integration
+  tests.  The localhost-capable run was required for the socket/TLS tests.
+
+  `makefilemodefix.patch` was reviewed but not applied.  Its diagnosis of the
+  old Mac-only expectation in `86ce515` is correct, but `e4f8805` already
+  replaced it with a shared GNU `system-type` decision table used by runtime
+  preload and tests.  The current table and loaded Semantic test are green on
+  this checkout.
+
+- The 2026-08-13 Filelock-through-Fns checkpoint advances the exact contiguous
+  frontier to **6,566/7,080**, leaving **514** selectors.  Its final-source
+  atomic replay covers selectors 6,451-6,566: all **116/116** outcomes match
+  GNU (114 passes and the same two collation skips), with no timeout,
+  unilateral skip, failure, or changed status.  NEXT is selector **6,567**,
+  `font-parse-tests`, in `test/src/font-tests.el` (two selected outcomes).
+
+  The canonical artifact is
+  `target/compat/regression-add-1786559823033091000-7116`, with source
+  fingerprint
+  `5e5d419b8813577f555a60fb32ea1e1340df7ecb35501d9577ee69780f37b12c`,
+  release binary
+  `ff2734aad7b2d56c21373ef38c3e6640dcc71547da5a2472c4f5d673b3a8c3b8`,
+  harness `7cc7218868e036c88187db007edae563fbfabccc4b0de52561677b6a9974fb4c`,
+  and pinned GNU commit `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+  Filelock is 6/6, Floatfns 29/29, and Fns is 81/81 (79 passes plus the same
+  two skips).  Post-bootstrap GNU/Emaxx bodies are 223/328, 15/28, and 682/723
+  ms respectively, so none crosses 2x.  Setup is separately 217-259 ms GNU
+  versus 2,379-2,639 ms Emaxx under dumped-startup issue #11.
+
+  One shared constant-memory destructive-list deletion engine now owns both
+  `delq` (`eq`) and `delete` (`equal`), including cycle detection, dotted-list
+  errors, and retained-cons identity.  Macroexpanded backquote preserves a
+  record literal used as a dotted tail as one object rather than traversing
+  its private reader encoding.  `value<` enforces GNU's exact two-argument
+  public contract.  A blanket generated-arity check at raw native dispatch
+  was deliberately rejected because bootstrap-only internal shims currently
+  accept extension arguments there; a future global enforcement change must
+  first separate the public Lisp-call boundary.
+
+  Final gates are green: formatting/diff, all-target/all-feature check, strict
+  Clippy, generated validation 13/13, focused deletion/arity/backquote tests,
+  all 26 backquote regressions, and the exact release replay.  All three owners
+  are recorded in `compat/compat_regressions.json`.
+
+- The 2026-08-12 Data-through-Fileio checkpoint advances the exact contiguous
+  frontier to **6,450/7,080**, leaving **630** selectors.  The final-source
+  atomic replay covers selectors 6,316-6,450: all **135/135** outcomes match
+  GNU (124 passes, the same one expected failure, and the same ten skips),
+  with no timeout, unilateral skip, or changed status.  NEXT is selector
+  **6,451**, `filelock-tests-detect-external-change`, in
+  `test/src/filelock-tests.el` (six selected outcomes).
+
+  The canonical seven-owner replay is
+  `target/compat/regression-add-1786557526761415000-3644`.  It uses
+  subject-source fingerprint
+  `cfcbbece20318801a61935e304553779ab6d6cd7816243e7ccc60c231e69a04f`,
+  release subject binary
+  `b77a132ac4093cbb989fdcbd1bef0c08348cf404a026b39d63b083adf845d20a`,
+  harness hash
+  `7cc7218868e036c88187db007edae563fbfabccc4b0de52561677b6a9974fb4c`,
+  pinned GNU commit `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, and separate
+  180-second setup/body budgets.  Owner totals are Data 57, Decompress 1,
+  Doc 5, Editfns 23, Emacs 7, Eval 26, and Fileio 16.  Matching non-passes
+  are Editfns' expected before/after-change failure, all seven platform or
+  sandbox skips in Emacs, and Fileio's three platform skips.
+
+  Post-bootstrap GNU/Emaxx bodies are Data 70/481 ms, Decompress 7/1, Doc
+  7/21, Editfns 69/544, Emacs 8/5, Eval 1,788/8,593, and Fileio 37/40.  Data
+  and Editfns exceed the 2x diagnostic but add less than one second.  Eval's
+  body deliberately launches three fresh editor subprocesses; the repeated
+  reconstructed startup explains most of its +6.8-second delta and belongs
+  to dumped-image issue #11 rather than an Eval-local algorithm.  It remains
+  below 5x at 4.805x.  Separate setup is GNU 216-234 ms versus Emaxx
+  2,347-2,708 ms.
+
+  Repairs are shared and follow GNU's native contracts without taking policy
+  from Elisp.  The existing `flate2` backend now implements the complete
+  `zlib-decompress-region` boundary: unibyte input, gzip/zlib recognition,
+  all-or-nothing default behavior, optional partial output, exact result
+  values, and one before/after hook pair.  Translation consumes and emits
+  public Emacs character codes, preserving raw byte8 and non-Unicode
+  characters through the centralized internal representation.  Float
+  printing uses GNU-style significant-digit growth and notation so large
+  floats reread as the same float instead of a nearby bignum.  Nested delete
+  preparation mirrors `del_range_1`/`signal_before_change`, preserving the
+  relocated start plus original length and keeping its three undo-visible
+  markers alive during callbacks.
+
+  Batch evaluation now snapshots the deepest propagating frame set and the
+  dynamic `backtrace-on-error-noninteractive` value before unwinding; both
+  source and VM condition handlers discard handled snapshots, and the batch
+  boundary renders the unhandled trace including `normal-top-level`.  Lisp
+  still owns debugger policy.  The centralized file-name-handler operation
+  table now marks only LINKNAME in `make-symbolic-link` as a file path.  The
+  target remains opaque link data, as in `fileio.c`, so strings such as `/:`
+  are stored verbatim instead of being accidentally unquoted.
+
+  The supplied `makefilemodefix.patch` was reviewed but not applied because
+  it targets an already-repaired revision.  `86ce515` introduced the
+  Mac-specific hardcoded Semantic expectation; `e4f8805` already replaced it
+  with one shared GNU `system-type` policy used by runtime preload and tests,
+  plus a cross-platform decision table.  That implementation is more
+  complete than the patch's compile-target conditional and covers DragonFly
+  through the Berkeley-Unix mapping.  The table regression and loaded
+  Semantic test pass.  A fresh fetch found local HEAD and `origin/main`
+  identical at `090de4e`, so no merge was required.
+
+  Final-source gates are green: formatting/diff; strict all-target/all-feature
+  Clippy; focused float, zlib, backtrace, translation, deletion, and symlink
+  suites; Makefile policy and loaded Semantic coverage; and the exact
+  135-outcome replay.  All seven owners are recorded in
+  `compat/compat_regressions.json`.
+
+- The 2026-08-12 Callint-through-Coding checkpoint advances the exact
+  contiguous frontier to **6,315/7,080**, leaving **765** selectors.  The
+  final-source atomic replay covers selectors 6,280-6,315: all **36/36**
+  selected outcomes match GNU (33 passes and the same three skips), with no
+  timeout, unilateral skip, failure, or changed status.  The matching skips
+  are Callproc's two platform cases and Casefiddle's locale case.  NEXT is
+  selector **6,316**, `binding-test-defvar-bool`, in
+  `test/src/data-tests.el` (57 selected outcomes in the file); the intervening
+  `test/src/comp-tests.el` entry has the canonical oracle load error and
+  contributes no selected outcome to the 7,080 denominator.
+
+  The canonical eight-owner replay is
+  `target/compat/regression-add-1786553591031637000-98862`.  It uses
+  subject-source fingerprint
+  `afff9f7a6680934482b47a3c64174fcff17ebf96b59e6332c29350cd06964eff`,
+  release subject binary
+  `0c0c8b4488d2686277bf578f1b62ba6d4be462489453b1b4de86fb40a55cd205`,
+  harness hash
+  `51087d9ff0111b6361be31a476a29428e8665e57d7ac0ad4efe207fd61e73fbc`,
+  pinned GNU commit `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, and separate
+  180-second setup/body budgets.  The owner totals are Callint 4, Callproc 3,
+  Casefiddle 11, Character 1, Charset 1, Chartab 5, Cmds 2, and Coding 9.
+
+  Post-bootstrap bodies are Callint 10/1 ms GNU/Emaxx, Callproc 180/42,
+  Casefiddle 97/98, Character 7/1, Charset 8/0, Chartab 7/2, Cmds 7/0, and
+  Coding 49/61.  None crosses even the diagnostic 2x-slower boundary.  Setup
+  remains the separately tracked dumped-startup gap: GNU is 223-234 ms while
+  Emaxx is 2,338-2,904 ms here.
+
+  Shared repairs follow GNU's host contracts while leaving Elisp owners in
+  Elisp.  Defun declarations now publish GNU-shaped indexed
+  `interactive-args` metadata, and command-history consumes that one property
+  instead of reparsing lambda bodies through a second mini-parser.  Raw-byte
+  interactive control-letter errors display the external byte.  String and
+  region casing share one Unicode special-case mapping with character
+  properties.  The coding registry now enforces native ASCII/Latin-1 bounds,
+  supplies the `coding-system-error` hierarchy, derives BOM policy from the
+  loaded coding plist, honors dynamic `inhibit-eol-conversion` in both encode
+  and decode paths, and uses a visiting buffer's coding tag for writes.
+  Bootstrap coding metadata carries the same BOM properties as GNU's
+  `mule-conf.el`, so file-less and loaded paths share the policy rather than
+  relying on stale internal kind names.
+
+  Final-source gates are green: formatting/diff, strict all-target/all-feature
+  Clippy, 9 call-interactively tests, 81 case-related tests, 37 coding tests,
+  the separately permitted loopback network-coding test, generated validation
+  13/13 in 13.23 seconds, and the exact 36-outcome replay above.  All eight
+  owners are recorded in
+  `compat/compat_regressions.json`.
+
+- The 2026-08-12 Ediff-through-Buffer checkpoint advances the exact contiguous
+  frontier to **6,279/7,080**, leaving **801** selectors.  The final-source
+  replay covers selectors 5,753-6,279: all **527/527** selected outcomes match
+  GNU (521 passes, the same two failures, and the same four skips), with no
+  timeout, unilateral skip, or changed status.  NEXT is selector **6,280**,
+  `call-interactively-prune-command-history`, in
+  `test/src/callint-tests.el` (four selected outcomes in the file).
+
+  The canonical 21-owner replay is
+  `target/compat/regression-add-1786550235882459000-91922`.  It uses
+  subject-source fingerprint
+  `520db5ba0e197f4bd62225aaabdb0e35ed16a91e5918f1dae76af70655d8bc07`,
+  release subject binary
+  `3780c7da89454f8bb012f173f864aa9301d1178241db180b0281a55778962806`,
+  harness hash
+  `51087d9ff0111b6361be31a476a29428e8665e57d7ac0ad4efe207fd61e73fbc`,
+  pinned GNU commit `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, and separate
+  180-second setup/body budgets.  The owner totals are Ediff Diff 2, Ediff
+  Ptch 2, Log Edit 8, Smerge 1, VC Bzr 3, VC CVS 13, VC Git 8, VC Hg 4, VC 7,
+  Version 1, Wdired 7, Which Key 9, Whitespace 10, Wid Edit 26, X DND 2, XDG
+  4, XML 5, XT Mouse 3, Yank Media 1, Alloc 5, and Buffer 406.
+
+  The diagnostic post-bootstrap warnings are Log Edit 11/283 ms
+  (24.701x), Whitespace 20/166 ms (8.140x), Wid Edit 10/36 ms (3.615x), X DND
+  39/94 ms (2.415x), and Buffer 192/3,843 ms (19.954x).  Only Buffer crosses
+  the simultaneous 5x/+1-second interruption rule.  Profiling assigns its
+  time to the already-tracked systemic source-interpreter/value-traffic theme
+  in GitHub issue #12, not to a Buffer-local algorithm; retain the evidence
+  and continue the ordered frontier.  Reconstructed setup remains separate:
+  GNU setup spans 223-455 ms while Emaxx spans 2,319-3,144 ms here, under
+  dumped-startup issue #11.
+
+  Shared repairs preserve the C-versus-Elisp ownership boundary.  Batch
+  startup loads GNU's complete `select.el`; XTerm mouse input discards only an
+  unbound button-down event; bounded recursive `require` follows GNU's loader
+  stack; and native ERT publishes real result records without taking over ERT
+  policy.  Rust host contracts now cover syntax-property-aware regexp atoms
+  and POSIX word classes, Lisp-identity overlay keys and accessible endpoints,
+  marker-backed labeled restrictions across interpreted and bytecode unwind,
+  indirect-buffer clone hooks, internal character strings, local-socket path
+  validation, allocator/keyboard/window state cells, and GNU's complete
+  `kill-buffer` query/interactive-save/autosave/lock ordering.  Loaded
+  `remove-overlays`, `with-restriction`, and `without-restriction` remain
+  Elisp-owned; their native routes are file-less bootstrap fallbacks only.
+
+  The compatibility harness now treats the 2x performance signal as a
+  diagnostic rather than a semantic failure.  `regressions add` accepts
+  repeated `--file` arguments and validates/records them atomically after one
+  subject build, avoiding a redundant release rebuild per owner while keeping
+  isolated GNU/Emaxx comparisons and exact provenance.  All 21 repaired
+  owners are now in `compat/compat_regressions.json`.
+
+  Publication evidence on the final source is green: formatting and
+  diff checks; all-target/all-feature check; strict Clippy; generated
+  validation **13/13** in 13.30 seconds; focused kill/query/lock tests; and the
+  exact 527-outcome replay above.  The first elevated full-suite run exposed
+  and prevented a real noninteractive `kill-buffer` prompt regression (2,024
+  passed, one failed, one intentionally ignored); GNU `buffer.c` confirmed
+  the missing `INTERACTIVE` guard, and the unchanged real file-lock lifecycle
+  test passes after the shared fix.  The corrected complete gate passed:
+  **2,026 passed, zero failed, one intentionally ignored** in 1,770.08 seconds,
+  followed by compat-harness **35/35**, perf-harness **1/1**, CLI **10/10**,
+  and ERT-runner **3/3**.  Incoming main commit `6fcf6fb` was then integrated
+  without conflicts.  Its two overlapping files touched separate hunks; two
+  strict-Clippy findings in its TTY path were repaired, and the combined
+  source passes format, all-target/all-feature check, strict Clippy, focused
+  TTY/minibuffer/message/quit tests, and the final 527-outcome replay recorded
+  above.
+
 - The 2026-08-12 Time-through-Diff-Mode checkpoint advances the exact
   contiguous frontier to **5,752/7,080**, leaving **1,328** selectors.  The
   final-source canonical replay covers selectors 5,510-5,752: all **243/243**

@@ -366,6 +366,188 @@ fn subr_frontier_aset_promotes_ascii_unibyte_strings_like_gnu() {
 }
 
 #[test]
+fn make_string_and_aset_share_the_internal_character_encoding() {
+    assert_upstream_primitive_contract(
+        "(let ((s (make-string 1 ?a)) (c (max-char)))\
+           (aset s 0 c)\
+           (prin1 (list (equal s (make-string 1 c)) (aref s 0))))",
+        "(t 4194303)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((s (make-string 1 ?a)) (c (max-char)))\
+           (aset s 0 c)\
+           (list (equal s (make-string 1 c)) (aref s 0)))",
+    )
+    .read_all()
+    .expect("read internal-character string contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("construct and mutate the same internal character"),
+        Value::list([Value::T, Value::Integer(0x3f_ffff)]),
+    );
+}
+
+#[test]
+fn overlay_properties_accept_nil_keys_and_accessible_endpoints() {
+    assert_upstream_primitive_contract(
+        "(with-temp-buffer\
+           (insert \"foo\")\
+           (let ((end (make-overlay (point-max) (point-max)))\
+                 (middle (make-overlay 2 2)))\
+             (overlay-put middle nil 4)\
+             (narrow-to-region 1 2)\
+             (prin1 (list (overlay-get middle nil)\
+                          (length (overlays-in 2 2))\
+                          (length (overlays-in 4 4))))))",
+        "(4 1 0)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(with-temp-buffer\
+           (insert \"foo\")\
+           (let ((end (make-overlay (point-max) (point-max)))\
+                 (middle (make-overlay 2 2)))\
+             (overlay-put middle nil 4)\
+             (narrow-to-region 1 2)\
+             (list (overlay-get middle nil)\
+                   (length (overlays-in 2 2))\
+                   (length (overlays-in 4 4)))))",
+    )
+    .read_all()
+    .expect("read overlay endpoint contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("query nil overlay property and accessible endpoint"),
+        Value::list([Value::Integer(4), Value::Integer(1), Value::Integer(0)]),
+    );
+}
+
+#[test]
+fn overlay_property_keys_use_lisp_identity() {
+    assert_upstream_primitive_contract(
+        "(with-temp-buffer
+           (let* ((overlay (make-overlay 1 1))
+                  (key (copy-sequence \"key\"))
+                  (equal-key (copy-sequence key)))
+             (overlay-put overlay key 4)
+             (prin1 (list (overlay-get overlay key)
+                          (overlay-get overlay equal-key)))))",
+        "(4 nil)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(with-temp-buffer
+           (let* ((overlay (make-overlay 1 1))
+                  (key (copy-sequence \"key\"))
+                  (equal-key (copy-sequence key)))
+             (overlay-put overlay key 4)
+             (list (overlay-get overlay key)
+                   (overlay-get overlay equal-key))))",
+    )
+    .read_all()
+    .expect("read overlay property-key identity contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("preserve overlay property-key identity"),
+        Value::list([Value::Integer(4), Value::Nil]),
+    );
+}
+
+#[test]
+fn kill_buffer_queries_before_the_interactive_modified_prompt() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((victim (get-buffer-create \" kill-query-order\")) events)\
+           (with-current-buffer victim\
+             (setq buffer-file-name \"visited\")\
+             (insert \"changed\")\
+             (add-hook 'kill-buffer-query-functions\
+                       (lambda () (push 'query events) t) nil t))\
+           (cl-letf (((symbol-function 'kill-buffer--possibly-save)\
+                      (lambda (_) (push 'modified events) t)))\
+             (call-interactively\
+              (lambda () (interactive) (kill-buffer victim))))\
+           (nreverse events))",
+    )
+    .read_all()
+    .expect("read kill-buffer query ordering contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("query hooks precede the modified-buffer prompt"),
+        Value::list([
+            Value::Symbol("query".into()),
+            Value::Symbol("modified".into()),
+        ]),
+    );
+}
+
+#[test]
+fn noninteractive_kill_buffer_does_not_prompt_for_a_modified_file() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((victim (get-buffer-create \" kill-no-prompt\")) prompted)\
+           (with-current-buffer victim\
+             (setq buffer-file-name \"visited\")\
+             (insert \"changed\"))\
+           (cl-letf (((symbol-function 'kill-buffer--possibly-save)\
+                      (lambda (_) (setq prompted t) nil)))\
+             (list (kill-buffer victim) prompted (buffer-live-p victim))))",
+    )
+    .read_all()
+    .expect("read noninteractive kill-buffer contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("kill a modified file buffer without an interactive prompt"),
+        Value::list([Value::T, Value::Nil, Value::Nil]),
+    );
+}
+
+#[test]
+fn kill_buffer_restores_the_current_buffer_when_a_query_signals() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(let ((caller (current-buffer))
+               (victim (get-buffer-create \" kill-query-error\")))
+           (with-current-buffer victim
+             (add-hook 'kill-buffer-query-functions
+                       (lambda () (error \"query failed\")) nil t))
+           (condition-case nil
+               (kill-buffer victim)
+             (error nil))
+           (list (eq (current-buffer) caller) (buffer-live-p victim)))",
+    )
+    .read_all()
+    .expect("read kill-buffer error-unwind contract")
+    .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("restore caller after a kill query signals"),
+        Value::list([Value::T, Value::T]),
+    );
+}
+
+#[test]
 fn subr_frontier_replace_match_distinguishes_string_and_buffer_escapes() {
     let contract = r#"(let ((source "aba"))
              (string-match "a" source)
@@ -1219,7 +1401,7 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .iter()
         .filter(|contract| contract.arity.is_some())
         .collect::<Vec<_>>();
-    let is_native_mirror = |name: &str| is_builtin(name) || is_special_form_name(name);
+    let is_native_mirror = |name: &str| has_dispatch_handler(name) || is_special_form_name(name);
     let missing = available
         .iter()
         .copied()
@@ -10530,6 +10712,49 @@ fn native_combined_after_change_merges_ranges_before_running_hooks() {
 }
 
 #[test]
+fn change_hook_nonlocal_exits_clear_the_active_hook_value() {
+    let program = r#"(progn
+                       (define-error 'emaxx-change-hook-error "change hook error")
+                       (defun emaxx-change-hook-signal (&rest _)
+                         (signal 'emaxx-change-hook-error nil))
+                       (defun emaxx-change-hook-throw (&rest _)
+                         (throw 'emaxx-change-hook-tag 'thrown))
+                       (setq after-change-functions nil)
+                       (condition-case nil
+                           (with-temp-buffer
+                             (add-hook 'after-change-functions
+                                       #'emaxx-change-hook-signal 90)
+                             (insert "a"))
+                         (emaxx-change-hook-error nil))
+                       (let ((after-signal after-change-functions))
+                         (setq after-change-functions nil)
+                         (catch 'emaxx-change-hook-tag
+                           (with-temp-buffer
+                             (add-hook 'after-change-functions
+                                       #'emaxx-change-hook-throw 90)
+                             (insert "b")))
+                         (list after-signal after-change-functions)))"#;
+    let expected = "(nil nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("change-hook cleanup contract should parse")
+        .expect("change-hook cleanup contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("change-hook cleanup contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("change-hook cleanup result should parse")
+            .expect("change-hook cleanup result should exist")
+    );
+}
+
+#[test]
 fn combine_change_calls_coalesces_hooks_and_tracks_the_updated_end() {
     let program = r#"(progn
                        (defun emaxx-test-combine-before (begin end)
@@ -10777,6 +11002,11 @@ fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
             "([f5] [f5] [f5] [f5] [f5])",
         ),
         (
+            r#"(let ((unread-command-events '((down-mouse-1 nil 1))))
+                 (car-safe (aref (read-key-sequence nil) 0)))"#,
+            "down-mouse-1",
+        ),
+        (
             r#"(let ((last-kbd-macro [old])
                      (unread-command-events '(97)))
                  (start-kbd-macro t t)
@@ -10825,6 +11055,47 @@ fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
             "keyboard-input contract diverged: {program}"
         );
     }
+}
+
+#[test]
+fn char_property_primitives_accept_windows_and_filter_window_overlays() {
+    let program = r#"(let* ((window (selected-window))
+                            (old-buffer (window-buffer window))
+                            (buffer (generate-new-buffer " *char-property-window*")))
+                       (unwind-protect
+                           (progn
+                             (set-window-buffer window buffer)
+                             (with-current-buffer buffer
+                               (insert "x")
+                               (put-text-property 1 2 'face 'text-face)
+                               (let ((overlay (make-overlay 1 2 buffer)))
+                                 (overlay-put overlay 'face 'window-face)
+                                 (overlay-put overlay 'window window)
+                                 (let ((pair (get-char-property-and-overlay
+                                              1 'face window)))
+                                   (list (get-char-property 1 'face window)
+                                         (car pair)
+                                         (overlayp (cdr pair)))))))
+                         (set-window-buffer window old-buffer)
+                         (kill-buffer buffer)))"#;
+    let expected = "(window-face window-face t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("window char-property contract should parse")
+        .expect("window char-property contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("window char-property contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("window char-property result should parse")
+            .expect("window char-property result should exist")
+    );
 }
 
 #[test]
@@ -12173,6 +12444,39 @@ fn native_network_socket_errors_preserve_gnu_file_conditions() {
     assert_eq!(&client[3..], args.as_slice());
 }
 
+#[cfg(unix)]
+#[test]
+fn local_network_process_rejects_overlong_service_before_host_bind() {
+    let program = r#"(condition-case err
+                         (make-network-process
+                          :name "overlong-local-socket"
+                          :family 'local
+                          :server t
+                          :service
+                          (make-string 200 ?x))
+                       (error (list (car err) (cadr err))))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "(error \"Service name too long\")",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("overlong local socket contract should parse")
+        .expect("overlong local socket contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("condition-case should catch overlong service"),
+        Value::list([
+            Value::symbol("error"),
+            Value::string("Service name too long"),
+        ])
+    );
+}
+
 #[test]
 fn native_udp_event_pump_preserves_datagrams_and_updates_the_reply_peer() {
     let program = r#"(progn
@@ -12820,4 +13124,127 @@ fn command_remapping_finds_fresh_remap_bindings() {
     )
     .expect("where-is-internal resolves");
     assert_eq!(format!("{where_is}"), "[121]");
+}
+
+#[test]
+fn window_end_and_posn_follow_published_interactive_geometry() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for n in 0..60 {
+        call(
+            &mut interp,
+            "insert",
+            &[Value::String(format!("line {n:03}\n").into())],
+            &mut env,
+        )
+        .expect("insert seeds the buffer");
+    }
+    let point_max = interp.buffer.point_max();
+
+    // Batch sessions answer like GNU --batch: the whole buffer shows.
+    let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
+    assert_eq!(end, Value::Integer(point_max as i64));
+    let posn = call(&mut interp, "posn-at-point", &[], &mut env).expect("posn-at-point");
+    assert_eq!(posn, Value::Nil, "no glyph matrix in batch");
+
+    // A frontend publishing live geometry changes both answers.
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 22,
+        window_end: 199,
+    }));
+    let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
+    assert_eq!(end, Value::Integer(199), "window-end reads the glass state");
+
+    call(&mut interp, "goto-char", &[Value::Integer(10)], &mut env).expect("goto-char");
+    let posn = call(&mut interp, "posn-at-point", &[], &mut env).expect("posn-at-point");
+    let items = posn.to_vec().expect("posn is a list");
+    assert_eq!(items[1], Value::Integer(10), "posn carries the position");
+    assert_eq!(
+        items[2],
+        Value::cons(Value::Integer(0), Value::Integer(1)),
+        "line 2 column 0 sits at x=0 y=1"
+    );
+
+    // Positions beyond the displayed extent answer nil, GNU's contract.
+    call(
+        &mut interp,
+        "goto-char",
+        &[Value::Integer(300)],
+        &mut env,
+    )
+    .expect("goto-char");
+    let posn = call(&mut interp, "posn-at-point", &[], &mut env).expect("posn-at-point");
+    assert_eq!(posn, Value::Nil, "off-window positions have no posn");
+
+    set_interactive_window_metrics(None);
+}
+
+#[test]
+fn recenter_uses_the_published_window_height_for_negative_lines() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for n in 0..60 {
+        call(
+            &mut interp,
+            "insert",
+            &[Value::String(format!("line {n:03}\n").into())],
+            &mut env,
+        )
+        .expect("insert seeds the buffer");
+    }
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 22,
+        window_end: 199,
+    }));
+    // Point on line 31; (recenter -3) puts it 3 rows above the bottom of
+    // a 22-row window: 19 lines above the start, so the window starts at
+    // line 12 (simple.el's end-of-buffer contract).
+    call(
+        &mut interp,
+        "goto-char",
+        &[Value::Integer((30 * 9 + 1) as i64)],
+        &mut env,
+    )
+    .expect("goto-char");
+    call(&mut interp, "recenter", &[Value::Integer(-3)], &mut env).expect("recenter");
+    let start = call(&mut interp, "window-start", &[], &mut env).expect("window-start");
+    set_interactive_window_metrics(None);
+    assert_eq!(
+        start,
+        Value::Integer((11 * 9 + 1) as i64),
+        "window starts 19 lines above point"
+    );
+}
+
+#[test]
+fn interactive_vertical_motion_honors_the_cons_goal_column() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String(format!("top\n{}\nbottom\n", "wide".repeat(50)).into())],
+        &mut env,
+    )
+    .expect("insert seeds the buffer");
+    // The wide line starts at position 5; its second screen row starts 79
+    // characters later at 84 (80-column frame, continuation reserves one).
+    let goal = Value::cons(Value::Integer(3), Value::Integer(1));
+
+    // Batch ignores the goal column, GNU's --batch behavior.
+    call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
+    call(&mut interp, "vertical-motion", &[goal.clone()], &mut env).expect("vertical-motion");
+    assert_eq!(interp.buffer.point(), 84, "batch lands at the row start");
+
+    // An interactive session moves to the goal column within the row,
+    // line-move-visual's contract; a float goal (posn pixels divided by
+    // the frame char width) works the same way.
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
+    call(&mut interp, "vertical-motion", &[goal], &mut env).expect("vertical-motion");
+    assert_eq!(interp.buffer.point(), 87, "goal column 3 within the row");
+
+    let float_goal = Value::cons(Value::Float(3.0), Value::Integer(-1));
+    call(&mut interp, "vertical-motion", &[float_goal], &mut env).expect("vertical-motion");
+    assert_eq!(interp.buffer.point(), 8, "float goal moves back up to column 3");
 }

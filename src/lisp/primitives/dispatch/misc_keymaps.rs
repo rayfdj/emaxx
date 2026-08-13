@@ -566,6 +566,7 @@ define_dispatch!(
                         record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
                     }
                     record.slots[KEYMAP_PARENT_SLOT] = args[1].clone();
+                    refresh_runtime_keymap_public_view(interp, *id)?;
                 }
                 Ok(Value::Nil)
             }

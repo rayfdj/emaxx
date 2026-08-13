@@ -515,7 +515,12 @@ fn is_cxr_accessor_name(name: &str) -> bool {
     (2..=4).contains(&letters.len()) && letters.chars().all(|ch| ch == 'a' || ch == 'd')
 }
 
-fn record_defun_attributes(interp: &mut Interpreter, name: &str, forms: &[Value]) {
+fn record_defun_attributes(
+    interp: &mut Interpreter,
+    name: &str,
+    params: &[String],
+    forms: &[Value],
+) {
     interp.remove_symbol_property(name, "interactive-form");
     for form in forms {
         if matches!(form, Value::String(_) | Value::StringObject(_)) {
@@ -539,6 +544,36 @@ fn record_defun_attributes(interp: &mut Interpreter, name: &str, forms: &[Value]
                                 name,
                                 "lisp-indent-function",
                                 parts[1].clone(),
+                            );
+                        }
+                        // GNU byte-run.el lowers this declaration to an
+                        // indexed `interactive-args' function property.
+                        // callint.c consumes that property when constructing
+                        // command-history; the executable arguments are left
+                        // unchanged.
+                        Some("interactive-args") => {
+                            let positional = params
+                                .iter()
+                                .filter(|param| *param != "&optional" && *param != "&rest")
+                                .collect::<Vec<_>>();
+                            let replacements = parts[1..]
+                                .iter()
+                                .filter_map(|entry| {
+                                    let entry = entry.to_vec().ok()?;
+                                    let argument = entry.first()?.as_symbol().ok()?;
+                                    let replacement = entry.get(1)?.clone();
+                                    let index = positional
+                                        .iter()
+                                        .position(|param| param.as_str() == argument)
+                                        .map(|index| Value::Integer(index as i64))
+                                        .unwrap_or(Value::Nil);
+                                    Some(Value::cons(index, replacement))
+                                })
+                                .collect::<Vec<_>>();
+                            interp.put_symbol_property(
+                                name,
+                                "interactive-args",
+                                Value::list(replacements),
                             );
                         }
                         // GNU defun-declarations-alist: (obsolete NEW WHEN)
@@ -1564,14 +1599,13 @@ impl Interpreter {
                         }
                     };
                     let prop = self.eval(prop_expr, env)?;
-                    let prop_name = prop.as_symbol()?.to_string();
                     let Some(existing) = self.find_overlay_mut(overlay_id) else {
                         return Err(LispError::TypeError(
                             "overlay".into(),
                             format!("overlay<{overlay_id}>"),
                         ));
                     };
-                    existing.put_prop(&prop_name, value);
+                    existing.put_prop(prop, value);
                     Ok(())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "get") {
                     let Some(symbol_expr) = items.get(1) else {
@@ -3324,7 +3358,7 @@ impl Interpreter {
             self.remove_symbol_property(&name, "function-documentation");
         }
 
-        record_defun_attributes(self, &name, &normalized_forms);
+        record_defun_attributes(self, &name, &params, &normalized_forms);
 
         // Skip docstring if present
         let body_start = if normalized_forms.len() > 1 {

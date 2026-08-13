@@ -16,7 +16,7 @@ pub struct Overlay {
     /// Buffer ID this overlay belongs to, or None if deleted/detached.
     pub buffer_id: Option<u64>,
     /// Property list: (key, value) pairs.
-    pub plist: Vec<(String, Value)>,
+    pub plist: Vec<(Value, Value)>,
 }
 
 impl Overlay {
@@ -40,15 +40,22 @@ impl Overlay {
         }
     }
 
-    pub fn get_prop(&self, key: &str) -> Option<&Value> {
-        self.plist.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    pub fn get_prop(&self, key: &Value) -> Option<&Value> {
+        self.plist
+            .iter()
+            .find(|(candidate, _)| crate::lisp::primitives::values_eql(candidate, key))
+            .map(|(_, value)| value)
     }
 
-    pub fn put_prop(&mut self, key: &str, value: Value) {
-        if let Some(entry) = self.plist.iter_mut().find(|(k, _)| k == key) {
+    pub fn put_prop(&mut self, key: Value, value: Value) {
+        if let Some(entry) = self
+            .plist
+            .iter_mut()
+            .find(|(candidate, _)| crate::lisp::primitives::values_eql(candidate, &key))
+        {
             entry.1 = value;
         } else {
-            self.plist.push((key.to_string(), value));
+            self.plist.push((key, value));
         }
     }
 
@@ -58,7 +65,7 @@ impl Overlay {
 
     /// Priority for sorting (higher = more important). Defaults to 0.
     pub fn priority(&self) -> i64 {
-        match self.get_prop("priority") {
+        match self.get_prop(&Value::Symbol("priority".into())) {
             Some(Value::Integer(n)) => *n,
             _ => 0,
         }
@@ -107,7 +114,7 @@ pub fn adjust_for_delete(overlays: &mut [Overlay], from: usize, to: usize) {
 pub fn evaporate(overlays: &mut Vec<Overlay>) {
     overlays.retain(|ov| {
         if ov.beg == ov.end
-            && let Some(val) = ov.get_prop("evaporate")
+            && let Some(val) = ov.get_prop(&Value::Symbol("evaporate".into()))
         {
             return !val.is_truthy();
         }

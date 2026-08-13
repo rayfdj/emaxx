@@ -43,6 +43,8 @@ class Vt100Screen:
         self.rows, self.cols = rows, cols
         self.grid = [[" "] * cols for _ in range(rows)]
         self.row = self.col = 0
+        self.top_margin, self.bottom_margin = 0, rows - 1
+        self.saved_cursor = (0, 0)
 
     def feed(self, data):
         text = data.decode("utf-8", "replace")
@@ -55,7 +57,10 @@ class Vt100Screen:
                 self.col = 0
                 i += 1
             elif c == "\n":
-                self.row = min(self.row + 1, self.rows - 1)
+                self._linefeed()
+                i += 1
+            elif c == "\t":
+                self.col = min((self.col // 8 + 1) * 8, self.cols - 1)
                 i += 1
             elif c == "\b":
                 self.col = max(self.col - 1, 0)
@@ -77,7 +82,7 @@ class Vt100Screen:
         kind = text[i + 1]
         if kind == "[":
             j = i + 2
-            while j < len(text) and text[j] not in "@ABCDEFGHJKLMPXacdfghlmnpqrsu":
+            while j < len(text) and text[j] not in "@ABCDEFGHJKLMPSTX`acdfghlmnpqrsu":
                 j += 1
             if j >= len(text):
                 return len(text)
@@ -89,6 +94,20 @@ class Vt100Screen:
             k = text.find("\x1b\\", i)
             ends = [e for e in (j, k) if e != -1]
             return (min(ends) + (1 if min(ends) == j else 2)) if ends else len(text)
+        if kind == "D":  # IND: index down, scrolling at the region bottom
+            self._linefeed()
+        elif kind == "M":  # RI: reverse index, scrolling at the region top
+            if self.row == self.top_margin:
+                self._scroll_down(1)
+            else:
+                self.row = max(self.row - 1, 0)
+        elif kind == "E":  # NEL
+            self.col = 0
+            self._linefeed()
+        elif kind == "7":  # DECSC
+            self.saved_cursor = (self.row, self.col)
+        elif kind == "8":  # DECRC
+            self.row, self.col = getattr(self, "saved_cursor", (0, 0))
         return i + 2
 
     def _csi(self, body, final):
@@ -105,7 +124,7 @@ class Vt100Screen:
             self.col = min(self.col + max(p0, 1), self.cols - 1)
         elif final == "D":
             self.col = max(self.col - max(p0, 1), 0)
-        elif final == "G":
+        elif final in "G`":
             self.col = min(max(p0, 1) - 1, self.cols - 1)
         elif final == "d":
             self.row = min(max(p0, 1) - 1, self.rows - 1)
@@ -113,15 +132,26 @@ class Vt100Screen:
             self._erase_screen(p0)
         elif final == "K":
             self._erase_line(p0)
-        elif final == "L":  # insert lines
-            for _ in range(max(p0, 1)):
-                self.grid.insert(self.row, [" "] * self.cols)
-                self.grid.pop()
-        elif final == "M":  # delete lines
-            for _ in range(max(p0, 1)):
-                if self.row < len(self.grid):
+        elif final == "L":  # insert lines within the scroll region
+            if self.top_margin <= self.row <= self.bottom_margin:
+                for _ in range(max(p0, 1)):
+                    self.grid.pop(self.bottom_margin)
+                    self.grid.insert(self.row, [" "] * self.cols)
+        elif final == "M":  # delete lines within the scroll region
+            if self.top_margin <= self.row <= self.bottom_margin:
+                for _ in range(max(p0, 1)):
                     self.grid.pop(self.row)
-                    self.grid.append([" "] * self.cols)
+                    self.grid.insert(self.bottom_margin, [" "] * self.cols)
+        elif final == "S":  # scroll region up
+            self._scroll_up(max(p0, 1))
+        elif final == "T":  # scroll region down
+            self._scroll_down(max(p0, 1))
+        elif final == "r":  # DECSTBM: set scroll region, home the cursor
+            top = (params[0] or 1) - 1
+            bottom = (params[1] if len(params) > 1 and params[1] else self.rows) - 1
+            if 0 <= top < bottom < self.rows:
+                self.top_margin, self.bottom_margin = top, bottom
+                self.row = self.col = 0
         elif final == "@":  # insert blank characters, shifting right
             count = max(p0, 1)
             row = self.grid[self.row]
@@ -131,6 +161,22 @@ class Vt100Screen:
             row = self.grid[self.row]
             row[self.col:] = (row[self.col + count:] + [" "] * count)[: self.cols - self.col]
         # SGR (m), modes (h/l), and the rest do not affect the text grid.
+
+    def _linefeed(self):
+        if self.row == self.bottom_margin:
+            self._scroll_up(1)
+        else:
+            self.row = min(self.row + 1, self.rows - 1)
+
+    def _scroll_up(self, count):
+        for _ in range(count):
+            self.grid.pop(self.top_margin)
+            self.grid.insert(self.bottom_margin, [" "] * self.cols)
+
+    def _scroll_down(self, count):
+        for _ in range(count):
+            self.grid.pop(self.bottom_margin)
+            self.grid.insert(self.top_margin, [" "] * self.cols)
 
     def _erase_screen(self, mode):
         if mode == 2:
@@ -248,8 +294,10 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
 
         gnu_mode = find_mode_line(gnu_lines)
         emaxx_mode = find_mode_line(emaxx_lines)
-        # GNU -nw shows a menu-bar row at the top; emaxx does not (yet).
-        gnu_text = gnu_lines[1:gnu_mode]
+        # GNU runs with the menu bar disabled (emaxx does not render one
+        # yet), so both editors work a 22-row text window and every text
+        # row — including scroll positions — must agree exactly.
+        gnu_text = gnu_lines[0:gnu_mode]
         emaxx_text = emaxx_lines[0:emaxx_mode]
 
         length = max(len(gnu_text), len(emaxx_text))
@@ -281,6 +329,53 @@ SCENARIOS = [
     ("open-existing-and-edit", "alpha\nbeta\ngamma\n", [b"\x0e\x0e", b"\x05", b" tail"]),
     ("kill-line-and-undo", "one\ntwo\nthree\n", [b"\x0b", b"\x1f"]),
     ("delete-and-backspace", "abcdef\n", [b"\x06\x06", b"\x04", b"\x7f\x7f"]),
+    # A logical line wider than the window: GNU wraps it onto continuation
+    # rows (with a trailing "\" marker); motion afterwards must land on the
+    # same visual row/column.
+    (
+        "long-line-wrap",
+        "short before\n",
+        [bytes("wide" * 50, "ascii"), b"\x01", b"\x06" * 5],
+    ),
+    # Enough lines to push point past the window bottom: both editors must
+    # pick the same new window start when they scroll.
+    (
+        "scroll-through-file",
+        "".join(f"line {n:03}\n" for n in range(60)),
+        [b"\x0e" * 30, b"X"],
+    ),
+    # Universal argument: C-u multiplies self-insert and motion counts.
+    (
+        "prefix-arguments",
+        "abcdefghijklmnop\n",
+        [b"\x15x", b"\x15" + b"8" + b"y", b"\x01", b"\x15\x06", b"Z"],
+    ),
+    # M-x round trip through the minibuffer.
+    (
+        "m-x-round-trip",
+        "abcdef\n",
+        [b"\x1bxforward-char\r", b"Q"],
+    ),
+    # Scrolling back above the window top recenters upward, clamped at
+    # the first line.
+    (
+        "scroll-back-up",
+        "".join(f"line {n:03}\n" for n in range(60)),
+        [b"\x0e" * 30, b"\x10" * 25, b"X"],
+    ),
+    # A jump straight to the end of the buffer picks the same window
+    # start as GNU's recentering.
+    (
+        "jump-to-end",
+        "".join(f"line {n:03}\n" for n in range(60)),
+        [b"\x1b>", b"END"],
+    ),
+    # next-line moves by visual rows on a wrapped line (line-move-visual).
+    (
+        "wrapped-line-vertical-motion",
+        "top line\n" + "wide" * 50 + "\nbottom line\n",
+        [b"\x0e" * 2, b"\x06" * 3, b"\x0e", b"*"],
+    ),
 ]
 
 
@@ -309,7 +404,7 @@ def main():
             ok = compare(
                 name,
                 keys,
-                [gnu_binary, "-nw", "-Q", path],
+                [gnu_binary, "-nw", "-Q", "--eval", "(menu-bar-mode -1)", path],
                 [emaxx_binary, path],
                 {},
                 {"EMACSLOADPATH": load_path},

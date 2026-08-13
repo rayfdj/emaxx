@@ -5,6 +5,40 @@ use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, LispError, Value};
 
 pub(crate) const DEFAULT_SELECTED_WINDOW_HEIGHT: usize = 24;
+
+/// Live geometry of the selected window in an interactive session,
+/// published by the terminal frontend after each redisplay.  Batch
+/// sessions have none and keep GNU's batch answers (window-end = ZV,
+/// window math on the dumb-frame height).
+#[derive(Clone, Copy)]
+pub(crate) struct InteractiveWindowMetrics {
+    /// Text rows of the selected window (frame minus mode line and echo
+    /// area).
+    pub text_height: usize,
+    /// Position just past the last displayed character, GNU's window-end.
+    pub window_end: usize,
+}
+
+thread_local! {
+    static INTERACTIVE_WINDOW_METRICS: std::cell::Cell<Option<InteractiveWindowMetrics>> =
+        const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn set_interactive_window_metrics(metrics: Option<InteractiveWindowMetrics>) {
+    INTERACTIVE_WINDOW_METRICS.with(|cell| cell.set(metrics));
+}
+
+pub(crate) fn interactive_window_metrics() -> Option<InteractiveWindowMetrics> {
+    INTERACTIVE_WINDOW_METRICS.with(|cell| cell.get())
+}
+
+/// Text height of the selected window: live terminal geometry when a
+/// frontend publishes it, GNU's batch default otherwise.
+pub(crate) fn selected_window_text_height() -> usize {
+    interactive_window_metrics()
+        .map(|metrics| metrics.text_height)
+        .unwrap_or(DEFAULT_SELECTED_WINDOW_HEIGHT)
+}
 pub(crate) const WINDOW_BUFFER_SLOT: usize = 0;
 pub(crate) const WINDOW_START_SLOT: usize = 1;
 pub(crate) const WINDOW_OLD_POINT_SLOT: usize = 2;
@@ -215,7 +249,7 @@ pub(crate) fn resolve_window_line(
     Ok(if line >= 0 {
         line as isize
     } else {
-        (DEFAULT_SELECTED_WINDOW_HEIGHT as isize + line as isize).max(0)
+        (selected_window_text_height() as isize + line as isize).max(0)
     })
 }
 

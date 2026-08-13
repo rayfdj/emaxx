@@ -696,12 +696,37 @@ pub(crate) fn read_key_sequence_event(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let event = if let Some(decoded) = read_decoded_input_event(interp, env)? {
-        decoded
-    } else {
-        normalize_key_event_value(pop_unread_command_event_value(interp, env)?)?
-    };
-    translate_mouse_read_key_sequence_event(interp, event, env)
+    loop {
+        let event = if let Some(decoded) = read_decoded_input_event(interp, env)? {
+            decoded
+        } else {
+            normalize_key_event_value(pop_unread_command_event_value(interp, env)?)?
+        };
+        if is_mouse_down_event(&event) {
+            let event_name =
+                input_event_symbol(&event).expect("mouse-down events have a symbolic head");
+            let key_parts = vec![event_name];
+            let mut binding = Value::Nil;
+            for map in active_command_keymaps(interp, env)? {
+                binding = keymap_lookup_sequence_value_with_default(
+                    interp, &map, &key_parts, false, env,
+                )?;
+                if !binding.is_nil() {
+                    break;
+                }
+            }
+            // bindings.el installs this in GNU's dumped global map.  Keep
+            // the file-less bootstrap fallback aligned without treating all
+            // mouse-down events as bound.
+            if binding.is_nil() && key_parts == ["down-mouse-1"] {
+                binding = Value::Symbol("mouse-drag-region".into());
+            }
+            if binding.is_nil() {
+                continue;
+            }
+        }
+        return translate_mouse_read_key_sequence_event(interp, event, env);
+    }
 }
 
 pub(crate) fn record_command_history(
@@ -732,9 +757,12 @@ pub(crate) fn is_declare_form(form: &Value) -> bool {
 }
 
 pub(crate) fn invalid_interactive_control_letter(ch: char) -> LispError {
-    let code = ch as u32;
+    let code = raw_byte_from_regex_char(ch)
+        .map(u32::from)
+        .unwrap_or(ch as u32);
+    let display = char::from_u32(code).unwrap_or(ch);
     LispError::Signal(format!(
-        "Invalid control letter `{ch}' (#o{code:03o}, #x{code:04x}) in interactive calling string"
+        "Invalid control letter `{display}' (#o{code:03o}, #x{code:04x}) in interactive calling string"
     ))
 }
 

@@ -295,7 +295,7 @@ fn prefix_integer(value: &Value) -> Option<BigInt> {
     }
 }
 
-fn next_universal_prefix(pending: &Value) -> Value {
+pub(crate) fn next_universal_prefix(pending: &Value) -> Value {
     match pending {
         Value::Nil => Value::list([Value::Integer(4)]),
         Value::Cons(_) => {
@@ -310,7 +310,7 @@ fn next_universal_prefix(pending: &Value) -> Value {
     }
 }
 
-fn next_negative_prefix(pending: &Value) -> Value {
+pub(crate) fn next_negative_prefix(pending: &Value) -> Value {
     if let Some(integer) = prefix_integer(pending) {
         normalize_bigint_value(-integer)
     } else if matches!(pending, Value::Symbol(minus) if minus == "-") {
@@ -320,7 +320,7 @@ fn next_negative_prefix(pending: &Value) -> Value {
     }
 }
 
-fn next_digit_prefix(pending: &Value, digit: i64) -> Value {
+pub(crate) fn next_digit_prefix(pending: &Value, digit: i64) -> Value {
     if let Some(integer) = prefix_integer(pending) {
         let negative = integer.sign() == Sign::Minus;
         let digit = BigInt::from(digit);
@@ -1378,8 +1378,8 @@ define_dispatch!(
             }
             "car" => {
                 need_args(name, args, 1)?;
-                if let Some(items) = keymap_list_items(interp, &args[0])? {
-                    Ok(items.into_iter().next().unwrap_or(Value::Nil))
+                if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
+                    view.car()
                 } else {
                     args[0]
                         .car()
@@ -1409,8 +1409,8 @@ define_dispatch!(
             }
             "cdr" => {
                 need_args(name, args, 1)?;
-                if let Some(items) = keymap_list_items(interp, &args[0])? {
-                    Ok(Value::list(items.into_iter().skip(1)))
+                if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
+                    view.cdr()
                 } else {
                     args[0]
                         .cdr()
@@ -1421,8 +1421,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(match &args[0] {
                     Value::Cons(cell) => cell.car.borrow().clone(),
-                    value => keymap_list_items(interp, value)?
-                        .and_then(|items| items.into_iter().next())
+                    value => runtime_keymap_public_view(interp, value)
+                        .and_then(|view| view.car().ok())
                         .unwrap_or(Value::Nil),
                 })
             }
@@ -1430,8 +1430,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(match &args[0] {
                     Value::Cons(cell) => cell.cdr.borrow().clone(),
-                    value => keymap_list_items(interp, value)?
-                        .map(|items| Value::list(items.into_iter().skip(1)))
+                    value => runtime_keymap_public_view(interp, value)
+                        .and_then(|view| view.cdr().ok())
                         .unwrap_or(Value::Nil),
                 })
             }
@@ -1837,10 +1837,17 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let want_car = name == "assq";
                 let key = &args[0];
+                let projected;
+                let alist = if let Some(items) = keymap_list_items(interp, &args[1])? {
+                    projected = Value::list(items);
+                    &projected
+                } else {
+                    &args[1]
+                };
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 // Walk by cons cells rather than by cloned Values: one Rc
                 // bump per step and no whole-Value churn.
-                let mut cell = match &args[1] {
+                let mut cell = match alist {
                     Value::Nil => return Ok(Value::Nil),
                     Value::Cons(cell) => Rc::clone(cell),
                     other => {
@@ -3165,18 +3172,19 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 2)?;
                 ensure_interaction_allowed(interp, env)?;
                 let disable_fallbacks = args.get(1).is_some_and(Value::is_truthy);
-                loop {
-                    let event = if let Some(decoded) = read_decoded_input_event(interp, env)? {
+                let event = if disable_fallbacks {
+                    if let Some(decoded) = read_decoded_input_event(interp, env)? {
                         decoded
                     } else {
                         normalize_key_event_value(pop_unread_command_event_value(interp, env)?)?
-                    };
-                    if !disable_fallbacks && is_mouse_down_event(&event) {
-                        continue;
                     }
+                } else {
+                    read_key_sequence_event(interp, env)?
+                };
+                if disable_fallbacks {
                     interp.set_variable("last-input-event", event.clone(), env);
-                    return Ok(event);
                 }
+                Ok(event)
             }
             "read-key-sequence" | "read-key-sequence-vector" => {
                 need_arg_range(name, args, 1, 6)?;

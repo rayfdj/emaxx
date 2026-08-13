@@ -266,13 +266,10 @@ define_dispatch!(
                     Value::Overlay(id) => *id,
                     _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
                 };
-                let key = match &args[1] {
-                    Value::Symbol(s) => s.clone(),
-                    _ => return Err(LispError::TypeError("symbol".into(), args[1].type_name())),
-                };
+                let key = args[1].clone();
                 let value = args[2].clone();
                 if let Some(ov) = interp.find_overlay_mut(ov_id) {
-                    ov.put_prop(&key, value.clone());
+                    ov.put_prop(key, value.clone());
                 }
                 Ok(value)
             }
@@ -283,13 +280,15 @@ define_dispatch!(
                     Value::Overlay(id) => *id,
                     _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
                 };
-                let key = match &args[1] {
-                    Value::Symbol(s) => s.clone(),
-                    _ => return Err(LispError::TypeError("symbol".into(), args[1].type_name())),
-                };
+                let key = args[1].clone();
                 match interp.find_overlay(ov_id) {
                     Some(ov) => {
-                        Ok(overlay_property_with_category(interp, ov, &key).unwrap_or(Value::Nil))
+                        if let Value::Symbol(name) = &key {
+                            Ok(overlay_property_with_category(interp, ov, name)
+                                .unwrap_or(Value::Nil))
+                        } else {
+                            Ok(ov.get_prop(&key).cloned().unwrap_or(Value::Nil))
+                        }
                     }
                     None => Ok(Value::Nil),
                 }
@@ -305,7 +304,7 @@ define_dispatch!(
                     Some(ov) => {
                         let mut items = Vec::new();
                         for (k, v) in &ov.plist {
-                            items.push(Value::Symbol(k.clone().into()));
+                            items.push(k.clone());
                             items.push(v.clone());
                         }
                         Ok(Value::list(items))
@@ -335,8 +334,10 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let beg = position_from_value(interp, &args[0])?;
                 let end = position_from_value(interp, &args[1])?;
-                // Z is the un-narrowed buffer end (1-based).
-                let z = interp.buffer.size_total() + 1;
+                // GNU treats the accessible end as the endpoint for empty
+                // overlays.  After narrowing, an overlay at ZV is visible to
+                // `overlays-in ZV ZV' even when it is not at the buffer's Z.
+                let zv = interp.buffer.point_max();
                 let mut overlays = interp
                     .buffer
                     .overlays
@@ -348,10 +349,12 @@ define_dispatch!(
                         if ov.beg == ov.end {
                             // Zero-length overlay at pos P:
                             // Include if P is in [beg, end), or if beg==end and P==beg,
-                            // or if P==end and end >= Z (at the real buffer end).
-                            return (ov.beg >= beg && ov.beg < end)
-                                || (beg == end && ov.beg == beg)
-                                || (ov.beg == end && end >= z);
+                            // or if P==end and end >= ZV (at the accessible end).
+                            return ov.beg >= interp.buffer.point_min()
+                                && ov.beg <= zv
+                                && ((ov.beg >= beg && ov.beg < end)
+                                    || (beg == end && ov.beg == beg)
+                                    || (ov.beg == end && end >= zv));
                         }
                         // Non-empty overlay: include if it overlaps [beg, end)
                         ov.beg < end && ov.end > beg
@@ -408,6 +411,10 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
 
+            // GNU subr.el owns this high-level splitting policy.  Retain a
+            // file-less bootstrap route, but never pin initialized batch
+            // execution to this fallback (a loaded defun wins function-cell
+            // resolution).
             "remove-overlays" => {
                 // (remove-overlays &optional BEG END NAME VAL)
                 let beg = if args.is_empty() || args[0].is_nil() {
@@ -420,11 +427,7 @@ define_dispatch!(
                 } else {
                     args[1].as_integer()? as usize
                 };
-                let filter_name = if args.len() >= 3 {
-                    args[2].as_symbol().ok().map(|s| s.to_string())
-                } else {
-                    None
-                };
+                let filter_name = args.get(2).cloned();
                 let filter_val = args.get(3).cloned();
                 let zv = interp.buffer.point_max();
 
@@ -441,7 +444,7 @@ define_dispatch!(
                         if let Some(ref fname) = filter_name {
                             let val = ov.get_prop(fname).cloned().unwrap_or(Value::Nil);
                             if let Some(ref fval) = filter_val
-                                && !values_equal(interp, &val, fval)
+                                && !values_eql(&val, fval)
                             {
                                 return false;
                             }

@@ -146,11 +146,7 @@ pub fn run_batch_with_actions(
                         Ok(_) => {}
                         Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                         Err(error) => {
-                            // GNU's noninteractive command loop reports an
-                            // unhandled Lisp condition directly, without
-                            // decorating it with the command-line form, and
-                            // terminates with the conventional fatal status.
-                            eprintln!("{error}");
+                            emit_unhandled_batch_error(&mut interpreter, &error);
                             return Ok(BatchRunOutcome::Exit(255));
                         }
                     }
@@ -165,7 +161,7 @@ pub fn run_batch_with_actions(
                     Ok(_) => {}
                     Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                     Err(error) => {
-                        eprintln!("{error}");
+                        emit_unhandled_batch_error(&mut interpreter, &error);
                         return Ok(BatchRunOutcome::Exit(255));
                     }
                 }
@@ -250,6 +246,45 @@ pub fn run_batch_with_actions(
     } else {
         Ok(BatchRunOutcome::Exit(1))
     }
+}
+
+fn emit_unhandled_batch_error(interpreter: &mut Interpreter, error: &LispError) {
+    eprintln!("{error}");
+    let Some(backtrace) = interpreter.take_batch_error_backtrace() else {
+        return;
+    };
+    if !backtrace.enabled {
+        return;
+    }
+    let condition = lisp::eval::error_condition_value(error);
+    let rendered_condition = match condition.to_vec() {
+        Ok(items) if !items.is_empty() => {
+            let kind = items[0].to_string();
+            let data = Value::list(items.into_iter().skip(1));
+            format!("{kind} {data}")
+        }
+        _ => condition.to_string(),
+    };
+    eprintln!("\nError: {rendered_condition}");
+    for (evald, function, args, _) in backtrace.frames {
+        if evald {
+            let args = args
+                .into_iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!("  {function}({args})");
+        } else {
+            let args = args
+                .into_iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let separator = if args.is_empty() { "" } else { " " };
+            eprintln!("  ({function}{separator}{args})");
+        }
+    }
+    eprintln!("  normal-top-level()");
 }
 
 fn run_ert_for_batch_report(
@@ -708,6 +743,28 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         interpreter
             .load_target("frame")
             .map_err(|error| format!("preload frame: {error}"))?;
+    }
+
+    // GNU loadup dumps mouse.el after frame/font-lock and before select.el.
+    // Context-menu construction, mouse translations, and their defcustom
+    // declarations are Elisp policy; reconstruct the complete dumped owner
+    // rather than relying on the file-less native fallbacks during batch use.
+    if !interpreter.has_feature("mouse") && interpreter.resolve_load_target("mouse").is_some() {
+        interpreter
+            .load_target("mouse")
+            .map_err(|error| format!("preload mouse: {error}"))?;
+    }
+
+    // GNU loadup dumps select.el after frame.el (and the mouse/scroll-bar
+    // owners) and before the timer/menu cluster.  Its public
+    // GUI selection API is portable Elisp policy over backend primitives;
+    // callers such as x-dnd.el legitimately use it without requiring the
+    // feature.  Reconstruct the complete owner instead of providing a native
+    // gui-set-selection shortcut or teaching individual clients about it.
+    if !interpreter.has_feature("select") && interpreter.resolve_load_target("select").is_some() {
+        interpreter
+            .load_target("select")
+            .map_err(|error| format!("preload select: {error}"))?;
     }
 
     // GNU loadup dumps easymenu.el after frame.el and before isearch.el.
@@ -2210,6 +2267,142 @@ mod tests {
                     .eval(&form, &mut Vec::new())
                     .expect("evaluate isearch startup probe"),
                 Value::list([Value::T, Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_complete_selection_owner() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'select)\
+                       (fboundp 'gui-set-selection)\
+                       (not (subrp (symbol-function 'gui-set-selection)))\
+                       (boundp 'selection-converter-alist)\
+                       (gui-set-selection 'PRIMARY \"payload\")\
+                       (condition-case error-data\
+                           (gui-set-selection 'PRIMARY '(invalid))\
+                         (error error-data)))",
+            )
+            .read_all()
+            .expect("read selection startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate selection startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::String("payload".into()),
+                    Value::list([
+                        Value::Symbol("error".into()),
+                        Value::String("invalid selection".into()),
+                        Value::list([Value::Symbol("invalid".into())]),
+                    ]),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_mouse_owner_and_dynamic_context_menu_policy() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'mouse)\
+                       (special-variable-p 'context-menu-functions)\
+                       (special-variable-p 'context-menu-filter-function)\
+                       (not (subrp (symbol-function 'context-menu-map)))\
+                       (let ((context-menu-functions nil))\
+                         (equal (context-menu-map)\
+                                '(keymap \"Context Menu\"))))",
+            )
+            .read_all()
+            .expect("read mouse startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate mouse startup probe"),
+                Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn xt_mouse_read_key_discards_the_unbound_down_event() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                r#"(progn
+                     (require 'xt-mouse)
+                     (require 'cl-lib)
+                     (let ((width (frame-width))
+                           (height (frame-height)))
+                       (unwind-protect
+                           (progn
+                             (set-frame-width nil (max width 2000))
+                             (set-frame-height nil (max height 2000))
+                             (cl-letf (((terminal-parameter nil 'xterm-mouse-x) nil)
+                                       ((terminal-parameter nil 'xterm-mouse-y) nil)
+                                       ((terminal-parameter nil 'xterm-mouse-last-down) nil)
+                                       ((terminal-parameter nil 'xterm-mouse-last-click) nil))
+                               (unless xterm-mouse-mode
+                                 (cl-letf (((symbol-function 'terminal-name)
+                                            (lambda (&optional _) "fake-terminal")))
+                                   (xterm-mouse-mode)))
+                               (unwind-protect
+                                   (let* ((unread-command-events
+                                           (append "\e[M%\xD9\x81"
+                                                   "\e[M'\xD9\x81" nil))
+                                          (key (read-key)))
+                                     (list (car key)
+                                           (nth 2 (cadr key))
+                                           unread-command-events))
+                                 (xterm-mouse-mode 0))))
+                         (set-frame-width nil width)
+                         (set-frame-height nil height))))"#,
+            )
+            .read_all()
+            .expect("read XTerm mouse stage probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("read the translated XTerm mouse event"),
+                Value::list([
+                    Value::Symbol("S-mouse-2".into()),
+                    Value::cons(Value::Integer(184), Value::Integer(95)),
+                    Value::Nil,
+                ])
             );
         });
     }

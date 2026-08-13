@@ -2457,8 +2457,14 @@ define_dispatch!(
                 // headless extent eagerly, so accepting it requires no extra
                 // invalidation step.
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
-                let (_, point_max) = buffer_point_bounds(interp, buffer_id);
-                Ok(Value::Integer(point_max as i64))
+                let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+                // A batch session's dumb frame shows the whole buffer (GNU
+                // answers ZV); an interactive frontend publishes the real
+                // displayed extent.
+                let end = interactive_window_metrics()
+                    .map(|metrics| metrics.window_end.clamp(point_min, point_max))
+                    .unwrap_or(point_max);
+                Ok(Value::Integer(end as i64))
             }
             "window-point" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -2695,7 +2701,7 @@ define_dispatch!(
                 let visible_line = line_distance_in_buffer(interp, buffer_id, first_visible, pos);
                 let visible = pos >= first_visible
                     && pos <= point_max
-                    && visible_line < DEFAULT_SELECTED_WINDOW_HEIGHT;
+                    && visible_line < selected_window_text_height();
                 if !visible {
                     return Ok(Value::Nil);
                 }
@@ -2940,7 +2946,7 @@ define_dispatch!(
             }
             "move-to-window-line" => {
                 need_arg_range(name, args, 0, 1)?;
-                let line = resolve_window_line(args.first(), DEFAULT_SELECTED_WINDOW_HEIGHT / 2)?;
+                let line = resolve_window_line(args.first(), selected_window_text_height() / 2)?;
                 let window_start = current_window_start(interp);
                 let (target, shortage) = move_lines_from(interp, window_start, line);
                 interp.buffer.goto_char(target);
@@ -2955,7 +2961,7 @@ define_dispatch!(
             }
             "recenter" => {
                 need_arg_range(name, args, 0, 2)?;
-                let line = resolve_window_line(args.first(), DEFAULT_SELECTED_WINDOW_HEIGHT / 2)?;
+                let line = resolve_window_line(args.first(), selected_window_text_height() / 2)?;
                 let point_line = beginning_of_line_at(interp, interp.buffer.point());
                 let (new_start, _) = move_lines_from(interp, point_line, -line);
                 set_current_window_start(interp, new_start);
@@ -4100,7 +4106,6 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 4)?;
                 let x = args[0].as_integer()?;
                 let y = args[1].as_integer()?;
-                let pos_y = if y > 0 { y - 1 } else { y };
                 let window = args
                     .get(2)
                     .filter(|value| is_window_value(interp, value))
@@ -4109,15 +4114,89 @@ define_dispatch!(
                 Ok(Value::list([
                     window,
                     Value::Nil,
-                    Value::cons(Value::Integer(x), Value::Integer(pos_y)),
+                    Value::cons(Value::Integer(x), Value::Integer(y)),
                     Value::Integer(0),
                 ]))
             }
             "posn-at-point" => {
                 need_arg_range(name, args, 0, 2)?;
                 // Like GNU --batch, Emaxx has no realized glyph matrix from
-                // which to derive a screen position.
-                Ok(Value::Nil)
+                // which to derive a screen position.  An interactive
+                // session publishes live window geometry, from which the
+                // posn's screen coordinates follow (tty pixels are cells).
+                let Some(metrics) = interactive_window_metrics() else {
+                    return Ok(Value::Nil);
+                };
+                let pos = match args.first() {
+                    None | Some(Value::Nil) => interp.buffer.point(),
+                    Some(value) => position_from_value(interp, value)?,
+                };
+                let point_min = interp.buffer.point_min();
+                let point_max = interp.buffer.point_max();
+                let start = crate::lisp::primitives::current_window_start(interp)
+                    .clamp(point_min, point_max);
+                let visible = pos >= start
+                    && (pos < metrics.window_end
+                        || (pos <= point_max && metrics.window_end >= point_max));
+                if !visible {
+                    // GNU answers nil for positions outside the window.
+                    return Ok(Value::Nil);
+                }
+                let (bol, eol) = super::buffer_edit::visual_line_bounds(interp, pos);
+                let starts = super::buffer_edit::visual_segment_starts(interp, env, bol, eol);
+                let seg_index = starts.iter().rposition(|&s| s <= pos).unwrap_or(0);
+                let widths = super::buffer_edit::visual_char_widths(interp, env, bol, eol);
+                let mut x = 0usize;
+                for p in starts[seg_index]..pos {
+                    let (raw, _) = widths[p - bol];
+                    x += if raw == usize::MAX { 8 - (x % 8) } else { raw };
+                }
+                // Row within the window: visual rows between window-start
+                // and POS's screen line, capped at the window height.
+                let mut y = 0usize;
+                let (mut walk_bol, mut walk_eol) =
+                    super::buffer_edit::visual_line_bounds(interp, start);
+                let walk_starts =
+                    super::buffer_edit::visual_segment_starts(interp, env, walk_bol, walk_eol);
+                let mut walk_seg = walk_starts
+                    .iter()
+                    .rposition(|&s| s <= start)
+                    .unwrap_or(0);
+                while y < metrics.text_height {
+                    if walk_bol == bol {
+                        y += seg_index.saturating_sub(walk_seg);
+                        break;
+                    }
+                    let segs = super::buffer_edit::visual_segment_starts(
+                        interp, env, walk_bol, walk_eol,
+                    )
+                    .len();
+                    y += segs.saturating_sub(walk_seg);
+                    walk_seg = 0;
+                    if walk_eol >= point_max {
+                        break;
+                    }
+                    let bounds = super::buffer_edit::visual_line_bounds(interp, walk_eol + 1);
+                    walk_bol = bounds.0;
+                    walk_eol = bounds.1;
+                }
+                let y = y.min(metrics.text_height.saturating_sub(1));
+                // keyboard.c's make_lispy_position for a text-area point:
+                // (WINDOW POS (X . Y) TIME OBJECT POS (COL . ROW) IMAGE
+                //  (DX . DY) (WIDTH . HEIGHT)).
+                let xy = Value::cons(Value::Integer(x as i64), Value::Integer(y as i64));
+                Ok(Value::list([
+                    interp.selected_window_value(),
+                    Value::Integer(pos as i64),
+                    xy.clone(),
+                    Value::Integer(0),
+                    Value::Nil,
+                    Value::Integer(pos as i64),
+                    xy,
+                    Value::Nil,
+                    Value::cons(Value::Integer(0), Value::Integer(0)),
+                    Value::cons(Value::Integer(1), Value::Integer(1)),
+                ]))
             }
             "window-display-table" | "window-cursor-type" => {
                 need_arg_range(name, args, 0, 1)?;

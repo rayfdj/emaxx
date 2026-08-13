@@ -166,6 +166,9 @@ fn keymap_list_items_inner(
     let Some(id) = keymap_record_id(interp, value) else {
         return Ok(None);
     };
+    if let Some(view) = runtime_keymap_public_view(interp, value) {
+        return view.to_vec().map(Some);
+    }
     if !seen_keymaps.insert(id) {
         // GNU keymaps are cons graphs and may contain recursive prefix
         // bindings.  A repeated node is still recognizably a keymap, but
@@ -188,7 +191,6 @@ fn keymap_list_items_inner(
     for binding in bindings
         .iter()
         .filter(|binding| !binding.after_prompt)
-        .rev()
         .chain(bindings.iter().filter(|binding| binding.after_prompt))
     {
         let value = project_embedded_keymaps(interp, &binding.value, seen_keymaps, seen_cons)?;

@@ -181,6 +181,29 @@ impl Interpreter {
         }
     }
 
+    /// Run the native `make-indirect-buffer' clone hook in the new buffer
+    /// while restoring the caller's buffer even when a hook signals.
+    pub(crate) fn run_clone_indirect_buffer_hook(
+        &mut self,
+        new_buffer_id: u64,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let saved_buffer_id = self.current_buffer_id();
+        self.set_current_buffer_id(new_buffer_id)?;
+        let result = crate::lisp::primitives::run_named_hooks(
+            self,
+            "clone-indirect-buffer-hook",
+            env,
+            Some(new_buffer_id),
+        );
+        let restore = self.set_current_buffer_id(saved_buffer_id);
+        match (result, restore) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
         self.buffer_locals
             .get(&buffer_id)
@@ -1460,6 +1483,34 @@ impl Interpreter {
             .collect()
     }
 
+    pub(super) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {
+        if matches!(error, LispError::Throw(_, _) | LispError::Terminate(_)) {
+            return;
+        }
+        let frames = self.backtrace_frames_snapshot();
+        if self
+            .batch_error_backtrace
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.frames.len() >= frames.len())
+        {
+            return;
+        }
+        self.batch_error_backtrace = Some(BatchErrorBacktrace {
+            enabled: self
+                .lookup_var("backtrace-on-error-noninteractive", env)
+                .is_some_and(|value| value.is_truthy()),
+            frames,
+        });
+    }
+
+    pub(crate) fn take_batch_error_backtrace(&mut self) -> Option<BatchErrorBacktrace> {
+        self.batch_error_backtrace.take()
+    }
+
+    pub(crate) fn clear_batch_error_backtrace(&mut self) {
+        self.batch_error_backtrace = None;
+    }
+
     pub fn backtrace_frame_locals_snapshot(&self, index: usize) -> Option<Vec<(String, Value)>> {
         self.backtrace_frames
             .iter()
@@ -1697,18 +1748,131 @@ impl Interpreter {
     pub fn effective_labeled_restriction(
         &self,
         buffer_id: u64,
-        skip_label: Option<&str>,
+        skip_label: Option<&Value>,
     ) -> Option<(usize, usize)> {
         let mut result: Option<(usize, usize)> = None;
-        for (id, label, start, end) in &self.labeled_restrictions {
-            if *id != buffer_id || skip_label == Some(label.as_str()) {
+        for restriction in &self.labeled_restrictions {
+            if restriction.buffer_id != buffer_id
+                || skip_label.is_some_and(|skip| {
+                    restriction
+                        .label
+                        .as_ref()
+                        .is_some_and(|label| crate::lisp::primitives::values_eql(skip, label))
+                })
+            {
                 continue;
             }
+            let Some(start) = self.marker_position(restriction.beg_marker_id) else {
+                continue;
+            };
+            let Some(end) = self.marker_position(restriction.end_marker_id) else {
+                continue;
+            };
             result = Some(match result {
-                Some((cur_start, cur_end)) => (cur_start.max(*start), cur_end.min(*end)),
-                None => (*start, *end),
+                Some((cur_start, cur_end)) => (cur_start.max(start), cur_end.min(end)),
+                None => (start, end),
             });
         }
         result
+    }
+
+    pub(crate) fn labeled_restrictions_snapshot(&self, buffer_id: u64) -> Vec<LabeledRestriction> {
+        self.labeled_restrictions
+            .iter()
+            .filter(|restriction| restriction.buffer_id == buffer_id)
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn restore_labeled_restrictions(
+        &mut self,
+        buffer_id: u64,
+        snapshot: Vec<LabeledRestriction>,
+    ) {
+        self.labeled_restrictions
+            .retain(|restriction| restriction.buffer_id != buffer_id);
+        self.labeled_restrictions.extend(snapshot);
+    }
+
+    pub(crate) fn push_labeled_restriction(
+        &mut self,
+        buffer_id: u64,
+        label: Value,
+        start: usize,
+        end: usize,
+        outermost: (usize, usize),
+    ) -> Result<(), LispError> {
+        if !self
+            .labeled_restrictions
+            .iter()
+            .any(|restriction| restriction.buffer_id == buffer_id)
+        {
+            let (beg_marker_id, end_marker_id) =
+                self.labeled_restriction_markers(buffer_id, outermost.0, outermost.1)?;
+            self.labeled_restrictions.push(LabeledRestriction {
+                buffer_id,
+                label: None,
+                beg_marker_id,
+                end_marker_id,
+            });
+        }
+        let (beg_marker_id, end_marker_id) =
+            self.labeled_restriction_markers(buffer_id, start, end)?;
+        self.labeled_restrictions.push(LabeledRestriction {
+            buffer_id,
+            label: Some(label),
+            beg_marker_id,
+            end_marker_id,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn pop_labeled_restriction(
+        &mut self,
+        buffer_id: u64,
+        label: &Value,
+    ) -> Option<(usize, usize)> {
+        let top = self
+            .labeled_restrictions
+            .iter()
+            .rposition(|restriction| restriction.buffer_id == buffer_id)?;
+        if self.labeled_restrictions[top]
+            .label
+            .as_ref()
+            .is_some_and(|active| crate::lisp::primitives::values_eql(active, label))
+        {
+            self.labeled_restrictions.remove(top);
+        }
+        let next = self
+            .labeled_restrictions
+            .iter()
+            .rposition(|restriction| restriction.buffer_id == buffer_id)?;
+        let restriction = self.labeled_restrictions[next].clone();
+        let start = self.marker_position(restriction.beg_marker_id)?;
+        let end = self.marker_position(restriction.end_marker_id)?;
+        if restriction.label.is_none() {
+            self.labeled_restrictions.remove(next);
+        }
+        Some((start, end))
+    }
+
+    fn labeled_restriction_markers(
+        &mut self,
+        buffer_id: u64,
+        start: usize,
+        end: usize,
+    ) -> Result<(u64, u64), LispError> {
+        let Value::Marker(beg_marker_id) = self.make_marker() else {
+            unreachable!("make_marker returns a marker")
+        };
+        let Value::Marker(end_marker_id) = self.make_marker() else {
+            unreachable!("make_marker returns a marker")
+        };
+        self.set_marker(beg_marker_id, Some(start), Some(buffer_id))?;
+        self.set_marker(end_marker_id, Some(end), Some(buffer_id))?;
+        // Point-max markers, including the labeled-restriction endpoints in
+        // editfns.c, move after text inserted exactly at their position.
+        self.set_marker_insertion_type(end_marker_id, true);
+        Ok((beg_marker_id, end_marker_id))
     }
 }

@@ -78,10 +78,6 @@
       "selector": "t"
     },
     {
-      "path": "test/lisp/follow-tests.el",
-      "selector": "t"
-    },
-    {
       "path": "test/lisp/font-lock-tests.el",
       "selector": "t"
     },
@@ -174,10 +170,6 @@
       "selector": "t"
     },
     {
-      "path": "test/lisp/savehist-tests.el",
-      "selector": "t"
-    },
-    {
       "path": "test/lisp/saveplace-tests.el",
       "selector": "t"
     },
@@ -202,11 +194,59 @@
       "selector": "t"
     },
     {
+      "path": "test/lisp/vc/ediff-diff-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/ediff-ptch-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/log-edit-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/smerge-mode-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-bzr-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-cvs-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-git-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-hg-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/vc/vc-tests.el",
+      "selector": "t"
+    },
+    {
       "path": "test/lisp/version-tests.el",
       "selector": "t"
     },
     {
-      "path": "test/lisp/winner-tests.el",
+      "path": "test/lisp/wdired-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/which-key-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/whitespace-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/wid-edit-tests.el",
       "selector": "t"
     },
     {
@@ -215,6 +255,10 @@
     },
     {
       "path": "test/lisp/xdg-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/xml-tests.el",
       "selector": "t"
     },
     {
@@ -238,7 +282,39 @@
       "selector": "t"
     },
     {
+      "path": "test/src/alloc-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/buffer-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/callint-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/callproc-tests.el",
+      "selector": "t"
+    },
+    {
       "path": "test/src/casefiddle-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/character-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/charset-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/chartab-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/cmds-tests.el",
       "selector": "t"
     },
     {
@@ -250,7 +326,23 @@
       "selector": "t"
     },
     {
+      "path": "test/src/decompress-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/doc-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/editfns-tests.el",
+      "selector": "t"
+    },
+    {
       "path": "test/src/emacs-module-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/emacs-tests.el",
       "selector": "t"
     },
     {
@@ -266,7 +358,31 @@
       "selector": "t"
     },
     {
+      "path": "test/src/floatfns-tests.el",
+      "selector": "t"
+    },
+    {
       "path": "test/src/fns-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/font-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/image-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/indent-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/inotify-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/json-tests.el",
       "selector": "t"
     },
     {

@@ -338,8 +338,6 @@ impl Interpreter {
             "adaptive-fill-regexp" => Some(Value::String("[-–!|#%;>*·•‣⁃◦ \t]*".into())),
             "adaptive-fill-first-line-regexp" => Some(Value::String("\\`[ \t]*\\'".into())),
             "gc-cons-threshold" => Some(Value::Integer(800_000)),
-            "auto-save-timeout" => Some(Value::Integer(30)),
-            "auto-save-interval" => Some(Value::Integer(300)),
             // GNU fileio.c defvar; simple.el reads it before files.el policy
             // is necessarily loaded.
             "auto-save-visited-file-name" => Some(Value::Nil),
@@ -441,7 +439,6 @@ impl Interpreter {
             "overlay-arrow-string" => Some(Value::Nil),
             "track-mouse" => Some(Value::Nil),
             "last-input-event" => Some(Value::Nil),
-            "last-event-frame" => Some(Value::Nil),
             "last-nonmenu-event" => Some(Value::Nil),
             "signal-hook-function" => Some(Value::Nil),
             "minor-mode-overriding-map-alist" => Some(Value::Nil),
@@ -682,11 +679,6 @@ impl Interpreter {
             "window-system" => Some(Value::Nil),
             "initial-window-system" => Some(Value::Nil),
             "left-margin" => Some(Value::Integer(0)),
-            "last-command" => Some(Value::Nil),
-            "real-last-command" => Some(Value::Nil),
-            "this-command" => Some(Value::Nil),
-            "this-original-command" => Some(Value::Nil),
-            "num-input-keys" | "num-nonmacro-input-events" => Some(Value::Integer(0)),
             "this-single-command-keys" => {
                 Some(Value::list([Value::Symbol("vector-literal".into())]))
             }
@@ -727,10 +719,6 @@ impl Interpreter {
             "tab-stop-list" => Some(Value::Nil),
             "use-dialog-box" => Some(Value::T),
             "use-file-dialog" => Some(Value::T),
-            "help-char" => Some(Value::Integer(8)),
-            "help-event-list" => Some(Value::Nil),
-            "help-form" => Some(Value::Nil),
-            "prefix-help-command" => Some(Value::Nil),
             "command-error-function" => {
                 Some(Value::Symbol("command-error-default-function".into()))
             }
