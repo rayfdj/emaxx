@@ -49,7 +49,8 @@ fn validate_popup_position(interp: &Interpreter, position: &Value) -> Result<(),
         if let Some(window) = items.get(1) {
             let valid_window = matches!(window, Value::Frame(id) if interp.frame_is_live(*id))
                 || matches!(window, Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| record.type_name == "window"));
+                        if interp.find_record(*id).is_some_and(|record|
+                            record.kind == crate::lisp::eval::RecordKind::Window));
             if !valid_window {
                 return Err(wrong_type_argument("windowp", window.clone()));
             }
@@ -155,9 +156,9 @@ define_dispatch!(
                     Value::T => {}
                     Value::Frame(id) if interp.frame_is_live(*id) => {}
                     Value::Record(id)
-                        if interp
-                            .find_record(*id)
-                            .is_some_and(|record| record.type_name == "window") => {}
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::Window
+                        }) => {}
                     Value::Cons(_) => {}
                     _ => return Err(wrong_type_argument("windowp", Value::Nil)),
                 }

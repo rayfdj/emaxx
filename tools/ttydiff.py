@@ -6,12 +6,11 @@ decodes each output stream with a small VT100 interpreter into a character
 grid, and compares the grids region by region:
 
   text area   rows before the mode line, after skipping GNU's menu-bar row
-  mode line   compared as a presence check only for now (formats differ)
+  mode line   exact characters and padding
   echo area   the final row
 
-The text area is the contract: identical buffer content, cursor row/column,
-and scrolling.  Mode-line/echo formatting differences are reported but not
-fatal until the frontend renders `mode-line-format' (a later Phase 2 step).
+The contract is identical buffer content, cursor row/column, scrolling,
+mode-line rendering, and echo-area rendering.
 
 Usage:
     tools/ttydiff.py EMAXX_BINARY GNU_BINARY GNU_LISP_DIR [SCRIPT...]
@@ -21,6 +20,7 @@ text-area divergence; missing binaries skip with exit 0 so unconfigured
 environments stay green.
 """
 
+import codecs
 import os
 import pty
 import select
@@ -34,6 +34,10 @@ import termios
 
 ROWS, COLS = 24, 80
 FIXTURE_PATH = "/tmp/emaxxff-fixture.dat"
+# A directory whose listing both editors complete over: two names sharing
+# the ambiguous prefix the *Completions* scenarios TAB on.
+COMPLETIONS_DIR_NAME = "emaxxffcomp"
+COMPLETIONS_DIR = f"/tmp/{COMPLETIONS_DIR_NAME}"
 
 
 class Vt100Screen:
@@ -46,14 +50,25 @@ class Vt100Screen:
         self.row = self.col = 0
         self.top_margin, self.bottom_margin = 0, rows - 1
         self.saved_cursor = (0, 0)
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self._pending = ""
 
     def feed(self, data):
-        text = data.decode("utf-8", "replace")
+        # PTYs may split both UTF-8 characters and terminal escape sequences
+        # at any byte.  Preserve incomplete input across reads: otherwise the
+        # tail of (for example) ESC[?25h becomes literal screen text and makes
+        # the differential result depend on kernel scheduling.
+        text = self._pending + self._decoder.decode(data)
+        self._pending = ""
         i = 0
         while i < len(text):
             c = text[i]
             if c == "\x1b":
-                i = self._escape(text, i)
+                next_index = self._escape(text, i)
+                if next_index is None:
+                    self._pending = text[i:]
+                    break
+                i = next_index
             elif c == "\r":
                 self.col = 0
                 i += 1
@@ -79,14 +94,16 @@ class Vt100Screen:
     def _escape(self, text, i):
         # i points at ESC.
         if i + 1 >= len(text):
-            return i + 1
+            return None
         kind = text[i + 1]
         if kind == "[":
             j = i + 2
-            while j < len(text) and text[j] not in "@ABCDEFGHJKLMPSTX`acdfghlmnpqrsu":
+            # ECMA-48 defines every byte from 0x40 through 0x7e as a CSI
+            # final byte.  An allowlist silently leaked valid GNU sequences.
+            while j < len(text) and not ("@" <= text[j] <= "~"):
                 j += 1
             if j >= len(text):
-                return len(text)
+                return None
             body, final = text[i + 2 : j], text[j]
             self._csi(body, final)
             return j + 1
@@ -94,7 +111,10 @@ class Vt100Screen:
             j = text.find("\x07", i)
             k = text.find("\x1b\\", i)
             ends = [e for e in (j, k) if e != -1]
-            return (min(ends) + (1 if min(ends) == j else 2)) if ends else len(text)
+            return (min(ends) + (1 if min(ends) == j else 2)) if ends else None
+        if kind in "()#%":
+            # Character-set/designation escapes carry one more byte.
+            return i + 3 if i + 2 < len(text) else None
         if kind == "D":  # IND: index down, scrolling at the region bottom
             self._linefeed()
         elif kind == "M":  # RI: reverse index, scrolling at the region top
@@ -539,6 +559,103 @@ SCENARIOS = [
         "".join(f"line {n:03}\n" for n in range(50)) + "needle here\n",
         [b"\x13", b"needle", b"\r", b"N"],
     ),
+    # C-x 2: two stacked windows on the same buffer, a mode line each
+    # (the root's 23 lines split 12/11, upper keeps the extra row).
+    (
+        "split-below-two-windows",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182"],
+    ),
+    # Motion after C-x 2 moves point in the upper (selected) window only;
+    # the two mode lines disagree on L.
+    (
+        "split-below-motion",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x0e\x0e\x0e"],
+    ),
+    # C-x o selects the lower window; motion there leaves the upper
+    # window's point alone.
+    (
+        "other-window-motion",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x18o", b"\x0e" * 5],
+    ),
+    # C-x 3: side-by-side windows with the vertical border column and
+    # per-window mode lines truncated to each body width.
+    (
+        "split-right-vertical",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x183"],
+    ),
+    # Windows narrower than truncate-partial-width-windows truncate long
+    # lines with the `$' marker instead of wrapping them.
+    (
+        "split-right-truncated",
+        "short one\n" + "W" * 100 + "\n" + "".join(f"line {n:02} alpha\n" for n in range(3, 40)),
+        [b"\x183"],
+    ),
+    # C-x o then motion in the right-hand window.
+    (
+        "split-right-other",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x183", b"\x18o", b"\x0e\x0e"],
+    ),
+    # C-x 0 gives the deleted window's rows back to its sibling.
+    (
+        "delete-window-restores",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x180"],
+    ),
+    # C-x 1 from the lower window makes it fill the frame.
+    (
+        "delete-other-windows",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x18o", b"\x181"],
+    ),
+    # C-x 2 then C-x 3 splits only the upper window.
+    (
+        "three-way-split",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x183"],
+    ),
+    # C-x o cycles in tree order: upper-left, upper-right, bottom.
+    (
+        "three-way-cycle",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x183", b"\x18o", b"X"],
+    ),
+    # C-v in the lower window scrolls it by its own page size; the upper
+    # window must not move.
+    (
+        "split-scroll-independent",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x18o", b"\x16"],
+    ),
+    # C-v in the upper window: page size follows its 11 text rows.
+    (
+        "split-scroll-upper",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x16"],
+    ),
+    # M-> in the lower window recenters around the buffer end there.
+    (
+        "split-jump-end",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x18o", b"\x1b>"],
+    ),
+    # An ambiguous TAB in the C-x C-f prompt pops *Completions* at the
+    # frame bottom, sized to its candidate list.
+    (
+        "completions-pop-up",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x18\x06", COMPLETIONS_DIR_NAME.encode() + b"/am", b"\t", b"\t"],
+    ),
+    # Finishing the file name removes the *Completions* window again.
+    (
+        "completions-dismiss",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x18\x06", COMPLETIONS_DIR_NAME.encode() + b"/am", b"\t", b"\t", b"1.dat\r"],
+    ),
 ]
 
 
@@ -560,6 +677,12 @@ def main():
 
     with open(FIXTURE_PATH, "w") as fixture:
         fixture.write("fixture line one\nfixture line two\n")
+    os.makedirs(COMPLETIONS_DIR, exist_ok=True)
+    for entry in os.listdir(COMPLETIONS_DIR):
+        os.unlink(os.path.join(COMPLETIONS_DIR, entry))
+    for name in ("ambig1.dat", "ambig2.dat"):
+        with open(os.path.join(COMPLETIONS_DIR, name), "w"):
+            pass
     failures = 0
     for name, contents, keys in SCENARIOS:
         handle, path = tempfile.mkstemp(suffix=".dat", prefix=f"ttydiff-{name}-")

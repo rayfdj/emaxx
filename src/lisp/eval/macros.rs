@@ -133,7 +133,7 @@ impl Interpreter {
     }
 
     /// Materialize `#[...]' and ordinary `#s(...)' reader forms throughout a
-    /// freshly-read object.  GNU creates record objects in the reader, even
+    /// freshly-read object.  GNU creates pseudovector objects in the reader, even
     /// below `quote'.  Emaxx keeps parsing independent of an Interpreter, so
     /// perform that object-allocation step at the read/evaluation boundary.
     /// Mutating surrounding cons cells in place preserves reader sharing.
@@ -158,7 +158,7 @@ impl Interpreter {
             return Ok(value.clone());
         };
         let identity = car_cell.cell_id();
-        if is_record_literal_reader_form(value) {
+        if is_record_literal_reader_form(value) || is_closure_literal_reader_form(value) {
             if let Some(record) = records.get(&identity) {
                 return Ok(record.clone());
             }
@@ -170,7 +170,11 @@ impl Interpreter {
             for slot in &items[1..] {
                 slots.push(self.materialize_read_record_literals_inner(slot, seen, records)?);
             }
-            let record = self.eval_record_literal_form(&slots, &mut Env::new())?;
+            let record = if is_closure_literal_reader_form(value) {
+                self.eval_closure_literal_form(&slots, &mut Env::new())?
+            } else {
+                self.eval_record_literal_form(&slots, &mut Env::new())?
+            };
             records.insert(identity, record.clone());
             return Ok(record);
         }
@@ -212,6 +216,26 @@ impl Interpreter {
             return Ok(self.create_record(type_name, values[1..].to_vec()));
         }
         Ok(self.create_record("literal-record", values))
+    }
+
+    pub(super) fn eval_closure_literal_form(
+        &mut self,
+        slots: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let mut values = Vec::with_capacity(slots.len());
+        for slot in slots {
+            values.push(self.eval(slot, env)?);
+        }
+        match values.first().and_then(|value| value.as_symbol().ok()) {
+            Some("interpreted-function") => self.make_interpreted_closure_value(&values[1..]),
+            Some("byte-code-function") => Ok(self.create_pseudovector(
+                RecordKind::Closure,
+                "byte-code-function",
+                values[1..].to_vec(),
+            )),
+            _ => Err(LispError::ReadError("invalid closure literal".into())),
+        }
     }
 
     /// Construct GNU's interpreted `#[ARGS BODY ENV ...]' closure object.
@@ -369,6 +393,7 @@ impl Interpreter {
                 let result = Value::list(result);
                 if depth == 0
                     && (is_record_literal_reader_form(expr)
+                        || is_closure_literal_reader_form(expr)
                         || is_char_table_literal_reader_form(expr))
                 {
                     return self.eval(&result, env);

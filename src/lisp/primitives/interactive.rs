@@ -64,7 +64,7 @@ pub(crate) fn function_documentation(
     };
     if let Value::Record(id) = value
         && let Some(record) = interp.find_record(id)
-        && record.type_name == "byte-code-function"
+        && record.kind == crate::lisp::eval::RecordKind::Closure
     {
         return record.slots.get(4).filter(|doc| !doc.is_nil()).cloned();
     }
@@ -109,7 +109,7 @@ pub(crate) fn symbol_with_pos_parts(interp: &Interpreter, value: &Value) -> Opti
         return None;
     };
     let record = interp.find_record(*id)?;
-    if record.type_name != "symbol-with-pos" || record.slots.len() < 2 {
+    if record.kind != crate::lisp::eval::RecordKind::SymbolWithPos || record.slots.len() < 2 {
         return None;
     }
     Some((record.slots[0].clone(), record.slots[1].as_integer().ok()?))
@@ -121,7 +121,7 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-fn symbols_with_pos_enabled(interp: &Interpreter, env: &Env) -> bool {
+pub(crate) fn symbols_with_pos_enabled(interp: &Interpreter, env: &Env) -> bool {
     #[cfg(test)]
     SYMBOL_WITH_POS_FLAG_READ_COUNT.with(|count| count.set(count.get() + 1));
     interp
@@ -326,6 +326,9 @@ pub(crate) fn parse_interactive_string(
                         .unwrap_or(Value::Nil),
                 );
             }
+            // "i": an ignored argument — always nil, no I/O (window.el's
+            // commands pass their INTERACTIVE params through it).
+            'i' => values.push(Value::Nil),
             'N' => {
                 let prefix = interp
                     .lookup_var("current-prefix-arg", env)
@@ -371,6 +374,36 @@ fn read_via_tty_event_reader() -> Option<Option<Value>> {
 /// minibuffer reads through its own event loop when one is.
 pub(crate) fn has_tty_event_reader() -> bool {
     TTY_EVENT_READER.with_borrow(|slot| slot.is_some())
+}
+
+// Frame repaint, installed alongside the event reader.  Command code
+// that runs its own event loop (the interactive minibuffer) calls it so
+// window-configuration changes made mid-read — a *Completions* pop-up —
+// reach the glass before the next key blocks.
+thread_local! {
+    static TTY_FRAME_REDRAW: std::cell::RefCell<Option<TtyFrameRedraw>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) type TtyFrameRedraw = Box<dyn FnMut(&mut Interpreter, &mut Env)>;
+
+pub(crate) fn set_tty_frame_redraw(hook: Option<TtyFrameRedraw>) {
+    TTY_FRAME_REDRAW.with_borrow_mut(|slot| *slot = hook);
+}
+
+/// Run the frontend's frame repaint if one is installed.  The hook is
+/// taken out for the call: redisplay evaluates Lisp (mode lines), which
+/// must not re-enter the hook cell.
+pub(crate) fn run_tty_frame_redraw(interp: &mut Interpreter, env: &mut Env) {
+    let hook = TTY_FRAME_REDRAW.with_borrow_mut(std::mem::take);
+    if let Some(mut hook) = hook {
+        hook(interp, env);
+        TTY_FRAME_REDRAW.with_borrow_mut(|slot| {
+            if slot.is_none() {
+                *slot = Some(hook);
+            }
+        });
+    }
 }
 
 pub(crate) fn pop_unread_command_event_value(

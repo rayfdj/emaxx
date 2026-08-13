@@ -361,7 +361,7 @@ impl Interpreter {
             Value::Record(id)
                 if self
                     .find_record(*id)
-                    .is_some_and(|record| record.type_name == "thread") =>
+                    .is_some_and(|record| record.kind == RecordKind::Thread) =>
             {
                 Ok(*id)
             }
@@ -374,7 +374,7 @@ impl Interpreter {
             Value::Record(id)
                 if self
                     .find_record(*id)
-                    .is_some_and(|record| record.type_name == "mutex") =>
+                    .is_some_and(|record| record.kind == RecordKind::Mutex) =>
             {
                 Ok(*id)
             }
@@ -387,7 +387,7 @@ impl Interpreter {
             Value::Record(id)
                 if self
                     .find_record(*id)
-                    .is_some_and(|record| record.type_name == "condition-variable") =>
+                    .is_some_and(|record| record.kind == RecordKind::ConditionVariable) =>
             {
                 Ok(*id)
             }
@@ -400,7 +400,7 @@ impl Interpreter {
             Value::Record(id)
                 if self
                     .find_record(*id)
-                    .is_some_and(|record| record.type_name == "process") =>
+                    .is_some_and(|record| record.kind == RecordKind::Process) =>
             {
                 Ok(*id)
             }
@@ -419,7 +419,7 @@ impl Interpreter {
         // GNU names the process after the NAME argument (uniquified with
         // <N> on collision), not the program.
         let name = self.unique_process_name(&name.or_else(|| program.clone()).unwrap_or_default());
-        let process = self.create_record("process", Vec::new());
+        let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
         let Value::Record(record_id) = process.clone() else {
             unreachable!("create_record returns a record")
         };
@@ -507,7 +507,7 @@ impl Interpreter {
             | NetworkRuntime::Datagram { .. }
             | NetworkRuntime::UnixStream(_) => ProcessStatus::Open,
         };
-        let process = self.create_record("process", Vec::new());
+        let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
         let Value::Record(record_id) = process.clone() else {
             unreachable!("create_record returns a record")
         };
@@ -575,7 +575,7 @@ impl Interpreter {
         stopped: bool,
     ) -> Result<Value, LispError> {
         let name = self.unique_process_name(name);
-        let process = self.create_record("process", Vec::new());
+        let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
         let Value::Record(record_id) = process.clone() else {
             unreachable!("create_record returns a record")
         };
@@ -2073,7 +2073,7 @@ impl Interpreter {
         disposition: BufferDisposition,
     ) -> Result<Value, LispError> {
         let program = self.thread_program_from_callable(&function)?;
-        let value = self.create_record("thread", Vec::new());
+        let value = self.create_pseudovector(RecordKind::Thread, "thread", Vec::new());
         let Value::Record(record_id) = value else {
             unreachable!("thread records are always record values");
         };
@@ -2150,7 +2150,7 @@ impl Interpreter {
     }
 
     pub fn make_mutex(&mut self, name: Option<String>) -> Value {
-        let value = self.create_record("mutex", Vec::new());
+        let value = self.create_pseudovector(RecordKind::Mutex, "mutex", Vec::new());
         let Value::Record(record_id) = value else {
             unreachable!("mutex records are always record values");
         };
@@ -2164,7 +2164,11 @@ impl Interpreter {
     }
 
     pub fn make_condition_variable(&mut self, mutex_id: u64, name: Option<String>) -> Value {
-        let value = self.create_record("condition-variable", Vec::new());
+        let value = self.create_pseudovector(
+            RecordKind::ConditionVariable,
+            "condition-variable",
+            Vec::new(),
+        );
         let Value::Record(record_id) = value else {
             unreachable!("condition variables are always record values");
         };

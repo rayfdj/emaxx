@@ -126,7 +126,7 @@ fn category_set_contains(interp: &Interpreter, value: &Value, category: char) ->
     match value {
         Value::String(text) => text.chars().any(|member| member == category),
         Value::Record(id) => interp.find_record(*id).is_some_and(|record| {
-            record.type_name == "bool-vector"
+            record.kind == crate::lisp::eval::RecordKind::BoolVector
                 && record
                     .slots
                     .get(category as usize)

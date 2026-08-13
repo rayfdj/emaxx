@@ -496,25 +496,175 @@ fn frame_root_window_value(interp: &Interpreter) -> Value {
         .unwrap_or_else(|| interp.selected_window_value())
 }
 
+fn is_live_ordinary_window(interp: &Interpreter, id: u64) -> bool {
+    let kind = window_slot_value(interp, id, WINDOW_KIND_SLOT);
+    !matches!(
+        kind,
+        Value::Symbol(ref kind)
+            if matches!(
+                kind.as_str(),
+                MINIBUFFER_WINDOW_KIND
+                    | INTERNAL_HORIZONTAL_WINDOW_KIND
+                    | INTERNAL_VERTICAL_WINDOW_KIND
+                    | DELETED_WINDOW_KIND
+            )
+    ) && window_buffer_id(interp, &Value::Record(id)).is_some()
+}
+
+/// Leaf windows of the frame's window tree in GNU's canonical order — a
+/// depth-first walk that descends first children and follows sibling
+/// chains.  `next-window' cycles and `window-list' both follow it, and it
+/// is the top-to-bottom, left-to-right order the glass paints.
+fn window_tree_leaf_ids(interp: &Interpreter) -> Vec<u64> {
+    let Value::Record(root_id) = frame_root_window_value(interp) else {
+        return Vec::new();
+    };
+    // A malformed tree (stale sibling links) must not loop forever; no
+    // healthy tree revisits a window record.
+    let budget = interp.record_ids_by_type("window").len().saturating_add(1);
+    let mut leaves = Vec::new();
+    let mut stack = vec![root_id];
+    let mut visited = 0usize;
+    while let Some(id) = stack.pop() {
+        visited += 1;
+        if visited > budget {
+            return Vec::new();
+        }
+        match window_link(interp, id, WINDOW_FIRST_CHILD_SLOT) {
+            Some(child) => {
+                let mut chain = Vec::new();
+                let mut walk = Some(child);
+                while let Some(node) = walk {
+                    chain.push(node);
+                    if chain.len() > budget {
+                        return Vec::new();
+                    }
+                    walk = window_link(interp, node, WINDOW_NEXT_SIBLING_SLOT);
+                }
+                stack.extend(chain.into_iter().rev());
+            }
+            None => leaves.push(id),
+        }
+    }
+    leaves
+}
+
 fn live_ordinary_window_ids(interp: &Interpreter) -> Vec<u64> {
+    let from_tree: Vec<u64> = window_tree_leaf_ids(interp)
+        .into_iter()
+        .filter(|id| is_live_ordinary_window(interp, *id))
+        .collect();
+    if !from_tree.is_empty() {
+        return from_tree;
+    }
+    // No usable tree (no root binding yet, or a degenerate walk): fall
+    // back to record order, which equals tree order for a lone window.
     interp
         .record_ids_by_type("window")
         .into_iter()
-        .filter(|id| {
-            let kind = window_slot_value(interp, *id, WINDOW_KIND_SLOT);
-            !matches!(
-                kind,
-                Value::Symbol(ref kind)
-                    if matches!(
-                        kind.as_str(),
-                        MINIBUFFER_WINDOW_KIND
-                            | INTERNAL_HORIZONTAL_WINDOW_KIND
-                            | INTERNAL_VERTICAL_WINDOW_KIND
-                            | DELETED_WINDOW_KIND
-                    )
-            ) && window_buffer_id(interp, &Value::Record(*id)).is_some()
+        .filter(|id| is_live_ordinary_window(interp, *id))
+        .collect()
+}
+
+/// One live window as the terminal frontend renders it: its frame rect,
+/// buffer, and display anchors.  Geometry counts total lines and columns
+/// — the mode line is the rect's last row, and a window not flush with
+/// the frame's right edge spends its last column on the vertical border.
+pub(crate) struct WindowRenderInfo {
+    pub(crate) window_id: u64,
+    pub(crate) buffer_id: u64,
+    pub(crate) left: usize,
+    pub(crate) top: usize,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    /// The window's display start (the window-start slot, clamped).
+    pub(crate) start: usize,
+    /// The window's own point: the live buffer point for the selected
+    /// window, the saved window-point slot otherwise.
+    pub(crate) point: usize,
+    pub(crate) selected: bool,
+}
+
+/// The frame's live windows in paint order (the tree walk), with the
+/// geometry and content anchors redisplay needs.
+pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo> {
+    let selected_id = interp.selected_window_id();
+    live_ordinary_window_ids(interp)
+        .into_iter()
+        .filter_map(|window_id| {
+            let selected = window_id == selected_id;
+            let buffer_id = window_buffer_id(interp, &Value::Record(window_id))?;
+            let (width, height, left, top) = window_geometry(interp, window_id);
+            let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+            let clamp = |value: i64| value.clamp(point_min as i64, point_max as i64) as usize;
+            let start = if selected {
+                interp.selected_window_start()
+            } else {
+                clamp(
+                    window_slot_value(interp, window_id, WINDOW_START_SLOT)
+                        .as_integer()
+                        .unwrap_or(point_min as i64),
+                )
+            };
+            let live_point = if buffer_id == interp.current_buffer_id() {
+                interp.buffer.point()
+            } else {
+                interp
+                    .get_buffer_by_id(buffer_id)
+                    .map(|buffer| buffer.point())
+                    .unwrap_or(point_min)
+            };
+            let point = if selected {
+                live_point
+            } else {
+                window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
+                    .as_integer()
+                    .map(clamp)
+                    .unwrap_or(live_point)
+            };
+            Some(WindowRenderInfo {
+                window_id,
+                buffer_id,
+                left: left.max(0) as usize,
+                top: top.max(0) as usize,
+                width: width.max(0) as usize,
+                height: height.max(0) as usize,
+                start,
+                point,
+                selected,
+            })
         })
         .collect()
+}
+
+/// A window's mode line as the display engine paints it.  GNU renders
+/// each mode line with that window selected and its buffer current
+/// (display_mode_line's context); this swaps both in — plus the window's
+/// point and live metrics — and restores every piece afterwards.
+pub(crate) fn render_window_mode_line(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    point: usize,
+    metrics: InteractiveWindowMetrics,
+) -> Result<String, LispError> {
+    let saved_window = interp.selected_window_id();
+    let saved_buffer = interp.current_buffer_id();
+    let saved_metrics = interactive_window_metrics();
+    let buffer_id = window_buffer_id(interp, &Value::Record(window_id)).unwrap_or(saved_buffer);
+    interp.set_selected_window_id(window_id);
+    let switched = buffer_id != saved_buffer && interp.set_current_buffer_id(buffer_id).is_ok();
+    let saved_point = interp.buffer.point();
+    interp.buffer.goto_char(point);
+    set_interactive_window_metrics(Some(metrics));
+    let result = render_mode_line_glass(interp, env);
+    interp.buffer.goto_char(saved_point);
+    if switched {
+        let _ = interp.set_current_buffer_id(saved_buffer);
+    }
+    interp.set_selected_window_id(saved_window);
+    set_interactive_window_metrics(saved_metrics);
+    result
 }
 
 fn live_window_id_or_selected(
@@ -678,7 +828,8 @@ fn split_window_tree(
     } else {
         INTERNAL_VERTICAL_WINDOW_KIND
     };
-    let parent = interp.create_record(
+    let parent = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Window,
         "window",
         window_record_slots(
             None,
@@ -690,7 +841,8 @@ fn split_window_tree(
     let Value::Record(parent_id) = parent else {
         unreachable!("window records use Value::Record");
     };
-    let new = interp.create_record(
+    let new = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Window,
         "window",
         window_record_slots(Some(buffer_id), start, Value::Nil, new_geometry),
     );
@@ -994,11 +1146,23 @@ fn valid_window_cursor_type(value: &Value) -> bool {
     }
 }
 
-fn window_list_value(interp: &Interpreter, env: &Env, minibuf: Option<&Value>) -> Value {
-    let mut windows = live_ordinary_window_ids(interp)
-        .into_iter()
-        .map(Value::Record)
-        .collect::<Vec<_>>();
+fn window_list_value(
+    interp: &Interpreter,
+    env: &Env,
+    minibuf: Option<&Value>,
+    start: Option<&Value>,
+) -> Value {
+    let mut ids = live_ordinary_window_ids(interp);
+    // GNU lists windows in cyclic order starting from WINDOW (default
+    // the selected window), not from the tree's first leaf.
+    let start_id = start
+        .filter(|window| !window.is_nil())
+        .and_then(|window| window_record_id_from_value(interp, window))
+        .unwrap_or_else(|| interp.selected_window_id());
+    if let Some(index) = ids.iter().position(|id| *id == start_id) {
+        ids.rotate_left(index);
+    }
+    let mut windows = ids.into_iter().map(Value::Record).collect::<Vec<_>>();
     let include_minibuffer = matches!(minibuf, Some(Value::T));
     if !include_minibuffer {
         return Value::list(windows);
@@ -3845,7 +4009,12 @@ define_dispatch!(
             }
             "window-list" | "window-list-1" => {
                 need_arg_range(name, args, 0, 3)?;
-                Ok(window_list_value(interp, env, args.get(1)))
+                let start = if name == "window-list" {
+                    args.get(2)
+                } else {
+                    args.first()
+                };
+                Ok(window_list_value(interp, env, args.get(1), start))
             }
             "next-window" | "previous-window" => {
                 need_arg_range(name, args, 0, 3)?;
@@ -4381,9 +4550,35 @@ define_dispatch!(
                 };
                 Ok(buffer_id
                     .and_then(|buffer_id| {
-                        live_ordinary_window_ids(interp).into_iter().find(|id| {
-                            window_buffer_id(interp, &Value::Record(*id)) == Some(buffer_id)
-                        })
+                        live_ordinary_window_ids(interp)
+                            .into_iter()
+                            .find(|id| {
+                                window_buffer_id(interp, &Value::Record(*id)) == Some(buffer_id)
+                            })
+                            .or_else(|| {
+                                // ALL-FRAMES t considers the minibuffer
+                                // window when it is active (GNU's
+                                // choose-completion-string finds the
+                                // minibuffer through this).
+                                if !matches!(args.get(1), Some(Value::T)) {
+                                    return None;
+                                }
+                                if !interp
+                                    .lookup_var("emaxx--active-minibuffer", env)
+                                    .is_some_and(|value| value.is_truthy())
+                                {
+                                    return None;
+                                }
+                                match interp.lookup_var("emaxx-minibuffer-window", env) {
+                                    Some(Value::Record(id))
+                                        if window_buffer_id(interp, &Value::Record(id))
+                                            == Some(buffer_id) =>
+                                    {
+                                        Some(id)
+                                    }
+                                    _ => None,
+                                }
+                            })
                     })
                     .map(Value::Record)
                     .unwrap_or(Value::Nil))

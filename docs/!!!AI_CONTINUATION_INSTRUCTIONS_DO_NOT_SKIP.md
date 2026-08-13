@@ -18,6 +18,88 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-13 SEARCH-THROUGH-SYNTAX CHECKPOINT: the exact contiguous frontier
+  is **6,965/7,080**, leaving **115** selectors.  Selectors 6,853-6,965 are
+  exact: Search 1/1, SQLite 12/12, and Syntax 100/100.  NEXT is selector
+  **6,966**, `textprop-interval-immutability`, in
+  `test/src/textprop-tests.el` (three selected outcomes), followed by Thread
+  (32 selected outcomes).
+
+  Canonical final-source artifact:
+  `target/compat/regression-add-1786626931404093000-87226`, with **113/113**
+  matching outcomes and no timeout or unilateral skip.  Subject-source
+  fingerprint is
+  `6c020b9896e3777302359cc8525d7c94132b2f764ab698718717954337bfe127`,
+  release binary hash is
+  `9e38ad20ad7ddf8362916044065da4de9e356296186c4e79309df29f447ed6c2`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  Syntax now applies GNU's `comment-end-can-be-escaped` rule in the shared
+  forward scanner used by `scan-lists`, including escaped line endings and
+  two-character block endings.  Backward `forward-comment` tests a bounded
+  complete local comment before dismissing an end-comment newline as
+  whitespace, so an unterminated nested marker inside a line comment cannot
+  hide that comment.  `char-syntax` promotes 128..255 to GNU byte8 character
+  codes in unibyte buffers, while the syntax-table lookup retains the public
+  code as its key and uses the shared character boundary only for default
+  classification.  Direct Rust regressions cover all three decisions, with
+  `char-syntax` exercised through both interpreted and bytecompiled calls.
+
+  Final-source post-bootstrap GNU/Emaxx bodies are Search 9/2 ms, SQLite
+  11/6 ms, and Syntax 281/781 ms (2.773x, +500 ms).  Syntax exceeds the 2x
+  diagnostic flag but not the active 5x-and-one-second frontier stop rule.
+  Reconstructed setup remains separate at 268/3,299, 244/2,755, and
+  246/2,721 ms respectively under dumped-startup issue #11.  Formatting,
+  diff checks, all-target check, strict all-target/all-feature Clippy, focused
+  host regressions, and the 113-outcome oracle replay are green.  The TTY
+  merge remains published as `b5702de`; do not repeat its 99-minute serial
+  library gate during ordinary frontier iteration.
+
+- 2026-08-13 TTY FRONTEND MERGE CHECKPOINT: `origin/tty-frontend` through
+  `39a54cc` is reconciled with the Print-through-Regex mainline at the exact
+  contiguous frontier **6,852/7,080**.  NEXT remains selector **6,853**,
+  `search-test--replace-match-update-data`, in `test/src/search-tests.el`,
+  followed by SQLite.
+
+  Keep the TTY branch's Rope-aware `Buffer::lines_from` and
+  `Buffer::line_start_of` path: redisplay extracts only visible rows and
+  reuses cached keymap projections instead of repeatedly flattening the
+  entire buffer or rebuilding bindings.  This optimization is for interactive
+  redisplay and key lookup; regexp matching still has its own flattened search
+  input and must not be credited with the TTY improvement.
+
+  The combined tree passed all 23 pseudo-terminal scenarios against GNU
+  Emacs, comparing the complete text area, cursor placement, mode line, echo
+  area, wrapping, scrolling, paging, prefix arguments, errors, and undo.  The
+  terminal decoder is now genuinely streaming across arbitrary PTY chunk and
+  UTF-8 boundaries, with byte-at-a-time regression coverage; the former
+  decoder could expose split CSI tails as text and report scheduling-dependent
+  false divergences.  Focused TTY tests are 21 passed with one intentionally
+  ignored release-binary smoke test, and all 17 newly added Rust contracts
+  pass individually.
+
+  The recorded compatibility audit is **104/105** files at
+  `target/compat/regressions-1786612631353953000-78395`; only the known GNU
+  dynamic-module load-error difference remains.  This is an improvement over
+  the pre-Print/Regex 102/105 audit, not a TTY regression.  Print is exact at
+  46/46 in `target/compat/regressions-1786612381225055000-78095` (GNU/Emaxx
+  bodies 45/309 ms; setup 343/3,608 ms), and Regex is exact at 34/34 in
+  `target/compat/regressions-1786612515244584000-78256` (bodies 147/1,392 ms;
+  setup 266/3,304 ms).  Both use subject-source fingerprint
+  `f6bbab45acc40d881b96e308df246d9f4cbf6bdd1d79e324aa82e4481be4fdd8`
+  and release binary hash
+  `b3798b568a2e220d151efe1e4a583fafc875c1fd2da1d9a1c0f3fbef4832122e`.
+
+  Final merge gates are green: format/diff, all-target/all-feature check,
+  strict Clippy, the streaming-decoder unit tests, 2,078 library cases (2,077
+  passed and one ignored), 35 compatibility-harness tests, one
+  performance-harness test, 10 CLI tests, and three ERT integration tests.
+  The exhaustive serial library run took 5,931.50 seconds; retain focused,
+  parallel-safe frontier groups for ordinary iteration and reserve this serial
+  all-target gate for publication checkpoints.
+
 - 2026-08-13 PRINT-THROUGH-REGEX CHECKPOINT: the exact contiguous frontier is
   **6,852/7,080**, leaving **228** selectors.  Selectors 6,773-6,852 are
   exact: Print 46/46 and Regex Emacs 34/34.  NEXT is selector **6,853**,
@@ -55,10 +137,8 @@ counts as the progress denominator.
   passed and one ignored), 35 compatibility-harness, one performance-harness,
   10 CLI, and three ERT integration tests.
 
-  Publish this checkpoint before touching the TTY branch.  Then reconcile and
-  merge `origin/tty-frontend`, retaining commit `3e29726`'s Rope-aware
-  visible-row redisplay and key-lookup optimization rather than duplicating
-  its buffer path.  Certify the combined tree before resuming selector 6,853.
+  This checkpoint was published as `a5d5001`; the certified TTY merge described
+  above follows it without changing the compatibility frontier.
 
 - 2026-08-13 LREAD-THROUGH-MINIBUF CHECKPOINT: the exact contiguous frontier
   is **6,772/7,080**, leaving **308** selectors.  Selectors 6,656-6,772 are

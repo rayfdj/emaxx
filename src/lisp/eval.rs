@@ -9,7 +9,7 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::primitives;
-use super::reader::{CHAR_TABLE_LITERAL_SYMBOL, RECORD_LITERAL_SYMBOL};
+use super::reader::{CHAR_TABLE_LITERAL_SYMBOL, CLOSURE_LITERAL_SYMBOL, RECORD_LITERAL_SYMBOL};
 use super::sqlite::SqliteHandleState;
 use super::types::{
     EmacsTermination, Env, EnvFrame, LispError, SharedEnv, Value, WeakConsSlot,
@@ -1127,11 +1127,43 @@ impl CharTableState {
     }
 }
 
+/// GNU vectorlike representation carried by Emaxx's shared record arena.
+///
+/// `Value::Record` is an internal storage choice, not an Elisp type.  Keep
+/// the public pseudovector kind explicit so a real `(record 'thread ...)' is
+/// never confused with a native thread merely because their printed type
+/// names happen to match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecordKind {
+    Record,
+    BoolVector,
+    Closure,
+    Font,
+    SymbolWithPos,
+    Process,
+    HashTable,
+    Obarray,
+    Window,
+    WindowConfiguration,
+    Thread,
+    Mutex,
+    ConditionVariable,
+    NativeCompUnit,
+    TreeSitterParser,
+    TreeSitterNode,
+    TreeSitterCompiledQuery,
+    Sqlite,
+    /// Identity-bearing host facade whose public Elisp representation is a
+    /// list.  GNU itself therefore never exposes this as a pseudovector.
+    Keymap,
+}
+
 #[derive(Clone, Debug)]
 pub struct RecordState {
     pub id: u64,
     pub type_name: String,
     pub slots: Vec<Value>,
+    pub(crate) kind: RecordKind,
 }
 
 pub(crate) struct TreeSitterQueryState {
@@ -3030,11 +3062,13 @@ impl Interpreter {
                     id: main_thread_id,
                     type_name: "thread".into(),
                     slots: Vec::new(),
+                    kind: RecordKind::Thread,
                 },
                 RecordState {
                     id: standard_obarray_id,
                     type_name: "obarray".into(),
                     slots: vec![Value::Nil],
+                    kind: RecordKind::Obarray,
                 },
             ],
             record_ids_by_type_index: HashMap::from([
@@ -4308,7 +4342,8 @@ impl Interpreter {
             "emaxx-gv-setter",
             Value::Symbol("set-window-parameter".into()),
         );
-        let selected_window = interp.create_record(
+        let selected_window = interp.create_pseudovector(
+            RecordKind::Window,
             "window",
             primitives::window_record_slots(
                 Some(interp.current_buffer_id),
@@ -4332,7 +4367,8 @@ impl Interpreter {
             window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
         }
         let (minibuffer_buffer_id, _) = interp.create_buffer(" *Minibuf-0*");
-        let minibuffer_window = interp.create_record(
+        let minibuffer_window = interp.create_pseudovector(
+            RecordKind::Window,
             "window",
             primitives::window_record_slots(
                 Some(minibuffer_buffer_id),
@@ -5281,6 +5317,7 @@ fn is_record_literal_slot_form(value: &Value) -> bool {
                 || is_vector_literal(value)
                 || is_bool_vector_literal(value)
                 || is_char_table_literal_reader_form(value)
+                || is_closure_literal_reader_form(value)
                 || is_record_literal_reader_form(value)
         }
         Value::Symbol(_) => false,
@@ -5294,6 +5331,19 @@ fn is_record_literal_reader_form(value: &Value) -> bool {
         return false;
     };
     if !matches!(&*car.borrow(), Value::Symbol(name) if name == RECORD_LITERAL_SYMBOL) {
+        return false;
+    }
+    let Ok(items) = value.to_vec() else {
+        return false;
+    };
+    items[1..].iter().all(is_record_literal_slot_form)
+}
+
+fn is_closure_literal_reader_form(value: &Value) -> bool {
+    let Some((car, _)) = value.cons_cells() else {
+        return false;
+    };
+    if !matches!(&*car.borrow(), Value::Symbol(name) if name == CLOSURE_LITERAL_SYMBOL) {
         return false;
     }
     let Ok(items) = value.to_vec() else {
@@ -5320,6 +5370,7 @@ fn is_backquote_atomic_cons_tail(value: &Value) -> bool {
         || is_vector_literal(value)
         || is_bool_vector_literal(value)
         || is_char_table_literal_reader_form(value)
+        || is_closure_literal_reader_form(value)
         || is_record_literal_reader_form(value)
 }
 

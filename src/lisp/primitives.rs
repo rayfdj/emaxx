@@ -355,8 +355,10 @@ pub(crate) use dispatch::echo_area_message;
 pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::oclosure_type_of;
+#[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
 pub(crate) use dispatch::set_echo_area_message;
+pub(crate) use dispatch::{WindowRenderInfo, render_window_mode_line, window_render_layout};
 pub use dispatch::{call, is_builtin};
 pub(crate) use dispatch::{next_digit_prefix, next_negative_prefix, next_universal_prefix};
 

@@ -151,7 +151,7 @@ pub(crate) fn window_record_id_from_value(interp: &Interpreter, value: &Value) -
         Value::Record(id)
             if interp
                 .find_record(*id)
-                .is_some_and(|record| record.type_name == "window") =>
+                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Window) =>
         {
             Some(*id)
         }

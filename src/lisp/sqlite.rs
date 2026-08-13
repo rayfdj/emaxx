@@ -384,7 +384,8 @@ fn create_sqlite_handle(
     interp: &mut Interpreter,
     state: SqliteHandleState,
 ) -> Result<Value, LispError> {
-    let value = interp.create_record("sqlite", Vec::new());
+    let value =
+        interp.create_pseudovector(crate::lisp::eval::RecordKind::Sqlite, "sqlite", Vec::new());
     let Value::Record(id) = value else {
         return Err(LispError::Signal("sqlite record allocation failed".into()));
     };

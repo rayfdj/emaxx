@@ -414,6 +414,26 @@
       "selector": "t"
     },
     {
+      "path": "test/src/search-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/sqlite-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/syntax-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/textprop-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/thread-tests.el",
+      "selector": "(not (or (tag :expensive-test) (tag :unstable)))"
+    },
+    {
       "path": "test/src/timefns-tests.el",
       "selector": "t"
     },

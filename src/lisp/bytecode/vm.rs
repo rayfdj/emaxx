@@ -174,7 +174,9 @@ fn materialize_constant_inner(
 ) -> Result<Value, LispError> {
     let head = constant.car().ok();
     match head.as_ref() {
-        Some(Value::Symbol(marker)) if marker == "emaxx--record-literal" => {
+        Some(Value::Symbol(marker))
+            if marker == "emaxx--record-literal" || marker == "emaxx--closure-literal" =>
+        {
             interp.eval(constant, env)
         }
         Some(Value::Symbol(marker)) if marker == "emaxx--hash-table-literal" => {

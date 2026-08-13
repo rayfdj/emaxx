@@ -502,7 +502,12 @@ pub(crate) fn record_type_name<'a>(interp: &'a Interpreter, value: &Value) -> Op
 }
 
 pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool {
-    record_type_name(interp, value) == Some("bool-vector")
+    let Value::Record(id) = value else {
+        return false;
+    };
+    interp
+        .find_record(*id)
+        .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::BoolVector)
 }
 
 pub(crate) fn vector_root_slot(value: &Value) -> Option<ConsSlot> {
@@ -623,7 +628,7 @@ pub(crate) fn bool_vector_values(
     let record = interp
         .find_record(*id)
         .ok_or_else(|| LispError::TypeError("bool-vector".into(), value.type_name()))?;
-    if record.type_name != "bool-vector" {
+    if record.kind != crate::lisp::eval::RecordKind::BoolVector {
         return Err(LispError::TypeError(
             "bool-vector".into(),
             value.type_name(),
@@ -646,7 +651,8 @@ pub(crate) fn make_bool_vector_value(
     interp: &mut Interpreter,
     bits: impl IntoIterator<Item = bool>,
 ) -> Value {
-    interp.create_record(
+    interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::BoolVector,
         "bool-vector",
         bits.into_iter()
             .map(|bit| if bit { Value::T } else { Value::Nil })
@@ -674,7 +680,7 @@ pub(crate) fn set_bool_vector_bit(
     let record = interp
         .find_record_mut(*id)
         .ok_or_else(|| LispError::TypeError("bool-vector".into(), value.type_name()))?;
-    if record.type_name != "bool-vector" {
+    if record.kind != crate::lisp::eval::RecordKind::BoolVector {
         return Err(LispError::TypeError(
             "bool-vector".into(),
             value.type_name(),
@@ -726,7 +732,8 @@ pub(crate) fn make_runtime_abbrev_table(
     props: Value,
 ) -> Value {
     let props = abbrev_table_props_with_modiff(props);
-    let table = interp.create_record(
+    let table = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Obarray,
         ABBREV_TABLE_RECORD_TYPE,
         vec![
             name.map(Value::symbol).unwrap_or(Value::Nil),
@@ -1483,34 +1490,38 @@ pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'stat
         Value::CharTable(_) => "char-table",
         Value::Frame(_) => "frame",
         Value::Terminal(_) => "terminal",
-        Value::Record(id) => match interp
-            .find_record(*id)
-            .map(|record| record.type_name.as_str())
-            .unwrap_or("record")
-        {
-            "bool-vector" => "bool-vector",
-            "condition-variable" => "condvar",
-            "font-entity" => "font-entity",
-            "font-object" => "font-object",
-            "font-spec" => "font-spec",
-            "frame" => "frame",
-            "module-function" => "module-function",
-            "mutex" => "mutex",
-            "native-comp-function" => "native-comp-function",
-            "native-comp-unit" => "native-comp-unit",
-            "obarray" => "obarray",
-            "process" => "process",
-            "terminal" => "terminal",
-            "thread" => "thread",
-            "tree-sitter-compiled-query" => "tree-sitter-compiled-query",
-            "tree-sitter-node" => "tree-sitter-node",
-            "tree-sitter-parser" => "tree-sitter-parser",
-            "user-ptr" => "user-ptr",
-            "window" => "window",
-            "window-configuration" => "window-configuration",
-            "byte-code-function" => "byte-code-function",
-            _ => "record",
-        },
+        Value::Record(id) => {
+            let Some(record) = interp.find_record(*id) else {
+                return Ok("record");
+            };
+            match record.kind {
+                crate::lisp::eval::RecordKind::Record => "record",
+                crate::lisp::eval::RecordKind::BoolVector => "bool-vector",
+                crate::lisp::eval::RecordKind::Closure => "byte-code-function",
+                crate::lisp::eval::RecordKind::Font => match record.type_name.as_str() {
+                    "font-entity" => "font-entity",
+                    "font-object" => "font-object",
+                    _ => "font-spec",
+                },
+                crate::lisp::eval::RecordKind::SymbolWithPos => "symbol-with-pos",
+                crate::lisp::eval::RecordKind::Process => "process",
+                crate::lisp::eval::RecordKind::HashTable => "hash-table",
+                crate::lisp::eval::RecordKind::Obarray => "obarray",
+                crate::lisp::eval::RecordKind::Window => "window",
+                crate::lisp::eval::RecordKind::WindowConfiguration => "window-configuration",
+                crate::lisp::eval::RecordKind::Thread => "thread",
+                crate::lisp::eval::RecordKind::Mutex => "mutex",
+                crate::lisp::eval::RecordKind::ConditionVariable => "condvar",
+                crate::lisp::eval::RecordKind::NativeCompUnit => "native-comp-unit",
+                crate::lisp::eval::RecordKind::TreeSitterParser => "tree-sitter-parser",
+                crate::lisp::eval::RecordKind::TreeSitterNode => "tree-sitter-node",
+                crate::lisp::eval::RecordKind::TreeSitterCompiledQuery => {
+                    "tree-sitter-compiled-query"
+                }
+                crate::lisp::eval::RecordKind::Sqlite => "sqlite",
+                crate::lisp::eval::RecordKind::Keymap => "cons",
+            }
+        }
         Value::Finalizer(_) => "finalizer",
         Value::Unbound => "unbound",
     };

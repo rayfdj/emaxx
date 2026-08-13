@@ -162,7 +162,9 @@ pub(crate) fn spawn_persistent_process(
                 } else if libc::setpgid(0, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
-                if input_pty && libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) < 0 {
+                if input_pty
+                    && libc::ioctl(libc::STDIN_FILENO, libc::c_ulong::from(libc::TIOCSCTTY), 0) < 0
+                {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())

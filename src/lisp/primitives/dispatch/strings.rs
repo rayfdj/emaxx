@@ -115,9 +115,9 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match &args[0] {
                     Value::Record(id)
-                        if interp
-                            .find_record(*id)
-                            .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::Keymap
+                        }) =>
                     {
                         interp.copy_record(*id)
                     }
@@ -1643,8 +1643,15 @@ define_dispatch!(
             }
             "char-syntax" => {
                 need_args(name, args, 1)?;
-                let code = u32::try_from(args[0].as_integer()?)
+                let mut code = u32::try_from(args[0].as_integer()?)
                     .map_err(|_| LispError::Signal("Invalid character".into()))?;
+                // GNU syntax.c promotes a raw byte to its byte8 character
+                // before consulting the current table in a unibyte buffer.
+                // This keeps entries installed with
+                // `unibyte-char-to-multibyte' visible to `char-syntax'.
+                if !interp.buffer.is_multibyte() && (0x80..=0xFF).contains(&code) {
+                    code += RAW_BYTE8_BASE;
+                }
                 let class =
                     syntax::syntax_entry_for_code(interp, interp.current_syntax_table_id(), code)
                         .class;
@@ -1915,7 +1922,7 @@ fn unicode_property_uses_unsupported_bytecode(interp: &Interpreter, table: &Valu
     };
     interp
         .find_record(decoder_id)
-        .is_some_and(|record| record.type_name == "byte-code-function")
+        .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure)
 }
 
 fn decode_unicode_property_value(
