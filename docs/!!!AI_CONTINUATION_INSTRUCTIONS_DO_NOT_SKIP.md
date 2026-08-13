@@ -18,6 +18,45 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-08-13 SEARCH-THROUGH-SYNTAX CHECKPOINT: the exact contiguous frontier
+  is **6,965/7,080**, leaving **115** selectors.  Selectors 6,853-6,965 are
+  exact: Search 1/1, SQLite 12/12, and Syntax 100/100.  NEXT is selector
+  **6,966**, `textprop-interval-immutability`, in
+  `test/src/textprop-tests.el` (three selected outcomes), followed by Thread
+  (32 selected outcomes).
+
+  Canonical final-source artifact:
+  `target/compat/regression-add-1786626931404093000-87226`, with **113/113**
+  matching outcomes and no timeout or unilateral skip.  Subject-source
+  fingerprint is
+  `6c020b9896e3777302359cc8525d7c94132b2f764ab698718717954337bfe127`,
+  release binary hash is
+  `9e38ad20ad7ddf8362916044065da4de9e356296186c4e79309df29f447ed6c2`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and pinned GNU commit is `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  Syntax now applies GNU's `comment-end-can-be-escaped` rule in the shared
+  forward scanner used by `scan-lists`, including escaped line endings and
+  two-character block endings.  Backward `forward-comment` tests a bounded
+  complete local comment before dismissing an end-comment newline as
+  whitespace, so an unterminated nested marker inside a line comment cannot
+  hide that comment.  `char-syntax` promotes 128..255 to GNU byte8 character
+  codes in unibyte buffers, while the syntax-table lookup retains the public
+  code as its key and uses the shared character boundary only for default
+  classification.  Direct Rust regressions cover all three decisions, with
+  `char-syntax` exercised through both interpreted and bytecompiled calls.
+
+  Final-source post-bootstrap GNU/Emaxx bodies are Search 9/2 ms, SQLite
+  11/6 ms, and Syntax 281/781 ms (2.773x, +500 ms).  Syntax exceeds the 2x
+  diagnostic flag but not the active 5x-and-one-second frontier stop rule.
+  Reconstructed setup remains separate at 268/3,299, 244/2,755, and
+  246/2,721 ms respectively under dumped-startup issue #11.  Formatting,
+  diff checks, all-target check, strict all-target/all-feature Clippy, focused
+  host regressions, and the 113-outcome oracle replay are green.  The TTY
+  merge remains published as `b5702de`; do not repeat its 99-minute serial
+  library gate during ordinary frontier iteration.
+
 - 2026-08-13 TTY FRONTEND MERGE CHECKPOINT: `origin/tty-frontend` through
   `39a54cc` is reconciled with the Print-through-Regex mainline at the exact
   contiguous frontier **6,852/7,080**.  NEXT remains selector **6,853**,

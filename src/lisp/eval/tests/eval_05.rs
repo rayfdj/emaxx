@@ -3534,6 +3534,22 @@ fn anchored_syntax_class_regexp_honors_buffer_syntax_properties() {
 }
 
 #[test]
+fn char_syntax_promotes_raw_bytes_in_unibyte_buffers() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (set-buffer-multibyte nil)
+               (let ((table (make-syntax-table))
+                     (compiled (byte-compile (lambda (char) (char-syntax char)))))
+                 (modify-syntax-entry (unibyte-char-to-multibyte 128) \"_\" table)
+                 (set-syntax-table table)
+                 (list (char-syntax 128) (funcall compiled 128))))"
+        ),
+        Value::list([Value::Integer(95), Value::Integer(95)])
+    );
+}
+
+#[test]
 fn standalone_syntax_class_regexps_use_table_and_text_property_entries() {
     assert_eq!(
         eval_str(

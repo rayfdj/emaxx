@@ -485,7 +485,11 @@ pub(crate) fn syntax_class_ascii_chars(interp: &Interpreter, class_char: char) -
 }
 
 pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u32) -> SyntaxEntry {
-    let Some(ch) = char::from_u32(code) else {
+    // GNU character codes include the raw-byte range above Unicode's scalar
+    // limit.  Keep the public code as the char-table key, but use the shared
+    // character boundary to obtain Emaxx's internal marker when a default
+    // syntax entry has to be derived.
+    let Ok(ch) = char_from_integer(i64::from(code)) else {
         return SyntaxEntry::default();
     };
     let Some((explicit, terminal)) = interp.char_table_explicit_or_terminal(table_id, code) else {
@@ -1167,23 +1171,37 @@ fn scan_char_quoted(
 // GNU syntax.c forw_comment: FROM is just past the comment starter.  On
 // success returns (true, position of the last comment-ender char); when the
 // comment never ends returns (false, STOP).
+#[derive(Clone, Copy)]
+struct ForwardCommentOptions {
+    nested: bool,
+    style: u8,
+    end_can_be_escaped: bool,
+}
+
 fn scan_forw_comment(
     interp: &Interpreter,
     table_id: u64,
     chars: &[char],
     mut from: i64,
     stop: i64,
-    comnested: bool,
-    style: u8,
+    options: ForwardCommentOptions,
 ) -> (bool, i64) {
-    let mut nesting: i64 = if comnested { 1 } else { -1 };
+    let mut nesting: i64 = if options.nested { 1 } else { -1 };
     loop {
         if from >= stop {
             return (false, stop);
         }
         let entry = scan_entry(interp, table_id, chars, from);
+        let entry_position = from;
         let code = entry.class;
-        if code == SyntaxClass::CommentEnd && scan_comment_style(&entry, None) == style {
+        let escaped = options.end_can_be_escaped
+            && usize::try_from(entry_position - 1)
+                .ok()
+                .is_some_and(|index| preceded_by_odd_backslashes(chars, index));
+        if code == SyntaxClass::CommentEnd
+            && scan_comment_style(&entry, None) == options.style
+            && !escaped
+        {
             let ends = if entry.nested {
                 if nesting > 0 {
                     nesting -= 1;
@@ -1198,13 +1216,13 @@ fn scan_forw_comment(
                 return (true, from);
             }
         }
-        if code == SyntaxClass::GenericCommentDelimiter && style == 2 {
+        if code == SyntaxClass::GenericCommentDelimiter && options.style == 2 {
             return (true, from);
         }
         if nesting > 0
             && code == SyntaxClass::CommentStart
             && entry.nested
-            && scan_comment_style(&entry, None) == style
+            && scan_comment_style(&entry, None) == options.style
         {
             nesting += 1;
         }
@@ -1213,7 +1231,8 @@ fn scan_forw_comment(
         if from < stop && entry.end_first {
             let second = scan_entry(interp, table_id, chars, from);
             if second.end_second
-                && scan_comment_style(&entry, Some(&second)) == style
+                && scan_comment_style(&entry, Some(&second)) == options.style
+                && !escaped
                 && (if entry.nested || second.nested {
                     nesting > 0
                 } else {
@@ -1232,7 +1251,7 @@ fn scan_forw_comment(
         if nesting > 0 && from < stop && entry.start_first {
             let second = scan_entry(interp, table_id, chars, from);
             if second.start_second
-                && scan_comment_style(&entry, Some(&second)) == style
+                && scan_comment_style(&entry, Some(&second)) == options.style
                 && (entry.nested || second.nested)
             {
                 from += 1;
@@ -1322,6 +1341,9 @@ pub(super) fn scan_lists_gnu(
     let ignore_comments = interp
         .lookup_var("parse-sexp-ignore-comments", env)
         .is_some_and(|value| value.is_truthy());
+    let comment_end_can_be_escaped = interp
+        .lookup_var("comment-end-can-be-escaped", env)
+        .is_some_and(|value| value.is_truthy());
 
     let mut count = count0;
     let mut depth = depth0;
@@ -1400,7 +1422,16 @@ pub(super) fn scan_lists_gnu(
                         continue;
                     }
                     let (found, out) = scan_forw_comment(
-                        interp, table_id, &chars, from, stop, comnested, comstyle,
+                        interp,
+                        table_id,
+                        &chars,
+                        from,
+                        stop,
+                        ForwardCommentOptions {
+                            nested: comnested,
+                            style: comstyle,
+                            end_can_be_escaped: comment_end_can_be_escaped,
+                        },
                     );
                     from = out;
                     if !found {
@@ -2555,12 +2586,6 @@ pub(super) fn forward_comment_impl(
                         break;
                     }
                 }
-                if ch == '\n' {
-                    // GNU treats a newline whose end-comment syntax does not
-                    // close any comment as ordinary whitespace.
-                    point -= 1;
-                    continue;
-                }
                 if !quoted
                     && let Some(start_pos) = find_complete_comment_ending_at(
                         interp,
@@ -2573,6 +2598,14 @@ pub(super) fn forward_comment_impl(
                 {
                     point = start_pos;
                     break;
+                }
+                if ch == '\n' {
+                    // A full parse can be confused by an earlier malformed
+                    // nested comment.  Only treat this end-comment newline as
+                    // whitespace after the bounded candidate scan has proved
+                    // that it closes no complete local comment.
+                    point -= 1;
+                    continue;
                 }
                 interp.buffer.goto_char(point);
                 return Ok(Value::Nil);
