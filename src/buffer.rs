@@ -178,13 +178,29 @@ fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
     }
 }
 
-fn undo_file_marker() -> Value {
+/// GNU's `(t . TIME)' first-change undo entry: TIME is the visited
+/// file's modtime, which `primitive-undo' compares against
+/// `visited-file-modtime' to restore the unmodified state.
+fn undo_file_marker(modtime: Option<FileModTime>) -> Value {
+    let (high, low, usec, psec) = modtime
+        .and_then(|value| value.modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| {
+            let seconds = duration.as_secs() as i64;
+            let nanoseconds = duration.subsec_nanos() as i64;
+            (
+                seconds >> 16,
+                seconds & 0xffff,
+                nanoseconds.div_euclid(1_000),
+                nanoseconds.rem_euclid(1_000) * 1_000,
+            )
+        })
+        .unwrap_or((0, 0, 0, 0));
     Value::list([
         Value::T,
-        Value::Integer(0),
-        Value::Integer(0),
-        Value::Integer(0),
-        Value::Integer(0),
+        Value::Integer(high),
+        Value::Integer(low),
+        Value::Integer(usec),
+        Value::Integer(psec),
     ])
 }
 
@@ -629,6 +645,24 @@ impl Buffer {
 
     pub fn full_buffer_string(&self) -> String {
         self.text.to_string()
+    }
+
+    /// Text of up to COUNT lines starting at 1-based LINE, one string per
+    /// line without its terminator.  The rope resolves each line seek in
+    /// O(log n), so a redisplay window costs the window — never the file.
+    pub fn lines_from(&self, line: usize, count: usize) -> Vec<String> {
+        let total = self.text.len_lines();
+        let start = line.saturating_sub(1).min(total);
+        let end = start.saturating_add(count).min(total);
+        (start..end)
+            .map(|index| {
+                let mut text = self.text.line(index).to_string();
+                while text.ends_with(['\n', '\r']) {
+                    text.pop();
+                }
+                text
+            })
+            .collect()
     }
 
     pub fn position_bytes(&self, pos: usize) -> Option<usize> {
@@ -1135,6 +1169,13 @@ impl Buffer {
         self.invalidate_undo_list_view();
     }
 
+    /// Drop recorded undo history while leaving undo recording enabled,
+    /// GNU's `(setq buffer-undo-list nil)'.
+    pub fn clear_undo(&mut self) {
+        self.undo_list.clear();
+        self.invalidate_undo_list_view();
+    }
+
     pub fn undo_entries(&self) -> &[UndoEntry] {
         &self.undo_list
     }
@@ -1168,7 +1209,7 @@ impl Buffer {
             .map(undo_entry_lisp_value)
             .collect::<Vec<_>>();
         if has_file_marker {
-            entries.push(undo_file_marker());
+            entries.push(undo_file_marker(self.visited_file_modtime));
         }
         let value = Value::list(entries);
         *self.undo_list_view.0.borrow_mut() = Some(UndoListView {
@@ -1249,7 +1290,10 @@ impl Buffer {
     }
 
     pub fn push_undo_boundary(&mut self) {
-        if !matches!(self.undo_list.last(), Some(UndoEntry::Boundary)) {
+        // GNU's Fundo_boundary: an empty list gets no boundary (nothing to
+        // group yet), and consecutive boundaries collapse.
+        if !self.undo_list.is_empty() && !matches!(self.undo_list.last(), Some(UndoEntry::Boundary))
+        {
             self.push_undo_entry(UndoEntry::Boundary);
         }
     }
@@ -1313,6 +1357,13 @@ impl Buffer {
     pub fn line_number_at_pos(&self, pos: usize) -> usize {
         let pos0 = (pos - 1).min(self.text.len_chars());
         self.text.char_to_line(pos0) + 1
+    }
+
+    /// Start position (1-based) of the 1-based LINE, clamped to the text.
+    pub fn line_start_of(&self, line: usize) -> usize {
+        let total = self.text.len_lines();
+        let index = line.saturating_sub(1).min(total.saturating_sub(1));
+        self.text.line_to_char(index) + 1
     }
 
     /// Current column (0-based) of point.
