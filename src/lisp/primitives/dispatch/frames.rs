@@ -70,8 +70,25 @@ fn default_frame_parameters(interp: &Interpreter, id: u64) -> Vec<(String, Value
         ("cursor-color".into(), Value::string("white")),
         ("scroll-bar-background".into(), Value::Nil),
         ("scroll-bar-foreground".into(), Value::Nil),
-        ("background-mode".into(), Value::symbol("dark")),
-        ("display-type".into(), Value::symbol("mono")),
+        // A live color terminal classifies as a light-background color
+        // display (GNU's xterm terminal-init default); batch keeps the
+        // dumb-terminal dark/mono answers.
+        (
+            "background-mode".into(),
+            Value::symbol(if interp.tty_display_color_cells() > 0 {
+                "light"
+            } else {
+                "dark"
+            }),
+        ),
+        (
+            "display-type".into(),
+            Value::symbol(if interp.tty_display_color_cells() > 0 {
+                "color"
+            } else {
+                "mono"
+            }),
+        ),
         ("minibuffer".into(), Value::T),
     ]
 }
@@ -100,6 +117,20 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
         // the native set-frame-{width,height,size} operations own geometry.
         return;
     }
+    if parameter == "tty-color-mode" {
+        // GNU's channel for changing a tty frame's color support
+        // (term.c's tty_set_color_mode): the count feeds defface spec
+        // selection, and every realized face re-derives from its spec
+        // under the new display.
+        let cells = match &value {
+            Value::Integer(mode) if *mode > 1 => *mode,
+            Value::Integer(_) | Value::Nil => 0,
+            _ => 8,
+        };
+        interp.set_tty_display_colors(cells);
+        let _ = interp.rerealize_defface_faces();
+    }
+    let menu_bar_lines_changed = parameter == "menu-bar-lines";
     let Some(frame) = interp.frame_state_mut(id) else {
         return;
     };
@@ -114,6 +145,11 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
         *current = value;
     } else {
         frame.parameter_overrides.insert(0, (parameter, value));
+    }
+    if menu_bar_lines_changed {
+        // menu-bar-mode stored a new line count; on a live tty the
+        // window tree re-derives under it (frame.c adjust_frame_size).
+        interp.refresh_tty_frame_layout();
     }
 }
 

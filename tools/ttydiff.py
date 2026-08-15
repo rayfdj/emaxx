@@ -40,13 +40,22 @@ COMPLETIONS_DIR_NAME = "emaxxffcomp"
 COMPLETIONS_DIR = f"/tmp/{COMPLETIONS_DIR_NAME}"
 
 
+# (fg, bg, bold, underline, reverse): fg/bg are ANSI indexes or None for
+# the terminal default.  Erased cells always carry DEFAULT_ATTR — only
+# explicitly painted cells hold face attributes, on both editors alike.
+DEFAULT_ATTR = (None, None, False, False, False)
+
+
 class Vt100Screen:
     """The minimum terminal model both editors' output actually uses:
-    cursor addressing, line/screen erase, alternate screen, autowrap."""
+    cursor addressing, line/screen erase, alternate screen, autowrap —
+    plus per-cell SGR attributes, the face layer of the contract."""
 
     def __init__(self, rows=ROWS, cols=COLS):
         self.rows, self.cols = rows, cols
         self.grid = [[" "] * cols for _ in range(rows)]
+        self.attrs = [[DEFAULT_ATTR] * cols for _ in range(rows)]
+        self.attr = DEFAULT_ATTR
         self.row = self.col = 0
         self.top_margin, self.bottom_margin = 0, rows - 1
         self.saved_cursor = (0, 0)
@@ -88,6 +97,7 @@ class Vt100Screen:
                     self.col = 0
                     self.row = min(self.row + 1, self.rows - 1)
                 self.grid[self.row][self.col] = c
+                self.attrs[self.row][self.col] = self.attr
                 self.col += 1
                 i += 1
 
@@ -158,11 +168,15 @@ class Vt100Screen:
                 for _ in range(max(p0, 1)):
                     self.grid.pop(self.bottom_margin)
                     self.grid.insert(self.row, [" "] * self.cols)
+                    self.attrs.pop(self.bottom_margin)
+                    self.attrs.insert(self.row, [DEFAULT_ATTR] * self.cols)
         elif final == "M":  # delete lines within the scroll region
             if self.top_margin <= self.row <= self.bottom_margin:
                 for _ in range(max(p0, 1)):
                     self.grid.pop(self.row)
                     self.grid.insert(self.bottom_margin, [" "] * self.cols)
+                    self.attrs.pop(self.row)
+                    self.attrs.insert(self.bottom_margin, [DEFAULT_ATTR] * self.cols)
         elif final == "S":  # scroll region up
             self._scroll_up(max(p0, 1))
         elif final == "T":  # scroll region down
@@ -177,11 +191,57 @@ class Vt100Screen:
             count = max(p0, 1)
             row = self.grid[self.row]
             row[self.col:] = ([" "] * count + row[self.col:])[: self.cols - self.col]
+            attrs = self.attrs[self.row]
+            attrs[self.col:] = ([DEFAULT_ATTR] * count + attrs[self.col:])[: self.cols - self.col]
         elif final == "P":  # delete characters, shifting left
             count = max(p0, 1)
             row = self.grid[self.row]
             row[self.col:] = (row[self.col + count:] + [" "] * count)[: self.cols - self.col]
-        # SGR (m), modes (h/l), and the rest do not affect the text grid.
+            attrs = self.attrs[self.row]
+            attrs[self.col:] = (attrs[self.col + count:] + [DEFAULT_ATTR] * count)[: self.cols - self.col]
+        elif final == "m":
+            self._sgr(params if body else [0])
+        # Modes (h/l) and the rest do not affect the text grid.
+
+    def _sgr(self, params):
+        fg, bg, bold, underline, reverse = self.attr
+        i = 0
+        while i < len(params):
+            p = params[i]
+            if p == 0:
+                fg, bg, bold, underline, reverse = DEFAULT_ATTR
+            elif p == 1:
+                bold = True
+            elif p == 22:
+                bold = False
+            elif p == 4:
+                underline = True
+            elif p == 24:
+                underline = False
+            elif p == 7:
+                reverse = True
+            elif p == 27:
+                reverse = False
+            elif 30 <= p <= 37:
+                fg = p - 30
+            elif p == 39:
+                fg = None
+            elif 40 <= p <= 47:
+                bg = p - 40
+            elif p == 49:
+                bg = None
+            elif 90 <= p <= 97:
+                fg = p - 90 + 8
+            elif 100 <= p <= 107:
+                bg = p - 100 + 8
+            elif p in (38, 48) and i + 2 < len(params) and params[i + 1] == 5:
+                if p == 38:
+                    fg = params[i + 2]
+                else:
+                    bg = params[i + 2]
+                i += 2
+            i += 1
+        self.attr = (fg, bg, bold, underline, reverse)
 
     def _linefeed(self):
         if self.row == self.bottom_margin:
@@ -193,36 +253,78 @@ class Vt100Screen:
         for _ in range(count):
             self.grid.pop(self.top_margin)
             self.grid.insert(self.bottom_margin, [" "] * self.cols)
+            self.attrs.pop(self.top_margin)
+            self.attrs.insert(self.bottom_margin, [DEFAULT_ATTR] * self.cols)
 
     def _scroll_down(self, count):
         for _ in range(count):
             self.grid.pop(self.bottom_margin)
             self.grid.insert(self.top_margin, [" "] * self.cols)
+            self.attrs.pop(self.bottom_margin)
+            self.attrs.insert(self.top_margin, [DEFAULT_ATTR] * self.cols)
 
     def _erase_screen(self, mode):
         if mode == 2:
             self.grid = [[" "] * self.cols for _ in range(self.rows)]
+            self.attrs = [[DEFAULT_ATTR] * self.cols for _ in range(self.rows)]
         elif mode == 0:
             self._erase_line(0)
             for r in range(self.row + 1, self.rows):
                 self.grid[r] = [" "] * self.cols
+                self.attrs[r] = [DEFAULT_ATTR] * self.cols
         elif mode == 1:
             self._erase_line(1)
             for r in range(self.row):
                 self.grid[r] = [" "] * self.cols
+                self.attrs[r] = [DEFAULT_ATTR] * self.cols
 
     def _erase_line(self, mode):
         if mode == 0:
             for c in range(self.col, self.cols):
                 self.grid[self.row][c] = " "
+                self.attrs[self.row][c] = DEFAULT_ATTR
         elif mode == 1:
             for c in range(self.col + 1):
                 self.grid[self.row][c] = " "
+                self.attrs[self.row][c] = DEFAULT_ATTR
         else:
             self.grid[self.row] = [" "] * self.cols
+            self.attrs[self.row] = [DEFAULT_ATTR] * self.cols
 
     def lines(self):
         return ["".join(row).rstrip() for row in self.grid]
+
+    def attr_rows(self):
+        """Per-row cell attributes, full width — the face layer of the
+        comparison contract."""
+        return [list(row) for row in self.attrs]
+
+
+def describe_attr_row(attrs):
+    """Compact human-readable runs for divergence messages:
+    \"[0-13 rv][14-25 rv+b]\" — default-attribute runs are omitted."""
+    parts = []
+    start = 0
+    while start < len(attrs):
+        end = start
+        while end < len(attrs) and attrs[end] == attrs[start]:
+            end += 1
+        if attrs[start] != DEFAULT_ATTR:
+            fg, bg, bold, underline, reverse = attrs[start]
+            bits = [
+                item
+                for item in (
+                    f"fg{fg}" if fg is not None else "",
+                    f"bg{bg}" if bg is not None else "",
+                    "b" if bold else "",
+                    "u" if underline else "",
+                    "rv" if reverse else "",
+                )
+                if item
+            ]
+            parts.append(f"[{start}-{end - 1} {'+'.join(bits)}]")
+        start = end
+    return "".join(parts) or "[default]"
 
 
 class Session:
@@ -312,14 +414,20 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
 
         gnu_lines = gnu.screen.lines()
         emaxx_lines = emaxx.screen.lines()
+        gnu_attrs = gnu.screen.attr_rows()
+        emaxx_attrs = emaxx.screen.attr_rows()
 
         gnu_mode = find_mode_line(gnu_lines)
         emaxx_mode = find_mode_line(emaxx_lines)
-        # GNU runs with the menu bar disabled (emaxx does not render one
-        # yet), so both editors work a 22-row text window and every text
-        # row — including scroll positions — must agree exactly.
+        # Both editors show the default menu bar on row 0 and work a
+        # 21-row text window under it; every row — menu captions and
+        # scroll positions included — must agree exactly.
         gnu_text = gnu_lines[0:gnu_mode]
         emaxx_text = emaxx_lines[0:emaxx_mode]
+
+        # Faces are part of the contract: every cell's SGR attributes must
+        # agree, on text rows, mode lines, and the echo area alike.
+        compare_attrs = os.environ.get("EMAXX_TTYDIFF_TEXT_ONLY") is None
 
         length = max(len(gnu_text), len(emaxx_text))
         gnu_text += [""] * (length - len(gnu_text))
@@ -328,13 +436,37 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
         for offset, (expected, actual) in enumerate(zip(gnu_text, emaxx_text)):
             if expected != actual:
                 divergences.append((offset, expected, actual))
+            elif compare_attrs and gnu_attrs[offset] != emaxx_attrs[offset]:
+                divergences.append(
+                    (
+                        f"{offset} (attrs)",
+                        describe_attr_row(gnu_attrs[offset]),
+                        describe_attr_row(emaxx_attrs[offset]),
+                    )
+                )
         # The mode line is part of the contract: same characters, same
         # padding, same percent/line indicators.
         if gnu_lines[gnu_mode] != emaxx_lines[emaxx_mode]:
             divergences.append(("mode-line", gnu_lines[gnu_mode], emaxx_lines[emaxx_mode]))
+        elif compare_attrs and gnu_attrs[gnu_mode] != emaxx_attrs[emaxx_mode]:
+            divergences.append(
+                (
+                    "mode-line (attrs)",
+                    describe_attr_row(gnu_attrs[gnu_mode]),
+                    describe_attr_row(emaxx_attrs[emaxx_mode]),
+                )
+            )
         # So is the echo area: the same final message (or its absence).
         if gnu_lines[-1] != emaxx_lines[-1]:
             divergences.append(("echo", gnu_lines[-1], emaxx_lines[-1]))
+        elif compare_attrs and gnu_attrs[len(gnu_lines) - 1] != emaxx_attrs[len(emaxx_lines) - 1]:
+            divergences.append(
+                (
+                    "echo (attrs)",
+                    describe_attr_row(gnu_attrs[len(gnu_lines) - 1]),
+                    describe_attr_row(emaxx_attrs[len(emaxx_lines) - 1]),
+                )
+            )
 
         if divergences:
             print(f"DIVERGE [{scenario}]: {len(divergences)} text row(s) differ")
@@ -450,6 +582,30 @@ SCENARIOS = [
         "quit-key",
         "alpha\nbeta\n",
         [b"\x06", b"\x07"],
+    ),
+    # M-: shows the value with eval-expression-print-format in the echo.
+    (
+        "eval-expression",
+        "alpha\nbeta\n",
+        [b"\x1b:", b"(+ 1 2)", b"\r"],
+    ),
+    # Kill a region and yank it back: C-SPC, C-k lines, C-y.
+    (
+        "kill-yank",
+        "alpha one\nbeta two\ngamma three\ndelta four\n",
+        [b"\x00", b"\x0e\x0e", b"\x17", b"\x1b>", b"\x19"],
+    ),
+    # Copy with M-w, move, yank: the region stays put, the copy lands.
+    (
+        "copy-yank",
+        "alpha one\nbeta two\ngamma three\n",
+        [b"\x00", b"\x0e", b"\x05", b"\x1bw", b"\x1b>", b"\x19"],
+    ),
+    # C-x C-x swaps point and mark and reactivates the region.
+    (
+        "exchange-point-mark",
+        "alpha one\nbeta two\ngamma three\n",
+        [b"\x0e", b"\x00", b"\x0e", b"\x06\x06", b"\x18\x18"],
     ),
     # An unbound key reports itself in the echo area.
     (
@@ -656,6 +812,24 @@ SCENARIOS = [
         "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
         [b"\x18\x06", COMPLETIONS_DIR_NAME.encode() + b"/am", b"\t", b"\t", b"1.dat\r"],
     ),
+    # C-SPC then motion: the active region shows in the region face.
+    (
+        "region-highlight",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 30)),
+        [b"\x00", b"\x0e\x0e", b"\x06\x06\x06"],
+    ),
+    # A region marked backward (point before mark) highlights the same.
+    (
+        "region-backward",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 30)),
+        [b"\x0e\x0e\x0e", b"\x00", b"\x10\x10"],
+    ),
+    # C-g deactivates the mark and the highlight disappears.
+    (
+        "region-deactivate",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 30)),
+        [b"\x00", b"\x0e\x0e", b"\x07", b"\x0e"],
+    ),
 ]
 
 
@@ -692,7 +866,7 @@ def main():
             ok = compare(
                 name,
                 keys,
-                [gnu_binary, "-nw", "-Q", "--eval", "(menu-bar-mode -1)", path],
+                [gnu_binary, "-nw", "-Q", path],
                 [emaxx_binary, path],
                 {},
                 {"EMACSLOADPATH": load_path},

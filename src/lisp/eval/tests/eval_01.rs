@@ -5375,7 +5375,11 @@ fn deactivate_mark_clears_active_region() {
             r#"(let ((transient-mark-mode t))
                   (with-temp-buffer
                     (insert "abc")
-                    (set-mark 1)
+                    ;; This bare interpreter fixture does not preload GNU
+                    ;; simple.el.  Install the mark through native marker
+                    ;; storage; `deactivate-mark' is the behavior under test.
+                    (set-marker (mark-marker) 1 (current-buffer))
+                    (setq mark-active t)
                     (goto-char 3)
                     (list (region-active-p)
                           (deactivate-mark)
@@ -5984,6 +5988,152 @@ fn defface_records_nested_default_plists() {
         ),
         Value::list([Value::Symbol("bold".into()), Value::T])
     );
+}
+
+#[test]
+fn defface_clauses_choose_by_the_terminal_color_count() {
+    let spec = "(defface sample-min-colors-face
+                  '((((class color) (min-colors 88)) :foreground \"red\")
+                    (((class color) (min-colors 8)) :foreground \"blue\")
+                    (t :weight bold))
+                  \"doc\")";
+    let probe = "(list (face-attribute 'sample-min-colors-face :foreground)
+                       (face-attribute 'sample-min-colors-face :weight))";
+
+    let mut color = Interpreter::new();
+    color.set_tty_display_colors(8);
+    eval_str_with(&mut color, spec);
+    let values = eval_str_with(&mut color, probe).to_vec().unwrap();
+    assert_string_value(values[0].clone(), "blue");
+    assert_eq!(
+        values[1],
+        Value::Symbol("unspecified".into()),
+        "only the first matching clause applies, not later ones"
+    );
+
+    let mut mono = Interpreter::new();
+    eval_str_with(&mut mono, spec);
+    let values = eval_str_with(&mut mono, probe).to_vec().unwrap();
+    assert_eq!(
+        values[0],
+        Value::Symbol("unspecified".into()),
+        "color clauses cannot match a colorless terminal"
+    );
+    assert_eq!(values[1], Value::Symbol("bold".into()));
+}
+
+#[test]
+fn defface_default_clause_contributes_leading_defaults() {
+    let mut interp = Interpreter::new();
+    interp.set_tty_display_colors(8);
+    let values = eval_str_with(
+        &mut interp,
+        "(progn
+           (defface sample-defaulted-face
+             '((default :underline t)
+               (((class color) (background light)) :foreground \"blue\")
+               (((class color) (background dark)) :foreground \"red\"))
+             \"doc\")
+           (list (face-attribute 'sample-defaulted-face :underline)
+                 (face-attribute 'sample-defaulted-face :foreground)))",
+    )
+    .to_vec()
+    .unwrap();
+    assert_eq!(values[0], Value::T);
+    assert_string_value(values[1].clone(), "blue");
+}
+
+#[test]
+fn tty_face_attrs_resolve_through_the_face_machinery() {
+    let mut interp = Interpreter::new();
+    interp.set_tty_display_colors(8);
+    // The real tty-color-translate lives in GNU's tty-colors.el, outside a
+    // unit test's load path; a table stub exercises the same call channel.
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (defun tty-color-translate (color &optional frame)
+             (cdr (assoc color '((\"cyan\" . 6) (\"magenta\" . 5)))))
+           (defface sample-parent-face '((t :background \"magenta\")) \"doc\")
+           (defface sample-resolved-face
+             '((t :foreground \"cyan\" :weight bold :extend t
+                  :inherit sample-parent-face))
+             \"doc\"))",
+    );
+    let mut env: Env = Vec::new();
+    let attrs = crate::lisp::primitives::resolve_tty_face_attrs(
+        &mut interp,
+        &mut env,
+        &Value::Symbol("sample-resolved-face".into()),
+    );
+    assert_eq!(attrs.foreground, Some(6));
+    assert_eq!(
+        attrs.background,
+        Some(5),
+        "unspecified attributes merge from the :inherit parent"
+    );
+    assert!(attrs.bold && attrs.extend);
+    assert!(!attrs.reverse && !attrs.underline);
+}
+
+#[test]
+fn window_face_spans_layer_text_properties_region_and_overlays() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (insert \"abcdefghij\")
+           (put-text-property 2 4 'face 'bold)
+           (setq transient-mark-mode t)
+           (set-marker (mark-marker) 5)
+           (setq mark-active t)
+           (goto-char 8)
+           (let ((overlay (make-overlay 6 9)))
+             (overlay-put overlay 'face 'isearch)
+             (overlay-put overlay 'priority 1001)))",
+    );
+    let mut env: Env = Vec::new();
+    let buffer_id = interp.current_buffer_id();
+    let spans =
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 11, true);
+    assert_eq!(
+        spans,
+        vec![
+            (2, 4, Value::Symbol("bold".into())),
+            (5, 8, Value::Symbol("region".into())),
+            (6, 9, Value::Symbol("isearch".into())),
+        ],
+        "text properties first, then the active region, overlays above"
+    );
+
+    let without_region =
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 11, false);
+    assert!(
+        without_region
+            .iter()
+            .all(|(_, _, face)| !matches!(face, Value::Symbol(s) if s == "region")),
+        "non-selected windows do not paint the region"
+    );
+}
+
+#[test]
+fn propertized_messages_carry_face_spans_to_the_echo_area() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(message \"%sabc\" (propertize \"I-search: \" 'face 'minibuffer-prompt))",
+    );
+    let (text, spans) = crate::lisp::primitives::echo_area_message_with_spans()
+        .expect("message sets the echo area");
+    assert_eq!(text, "I-search: abc");
+    assert_eq!(
+        spans,
+        vec![(0, 10, Value::Symbol("minibuffer-prompt".into()))],
+        "format keeps the argument's face properties in char offsets"
+    );
+    eval_str_with(&mut interp, "(message \"plain\")");
+    let (_, spans) = crate::lisp::primitives::echo_area_message_with_spans().unwrap();
+    assert!(spans.is_empty(), "plain messages carry no spans");
 }
 
 #[test]

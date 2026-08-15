@@ -68,20 +68,50 @@ struct WindowView {
     synced_start: usize,
 }
 
-/// One painted terminal row: its characters and, per cell, whether it
-/// shows in reverse video (mode lines).  Two rows compare equal exactly
-/// when the glass would look identical.
+/// The terminal's color capability, GNU's terminfo Co# in miniature:
+/// xterm-family terminals answer 8 colors, 256-color variants 256, and
+/// anything unrecognizably dumb stays colorless.
+fn terminal_color_cells() -> i64 {
+    let term = std::env::var("TERM").unwrap_or_default();
+    if term.is_empty() || term == "dumb" {
+        0
+    } else if term.contains("256color") {
+        256
+    } else {
+        8
+    }
+}
+
+type CellAttrs = crate::lisp::primitives::TtyFaceAttrs;
+
+/// A face layered over a base: attributes the face leaves unspecified
+/// keep the base's — GNU's face merging for spans drawn inside an
+/// already-faced area (the mode line's buffer name over the mode line).
+fn merge_cell_attrs(base: CellAttrs, over: CellAttrs) -> CellAttrs {
+    CellAttrs {
+        foreground: over.foreground.or(base.foreground),
+        background: over.background.or(base.background),
+        bold: base.bold || over.bold,
+        underline: base.underline || over.underline,
+        reverse: base.reverse || over.reverse,
+        extend: base.extend || over.extend,
+    }
+}
+
+/// One painted terminal row: its characters and each cell's face
+/// attributes.  Two rows compare equal exactly when the glass would look
+/// identical.
 #[derive(Clone, Debug, PartialEq)]
 struct PaintRow {
     text: Vec<char>,
-    reverse: Vec<bool>,
+    attrs: Vec<CellAttrs>,
 }
 
 impl PaintRow {
     fn blank(cols: usize) -> Self {
         Self {
             text: vec![' '; cols],
-            reverse: vec![false; cols],
+            attrs: vec![CellAttrs::default(); cols],
         }
     }
 
@@ -89,17 +119,25 @@ impl PaintRow {
     fn unpainted() -> Self {
         Self {
             text: vec!['\u{0}'],
-            reverse: vec![false],
+            attrs: vec![CellAttrs::default()],
         }
     }
 
-    fn blit(&mut self, col: usize, text: &str, reverse: bool) {
+    fn blit(&mut self, col: usize, text: &str, attrs: CellAttrs) {
         for (offset, c) in text.chars().enumerate() {
             let Some(cell) = self.text.get_mut(col + offset) else {
                 break;
             };
             *cell = c;
-            self.reverse[col + offset] = reverse;
+            self.attrs[col + offset] = attrs;
+        }
+    }
+
+    /// Layer FACE attributes over the cells in [FROM, TO): attributes the
+    /// face leaves unspecified keep what the cell already shows.
+    fn overlay(&mut self, from: usize, to: usize, attrs: CellAttrs) {
+        for at in from..to.min(self.attrs.len()) {
+            self.attrs[at] = merge_cell_attrs(self.attrs[at], attrs);
         }
     }
 }
@@ -120,8 +158,17 @@ struct TtyState {
     /// only rows that differ — GNU's dispnew current-matrix idea, one
     /// line deep.
     painted_rows: Vec<PaintRow>,
-    painted_echo: String,
+    painted_echo: PaintRow,
     painted_size: (usize, usize),
+    /// Resolved face attributes, valid while the interpreter's face
+    /// generation is unchanged (GNU's face_change flag).
+    face_cache: std::collections::HashMap<String, CellAttrs>,
+    face_cache_generation: u64,
+    /// The menu-bar row's caption text, valid while the selected
+    /// window's buffer, major mode, and active keymap set are unchanged
+    /// — GNU recomputes menu_bar_items on buffer, window, or mode-line
+    /// changes (isearch entering is one), not per key.
+    menu_bar_row: Option<((u64, String, usize), String)>,
 }
 
 impl TtyState {
@@ -132,8 +179,11 @@ impl TtyState {
             pending: Vec::new(),
             echo: String::new(),
             painted_rows: Vec::new(),
-            painted_echo: String::new(),
+            painted_echo: PaintRow::unpainted(),
             painted_size: (0, 0),
+            face_cache: std::collections::HashMap::new(),
+            face_cache_generation: 0,
+            menu_bar_row: None,
         }
     }
 }
@@ -176,10 +226,19 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
         ));
     }
 
+    // Publish the terminal's color capability before the first redraw:
+    // defface specs re-realize against it (GNU's terminal-init path), and
+    // libraries loaded later define their faces under the same display.
+    interpreter.set_tty_display_colors(terminal_color_cells());
+    let _ = interpreter.rerealize_defface_faces();
+
     let guard = TerminalGuard::enter().map_err(|error| error.to_string())?;
     let queue = SharedEventQueue::default();
     let state = std::rc::Rc::new(std::cell::RefCell::new(TtyState::new()));
-    crate::lisp::primitives::set_tty_event_reader(Some(make_event_reader(queue.clone())));
+    crate::lisp::primitives::set_tty_event_reader(Some(make_event_reader(
+        queue.clone(),
+        std::rc::Rc::clone(&state),
+    )));
     // Command code that reads events itself (the minibuffer) repaints the
     // frame through this hook, so window-configuration changes made
     // mid-read — a *Completions* pop-up — reach the glass immediately.
@@ -220,6 +279,29 @@ impl SharedEventQueue {
             || event::poll(std::time::Duration::from_millis(0)).unwrap_or(false)
     }
 
+    /// Pop an event without blocking: a queued one, or whatever the
+    /// terminal has ready.  `Err' means the terminal is gone.
+    fn try_next_event(&self) -> Result<Option<Value>, ()> {
+        if let Some(event) = self.0.borrow_mut().pop_front() {
+            return Ok(Some(event));
+        }
+        while event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
+            let Ok(event) = event::read() else {
+                return Err(());
+            };
+            if let Event::Key(key) = event {
+                let mut events = encode_key(key);
+                if events.is_empty() {
+                    continue;
+                }
+                let first = events.remove(0);
+                self.0.borrow_mut().extend(events);
+                return Ok(Some(first));
+            }
+        }
+        Ok(None)
+    }
+
     /// Pop the next event, blocking on the terminal when empty.  Returns
     /// `None' only on terminal loss.
     fn next_event(&self) -> Option<Value> {
@@ -248,9 +330,12 @@ impl SharedEventQueue {
 /// `message' (y-or-n-p's protocol) is visible while the terminal waits.
 /// C-g answers `None' and becomes GNU's `quit' signal at the consuming
 /// primitive.
-fn make_event_reader(queue: SharedEventQueue) -> Box<dyn FnMut() -> Option<Value>> {
+fn make_event_reader(
+    queue: SharedEventQueue,
+    state: std::rc::Rc<std::cell::RefCell<TtyState>>,
+) -> Box<dyn FnMut() -> Option<Value>> {
     Box::new(move || {
-        draw_echo_row();
+        draw_echo_row(&state);
         let event = queue.next_event()?;
         if event == Value::Integer(7) {
             return None;
@@ -261,12 +346,20 @@ fn make_event_reader(queue: SharedEventQueue) -> Box<dyn FnMut() -> Option<Value
 
 /// Paint the live echo-area line without interpreter access; the message
 /// text lives in session state exactly so blocking readers can show it.
-fn draw_echo_row() {
+/// When the full redisplay already painted this text (with its face
+/// attributes — the minibuffer prompt), leave that paint alone.
+fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
     let Ok((cols, rows)) = terminal::size() else {
         return;
     };
     let mut text = crate::lisp::primitives::echo_area_message().unwrap_or_default();
     text.truncate(cols.max(10) as usize);
+    if let Ok(state) = state.try_borrow() {
+        let painted: String = state.painted_echo.text.iter().collect();
+        if painted.trim_end_matches(' ') == text {
+            return;
+        }
+    }
     let mut out = io::stdout();
     let _ = queue!(
         out,
@@ -313,8 +406,33 @@ fn command_loop(
             let mut state = shared_state.borrow_mut();
             redraw(interpreter, env, &mut state).map_err(|error| error.to_string())?;
         }
-        let Some(event) = queue.next_event() else {
-            return Ok(0);
+        // GNU fires ripe timers while the loop waits for input
+        // (keyboard.c's timer_check): isearch's lazy highlight and every
+        // other timer-driven update land between keystrokes.  A timer
+        // that ran gets its work repainted before the wait resumes.
+        let mut idle_since: Option<std::time::Instant> = None;
+        let event = loop {
+            // GNU's read_char consumes `unread-command-events' before the
+            // terminal: an event a command read and pushed back (subr.el's
+            // sit-for) re-enters the key stream here.
+            if let Some(event) =
+                crate::lisp::primitives::take_unread_command_event(interpreter, env)
+            {
+                break event;
+            }
+            match queue.try_next_event() {
+                Err(()) => return Ok(0),
+                Ok(Some(event)) => break event,
+                Ok(None) => {}
+            }
+            let idle = idle_since
+                .get_or_insert_with(std::time::Instant::now)
+                .elapsed();
+            if crate::lisp::primitives::run_due_timers(interpreter, env, idle.as_secs_f64()) {
+                let mut state = shared_state.borrow_mut();
+                let _ = redraw(interpreter, env, &mut state);
+            }
+            let _ = event::poll(std::time::Duration::from_millis(50));
         };
         // The state borrow is scoped: `execute_binding' below may re-enter
         // redisplay through the minibuffer's frame-redraw hook, which
@@ -322,18 +440,10 @@ fn command_loop(
         let dispatch = {
             let state = &mut *shared_state.borrow_mut();
 
-            // `C-u' and its follow-up digits accumulate a prefix argument
-            // before ordinary dispatch, GNU's universal-argument machinery.
-            // The runtime does not define the prefix commands, so the state
-            // transitions run natively, exactly as the kbd-macro engine does.
-            if state.pending.is_empty()
-                && let Value::Integer(code) = &event
-                && let Some(()) = accumulate_prefix(interpreter, env, state, *code)
-            {
-                continue;
-            }
-
-            if state.pending.is_empty() {
+            // A fresh key erases a previous command's echo, but not the
+            // accumulating `C-u' chain's own display (GNU's prefix echo
+            // survives until a non-prefix command consumes it).
+            if state.pending.is_empty() && !state.prefix_active {
                 state.echo.clear();
             }
             state.pending.push(event);
@@ -350,13 +460,14 @@ fn command_loop(
             ));
             match resolution {
                 Resolution::Command(binding) => {
-                    // Any dispatched command consumes the prefix chain, even
-                    // one entered through a non-character key like an arrow.
-                    state.prefix_active = false;
-                    // The sequence resolved: its key echo is done (GNU erases
-                    // the echo when dispatch begins), and a command error may
-                    // replace it below.
-                    state.echo.clear();
+                    // GNU erases the key echo when dispatch begins — a
+                    // command that blocks (a minibuffer read) must not
+                    // leave its own key sequence on the glass.  An
+                    // accumulating C-u chain keeps its echo: the digits
+                    // extend it after the prefix command runs.
+                    if !state.prefix_active {
+                        state.echo.clear();
+                    }
                     let keys = std::mem::take(&mut state.pending);
                     Some((binding, keys))
                 }
@@ -367,6 +478,7 @@ fn command_loop(
                 Resolution::Undefined => {
                     state.echo = format!("{} is undefined", describe_keys(&state.pending));
                     state.pending.clear();
+                    state.prefix_active = false;
                     None
                 }
             }
@@ -395,114 +507,34 @@ fn command_loop(
         if let Some(termination) = interpreter.take_pending_termination() {
             return Ok(termination.exit_code);
         }
+        // A prefix command (simple.el's universal-argument family) left
+        // an accumulating prefix-arg behind: keep echoing the chain,
+        // GNU's echo_keystrokes display of the pending prefix keys.
+        // Any other command consumes the chain and its echo.
+        let prefix_pending = interpreter
+            .lookup_var("prefix-arg", env)
+            .is_some_and(|prefix| prefix.is_truthy());
         let state = &mut *shared_state.borrow_mut();
+        if prefix_pending {
+            state.echo = append_prefix_echo(&state.echo, &describe_keys(&keys));
+            state.prefix_active = true;
+        } else {
+            state.prefix_active = false;
+            state.echo.clear();
+        }
         if let Some(text) = command_error {
             state.echo = text;
         }
         // A blocking reader may have painted the echo row outside the
         // matrix; repaint it against fresh state next frame.
-        state.painted_echo = String::from("\u{0}");
+        state.painted_echo = PaintRow::unpainted();
     }
 }
 
-/// Feed one event to the native `C-u' machinery; `Some(())' means the
-/// event extended the accumulating prefix and dispatch must not see it.
-fn accumulate_prefix(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    state: &mut TtyState,
-    code: i64,
-) -> Option<()> {
-    let pending_prefix = interpreter
-        .lookup_var("prefix-arg", env)
-        .unwrap_or(Value::Nil);
-    if code == 21 {
-        let next = crate::lisp::primitives::next_universal_prefix(&pending_prefix);
-        interpreter.set_variable("prefix-arg", next, env);
-        state.echo = if state.prefix_active {
-            append_prefix_echo(&state.echo, "C-u")
-        } else {
-            String::from("C-u-")
-        };
-        state.prefix_active = true;
-        return Some(());
-    }
-    if state.prefix_active {
-        if (48..=57).contains(&code) {
-            let next = crate::lisp::primitives::next_digit_prefix(&pending_prefix, code - 48);
-            interpreter.set_variable("prefix-arg", next, env);
-            state.echo = append_prefix_echo(&state.echo, &char::from(code as u8).to_string());
-            return Some(());
-        }
-        if code == i64::from(b'-') && pending_prefix.is_truthy() {
-            let next = crate::lisp::primitives::next_negative_prefix(&pending_prefix);
-            interpreter.set_variable("prefix-arg", next, env);
-            state.echo = append_prefix_echo(&state.echo, "-");
-            return Some(());
-        }
-        state.prefix_active = false;
-    }
-    None
-}
-
-enum Resolution {
-    Command(Value),
-    Prefix,
-    Undefined,
-}
+use crate::lisp::primitives::KeyResolution as Resolution;
 
 fn resolve_pending(interpreter: &mut Interpreter, env: &mut Env, pending: &[Value]) -> Resolution {
-    let key_vector = Value::list(
-        std::iter::once(Value::Symbol("vector-literal".into())).chain(pending.iter().cloned()),
-    );
-    let binding = match call(interpreter, env, "key-binding", &[key_vector, Value::T]) {
-        Ok(binding) => binding,
-        Err(_) => Value::Nil,
-    };
-    if binding.is_nil() {
-        // An unresolved strict prefix keeps reading (C-x alone answers nil
-        // while C-x C-f resolves), so probe whether any longer sequence can
-        // still match by asking for the prefix's own keymap.
-        if pending_is_prefix(interpreter, env, pending) {
-            return Resolution::Prefix;
-        }
-        return Resolution::Undefined;
-    }
-    // A prefix can answer as the keymap itself or as a prefix command
-    // symbol (`Control-X-prefix') whose function cell holds the keymap;
-    // GNU resolves through the indirection before dispatching.  Native
-    // probes here: this classification runs once per keystroke.
-    let resolved = if let Value::Symbol(name) = &binding {
-        interpreter
-            .lookup_function(name, env)
-            .unwrap_or_else(|_| binding.clone())
-    } else {
-        binding.clone()
-    };
-    if crate::lisp::primitives::is_keymap_value(interpreter, &resolved) {
-        Resolution::Prefix
-    } else {
-        Resolution::Command(binding)
-    }
-}
-
-fn pending_is_prefix(interpreter: &mut Interpreter, env: &mut Env, pending: &[Value]) -> bool {
-    // ESC alone is always a live prefix (meta encoding).
-    if pending.len() == 1 && matches!(pending.first(), Some(Value::Integer(27))) {
-        return true;
-    }
-    let key_vector = Value::list(
-        std::iter::once(Value::Symbol("vector-literal".into())).chain(pending.iter().cloned()),
-    );
-    // `key-binding' with ACCEPT-DEFAULT nil still answers prefix keymaps.
-    call(interpreter, env, "key-binding", &[key_vector])
-        .map(|binding| {
-            !binding.is_nil()
-                && call(interpreter, env, "keymapp", &[binding])
-                    .map(|value| value.is_truthy())
-                    .unwrap_or(false)
-        })
-        .unwrap_or(false)
+    crate::lisp::primitives::resolve_key_sequence(interpreter, env, pending)
 }
 
 fn execute_binding(
@@ -512,69 +544,7 @@ fn execute_binding(
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
-    // GNU's command loop separates each command into its own undo group
-    // (undo-auto--add-boundary after every command); `undo' relies on the
-    // boundary to skip before replaying the previous group.
-    interpreter.buffer.push_undo_boundary();
-    // A lingering echo-area message belongs to the previous command; GNU
-    // clears it when the next command runs (its own `message' then shows).
-    crate::lisp::primitives::set_echo_area_message(None);
-    interpreter.set_variable("last-command-event", last_event, env);
-    // The canonical key-state channel: this-command-keys,
-    // this-single-command-keys, and their raw variants all read it
-    // (isearch's pre-command-hook indexes the vector).
-    crate::lisp::primitives::set_command_key_state(interpreter, keys.to_vec(), keys.to_vec(), env);
-    interpreter.set_variable(
-        "this-command-keys-vector",
-        Value::list(
-            std::iter::once(Value::Symbol("vector-literal".into())).chain(keys.iter().cloned()),
-        ),
-        env,
-    );
-    interpreter.set_variable("this-command", binding.clone(), env);
-    // GNU's command loop hands the accumulated prefix to the command:
-    // current-prefix-arg takes prefix-arg's value and prefix-arg clears
-    // before the call; last-prefix-arg keeps it for the next cycle.
-    let prefix = interpreter
-        .lookup_var("prefix-arg", env)
-        .unwrap_or(Value::Nil);
-    interpreter.set_variable("current-prefix-arg", prefix.clone(), env);
-    interpreter.set_variable("prefix-arg", Value::Nil, env);
-    // pre-command-hook may rewrite `this-command' (isearch's exit path
-    // does); GNU executes whatever the hook left there.
-    let buffer_id = interpreter.current_buffer_id();
-    crate::lisp::primitives::safe_run_named_hooks(
-        interpreter,
-        "pre-command-hook",
-        env,
-        Some(buffer_id),
-    )
-    .unwrap_or(());
-    let dispatched = interpreter
-        .lookup_var("this-command", env)
-        .filter(|command| !command.is_nil())
-        .unwrap_or_else(|| binding.clone());
-    // GNU's command_execute is a thin wrapper over call-interactively
-    // (prefix-arg bookkeeping, kbd-macro expansion); the runtime does not
-    // define it yet, so drive the interactive call directly.
-    let result = call(
-        interpreter,
-        env,
-        "call-interactively",
-        std::slice::from_ref(&dispatched),
-    )
-    .map(|_| ());
-    let buffer_id = interpreter.current_buffer_id();
-    crate::lisp::primitives::safe_run_named_hooks(
-        interpreter,
-        "post-command-hook",
-        env,
-        Some(buffer_id),
-    )
-    .unwrap_or(());
-    interpreter.set_variable("last-command", dispatched, env);
-    interpreter.set_variable("last-prefix-arg", prefix, env);
-    result
+    crate::lisp::primitives::execute_command_binding(interpreter, env, binding, keys, last_event)
 }
 
 /// Extend the echoed `C-u' sequence: "C-u-" then "C-u 8-", GNU's prefix
@@ -590,30 +560,7 @@ fn append_prefix_echo(echo: &str, key: &str) -> String {
 /// `error-message-string' rendering ("Quit", "Beginning of buffer", a
 /// user-error's own message).
 fn command_error_text(interpreter: &mut Interpreter, env: &mut Env, error: &LispError) -> String {
-    let text = match error {
-        LispError::SignalValue(data) => {
-            let data = if matches!(data, Value::Symbol(_)) {
-                Value::list([data.clone()])
-            } else {
-                data.clone()
-            };
-            call(
-                interpreter,
-                env,
-                "error-message-string",
-                std::slice::from_ref(&data),
-            )
-            .ok()
-            .and_then(|value| match value {
-                Value::String(text) => Some(text.to_string()),
-                _ => None,
-            })
-            .unwrap_or_else(|| format!("{data}"))
-        }
-        LispError::Signal(text) => text.clone(),
-        other => format!("{other:?}"),
-    };
-    text.replace(['\n', '\r'], " ").chars().take(200).collect()
+    crate::lisp::primitives::command_error_echo_text(interpreter, env, error)
 }
 
 // ── Event encoding ──────────────────────────────────────────────────────
@@ -721,8 +668,10 @@ fn describe_char(code: i64, meta: bool) -> String {
 
 /// A window's planned text rows and display geometry for one redisplay.
 struct WindowPlan {
-    /// Text rows, top to bottom, each at most the window's body width.
-    rendered: Vec<String>,
+    /// Text rows, top to bottom, each at most the window's body width,
+    /// with the buffer line, wrap segment, and start position each row
+    /// shows — the anchors face spans map through.
+    rendered: Vec<(String, usize, usize, usize)>,
     /// Buffer position where the window's display starts.
     top_pos: usize,
     /// Position just past the last displayed character (GNU window-end).
@@ -852,7 +801,7 @@ fn plan_window_text(
     // never the buffer size.  Each line yields at least one visual row,
     // so text_rows lines always cover the window.
     let lines = buffer.lines_from(view.top_line, text_rows);
-    let mut rendered: Vec<String> = Vec::with_capacity(text_rows);
+    let mut rendered: Vec<(String, usize, usize, usize)> = Vec::with_capacity(text_rows);
     // First row past the window, as (line, segment): the window's end.
     let mut past_window: Option<(usize, usize)> = None;
     'fill: for (index, line) in lines.iter().enumerate() {
@@ -867,7 +816,9 @@ fn plan_window_text(
             0
         };
         for (seg_index, segment) in segments.iter().enumerate().skip(from) {
-            rendered.push(segment.clone());
+            let row_line = view.top_line + index;
+            let row_start = position_of_visual_row(buffer, row_line, seg_index, usable);
+            rendered.push((segment.clone(), row_line, seg_index, row_start));
             if rendered.len() == text_rows {
                 past_window = Some(if seg_index + 1 < segments.len() {
                     (view.top_line + index, seg_index + 1)
@@ -878,10 +829,15 @@ fn plan_window_text(
             }
         }
     }
-    rendered.resize(text_rows, String::new());
+    rendered.resize(text_rows, (String::new(), 0, 0, usize::MAX));
 
     let top_pos = position_of_visual_row(buffer, view.top_line, view.top_seg, usable);
+    let last_line = buffer.line_number_at_pos(buffer.point_max());
     let window_end = match past_window {
+        // A row past the final buffer line means the window shows
+        // everything: window-end is ZV (a buffer without a trailing
+        // newline has no line beyond its last).
+        Some((line, _)) if line > last_line => buffer.point_max(),
         Some((line, seg)) => position_of_visual_row(buffer, line, seg, usable),
         None => buffer.point_max(),
     };
@@ -903,11 +859,22 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         interpreter.set_tty_frame_size(cols as i64, rows as i64);
     }
     let frame_rows = rows - 1; // everything above the echo area
+    // The rows the frame keeps above the window tree are the menu bar's
+    // (GNU's FRAME_MENU_BAR_LINES); `menu-bar-mode' drives the count
+    // through the `menu-bar-lines' frame parameter.
+    let menu_lines = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1) as usize;
     let full_repaint = state.painted_size != (cols, rows);
     if full_repaint {
         // A resize changes the wrap geometry under every saved segment
         // index; re-anchor each window instead of trusting stale ones.
         state.views.clear();
+    }
+    // Resolved faces stay cached until a face definition changes (GNU's
+    // face_change flag) — resolution evaluates Lisp per attribute.
+    let face_generation = interpreter.face_definitions_generation();
+    if full_repaint || state.face_cache_generation != face_generation {
+        state.face_cache.clear();
+        state.face_cache_generation = face_generation;
     }
 
     let mut layout = crate::lisp::primitives::window_render_layout(interpreter);
@@ -926,9 +893,9 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             window_id: interpreter.selected_window_id(),
             buffer_id: interpreter.current_buffer_id(),
             left: 0,
-            top: 0,
+            top: menu_lines,
             width: cols,
-            height: frame_rows,
+            height: frame_rows - menu_lines,
             start: crate::lisp::primitives::current_window_start(interpreter)
                 .clamp(buffer.point_min(), buffer.point_max()),
             point: buffer.point(),
@@ -940,6 +907,22 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         .retain(|id, _| layout.iter().any(|window| window.window_id == *id));
 
     let mut frame = vec![PaintRow::blank(cols); frame_rows];
+    // GNU's tty vertical border draws in the vertical-border face (its
+    // inherit chain reaches mode-line-inactive's reverse video).
+    let divider_attrs = if layout.iter().any(|info| info.left + info.width < cols) {
+        *state
+            .face_cache
+            .entry("vertical-border".into())
+            .or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(
+                    interpreter,
+                    env,
+                    &Value::Symbol("vertical-border".into()),
+                )
+            })
+    } else {
+        CellAttrs::default()
+    };
     let mut cursor_position = (0u16, 0u16);
     let mut selected_sync: Option<(usize, crate::lisp::primitives::InteractiveWindowMetrics)> =
         None;
@@ -953,6 +936,20 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         metrics: crate::lisp::primitives::InteractiveWindowMetrics,
     }
     let mut mode_line_jobs: Vec<ModeLineJob> = Vec::new();
+    // Face spans over window text apply after the text lands (their
+    // resolution evaluates Lisp, which the buffer borrow above forbids).
+    struct TextFaceJob {
+        buffer_id: u64,
+        selected: bool,
+        top: usize,
+        left: usize,
+        body_width: usize,
+        usable: usize,
+        start: usize,
+        window_end: usize,
+        rows: Vec<(usize, usize, usize)>,
+    }
+    let mut text_face_jobs: Vec<TextFaceJob> = Vec::new();
 
     for info in &layout {
         // A window not flush with the frame's right edge spends its last
@@ -983,12 +980,27 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             info.selected,
         );
         let point_line = buffer.line_number_at_pos(info.point);
-        for (row, rendered) in plan.rendered.iter().enumerate() {
-            frame[info.top + row].blit(info.left, rendered, false);
+        for (row, (rendered, _, _, _)) in plan.rendered.iter().enumerate() {
+            frame[info.top + row].blit(info.left, rendered, CellAttrs::default());
         }
+        text_face_jobs.push(TextFaceJob {
+            buffer_id: info.buffer_id,
+            selected: info.selected,
+            top: info.top,
+            left: info.left,
+            body_width,
+            usable: body_width.saturating_sub(1).max(1),
+            start: plan.top_pos,
+            window_end: plan.window_end,
+            rows: plan
+                .rendered
+                .iter()
+                .map(|(_, line, seg, start)| (*line, *seg, *start))
+                .collect(),
+        });
         if body_width < info.width {
             for row in 0..info.height {
-                frame[info.top + row].blit(info.left + body_width, "|", false);
+                frame[info.top + row].blit(info.left + body_width, "|", divider_attrs);
             }
         }
         let metrics = crate::lisp::primitives::InteractiveWindowMetrics {
@@ -1025,10 +1037,109 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         crate::lisp::primitives::set_interactive_window_metrics(Some(metrics));
     }
 
+    // Face spans over window text — buffer `face' properties, the
+    // selected window's active region, and overlay faces (isearch's
+    // highlights) — resolved through the face machinery and mapped onto
+    // cells through each row's line/segment anchors.
+    for job in &text_face_jobs {
+        if job.start >= job.window_end {
+            continue;
+        }
+        let spans = crate::lisp::primitives::window_face_spans(
+            interpreter,
+            env,
+            job.buffer_id,
+            job.start,
+            job.window_end,
+            job.selected,
+        );
+        if spans.is_empty() {
+            continue;
+        }
+        let resolved: Vec<(usize, usize, CellAttrs)> = spans
+            .iter()
+            .map(|(begin, end, face)| {
+                let key = format!("{face}");
+                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
+                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
+                });
+                (*begin, *end, attrs)
+            })
+            .collect();
+        let buffer = if job.buffer_id == interpreter.current_buffer_id() {
+            &interpreter.buffer
+        } else {
+            match interpreter.get_buffer_by_id(job.buffer_id) {
+                Some(buffer) => buffer,
+                None => continue,
+            }
+        };
+        for (index, (line, seg, row_start)) in job.rows.iter().enumerate() {
+            if *row_start == usize::MAX {
+                continue;
+            }
+            let row_end = job
+                .rows
+                .get(index + 1)
+                .map(|(_, _, next)| *next)
+                .filter(|next| *next != usize::MAX)
+                .unwrap_or(job.window_end);
+            if row_end <= *row_start {
+                continue;
+            }
+            let line_text = buffer
+                .lines_from(*line, 1)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let line_begin = buffer.line_start_of(*line);
+            for (span_begin, span_end, attrs) in &resolved {
+                let begin = (*span_begin).max(*row_start);
+                let end = (*span_end).min(row_end);
+                if begin >= end {
+                    continue;
+                }
+                let col_of = |pos: usize| {
+                    display_column(&line_text, pos.saturating_sub(line_begin))
+                        .saturating_sub(seg * job.usable)
+                };
+                let from_col = col_of(begin).min(job.body_width);
+                // A span covering the newline paints its glyph's cell —
+                // and an `:extend' face (the region) keeps painting to
+                // the window edge, GNU's whole-row highlight.
+                let line_chars = line_text.chars().count();
+                let mut to_col = col_of(end);
+                if end.saturating_sub(line_begin) > line_chars {
+                    to_col = if attrs.extend {
+                        job.body_width
+                    } else {
+                        to_col + 1
+                    };
+                }
+                let to_col = to_col.min(job.body_width);
+                if from_col >= to_col {
+                    continue;
+                }
+                frame[job.top + index].overlay(job.left + from_col, job.left + to_col, *attrs);
+            }
+        }
+    }
+
     // Mode lines: each window's real `mode-line-format', rendered by the
-    // interpreter's engine in that window's context.
+    // interpreter's engine in that window's context and painted in the
+    // realized mode-line face.
+    let mode_line_attrs = *state
+        .face_cache
+        .entry("mode-line".into())
+        .or_insert_with(|| {
+            crate::lisp::primitives::resolve_tty_face_attrs(
+                interpreter,
+                env,
+                &Value::Symbol("mode-line".into()),
+            )
+        });
     for job in &mode_line_jobs {
-        let mut mode_line = crate::lisp::primitives::render_window_mode_line(
+        let (mut mode_line, spans) = crate::lisp::primitives::render_window_mode_line(
             interpreter,
             env,
             job.window_id,
@@ -1037,7 +1148,7 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         )
         .inspect_err(|error| debug_log(&format!("mode-line render: {error:?}")))
         .ok()
-        .filter(|text| !text.is_empty())
+        .filter(|(text, _)| !text.is_empty())
         .unwrap_or_else(|| {
             // A session whose spec fails to render still shows the basics.
             let modified = if interpreter.buffer.is_modified() {
@@ -1045,9 +1156,12 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             } else {
                 "--"
             };
-            format!(
-                "-UUU:{modified}-  {}   L{}   (Fundamental)",
-                interpreter.buffer.name, job.point_line
+            (
+                format!(
+                    "-UUU:{modified}-  {}   L{}   (Fundamental)",
+                    interpreter.buffer.name, job.point_line
+                ),
+                Vec::new(),
             )
         });
         if mode_line.chars().count() < job.body_width {
@@ -1057,14 +1171,80 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         if mode_line.chars().count() > job.body_width {
             mode_line = mode_line.chars().take(job.body_width).collect();
         }
-        frame[job.row].blit(job.left, &mode_line, true);
+        frame[job.row].blit(job.left, &mode_line, mode_line_attrs);
+        // The renderer's face spans (the buffer name's mode-line-buffer-id)
+        // layer over the base mode-line face, clipped to the body.
+        for (from, to, face) in spans {
+            let key = format!("{face}");
+            let attrs = *state.face_cache.entry(key).or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+            });
+            let from = job.left + from.min(job.body_width);
+            let to = job.left + to.min(job.body_width);
+            frame[job.row].overlay(from, to, attrs);
+        }
+    }
+
+    // The menu bar row (GNU's display_menu_bar): every active keymap's
+    // top-level captions one space apart, the whole row in the `menu'
+    // face.  Recomputed — after menu-bar-update-hook, like GNU's
+    // update_menu_bar — when the selected buffer or its major mode
+    // changed, not per keystroke.
+    if menu_lines > 0 && !frame.is_empty() {
+        let mode = interpreter
+            .lookup_var("major-mode", env)
+            .map(|mode| format!("{mode}"))
+            .unwrap_or_default();
+        let cache_key = (
+            interpreter.current_buffer_id(),
+            mode,
+            crate::lisp::primitives::active_keymap_count(interpreter, env),
+        );
+        if state
+            .menu_bar_row
+            .as_ref()
+            .is_none_or(|(key, _)| *key != cache_key)
+        {
+            let _ = interpreter.call_function_value(
+                Value::Symbol("run-hooks".into()),
+                None,
+                &[
+                    Value::Symbol("activate-menubar-hook".into()),
+                    Value::Symbol("menu-bar-update-hook".into()),
+                ],
+                env,
+            );
+            let captions = crate::lisp::primitives::menu_bar_row_captions(interpreter, env);
+            let mut text = String::new();
+            for caption in &captions {
+                text.push_str(caption);
+                text.push(' ');
+            }
+            state.menu_bar_row = Some((cache_key, text));
+        }
+        let menu_attrs = *state.face_cache.entry("menu".into()).or_insert_with(|| {
+            crate::lisp::primitives::resolve_tty_face_attrs(
+                interpreter,
+                env,
+                &Value::Symbol("menu".into()),
+            )
+        });
+        let text = state
+            .menu_bar_row
+            .as_ref()
+            .map(|(_, text)| text.clone())
+            .unwrap_or_default();
+        let mut row = PaintRow::blank(cols);
+        row.attrs = vec![menu_attrs; cols];
+        row.blit(0, &text, menu_attrs);
+        frame[0] = row;
     }
 
     // Emit only rows that changed since the last paint (dispnew's
     // current-matrix idea, one line deep): a self-insert repaints one
     // text row, not the frame.
     if full_repaint {
-        state.painted_echo = String::from("\u{0}");
+        state.painted_echo = PaintRow::unpainted();
         state.painted_size = (cols, rows);
         state.painted_rows.clear();
     }
@@ -1080,21 +1260,21 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     }
 
     // Echo area: frontend echo (key progress, errors) wins; otherwise the
-    // session's live `message' line shows, GNU's echo-area behavior.
-    let mut echo = if state.echo.is_empty() {
-        crate::lisp::primitives::echo_area_message().unwrap_or_default()
-    } else {
-        state.echo.clone()
-    };
-    echo.truncate(cols);
-    if state.painted_echo != echo {
-        queue!(
-            out,
-            cursor::MoveTo(0, frame_rows as u16),
-            terminal::Clear(terminal::ClearType::CurrentLine),
-            style::Print(&echo),
-        )?;
-        state.painted_echo = echo;
+    // session's live `message' line shows, GNU's echo-area behavior.  An
+    // active minibuffer's row comes from its buffer with the text
+    // properties read_minibuf applied — the prompt's face reaches the
+    // glass.
+    let frontend_echo = state.echo.clone();
+    let echo_row = compose_echo_row(
+        interpreter,
+        env,
+        &frontend_echo,
+        cols,
+        &mut state.face_cache,
+    );
+    if state.painted_echo != echo_row {
+        paint_row(&mut out, frame_rows, &echo_row)?;
+        state.painted_echo = echo_row;
     }
     queue!(
         out,
@@ -1104,10 +1284,115 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     out.flush()
 }
 
-/// Emit one terminal row from its paint model: runs of ordinary text
-/// print bare, runs of reverse-video cells (mode lines) print inside a
-/// Reverse attribute, and trailing blank ordinary cells are cleared, not
-/// printed.
+/// The echo row's paint: an active minibuffer renders from its buffer
+/// with the face text properties read_minibuf applied (the prompt's
+/// face); every other echo — messages, key progress, errors — paints in
+/// the default face, as GNU does.
+fn compose_echo_row(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    frontend_echo: &str,
+    cols: usize,
+    face_cache: &mut std::collections::HashMap<String, CellAttrs>,
+) -> PaintRow {
+    let mut row = PaintRow::blank(cols);
+    let minibuffer_id = if frontend_echo.is_empty() {
+        interpreter
+            .lookup_var("emaxx--active-minibuffer", env)
+            .and_then(|value| match value {
+                Value::Buffer(buffer) => Some(buffer.id),
+                _ => None,
+            })
+            .filter(|id| interpreter.has_buffer_id(*id))
+    } else {
+        None
+    };
+    if let Some(buffer_id) = minibuffer_id {
+        let cells: Vec<(char, Option<Value>)> = {
+            let buffer = if buffer_id == interpreter.current_buffer_id() {
+                &interpreter.buffer
+            } else if let Some(buffer) = interpreter.get_buffer_by_id(buffer_id) {
+                buffer
+            } else {
+                &interpreter.buffer
+            };
+            let text = buffer.buffer_string();
+            text.chars()
+                .take(cols)
+                .enumerate()
+                .map(|(index, c)| {
+                    (
+                        c,
+                        buffer
+                            .text_property_at(buffer.point_min() + index, "face")
+                            .filter(|face| !face.is_nil()),
+                    )
+                })
+                .collect()
+        };
+        for (col, (c, face)) in cells.into_iter().enumerate() {
+            let attrs = match face {
+                Some(face) => {
+                    let key = format!("{face}");
+                    *face_cache.entry(key).or_insert_with(|| {
+                        crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+                    })
+                }
+                None => CellAttrs::default(),
+            };
+            row.blit(col, &c.to_string(), attrs);
+        }
+        return row;
+    }
+    let (mut echo, spans) = if frontend_echo.is_empty() {
+        crate::lisp::primitives::echo_area_message_with_spans().unwrap_or_default()
+    } else {
+        (frontend_echo.to_string(), Vec::new())
+    };
+    echo.truncate(cols);
+    row.blit(0, &echo, CellAttrs::default());
+    for (from, to, face) in spans {
+        let key = format!("{face}");
+        let attrs = *face_cache.entry(key).or_insert_with(|| {
+            crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+        });
+        row.overlay(from.min(cols), to.min(cols), attrs);
+    }
+    row
+}
+
+/// The SGR sequence selecting ATTRS from a reset state.
+fn sgr_sequence(attrs: &CellAttrs) -> String {
+    let mut codes: Vec<String> = vec!["0".into()];
+    if attrs.bold {
+        codes.push("1".into());
+    }
+    if attrs.underline {
+        codes.push("4".into());
+    }
+    if attrs.reverse {
+        codes.push("7".into());
+    }
+    if let Some(fg) = attrs.foreground {
+        codes.push(if fg < 8 {
+            format!("{}", 30 + fg)
+        } else {
+            format!("38;5;{fg}")
+        });
+    }
+    if let Some(bg) = attrs.background {
+        codes.push(if bg < 8 {
+            format!("{}", 40 + bg)
+        } else {
+            format!("48;5;{bg}")
+        });
+    }
+    format!("\x1b[{}m", codes.join(";"))
+}
+
+/// Emit one terminal row from its paint model: runs of same-attribute
+/// cells print inside one SGR selection, and trailing blank
+/// default-attribute cells are cleared, not printed.
 fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Result<()> {
     queue!(
         out,
@@ -1115,27 +1400,28 @@ fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Resul
         terminal::Clear(terminal::ClearType::CurrentLine),
     )?;
     let cols = rendered.text.len();
+    let default_attrs = CellAttrs::default();
     let mut end = cols;
-    while end > 0 && rendered.text[end - 1] == ' ' && !rendered.reverse[end - 1] {
+    while end > 0 && rendered.text[end - 1] == ' ' && rendered.attrs[end - 1] == default_attrs {
         end -= 1;
     }
     let mut at = 0usize;
     while at < end {
-        let reverse = rendered.reverse[at];
+        let attrs = rendered.attrs[at];
         let mut run_end = at;
-        while run_end < end && rendered.reverse[run_end] == reverse {
+        while run_end < end && rendered.attrs[run_end] == attrs {
             run_end += 1;
         }
         let text: String = rendered.text[at..run_end].iter().collect();
-        if reverse {
+        if attrs == default_attrs {
+            queue!(out, style::Print(&text))?;
+        } else {
             queue!(
                 out,
-                style::SetAttribute(style::Attribute::Reverse),
+                style::Print(sgr_sequence(&attrs)),
                 style::Print(&text),
-                style::SetAttribute(style::Attribute::Reset),
+                style::Print("\x1b[0m"),
             )?;
-        } else {
-            queue!(out, style::Print(&text))?;
         }
         at = run_end;
     }
@@ -1488,8 +1774,8 @@ mod tests {
             false,
             false,
         );
-        assert_eq!(plan.rendered[0], "line 30");
-        assert_eq!(plan.rendered[9], "line 39");
+        assert_eq!(plan.rendered[0].0, "line 30");
+        assert_eq!(plan.rendered[9].0, "line 39");
         assert_eq!(plan.top_pos, start);
         assert_eq!(
             plan.cursor, None,
@@ -1522,7 +1808,7 @@ mod tests {
         );
         // GNU recenters half a window above point: 40 - 11/2 = line 35.
         assert_eq!(view.top_line, 35);
-        assert_eq!(plan.rendered[0], "line 35");
+        assert_eq!(plan.rendered[0].0, "line 35");
         assert_eq!(plan.cursor, Some((5, 0)));
     }
 
@@ -1537,10 +1823,10 @@ mod tests {
         }
         let mut view = WindowView::default();
         let plan = plan_window_text(&interpreter.buffer, &mut view, 1, 1, 11, 39, true, true);
-        assert_eq!(plan.rendered[0], "short one");
-        assert_eq!(plan.rendered[1], "W".repeat(38) + "$");
+        assert_eq!(plan.rendered[0].0, "short one");
+        assert_eq!(plan.rendered[1].0, "W".repeat(38) + "$");
         assert_eq!(
-            plan.rendered[2], "line 03",
+            plan.rendered[2].0, "line 03",
             "the long line takes one row, not a wrapped pair"
         );
         assert_eq!(plan.cursor, Some((0, 0)));
@@ -1551,16 +1837,68 @@ mod tests {
         let mut row = PaintRow::blank(10);
         let mut same = PaintRow::blank(10);
         assert_eq!(row, same);
-        row.blit(2, "ab", false);
-        same.blit(2, "ab", true);
-        assert_ne!(row, same, "reverse video is part of the paint identity");
+        row.blit(2, "ab", CellAttrs::default());
+        same.blit(
+            2,
+            "ab",
+            CellAttrs {
+                reverse: true,
+                ..CellAttrs::default()
+            },
+        );
+        assert_ne!(row, same, "face attributes are part of the paint identity");
         let mut clipped = PaintRow::blank(4);
-        clipped.blit(2, "abcdef", false);
+        clipped.blit(2, "abcdef", CellAttrs::default());
         assert_eq!(
             clipped.text.iter().collect::<String>(),
             "  ab",
             "blits clip at the row's end"
         );
+    }
+
+    #[test]
+    fn sgr_sequences_reset_then_select_each_attribute() {
+        assert_eq!(sgr_sequence(&CellAttrs::default()), "\x1b[0m");
+        assert_eq!(
+            sgr_sequence(&CellAttrs {
+                foreground: Some(6),
+                background: Some(5),
+                ..CellAttrs::default()
+            }),
+            "\x1b[0;36;45m",
+            "the base ANSI palette uses the 30/40 ranges"
+        );
+        assert_eq!(
+            sgr_sequence(&CellAttrs {
+                foreground: Some(250),
+                background: Some(238),
+                bold: true,
+                underline: true,
+                reverse: true,
+                extend: false,
+            }),
+            "\x1b[0;1;4;7;38;5;250;48;5;238m",
+            "colors past the base palette select through 38;5/48;5"
+        );
+    }
+
+    #[test]
+    fn merged_attrs_keep_the_base_where_the_overlay_is_silent() {
+        let base = CellAttrs {
+            foreground: Some(7),
+            background: Some(4),
+            reverse: true,
+            ..CellAttrs::default()
+        };
+        let over = CellAttrs {
+            foreground: Some(6),
+            bold: true,
+            ..CellAttrs::default()
+        };
+        let merged = merge_cell_attrs(base, over);
+        assert_eq!(merged.foreground, Some(6), "the overlay's colors win");
+        assert_eq!(merged.background, Some(4), "unspecified colors fall back");
+        assert!(merged.bold && merged.reverse && !merged.underline);
     }
 
     #[test]
@@ -1657,6 +1995,68 @@ gamma word three
         assert!(
             overriding.is_nil(),
             "leaving isearch removes the overriding map"
+        );
+    }
+
+    #[test]
+    fn universal_argument_prefixes_dispatch_through_simple_el() {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(
+                &crate::compat::project_root().join("../emacs"),
+            )
+            .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interpreter =
+            crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
+        let mut env: Env = Vec::new();
+        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.buffer.insert("abcdefghijklmnop\n");
+        interpreter.buffer.goto_char(1);
+
+        let send = |interpreter: &mut Interpreter, env: &mut Env, code: i64| {
+            let event = Value::Integer(code);
+            let resolution = resolve_pending(interpreter, env, std::slice::from_ref(&event));
+            let Resolution::Command(binding) = resolution else {
+                panic!("event {code} must resolve to a command");
+            };
+            let described = format!("{binding}");
+            execute_binding(
+                interpreter,
+                env,
+                binding,
+                std::slice::from_ref(&event),
+                event.clone(),
+            )
+            .expect("command executes");
+            described
+        };
+
+        // C-u is simple.el's universal-argument: it stores (4) in
+        // prefix-arg and arms the transient map that makes a following
+        // digit dispatch digit-argument.
+        assert_eq!(send(&mut interpreter, &mut env, 21), "universal-argument");
+        assert_eq!(
+            interpreter.lookup_var("prefix-arg", &env),
+            Some(Value::list([Value::Integer(4)]))
+        );
+        assert_eq!(
+            send(&mut interpreter, &mut env, i64::from(b'8')),
+            "digit-argument"
+        );
+        assert_eq!(
+            interpreter.lookup_var("prefix-arg", &env),
+            Some(Value::Integer(8))
+        );
+        // The next ordinary command consumes the accumulated prefix.
+        assert_eq!(send(&mut interpreter, &mut env, 6), "forward-char");
+        assert_eq!(interpreter.buffer.point(), 9, "C-u 8 C-f moves 8 chars");
+        assert_eq!(
+            interpreter
+                .lookup_var("prefix-arg", &env)
+                .unwrap_or(Value::Nil),
+            Value::Nil,
+            "the chain is consumed"
         );
     }
 

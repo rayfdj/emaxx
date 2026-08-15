@@ -314,15 +314,25 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
         options.load_path = env::split_paths(&paths).collect();
     }
     let mut interpreter = initialize_batch_interpreter(&options)?;
-    // GNU dumps isearch.el into the image; an interactive session must
-    // have C-s ready before the first keystroke.  A load-path without
-    // the real Lisp tree (unit tests) simply leaves C-s unbound, exactly
-    // like the batch runtime.
-    if interpreter.resolve_load_target("isearch").is_some() {
-        interpreter
-            .load_target("isearch")
-            .map_err(|error| format!("preload isearch: {error}"))?;
+    // GNU dumps isearch.el and minibuffer.el into the image; an
+    // interactive session must have C-s and the minibuffer's own command
+    // set (exit-minibuffer, minibuffer-complete) ready before the first
+    // keystroke.  A load-path without the real Lisp tree (unit tests)
+    // simply leaves them unbound, exactly like the batch runtime.
+    for target in ["isearch", "minibuffer"] {
+        if interpreter.resolve_load_target(target).is_some() {
+            interpreter
+                .load_target(target)
+                .map_err(|error| format!("preload {target}: {error}"))?;
+        }
     }
+    // startup.el enables transient-mark-mode for interactive sessions
+    // (batch keeps the dumped nil default): the region highlights.
+    interpreter.set_variable("transient-mark-mode", Value::T, &mut Vec::new());
+    // menu-bar-mode's C default is t; startup.el turns it off only when
+    // noninteractive.  An interactive session keeps the menu bar (the
+    // `menu-bar-lines' frame parameter already defaults to 1).
+    interpreter.set_variable("menu-bar-mode", Value::T, &mut Vec::new());
     Ok(interpreter)
 }
 

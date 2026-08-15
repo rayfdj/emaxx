@@ -13302,6 +13302,317 @@ fn tty_completing_read_completes_with_tab() {
     );
 }
 
+/// A batch interpreter with the upstream Lisp tree on the load path and
+/// minibuffer.el preloaded — the interactive session's shape, minus the
+/// terminal.
+fn upstream_interactive_interpreter() -> (Interpreter, Env) {
+    let root = crate::compat::project_root().join("../emacs");
+    let load_path = crate::compat::emaxx_upstream_load_path(&root).expect("upstream load path");
+    let options = crate::batch::BatchRunOptions {
+        load_path,
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp
+        .load_target("minibuffer")
+        .expect("minibuffer.el loads");
+    (interp, env)
+}
+
+#[test]
+fn tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands() {
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "alp\t\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "completing-read",
+        &[
+            Value::String("Word: ".into()),
+            Value::list([
+                Value::String("alphabet".into()),
+                Value::String("alphameric".into()),
+            ]),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    // TAB ran minibuffer.el's `minibuffer-complete' (the common prefix of
+    // the two candidates), and RET exited through `exit-minibuffer's
+    // throw — the keymap-dispatched command is what last-command records.
+    assert_eq!(
+        result.expect("the real minibuffer loop submits"),
+        Value::String("alpha".into())
+    );
+    assert_eq!(
+        interp.lookup_var("last-command", &env),
+        Some(Value::Symbol("exit-minibuffer".into())),
+        "RET must dispatch minibuffer.el's exit-minibuffer"
+    );
+}
+
+#[test]
+fn minibuffer_prompt_carries_its_face_through_the_read() {
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "x\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    // Observe the live minibuffer from the frame-redraw hook, exactly
+    // where the frontend composes the echo row.
+    let observed: std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&observed);
+    set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+        let active = interp
+            .lookup_var("emaxx--active-minibuffer", env)
+            .unwrap_or(Value::Nil);
+        let face = interp
+            .buffer
+            .text_property_at(interp.buffer.point_min(), "face")
+            .unwrap_or(Value::Nil);
+        sink.borrow_mut().push((active, face));
+    })));
+    let result = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[Value::String("P: ".into())],
+        &mut env,
+    );
+    set_tty_frame_redraw(None);
+    set_tty_event_reader(None);
+    assert_eq!(result.expect("read submits"), Value::String("x".into()));
+    let observed = observed.borrow();
+    assert!(!observed.is_empty(), "the redraw hook runs during the read");
+    let (active, face) = &observed[0];
+    assert!(
+        matches!(active, Value::Buffer(_)),
+        "emaxx--active-minibuffer holds the live buffer, got {active:?}"
+    );
+    assert_eq!(
+        face,
+        &Value::Symbol("minibuffer-prompt".into()),
+        "the prompt text carries minibuffer-prompt via minibuffer-prompt-properties"
+    );
+}
+
+#[test]
+fn tty_real_minibuffer_history_recalls_through_simple_el() {
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    let feed_events = |events: &str| {
+        let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(
+                events
+                    .chars()
+                    .rev()
+                    .map(|ch| Value::Integer(ch as i64))
+                    .collect(),
+            ));
+        let feed = std::rc::Rc::clone(&script);
+        set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    };
+    let history = Value::Symbol("emaxx--test-history".into());
+    feed_events("first\r");
+    let first = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[
+            Value::String("P: ".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            history.clone(),
+        ],
+        &mut env,
+    );
+    assert_eq!(
+        first.expect("first read submits"),
+        Value::String("first".into())
+    );
+    // M-p arrives as ESC p and must dispatch simple.el's
+    // previous-history-element against the recorded history.
+    feed_events("\u{1b}p\r");
+    let recalled = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[
+            Value::String("P: ".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            history,
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        recalled.expect("history recall submits"),
+        Value::String("first".into())
+    );
+}
+
+#[test]
+fn window_resize_apply_commits_staged_pixel_sizes() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let upper = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
+    call(
+        &mut interp,
+        "split-window-internal",
+        &[
+            upper.clone(),
+            Value::Integer(12),
+            Value::Nil,
+            Value::Float(0.5),
+        ],
+        &mut env,
+    )
+    .expect("split succeeds");
+    let windows = call(&mut interp, "window-list", &[], &mut env)
+        .expect("window list")
+        .to_vec()
+        .expect("list of windows");
+    let lower = windows[1].clone();
+    for (window, staged) in [(&upper, 16i64), (&lower, 8i64)] {
+        call(
+            &mut interp,
+            "set-window-new-pixel",
+            &[(*window).clone(), Value::Integer(staged)],
+            &mut env,
+        )
+        .expect("staging succeeds");
+    }
+    call(&mut interp, "window-resize-apply", &[], &mut env).expect("apply succeeds");
+    let edges = |interp: &mut Interpreter, env: &mut Env, window: &Value| {
+        call(interp, "window-edges", std::slice::from_ref(window), env)
+            .expect("edges")
+            .to_vec()
+            .expect("edge list")
+    };
+    assert_eq!(
+        edges(&mut interp, &mut env, &upper),
+        [0, 0, 80, 16].map(Value::Integer),
+        "the upper window takes its staged 16 lines"
+    );
+    assert_eq!(
+        edges(&mut interp, &mut env, &lower),
+        [0, 16, 80, 24].map(Value::Integer),
+        "the lower window is laid out below the applied upper size"
+    );
+}
+
+#[test]
+fn window_text_pixel_size_measures_the_window_buffer_with_mode_lines() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.buffer.insert("aa\nbbbb\nc\n");
+    let plain = call(&mut interp, "window-text-pixel-size", &[], &mut env).expect("size");
+    assert_eq!(
+        plain,
+        Value::cons(Value::Integer(4), Value::Integer(3)),
+        "widest line and line count in cell units"
+    );
+    let with_mode_line = call(
+        &mut interp,
+        "window-text-pixel-size",
+        &[
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+        ],
+        &mut env,
+    )
+    .expect("size with mode lines");
+    assert_eq!(
+        with_mode_line,
+        Value::cons(Value::Integer(4), Value::Integer(4)),
+        "MODE-LINES t adds the window's mode line — fit-window-to-buffer sizes from this"
+    );
+}
+
+#[test]
+fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    call(
+        &mut interp,
+        "switch-to-buffer",
+        &[Value::String("undo-markers".into())],
+        &mut env,
+    )
+    .expect("buffer switches");
+    call(&mut interp, "buffer-enable-undo", &[], &mut env).expect("undo enables");
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String("one\ntwo\n".into())],
+        &mut env,
+    )
+    .expect("insert succeeds");
+    call(
+        &mut interp,
+        "set-buffer-modified-p",
+        &[Value::Nil],
+        &mut env,
+    )
+    .expect("modified clears");
+    let marker = call(&mut interp, "make-marker", &[], &mut env).expect("marker");
+    call(
+        &mut interp,
+        "set-marker",
+        &[marker.clone(), Value::Integer(4)],
+        &mut env,
+    )
+    .expect("marker set");
+    call(&mut interp, "undo-boundary", &[], &mut env).expect("boundary");
+    call(
+        &mut interp,
+        "delete-region",
+        &[Value::Integer(1), Value::Integer(4)],
+        &mut env,
+    )
+    .expect("delete succeeds");
+    let undo_list = interp
+        .lookup_var("buffer-undo-list", &env)
+        .expect("undo list")
+        .to_vec()
+        .expect("list entries");
+    // undo.c's order: the deletion record first, its marker adjustment
+    // directly after, the first-change (t . TIME) entry below both —
+    // primitive-undo consumes marker riders only by that adjacency.
+    let deletion = undo_list[0].cons_values().expect("deletion entry");
+    assert!(deletion.0.is_string(), "car is the deleted text");
+    let rider = undo_list[1].cons_values().expect("marker rider");
+    assert!(
+        matches!(rider.0, Value::Marker(_)),
+        "the marker adjustment follows its deletion, got {:?}",
+        undo_list[1]
+    );
+    assert_eq!(rider.1, Value::Integer(-3));
+    let first_change = undo_list[2].cons_values().expect("first-change entry");
+    assert_eq!(first_change.0, Value::T, "the (t . TIME) entry sits below");
+}
+
 #[test]
 fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
     let mut interp = Interpreter::new();
@@ -13732,6 +14043,51 @@ fn undo_file_marker_records_the_visited_modtime() {
 }
 
 #[test]
+fn undo_host_records_match_gnu_save_point_property_and_multibyte_contracts() {
+    let program = r#"(progn
+      (setq contract-out
+            (with-temp-buffer
+              (buffer-enable-undo)
+              (insert "x")
+              (set-buffer-modified-p nil)
+              (put-text-property 1 2 'face 'bold)
+              (set-buffer-multibyte nil)
+              (prin1-to-string buffer-undo-list)))
+      (princ contract-out))"#;
+    let expected = "((apply set-buffer-multibyte t) (nil face nil 1 . 2) (t . 0) (1 . 2) (t . 0))";
+    assert_upstream_primitive_contract(program, expected);
+    assert_eq!(emaxx_batch_output(program), expected);
+
+    assert_upstream_primitive_contract(
+        "(condition-case e (> 1 nil) (error (prin1 e)))",
+        "(wrong-type-argument number-or-marker-p nil)",
+    );
+    assert_eq!(
+        emaxx_batch_output(
+            "(progn (setq contract-out (condition-case e (> 1 nil) (error (prin1-to-string e)))) (princ contract-out))"
+        ),
+        "(wrong-type-argument number-or-marker-p nil)"
+    );
+}
+
+#[test]
+fn push_mark_separates_marker_motion_from_transient_region_activation() {
+    let program = r#"(progn
+      (setq contract-out
+            (let ((transient-mark-mode t))
+              (with-temp-buffer
+                (insert "abc")
+                (push-mark nil t)
+                (let ((plain (list (mark t) mark-active (region-active-p))))
+                  (push-mark 2 t t)
+                  (list plain (list (mark t) mark-active (region-active-p)))))))
+      (princ (prin1-to-string contract-out)))"#;
+    let expected = "((4 nil nil) (2 t t))";
+    assert_upstream_primitive_contract(program, expected);
+    assert_eq!(emaxx_batch_output(program), expected);
+}
+
+#[test]
 fn interactive_undo_restores_the_unmodified_state() {
     // The tty command loop's per-command undo boundaries plus the
     // modtime-carrying (t . TIME) marker let simple.el's `undo' walk back
@@ -13810,8 +14166,8 @@ fn tty_frame_size_shapes_the_root_and_minibuffer_windows() {
     let root_edges = call(&mut interp, "window-edges", &[], &mut env).expect("window-edges");
     assert_eq!(
         format!("{root_edges}"),
-        "(0 0 80 23)",
-        "a 24-row tty keeps 23 root lines above the minibuffer"
+        "(0 1 80 23)",
+        "a 24-row tty reserves the menu-bar line above 22 root lines"
     );
     let minibuffer = call(&mut interp, "minibuffer-window", &[], &mut env).expect("window");
     let minibuffer_edges = call(&mut interp, "window-edges", &[minibuffer], &mut env)
@@ -13826,7 +14182,8 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
     interp.set_tty_frame_size(80, 24);
     interp.buffer.insert("alpha\nbeta\ngamma\n");
     let upper = interp.selected_window_value();
-    // C-x 2's shape on the 24-row tty: the 23-line root splits 12/11.
+    // C-x 2's shape on the 24-row tty: under the menu-bar line the
+    // 22-line root splits 11/11.
     let lower = call(
         &mut interp,
         "split-window-internal",
@@ -13843,8 +14200,8 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
     let (top, bottom) = (&layout[0], &layout[1]);
     assert_eq!(
         (top.left, top.top, top.width, top.height),
-        (0, 0, 80, 12),
-        "the old window keeps the upper 12 lines"
+        (0, 1, 80, 11),
+        "the old window keeps the upper 11 lines"
     );
     assert!(top.selected, "the split leaves the old window selected");
     assert_eq!(
@@ -13999,7 +14356,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         text_height: 10,
         window_end: 14,
     };
-    let mode_line = crate::lisp::primitives::render_window_mode_line(
+    let (mode_line, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
         lower_id,
@@ -14035,7 +14392,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate softly");
-    let softly = crate::lisp::primitives::render_window_mode_line(
+    let (softly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
         lower_id,
@@ -14051,7 +14408,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate strongly");
-    let strongly = crate::lisp::primitives::render_window_mode_line(
+    let (strongly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
         lower_id,
@@ -14091,9 +14448,11 @@ fn interactive_spec_i_passes_nil_without_reading_anything() {
 
 #[test]
 fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    // The pop-up is minibuffer.el's own machinery end to end:
+    // minibuffer-complete detects no progress, minibuffer-completion-help
+    // fills *Completions* and displays it through display-buffer, and the
+    // exit teardown's window-configuration restore removes it.
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     interp.set_tty_frame_size(80, 24);
     interp.buffer.insert("alpha\nbeta\n");
 
@@ -14175,8 +14534,8 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
         "submitting the minibuffer removes the *Completions* window"
     );
     assert_eq!(
-        final_layout[0].height, 23,
-        "the surviving window takes the frame back"
+        final_layout[0].height, 22,
+        "the surviving window takes the frame back under the menu bar"
     );
 
     // The buffer itself carries GNU 30.2's tty help text and shape.
@@ -14190,11 +14549,13 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
         .buffer_substring(1, interp.buffer.point_max())
         .expect("contents");
     let _ = interp.set_current_buffer_id(saved);
+    // minibuffer.el's completion--insert-strings separates candidates
+    // with newlines; the buffer ends at the last candidate.
     assert_eq!(
         text,
         "Type M-RET on a completion to select it.\n\
          Type M-<down> or M-<up> to move point between completions.\n\n\
-         2 possible completions:\nambig1\nambig2\n"
+         2 possible completions:\nambig1\nambig2"
     );
 }
 

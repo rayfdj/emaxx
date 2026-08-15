@@ -1273,11 +1273,9 @@ impl Interpreter {
         }
         if resolved == "buffer-undo-list" {
             if value.is_nil() {
-                self.undo_sequence = None;
                 self.buffer.enable_undo();
                 self.buffer.clear_undo_history();
             } else if matches!(value, Value::T) {
-                self.undo_sequence = None;
                 self.buffer.disable_undo();
             } else if let Some((head, tail)) = value.cons_values()
                 && crate::lisp::primitives::values_eql(
@@ -1294,21 +1292,12 @@ impl Interpreter {
                 // cancel-change-group, boundary removal by
                 // undo-amalgamate-change-group, ...): rebuild the native undo
                 // state from the assigned list so the Lisp view round-trips.
-                self.undo_sequence = None;
                 if let Ok(items) = value.to_vec() {
                     self.buffer.enable_undo();
                     self.buffer.clear_undo_history();
                     // The Lisp view is newest-first; the native list is
                     // oldest-first.
                     for item in items.into_iter().rev() {
-                        // The trailing (t . TIME) modtime marker is
-                        // synthesized on read for file-visiting buffers;
-                        // storing it back would duplicate it.
-                        if let Value::Cons(cell) = &item
-                            && matches!(&*cell.car.borrow(), Value::T)
-                        {
-                            continue;
-                        }
                         self.buffer
                             .push_undo_entry(buffer_undo_head_to_entry(&item));
                     }

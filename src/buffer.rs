@@ -112,6 +112,10 @@ pub enum UndoEntry {
     /// Deleted text that was at pos (1-based). To undo: re-insert it.
     Delete {
         pos: usize,
+        /// GNU stores a negative POS when point was at the end of the
+        /// deleted text.  `primitive-undo' uses the sign to decide whether
+        /// point should remain after the reinserted text.
+        point_after: bool,
         text: String,
         props: Vec<TextPropertySpan>,
         markers: Vec<UndoMarker>,
@@ -131,8 +135,6 @@ pub enum UndoEntry {
 struct UndoListView {
     value: Value,
     undo_len: usize,
-    file_present: bool,
-    has_file_marker: bool,
 }
 
 #[derive(Default)]
@@ -169,9 +171,18 @@ fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
             Value::Integer(*pos as i64),
             Value::Integer((*pos + *len) as i64),
         ),
-        UndoEntry::Delete { pos, text, .. } => Value::cons(
+        UndoEntry::Delete {
+            pos,
+            point_after,
+            text,
+            ..
+        } => Value::cons(
             Value::String(text.clone().into()),
-            Value::Integer(*pos as i64),
+            Value::Integer(if *point_after {
+                -(*pos as i64)
+            } else {
+                *pos as i64
+            }),
         ),
         UndoEntry::Combined { display, .. } | UndoEntry::Opaque(display) => display.clone(),
         UndoEntry::Boundary => Value::Nil,
@@ -181,26 +192,22 @@ fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
 /// GNU's `(t . TIME)' first-change undo entry: TIME is the visited
 /// file's modtime, which `primitive-undo' compares against
 /// `visited-file-modtime' to restore the unmodified state.
-fn undo_file_marker(modtime: Option<FileModTime>) -> Value {
-    let (high, low, usec, psec) = modtime
-        .and_then(|value| value.modified.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| {
-            let seconds = duration.as_secs() as i64;
-            let nanoseconds = duration.subsec_nanos() as i64;
-            (
-                seconds >> 16,
-                seconds & 0xffff,
-                nanoseconds.div_euclid(1_000),
-                nanoseconds.rem_euclid(1_000) * 1_000,
-            )
-        })
-        .unwrap_or((0, 0, 0, 0));
+fn undo_first_change_marker(modtime: Option<FileModTime>) -> Value {
+    let Some(duration) =
+        modtime.and_then(|value| value.modified.duration_since(std::time::UNIX_EPOCH).ok())
+    else {
+        // `visited-file-modtime' returns the integer 0 when there is no
+        // recorded timestamp, so GNU records the dotted pair (t . 0).
+        return Value::cons(Value::T, Value::Integer(0));
+    };
+    let seconds = duration.as_secs() as i64;
+    let nanoseconds = duration.subsec_nanos() as i64;
     Value::list([
         Value::T,
-        Value::Integer(high),
-        Value::Integer(low),
-        Value::Integer(usec),
-        Value::Integer(psec),
+        Value::Integer(seconds >> 16),
+        Value::Integer(seconds & 0xffff),
+        Value::Integer(nanoseconds.div_euclid(1_000)),
+        Value::Integer(nanoseconds.rem_euclid(1_000) * 1_000),
     ])
 }
 
@@ -387,7 +394,6 @@ impl Buffer {
         self.invalidate_char_cache();
         self.saved_text = saved_text;
         self.multibyte = enabled;
-        self.clear_undo_history();
     }
 
     /// Total characters in the buffer (ignoring narrowing).
@@ -611,6 +617,13 @@ impl Buffer {
     pub fn set_mark(&mut self, pos: usize) {
         self.mark = Some(pos.clamp(self.begv, self.zv));
         self.mark_active = true;
+    }
+
+    /// Move the buffer's mark marker without changing whether the region is
+    /// active.  GNU's `set-marker' and the first half of `push-mark' do this;
+    /// `set-mark' is the separate operation that activates it.
+    pub fn set_mark_position(&mut self, pos: usize) {
+        self.mark = Some(pos.clamp(self.begv, self.zv));
     }
 
     pub fn set_mark_active(&mut self, active: bool) {
@@ -909,15 +922,13 @@ impl Buffer {
 
         let insert_at = self.pt;
         let idx0 = self.pt - 1; // 0-based
+        self.record_first_change_for_undo();
         self.text.insert(idx0, s);
         self.invalidate_char_cache();
 
         // Record undo
         if !self.undo_disabled {
-            self.push_undo_entry(UndoEntry::Insert {
-                pos: insert_at,
-                len: nchars,
-            });
+            self.record_insert_for_undo(insert_at, nchars);
         }
 
         // Advance point past insertion
@@ -941,7 +952,7 @@ impl Buffer {
             && !props.is_empty()
         {
             // Fresh text: keep the given plist order (GNU grafts intervals).
-            self.set_text_properties(insert_at, insert_at + nchars, &props);
+            self.set_text_properties_without_undo(insert_at, insert_at + nchars, &props);
         }
 
         self.modiff += 1;
@@ -957,10 +968,12 @@ impl Buffer {
         let from0 = from - 1;
         let to0 = to - 1;
         if !self.undo_disabled && !noundo {
+            self.record_first_change_for_undo();
             let old: String = self.text.slice(from0..to0).to_string();
             let props = self.substring_property_spans(from, to);
             self.push_undo_entry(UndoEntry::Delete {
                 pos: from,
+                point_after: self.pt == to,
                 text: old,
                 props,
                 markers: Vec::new(),
@@ -1004,8 +1017,10 @@ impl Buffer {
         let nchars = to - from;
 
         if !self.undo_disabled {
+            self.record_first_change_for_undo();
             self.push_undo_entry(UndoEntry::Delete {
                 pos: from,
+                point_after: self.pt == to,
                 text: deleted.clone(),
                 props: deleted_props,
                 markers: Vec::new(),
@@ -1189,34 +1204,22 @@ impl Buffer {
             return Value::T;
         }
 
-        let has_file_marker = self.file.is_some()
-            && self
-                .undo_list
-                .iter()
-                .any(|entry| matches!(entry, UndoEntry::Insert { .. } | UndoEntry::Delete { .. }));
         if let Some(view) = self.undo_list_view.0.borrow().as_ref()
             && view.undo_len == self.undo_list.len()
-            && view.file_present == self.file.is_some()
-            && view.has_file_marker == has_file_marker
         {
             return view.value.clone();
         }
 
-        let mut entries = self
+        let entries = self
             .undo_list
             .iter()
             .rev()
             .map(undo_entry_lisp_value)
             .collect::<Vec<_>>();
-        if has_file_marker {
-            entries.push(undo_file_marker(self.visited_file_modtime));
-        }
         let value = Value::list(entries);
         *self.undo_list_view.0.borrow_mut() = Some(UndoListView {
             value: value.clone(),
             undo_len: self.undo_list.len(),
-            file_present: self.file.is_some(),
-            has_file_marker,
         });
         value
     }
@@ -1233,37 +1236,75 @@ impl Buffer {
     /// equal-looking rebuilt list is therefore observably different and can
     /// turn a bounded undo loop into an infinite one.
     pub(crate) fn set_undo_list_view(&self, value: Value) {
-        let has_file_marker = self.file.is_some()
-            && self
-                .undo_list
-                .iter()
-                .any(|entry| matches!(entry, UndoEntry::Insert { .. } | UndoEntry::Delete { .. }));
         *self.undo_list_view.0.borrow_mut() = Some(UndoListView {
             value,
             undo_len: self.undo_list.len(),
-            file_present: self.file.is_some(),
-            has_file_marker,
         });
     }
 
     pub fn push_undo_entry(&mut self, entry: UndoEntry) {
-        let entry_is_text = matches!(entry, UndoEntry::Insert { .. } | UndoEntry::Delete { .. });
         let entry_value = undo_entry_lisp_value(&entry);
         self.undo_list.push(entry);
-        let file_present = self.file.is_some();
         let mut view = self.undo_list_view.0.borrow_mut();
-        if let Some(view) = view.as_mut() {
-            let has_file_marker = file_present && (view.has_file_marker || entry_is_text);
-            if view.undo_len + 1 == self.undo_list.len()
-                && view.file_present == file_present
-                && view.has_file_marker == has_file_marker
-            {
-                view.value = Value::cons(entry_value, view.value.clone());
-                view.undo_len += 1;
-                return;
-            }
+        if let Some(view) = view.as_mut()
+            && view.undo_len + 1 == self.undo_list.len()
+        {
+            view.value = Value::cons(entry_value, view.value.clone());
+            view.undo_len += 1;
+            return;
         }
         *view = None;
+    }
+
+    /// GNU `record_insert' extends the newest `(BEG . END)' record when the
+    /// next insertion begins at END.  Besides avoiding one allocation per
+    /// character in insertion loops, it mutates the exposed pair in place so
+    /// Lisp code retaining the undo-list tail observes the same object.
+    fn record_insert_for_undo(&mut self, pos: usize, len: usize) {
+        let Some(UndoEntry::Insert {
+            pos: previous_pos,
+            len: previous_len,
+        }) = self.undo_list.last_mut()
+        else {
+            self.push_undo_entry(UndoEntry::Insert { pos, len });
+            return;
+        };
+        if *previous_pos + *previous_len != pos {
+            self.push_undo_entry(UndoEntry::Insert { pos, len });
+            return;
+        }
+
+        *previous_len += len;
+        let mut view = self.undo_list_view.0.borrow_mut();
+        let Some(cached) = view
+            .as_mut()
+            .filter(|cached| cached.undo_len == self.undo_list.len())
+        else {
+            *view = None;
+            return;
+        };
+        let Some((head, _)) = cached.value.cons_cells() else {
+            *view = None;
+            return;
+        };
+        let head = head.borrow().clone();
+        let Some((_, end)) = head.cons_cells() else {
+            *view = None;
+            return;
+        };
+        *end.borrow_mut() = Value::Integer((pos + len) as i64);
+    }
+
+    /// Record GNU's `(t . TIME)' save-point marker before the first
+    /// undoable change to an unmodified buffer.  This is a real undo entry,
+    /// not a read-time decoration: setting a buffer unmodified establishes
+    /// another save point in the existing history.
+    fn record_first_change_for_undo(&mut self) {
+        if !self.undo_disabled && !self.is_modified() {
+            self.push_undo_entry(UndoEntry::Opaque(undo_first_change_marker(
+                self.visited_file_modtime,
+            )));
+        }
     }
 
     pub fn undo_len(&self) -> usize {
@@ -1274,6 +1315,20 @@ impl Buffer {
         let entries = self.undo_list.split_off(start);
         self.invalidate_undo_list_view();
         entries
+    }
+
+    /// Splice ENTRIES immediately below the newest undo record: undo.c
+    /// records marker adjustments before the deletion they ride with, so
+    /// the Lisp list exposes the deletion first and its markers directly
+    /// after — `primitive-undo' consumes them by that adjacency, and a
+    /// first-change `(t . TIME)' entry must not sit between them.
+    pub fn splice_undo_entries_before_last(&mut self, entries: Vec<UndoEntry>) {
+        if entries.is_empty() || self.undo_disabled {
+            return;
+        }
+        let at = self.undo_list.len().saturating_sub(1);
+        self.undo_list.splice(at..at, entries);
+        self.invalidate_undo_list_view();
     }
 
     pub fn attach_markers_to_last_delete(&mut self, markers: Vec<UndoMarker>) {
@@ -1451,8 +1506,29 @@ impl Buffer {
         self.text_properties = merge_adjacent_spans(updated);
     }
 
-    fn modify_text_properties<F>(&mut self, start: usize, end: usize, mut f: F)
+    fn modify_text_properties<F>(&mut self, start: usize, end: usize, f: F)
     where
+        F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
+    {
+        self.modify_text_properties_with_undo(start, end, true, f);
+    }
+
+    fn set_text_properties_without_undo(
+        &mut self,
+        start: usize,
+        end: usize,
+        props: &[(String, Value)],
+    ) {
+        self.modify_text_properties_with_undo(start, end, false, |_| props.to_vec());
+    }
+
+    fn modify_text_properties_with_undo<F>(
+        &mut self,
+        start: usize,
+        end: usize,
+        record_undo: bool,
+        mut f: F,
+    ) where
         F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
     {
         let start = start.max(self.point_min());
@@ -1495,6 +1571,7 @@ impl Buffer {
         boundaries.sort_unstable();
         boundaries.dedup();
 
+        let mut undo_records = Vec::new();
         for window in boundaries.windows(2) {
             let seg_start = window[0];
             let seg_end = window[1];
@@ -1502,7 +1579,35 @@ impl Buffer {
                 continue;
             }
             let current = properties_at_from(&original, seg_start);
-            let next = f(current);
+            let next = f(current.clone());
+            if record_undo && !self.undo_disabled && !text_property_plists_eq(&current, &next) {
+                for (name, old_value) in &current {
+                    let changed = next
+                        .iter()
+                        .find(|(candidate, _)| candidate == name)
+                        .is_none_or(|(_, new_value)| {
+                            !text_property_values_eq(old_value, new_value)
+                        });
+                    if changed {
+                        undo_records.push(property_undo_entry(
+                            name,
+                            old_value.clone(),
+                            seg_start,
+                            seg_end,
+                        ));
+                    }
+                }
+                for (name, _) in &next {
+                    if !current.iter().any(|(candidate, _)| candidate == name) {
+                        undo_records.push(property_undo_entry(
+                            name,
+                            Value::Nil,
+                            seg_start,
+                            seg_end,
+                        ));
+                    }
+                }
+            }
             if !next.is_empty() {
                 updated.push(TextPropertySpan {
                     start: seg_start,
@@ -1512,8 +1617,33 @@ impl Buffer {
             }
         }
 
-        self.text_properties = merge_adjacent_spans(updated);
+        let updated = merge_adjacent_spans(updated);
+        if updated == original {
+            return;
+        }
+        if record_undo && !self.undo_disabled {
+            self.record_first_change_for_undo();
+            for entry in undo_records {
+                self.push_undo_entry(UndoEntry::Opaque(entry));
+            }
+        }
+        self.text_properties = updated;
+        self.modiff = self.modiff.saturating_add(1);
+        self.autosaved = false;
     }
+}
+
+fn property_undo_entry(name: &str, value: Value, start: usize, end: usize) -> Value {
+    Value::cons(
+        Value::Nil,
+        Value::cons(
+            Value::Symbol(name.into()),
+            Value::cons(
+                value,
+                Value::cons(Value::Integer(start as i64), Value::Integer(end as i64)),
+            ),
+        ),
+    )
 }
 
 impl Buffer {
@@ -1672,7 +1802,11 @@ impl Buffer {
                 Ok(())
             }
             UndoEntry::Delete {
-                pos, text, props, ..
+                pos,
+                point_after,
+                text,
+                props,
+                ..
             } => {
                 self.goto_char(*pos);
                 let insert_at = self.point();
@@ -1684,12 +1818,23 @@ impl Buffer {
                         &span.props,
                     );
                 }
+                if !point_after {
+                    self.goto_char(*pos);
+                }
                 Ok(())
             }
             UndoEntry::Combined { entries, .. } => {
                 for inner in entries.iter().rev() {
                     self.apply_undo_entry(inner)?;
                 }
+                Ok(())
+            }
+            UndoEntry::Opaque(value)
+                if value
+                    .cons_values()
+                    .is_some_and(|(head, _)| matches!(head, Value::T)) =>
+            {
+                self.set_unmodified();
                 Ok(())
             }
             UndoEntry::Opaque(value) => Err(BufferError::UnrecognizedUndoEntry(format!("{value}"))),
@@ -1781,11 +1926,13 @@ fn map_undo_entry_through_newer(entry: &UndoEntry, newer_groups: &[Vec<UndoEntry
         },
         UndoEntry::Delete {
             pos,
+            point_after,
             text,
             props,
             markers,
         } => UndoEntry::Delete {
             pos: map_position_through_groups(*pos, newer_groups, false),
+            point_after: *point_after,
             text: text.clone(),
             props: props.clone(),
             markers: markers.clone(),
@@ -2271,6 +2418,29 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_inserts_share_one_gnu_undo_record_and_public_pair() {
+        let mut buf = Buffer::new("test");
+        buf.insert("a");
+        let first_view = buf.undo_list_value();
+        let first_insert = first_view.car().expect("first undo record");
+        buf.insert("bc");
+
+        assert_eq!(buf.undo_entries().len(), 2, "save marker plus insertion");
+        let second_view = buf.undo_list_value();
+        let second_insert = second_view.car().expect("coalesced undo record");
+        assert!(matches!(
+            (&first_insert, &second_insert),
+            (Value::Cons(left), Value::Cons(right)) if Rc::ptr_eq(left, right)
+        ));
+        assert_eq!(
+            second_insert,
+            Value::cons(Value::Integer(1), Value::Integer(4))
+        );
+        buf.undo().expect("coalesced insertion undoes");
+        assert_eq!(buf.buffer_string(), "");
+    }
+
+    #[test]
     fn undo_delete() {
         let mut buf = Buffer::from_text("test", "abc");
         buf.goto_char(2);
@@ -2284,6 +2454,7 @@ mod tests {
     fn undo_delete_restores_text_properties() {
         let mut buf = Buffer::from_text("test", "abc");
         buf.add_text_properties(2, 3, &[("markup".into(), Value::String("x".into()))]);
+        buf.push_undo_boundary();
         buf.goto_char(2);
         buf.delete_char(1).unwrap();
         assert_eq!(buf.buffer_string(), "ac");

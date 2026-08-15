@@ -105,6 +105,36 @@ impl Interpreter {
         Ok(vector)
     }
 
+    /// GNU's tty color-mode switch clears the face cache so every face
+    /// re-realizes from its stored specs against the new display
+    /// (term.c tty_set_color_mode → clear_face_cache).  emaxx realizes
+    /// eagerly, so walk the registry now: reset each defface'd face and
+    /// re-apply its spec layers in face-spec-recalc's order.
+    pub(crate) fn rerealize_defface_faces(&mut self) -> Result<(), LispError> {
+        let faces: Vec<String> = self.lisp_face_names().map(str::to_string).collect();
+        for face in faces {
+            let Some(spec) = self
+                .get_symbol_property(&face, "face-defface-spec")
+                .filter(|spec| !spec.is_nil())
+            else {
+                continue;
+            };
+            self.ensure_lisp_face(&face, false, true)?;
+            self.ensure_lisp_face(&face, true, true)?;
+            self.record_defface_runtime_attributes(&face, &spec)?;
+            for layer in ["saved-face", "customized-face", "face-override-spec"] {
+                if let Some(extra) = self
+                    .get_symbol_property(&face, layer)
+                    .filter(|extra| !extra.is_nil())
+                {
+                    self.record_defface_runtime_attributes(&face, &extra)?;
+                }
+            }
+        }
+        self.face_change_count += 1;
+        Ok(())
+    }
+
     fn sync_selected_frame_face_hash_entry(
         &mut self,
         name: &str,
@@ -199,6 +229,10 @@ impl Interpreter {
             .and_then(|vector| vector_slot_value(&vector, index).ok())
     }
 
+    pub(crate) fn face_definitions_generation(&self) -> u64 {
+        self.face_change_count
+    }
+
     pub(crate) fn set_lisp_face_attribute(
         &mut self,
         name: &str,
@@ -208,6 +242,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let vector = self.ensure_lisp_face(name, !global, false)?;
         aset_vector_value(&vector, index, value.clone())?;
+        self.face_change_count += 1;
         if global {
             self.sync_new_frame_face_hash_entry(name)?;
         }
