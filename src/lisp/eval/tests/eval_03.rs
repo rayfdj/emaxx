@@ -6006,13 +6006,18 @@ fn kmacro_frontier_region_extractor_copies_deletes_and_rejects_an_unset_mark() {
                  (with-temp-buffer
                    (insert "abcd")
                    (goto-char 2)
-                   (push-mark 4)
+                   ;; `push-mark' belongs to GNU simple.el, which this bare
+                   ;; fixture does not preload.  Establish the active region
+                   ;; through native marker storage instead.
+                   (set-marker (mark-marker) 4 (current-buffer))
+                   (setq mark-active t)
                    (list (funcall region-extract-function 'bounds)
                          (funcall region-extract-function nil)))
                  (with-temp-buffer
                    (insert "abcd")
                    (goto-char 2)
-                   (push-mark 4)
+                   (set-marker (mark-marker) 4 (current-buffer))
+                   (setq mark-active t)
                    (list (funcall region-extract-function 'delete-only)
                          (buffer-string))))"#
         ),

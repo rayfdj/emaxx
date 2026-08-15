@@ -1454,34 +1454,8 @@ define_dispatch!(
                 translate_region_with_table(interp, from, to, &table)
             }
 
-            #[dispatch(resets_undo)]
             "undo-boundary" => {
                 interp.buffer.push_undo_boundary();
-                Ok(Value::Nil)
-            }
-
-            "undo" => {
-                interp.undo_current_buffer()?;
-                Ok(Value::Nil)
-            }
-
-            "undo-more" => {
-                let count = if args.is_empty() {
-                    1
-                } else {
-                    match &args[0] {
-                        Value::Nil => {
-                            return Err(LispError::TypeError(
-                                "number-or-marker-p".into(),
-                                "nil".into(),
-                            ));
-                        }
-                        value => value.as_integer()?,
-                    }
-                };
-                for _ in 0..count.max(0) {
-                    interp.undo_more_current_buffer()?;
-                }
                 Ok(Value::Nil)
             }
 

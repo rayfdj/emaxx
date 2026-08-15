@@ -153,28 +153,38 @@ impl Interpreter {
         let from = from.max(self.buffer.point_min());
         let to = to.min(self.buffer.point_max());
         let affected_markers = self.affected_markers_for_delete(self.current_buffer_id(), from, to);
-        // undo.c records marker adjustments immediately before recording the
-        // deletion, so the Lisp undo list exposes the deletion followed by
-        // its marker riders.  `primitive-undo' relies on that adjacency.
-        if self.buffer.undo_enabled() {
-            for marker in &affected_markers {
-                let automatic_position = if self.marker_insertion_type(marker.id) == Some(true) {
-                    to
-                } else {
-                    from
-                };
-                let adjustment = automatic_position as i64 - marker.original_pos as i64;
-                if adjustment != 0 {
-                    self.buffer
-                        .push_undo_entry(crate::buffer::UndoEntry::Opaque(Value::cons(
+        // undo.c records marker adjustments immediately before recording
+        // the deletion, so the Lisp undo list exposes the deletion followed
+        // directly by its marker riders — `primitive-undo' relies on that
+        // adjacency, and the first-change `(t . TIME)' entry the deletion
+        // itself records must stay below both.  The riders are spliced in
+        // under the deletion record once it exists.
+        let marker_adjustments: Vec<crate::buffer::UndoEntry> = if self.buffer.undo_enabled() {
+            affected_markers
+                .iter()
+                .filter_map(|marker| {
+                    let automatic_position = if self.marker_insertion_type(marker.id) == Some(true)
+                    {
+                        to
+                    } else {
+                        from
+                    };
+                    let adjustment = automatic_position as i64 - marker.original_pos as i64;
+                    (adjustment != 0).then(|| {
+                        crate::buffer::UndoEntry::Opaque(Value::cons(
                             Value::Marker(marker.id),
                             Value::Integer(adjustment),
-                        )));
-                }
-            }
-        }
+                        ))
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let related = self.related_buffer_ids(self.current_buffer_id());
         let deleted = self.buffer.delete_region(from, to)?;
+        self.buffer
+            .splice_undo_entries_before_last(marker_adjustments);
         self.buffer.attach_markers_to_last_delete(affected_markers);
         self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
         self.mirror_delete_to_related_buffers(&related, from, to);
@@ -200,177 +210,6 @@ impl Interpreter {
             }
             let from = to - count;
             self.delete_region_current_buffer(from, to)
-        }
-    }
-
-    pub fn undo_current_buffer(&mut self) -> Result<(), LispError> {
-        let region = if self.buffer.mark_active() {
-            self.buffer.region()
-        } else {
-            None
-        };
-        if region.is_none() {
-            let redo_groups = self
-                .undo_sequence
-                .as_ref()
-                .filter(|state| !state.had_error && !state.redo_groups.is_empty())
-                .map(|state| state.redo_groups.clone());
-            if let Some(redo_groups) = redo_groups {
-                for group in redo_groups.iter().rev() {
-                    self.replay_sequence_group(group)?;
-                }
-                if let Some(state) = self.undo_sequence.as_mut() {
-                    state.undone_count = 1;
-                    state.redo_groups.clear();
-                }
-                return Ok(());
-            }
-            if self
-                .undo_sequence
-                .as_ref()
-                .is_some_and(|state| !state.had_error && state.redo_groups.is_empty())
-            {
-                self.start_undo_sequence_step()?;
-                return self.undo_more_current_buffer();
-            }
-            return self.start_undo_sequence_step();
-        }
-        let group = self
-            .buffer
-            .take_undo_group(region)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        self.buffer.push_undo_boundary();
-        for entry in group.iter().rev() {
-            self.apply_current_buffer_undo_entry(entry)?;
-        }
-        Ok(())
-    }
-
-    pub fn undo_more_current_buffer(&mut self) -> Result<(), LispError> {
-        if self.undo_sequence.is_none() {
-            return self.start_undo_sequence_step();
-        }
-        let group = {
-            let state = self.undo_sequence.as_ref().expect("checked above");
-            if state.undone_count >= state.original_groups.len() {
-                return Err(LispError::Signal(
-                    crate::buffer::BufferError::NoFurtherUndoInformation.to_string(),
-                ));
-            }
-            let start = state.original_groups.len() - 1 - state.undone_count;
-            state.original_groups[start].clone()
-        };
-        let before = self.buffer.undo_entries().len();
-        if let Err(error) = self.replay_sequence_group(&group) {
-            if let Some(state) = self.undo_sequence.as_mut() {
-                state.had_error = true;
-            }
-            return Err(error);
-        }
-        let state = self.undo_sequence.as_mut().expect("sequence active");
-        state.redo_groups.push(latest_generated_undo_group(
-            &self.buffer.undo_entries()[before..],
-        ));
-        state.undone_count += 1;
-        state.had_error = false;
-        Ok(())
-    }
-
-    pub fn reset_undo_sequence(&mut self) {
-        self.undo_sequence = None;
-    }
-
-    pub(super) fn start_undo_sequence_step(&mut self) -> Result<(), LispError> {
-        let original_groups = self.buffer.undo_groups();
-        let group = original_groups.last().cloned().ok_or_else(|| {
-            LispError::Signal(crate::buffer::BufferError::NoFurtherUndoInformation.to_string())
-        })?;
-        self.replay_sequence_group(&group)?;
-        self.undo_sequence = Some(UndoSequenceState {
-            original_groups,
-            undone_count: 1,
-            redo_groups: Vec::new(),
-            had_error: false,
-        });
-        Ok(())
-    }
-
-    pub(super) fn replay_sequence_group(
-        &mut self,
-        group: &[crate::buffer::UndoEntry],
-    ) -> Result<(), LispError> {
-        for entry in group.iter().rev() {
-            self.apply_current_buffer_undo_entry(entry)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn apply_current_buffer_undo_entry(
-        &mut self,
-        entry: &crate::buffer::UndoEntry,
-    ) -> Result<(), LispError> {
-        match entry {
-            crate::buffer::UndoEntry::Insert { pos, len } => {
-                self.buffer.goto_char(*pos);
-                self.delete_region_current_buffer(*pos, *pos + *len)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                Ok(())
-            }
-            crate::buffer::UndoEntry::Delete {
-                pos,
-                text,
-                props,
-                markers,
-            } => {
-                self.buffer.goto_char(*pos);
-                let insert_at = self.buffer.point();
-                self.insert_current_buffer(text);
-                for span in props {
-                    self.buffer.set_text_properties(
-                        insert_at + span.start,
-                        insert_at + span.end,
-                        &span.props,
-                    );
-                }
-                let inserted = text.chars().count();
-                for marker in markers {
-                    let expected_auto_pos = match self.marker_insertion_type(marker.id) {
-                        Some(true) => marker.collapsed_pos + inserted,
-                        _ => marker.collapsed_pos,
-                    };
-                    if self.marker_buffer_id(marker.id) == Some(self.current_buffer_id())
-                        && self.marker_position(marker.id) == Some(expected_auto_pos)
-                    {
-                        let _ = self.set_marker(
-                            marker.id,
-                            Some(marker.original_pos),
-                            Some(self.current_buffer_id()),
-                        );
-                    }
-                }
-                Ok(())
-            }
-            crate::buffer::UndoEntry::Combined { entries, .. } => {
-                for inner in entries.iter().rev() {
-                    self.apply_current_buffer_undo_entry(inner)?;
-                }
-                Ok(())
-            }
-            crate::buffer::UndoEntry::Opaque(value) => {
-                // Marker adjustments and modtime records are bookkeeping
-                // riders on their neighboring entries, not undoable changes
-                // themselves; GNU consumes or ignores them.
-                if let Some((car, _)) = value.cons_values()
-                    && matches!(car, Value::Marker(_) | Value::T)
-                {
-                    return Ok(());
-                }
-                Err(LispError::Signal(format!(
-                    "Unrecognized entry in undo list {}",
-                    render_undo_value(value)
-                )))
-            }
-            crate::buffer::UndoEntry::Boundary => Ok(()),
         }
     }
 

@@ -2060,7 +2060,10 @@ impl Interpreter {
         let Some(spec) = defface_spec_literal(spec_form) else {
             return Ok(());
         };
-        let Some(attributes) = defface_runtime_attributes(&spec) else {
+        let display = super::DeffaceDisplayContext {
+            color_cells: self.tty_display_color_cells,
+        };
+        let Some(attributes) = super::defface_runtime_attributes(&spec, &display) else {
             return Ok(());
         };
 

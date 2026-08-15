@@ -42,6 +42,62 @@ separate post-bootstrap body gap is tracked in
 
 ## Current State
 
+- The 2026-08-13 final ordered-manifest checkpoint reaches **7,080/7,080**:
+  every selected outcome in the canonical manifest now matches GNU Emacs, with
+  **zero selectors remaining**.  An index audit corrected the prior display
+  arithmetic: Syntax ends at 6,968, Textprop covers 6,969-6,971, Thread covers
+  6,972-7,003, Timefns covers 7,004-7,018, Treesit covers 7,019-7,048, Undo
+  covers 7,049-7,067, Xdisp covers 7,068-7,077, Xfaces covers 7,078-7,079,
+  and XML is selector 7,080.
+
+  The canonical final-tail artifact is
+  `target/compat/regression-add-1786644539609529000-21871`: Undo 19/19,
+  Xdisp 10/10, Xfaces 2/2, and XML 1/1 all match, with no timeout or unilateral
+  skip.  Subject-source fingerprint is
+  `385d981e1a82c729f07249ded3fe7ea3d0c44f1c7e7a2317c1f01a1b41ab987d`,
+  release binary hash is
+  `b94830378d365f3ef2f9298378d21b8f83c328a093fe8ccae9d3739427166e07`,
+  harness hash is
+  `bfb7f2f5379e49f4e272e03f6c2832f31e49698462803885f296b11072f47fc1`,
+  and GNU is pinned at `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`.
+
+  Undo now records GNU's real first-change, signed deletion-position,
+  text-property, multibyte-transition, and adjacent-insertion forms.  Adjacent
+  insertion coalescing preserves the identity of the public undo-list pair.
+  GNU-owned `undo`, `undo-more`, `primitive-undo`, `set-mark`, and
+  `push-mark` behavior remains in Elisp; Rust owns buffer storage and native
+  primitive mechanics.  The dormant second Rust undo engine and its obsolete
+  dispatch policy were removed.  Exact GNU-backed host regressions cover every
+  changed contract, including mark activation and numeric comparison errors.
+
+  The accumulated final-source replay is
+  `target/compat/regressions-1786644719249485000-22190`.  Its special Thread
+  selector passes separately; the `t` group matches 112/113 owners.  The sole
+  non-match is the pre-existing `test/src/emacs-module-tests.el` load-error
+  difference caused by the absent native-module artifact, not an Elisp result
+  regression.  The other 113 of 114 recorded owner comparisons pass.
+
+  Final-tail post-bootstrap GNU/Emaxx bodies are Undo 447/3,384 ms (7.564x),
+  Xdisp 10/3 ms, Xfaces 8/1 ms, and XML 8/1 ms.  Undo's million-insertion
+  `undo-test4` accounts for essentially the whole gap; profiling places it in
+  source-interpreted loop/value traffic plus per-edit Rope work, not the
+  bytecode VM or undo traversal.  Track it with the systemic post-7080
+  interpreter work in issue #12.  Reconstructed setup remains separate at
+  283/3,234, 250/2,713, 244/2,738, and 252/2,732 ms under dumped-startup issue
+  #11.
+
+  The corrected complete publication gate is green: 2,084 library tests pass
+  with one intentional ignored release smoke test, followed by 35 compatibility
+  harness tests, one performance-harness test, 10 CLI tests, and three ERT
+  integration tests.  Formatting, diff checks, all-target/all-feature compile,
+  and strict all-target/all-feature Clippy are also green.
+
+  NEXT is to publish this clean checkpoint.  After publication, discuss the
+  symbol-object proposal with the user before starting it, then choose the
+  post-7080 performance program from measured thematic gaps.  Do not begin the
+  proposal merely because its patch document exists.
+
+
 - The 2026-08-13 Search-through-Syntax checkpoint advances the exact
   contiguous frontier to **6,965/7,080**, leaving **115** selectors.
   Selectors 6,853-6,965 all match GNU: Search 1/1, SQLite 12/12, and Syntax

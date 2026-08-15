@@ -593,8 +593,10 @@ fn read_minibuffer_text_without_queued_events(
         {
             read_minibuffer_text_from_batch_stdin(prompt)
         } else if crate::lisp::primitives::has_tty_event_reader() {
-            // A live terminal reads through the interactive minibuffer
-            // loop (C-g inside it signals GNU's `quit').
+            // A live terminal reads through the recursive minibuffer
+            // command loop over the real Lisp keymaps; a session without
+            // that machinery keeps the native editing subset.  C-g inside
+            // either signals GNU's `quit'.
             crate::lisp::primitives::interactive_minibuffer_read(interp, env, initial, &history)
         } else {
             active_minibuffer_text(interp, env)

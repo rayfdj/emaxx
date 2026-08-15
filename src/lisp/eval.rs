@@ -1214,14 +1214,6 @@ pub struct CodingSystemState {
     pub plist: Value,
 }
 
-#[derive(Clone, Debug, Default)]
-struct UndoSequenceState {
-    original_groups: Vec<Vec<crate::buffer::UndoEntry>>,
-    undone_count: usize,
-    redo_groups: Vec<Vec<crate::buffer::UndoEntry>>,
-    had_error: bool,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SpecialBindingScope {
     Global,
@@ -2375,7 +2367,6 @@ pub struct Interpreter {
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
     syntax_word_chars: Vec<u32>,
     standard_syntax_table_id: u64,
-    undo_sequence: Option<UndoSequenceState>,
     load_path: Vec<PathBuf>,
     /// Prefer GNU bytecode artifacts after the source-based bootstrap has
     /// established the dumped Lisp runtime expected by compiled libraries.
@@ -2431,6 +2422,16 @@ pub struct Interpreter {
     handler_dispatch_depth: usize,
     suspend_condition_case_count: usize,
     window_margins: Vec<(u64, Option<i64>, Option<i64>)>,
+    /// Live terminal color count published by the tty frontend; batch
+    /// sessions keep GNU's dumb-terminal zero.
+    pub(crate) tty_display_color_cells: i64,
+    /// True once a live tty published its frame size; the layout then
+    /// tracks `menu-bar-lines' changes like GNU's adjust_frame_size.
+    pub(crate) tty_frame_sized: bool,
+    /// Bumped whenever a face definition changes, GNU's face_change
+    /// flag: the frontend invalidates its resolved-attribute cache on a
+    /// new value instead of re-resolving faces every redisplay.
+    pub(crate) face_change_count: u64,
 }
 
 /// One entry in the dynamic handler stack, mirroring GNU's handlerlist.
@@ -3169,7 +3170,6 @@ impl Interpreter {
             builtin_doc_offsets: HashMap::new(),
             syntax_word_chars: Vec::new(),
             standard_syntax_table_id,
-            undo_sequence: None,
             load_path: Vec::new(),
             prefer_compiled_loads: false,
             require_nesting: Vec::new(),
@@ -3213,6 +3213,9 @@ impl Interpreter {
             handler_dispatch_depth: 0,
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
+            tty_display_color_cells: 0,
+            tty_frame_sized: false,
+            face_change_count: 0,
         };
         interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
         // Startup globals are dumped `defvar'/DEFVAR value cells, hence
@@ -5055,14 +5058,13 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
                     len: (end - beg) as usize,
                 }
             }
-            Some((Value::String(text), Value::Integer(pos))) if pos >= 0 => {
-                crate::buffer::UndoEntry::Delete {
-                    pos: pos as usize,
-                    text: text.to_string(),
-                    props: Vec::new(),
-                    markers: Vec::new(),
-                }
-            }
+            Some((Value::String(text), Value::Integer(pos))) => crate::buffer::UndoEntry::Delete {
+                pos: pos.unsigned_abs() as usize,
+                point_after: pos < 0,
+                text: text.to_string(),
+                props: Vec::new(),
+                markers: Vec::new(),
+            },
             _ => crate::buffer::UndoEntry::Opaque(value.clone()),
         },
         _ => crate::buffer::UndoEntry::Opaque(value.clone()),
@@ -5089,80 +5091,22 @@ fn undo_entry_display(entry: &crate::buffer::UndoEntry) -> Value {
             Value::Integer(*pos as i64),
             Value::Integer((*pos + *len) as i64),
         ),
-        crate::buffer::UndoEntry::Delete { pos, text, .. } => Value::cons(
+        crate::buffer::UndoEntry::Delete {
+            pos,
+            point_after,
+            text,
+            ..
+        } => Value::cons(
             Value::String(text.clone().into()),
-            Value::Integer(*pos as i64),
+            Value::Integer(if *point_after {
+                -(*pos as i64)
+            } else {
+                *pos as i64
+            }),
         ),
         crate::buffer::UndoEntry::Combined { display, .. }
         | crate::buffer::UndoEntry::Opaque(display) => display.clone(),
         crate::buffer::UndoEntry::Boundary => Value::Nil,
-    }
-}
-
-fn latest_generated_undo_group(
-    entries: &[crate::buffer::UndoEntry],
-) -> Vec<crate::buffer::UndoEntry> {
-    entries
-        .iter()
-        .filter(|entry| !matches!(entry, crate::buffer::UndoEntry::Boundary))
-        .cloned()
-        .collect()
-}
-
-fn render_undo_value(value: &Value) -> String {
-    match value {
-        Value::Nil => "nil".into(),
-        Value::T => "t".into(),
-        Value::Integer(n) => n.to_string(),
-        Value::BigInteger(n) => n.to_string(),
-        Value::Float(n) => {
-            if n.fract() == 0.0 {
-                format!("{n:.1}")
-            } else {
-                n.to_string()
-            }
-        }
-        Value::String(s) => format!("\"{}\"", s),
-        Value::StringObject(state) => format!("\"{}\"", state.borrow().text),
-        Value::Symbol(s) => s.to_string(),
-        Value::Cons(_) => {
-            let mut rendered = String::from("(");
-            let mut current = value.clone();
-            let mut first = true;
-            loop {
-                match current {
-                    Value::Cons(cons_cell) => {
-                        let car = &cons_cell.car;
-                        let cdr = &cons_cell.cdr;
-                        if !first {
-                            rendered.push(' ');
-                        }
-                        rendered.push_str(&render_undo_value(&car.borrow()));
-                        first = false;
-                        current = cdr.borrow().clone();
-                    }
-                    Value::Nil => break,
-                    other => {
-                        rendered.push_str(" . ");
-                        rendered.push_str(&render_undo_value(&other));
-                        break;
-                    }
-                }
-            }
-            rendered.push(')');
-            rendered
-        }
-        Value::BuiltinFunc(name) => format!("#<builtin {name}>"),
-        Value::Lambda(lambda) => format!("#<lambda ({})>", lambda.params.join(" ")),
-        Value::Buffer(buffer) => format!("#<buffer {}>", buffer.name),
-        Value::Marker(id) => format!("#<marker id:{id}>"),
-        Value::Overlay(id) => format!("#<overlay id:{id}>"),
-        Value::CharTable(id) => format!("#<char-table id:{id}>"),
-        Value::Frame(id) => format!("#<frame id:{id}>"),
-        Value::Terminal(id) => format!("#<terminal id:{id}>"),
-        Value::Record(id) => format!("#<record id:{id}>"),
-        Value::Finalizer(id) => format!("#<finalizer id:{id}>"),
-        Value::Unbound => "#<unbound>".into(),
     }
 }
 
@@ -5456,11 +5400,102 @@ fn defface_spec_literal(spec_form: &Value) -> Option<Value> {
     }
 }
 
-fn defface_runtime_attributes(spec: &Value) -> Option<Vec<(String, Value)>> {
+/// GNU face-spec-choose over the session's display: the `default'
+/// clause contributes leading defaults, and the first clause whose
+/// DISPLAY matches the terminal wins.  Attributes apply in order, so the
+/// matching clause overrides the defaults, exactly like face-spec-set's
+/// sequential set-face-attribute calls.
+fn defface_runtime_attributes(
+    spec: &Value,
+    display: &DeffaceDisplayContext,
+) -> Option<Vec<(String, Value)>> {
     let clauses = spec.to_vec().ok()?;
-    clauses
-        .iter()
-        .find_map(|clause| defface_clause_attributes(clause, true))
+    let mut attributes = Vec::new();
+    if let Some(defaults) = clauses.iter().find_map(|clause| {
+        let parts = clause.to_vec().ok()?;
+        if matches!(parts.first(), Some(Value::Symbol(symbol)) if symbol == "default") {
+            defface_clause_attributes(clause, false)
+        } else {
+            None
+        }
+    }) {
+        attributes.extend(defaults);
+    }
+    if let Some(matched) = clauses.iter().find_map(|clause| {
+        let parts = clause.to_vec().ok()?;
+        let condition = parts.first()?;
+        if matches!(condition, Value::Symbol(symbol) if symbol == "default") {
+            return None;
+        }
+        if !defface_display_matches(condition, display) {
+            return None;
+        }
+        defface_clause_attributes(clause, false)
+    }) {
+        attributes.extend(matched);
+    }
+    if attributes.is_empty() {
+        None
+    } else {
+        Some(attributes)
+    }
+}
+
+/// The display facts `defface' clause conditions test on this session's
+/// terminal, GNU's face-spec-set-match-display inputs: always a tty, its
+/// color class and count published by the frontend (batch stays the
+/// colorless dark dumb terminal).
+pub(crate) struct DeffaceDisplayContext {
+    pub(crate) color_cells: i64,
+}
+
+impl DeffaceDisplayContext {
+    fn background_light(&self) -> bool {
+        self.color_cells > 0
+    }
+}
+
+/// One DISPLAY condition against the session's terminal —
+/// face-spec-set-match-display's conjunct walk.
+fn defface_display_matches(condition: &Value, display: &DeffaceDisplayContext) -> bool {
+    if defface_matches_default_display(condition) {
+        return true;
+    }
+    let Ok(conjuncts) = condition.to_vec() else {
+        return false;
+    };
+    conjuncts.iter().all(|conjunct| {
+        let Ok(parts) = conjunct.to_vec() else {
+            return false;
+        };
+        let Some(Ok(requirement)) = parts.first().map(|part| part.as_symbol()) else {
+            return false;
+        };
+        let option_matches = |name: &str| {
+            parts[1..]
+                .iter()
+                .any(|option| matches!(option, Value::Symbol(symbol) if symbol == name))
+        };
+        match requirement {
+            "type" => option_matches("tty"),
+            "class" => option_matches(if display.color_cells > 0 {
+                "color"
+            } else {
+                "mono"
+            }),
+            "min-colors" => parts
+                .get(1)
+                .and_then(|count| count.as_integer().ok())
+                .is_some_and(|count| display.color_cells >= count),
+            "background" => option_matches(if display.background_light() {
+                "light"
+            } else {
+                "dark"
+            }),
+            // A tty supports no display-dependent extras GNU would probe.
+            _ => false,
+        }
+    })
 }
 
 fn defface_clause_attributes(

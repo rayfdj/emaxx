@@ -141,8 +141,10 @@ fn buffer_line_start_at(interp: &Interpreter, buffer_id: u64, pos: usize) -> usi
 pub(crate) fn set_current_window_start(interp: &mut Interpreter, start: usize) {
     let buffer_id = interp.selected_window_buffer_id();
     let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+    // GNU keeps the exact position — mid-line for a wrapped-segment
+    // start (scroll-up over continuation lines lands there); the
+    // renderer anchors on the segment containing it.
     let start = start.clamp(point_min, point_max);
-    let start = buffer_line_start_at(interp, buffer_id, start);
     interp.set_selected_window_start(start);
 }
 

@@ -1223,6 +1223,42 @@ pub(crate) fn activate_minibuffer(
     }
     interp.buffer.goto_char(interp.buffer.point_min());
     interp.buffer.insert(prompt);
+    // read_minibuf stamps the prompt: `minibuffer-prompt-properties'
+    // (the read-only guard and the prompt face), plus the field and
+    // stickiness controls that keep typed text from inheriting them —
+    // the prompt is front-sticky and rear-nonsticky.
+    if !prompt.is_empty() {
+        let prompt_end = Value::Integer(1 + prompt.chars().count() as i64);
+        let mut prompt_env = Env::new();
+        if let Some(properties) = interp
+            .lookup_var("minibuffer-prompt-properties", env)
+            .filter(|properties| !properties.is_nil())
+        {
+            let _ = call_function_value(
+                interp,
+                &Value::Symbol("add-text-properties".into()),
+                &[Value::Integer(1), prompt_end.clone(), properties],
+                &mut prompt_env,
+            );
+        }
+        for (name, value) in [
+            ("field", Value::T),
+            ("front-sticky", Value::T),
+            ("rear-nonsticky", Value::T),
+        ] {
+            let _ = call_function_value(
+                interp,
+                &Value::Symbol("put-text-property".into()),
+                &[
+                    Value::Integer(1),
+                    prompt_end.clone(),
+                    Value::Symbol(name.into()),
+                    value,
+                ],
+                &mut prompt_env,
+            );
+        }
+    }
     if !initial_input.is_empty() {
         interp.buffer.insert(initial_input);
     }
@@ -1320,12 +1356,29 @@ fn completing_read_contents(
     {
         return Ok(Value::String(contents.into()));
     }
-    // A live terminal reads through the interactive minibuffer loop.
+    // A live terminal reads through GNU's route: Fcompleting_read defers
+    // to `completing-read-function' — minibuffer.el's
+    // `completing-read-default' let-binds the completion context, picks
+    // the completion keymap, and calls `read-from-minibuffer', whose
+    // recursive command loop runs here.  Without that Lisp machinery the
+    // native minibuffer subset reads instead.
     if crate::lisp::primitives::has_tty_event_reader()
         && interp
             .lookup_var("noninteractive", env)
             .is_some_and(|value| value.is_nil())
     {
+        if real_minibuffer_machinery_available(interp, env)
+            && interp
+                .lookup_function("completing-read-default", env)
+                .is_ok()
+        {
+            return call_function_value(
+                interp,
+                &Value::Symbol("completing-read-default".into()),
+                args,
+                env,
+            );
+        }
         return interactive_completing_read(interp, args, env);
     }
     if let Some(initial_input) = initial_input {
@@ -1858,132 +1911,6 @@ fn apply_minibuffer_edit_key(contents: &mut Vec<char>, cursor: &mut usize, ch: c
     }
 }
 
-/// The window currently displaying *Completions*, if any.
-fn completions_window_id(interp: &Interpreter) -> Option<u64> {
-    super::window_render_layout(interp)
-        .into_iter()
-        .find(|info| {
-            let name = if info.buffer_id == interp.current_buffer_id() {
-                Some(interp.buffer.name.as_str())
-            } else {
-                interp
-                    .get_buffer_by_id(info.buffer_id)
-                    .map(|buffer| buffer.name.as_str())
-            };
-            name == Some("*Completions*")
-        })
-        .map(|info| info.window_id)
-}
-
-/// GNU's ambiguous-TAB help: fill *Completions* with the candidate list
-/// in 30.2's tty shape (the M-RET/M-<down> header, "N possible
-/// completions:", one candidate per line) and pop it up at the frame's
-/// bottom, sized to fit the list while the window above keeps GNU's
-/// four-line minimum — `minibuffer-completion-help' through
-/// `display-buffer-at-bottom' plus fit-window-to-buffer.
-fn show_completions_list(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    candidates: &[String],
-) -> Result<(), LispError> {
-    let mut content = String::from(
-        "Type M-RET on a completion to select it.\n\
-         Type M-<down> or M-<up> to move point between completions.\n\n",
-    );
-    content.push_str(&format!("{} possible completions:\n", candidates.len()));
-    for candidate in candidates {
-        content.push_str(candidate);
-        content.push('\n');
-    }
-    let line_count = content.lines().count();
-
-    let buffer = call_function_value(
-        interp,
-        &Value::Symbol("get-buffer-create".into()),
-        &[Value::String("*Completions*".into())],
-        env,
-    )?;
-    let original = call_function_value(interp, &Value::Symbol("current-buffer".into()), &[], env)?;
-    call_function_value(
-        interp,
-        &Value::Symbol("set-buffer".into()),
-        std::slice::from_ref(&buffer),
-        env,
-    )?;
-    // mode-name, major-mode, and buffer-read-only are always
-    // buffer-local: setting them here only shapes *Completions*.
-    interp.set_variable("buffer-read-only", Value::Nil, env);
-    let _ = call_function_value(interp, &Value::Symbol("erase-buffer".into()), &[], env);
-    interp.buffer.insert(&content);
-    interp.buffer.goto_char(1);
-    interp.set_variable(
-        "major-mode",
-        Value::Symbol("completion-list-mode".into()),
-        env,
-    );
-    interp.set_variable("mode-name", Value::String("Completion List".into()), env);
-    interp.set_variable("buffer-read-only", Value::T, env);
-    call_function_value(
-        interp,
-        &Value::Symbol("set-buffer".into()),
-        std::slice::from_ref(&original),
-        env,
-    )?;
-
-    if completions_window_id(interp).is_none() {
-        let layout = super::window_render_layout(interp);
-        if let Some(bottom) = layout
-            .iter()
-            .max_by_key(|info| (info.top + info.height, info.left + info.width))
-        {
-            let desired = line_count + 1; // content plus its mode line
-            let available = bottom.height.saturating_sub(4);
-            let size = desired.min(available);
-            if size >= 2 {
-                let window = call_function_value(
-                    interp,
-                    &Value::Symbol("split-window-internal".into()),
-                    &[
-                        Value::Record(bottom.window_id),
-                        Value::Integer(size as i64),
-                        Value::Nil,
-                        Value::Float(0.5),
-                    ],
-                    env,
-                )?;
-                call_function_value(
-                    interp,
-                    &Value::Symbol("set-window-buffer".into()),
-                    &[window.clone(), buffer.clone()],
-                    env,
-                )?;
-                // Weak dedication, display-buffer's kind: the mode line
-                // marks it `d' (`D' is reserved for strong dedication).
-                call_function_value(
-                    interp,
-                    &Value::Symbol("set-window-dedicated-p".into()),
-                    &[window, Value::Symbol("soft".into())],
-                    env,
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Remove the *Completions* window when the minibuffer is done with it,
-/// GNU's `minibuffer-hide-completions' on exit and quit.
-fn hide_completions_window(interp: &mut Interpreter, env: &mut Env) {
-    if let Some(window_id) = completions_window_id(interp) {
-        let _ = call_function_value(
-            interp,
-            &Value::Symbol("delete-window-internal".into()),
-            &[Value::Record(window_id)],
-            env,
-        );
-    }
-}
-
 /// The history variable a minibuffer read records into: HIST arg shapes
 /// are SYMBOL, (SYMBOL . STARTPOS), nil (the default
 /// `minibuffer-history'), and t (no recording).
@@ -2042,13 +1969,165 @@ fn history_entries(interp: &Interpreter, env: &Env, variable: &str) -> Vec<Strin
         .unwrap_or_default()
 }
 
+/// Whether the runtime carries the real Lisp minibuffer machinery: the
+/// recursive command loop needs `exit-minibuffer' (minibuffer.el) to
+/// throw its exit and a populated `minibuffer-local-map' to dispatch
+/// keys.  A session without the Lisp tree falls back to the native
+/// editing subset below, like a batch runtime without isearch.el leaves
+/// C-s unbound.
+fn real_minibuffer_machinery_available(interp: &mut Interpreter, env: &mut Env) -> bool {
+    interp.lookup_function("exit-minibuffer", env).is_ok()
+        && interp
+            .lookup_var("minibuffer-local-map", env)
+            .is_some_and(|map| crate::lisp::primitives::is_keymap_value(interp, &map))
+}
+
+/// GNU read_minibuf's recursive command loop, driven by live terminal
+/// events.  Every key sequence resolves through the minibuffer's real
+/// keymaps (`key-binding' sees the buffer-local map installed by
+/// `activate_minibuffer') and executes the bound Lisp commands —
+/// minibuffer.el's TAB/RET machinery, simple.el's history motion — with
+/// the full per-command ceremony, until `exit-minibuffer' throws to the
+/// `exit' tag.  Runs inside an activated minibuffer; the caller's
+/// `run_active_minibuffer' restores the session on every path.
+pub(crate) fn interactive_minibuffer_command_loop(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    history_spec: &Value,
+) -> Result<String, LispError> {
+    // C's read_minibuf seeds the buffer-local history bookkeeping that
+    // simple.el's history commands read.
+    let buffer_id = interp.current_buffer_id();
+    let history_variable = match history_spec {
+        Value::Nil => Value::Symbol("minibuffer-history".into()),
+        Value::Cons(_) => history_spec.car().unwrap_or(Value::Nil),
+        other => other.clone(),
+    };
+    let history_position = history_spec
+        .cdr()
+        .ok()
+        .and_then(|position| position.as_integer().ok())
+        .unwrap_or(0);
+    interp.set_buffer_local_value(buffer_id, "minibuffer-history-variable", history_variable);
+    interp.set_buffer_local_value(
+        buffer_id,
+        "minibuffer-history-position",
+        Value::Integer(history_position),
+    );
+
+    // read_minibuf saves the window configuration before the read; the
+    // teardown below puts it back (default `read-minibuffer-restore-windows'
+    // t), which is how a *Completions* pop-up vanishes on exit and the
+    // shrunk window above it gets its lines back.
+    let saved_windows = interp.snapshot_window_configuration();
+    // The read is one big `catch' for the `exit' tag, GNU read_minibuf's
+    // recursive-edit shape: registering the tag makes `throw' from
+    // `exit-minibuffer' arrive here instead of signaling `no-catch'.
+    interp.push_active_catch_tag(Value::Symbol("exit".into()));
+    let loop_outcome = (|interp: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
+        let mut pending: Vec<Value> = Vec::new();
+        // A command error or an undefined key echoes its message until
+        // the next keystroke, GNU's transient echo.
+        let mut hold_echo = false;
+        loop {
+            if pending.is_empty() {
+                if !hold_echo {
+                    super::set_echo_area_message(Some(interp.buffer.buffer_string()));
+                }
+                // Window-configuration changes made mid-read (the
+                // completion help pop-up) reach the glass before the next
+                // key blocks.
+                crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+            }
+            // C-g propagates as GNU's quit out of the recursive edit.
+            let event = crate::lisp::primitives::pop_unread_command_event_value(interp, env)?;
+            hold_echo = false;
+            pending.push(event);
+            match crate::lisp::primitives::resolve_key_sequence(interp, env, &pending) {
+                crate::lisp::primitives::KeyResolution::Command(binding) => {
+                    let keys = std::mem::take(&mut pending);
+                    let last_event = keys.last().cloned().unwrap_or(Value::Nil);
+                    match crate::lisp::primitives::execute_command_binding(
+                        interp, env, binding, &keys, last_event,
+                    ) {
+                        Ok(()) => {}
+                        Err(LispError::Throw(tag, _value)) if matches!(&tag, Value::Symbol(name) if name == "exit") =>
+                        {
+                            return Ok(());
+                        }
+                        Err(LispError::Terminate(termination)) => {
+                            return Err(LispError::Terminate(termination));
+                        }
+                        Err(error @ LispError::Throw(..)) => {
+                            // A throw bound for an outer catch unwinds the
+                            // whole read, GNU's non-local exit.
+                            return Err(error);
+                        }
+                        Err(error) => {
+                            // GNU prints the error in the echo area and
+                            // keeps reading; any input restores the
+                            // minibuffer display.
+                            let text = crate::lisp::primitives::command_error_echo_text(
+                                interp, env, &error,
+                            );
+                            super::set_echo_area_message(Some(text));
+                            hold_echo = true;
+                        }
+                    }
+                }
+                crate::lisp::primitives::KeyResolution::Prefix => {}
+                crate::lisp::primitives::KeyResolution::Undefined => {
+                    pending.clear();
+                }
+            }
+        }
+    })(interp, env);
+    interp.pop_active_catch_tag();
+    // read_minibuf_unwind: the exit hook runs in the minibuffer, then the
+    // saved window configuration returns — on every exit path, quits
+    // included.
+    crate::lisp::primitives::safe_run_named_hooks(
+        interp,
+        "minibuffer-exit-hook",
+        env,
+        Some(buffer_id),
+    )
+    .unwrap_or(());
+    if interp
+        .lookup_var("read-minibuffer-restore-windows", env)
+        .is_none_or(|restore| restore.is_truthy())
+    {
+        let _ = interp.restore_window_configuration(saved_windows);
+    }
+    if let Err(error) = loop_outcome {
+        super::set_echo_area_message(None);
+        return Err(error);
+    }
+    super::set_echo_area_message(None);
+    let submitted = super::call(interp, "minibuffer-contents-no-properties", &[], env).and_then(
+        |contents| {
+            string_like(&contents).map(|text| text.text).ok_or_else(|| {
+                LispError::Signal("minibuffer-contents-no-properties must answer a string".into())
+            })
+        },
+    )?;
+    // add_to_history, C's side of the exit (the Lisp history commands
+    // only navigate; recording is read_minibuf's job).
+    if let Some(variable) = history_variable_name(history_spec) {
+        push_minibuffer_history(interp, env, &variable, &submitted);
+    }
+    Ok(submitted)
+}
+
 /// Drive the active minibuffer with terminal events: a native rendition
 /// of GNU's minibuffer command loop over the dumped keymaps' core —
 /// self-insertion and editing motion, TAB completion against the
 /// installed table, M-p/M-n history recall, RET submission with
-/// require-match, C-g quit.  The echo area shows the live prompt and
-/// contents while the loop runs; the frontend's event reader paints it
-/// before blocking for each key.
+/// require-match, C-g quit.  This is the fallback for sessions without
+/// the Lisp minibuffer machinery; a full session dispatches through
+/// `interactive_minibuffer_command_loop' instead.  The echo area shows
+/// the live prompt and contents while the loop runs; the frontend's
+/// event reader paints it before blocking for each key.
 #[allow(clippy::too_many_arguments)]
 fn drive_interactive_minibuffer(
     interp: &mut Interpreter,
@@ -2072,7 +2151,6 @@ fn drive_interactive_minibuffer(
     // 0 = editing fresh input; N = showing the Nth newest history entry.
     let mut history_position = 0usize;
     let mut stashed_input: Vec<char> = Vec::new();
-    let mut completions_shown = false;
     let submitted = loop {
         let live: String = contents.iter().collect();
         super::set_echo_area_message(Some(format!("{prompt}{live}")));
@@ -2083,9 +2161,6 @@ fn drive_interactive_minibuffer(
             Ok(event) => event,
             Err(error) => {
                 super::set_echo_area_message(None);
-                if completions_shown {
-                    hide_completions_window(interp, env);
-                }
                 return Err(error);
             }
         };
@@ -2112,7 +2187,6 @@ fn drive_interactive_minibuffer(
             }
             '\t' if collection.is_some() => {
                 if let Some(collection) = collection {
-                    let before: String = contents.iter().collect();
                     apply_minibuffer_completion(
                         interp,
                         env,
@@ -2121,24 +2195,6 @@ fn drive_interactive_minibuffer(
                         collection,
                         predicate,
                     )?;
-                    let after: String = contents.iter().collect();
-                    // GNU pops the completion list when TAB cannot make
-                    // progress and several candidates remain.
-                    if after == before {
-                        let matches = filtered_completion_matches(
-                            interp, &after, collection, predicate, env,
-                        )?;
-                        if matches.len() > 1 {
-                            let mut names: Vec<String> = matches
-                                .into_iter()
-                                .map(|candidate| candidate.name)
-                                .collect();
-                            names.sort();
-                            if show_completions_list(interp, env, &names).is_ok() {
-                                completions_shown = true;
-                            }
-                        }
-                    }
                 }
             }
             '\u{1b}' => {
@@ -2149,9 +2205,6 @@ fn drive_interactive_minibuffer(
                         Ok(event) => event,
                         Err(error) => {
                             super::set_echo_area_message(None);
-                            if completions_shown {
-                                hide_completions_window(interp, env);
-                            }
                             return Err(error);
                         }
                     };
@@ -2186,9 +2239,6 @@ fn drive_interactive_minibuffer(
         }
     };
     super::set_echo_area_message(None);
-    if completions_shown {
-        hide_completions_window(interp, env);
-    }
     if let Some(variable) = history_variable.as_deref() {
         push_minibuffer_history(interp, env, variable, &submitted);
     }
@@ -2221,16 +2271,20 @@ pub(crate) fn interactive_completing_read(
 }
 
 /// A minibuffer read driven by live terminal events: read-string and
-/// read-from-minibuffer's interactive path.  When Lisp bound a live
-/// completion context around the read (`completing-read-default' lets
-/// `minibuffer-completion-table' before calling `read-from-minibuffer'),
-/// TAB completes against it, GNU's keymap-selected behavior.
+/// read-from-minibuffer's interactive path.  With the Lisp minibuffer
+/// machinery loaded this is GNU's recursive command loop over the real
+/// keymaps; without it, the native editing subset reads against any
+/// live completion context (`completing-read-default' lets
+/// `minibuffer-completion-table' before calling `read-from-minibuffer').
 pub(crate) fn interactive_minibuffer_read(
     interp: &mut Interpreter,
     env: &mut Env,
     initial: &str,
     history_spec: &Value,
 ) -> Result<String, LispError> {
+    if real_minibuffer_machinery_available(interp, env) {
+        return interactive_minibuffer_command_loop(interp, env, history_spec);
+    }
     let collection = interp
         .lookup_var("minibuffer-completion-table", env)
         .filter(|table| !table.is_nil());

@@ -1071,14 +1071,14 @@ fn completing_read_consumes_keyboard_macro_input_in_the_minibuffer() {
 }
 
 #[test]
-fn buffer_undo_list_preserves_saved_tail_identity_as_changes_are_added() {
+fn buffer_undo_list_mutates_saved_head_for_adjacent_insertions_like_gnu() {
     assert_eq!(
         eval_str(
             r#"(with-temp-buffer
                  (insert "a")
                  (let ((saved buffer-undo-list))
                    (insert "b")
-                   (eq saved (cdr buffer-undo-list))))"#
+                   (eq saved buffer-undo-list)))"#
         ),
         Value::T
     );

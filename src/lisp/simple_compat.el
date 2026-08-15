@@ -4958,6 +4958,41 @@ If NO-TMM is non-nil, leave `transient-mark-mode' alone."
         (setq-local transient-mark-mode 'lambda))
       (run-hooks 'activate-mark-hook))))
 
+;; GNU simple.el owns the public mark commands.  Rust owns marker storage and
+;; movement only; activation and mark-ring policy stays at the Elisp boundary.
+(defun set-mark (pos)
+  "Set this buffer's mark to POS."
+  (if pos
+      (progn
+        (set-marker (mark-marker) pos (current-buffer))
+        (activate-mark 'no-tmm))
+    (deactivate-mark t)
+    (setq mark-active nil)
+    (set-marker (mark-marker) nil)))
+
+(defun push-mark (&optional location nomsg activate)
+  "Set mark at LOCATION (point, by default) and push old mark on mark ring."
+  (when (mark t)
+    (let ((old (nth mark-ring-max mark-ring))
+          (history-delete-duplicates nil))
+      (add-to-history 'mark-ring (copy-marker (mark-marker)) mark-ring-max t)
+      (when old
+        (set-marker old nil))))
+  (set-marker (mark-marker) (or location (point)) (current-buffer))
+  (unless (and global-mark-ring
+               (eq (marker-buffer (car global-mark-ring)) (current-buffer)))
+    (let ((old (nth global-mark-ring-max global-mark-ring))
+          (history-delete-duplicates nil))
+      (add-to-history
+       'global-mark-ring (copy-marker (mark-marker)) global-mark-ring-max t)
+      (when old
+        (set-marker old nil))))
+  (or nomsg executing-kbd-macro (> (minibuffer-depth) 0)
+      (message "Mark set"))
+  (if (or activate (not transient-mark-mode))
+      (set-mark (mark t)))
+  nil)
+
 (defmacro with-buffer-unmodified-if-unchanged (&rest body)
   "Like `progn', but change buffer-modified status only if buffer text changes.
 If the buffer was unmodified before execution of BODY, and
@@ -12788,6 +12823,43 @@ to the cycling order defined by `recenter-positions'."
   '(:eval (if (frame-parameter nil 'client) "@")))
 
 (defvar mode-line-modified '("%1*" "%1+"))
+
+;; faces.el: the minibuffer prompt carries its face through the prompt
+;; text properties read_minibuf applies.
+(setq minibuffer-prompt-properties
+      (append minibuffer-prompt-properties (list 'face 'minibuffer-prompt)))
+
+(defvar mode-line-buffer-identification-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mode-line mouse-1] 'mode-line-previous-buffer)
+    (define-key map [header-line down-mouse-1] 'ignore)
+    (define-key map [header-line mouse-1] 'mode-line-previous-buffer)
+    (define-key map [mode-line mouse-3] 'mode-line-next-buffer)
+    (define-key map [header-line down-mouse-3] 'ignore)
+    (define-key map [header-line mouse-3] 'mode-line-next-buffer)
+    map) "\
+Keymap for what is displayed by `mode-line-buffer-identification'.")
+
+(defun propertized-buffer-identification (fmt)
+  "Return a list suitable for `mode-line-buffer-identification'.
+FMT is a format specifier such as \"%12b\".  This function adds
+text properties for face, help-echo, and local-map to it."
+  (list (propertize fmt
+		    'face 'mode-line-buffer-id
+		    'help-echo
+		    (purecopy "Buffer name
+mouse-1: Previous buffer\nmouse-3: Next buffer")
+		    'mouse-face 'mode-line-highlight
+		    'local-map mode-line-buffer-identification-keymap)))
+
+(defvar-local mode-line-buffer-identification
+  (propertized-buffer-identification "%12b")
+  "Mode line construct for identifying the buffer being displayed.")
+;; The native bootstrap pre-binds this variable (native code reads it
+;; before this file loads), so defvar-local keeps that value; the
+;; propertized default is bindings.el's.
+(setq-default mode-line-buffer-identification
+              (propertized-buffer-identification "%12b"))
 
 (defvar mode-line-remote '("%1@"))
 

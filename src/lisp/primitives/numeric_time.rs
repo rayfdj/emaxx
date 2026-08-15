@@ -2248,6 +2248,21 @@ pub(crate) fn numeric_ordering(
     left: &Value,
     right: &Value,
 ) -> Result<Option<Ordering>, LispError> {
+    // GNU's arithcompare family (<, <=, =, >=, >) accepts numbers and
+    // markers and reports that public union type for every rejected operand.
+    // The lower-level numeric converters are also used by number-only
+    // arithmetic, so keep the comparison contract here.
+    for value in [left, right] {
+        if !matches!(
+            value,
+            Value::Integer(_) | Value::BigInteger(_) | Value::Float(_) | Value::Marker(_)
+        ) {
+            return Err(LispError::TypeError(
+                "number-or-marker-p".into(),
+                value.type_name(),
+            ));
+        }
+    }
     if matches!(left, Value::Float(value) if value.is_nan())
         || matches!(right, Value::Float(value) if value.is_nan())
     {

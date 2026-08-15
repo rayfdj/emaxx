@@ -694,6 +694,20 @@ impl Interpreter {
         self.resize_frame_window_records();
     }
 
+    /// Adopt the live terminal's display capabilities: color count and
+    /// background class drive `defface' spec selection exactly as GNU's
+    /// terminal-init path does (an xterm-family tty answers 8 colors and
+    /// a light background).  Batch sessions keep GNU's dumb-terminal
+    /// answers (0 colors, dark, mono); only the terminal frontend calls
+    /// this.
+    pub fn set_tty_display_colors(&mut self, color_cells: i64) {
+        self.tty_display_color_cells = color_cells.max(0);
+    }
+
+    pub(crate) fn tty_display_color_cells(&self) -> i64 {
+        self.tty_display_color_cells
+    }
+
     /// Adopt the terminal's real geometry: a tty frame's height counts
     /// every screen row (GNU's FRAME_TOTAL_LINES), so the root window
     /// keeps rows − 1 lines above the one-line minibuffer.  Batch frames
@@ -701,14 +715,40 @@ impl Interpreter {
     pub fn set_tty_frame_size(&mut self, width: i64, height: i64) {
         let width = width.max(1);
         let height = height.max(2);
+        // GNU's tty frame reserves FRAME_MENU_BAR_LINES above the window
+        // tree (frame.c adjust_frame_size); the `menu-bar-lines' frame
+        // parameter is menu-bar-mode's channel for that count.
+        // A tty menu bar is at most one screen line (GNU's tty frames
+        // force menu_bar_lines to 0 or 1 regardless of the parameter).
+        let menu_bar_lines = self
+            .frame_parameter_override("menu-bar-lines")
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(1)
+            .clamp(0, 1)
+            .min(height - 2);
+        self.tty_frame_sized = true;
         if let Some(frame) = self.selected_frame_state_mut() {
             frame.width = width;
             frame.height = height;
-            frame.text_height = height;
+            frame.text_height = height - menu_bar_lines;
             frame.parameter_width = width;
             frame.parameter_height = height;
         }
         self.resize_frame_window_records();
+    }
+
+    /// Recompute the tty window tree against the current frame
+    /// parameters — the resize `menu-bar-mode' triggers when it stores a
+    /// new `menu-bar-lines' count.  A no-op until a live tty has
+    /// published its size: batch frames ignore the parameter, as GNU's
+    /// batch frames do.
+    pub(crate) fn refresh_tty_frame_layout(&mut self) {
+        if !self.tty_frame_sized {
+            return;
+        }
+        let width = self.frame_width();
+        let height = self.frame_height();
+        self.set_tty_frame_size(width, height);
     }
 
     pub(crate) fn frame_text_height(&self) -> i64 {
@@ -1970,7 +2010,7 @@ impl Interpreter {
         {
             if buffer_id == Some(mark_buffer_id) {
                 if let Some(position) = position {
-                    buffer.set_mark(position);
+                    buffer.set_mark_position(position);
                 } else {
                     buffer.clear_mark();
                 }

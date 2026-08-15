@@ -376,6 +376,267 @@ pub(crate) fn has_tty_event_reader() -> bool {
     TTY_EVENT_READER.with_borrow(|slot| slot.is_some())
 }
 
+/// What a pending key sequence resolves to under the live keymaps.
+pub(crate) enum KeyResolution {
+    Command(Value),
+    Prefix,
+    Undefined,
+}
+
+fn command_loop_call(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    interp.call_function_value(Value::Symbol(name.into()), None, args, env)
+}
+
+/// Resolve a pending key sequence through the runtime's own keymaps
+/// (`key-binding'), classifying strict prefixes so a multi-key sequence
+/// keeps reading.  This is the single resolution path for every command
+/// loop — the frame's and the minibuffer's recursive one.
+pub(crate) fn resolve_key_sequence(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pending: &[Value],
+) -> KeyResolution {
+    let key_vector = Value::list(
+        std::iter::once(Value::Symbol("vector-literal".into())).chain(pending.iter().cloned()),
+    );
+    let binding = match command_loop_call(interp, env, "key-binding", &[key_vector, Value::T]) {
+        Ok(binding) => binding,
+        Err(_) => Value::Nil,
+    };
+    if binding.is_nil() {
+        // An unresolved strict prefix keeps reading (C-x alone answers nil
+        // while C-x C-f resolves), so probe whether any longer sequence can
+        // still match by asking for the prefix's own keymap.
+        if pending_sequence_is_prefix(interp, env, pending) {
+            return KeyResolution::Prefix;
+        }
+        return KeyResolution::Undefined;
+    }
+    // A prefix can answer as the keymap itself or as a prefix command
+    // symbol (`Control-X-prefix') whose function cell holds the keymap;
+    // GNU resolves through the indirection before dispatching.
+    let resolved = if let Value::Symbol(name) = &binding {
+        interp
+            .lookup_function(name, env)
+            .unwrap_or_else(|_| binding.clone())
+    } else {
+        binding.clone()
+    };
+    if crate::lisp::primitives::is_keymap_value(interp, &resolved) {
+        KeyResolution::Prefix
+    } else {
+        KeyResolution::Command(binding)
+    }
+}
+
+fn pending_sequence_is_prefix(interp: &mut Interpreter, env: &mut Env, pending: &[Value]) -> bool {
+    // ESC alone is always a live prefix (meta encoding).
+    if pending.len() == 1 && matches!(pending.first(), Some(Value::Integer(27))) {
+        return true;
+    }
+    let key_vector = Value::list(
+        std::iter::once(Value::Symbol("vector-literal".into())).chain(pending.iter().cloned()),
+    );
+    // `key-binding' with ACCEPT-DEFAULT nil still answers prefix keymaps.
+    command_loop_call(interp, env, "key-binding", &[key_vector])
+        .map(|binding| {
+            !binding.is_nil()
+                && command_loop_call(interp, env, "keymapp", &[binding])
+                    .map(|value| value.is_truthy())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// Execute one resolved command with GNU's full per-command ceremony:
+/// undo boundary, echo clearing, key-state publication, prefix handoff,
+/// pre/post-command hooks around `call-interactively', and the
+/// last-command bookkeeping.  Shared by the frame command loop and the
+/// minibuffer's recursive loop.
+pub(crate) fn execute_command_binding(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    binding: Value,
+    keys: &[Value],
+    last_event: Value,
+) -> Result<(), LispError> {
+    // GNU's command loop separates each command into its own undo group
+    // (undo-auto--add-boundary after every command); `undo' relies on the
+    // boundary to skip before replaying the previous group.
+    interp.buffer.push_undo_boundary();
+    // A lingering echo-area message belongs to the previous command; GNU
+    // clears it when the next command runs (its own `message' then shows).
+    crate::lisp::primitives::set_echo_area_message(None);
+    interp.set_variable("last-command-event", last_event, env);
+    // The canonical key-state channel: this-command-keys,
+    // this-single-command-keys, and their raw variants all read it
+    // (isearch's pre-command-hook indexes the vector).
+    set_command_key_state(interp, keys.to_vec(), keys.to_vec(), env);
+    interp.set_variable(
+        "this-command-keys-vector",
+        Value::list(
+            std::iter::once(Value::Symbol("vector-literal".into())).chain(keys.iter().cloned()),
+        ),
+        env,
+    );
+    interp.set_variable("this-command", binding.clone(), env);
+    // GNU's command loop hands the accumulated prefix to the command:
+    // current-prefix-arg takes prefix-arg's value and prefix-arg clears
+    // before the call; last-prefix-arg keeps it for the next cycle.
+    let prefix = interp.lookup_var("prefix-arg", env).unwrap_or(Value::Nil);
+    interp.set_variable("current-prefix-arg", prefix.clone(), env);
+    interp.set_variable("prefix-arg", Value::Nil, env);
+    // pre-command-hook may rewrite `this-command' (isearch's exit path
+    // does); GNU executes whatever the hook left there.
+    let buffer_id = interp.current_buffer_id();
+    crate::lisp::primitives::safe_run_named_hooks(interp, "pre-command-hook", env, Some(buffer_id))
+        .unwrap_or(());
+    let dispatched = interp
+        .lookup_var("this-command", env)
+        .filter(|command| !command.is_nil())
+        .unwrap_or_else(|| binding.clone());
+    // GNU's command_execute is a thin wrapper over call-interactively
+    // (prefix-arg bookkeeping, kbd-macro expansion); the runtime does not
+    // define it yet, so drive the interactive call directly.
+    let result = command_loop_call(
+        interp,
+        env,
+        "call-interactively",
+        std::slice::from_ref(&dispatched),
+    )
+    .map(|_| ());
+    let buffer_id = interp.current_buffer_id();
+    crate::lisp::primitives::safe_run_named_hooks(
+        interp,
+        "post-command-hook",
+        env,
+        Some(buffer_id),
+    )
+    .unwrap_or(());
+    // GNU takes last-command from this-command AFTER the command ran: a
+    // prefix command (universal-argument) restores the previous value
+    // there via prefix-command-preserve-state, keeping last-command
+    // stable across the C-u chain.
+    let last_command = interp
+        .lookup_var("this-command", env)
+        .filter(|command| !command.is_nil())
+        .unwrap_or(dispatched);
+    interp.set_variable("last-command", last_command, env);
+    interp.set_variable("last-prefix-arg", prefix, env);
+    result
+}
+
+/// keyboard.c's timer_check in miniature: while the command loop waits
+/// for input, fire the ripe entries of `timer-list' (absolute times) and
+/// `timer-idle-list' (idle durations, once per idle period) through
+/// timer.el's own `timer-event-handler'.  Returns whether any ran —
+/// isearch's lazy highlight arrives this way.
+pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_seconds: f64) -> bool {
+    if interp.lookup_function("timer-event-handler", env).is_err() {
+        return false;
+    }
+    let timer_seconds = |interp: &mut Interpreter, env: &mut Env, timer: &Value| {
+        let time = interp
+            .call_function_value(
+                Value::Symbol("timer--time".into()),
+                None,
+                std::slice::from_ref(timer),
+                env,
+            )
+            .ok()?;
+        interp
+            .call_function_value(
+                Value::Symbol("float-time".into()),
+                None,
+                std::slice::from_ref(&time),
+                env,
+            )
+            .ok()?
+            .as_float()
+            .ok()
+    };
+    let mut ran = false;
+    for (list_name, idle) in [("timer-idle-list", true), ("timer-list", false)] {
+        let Some(timers) = interp
+            .lookup_var(list_name, env)
+            .and_then(|value| value.to_vec().ok())
+        else {
+            continue;
+        };
+        for timer in timers {
+            let Some(time) = timer_seconds(interp, env, &timer) else {
+                continue;
+            };
+            let due = if idle {
+                let triggered = interp
+                    .call_function_value(
+                        Value::Symbol("timer--triggered".into()),
+                        None,
+                        std::slice::from_ref(&timer),
+                        env,
+                    )
+                    .is_ok_and(|value| value.is_truthy());
+                time <= idle_seconds && !triggered
+            } else {
+                interp
+                    .call_function_value(Value::Symbol("float-time".into()), None, &[], env)
+                    .ok()
+                    .and_then(|now| now.as_float().ok())
+                    .is_some_and(|now| time <= now)
+            };
+            if due {
+                ran = true;
+                let _ = interp.call_function_value(
+                    Value::Symbol("timer-event-handler".into()),
+                    None,
+                    std::slice::from_ref(&timer),
+                    env,
+                );
+            }
+        }
+    }
+    ran
+}
+
+/// The echo-area text for a command's error, GNU's
+/// `error-message-string' rendering ("Quit", "Beginning of buffer", a
+/// user-error's own message).
+pub(crate) fn command_error_echo_text(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    error: &LispError,
+) -> String {
+    let text = match error {
+        LispError::SignalValue(data) => {
+            let data = if matches!(data, Value::Symbol(_)) {
+                Value::list([data.clone()])
+            } else {
+                data.clone()
+            };
+            command_loop_call(
+                interp,
+                env,
+                "error-message-string",
+                std::slice::from_ref(&data),
+            )
+            .ok()
+            .and_then(|value| match value {
+                Value::String(text) => Some(text.to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| format!("{data}"))
+        }
+        LispError::Signal(text) => text.clone(),
+        other => format!("{other:?}"),
+    };
+    text.replace(['\n', '\r'], " ").chars().take(200).collect()
+}
+
 // Frame repaint, installed alongside the event reader.  Command code
 // that runs its own event loop (the interactive minibuffer) calls it so
 // window-configuration changes made mid-read — a *Completions* pop-up —
@@ -1037,4 +1298,209 @@ pub(crate) fn is_composed_accessor_name(name: &str) -> bool {
         && bytes[1..bytes.len() - 1]
             .iter()
             .all(|byte| matches!(byte, b'a' | b'd'))
+}
+
+/// keyboard.c's menu_bar_items: the menu bar's top-level captions in
+/// display order.  Every active keymap's `menu-bar' prefix is scanned
+/// lowest-precedence first (global map, then local, then minor modes),
+/// so global menus lead the row and higher-precedence maps append or
+/// merge into existing entries; the keys named by
+/// `menu-bar-final-items' move to the end (Help).
+pub(crate) fn menu_bar_row_captions(interp: &mut Interpreter, env: &mut Env) -> Vec<String> {
+    let maps = super::call(interp, "current-active-maps", &[Value::T], env)
+        .ok()
+        .and_then(|maps| maps.to_vec().ok())
+        .unwrap_or_default();
+    let menu_bar_key = Value::list([
+        Value::Symbol("vector-literal".into()),
+        Value::Symbol("menu-bar".into()),
+    ]);
+    let same_key = |a: &Value, b: &Value| match (a, b) {
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        _ => false,
+    };
+    let mut items: Vec<(Value, String)> = Vec::new();
+    for map in maps.iter().rev() {
+        let Ok(menu) = super::call(
+            interp,
+            "lookup-key",
+            &[map.clone(), menu_bar_key.clone()],
+            env,
+        ) else {
+            continue;
+        };
+        // A runtime keymap answers as its record identity; walk GNU's
+        // public `(keymap ...)' cons projection of it.
+        let menu = {
+            if let Some(id) = super::keymap_record_id(interp, &menu) {
+                let _ = super::refresh_runtime_keymap_public_view(interp, id);
+            }
+            super::public_keymap_value(interp, &menu)
+        };
+        if !matches!(menu.car(), Ok(Value::Symbol(tag)) if tag == "keymap") {
+            continue;
+        }
+        // One keymap contributes to a key only once, even when its
+        // entry list carries shadowed duplicates.
+        let mut seen: Vec<Value> = Vec::new();
+        let mut tail = menu.cdr().unwrap_or(Value::Nil);
+        while let Value::Cons(_) = tail {
+            let Ok(entry) = tail.car() else { break };
+            let next = tail.cdr().unwrap_or(Value::Nil);
+            match &entry {
+                // A parent keymap's entries follow through the tail.
+                Value::Symbol(tag) if tag == "keymap" => {}
+                Value::Cons(_) => {
+                    let key = entry.car().unwrap_or(Value::Nil);
+                    let item = entry.cdr().unwrap_or(Value::Nil);
+                    if !seen.iter().any(|earlier| same_key(earlier, &key)) {
+                        seen.push(key.clone());
+                        if matches!(&item, Value::Symbol(def) if def == "undefined") {
+                            // An explicit `undefined' discards any
+                            // previously made item for this key.
+                            items.retain(|(existing, _)| !same_key(existing, &key));
+                        } else if let Some(caption) = menu_item_caption(interp, env, &item)
+                            && !items.iter().any(|(existing, _)| same_key(existing, &key))
+                        {
+                            items.push((key, caption));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            tail = next;
+        }
+    }
+    if let Some(final_items) = interp
+        .lookup_var("menu-bar-final-items", env)
+        .and_then(|value| value.to_vec().ok())
+    {
+        for name in final_items {
+            if let Some(position) = items.iter().position(|(key, _)| same_key(key, &name)) {
+                let item = items.remove(position);
+                items.push(item);
+            }
+        }
+    }
+    items.into_iter().map(|(_, caption)| caption).collect()
+}
+
+/// parse_menu_item for the menu bar: the caption of a live top-level
+/// item, or None when the item is invisible, disabled, undefined, or
+/// not a menu item at all.
+fn menu_item_caption(interp: &mut Interpreter, env: &mut Env, item: &Value) -> Option<String> {
+    if !matches!(item, Value::Cons(_)) {
+        return None;
+    }
+    let eval_property = |interp: &mut Interpreter, env: &mut Env, form: &Value| match form {
+        Value::Symbol(name) if name != "t" && name != "nil" => {
+            interp.lookup_var(name, env).unwrap_or(Value::Nil)
+        }
+        Value::Cons(_) => interp.eval(form, env).unwrap_or(Value::Nil),
+        other => other.clone(),
+    };
+    let car = item.car().ok()?;
+    if let Ok(name) = crate::lisp::primitives::string_text(&car) {
+        // Old format (NAME [HELP-STRING] [CACHE] . DEF): a menu-bar item
+        // needs a live definition after the optional extras.
+        let mut def = item.cdr().ok()?;
+        if def.car().is_ok_and(|help| help.is_string()) {
+            def = def.cdr().ok()?;
+        }
+        if def.car().is_ok_and(|cache| {
+            matches!(cache.car(), Ok(Value::Nil))
+                || matches!(cache.car(), Ok(Value::Symbol(tag)) if tag == "vector-literal")
+        }) {
+            def = def.cdr().ok()?;
+        }
+        if def.is_nil() {
+            return None;
+        }
+        return Some(name);
+    }
+    if !matches!(&car, Value::Symbol(tag) if tag == "menu-item") {
+        return None;
+    }
+    // New format (menu-item NAME DEF [CACHE] . PROPS).
+    let rest = item.cdr().ok()?.to_vec().ok()?;
+    let name_form = rest.first()?.clone();
+    let mut def = rest.get(1).cloned().unwrap_or(Value::Nil);
+    let mut index = 2;
+    if matches!(rest.get(2), Some(Value::Cons(_))) {
+        index = 3;
+    }
+    let mut filter = None;
+    while index + 1 < rest.len() {
+        let Value::Symbol(keyword) = &rest[index] else {
+            break;
+        };
+        let value = &rest[index + 1];
+        match keyword.as_ref() {
+            ":visible" | ":enable" => {
+                if eval_property(interp, env, value).is_nil() {
+                    return None;
+                }
+            }
+            ":filter" => filter = Some(value.clone()),
+            _ => {}
+        }
+        index += 2;
+    }
+    if let Some(filter) = filter {
+        def = interp
+            .call_function_value(filter, None, std::slice::from_ref(&def), env)
+            .unwrap_or(Value::Nil);
+    }
+    if def.is_nil() {
+        return None;
+    }
+    let name = eval_property(interp, env, &name_form);
+    crate::lisp::primitives::string_text(&name)
+        .ok()
+        .map(|name| name.to_string())
+}
+
+/// The menu bar's cheap per-redraw change signal: how many minor-mode
+/// maps are live plus whether an overriding map is installed.  Entering
+/// isearch (or any minor mode with a map) changes it, which triggers
+/// the recompute GNU gets from update_mode_lines — without walking the
+/// full active-keymap set on every keystroke.
+pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> usize {
+    let minors = interp
+        .lookup_var("minor-mode-map-alist", env)
+        .and_then(|alist| alist.to_vec().ok())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry.car().is_ok_and(|mode| {
+                        matches!(&mode, Value::Symbol(name)
+                            if interp.lookup_var(name, env).is_some_and(|on| on.is_truthy()))
+                    })
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let overriding = interp
+        .lookup_var("overriding-terminal-local-map", env)
+        .is_some_and(|map| map.is_truthy());
+    minors + usize::from(overriding)
+}
+
+/// Pop the first `unread-command-events' entry, unwrapping GNU's
+/// `(t . EVENT)' don't-re-record form — read_char's front of the input
+/// stream, consulted before the terminal.
+pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
+    let events = interp.lookup_var("unread-command-events", env)?;
+    let mut events = events.to_vec().ok()?;
+    if events.is_empty() {
+        return None;
+    }
+    let event = events.remove(0);
+    interp.set_variable("unread-command-events", Value::list(events), env);
+    match &event {
+        Value::Cons(_) if matches!(event.car(), Ok(Value::T)) => event.cdr().ok(),
+        _ => Some(event),
+    }
 }

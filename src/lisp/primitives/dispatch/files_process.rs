@@ -3268,7 +3268,6 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 unlock_file_path(interp, env, &string_text(&args[0])?)
             }
-            #[dispatch(resets_undo)]
             "write-region" => {
                 if args.len() < 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -4910,27 +4909,9 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
-            "set-mark" => {
-                need_args(name, args, 1)?;
-                let pos = position_from_value(interp, &args[0])?;
-                interp.buffer.set_mark(pos);
-                Ok(Value::Nil)
-            }
             "set-mark-command" => {
                 need_arg_range(name, args, 0, 1)?;
                 interp.buffer.set_mark(interp.buffer.point());
-                Ok(Value::Nil)
-            }
-            "push-mark" => {
-                let pos = if args.is_empty() || args[0].is_nil() {
-                    interp.buffer.point()
-                } else {
-                    position_from_value(interp, &args[0])?
-                };
-                interp.buffer.set_mark(pos);
-                if !args.get(2).is_some_and(Value::is_truthy) {
-                    interp.buffer.deactivate_mark();
-                }
                 Ok(Value::Nil)
             }
             "mark" => Ok(match interp.buffer.mark() {
