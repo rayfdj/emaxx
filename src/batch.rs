@@ -332,7 +332,7 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
     interpreter
         .eval(&reopen, &mut Vec::new())
         .map_err(|error| format!("reopen delayed Custom phase: {error}"))?;
-    for target in ["isearch", "minibuffer", "rfn-eshadow"] {
+    for target in ["isearch", "minibuffer", "rfn-eshadow", "loaddefs"] {
         if interpreter.resolve_load_target(target).is_some() {
             interpreter
                 .load_target(target)
@@ -830,6 +830,17 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     // cons-list interface to this library.
     if !interpreter.has_feature("menu-bar") && interpreter.resolve_load_target("menu-bar").is_some()
     {
+        // The native bootstrap binds menu-bar-edit-menu as an empty
+        // stand-in for sessions without the Lisp tree; unbind it here so
+        // menu-bar.el's own defvar populates the real Edit menu exactly
+        // as GNU's dumped image carries it.
+        let form = Reader::new("(makunbound 'menu-bar-edit-menu)")
+            .read_all()
+            .map_err(|error| format!("read menu-bar unbind form: {error}"))?
+            .remove(0);
+        interpreter
+            .eval(&form, &mut Vec::new())
+            .map_err(|error| format!("unbind menu-bar-edit-menu stand-in: {error}"))?;
         interpreter
             .load_target("menu-bar")
             .map_err(|error| format!("preload menu-bar: {error}"))?;

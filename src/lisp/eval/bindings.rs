@@ -684,6 +684,14 @@ impl Interpreter {
             }
             "unread-command-events" => Some(Value::Nil),
             "deactivate-mark" => Some(Value::Nil),
+            // xdisp.c: the frame whose menu bar is being updated, nil
+            // outside menu updates (menu-bar.el's :enable forms read it).
+            "menu-updating-frame" => Some(Value::Nil),
+            // startup.el's dumped defcustom default; the File menu's
+            // session-recovery :enable reads it.
+            "auto-save-list-file-prefix" => {
+                Some(Value::String("~/.emacs.d/auto-save-list/.saves-".into()))
+            }
             "line-spacing" => Some(Value::Nil),
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),

@@ -855,6 +855,30 @@ SCENARIOS = [
         "fixture\n",
         [b"\x18\x06", b"/nonexistent-zz", b"\t"],
     ),
+    # F10 drops the File menu; down-arrow moves the selection.
+    (
+        "f10-open",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[B"],
+    ),
+    # Right-arrow closes File and opens Edit at its bar column.
+    (
+        "f10-cycle",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[C"],
+    ),
+    # RET on "Visit New File..." runs find-file: the prompt appears.
+    (
+        "f10-select",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[B", b"\r"],
+    ),
+    # C-g dismisses the menu and restores the glass behind it.
+    (
+        "f10-dismiss",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x07", b"\x0e"],
+    ),
 ]
 
 

@@ -14,22 +14,61 @@ pub(crate) type EchoSpans = FaceSpans;
 thread_local! {
     static ECHO_AREA_MESSAGE: std::cell::RefCell<Option<(String, EchoSpans)>> =
         const { std::cell::RefCell::new(None) };
+    /// GNU's echo_area_buffer[1]: the last message shown on the glass.
+    /// `redisplay' from Lisp is redisplay_preserve_echo_area — when the
+    /// current message was wiped by input arrival, it re-displays this
+    /// one instead of clearing the row (menu-bar-open relies on it).
+    static ECHO_AREA_LAST_DISPLAYED: std::cell::RefCell<Option<(String, EchoSpans)>> =
+        const { std::cell::RefCell::new(None) };
+    /// The frontend is redrawing under Fredisplay's preserve semantics.
+    static ECHO_PRESERVE_REDISPLAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The current echo text came from printing to the `t' stream;
     /// further prints append (GNU's echo buffer accumulates a print
     /// sequence) while any `message' replaces it and resets this.
     static ECHO_FROM_PRINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Monotonic count of message emissions.  GNU's message3 repaints
+    /// the echo area directly (display_echo_area) even while a tty menu
+    /// holds redisplay frozen, whereas read_char's input-arrival
+    /// clear_message only takes effect at the next redisplay; the
+    /// frontend's menu loop tells the two apart by whether this moved.
+    static ECHO_MESSAGE_TICK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn bump_echo_message_tick() {
+    ECHO_MESSAGE_TICK.with(|tick| tick.set(tick.get().wrapping_add(1)));
+}
+
+pub(crate) fn echo_area_message_tick() -> u64 {
+    ECHO_MESSAGE_TICK.with(std::cell::Cell::get)
 }
 
 pub(crate) fn set_echo_area_message(text: Option<String>) {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
-    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = text.map(|text| (text, Vec::new())));
+    bump_echo_message_tick();
+    let message = text.map(|text| (text, Vec::new()));
+    // message3 displays right away: the new message (or, for a clear,
+    // nothing) becomes the last-displayed one too.
+    ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
 }
 
 /// A message carrying face spans (a propertized `message' — isearch's
 /// prompt); the frontend paints the spans on the echo row.
 pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
-    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = Some((text, spans)));
+    bump_echo_message_tick();
+    let message = Some((text, spans));
+    ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
+}
+
+/// keyboard.c read_char's wipe when the next input event arrives: the
+/// message channel empties without counting as an emission, so nothing
+/// repaints until the next redisplay — a menu freezing redisplay keeps
+/// the old pixels on the glass exactly as GNU does.
+pub(crate) fn expire_echo_area_message() {
+    ECHO_FROM_PRINT.with(|flag| flag.set(false));
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = None);
 }
 
 /// Printing to the `t' stream in an interactive session displays in the
@@ -37,10 +76,13 @@ pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
 /// sequence — eval-expression's value then its print format — append.
 pub(crate) fn echo_area_print(text: &str) {
     let appending = ECHO_FROM_PRINT.with(std::cell::Cell::get);
+    bump_echo_message_tick();
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| match slot {
         Some((existing, _)) if appending => existing.push_str(text),
         _ => *slot = Some((text.to_string(), Vec::new())),
     });
+    ECHO_AREA_LAST_DISPLAYED
+        .with_borrow_mut(|slot| *slot = ECHO_AREA_MESSAGE.with_borrow(|current| current.clone()));
     ECHO_FROM_PRINT.with(|flag| flag.set(true));
 }
 
@@ -48,8 +90,33 @@ pub(crate) fn echo_area_message() -> Option<String> {
     ECHO_AREA_MESSAGE.with_borrow(|slot| slot.as_ref().map(|(text, _)| text.clone()))
 }
 
+#[cfg(test)]
 pub(crate) fn echo_area_message_with_spans() -> Option<(String, EchoSpans)> {
     ECHO_AREA_MESSAGE.with_borrow(|slot| slot.clone())
+}
+
+/// What redisplay shows on the echo row — xdisp.c's echo_area_display.
+/// Normally the current message, which then becomes the last-displayed
+/// one (emptiness after an input-arrival wipe clears it).  Under
+/// Fredisplay's preserve semantics a wiped-but-last-displayed message
+/// shows again instead, leaving the wipe pending for the next normal
+/// redisplay (redisplay_preserve_echo_area).
+pub(crate) fn echo_display_message() -> Option<(String, EchoSpans)> {
+    let current = ECHO_AREA_MESSAGE.with_borrow(|slot| slot.clone());
+    if current.is_none() && ECHO_PRESERVE_REDISPLAY.with(std::cell::Cell::get) {
+        return ECHO_AREA_LAST_DISPLAYED.with_borrow(|slot| slot.clone());
+    }
+    ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&current));
+    current
+}
+
+/// Run F with `redisplay's preserve-echo-area semantics in force
+/// (dispnew.c's Fredisplay calls redisplay_preserve_echo_area).
+pub(crate) fn with_preserved_echo_redisplay<T>(f: impl FnOnce() -> T) -> T {
+    let previous = ECHO_PRESERVE_REDISPLAY.with(|flag| flag.replace(true));
+    let result = f();
+    ECHO_PRESERVE_REDISPLAY.with(|flag| flag.set(previous));
+    result
 }
 
 /// The face runs of a propertized string value, in char offsets.
@@ -3826,8 +3893,13 @@ define_dispatch!(
                 // A live frontend repaints through its redraw hook
                 // (sit-for redisplays before waiting); the cache-free
                 // batch renderer cannot be preempted by pending terminal
-                // input, so redisplay always completes.
-                crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+                // input, so redisplay always completes.  Fredisplay is
+                // redisplay_preserve_echo_area: a message wiped by input
+                // arrival but still last-displayed shows again instead
+                // of clearing the row (menu-bar-open relies on it).
+                with_preserved_echo_redisplay(|| {
+                    crate::lisp::primitives::run_tty_frame_redraw(interp, env)
+                });
                 Ok(Value::T)
             }
             "redraw-frame" => {

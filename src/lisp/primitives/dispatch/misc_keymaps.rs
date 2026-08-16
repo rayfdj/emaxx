@@ -508,13 +508,19 @@ define_dispatch!(
             "key-binding" => {
                 need_arg_range(name, args, 1, 4)?;
                 let key = key_sequence_binding_text(&args[0])?;
-                key_binding(
+                let parts = key_sequence_keymap_parts(&args[0])?;
+                let binding = key_binding_with_parts(
                     interp,
                     &key,
+                    &parts,
                     args.get(1).is_some_and(Value::is_truthy),
                     args.get(2).is_some_and(Value::is_truthy),
                     env,
-                )
+                )?;
+                // access_keymap resolves every answer through
+                // get_keyelt: a menu binding ("Edit" . KEYMAP) or
+                // (menu-item ...) answers its real definition.
+                keymap_get_keyelt(interp, &binding, true, env)
             }
             "keymap-prompt" => {
                 need_args(name, args, 1)?;

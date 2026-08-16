@@ -352,13 +352,16 @@ pub(crate) use dispatch::NameFacts;
 pub(crate) use dispatch::call_with_facts;
 pub(crate) use dispatch::echo_area_message;
 #[cfg(test)]
+pub(crate) use dispatch::echo_area_message_with_spans;
+#[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::oclosure_type_of;
 #[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
 pub(crate) use dispatch::{
-    EchoSpans, echo_area_message_with_spans, echo_area_print, set_echo_area_message,
+    EchoSpans, echo_area_message_tick, echo_area_print, echo_display_message,
+    expire_echo_area_message, set_echo_area_message, set_echo_area_message_with_spans,
     string_face_spans,
 };
 pub(crate) use dispatch::{
