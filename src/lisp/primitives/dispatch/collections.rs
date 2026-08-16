@@ -1153,6 +1153,22 @@ define_dispatch!(
 
             "category-set-mnemonics" => {
                 need_args(name, args, 1)?;
+                // GNU's CHECK_CATEGORY_SET accepts the 128-slot bool-vector
+                // that `char-category-set' returns; the internal string form
+                // remains accepted for entries stored as mnemonic strings.
+                if let Value::Record(id) = &args[0]
+                    && let Some(record) = interp.find_record(*id)
+                    && record.kind == crate::lisp::eval::RecordKind::BoolVector
+                {
+                    let text: String = record
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, slot)| slot.is_truthy())
+                        .filter_map(|(index, _)| char::from_u32(index as u32))
+                        .collect();
+                    return Ok(Value::String(normalize_category_set(&text).into()));
+                }
                 let text = string_text(&args[0])?;
                 Ok(Value::String(normalize_category_set(&text).into()))
             }

@@ -25,6 +25,211 @@ parallel-only noise.
 
 ## Current Resume Point
 
+- 2026-08-17 EVAL_04 MODULE-CLEAN CHECKPOINT: the complete `eval_04`
+  module is authoritatively clean: all 240 tests passed in one
+  `--test-threads=1` process in 1864.56 seconds.  The 103 gate failures
+  resolved into: (a) wholesale stale-runtime conversions — every
+  `eval_str_with_upstream_load_path` user (a bare host plus load path
+  that cannot require any GNU file) moved to the reconstructed batch
+  image, and the helper was deleted; failing `eval_str` (early-lisp)
+  tests whose subjects are GNU-preloaded owners moved to batch likewise;
+  (b) stale expectations corrected against direct GNU 30.2 probes —
+  regexp-opt prefix factoring, custom-add-option push order,
+  custom-add-choice full-member dedup, select-safe-coding-system's
+  `-unix' variant, bound-and-true-p under GNU's lexical --eval, eleven
+  rx patterns re-probed against GNU's real rx.el, font-lock/hi-lock
+  headless-batch nil results, when-let routing through a redefined
+  `if-let*' (GNU errors identically), residual reader comma (GNU also
+  signals void-function), the wrapper-hook test's parallel-`let'
+  capture bug (GNU probes confirm `let*' semantics), and the
+  help-surface metadata tests moved to the compiled no-native-comp
+  reality (`.elc' names, byte-code-function types, wrong-type-argument
+  for `aref' on a macro cons); (c) genuine native repairs —
+  `category-set-mnemonics' now accepts the 128-slot bool-vector that
+  `char-category-set' returns (fixing the bidi RTL chain), and
+  `func-arity' strips a `(macro . FN)' wrapper exactly like GNU
+  eval.c:Ffunc_arity.  Tests needing ert-x/cl-lib now require them the
+  way GNU sessions must.  NOTE: the sibling GNU build is
+  native-comp-enabled; emaxx models no-native-comp GNU
+  (native-comp-available-p nil), so type-of probes against the sibling
+  need translation (native subr -> byte-code-function).
+
+  Next: run the complete `eval_05` module serially for its full
+  inventory (the killed gate recorded 38 failures with the tail
+  unmeasured; its 17 stale-helper call sites are already converted),
+  fix by owner group, then the complete module, then the full serial
+  publication gate again, then the honest canonical X/7080 rebuild.
+
+- 2026-08-17 FULL-GATE INVENTORY CHECKPOINT: the complete serial
+  publication gate ran as one `--test-threads=1` process and was killed
+  partway through `eval_05` (mid-eshell cluster) after 678 passed and
+  156 failed.  Everything before `eval_04` is green in that single
+  process: all pre-eval modules (anti-cheat, batch, buffer, compat,
+  bytecode), `eval_01` 313/313, `eval_02` 278/278, and `eval_03`
+  310/310 — the sixty provisional eval_03 failures from 2026-08-15 are
+  fully resolved.  The eval_01/eval_02 ownership-cleanup state is
+  committed and pushed as b2e41f6 ("Own eval_01/eval_02 on GNU
+  runtimes: 313 and 278 serial-clean").
+
+  The authoritative remaining inventory from that run: `eval_04` failed
+  103 of 240, and `eval_05` failed 38 of the ~190 that ran before the
+  kill (its tail from the eshell cluster onward is unmeasured).  These
+  are single-process serial results, not parallel noise.  Failure-name
+  clusters suggest the familiar stale-ownership-setup classes: dired
+  (9), abbrev (8), call-interactively/process (6), overlay modification
+  hooks (5), font-lock (5), simulated minibuffer input (4), setf (4),
+  require (4), file notifications (4), ert helpers, format-spec, timers,
+  rx, letrec/named-let, and assorted singles.  Resume by diagnosing
+  `eval_04` in alphabetic serial partitions exactly as eval_02 was done
+  (probe GNU first; fix stale runtimes or genuine native mismatches by
+  owner group; never re-add Rust substitutes), then `eval_05`, then
+  rerun each complete module serially, then the full gate again.
+
+  The exact 141 recorded failures are:
+
+  eval_04: abbrev_edit_save_to_file_redefines_tables,
+  abbrev_initializes_local_abbrev_table_default,
+  abbrev_possibly_save_honors_simulated_no_response,
+  abbrev_possibly_save_writes_file_and_resets_changed_flag,
+  abbrev_require_preserves_mode_tables_loaded_first,
+  abbrev_require_seeds_standard_table_name_list,
+  abbrev_table_empty_obarray_symbol_preserves_table_properties,
+  abbrev_table_obarray_clear_removes_entries,
+  auto_revert_mode_reloads_changed_file,
+  batch_error_snapshot_keeps_deep_frames_and_signal_site_policy,
+  bidi_string_mark_left_to_right_marks_rtl_strings,
+  bound_and_true_p_checks_binding_before_value,
+  buffer_list_is_mru_ordered_after_switches,
+  call_interactively_autoloads_commands_before_collecting_args,
+  call_interactively_follows_symbol_aliases_for_interactive_specs,
+  call_interactively_records_declared_history_arguments,
+  call_interactively_rejects_invalid_control_letters,
+  call_process_region_can_delete_entire_buffer,
+  completing_read_consumes_keyboard_macro_input_in_the_minibuffer,
+  custom_add_choice_extends_choice_types_without_duplicates,
+  custom_add_option_records_unique_options,
+  describe_char_observes_preloaded_eldoc_multiline_policy,
+  dired_revert_refreshes_directory_listing,
+  ert_with_temp_file_honors_text_keyword,
+  ert_with_test_buffer_keeps_buffer_after_error,
+  ert_with_test_buffer_kills_buffer_after_success,
+  eval_buffer_interns_symbols_read_from_loaded_source,
+  file_notifications_do_not_replay_events_to_later_watches,
+  file_notifications_drive_global_auto_revert_without_polling,
+  file_notifications_keep_callbacks_isolated_and_invalidate_deleted_paths,
+  file_notifications_observe_changes_made_outside_the_interpreter,
+  find_coding_systems_region_internal_accepts_positions_and_exclusions,
+  find_file_sets_buffer_local_default_directory,
+  font_lock_defaults_syntax_alist_is_scoped_to_fontification,
+  font_lock_ensure_and_flush_track_hi_lock_faces,
+  font_lock_flush_reapplies_remaining_hi_lock_faces,
+  font_lock_keyword_matching_uses_and_restores_its_case_fold_setting,
+  font_lock_optional_nil_bounds_and_decoration_levels_match_gnu,
+  format_spec_applies_width_precision_and_flags,
+  format_spec_renders_buffers_with_princ_semantics,
+  format_spec_supports_function_values_and_split,
+  forward_and_backward_sexp_move_over_balanced_lists,
+  global_auto_revert_adopts_files_opened_after_enable,
+  header_line_indent_mode_sets_buffer_local_state,
+  if_let_and_when_let_support_single_binding_compat_syntax,
+  if_let_star_and_when_let_star_short_circuit_on_nil,
+  indent_line_to_replaces_existing_indentation,
+  indent_relative_uses_previous_line_indent_points,
+  inhibited_interaction_is_dynamic_across_separately_defined_prompt_helpers,
+  insert_file_contents_visit_marks_buffer_as_visiting_file,
+  keyboard_quit_signals_quit_condition,
+  letrec_binds_names_before_initializer_evaluation,
+  letrec_preserves_recursive_lambda_bindings,
+  loaded_timer_queue_fires_during_waits,
+  make_indirect_buffer_clone_copies_buffer_local_modes,
+  make_indirect_buffer_does_not_visit_the_base_buffers_file,
+  make_indirect_buffer_runs_local_clone_hooks_in_the_new_buffer,
+  minibuffer_completion_primitives_cover_batch_cases,
+  named_let_expands_to_recursive_binding,
+  named_let_keeps_its_non_tail_recursive_function_binding,
+  native_when_let_does_not_reexpand_transient_if_let_forms_in_loops,
+  no_conversion_file_reads_preserve_crlf_bytes,
+  nonlocal_exit_from_timer_preserves_later_due_timers,
+  overlay_modification_hooks_data_driven_cases,
+  overlay_modification_hooks_record_insert_at_overlay_start,
+  overlay_modification_hooks_record_insert_inside_overlay,
+  overlay_modification_hooks_record_replace_two_chars,
+  overlay_modification_hooks_record_zero_length_insert,
+  recursive_edit_pumps_loaded_elisp_timers_and_propagates_nonlocal_exits,
+  regexp_opt_builds_basic_alternations,
+  regexp_syntax_classes_match_lisp_definition_forms,
+  require_allows_early_provide_cycles_to_finish_defining_their_api,
+  require_and_provide_evaluate_feature_variables,
+  require_ert_uses_builtin_feature_and_skip_alias,
+  require_uses_current_load_path_binding,
+  residual_reader_comma_evaluates_unquote_operand,
+  run_with_timer_returns_a_timer_without_firing_immediately,
+  rx_compiles_common_test_patterns,
+  rx_supports_pcomplete_help_regex_forms,
+  scan_sexps_uses_syntax_properties_for_comment_boundaries,
+  select_safe_coding_system_uses_default_candidates,
+  seq_position_uses_equal_by_default,
+  set_visited_file_name_clears_the_recorded_modtime,
+  setf_alist_get_updates_and_removes_entries,
+  setf_image_property_updates_image_descriptors,
+  setf_plist_get_updates_and_adds_entries,
+  setf_uses_lambda_gv_setter_declarations,
+  simulated_input_translates_symbolic_return_at_gnu_key_boundaries,
+  simulated_minibuffer_keys_do_not_run_prompting_buffer_local_hooks,
+  simulated_minibuffer_keys_preserve_the_callers_prefix_argument,
+  simulated_minibuffer_prefix_commands_repeat_the_following_input,
+  skip_unless_records_skip_in_summary,
+  syntax_ppss_moves_point_to_pos_like_gnu,
+  tab_bar_new_tab_choice_has_preloaded_custom_type,
+  timer_callbacks_finish_with_defsubsts_from_their_unloaded_feature,
+  timerp_recognizes_loaded_timer_records,
+  translation_table_vector_is_bound_vector_not_abbrev_table,
+  upstream_abbrev_edit_save_to_file_case,
+  upstream_abbrev_edit_save_to_file_ert_case_passes,
+  url_insert_entities_in_string_escapes_html_markup_chars,
+  where_is_first_prefers_a_short_character_binding,
+  wrapper_hook_nil_path_runs_body,
+  wrapper_hook_non_nil_wraps_body_through_continuation.
+
+  eval_05 (through the kill point only): atomic_change_group_evaluates_body,
+  atomic_change_group_rolls_back_on_throw,
+  backtrace_get_frames_reports_live_lisp_call_symbols,
+  backward_delete_char_untabify_deletes_before_point,
+  beginning_of_defun_ignores_a_column_zero_opener_inside_a_string,
+  c_brace_newlines_reports_c_style_layout,
+  c_toggle_comment_style_switches_between_block_and_line_comments,
+  c_toggle_electric_state_updates_c_electric_flag,
+  call_last_kbd_macro_replays_dynamic_last_kbd_macro,
+  character_property_alias_applies_to_string_lookup_and_changes,
+  cl_mismatch_key_uses_eql_for_default_test,
+  cl_substitute_updates_list_copy_through_setf_elt,
+  coding_system_list_is_bound_and_callable,
+  coding_system_type_treats_nil_as_the_no_conversion_designator,
+  comment_region_wraps_c_style_and_prefixes_hash_comments,
+  completion_at_point_displays_ambiguous_candidates_after_no_progress,
+  completion_at_point_uses_partial_completion_wildcards,
+  cons_mutation_invalidates_all_source_derivations,
+  copyright_update_updates_last_notice_when_searching_from_end,
+  cyrillic_koi8_is_a_single_byte_round_tripping_coding,
+  defcustom_records_version_and_group_membership,
+  defgroup_tracks_current_group_and_members,
+  define_global_minor_mode_init_value_runs_body,
+  define_minor_mode_variable_option_toggles_backing_variable,
+  define_minor_mode_variable_setter_controls_the_stored_value,
+  directory_empty_p_and_temporary_file_directory_match_files_helpers,
+  dired_create_destination_dirs_controls_copy_and_rename,
+  dired_delete_empty_marked_directories_removes_entries,
+  dired_do_create_files_recreates_destination_directory,
+  dired_highlights_unsubstituted_shell_metacharacters,
+  dired_reuses_directory_buffer_and_preserves_file_point,
+  dired_revert_preserves_line_when_header_length_changes,
+  dired_shell_command_confirmation_positions_match_upstream,
+  dired_shell_command_confirms_unsafe_substitution_marks,
+  display_warning_uses_prefix_function_and_explicit_buffer,
+  dnd_multiple_url_handlers_prefer_earlier_equal_precedence_handler,
+  dolist_with_progress_reporter_uses_dolist_semantics,
+  dumped_loaddefs_inline_functions_are_available_without_owner_loads.
+
 - 2026-08-16 EVAL_02 MODULE-CLEAN CHECKPOINT: the complete `eval_02`
   module is authoritatively clean: all 278 tests passed in one process
   with `--test-threads=1` in 3139.62 seconds, after the complete
