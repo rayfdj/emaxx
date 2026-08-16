@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::EnvFrame;
 
 pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
     let items = value.to_vec().ok()?;
@@ -134,7 +135,7 @@ pub(crate) fn call_interactively_impl(
 pub(crate) fn eval_impl(
     interp: &mut Interpreter,
     args: &[Value],
-    env: &mut Env,
+    _env: &mut Env,
 ) -> Result<Value, LispError> {
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs("eval".into(), args.len()));
@@ -142,12 +143,28 @@ pub(crate) fn eval_impl(
     if let Some(lexical) = args.get(1) {
         let (capture_lexical, trim_context, mut eval_env) = match lexical {
             Value::Nil => (false, false, Vec::new()),
-            Value::T => (true, false, env.clone()),
+            Value::T => (
+                true,
+                false,
+                vec![EnvFrame::with_lisp_environment_and_identity(
+                    Vec::new(),
+                    Value::list([Value::T]),
+                    Interpreter::fresh_frame_identity(),
+                )],
+            ),
             Value::Cons(_) => {
                 let frame = lexical_alist_frame(lexical)?;
                 (true, true, vec![frame.into()])
             }
-            _ => (true, false, env.clone()),
+            _ => (
+                true,
+                false,
+                vec![EnvFrame::with_lisp_environment_and_identity(
+                    Vec::new(),
+                    Value::list([Value::T]),
+                    Interpreter::fresh_frame_identity(),
+                )],
+            ),
         };
         interp.push_lambda_eval_context(capture_lexical, trim_context);
         // A fresh `eval' is a fresh activation: closures it creates must not
@@ -185,101 +202,6 @@ fn lexical_alist_frame(value: &Value) -> Result<Vec<(String, Value)>, LispError>
         }
     }
     Ok(frame)
-}
-
-pub(crate) fn unload_feature_impl(
-    interp: &mut Interpreter,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    if args.is_empty() || args.len() > 2 {
-        return Err(LispError::WrongNumberOfArgs(
-            "unload-feature".into(),
-            args.len(),
-        ));
-    }
-    let feature = args[0].as_symbol()?.to_string();
-    if !interp.has_feature(&feature) {
-        return Err(LispError::Signal(format!(
-            "{feature} is not a currently loaded feature"
-        )));
-    }
-    let provide_entry = Value::cons(
-        Value::Symbol("provide".into()),
-        Value::Symbol(feature.clone().into()),
-    );
-    let load_history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
-    let mut entries = load_history.to_vec().unwrap_or_default();
-    let feature_entry = entries.iter().position(|entry| {
-        let Some((_, defs)) = (entry).cons_cells() else {
-            return false;
-        };
-        let defs = defs.borrow().clone();
-        defs.to_vec()
-            .is_ok_and(|defs| defs.iter().any(|def| def == &provide_entry))
-    });
-    if let Some(index) = feature_entry {
-        // Purge every entry recorded for the feature's file: repeated
-        // evaluation of the same file stacks entries, and a stale entry
-        // keeps pointing at a temp file after it is deleted.
-        let feature_file = match &entries[index] {
-            Value::Cons(cell) => Some(cell.car.borrow().clone()),
-            _ => None,
-        };
-        let mut removed = vec![entries.remove(index)];
-        if let Some(feature_file) = &feature_file {
-            let mut kept = Vec::with_capacity(entries.len());
-            for entry in entries {
-                let same_file = matches!(
-                    &entry,
-                    Value::Cons(cell) if &*cell.car.borrow() == feature_file
-                );
-                if same_file {
-                    removed.push(entry);
-                } else {
-                    kept.push(entry);
-                }
-            }
-            entries = kept;
-        }
-        for entry in &removed {
-            let Some((_, defs)) = (entry).cons_cells() else {
-                continue;
-            };
-            let defs = defs.borrow().clone();
-            for def in defs.to_vec().unwrap_or_default() {
-                let Some((kind, target)) = def.cons_cells() else {
-                    continue;
-                };
-                let kind = kind.borrow().clone();
-                let target = target.borrow().clone();
-                match (&kind, &target) {
-                    (Value::Symbol(kind), Value::Symbol(name)) if kind == "provide" => {
-                        interp.unprovide_feature(name);
-                    }
-                    (Value::Symbol(kind), Value::Symbol(name)) if kind == "defun" => {
-                        interp.remove_all_function_bindings(name);
-                    }
-                    (Value::Symbol(kind), rest) if kind == "cl-defmethod" => {
-                        if let Ok(parts) = rest.to_vec()
-                            && let Some(Value::Symbol(name)) = parts.first()
-                        {
-                            interp.remove_all_function_bindings(name);
-                            interp.put_symbol_property(
-                                name,
-                                "emaxx-cl-defmethod-specializers",
-                                Value::Nil,
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        interp.set_global_binding("load-history", Value::list(entries));
-    }
-    interp.unprovide_feature(&feature);
-    Ok(Value::Nil)
 }
 
 pub(crate) fn eval_buffer_impl(
@@ -510,14 +432,9 @@ pub(crate) fn eager_expand_eval(
     form: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let compile_time_only = form.to_vec().is_ok_and(
-        |items| matches!(items.first(), Some(Value::Symbol(head)) if head == "eval-when-compile"),
-    );
-    if compile_time_only {
-        return interp.with_current_load_history_suppressed(|interp| {
-            eager_expand_eval_inner(interp, form, env)
-        });
-    }
+    // GNU does not suppress load-history attachment while a top-level
+    // `eval-when-compile' body runs during a source load: a `require'
+    // evaluated there still records under the loading file.
     eager_expand_eval_inner(interp, form, env)
 }
 
@@ -526,9 +443,7 @@ fn eager_expand_eval_inner(
     form: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let expanded =
-        crate::lisp::primitives::call(interp, "macroexpand", std::slice::from_ref(form), env)
-            .unwrap_or_else(|_| form.clone());
+    let expanded = call_internal_macroexpand_for_load(interp, form, Value::Nil, env)?;
     if let Ok(items) = expanded.to_vec()
         && matches!(items.first(), Some(Value::Symbol(head)) if head == "progn")
     {
@@ -540,10 +455,23 @@ fn eager_expand_eval_inner(
         }
         return Ok(result);
     }
-    let full = interp
-        .macroexpand_all_form_with_environment(&expanded, None, env)
-        .unwrap_or_else(|_| expanded.clone());
+    let full = call_internal_macroexpand_for_load(interp, &expanded, Value::T, env)?;
     interp.eval(&full, env)
+}
+
+fn call_internal_macroexpand_for_load(
+    interp: &mut Interpreter,
+    form: &Value,
+    full: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let owner = interp.lookup_function("internal-macroexpand-for-load", env)?;
+    interp.call_function_value(
+        owner,
+        Some("internal-macroexpand-for-load"),
+        &[form.clone(), full],
+        env,
+    )
 }
 
 fn eval_buffer_via_load_read_function(

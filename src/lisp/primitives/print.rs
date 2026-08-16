@@ -22,6 +22,17 @@ pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -
             '\t' if escape_newlines => rendered.push_str("\\t"),
             '\u{0008}' if escape_newlines => rendered.push_str("\\b"),
             '\u{000C}' if escape_newlines => rendered.push_str("\\f"),
+            // GNU print.c octal-escapes raw 8-bit bytes (`\300') whenever
+            // they cannot be emitted as characters: always in multibyte
+            // strings, and under `print-escape-nonascii' (auto-bound by
+            // string output in multibyte contexts) in unibyte strings.
+            // Emaxx represents such bytes as placeholder scalars, which
+            // must never leak into printed syntax.
+            ch if case::is_raw_byte_regex_char(ch) => {
+                let byte = case::raw_byte_from_regex_char(ch)
+                    .expect("raw byte placeholder maps back to its byte");
+                rendered.push_str(&format!("\\{byte:03o}"));
+            }
             ch if escape_multibyte && !ch.is_ascii() => {
                 rendered.push_str(&format!("\\x{:04x}", ch as u32));
             }
@@ -44,30 +55,29 @@ pub(crate) enum PrintRefKey {
 pub(crate) struct PrintOptions {
     circle: bool,
     continuous_numbering: bool,
-    dialect: PrintDialect,
     gensym: bool,
     integers_as_characters: bool,
+    symbols_bare: bool,
     length: Option<usize>,
     level: Option<usize>,
     quoted: bool,
-    string_length: Option<usize>,
-}
-
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum PrintDialect {
-    #[default]
-    Emacs,
-    Cl,
 }
 
 #[derive(Clone)]
 pub(crate) struct PrintContext {
     options: PrintOptions,
     counts: HashMap<PrintRefKey, usize>,
-    labels: HashMap<PrintRefKey, usize>,
+    labels: HashMap<PrintRefKey, PrintLabel>,
     next_label: usize,
     active: HashSet<PrintRefKey>,
-    first_ellipsis_expansion: Option<String>,
+    number_table: Option<Value>,
+}
+
+#[derive(Clone)]
+struct PrintLabel {
+    number: usize,
+    printed: bool,
+    object: Value,
 }
 
 impl PrintContext {
@@ -77,8 +87,11 @@ impl PrintContext {
         env: &Env,
         options: PrintOptions,
     ) -> Result<Self, LispError> {
+        let number_table = interp
+            .lookup_var("print-number-table", env)
+            .filter(|value| json::is_hash_table(interp, value));
         let (labels, next_label) = if options.circle && options.continuous_numbering {
-            parse_print_number_table(interp.lookup_var("print-number-table", env).as_ref())
+            parse_print_number_table(interp, number_table.as_ref(), options)
         } else {
             (HashMap::new(), 1)
         };
@@ -92,36 +105,27 @@ impl PrintContext {
             labels,
             next_label,
             active: HashSet::new(),
-            first_ellipsis_expansion: None,
+            number_table,
         })
-    }
-
-    fn record_ellipsis_expansion(&mut self, expansion: String) {
-        if self.first_ellipsis_expansion.is_none() {
-            self.first_ellipsis_expansion = Some(expansion);
-        }
     }
 }
 
-pub(crate) fn print_options(
-    interp: &Interpreter,
-    env: &Env,
-    dialect: PrintDialect,
-) -> PrintOptions {
+pub(crate) fn print_options(interp: &Interpreter, env: &Env) -> PrintOptions {
     PrintOptions {
         circle: interp
             .lookup_var("print-circle", env)
             .is_some_and(|value| value.is_truthy()),
-        continuous_numbering: dialect != PrintDialect::Cl
-            && interp
-                .lookup_var("print-continuous-numbering", env)
-                .is_some_and(|value| value.is_truthy()),
-        dialect,
+        continuous_numbering: interp
+            .lookup_var("print-continuous-numbering", env)
+            .is_some_and(|value| value.is_truthy()),
         gensym: interp
             .lookup_var("print-gensym", env)
             .is_some_and(|value| value.is_truthy()),
         integers_as_characters: interp
             .lookup_var("print-integers-as-characters", env)
+            .is_some_and(|value| value.is_truthy()),
+        symbols_bare: interp
+            .lookup_var("print-symbols-bare", env)
             .is_some_and(|value| value.is_truthy()),
         length: interp
             .lookup_var("print-length", env)
@@ -134,46 +138,29 @@ pub(crate) fn print_options(
         quoted: interp
             .lookup_var("print-quoted", env)
             .is_some_and(|value| value.is_truthy()),
-        string_length: interp
-            .lookup_var("cl-print-string-length", env)
-            .and_then(|value| value.as_integer().ok())
-            .and_then(|value| usize::try_from(value).ok()),
     }
 }
 
-pub(crate) fn record_prin1_fields(
-    interp: &Interpreter,
-    id: u64,
-    dialect: PrintDialect,
-) -> Option<Vec<Value>> {
+pub(crate) fn record_prin1_fields(interp: &Interpreter, id: u64) -> Option<Vec<Value>> {
     let record = interp.find_record(id)?;
-    match record.type_name.as_str() {
-        "thread" | "mutex" | "condition-variable" | "hash-table" | "process" | "obarray" => None,
-        "literal-record" => Some(record.slots.clone()),
-        _ => {
-            if dialect == PrintDialect::Cl
-                && let Some(slot_names) = interp
-                    .get_symbol_property(&record.type_name, "emaxx-struct-slots")
-                    .and_then(|value| value.to_vec().ok())
-                && slot_names.len() == record.slots.len()
-            {
-                let mut fields = Vec::with_capacity(1 + record.slots.len() * 2);
-                fields.push(Value::Symbol(record.type_name.clone().into()));
-                for (slot_name, slot_value) in slot_names.iter().zip(record.slots.iter()) {
-                    let Ok(slot_name) = slot_name.as_symbol() else {
-                        return None;
-                    };
-                    fields.push(Value::Symbol(format!(":{slot_name}").into()));
-                    fields.push(slot_value.clone());
-                }
-                return Some(fields);
-            }
-            Some(
-                std::iter::once(Value::Symbol(record.type_name.clone().into()))
-                    .chain(record.slots.iter().cloned())
-                    .collect(),
-            )
-        }
+    // GNU print.c handles PVEC_SYMBOL_WITH_POS directly rather than as a
+    // record or print-circle candidate.  Its dedicated rendering branch is
+    // in `render_prin1_body' below.
+    if record.kind == crate::lisp::eval::RecordKind::SymbolWithPos {
+        return None;
+    }
+    match record.kind {
+        crate::lisp::eval::RecordKind::Thread
+        | crate::lisp::eval::RecordKind::Mutex
+        | crate::lisp::eval::RecordKind::ConditionVariable
+        | crate::lisp::eval::RecordKind::HashTable
+        | crate::lisp::eval::RecordKind::Process
+        | crate::lisp::eval::RecordKind::Obarray => None,
+        _ => Some(
+            std::iter::once(record.type_tag.clone())
+                .chain(record.slots.iter().cloned())
+                .collect(),
+        ),
     }
 }
 
@@ -192,7 +179,7 @@ pub(crate) fn print_ref_key(
         {
             Some(PrintRefKey::Symbol(symbol.to_string()))
         }
-        Value::Record(id) if record_prin1_fields(interp, *id, PrintDialect::Emacs).is_some() => {
+        Value::Record(id) if record_prin1_fields(interp, *id).is_some() => {
             Some(PrintRefKey::Record(*id))
         }
         _ => None,
@@ -208,103 +195,45 @@ pub(crate) fn print_ref_placeholder(key: PrintRefKey) -> String {
     }
 }
 
-pub(crate) fn print_number_table_entry(key: &PrintRefKey, label: usize) -> Value {
-    let label = Value::Integer(label as i64);
-    match key {
-        PrintRefKey::Cons(id) => Value::list([
-            Value::Symbol("cons".into()),
-            Value::String(id.to_string().into()),
-            label,
-        ]),
-        PrintRefKey::Record(id) => Value::list([
-            Value::Symbol("record".into()),
-            Value::String(id.to_string().into()),
-            label,
-        ]),
-        PrintRefKey::StringObject(id) => Value::list([
-            Value::Symbol("string-object".into()),
-            Value::String(id.to_string().into()),
-            label,
-        ]),
-        PrintRefKey::Symbol(symbol) => Value::list([
-            Value::Symbol("symbol".into()),
-            Value::String(symbol.clone().into()),
-            label,
-        ]),
-    }
-}
-
-pub(crate) fn print_number_table_value(
-    labels: &HashMap<PrintRefKey, usize>,
-    next_label: usize,
-) -> Value {
-    let mut entries = labels.iter().collect::<Vec<_>>();
-    entries.sort_by_key(|(_, label)| **label);
-
-    let mut items = Vec::with_capacity(entries.len() + 2);
-    items.push(Value::Symbol("emaxx-print-number-table".into()));
-    items.push(Value::Integer(next_label as i64));
-    for (key, label) in entries {
-        items.push(print_number_table_entry(key, *label));
-    }
-    Value::list(items)
-}
-
-pub(crate) fn parse_print_number_table(
+fn parse_print_number_table(
+    interp: &Interpreter,
     value: Option<&Value>,
-) -> (HashMap<PrintRefKey, usize>, usize) {
+    options: PrintOptions,
+) -> (HashMap<PrintRefKey, PrintLabel>, usize) {
     let Some(value) = value else {
         return (HashMap::new(), 1);
     };
-    let Ok(items) = value.to_vec() else {
+    let Some((_, entries)) = json::hash_table_entries(interp, value) else {
         return (HashMap::new(), 1);
     };
-    let [Value::Symbol(tag), next_label, rest @ ..] = items.as_slice() else {
-        return (HashMap::new(), 1);
-    };
-    if tag != "emaxx-print-number-table" {
-        return (HashMap::new(), 1);
-    }
-
-    let next_label = next_label
-        .as_integer()
-        .ok()
-        .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(1);
 
     let mut labels = HashMap::new();
-    for entry in rest {
-        let Ok(parts) = entry.to_vec() else {
+    for (object, state) in entries {
+        let Ok(state) = state.as_integer() else {
             continue;
         };
-        let [Value::Symbol(kind), data, label] = parts.as_slice() else {
-            continue;
-        };
-        let Some(label) = label
-            .as_integer()
-            .ok()
-            .and_then(|value| usize::try_from(value).ok())
+        let Some(number) = state
+            .checked_abs()
+            .and_then(|number| usize::try_from(number).ok())
+            .filter(|number| *number > 0)
         else {
             continue;
         };
-        let Ok(data) = data.as_string() else {
+        let Some(key) = print_ref_key(interp, &object, options) else {
             continue;
         };
-        let key = match kind.as_str() {
-            "cons" => data.parse().ok().map(PrintRefKey::Cons),
-            "record" => data.parse().ok().map(PrintRefKey::Record),
-            "string-object" => data.parse().ok().map(PrintRefKey::StringObject),
-            "symbol" => Some(PrintRefKey::Symbol(data.to_string())),
-            _ => None,
-        };
-        if let Some(key) = key {
-            labels.insert(key, label);
-        }
+        labels.insert(
+            key,
+            PrintLabel {
+                number,
+                printed: state > 0,
+                object,
+            },
+        );
     }
 
-    let max_label = labels.values().copied().max().unwrap_or(0);
-    (labels, next_label.max(max_label + 1))
+    let next_label = labels.values().map(|label| label.number).max().unwrap_or(0) + 1;
+    (labels, next_label)
 }
 
 pub(crate) fn set_env_binding(env: &mut Env, name: &str, value: Value) {
@@ -345,93 +274,61 @@ pub(crate) fn collect_print_counts(
     counts: &mut HashMap<PrintRefKey, usize>,
     expanded: &mut HashSet<PrintRefKey>,
 ) -> Result<(), LispError> {
-    if let Some(key) = print_ref_key(interp, value, options) {
+    walk_print_graph(interp, value, options, |key, _| {
         *counts.entry(key.clone()).or_insert(0) += 1;
-        if !expanded.insert(key) {
-            return Ok(());
-        }
-    }
-
-    match value {
-        Value::Cons(_) if is_vector_value(value) => {
-            for item in vector_items(value)? {
-                collect_print_counts(interp, &item, options, counts, expanded)?;
-            }
-        }
-        Value::Cons(_) => {
-            let Some((car, cdr)) = value.cons_values() else {
-                return Ok(());
-            };
-            collect_print_counts(interp, &car, options, counts, expanded)?;
-            collect_print_counts(interp, &cdr, options, counts, expanded)?;
-        }
-        Value::StringObject(state) => {
-            let props = state.borrow().props.clone();
-            for span in props {
-                for (_, prop_value) in span.props {
-                    collect_print_counts(interp, &prop_value, options, counts, expanded)?;
-                }
-            }
-        }
-        Value::Record(id) => {
-            if let Some(fields) = record_prin1_fields(interp, *id, PrintDialect::Emacs) {
-                for field in fields {
-                    collect_print_counts(interp, &field, options, counts, expanded)?;
-                }
-            }
-        }
-        _ => {}
-    }
-
-    Ok(())
+        expanded.insert(key)
+    })
 }
 
-pub(crate) fn collect_print_table_objects(
+/// Walk the exact object graph considered by GNU print.c's
+/// PRINT_CIRCLE_CANDIDATE_P, visiting children in print order.  VISIT returns
+/// whether a candidate's children should be traversed.  The explicit work
+/// stack matches GNU's ppstack and remains safe for deep and cyclic objects.
+fn walk_print_graph(
     interp: &Interpreter,
     value: &Value,
     options: PrintOptions,
-    counts: &mut HashMap<PrintRefKey, (usize, Value)>,
-    expanded: &mut HashSet<PrintRefKey>,
+    mut visit: impl FnMut(PrintRefKey, &Value) -> bool,
 ) -> Result<(), LispError> {
-    if let Some(key) = print_ref_key(interp, value, options) {
-        let entry = counts.entry(key.clone()).or_insert((0, value.clone()));
-        entry.0 += 1;
-        if !expanded.insert(key) {
-            return Ok(());
+    let mut pending = vec![value.clone()];
+    while let Some(value) = pending.pop() {
+        if let Some(key) = print_ref_key(interp, &value, options)
+            && !visit(key, &value)
+        {
+            continue;
         }
-    }
 
-    match value {
-        Value::Cons(_) if is_vector_value(value) => {
-            for item in vector_items(value)? {
-                collect_print_table_objects(interp, &item, options, counts, expanded)?;
+        match &value {
+            Value::Cons(_) if is_vector_value(&value) => {
+                let items = vector_items(&value)?;
+                pending.extend(items.into_iter().rev());
             }
-        }
-        Value::Cons(_) => {
-            let Some((car, cdr)) = value.cons_values() else {
-                return Ok(());
-            };
-            collect_print_table_objects(interp, &car, options, counts, expanded)?;
-            collect_print_table_objects(interp, &cdr, options, counts, expanded)?;
-        }
-        Value::StringObject(state) => {
-            let props = state.borrow().props.clone();
-            for span in props {
-                for (_, prop_value) in span.props {
-                    collect_print_table_objects(interp, &prop_value, options, counts, expanded)?;
+            Value::Cons(_) => {
+                let Some((car, cdr)) = value.cons_values() else {
+                    continue;
+                };
+                pending.push(cdr);
+                pending.push(car);
+            }
+            Value::StringObject(state) => {
+                let props = state.borrow().props.clone();
+                for span in props.into_iter().rev() {
+                    pending.extend(
+                        span.props
+                            .into_iter()
+                            .rev()
+                            .map(|(_, prop_value)| prop_value),
+                    );
                 }
             }
-        }
-        Value::Record(id) => {
-            if let Some(fields) = record_prin1_fields(interp, *id, PrintDialect::Emacs) {
-                for field in fields {
-                    collect_print_table_objects(interp, &field, options, counts, expanded)?;
+            Value::Record(id) => {
+                if let Some(fields) = record_prin1_fields(interp, *id) {
+                    pending.extend(fields.into_iter().rev());
                 }
             }
+            _ => {}
         }
-        _ => {}
     }
-
     Ok(())
 }
 
@@ -449,239 +346,58 @@ pub(crate) fn print_preprocess(
 
     let table = match interp.lookup_var("print-number-table", env) {
         Some(existing) if json::is_hash_table(interp, &existing) => existing,
-        _ => json::make_hash_table(interp, "eql", Vec::new()),
+        _ => json::make_hash_table(interp, "eq", Vec::new()),
     };
-    set_env_binding(env, "print-number-table", table.clone());
+    // GNU's Vprint_number_table is a real special variable.  Update its
+    // active dynamic binding, not merely a lexical frame passed to the
+    // primitive.
+    interp.set_variable("print-number-table", table.clone(), env);
 
-    let mut counts = HashMap::new();
-    collect_print_table_objects(
-        interp,
-        value,
-        print_options(interp, env, PrintDialect::Emacs),
-        &mut counts,
-        &mut HashSet::new(),
-    )?;
+    let options = print_options(interp, env);
+    let mut entries = json::hash_table_entries(interp, &table)
+        .map(|(_, entries)| entries)
+        .unwrap_or_default();
+    let mut positions = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (object, _))| {
+            print_ref_key(interp, object, options).map(|key| (key, index))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut number_index = 0i64;
+    walk_print_graph(interp, value, options, |key, object| {
+        let continuous_gensym = options.continuous_numbering
+            && matches!(
+                object,
+                Value::Symbol(symbol) if crate::lisp::types::is_uninterned_symbol(symbol)
+            );
+        if let Some(index) = positions.get(&key).copied() {
+            let state = &entries[index].1;
+            if state.is_truthy() || continuous_gensym {
+                if matches!(state, Value::Nil | Value::T | Value::Symbol(_)) {
+                    number_index = number_index.saturating_add(1);
+                    entries[index].1 = Value::Integer(-number_index);
+                }
+                return false;
+            }
+            entries[index].1 = Value::T;
+            return true;
+        }
 
-    let entries = counts
-        .into_values()
-        .filter(|(count, _)| *count > 1)
-        .map(|(_, object)| (object, Value::T))
-        .collect::<Vec<_>>();
+        let state = if continuous_gensym {
+            number_index = number_index.saturating_add(1);
+            Value::Integer(-number_index)
+        } else {
+            Value::T
+        };
+        let descend = !continuous_gensym;
+        positions.insert(key, entries.len());
+        entries.push((object.clone(), state));
+        descend
+    })?;
+
     set_hash_table_entries(interp, &table, entries)?;
     Ok(Value::Nil)
-}
-
-fn render_cl_ellipsis_object_expansion(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-    context: &PrintContext,
-) -> Result<String, LispError> {
-    let mut expansion_context = context.clone();
-    expansion_context.first_ellipsis_expansion = None;
-    if let Some(key) = print_ref_key(interp, value, context.options) {
-        expansion_context.active.remove(&key);
-    }
-    render_prin1_with_context(interp, value, env, &mut expansion_context, 0)
-}
-
-fn render_cl_list_tail_expansion(
-    interp: &mut Interpreter,
-    tail: &Value,
-    env: &mut Env,
-    context: &PrintContext,
-) -> Result<String, LispError> {
-    if let Some(key) = print_ref_key(interp, tail, context.options) {
-        if context.options.circle
-            && let Some(label) = context.labels.get(&key)
-        {
-            return Ok(format!("#{label}#"));
-        }
-        if !context.options.circle && context.active.contains(&key) {
-            return Ok(print_ref_placeholder(key));
-        }
-    }
-
-    let mut expansion_context = context.clone();
-    expansion_context.first_ellipsis_expansion = None;
-    let mut rendered = Vec::new();
-    let mut current = tail.clone();
-    loop {
-        match current {
-            Value::Nil => return Ok(rendered.join(" ")),
-            Value::Cons(_) if is_vector_value(&current) => {
-                let tail_rendered =
-                    render_prin1_with_context(interp, &current, env, &mut expansion_context, 0)?;
-                return Ok(if rendered.is_empty() {
-                    tail_rendered
-                } else {
-                    format!("{} . {}", rendered.join(" "), tail_rendered)
-                });
-            }
-            Value::Cons(_) => {
-                if expansion_context
-                    .options
-                    .length
-                    .is_some_and(|limit| rendered.len() >= limit)
-                {
-                    rendered.push("...".into());
-                    return Ok(rendered.join(" "));
-                }
-                let Some((car, cdr)) = current.cons_values() else {
-                    return Ok(rendered.join(" "));
-                };
-                rendered.push(render_prin1_with_context(
-                    interp,
-                    &car,
-                    env,
-                    &mut expansion_context,
-                    0,
-                )?);
-                current = cdr;
-            }
-            other => {
-                let tail_rendered =
-                    render_prin1_with_context(interp, &other, env, &mut expansion_context, 0)?;
-                return Ok(if rendered.is_empty() {
-                    tail_rendered
-                } else {
-                    format!("{} . {}", rendered.join(" "), tail_rendered)
-                });
-            }
-        }
-    }
-}
-
-fn render_cl_vector_tail_expansion(
-    interp: &mut Interpreter,
-    items: &[Value],
-    start: usize,
-    env: &mut Env,
-    context: &PrintContext,
-) -> Result<String, LispError> {
-    let mut expansion_context = context.clone();
-    expansion_context.first_ellipsis_expansion = None;
-    let mut rendered = Vec::new();
-    for item in items.iter().skip(start) {
-        if expansion_context
-            .options
-            .length
-            .is_some_and(|limit| rendered.len() >= limit)
-        {
-            rendered.push("...".into());
-            break;
-        }
-        rendered.push(render_prin1_with_context(
-            interp,
-            item,
-            env,
-            &mut expansion_context,
-            0,
-        )?);
-    }
-    Ok(rendered.join(" "))
-}
-
-fn render_cl_string_property_tail_expansion(
-    interp: &mut Interpreter,
-    fields: &[Value],
-    start: usize,
-    env: &mut Env,
-    context: &PrintContext,
-) -> Result<String, LispError> {
-    let mut expansion_context = context.clone();
-    expansion_context.first_ellipsis_expansion = None;
-    let interval_limit = context
-        .options
-        .length
-        .map(|limit| (limit / 3).max(1))
-        .unwrap_or(usize::MAX);
-    let mut rendered = Vec::new();
-    let mut intervals = 0usize;
-    let mut index = start;
-    while index < fields.len() {
-        if intervals >= interval_limit {
-            rendered.push("...".into());
-            break;
-        }
-        for field in fields.iter().skip(index).take(3) {
-            rendered.push(render_prin1_with_context(
-                interp,
-                field,
-                env,
-                &mut expansion_context,
-                0,
-            )?);
-        }
-        intervals += 1;
-        index += 3;
-    }
-    Ok(rendered.join(" "))
-}
-
-fn render_cl_record_tail_expansion(
-    interp: &mut Interpreter,
-    fields: &[Value],
-    start: usize,
-    env: &mut Env,
-    context: &PrintContext,
-) -> Result<String, LispError> {
-    let mut expansion_context = context.clone();
-    expansion_context.first_ellipsis_expansion = None;
-    let slot_limit = context.options.length.unwrap_or(usize::MAX);
-    let mut rendered = Vec::new();
-    let mut slots = 0usize;
-    let mut index = start;
-    while index < fields.len() {
-        if slots >= slot_limit {
-            rendered.push("...".into());
-            break;
-        }
-        rendered.push(render_prin1_with_context(
-            interp,
-            &fields[index],
-            env,
-            &mut expansion_context,
-            0,
-        )?);
-        if let Some(value) = fields.get(index + 1) {
-            rendered.push(render_prin1_with_context(
-                interp,
-                value,
-                env,
-                &mut expansion_context,
-                0,
-            )?);
-        }
-        slots += 1;
-        index += 2;
-    }
-    Ok(rendered.join(" "))
-}
-
-fn render_cl_string_literal(
-    interp: &Interpreter,
-    text: &str,
-    env: &Env,
-    context: &mut PrintContext,
-) -> String {
-    if context.options.dialect == PrintDialect::Cl
-        && let Some(limit) = context.options.string_length
-    {
-        let len = text.chars().count();
-        if len > limit {
-            let prefix = text.chars().take(limit).collect::<String>();
-            let tail = text.chars().skip(limit).collect::<String>();
-            let expansion = if tail.chars().count() > limit {
-                format!("{}...", tail.chars().take(limit).collect::<String>())
-            } else {
-                tail
-            };
-            context.record_ellipsis_expansion(expansion);
-            return render_prin1_string(interp, &format!("{prefix}..."), env);
-        }
-    }
-    render_prin1_string(interp, text, env)
 }
 
 pub(crate) fn render_prin1_list(
@@ -728,10 +444,6 @@ pub(crate) fn render_prin1_list(
                     .length
                     .is_some_and(|limit| rendered.len() >= limit)
                 {
-                    if context.options.dialect == PrintDialect::Cl {
-                        let expansion = render_cl_list_tail_expansion(interp, &tail, env, context)?;
-                        context.record_ellipsis_expansion(expansion);
-                    }
                     rendered.push("...".into());
                     return Ok(format!("({})", rendered.join(" ")));
                 }
@@ -804,16 +516,31 @@ pub(crate) fn render_prin1_with_context(
     }
     if let Some(key) = print_ref_key(interp, value, context.options) {
         if should_label_value(value, &key, context) {
-            if let Some(label) = context.labels.get(&key) {
-                return Ok(format!("#{label}#"));
+            if let Some(label) = context.labels.get_mut(&key) {
+                let number = label.number;
+                if label.printed {
+                    return Ok(format!("#{number}#"));
+                }
+                label.printed = true;
+                context.active.insert(key.clone());
+                let rendered = render_prin1_body(interp, value, env, context, depth);
+                context.active.remove(&key);
+                return rendered.map(|body| format!("#{number}={body}"));
             }
-            let label = context.next_label;
+            let number = context.next_label;
             context.next_label += 1;
-            context.labels.insert(key.clone(), label);
+            context.labels.insert(
+                key.clone(),
+                PrintLabel {
+                    number,
+                    printed: true,
+                    object: value.clone(),
+                },
+            );
             context.active.insert(key.clone());
             let rendered = render_prin1_body(interp, value, env, context, depth);
             context.active.remove(&key);
-            return rendered.map(|body| format!("#{label}={body}"));
+            return rendered.map(|body| format!("#{number}={body}"));
         }
         if !context.active.insert(key.clone()) {
             return Ok(print_ref_placeholder(key));
@@ -938,14 +665,10 @@ pub(crate) fn render_prin1_symbol(symbol: &str, options: PrintOptions) -> String
 pub(crate) fn should_render_charset_text_property(
     interp: &Interpreter,
     env: &Env,
-    dialect: PrintDialect,
     text: &str,
     span: &StringPropertySpan,
     value: &Value,
 ) -> bool {
-    if dialect == PrintDialect::Cl {
-        return true;
-    }
     let setting = interp
         .lookup_var("print-charset-text-property", env)
         .unwrap_or(Value::Nil);
@@ -1059,36 +782,6 @@ pub(crate) fn render_prin1_body(
         Ok(Some(string_text(&rendered)?))
     };
 
-    if context.options.dialect == PrintDialect::Cl
-        && context.options.level.is_some_and(|limit| depth >= limit)
-    {
-        match value {
-            Value::StringObject(state) if !state.borrow().props.is_empty() => {
-                let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
-                context.record_ellipsis_expansion(expansion);
-                return Ok("...".into());
-            }
-            Value::Cons(_) if is_vector_value(value) => {
-                let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
-                context.record_ellipsis_expansion(expansion);
-                return Ok("...".into());
-            }
-            Value::Record(id)
-                if record_prin1_fields(interp, *id, context.options.dialect).is_some() =>
-            {
-                let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
-                context.record_ellipsis_expansion(expansion);
-                return Ok("...".into());
-            }
-            Value::Cons(_) => {
-                let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
-                context.record_ellipsis_expansion(expansion);
-                return Ok("...".into());
-            }
-            _ => {}
-        }
-    }
-
     if context.options.quoted
         && let Ok(items) = value.to_vec()
     {
@@ -1129,16 +822,16 @@ pub(crate) fn render_prin1_body(
             }
             Ok(value.to_string())
         }
-        Value::String(text) => Ok(render_cl_string_literal(interp, text, env, context)),
+        Value::String(text) => Ok(render_prin1_string(interp, text, env)),
         Value::StringObject(state) => {
             let (text, props) = {
                 let state = state.borrow();
                 (state.text.clone(), state.props.clone())
             };
             if props.is_empty() {
-                return Ok(render_cl_string_literal(interp, &text, env, context));
+                return Ok(render_prin1_string(interp, &text, env));
             }
-            let mut rendered = vec![render_cl_string_literal(interp, &text, env, context)];
+            let mut rendered = vec![render_prin1_string(interp, &text, env)];
             let mut field_values = Vec::new();
             for span in props {
                 let filtered_props = span
@@ -1146,14 +839,7 @@ pub(crate) fn render_prin1_body(
                     .iter()
                     .filter(|(name, value)| {
                         name != "charset"
-                            || should_render_charset_text_property(
-                                interp,
-                                env,
-                                context.options.dialect,
-                                &text,
-                                &span,
-                                value,
-                            )
+                            || should_render_charset_text_property(interp, env, &text, &span, value)
                     })
                     .cloned()
                     .collect::<Vec<_>>();
@@ -1164,22 +850,12 @@ pub(crate) fn render_prin1_body(
                 field_values.push(Value::Integer(span.end as i64));
                 field_values.push(plist_value(&filtered_props));
             }
-            for (index, field) in field_values.iter().enumerate() {
+            for field in &field_values {
                 if context
                     .options
                     .length
                     .is_some_and(|limit| rendered.len() >= limit)
                 {
-                    if context.options.dialect == PrintDialect::Cl {
-                        let expansion = render_cl_string_property_tail_expansion(
-                            interp,
-                            &field_values,
-                            index,
-                            env,
-                            context,
-                        )?;
-                        context.record_ellipsis_expansion(expansion);
-                    }
                     rendered.push("...".into());
                     break;
                 }
@@ -1192,7 +868,7 @@ pub(crate) fn render_prin1_body(
                 )?);
             }
             if rendered.len() == 1 {
-                return Ok(render_cl_string_literal(interp, &text, env, context));
+                return Ok(render_prin1_string(interp, &text, env));
             }
             Ok(format!("#({})", rendered.join(" ")))
         }
@@ -1205,11 +881,6 @@ pub(crate) fn render_prin1_body(
             let mut rendered_items = Vec::new();
             for (index, item) in items.iter().enumerate() {
                 if context.options.length.is_some_and(|limit| index >= limit) {
-                    if context.options.dialect == PrintDialect::Cl {
-                        let expansion =
-                            render_cl_vector_tail_expansion(interp, &items, index, env, context)?;
-                        context.record_ellipsis_expansion(expansion);
-                    }
                     rendered_items.push("...".into());
                     break;
                 }
@@ -1230,24 +901,6 @@ pub(crate) fn render_prin1_body(
             let closure_env = &lambda_value.env;
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
-            }
-            // cl-prin1 dispatches oclosures through the `cl-print-object'
-            // generic (nadvice prints advice objects as "#f(advice ...)").
-            if context.options.dialect == PrintDialect::Cl
-                && crate::lisp::primitives::dispatch::oclosure_type_of(value).is_some()
-                && interp.has_lisp_function("cl-print-object")
-            {
-                let form = Value::list([
-                    Value::Symbol("with-output-to-string".into()),
-                    Value::list([
-                        Value::Symbol("cl-print-object".into()),
-                        Value::list([Value::Symbol("quote".into()), value.clone()]),
-                        Value::Symbol("standard-output".into()),
-                    ]),
-                ]);
-                if let Ok(rendered) = interp.eval(&form, env) {
-                    return string_text(&rendered);
-                }
             }
             let captured = closure_env.borrow().clone();
             let prints_closure_env = body.len() > 1
@@ -1313,106 +966,67 @@ pub(crate) fn render_prin1_body(
         Value::Terminal(id) => Ok(format!("#<terminal {id} on initial_terminal>")),
         Value::Record(id) => {
             if let Some(record) = interp.find_record(*id) {
-                let rendered = match record.type_name.as_str() {
-                    "thread" => interp
-                        .thread_name(*id)
-                        .map(|name| format!("#<thread {name}>"))
-                        .unwrap_or_else(|| format!("#<thread id:{id}>")),
-                    "mutex" => interp
-                        .mutex_name(*id)
-                        .map(|name| format!("#<mutex {name}>"))
-                        .unwrap_or_else(|| "#<mutex>".into()),
-                    "condition-variable" => interp
-                        .condition_variable_name(*id)
-                        .map(|name| format!("#<condvar {name}>"))
-                        .unwrap_or_else(|| "#<condvar>".into()),
-                    "hash-table" => render_hash_table_prin1(interp, value, env, context, depth)?,
-                    "process" | "obarray" => value.to_string(),
-                    _ => {
-                        let Some(mut fields) =
-                            record_prin1_fields(interp, *id, context.options.dialect)
-                        else {
-                            return Ok(value.to_string());
-                        };
-                        // Records tagged with their class OBJECT (GNU eieio
-                        // objects created with `eieio-backward-compatibility'
-                        // nil, and every class's default-object cache) print
-                        // the class expanded in place of the type symbol;
-                        // the cache inside the class then hits the active-set
-                        // guard and prints as a circular `#N' marker.
-                        if context.options.dialect == PrintDialect::Emacs
-                            && interp.is_class_object_tagged_record(*id)
-                            && let Some(class_record) = interp
-                                .find_record(*id)
-                                .map(|record| record.type_name.clone())
-                                .and_then(|type_name| interp.class_value(&type_name))
-                        {
-                            fields[0] = class_record;
-                        }
-                        let mut rendered_fields = Vec::new();
-                        if context.options.dialect == PrintDialect::Cl
-                            && fields.len() > 1
-                            && fields.len() % 2 == 1
-                        {
-                            rendered_fields.push(render_prin1_with_context(
+                if record.kind == crate::lisp::eval::RecordKind::SymbolWithPos {
+                    let Some((symbol, position)) = symbol_with_pos_parts(interp, value) else {
+                        return Ok("#<symbol NOT A SYMBOL!! NOT A POSITION!!>".into());
+                    };
+                    if context.options.symbols_bare {
+                        return render_prin1_with_context(interp, &symbol, env, context, depth);
+                    }
+                    let rendered_symbol =
+                        render_prin1_with_context(interp, &symbol, env, context, depth + 1)?;
+                    return Ok(format!("#<symbol {rendered_symbol} at {position}>"));
+                }
+                let rendered = match record.kind {
+                    crate::lisp::eval::RecordKind::Closure => {
+                        // GNU print.c writes PVEC_CLOSURE with its dedicated
+                        // readable `#[...]' syntax.  `#s(...)' would read back
+                        // as an ordinary record and make a freshly emitted
+                        // .elc's byte-code functions non-callable.
+                        let slots = record.slots.clone();
+                        let mut rendered_slots = Vec::new();
+                        for (index, slot) in slots.iter().enumerate() {
+                            if context.options.length.is_some_and(|limit| index >= limit) {
+                                rendered_slots.push("...".into());
+                                break;
+                            }
+                            rendered_slots.push(render_prin1_with_context(
                                 interp,
-                                &fields[0],
+                                slot,
                                 env,
                                 context,
                                 depth + 1,
                             )?);
-                            let mut slot_index = 0usize;
-                            let mut field_index = 1usize;
-                            while field_index < fields.len() {
-                                if context
-                                    .options
-                                    .length
-                                    .is_some_and(|limit| slot_index >= limit)
-                                {
-                                    let expansion = render_cl_record_tail_expansion(
-                                        interp,
-                                        &fields,
-                                        field_index,
-                                        env,
-                                        context,
-                                    )?;
-                                    context.record_ellipsis_expansion(expansion);
-                                    rendered_fields.push("...".into());
-                                    break;
-                                }
-                                rendered_fields.push(render_prin1_with_context(
-                                    interp,
-                                    &fields[field_index],
-                                    env,
-                                    context,
-                                    depth + 1,
-                                )?);
-                                if let Some(field_value) = fields.get(field_index + 1) {
-                                    rendered_fields.push(render_prin1_with_context(
-                                        interp,
-                                        field_value,
-                                        env,
-                                        context,
-                                        depth + 1,
-                                    )?);
-                                }
-                                slot_index += 1;
-                                field_index += 2;
-                            }
-                        } else {
-                            rendered_fields = fields
-                                .iter()
-                                .map(|field| {
-                                    render_prin1_with_context(
-                                        interp,
-                                        field,
-                                        env,
-                                        context,
-                                        depth + 1,
-                                    )
-                                })
-                                .collect::<Result<Vec<_>, _>>()?;
                         }
+                        format!("#[{}]", rendered_slots.join(" "))
+                    }
+                    crate::lisp::eval::RecordKind::Thread => interp
+                        .thread_name(*id)
+                        .map(|name| format!("#<thread {name}>"))
+                        .unwrap_or_else(|| format!("#<thread id:{id}>")),
+                    crate::lisp::eval::RecordKind::Mutex => interp
+                        .mutex_name(*id)
+                        .map(|name| format!("#<mutex {name}>"))
+                        .unwrap_or_else(|| "#<mutex>".into()),
+                    crate::lisp::eval::RecordKind::ConditionVariable => interp
+                        .condition_variable_name(*id)
+                        .map(|name| format!("#<condvar {name}>"))
+                        .unwrap_or_else(|| "#<condvar>".into()),
+                    crate::lisp::eval::RecordKind::HashTable => {
+                        render_hash_table_prin1(interp, value, env, context, depth)?
+                    }
+                    crate::lisp::eval::RecordKind::Process
+                    | crate::lisp::eval::RecordKind::Obarray => value.to_string(),
+                    _ => {
+                        let Some(fields) = record_prin1_fields(interp, *id) else {
+                            return Ok(value.to_string());
+                        };
+                        let rendered_fields = fields
+                            .iter()
+                            .map(|field| {
+                                render_prin1_with_context(interp, field, env, context, depth + 1)
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
                         format!("#s({})", rendered_fields.join(" "))
                     }
                 };
@@ -1434,15 +1048,32 @@ fn closure_env_print_value(env: &Env) -> Value {
     }))
 }
 
-pub(crate) fn finish_print_number_table(env: &mut Env, context: &PrintContext) {
+pub(crate) fn finish_print_number_table(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    context: &PrintContext,
+) -> Result<(), LispError> {
     if !context.options.circle || !context.options.continuous_numbering {
-        return;
+        return Ok(());
     }
-    set_env_binding(
-        env,
-        "print-number-table",
-        print_number_table_value(&context.labels, context.next_label),
-    );
+    let table = context
+        .number_table
+        .clone()
+        .unwrap_or_else(|| json::make_hash_table(interp, "eq", Vec::new()));
+    let mut entries = json::hash_table_entries(interp, &table)
+        .map(|(_, entries)| entries)
+        .unwrap_or_default();
+    entries.retain(|(_, state)| !matches!(state, Value::Integer(_)));
+    let mut labels = context.labels.values().collect::<Vec<_>>();
+    labels.sort_by_key(|label| label.number);
+    entries.extend(labels.into_iter().map(|label| {
+        let number = i64::try_from(label.number).unwrap_or(i64::MAX);
+        let state = if label.printed { number } else { -number };
+        (label.object.clone(), Value::Integer(state))
+    }));
+    set_hash_table_entries(interp, &table, entries)?;
+    set_env_binding(env, "print-number-table", table);
+    Ok(())
 }
 
 pub(crate) fn render_prin1(
@@ -1450,69 +1081,10 @@ pub(crate) fn render_prin1(
     value: &Value,
     env: &mut crate::lisp::types::Env,
 ) -> Result<String, LispError> {
-    let mut context = PrintContext::new(
-        interp,
-        value,
-        env,
-        print_options(interp, env, PrintDialect::Emacs),
-    )?;
+    let mut context = PrintContext::new(interp, value, env, print_options(interp, env))?;
     let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
-    finish_print_number_table(env, &context);
+    finish_print_number_table(interp, env, &context)?;
     Ok(rendered)
-}
-
-pub(crate) fn render_cl_prin1(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut crate::lisp::types::Env,
-) -> Result<String, LispError> {
-    let mut context = PrintContext::new(
-        interp,
-        value,
-        env,
-        print_options(interp, env, PrintDialect::Cl),
-    )?;
-    let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
-    finish_print_number_table(env, &context);
-    Ok(rendered)
-}
-
-pub(crate) fn render_cl_prin1_value(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut crate::lisp::types::Env,
-) -> Result<Value, LispError> {
-    let mut context = PrintContext::new(
-        interp,
-        value,
-        env,
-        print_options(interp, env, PrintDialect::Cl),
-    )?;
-    let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
-    finish_print_number_table(env, &context);
-    let Some(expansion) = context.first_ellipsis_expansion else {
-        return Ok(Value::String(rendered.into()));
-    };
-    let Some(start) = rendered
-        .find("...")
-        .map(|byte| rendered[..byte].chars().count())
-    else {
-        return Ok(Value::String(rendered.into()));
-    };
-    Ok(string_like_value(
-        rendered,
-        vec![TextPropertySpan {
-            start,
-            end: start + 3,
-            props: vec![(
-                "cl-print-ellipsis".into(),
-                Value::list([
-                    Value::Symbol("emaxx-cl-print-ellipsis".into()),
-                    Value::String(expansion.into()),
-                ]),
-            )],
-        }],
-    ))
 }
 
 pub(crate) fn render_prin1_ephemeral(
@@ -1600,6 +1172,11 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
         }
         Value::BuiltinFunc(_) | Value::Lambda(_) => {
             let value = read_from_callable_source(interp, source, env)?;
+            // GNU's `read0' interns a symbol before wrapping it in the
+            // position-bearing pseudovector.  Emaxx parses independently of
+            // its obarray, so preserve that C-owned reader side effect
+            // explicitly before replacing ordinary symbols with records.
+            interp.intern_symbols_in_value(&value);
             Ok(position_symbols_in_value(
                 interp,
                 value,
@@ -1608,6 +1185,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
         }
         Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
             let value = read_from_callable_source(interp, source, env)?;
+            interp.intern_symbols_in_value(&value);
             Ok(position_symbols_in_value(
                 interp,
                 value,
@@ -1628,7 +1206,11 @@ fn read_one_positioned_form(
     base_position: i64,
 ) -> Result<(Value, usize), LispError> {
     let (value, consumed) = read_one_form_in_env(interp, text, env)?;
-    let mut tokens = symbol_tokens_with_positions(text, base_position);
+    // GNU 30.2 lread.c:read0 interns every ordinary symbol even when
+    // LOCATE_SYMS asks it to return a `symbol-with-pos' wrapper.
+    interp.intern_symbols_in_value(&value);
+    let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let mut tokens = symbol_tokens_with_positions(text, base_position, &symbol_shorthands);
     Ok((
         position_symbols_in_value(interp, value, &mut tokens),
         consumed,
@@ -1665,7 +1247,11 @@ fn position_symbols_in_value(
     }
 }
 
-fn symbol_tokens_with_positions(text: &str, base_position: i64) -> VecDeque<(String, i64)> {
+fn symbol_tokens_with_positions(
+    text: &str,
+    base_position: i64,
+    symbol_shorthands: &[(String, String)],
+) -> VecDeque<(String, i64)> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut tokens = VecDeque::new();
     let mut idx = 0usize;
@@ -1698,7 +1284,10 @@ fn symbol_tokens_with_positions(text: &str, base_position: i64) -> VecDeque<(Str
             }
             continue;
         }
-        if is_reader_delimiter(ch) {
+        let skip_shorthand = ch == '#' && chars.get(idx + 1).is_some_and(|(_, next)| *next == '_');
+        if skip_shorthand {
+            idx += 2;
+        } else if is_reader_delimiter(ch) {
             idx += 1;
             continue;
         }
@@ -1721,6 +1310,11 @@ fn symbol_tokens_with_positions(text: &str, base_position: i64) -> VecDeque<(Str
             idx += 1;
         }
         if !token.is_empty() && token != "." {
+            let token = if skip_shorthand {
+                token
+            } else {
+                crate::lisp::reader::apply_symbol_shorthands_to_token(token, symbol_shorthands)
+            };
             tokens.push_back((token, base_position + start_char_pos));
         }
     }
@@ -1732,20 +1326,17 @@ fn is_reader_delimiter(ch: char) -> bool {
 }
 
 pub(crate) fn record_literal_items(value: &Value) -> Option<Vec<Value>> {
-    // Runtime vectors and record literals are both represented by tagged
-    // conses for now.  Reject every other tag before materializing the
-    // proper list: callers use this as a type predicate on hot paths such as
-    // `aset', where walking a vector for every element would turn a fill
-    // loop into quadratic work.
-    let (car, _) = value.cons_cells()?;
-    if !matches!(
-        &*car.borrow(),
-        Value::Symbol(name) if name == crate::lisp::reader::RECORD_LITERAL_SYMBOL
-    ) {
+    let Value::ReaderForm(form) = value else {
         return None;
-    }
-    let items = value.to_vec().ok()?;
-    Some(items)
+    };
+    let crate::lisp::types::ReaderForm::Record { slots } = form.as_ref() else {
+        return None;
+    };
+    Some(
+        std::iter::once(Value::Nil)
+            .chain(slots.iter().cloned())
+            .collect(),
+    )
 }
 
 pub(crate) fn record_literal_slot_data(value: &Value) -> Value {
@@ -1846,25 +1437,21 @@ pub(crate) fn materialize_read_char_table_literals(
 }
 
 fn char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    let items = value.to_vec().ok()?;
-    match items.split_first() {
-        Some((Value::Symbol(symbol), fields))
-            if symbol == crate::lisp::reader::CHAR_TABLE_LITERAL_SYMBOL =>
-        {
-            Some(fields.to_vec())
-        }
+    match value {
+        Value::ReaderForm(form) => match form.as_ref() {
+            crate::lisp::types::ReaderForm::CharTable { fields } => Some(fields.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
 
 fn sub_char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    let items = value.to_vec().ok()?;
-    match items.split_first() {
-        Some((Value::Symbol(symbol), fields))
-            if symbol == crate::lisp::reader::SUB_CHAR_TABLE_LITERAL_SYMBOL =>
-        {
-            Some(fields.to_vec())
-        }
+    match value {
+        Value::ReaderForm(form) => match form.as_ref() {
+            crate::lisp::types::ReaderForm::SubCharTable { fields } => Some(fields.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1874,12 +1461,12 @@ fn materialize_char_table_literals_inner(
     value: &Value,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
-    let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
-        return Ok(value.clone());
-    };
     if let Some(fields) = char_table_literal_fields(value) {
         return char_table_from_literal_fields(interp, &fields, seen);
     }
+    let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
+        return Ok(value.clone());
+    };
     let ptr = car_cell.cell_id();
     if !seen.insert(ptr) {
         return Ok(value.clone());
@@ -2164,10 +1751,14 @@ fn materialize_literal_value(
     value: &Value,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
-    // Hash-table and character-table traversals maintain independent cycle
-    // sets: sharing one would make the second traversal mistake already
-    // visited ordinary conses for cycles.
-    let value = materialize_read_hash_table_literals(interp, value)?;
+    // GNU's reader constructs every identity-bearing object recursively.  A
+    // character-table slot can itself contain a `#[...]' decoder (the Unicode
+    // name table does), so materialize record/closure literals before the
+    // hash- and character-table passes.  Each object kind keeps an independent
+    // cycle/identity context: sharing `seen` would make a later pass mistake an
+    // ordinary cons already visited by an earlier pass for a cycle.
+    let value = interp.materialize_read_record_literals(value)?;
+    let value = materialize_read_hash_table_literals(interp, &value)?;
     materialize_char_table_literals_inner(interp, &value, seen)
 }
 
@@ -2211,25 +1802,21 @@ fn quoted_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
     if head != "quote" {
         return None;
     }
-    let literal_items = literal.to_vec().ok()?;
-    match literal_items.split_first() {
-        Some((Value::Symbol(symbol), fields))
-            if symbol == crate::lisp::json::HASH_TABLE_LITERAL_SYMBOL =>
-        {
-            Some(fields.to_vec())
-        }
+    match literal {
+        Value::ReaderForm(form) => match form.as_ref() {
+            crate::lisp::types::ReaderForm::HashTable { fields } => Some(fields.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
 
 fn bare_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    let items = value.to_vec().ok()?;
-    match items.split_first() {
-        Some((Value::Symbol(symbol), fields))
-            if symbol == crate::lisp::json::HASH_TABLE_LITERAL_SYMBOL =>
-        {
-            Some(fields.to_vec())
-        }
+    match value {
+        Value::ReaderForm(form) => match form.as_ref() {
+            crate::lisp::types::ReaderForm::HashTable { fields } => Some(fields.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -2239,15 +1826,15 @@ fn materialize_hash_table_literals_inner(
     value: &Value,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
-    let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
-        return Ok(value.clone());
-    };
     if let Some(fields) = quoted_hash_table_literal_fields(value) {
         return hash_table_from_literal_fields(interp, &fields, seen);
     }
     if let Some(fields) = bare_hash_table_literal_fields(value) {
         return hash_table_from_literal_fields(interp, &fields, seen);
     }
+    let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
+        return Ok(value.clone());
+    };
     let ptr = car_cell.cell_id();
     if !seen.insert(ptr) {
         return Ok(value.clone());
@@ -2415,5 +2002,104 @@ pub(crate) fn md5_source_text(
             let end = normalize_string_index(end, chars.len() as i64, chars.len() as i64)? as usize;
             Ok(chars[start..end].iter().collect())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn preprocess_env(interp: &mut Interpreter, table: Value) -> Env {
+        interp.set_symbol_value_cell("print-circle", Value::T);
+        interp.set_symbol_value_cell("print-continuous-numbering", Value::Nil);
+        interp.set_symbol_value_cell("print-gensym", Value::Nil);
+        interp.set_symbol_value_cell("print-number-table", table);
+        Env::new()
+    }
+
+    fn table_state(interp: &Interpreter, table: &Value, object: &Value) -> Option<Value> {
+        let key = print_ref_key(
+            interp,
+            object,
+            PrintOptions {
+                circle: true,
+                ..PrintOptions::default()
+            },
+        )?;
+        json::hash_table_entries(interp, table)?
+            .1
+            .into_iter()
+            .find_map(|(candidate, state)| {
+                (print_ref_key(
+                    interp,
+                    &candidate,
+                    PrintOptions {
+                        circle: true,
+                        ..PrintOptions::default()
+                    },
+                ) == Some(key.clone()))
+                .then_some(state)
+            })
+    }
+
+    #[test]
+    fn print_preprocess_numbers_repeated_objects_in_second_encounter_order() {
+        let mut interp = Interpreter::new();
+        let a = Value::list([Value::symbol("a")]);
+        let b = Value::list([Value::symbol("b")]);
+        let object = Value::list([a.clone(), b.clone(), a.clone(), b.clone()]);
+        let mut env = preprocess_env(&mut interp, Value::Nil);
+
+        print_preprocess(&mut interp, &object, &mut env).expect("preprocess shared list");
+
+        let table = interp
+            .lookup_var("print-number-table", &env)
+            .expect("public number table");
+        assert_eq!(table_state(&interp, &table, &a), Some(Value::Integer(-1)));
+        assert_eq!(table_state(&interp, &table, &b), Some(Value::Integer(-2)));
+    }
+
+    #[test]
+    fn print_preprocess_terminates_and_numbers_a_materialized_cycle() {
+        let mut interp = Interpreter::new();
+        let object = Value::cons(Value::Integer(1), Value::Nil);
+        let (_, cdr) = object.cons_cells().expect("cons");
+        *cdr.borrow_mut() = object.clone();
+        let mut env = preprocess_env(&mut interp, Value::Nil);
+
+        print_preprocess(&mut interp, &object, &mut env).expect("preprocess cyclic list");
+
+        let table = interp
+            .lookup_var("print-number-table", &env)
+            .expect("public number table");
+        assert_eq!(
+            table_state(&interp, &table, &object),
+            Some(Value::Integer(-1))
+        );
+    }
+
+    #[test]
+    fn print_preprocess_respects_existing_states_and_resets_new_numbering() {
+        let mut interp = Interpreter::new();
+        let existing = Value::list([Value::symbol("existing")]);
+        let repeated = Value::list([Value::symbol("repeated")]);
+        let table = json::make_hash_table(
+            &mut interp,
+            "eq",
+            vec![(existing.clone(), Value::Integer(-7))],
+        );
+        let object = Value::list([existing.clone(), repeated.clone(), repeated.clone()]);
+        let mut env = preprocess_env(&mut interp, table.clone());
+
+        print_preprocess(&mut interp, &object, &mut env).expect("preprocess existing table");
+
+        assert_eq!(
+            table_state(&interp, &table, &existing),
+            Some(Value::Integer(-7))
+        );
+        assert_eq!(
+            table_state(&interp, &table, &repeated),
+            Some(Value::Integer(-1))
+        );
     }
 }

@@ -625,63 +625,6 @@ pub(crate) fn process_environment_entries(value: &Value) -> Result<Vec<String>, 
         .collect()
 }
 
-pub(crate) fn process_environment_from_entries(entries: &[String]) -> Value {
-    Value::list(
-        entries
-            .iter()
-            .cloned()
-            .map(|value| Value::String(value.into())),
-    )
-}
-
-pub(crate) fn setenv_in_environment_entries(
-    entries: &mut Vec<String>,
-    variable: &str,
-    value: Option<&str>,
-    keep_empty: bool,
-) {
-    let prefix = format!("{variable}=");
-    if let Some(index) = entries
-        .iter()
-        .position(|entry| entry == variable || entry.starts_with(&prefix))
-    {
-        match value {
-            Some(value) => entries[index] = format!("{variable}={value}"),
-            None if keep_empty => entries[index] = variable.to_string(),
-            None => {
-                entries.remove(index);
-            }
-        }
-        return;
-    }
-
-    if let Some(value) = value {
-        entries.insert(0, format!("{variable}={value}"));
-    } else if keep_empty {
-        entries.insert(0, variable.to_string());
-    }
-}
-
-pub(crate) fn updated_process_environment(
-    environment: &Value,
-    variable: &str,
-    value: Option<&str>,
-    keep_empty: bool,
-) -> Result<Value, LispError> {
-    let wrapped = matches!(
-        environment.cons_values(),
-        Some((Value::Symbol(ref symbol), _)) if symbol == "environment"
-    );
-    let mut entries = process_environment_entries(environment)?;
-    setenv_in_environment_entries(&mut entries, variable, value, keep_empty);
-    let updated = process_environment_from_entries(&entries);
-    Ok(if wrapped {
-        Value::cons(Value::Symbol("environment".into()), updated)
-    } else {
-        updated
-    })
-}
-
 pub(crate) fn getenv_in_environment(
     variable: &str,
     environment: &Value,
@@ -1162,13 +1105,16 @@ pub(crate) fn make_network_process(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    if args.is_empty() {
+        return Ok(Value::Nil);
+    }
     if !args.len().is_multiple_of(2) {
         return Err(LispError::WrongNumberOfArgs(
             "make-network-process".into(),
             args.len(),
         ));
     }
-    let mut name = String::from("emaxx-network");
+    let mut name = None;
     let mut buffer_id = None;
     let mut filter = None;
     let mut sentinel = None;
@@ -1191,7 +1137,12 @@ pub(crate) fn make_network_process(
         let key = pair[0].as_symbol()?;
         let value = &pair[1];
         match key {
-            ":name" => name = string_text(value)?,
+            ":name" => {
+                name = Some(match value {
+                    Value::String(name) => name.to_string(),
+                    _ => return Err(LispError::Signal(":name value not a string".into())),
+                });
+            }
             ":buffer" => buffer_id = process_buffer_target(interp, value)?,
             ":filter" => filter = (!value.is_nil()).then(|| value.clone()),
             ":sentinel" => sentinel = (!value.is_nil()).then(|| value.clone()),
@@ -1243,6 +1194,8 @@ pub(crate) fn make_network_process(
             _ => {}
         }
     }
+
+    let name = name.ok_or_else(|| LispError::Signal("Missing :name keyword parameter".into()))?;
 
     let inherit_coding_system = buffer_id.is_some()
         && interp

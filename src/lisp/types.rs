@@ -582,6 +582,83 @@ pub struct LambdaValue {
     pub params: SharedLambdaParams,
     pub body: SharedLambdaBody,
     pub env: SharedEnv,
+    /// GNU closure slot four.  Unlike ordinary source docstrings, a
+    /// `(:documentation FORM)' may evaluate to any Lisp object (oclosure.el
+    /// deliberately stores its type symbol here).
+    pub documentation: Option<Value>,
+    /// GNU closure slot five.  `Some(nil)' is distinct from an absent slot:
+    /// `(interactive)' still makes the closure a command and gives it length
+    /// six.  A vector-valued slot preserves GNU's command-modes metadata.
+    pub interactive: Option<Value>,
+    /// Exact Lisp object stored in GNU interpreted-closure slot two when the
+    /// closure was constructed by `make-interpreted-closure'.  The object is
+    /// observable and mutable: `aref' must return this same alist, and
+    /// mutations of its binding cells must affect subsequent calls.
+    pub public_environment: Option<Value>,
+}
+
+impl LambdaValue {
+    /// Convert GNU's `(interactive SPEC . MODES)' form into closure slot
+    /// five.  Multiple command modes use the modern `[SPEC MODES]' layout.
+    pub fn interactive_slot_from_form(form: &Value) -> Option<Value> {
+        let items = form.to_vec().ok()?;
+        if !matches!(items.first(), Some(Value::Symbol(head)) if head == "interactive") {
+            return None;
+        }
+        Some(Self::interactive_slot_from_iform_items(&items))
+    }
+
+    /// Convert the already-validated list passed as IFORM to GNU's
+    /// `make-interpreted-closure' into slot five.
+    pub fn interactive_slot_from_iform_items(items: &[Value]) -> Value {
+        let spec = items.get(1).cloned().unwrap_or(Value::Nil);
+        if items.len() <= 2 {
+            spec
+        } else {
+            Value::list([
+                Value::Symbol("vector-literal".into()),
+                spec,
+                Value::list(items[2..].to_vec()),
+            ])
+        }
+    }
+
+    /// Return the public interactive specification from GNU closure slot
+    /// five.  New-style slots are vectors `[SPEC MODES]' while old-style
+    /// slots contain SPEC directly.
+    pub fn interactive_spec(&self) -> Option<Value> {
+        self.interactive.as_ref().map(|slot| {
+            slot.to_vec()
+                .ok()
+                .filter(|items| {
+                    matches!(items.first(), Some(Value::Symbol(head)) if head == "vector-literal")
+                })
+                .and_then(|items| items.get(1).cloned())
+                .unwrap_or_else(|| slot.clone())
+        })
+    }
+
+    pub fn command_modes(&self) -> Option<Value> {
+        self.interactive
+            .as_ref()
+            .and_then(Self::command_modes_from_slot)
+    }
+
+    pub fn command_modes_from_slot(slot: &Value) -> Option<Value> {
+        let items = slot.to_vec().ok()?;
+        matches!(items.first(), Some(Value::Symbol(head)) if head == "vector-literal")
+            .then(|| items.get(2).cloned().unwrap_or(Value::Nil))
+    }
+
+    pub fn public_len(&self) -> usize {
+        if self.interactive.is_some() {
+            6
+        } else if self.documentation.is_some() {
+            5
+        } else {
+            3
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -735,6 +812,12 @@ pub struct SharedStringState {
     pub text: String,
     pub props: Vec<StringPropertySpan>,
     pub multibyte: bool,
+    /// Sparse character-indexed values for Emacs characters outside
+    /// Unicode's scalar range.  `text` contains one placeholder scalar at
+    /// each recorded index, so ordinary Unicode strings retain Rust's fast
+    /// native representation while the full GNU character range remains
+    /// lossless and one entry still counts as one Lisp character.
+    pub extended_chars: Vec<(usize, u32)>,
 }
 
 /// Detects circular lists during traversal with Brent's algorithm, the same
@@ -775,6 +858,42 @@ impl Default for CycleGuard {
     }
 }
 
+/// Parser output that still needs an Interpreter to allocate its final Lisp
+/// object.  Keeping this typed prevents reader bookkeeping from entering the
+/// Lisp namespace as a private symbol or callable bridge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum ReaderClosureKind {
+    Interpreted,
+    ByteCode,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[doc(hidden)]
+pub enum ReaderForm {
+    CircularLabel {
+        id: u32,
+        payload: Value,
+    },
+    CircularReference(u32),
+    HashTable {
+        fields: Vec<Value>,
+    },
+    CharTable {
+        fields: Vec<Value>,
+    },
+    SubCharTable {
+        fields: Vec<Value>,
+    },
+    Record {
+        slots: Vec<Value>,
+    },
+    Closure {
+        kind: ReaderClosureKind,
+        slots: Vec<Value>,
+    },
+}
+
 /// A Lisp value. This covers the subset we need for ERT tests.
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -811,6 +930,8 @@ pub enum Value {
     Record(u64),
     /// A finalizer object, identified by unique id.
     Finalizer(u64),
+    /// Typed reader state awaiting Interpreter-owned object allocation.
+    ReaderForm(Rc<ReaderForm>),
     /// Internal marker for EIEIO slots that have not been bound.
     Unbound,
 }
@@ -823,12 +944,147 @@ pub enum Value {
 /// evaluator's exact frame/name overlay remains the authority for GNU's
 /// shared lexical-cell semantics; this type only removes redundant deep
 /// copies of derived snapshots.
-#[derive(Clone, Debug, PartialEq)]
-pub struct EnvFrame(Rc<Vec<(String, Value)>>);
+#[derive(Clone, Debug)]
+pub struct EnvFrame(Rc<EnvFrameData>);
+
+#[derive(Clone, Debug)]
+struct EnvFrameData {
+    bindings: Vec<(String, Value)>,
+    /// Stable identity used to align captured and live lexical frames.
+    /// This is evaluator bookkeeping, never a Lisp binding.
+    identity: Option<i64>,
+    /// Whether this frame belongs to the function namespace (for example a
+    /// cl-flet/cl-labels frame) rather than the value namespace.
+    function_bindings: bool,
+    /// GNU locally-special declarations, recorded at their position among
+    /// real bindings so closure environment serialization remains exact.
+    local_special_declarations: Vec<(usize, String)>,
+    /// A GNU interpreter environment whose binding conses are the authority
+    /// for this frame.  Keeping this typed metadata beside the bindings lets
+    /// copied frames and nested closures share the original Lisp cells
+    /// without a Lisp-visible marker or a process-global side table.
+    lisp_environment: Option<Value>,
+}
 
 impl EnvFrame {
     pub fn new(bindings: Vec<(String, Value)>) -> Self {
-        Self(Rc::new(bindings))
+        Self(Rc::new(EnvFrameData {
+            bindings,
+            identity: None,
+            function_bindings: false,
+            local_special_declarations: Vec::new(),
+            lisp_environment: None,
+        }))
+    }
+
+    pub fn with_identity(bindings: Vec<(String, Value)>, identity: i64) -> Self {
+        Self(Rc::new(EnvFrameData {
+            bindings,
+            identity: Some(identity),
+            function_bindings: false,
+            local_special_declarations: Vec::new(),
+            lisp_environment: None,
+        }))
+    }
+
+    pub fn with_lisp_environment_and_identity(
+        bindings: Vec<(String, Value)>,
+        lisp_environment: Value,
+        identity: i64,
+    ) -> Self {
+        Self(Rc::new(EnvFrameData {
+            bindings,
+            identity: Some(identity),
+            function_bindings: false,
+            local_special_declarations: Vec::new(),
+            lisp_environment: Some(lisp_environment),
+        }))
+    }
+
+    pub fn with_function_bindings(bindings: Vec<(String, Value)>, identity: i64) -> Self {
+        Self(Rc::new(EnvFrameData {
+            bindings,
+            identity: Some(identity),
+            function_bindings: true,
+            local_special_declarations: Vec::new(),
+            lisp_environment: None,
+        }))
+    }
+
+    pub fn with_local_special(name: impl Into<String>, identity: i64) -> Self {
+        Self::with_local_specials([name.into()], identity)
+    }
+
+    pub fn with_local_specials(names: impl IntoIterator<Item = String>, identity: i64) -> Self {
+        Self(Rc::new(EnvFrameData {
+            bindings: Vec::new(),
+            identity: Some(identity),
+            function_bindings: false,
+            local_special_declarations: names.into_iter().map(|name| (0, name)).collect(),
+            lisp_environment: None,
+        }))
+    }
+
+    pub fn from_parts(
+        bindings: Vec<(String, Value)>,
+        identity: Option<i64>,
+        function_bindings: bool,
+        local_special_declarations: Vec<(usize, String)>,
+    ) -> Self {
+        Self(Rc::new(EnvFrameData {
+            bindings,
+            identity,
+            function_bindings,
+            local_special_declarations,
+            lisp_environment: None,
+        }))
+    }
+
+    pub fn identity(&self) -> Option<i64> {
+        self.0.identity
+    }
+
+    pub fn has_function_bindings(&self) -> bool {
+        self.0.function_bindings
+    }
+
+    pub fn declares_local_special(&self, name: &str) -> bool {
+        self.0
+            .local_special_declarations
+            .iter()
+            .any(|(_, declared)| declared == name)
+    }
+
+    pub fn local_special_declarations(&self) -> &[(usize, String)] {
+        &self.0.local_special_declarations
+    }
+
+    pub fn is_local_special_snapshot(&self) -> bool {
+        self.0.bindings.is_empty()
+            && !self.0.function_bindings
+            && !self.0.local_special_declarations.is_empty()
+            && self
+                .0
+                .local_special_declarations
+                .iter()
+                .all(|(position, _)| *position == 0)
+    }
+
+    pub fn set_lisp_environment(&mut self, environment: Value) {
+        Rc::make_mut(&mut self.0).lisp_environment = Some(environment);
+    }
+
+    pub fn lisp_environment(&self) -> Option<&Value> {
+        self.0.lisp_environment.as_ref()
+    }
+}
+
+impl PartialEq for EnvFrame {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.bindings == other.0.bindings
+            && self.0.identity == other.0.identity
+            && self.0.function_bindings == other.0.function_bindings
+            && self.0.local_special_declarations == other.0.local_special_declarations
     }
 }
 
@@ -854,13 +1110,13 @@ impl Deref for EnvFrame {
     type Target = Vec<(String, Value)>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.0.bindings
     }
 }
 
 impl DerefMut for EnvFrame {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        Rc::make_mut(&mut self.0)
+        &mut Rc::make_mut(&mut self.0).bindings
     }
 }
 
@@ -870,7 +1126,8 @@ impl IntoIterator for EnvFrame {
 
     fn into_iter(self) -> Self::IntoIter {
         Rc::try_unwrap(self.0)
-            .unwrap_or_else(|bindings| bindings.as_ref().clone())
+            .map(|frame| frame.bindings)
+            .unwrap_or_else(|frame| frame.bindings.clone())
             .into_iter()
     }
 }
@@ -880,7 +1137,7 @@ impl<'a> IntoIterator for &'a EnvFrame {
     type IntoIter = std::slice::Iter<'a, (String, Value)>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.0.bindings.iter()
     }
 }
 
@@ -889,7 +1146,7 @@ impl<'a> IntoIterator for &'a mut EnvFrame {
     type IntoIter = std::slice::IterMut<'a, (String, Value)>;
 
     fn into_iter(self) -> Self::IntoIter {
-        Rc::make_mut(&mut self.0).iter_mut()
+        Rc::make_mut(&mut self.0).bindings.iter_mut()
     }
 }
 
@@ -1029,7 +1286,51 @@ impl Value {
     }
 
     pub fn lambda(params: SharedLambdaParams, body: SharedLambdaBody, env: SharedEnv) -> Self {
-        Value::Lambda(Rc::new(LambdaValue { params, body, env }))
+        Self::lambda_with_documentation(params, body, env, None)
+    }
+
+    pub fn lambda_with_documentation(
+        params: SharedLambdaParams,
+        body: SharedLambdaBody,
+        env: SharedEnv,
+        documentation: Option<Value>,
+    ) -> Self {
+        Self::lambda_with_metadata(params, body, env, documentation, None)
+    }
+
+    pub fn lambda_with_metadata(
+        params: SharedLambdaParams,
+        body: SharedLambdaBody,
+        env: SharedEnv,
+        documentation: Option<Value>,
+        interactive: Option<Value>,
+    ) -> Self {
+        Value::Lambda(Rc::new(LambdaValue {
+            params,
+            body,
+            env,
+            documentation,
+            interactive,
+            public_environment: None,
+        }))
+    }
+
+    pub fn lambda_with_public_environment(
+        params: SharedLambdaParams,
+        body: SharedLambdaBody,
+        env: SharedEnv,
+        documentation: Option<Value>,
+        interactive: Option<Value>,
+        public_environment: Value,
+    ) -> Self {
+        Value::Lambda(Rc::new(LambdaValue {
+            params,
+            body,
+            env,
+            documentation,
+            interactive,
+            public_environment: Some(public_environment),
+        }))
     }
 
     pub fn buffer(id: u64, name: impl Into<SharedText>) -> Self {
@@ -1223,6 +1524,7 @@ impl Value {
             Value::Terminal(id) => format!("terminal<{}>", id),
             Value::Record(id) => format!("record<{}>", id),
             Value::Finalizer(id) => format!("finalizer<{}>", id),
+            Value::ReaderForm(_) => "reader-form".into(),
             Value::Unbound => "unbound".into(),
         }
     }
@@ -1263,13 +1565,17 @@ fn values_equal_recursive(
         (Value::Float(a), Value::Float(b)) => a == b,
         (Value::String(a), Value::String(b)) => a == b,
         (Value::StringObject(a), Value::StringObject(b)) => {
-            RefCell::borrow(a.as_ref()).text == RefCell::borrow(b.as_ref()).text
+            let a = RefCell::borrow(a.as_ref());
+            let b = RefCell::borrow(b.as_ref());
+            a.text == b.text && a.extended_chars == b.extended_chars
         }
         (Value::String(a), Value::StringObject(b)) => {
-            a.as_str() == RefCell::borrow(b.as_ref()).text
+            let b = RefCell::borrow(b.as_ref());
+            b.extended_chars.is_empty() && a.as_str() == b.text
         }
         (Value::StringObject(a), Value::String(b)) => {
-            RefCell::borrow(a.as_ref()).text == b.as_str()
+            let a = RefCell::borrow(a.as_ref());
+            a.extended_chars.is_empty() && a.text == b.as_str()
         }
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Cons(a), Value::Cons(b)) => {
@@ -1285,7 +1591,12 @@ fn values_equal_recursive(
         }
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Lambda(a), Value::Lambda(b)) => {
-            a.params == b.params && a.body == b.body && Rc::ptr_eq(&a.env, &b.env)
+            a.params == b.params
+                && a.body == b.body
+                && a.documentation == b.documentation
+                && a.interactive == b.interactive
+                && a.public_environment == b.public_environment
+                && Rc::ptr_eq(&a.env, &b.env)
         }
         (Value::Buffer(a), Value::Buffer(b)) => a.id == b.id,
         (Value::Marker(a), Value::Marker(b)) => a == b,
@@ -1295,6 +1606,7 @@ fn values_equal_recursive(
         (Value::Terminal(a), Value::Terminal(b)) => a == b,
         (Value::Record(a), Value::Record(b)) => a == b,
         (Value::Finalizer(a), Value::Finalizer(b)) => a == b,
+        (Value::ReaderForm(a), Value::ReaderForm(b)) => Rc::ptr_eq(a, b),
         (Value::Unbound, Value::Unbound) => true,
         _ => false,
     }
@@ -1384,6 +1696,7 @@ fn format_value(
         Value::Terminal(id) => write!(f, "#<terminal id:{}>", id),
         Value::Record(id) => write!(f, "#<record id:{}>", id),
         Value::Finalizer(id) => write!(f, "#<finalizer id:{}>", id),
+        Value::ReaderForm(_) => write!(f, "#<reader-form>"),
         Value::Unbound => write!(f, "#<unbound>"),
     }
 }
@@ -1418,6 +1731,8 @@ pub enum LispError {
     ErtTestFailed(String),
     /// Non-local exit via `throw`.
     Throw(Value, Value),
+    /// Internal bytecode VM return; consumed before control leaves the VM.
+    VmReturn(Value),
     /// Orderly, non-catchable process termination via `kill-emacs`.
     Terminate(EmacsTermination),
     /// An ERT skip condition.
@@ -1442,10 +1757,12 @@ impl LispError {
             },
             LispError::ErtTestFailed(_) => "ert-test-failed".into(),
             LispError::Throw(_, _) => "no-catch".into(),
-            // This name is only a defensive fallback for diagnostics.
-            // Evaluator condition machinery must propagate Terminate before
-            // asking for a condition type.
-            LispError::Terminate(_) => "emaxx--process-termination".into(),
+            LispError::VmReturn(_) => {
+                unreachable!("bytecode return escaped the VM")
+            }
+            LispError::Terminate(_) => {
+                unreachable!("process termination is non-catchable evaluator control flow")
+            }
             LispError::TestSkipped(_) => "ert-test-skipped".into(),
             LispError::EndOfInput => "end-of-file".into(),
             LispError::ReadError(_) => "invalid-read-syntax".into(),
@@ -1517,6 +1834,7 @@ impl fmt::Display for LispError {
             },
             LispError::ErtTestFailed(msg) => write!(f, "{}", msg),
             LispError::Throw(tag, value) => write!(f, "No catch for {}: {}", tag, value),
+            LispError::VmReturn(_) => unreachable!("bytecode return escaped the VM"),
             LispError::Terminate(termination) => {
                 if termination.restart {
                     write!(

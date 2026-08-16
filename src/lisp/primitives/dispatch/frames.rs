@@ -70,8 +70,6 @@ fn default_frame_parameters(interp: &Interpreter, id: u64) -> Vec<(String, Value
         ("cursor-color".into(), Value::string("white")),
         ("scroll-bar-background".into(), Value::Nil),
         ("scroll-bar-foreground".into(), Value::Nil),
-        ("background-mode".into(), Value::symbol("dark")),
-        ("display-type".into(), Value::symbol("mono")),
         ("minibuffer".into(), Value::T),
     ]
 }
@@ -282,16 +280,6 @@ define_dispatch!(
                         .to_string();
                     store_frame_parameter(interp, id, parameter, value);
                 }
-                Ok(Value::Nil)
-            }
-            "set-frame-parameter" => {
-                need_args(name, args, 3)?;
-                let id = decode_live_frame(interp, args.first(), true)?;
-                let parameter = args[1]
-                    .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?
-                    .to_string();
-                store_frame_parameter(interp, id, parameter, args[2].clone());
                 Ok(Value::Nil)
             }
             "frame-char-width" | "frame-char-height" => {

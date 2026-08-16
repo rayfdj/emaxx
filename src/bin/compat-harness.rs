@@ -22,6 +22,10 @@ use emaxx::compat::{
 
 const ADVANCE_COMPAT_PREFIX: &str = "Advance compatibility for ";
 const COMPAT_REGRESSION_MANIFEST_PATH: &str = "compat/compat_regressions.json";
+const FROZEN_COMPAT_MANIFEST_PATH: &str = "compat/oracle_tests_all.txt";
+const FROZEN_COMPAT_FILE_COUNT: usize = 510;
+const FROZEN_COMPAT_LOAD_ERROR_COUNT: usize = 9;
+const FROZEN_COMPAT_OUTCOME_COUNT: usize = 7_080;
 const TARGET_OWNER_FILE: &str = ".emaxx-source-root";
 const SUBJECT_LOCK_FILE: &str = ".emaxx-compat.lock";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 180;
@@ -37,6 +41,7 @@ struct CompatRunPlan<'a> {
     timeout: Option<Duration>,
     subject: &'a SubjectBuild,
     provenance: &'a RunProvenance,
+    frozen_manifest: Option<&'a FrozenCompatibilityManifest>,
 }
 
 #[derive(Debug, Parser)]
@@ -52,10 +57,22 @@ enum Commands {
     Selectors,
     List(ListArgs),
     Run(RunArgs),
+    /// Replay exactly the pinned 7,080-outcome compatibility manifest.
+    Frozen(FrozenArgs),
     Landed(LandedArgs),
     Regressions(RegressionArgs),
     /// Compare only Emaxx outcomes from two completed artifact directories.
     CompareSubjects(CompareSubjectsArgs),
+}
+
+#[derive(Debug, Args)]
+struct FrozenArgs {
+    /// Source checkout whose Emaxx binary should be built and tested.
+    #[arg(long)]
+    subject_root: Option<PathBuf>,
+    /// Per setup and test phase.  This is recorded in summary provenance.
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -460,7 +477,158 @@ struct AggregateReport {
     timings: Vec<FileTiming>,
     #[serde(default)]
     performance_regressions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frozen_manifest: Option<FrozenManifestEvidence>,
     provenance: RunProvenance,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct FrozenManifestEvidence {
+    path: String,
+    sha256: String,
+    recorded_files: usize,
+    executed_files: usize,
+    historical_load_errors: usize,
+    required_outcomes: usize,
+    compared_outcomes: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FrozenCompatibilityManifest {
+    path: PathBuf,
+    sha256: String,
+    entries: BTreeMap<String, Vec<String>>,
+    historical_load_errors: Vec<String>,
+}
+
+impl FrozenCompatibilityManifest {
+    fn load() -> Result<Self, String> {
+        let path = compat::compat_path(FROZEN_COMPAT_MANIFEST_PATH);
+        let data = fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        Self::parse(
+            path,
+            sha256_file(&compat::compat_path(FROZEN_COMPAT_MANIFEST_PATH))?,
+            &data,
+        )
+    }
+
+    fn parse(path: PathBuf, sha256: String, data: &str) -> Result<Self, String> {
+        let header = Regex::new(r"^([^ ].*): discovered=([0-9]+) selected=([0-9]+)$")
+            .map_err(|error| format!("compile frozen manifest header parser: {error}"))?;
+        let load_error = Regex::new(r"^([^ ].*): load-error (.+)$")
+            .map_err(|error| format!("compile frozen manifest load-error parser: {error}"))?;
+        let mut entries = BTreeMap::<String, Vec<String>>::new();
+        let mut expected_selected = BTreeMap::<String, usize>::new();
+        let mut historical_load_errors = Vec::new();
+        let mut current_file = None::<String>;
+        let mut seen_outcomes = BTreeSet::new();
+
+        for (index, line) in data.lines().enumerate() {
+            if let Some(captures) = header.captures(line) {
+                let file = captures[1].to_string();
+                let selected = captures[3].parse::<usize>().map_err(|error| {
+                    format!(
+                        "parse selected count on {}:{}: {error}",
+                        path.display(),
+                        index + 1
+                    )
+                })?;
+                if entries.insert(file.clone(), Vec::new()).is_some() {
+                    return Err(format!(
+                        "duplicate file `{file}` in {}:{}",
+                        path.display(),
+                        index + 1
+                    ));
+                }
+                expected_selected.insert(file.clone(), selected);
+                current_file = Some(file);
+            } else if let Some(captures) = load_error.captures(line) {
+                historical_load_errors.push(captures[1].to_string());
+                current_file = None;
+            } else if let Some(name) = line.strip_prefix("  ") {
+                let file = current_file.as_ref().ok_or_else(|| {
+                    format!(
+                        "test `{name}` has no file header in {}:{}",
+                        path.display(),
+                        index + 1
+                    )
+                })?;
+                if name.is_empty() || !seen_outcomes.insert((file.clone(), name.to_string())) {
+                    return Err(format!(
+                        "empty or duplicate outcome `{file}|{name}` in {}:{}",
+                        path.display(),
+                        index + 1
+                    ));
+                }
+                entries
+                    .get_mut(file)
+                    .expect("current frozen manifest entry must exist")
+                    .push(name.to_string());
+            } else if !line.trim().is_empty() {
+                return Err(format!(
+                    "unrecognized frozen manifest line {}:{}: {line}",
+                    path.display(),
+                    index + 1
+                ));
+            }
+        }
+
+        for (file, expected) in expected_selected {
+            let actual = entries.get(&file).map_or(0, Vec::len);
+            if actual != expected {
+                return Err(format!(
+                    "frozen manifest `{file}` records selected={expected} but lists {actual} outcomes"
+                ));
+            }
+        }
+        let outcome_count = entries.values().map(Vec::len).sum::<usize>();
+        if entries.len() != FROZEN_COMPAT_FILE_COUNT
+            || historical_load_errors.len() != FROZEN_COMPAT_LOAD_ERROR_COUNT
+            || outcome_count != FROZEN_COMPAT_OUTCOME_COUNT
+        {
+            return Err(format!(
+                "frozen compatibility inventory drifted: files={} (expected {}), load_errors={} (expected {}), outcomes={} (expected {})",
+                entries.len(),
+                FROZEN_COMPAT_FILE_COUNT,
+                historical_load_errors.len(),
+                FROZEN_COMPAT_LOAD_ERROR_COUNT,
+                outcome_count,
+                FROZEN_COMPAT_OUTCOME_COUNT
+            ));
+        }
+
+        Ok(Self {
+            path,
+            sha256,
+            entries,
+            historical_load_errors,
+        })
+    }
+
+    fn executable_files(&self, repo_root: &Path) -> Result<Vec<PathBuf>, String> {
+        self.entries
+            .iter()
+            .filter(|(_, names)| !names.is_empty())
+            .map(|(file, _)| resolve_manifest_path_from_cli(repo_root, file))
+            .collect()
+    }
+
+    fn evidence(&self, compared_outcomes: usize) -> FrozenManifestEvidence {
+        FrozenManifestEvidence {
+            path: FROZEN_COMPAT_MANIFEST_PATH.into(),
+            sha256: self.sha256.clone(),
+            recorded_files: self.entries.len(),
+            executed_files: self
+                .entries
+                .values()
+                .filter(|names| !names.is_empty())
+                .count(),
+            historical_load_errors: self.historical_load_errors.len(),
+            required_outcomes: self.entries.values().map(Vec::len).sum(),
+            compared_outcomes,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -682,6 +850,7 @@ fn try_main() -> Result<u8, String> {
             Ok(0)
         }
         Commands::Run(args) => run_compat(args),
+        Commands::Frozen(args) => run_frozen_compat(args),
         Commands::Landed(args) => run_landed_compat(args),
         Commands::Regressions(args) => run_regressions(args),
         Commands::CompareSubjects(args) => compare_subject_artifacts(args),
@@ -826,6 +995,35 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
             timeout,
             subject: &subject,
             provenance: &provenance,
+            frozen_manifest: None,
+        },
+    )
+}
+
+fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
+    let context = load_context()?;
+    let manifest = FrozenCompatibilityManifest::load()?;
+    let selector = compat::resolve_selector(&context.lock, "default")?;
+    let files = manifest.executable_files(&context.local.emacs_repo)?;
+    let timeout = resolve_run_timeout(args.timeout_seconds)?;
+    let artifact_root = make_artifact_root("frozen-7080")?;
+    let subject = ensure_emaxx_binary(args.subject_root.as_deref())?;
+    let provenance = collect_run_provenance(&context, &subject, timeout)?;
+
+    run_compat_files(
+        &context,
+        CompatRunPlan {
+            mode: "frozen-7080",
+            scope: "Frozen7080".into(),
+            selector: &selector,
+            files,
+            name_filter: None,
+            name_filter_expression: None,
+            artifact_root: &artifact_root,
+            timeout,
+            subject: &subject,
+            provenance: &provenance,
+            frozen_manifest: Some(&manifest),
         },
     )
 }
@@ -1054,6 +1252,11 @@ fn artifact_incompatibilities(
     require_equal!("scope", baseline.scope, candidate.scope);
     require_equal!("mode", baseline.mode, candidate.mode);
     require_equal!(
+        "frozen_manifest",
+        baseline.frozen_manifest,
+        candidate.frozen_manifest
+    );
+    require_equal!(
         "provenance.harness_sha256",
         baseline.provenance.harness_sha256,
         candidate.provenance.harness_sha256
@@ -1165,6 +1368,7 @@ fn run_landed_compat(args: LandedArgs) -> Result<u8, String> {
             timeout,
             subject: &subject,
             provenance: &provenance,
+            frozen_manifest: None,
         },
     )
 }
@@ -1226,6 +1430,7 @@ fn run_regressions_audit(args: RegressionRunArgs) -> Result<u8, String> {
                 timeout,
                 subject: &subject,
                 provenance: &provenance,
+                frozen_manifest: None,
             },
         )?;
         if run_status != 0 {
@@ -1261,6 +1466,7 @@ fn add_regression(args: RegressionAddArgs) -> Result<u8, String> {
             timeout,
             subject: &subject,
             provenance: &provenance,
+            frozen_manifest: None,
         },
     )?;
     if status != 0 {
@@ -1346,12 +1552,14 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         timeout,
         subject,
         provenance,
+        frozen_manifest,
     } = plan;
     let mut matching_files = 0usize;
     let mut mismatches = Vec::new();
     let mut timings = Vec::new();
     let mut performance_regressions = Vec::new();
     let mut relative_files = Vec::new();
+    let mut compared_outcomes = 0usize;
     let oracle_checkout = IsolatedTestCheckout::clone(
         &context.local.emacs_repo,
         &context.lock.emacs_repo_commit,
@@ -1393,8 +1601,47 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
             timeout,
         })?;
 
-        let oracle_report = compat::filter_report_by_name(&oracle.report, name_filter);
-        let emaxx_report = compat::filter_report_by_name(&emaxx.report, name_filter);
+        let (oracle_report, emaxx_report) = if let Some(manifest) = frozen_manifest {
+            let required_names = manifest.entries.get(&relative).ok_or_else(|| {
+                format!("frozen compatibility manifest has no entry for `{relative}`")
+            })?;
+            let required_names = required_names.iter().cloned().collect::<BTreeSet<_>>();
+            let oracle_report =
+                compat::filter_report_by_exact_names(&oracle.report, &required_names);
+            let emaxx_report = compat::filter_report_by_exact_names(&emaxx.report, &required_names);
+            let oracle_results = oracle_report
+                .results
+                .iter()
+                .map(|result| result.name.as_str())
+                .collect::<BTreeSet<_>>();
+            let emaxx_results = emaxx_report
+                .results
+                .iter()
+                .map(|result| result.name.as_str())
+                .collect::<BTreeSet<_>>();
+            let missing_oracle = required_names
+                .iter()
+                .filter(|name| !oracle_results.contains(name.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let missing_emaxx = required_names
+                .iter()
+                .filter(|name| !emaxx_results.contains(name.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !missing_oracle.is_empty() || !missing_emaxx.is_empty() {
+                return Err(format!(
+                    "frozen outcome coverage failed for `{relative}`: missing from GNU Emacs {missing_oracle:?}; missing from Emaxx {missing_emaxx:?}"
+                ));
+            }
+            compared_outcomes += required_names.len();
+            (oracle_report, emaxx_report)
+        } else {
+            (
+                compat::filter_report_by_name(&oracle.report, name_filter),
+                compat::filter_report_by_name(&emaxx.report, name_filter),
+            )
+        };
         let mut comparison = compat::compare_reports(&oracle_report, &emaxx_report);
         invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &oracle.process);
         invalidate_timed_out_comparison(&mut comparison, "Emaxx", &emaxx.process);
@@ -1447,8 +1694,14 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         name_filter: name_filter_expression.map(ToOwned::to_owned),
         timings,
         performance_regressions,
+        frozen_manifest: frozen_manifest.map(|manifest| manifest.evidence(compared_outcomes)),
         provenance: provenance.clone(),
     };
+    if frozen_manifest.is_some() && compared_outcomes != FROZEN_COMPAT_OUTCOME_COUNT {
+        return Err(format!(
+            "frozen replay compared {compared_outcomes} outcomes; expected {FROZEN_COMPAT_OUTCOME_COUNT}"
+        ));
+    }
     verify_run_inputs_unchanged(provenance)?;
     write_json(
         &artifact_root.join("summary.json"),
@@ -2756,6 +3009,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn checked_in_frozen_manifest_is_exactly_7080_outcomes() {
+        let manifest = FrozenCompatibilityManifest::load().expect("load frozen manifest");
+
+        assert_eq!(manifest.entries.len(), FROZEN_COMPAT_FILE_COUNT);
+        assert_eq!(
+            manifest.historical_load_errors.len(),
+            FROZEN_COMPAT_LOAD_ERROR_COUNT
+        );
+        assert_eq!(
+            manifest.entries.values().map(Vec::len).sum::<usize>(),
+            FROZEN_COMPAT_OUTCOME_COUNT
+        );
+        assert_eq!(
+            manifest
+                .entries
+                .values()
+                .filter(|names| !names.is_empty())
+                .count(),
+            453
+        );
+    }
+
+    #[test]
+    fn frozen_manifest_parser_rejects_duplicate_and_count_drift() {
+        let duplicate = "test/a.el: discovered=2 selected=2\n  same\n  same\n";
+        assert!(
+            FrozenCompatibilityManifest::parse(
+                PathBuf::from("manifest.txt"),
+                "hash".into(),
+                duplicate
+            )
+            .unwrap_err()
+            .contains("duplicate outcome")
+        );
+
+        let count_drift = "test/a.el: discovered=2 selected=2\n  one\n";
+        assert!(
+            FrozenCompatibilityManifest::parse(
+                PathBuf::from("manifest.txt"),
+                "hash".into(),
+                count_drift
+            )
+            .unwrap_err()
+            .contains("records selected=2 but lists 1")
+        );
+    }
+
+    #[test]
     fn regression_add_accepts_multiple_files() {
         let cli = Cli::try_parse_from([
             "compat-harness",
@@ -2849,6 +3150,7 @@ mod tests {
             name_filter: None,
             timings: Vec::new(),
             performance_regressions: Vec::new(),
+            frozen_manifest: None,
             provenance: test_provenance(),
         }
     }
@@ -3127,11 +3429,11 @@ mod tests {
         fs::create_dir_all(root.join("src/lisp")).unwrap();
         fs::write(root.join("Cargo.toml"), "[package]\nname='probe'\n").unwrap();
         fs::write(root.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n").unwrap();
-        fs::write(root.join("src/lisp/simple_compat.el"), "(provide 'probe)\n").unwrap();
+        fs::write(root.join("src/lisp/runtime_probe.el"), "(provide 'probe)\n").unwrap();
         let initial = subject_source_fingerprint(&root).unwrap();
 
         fs::write(
-            root.join("src/lisp/simple_compat.el"),
+            root.join("src/lisp/runtime_probe.el"),
             "(provide 'changed)\n",
         )
         .unwrap();

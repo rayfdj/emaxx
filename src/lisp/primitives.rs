@@ -43,7 +43,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, rc::Rc};
 use unicode_general_category::get_general_category;
-use unicode_names2::name as unicode_name;
 use unicode_width::UnicodeWidthChar;
 
 mod accessors_random;
@@ -57,14 +56,15 @@ mod dispatch;
 mod file_io;
 mod generated_builtin_arities;
 mod generated_gnu_c_primitives;
+pub(crate) use generated_gnu_c_primitives::{
+    generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
+};
 mod hash_insert;
 mod hooks_overlays;
 mod interactive;
 mod keys;
 mod loading;
-mod modes;
 mod numeric_time;
-mod objects;
 mod print;
 mod processes;
 mod regexp;
@@ -76,7 +76,7 @@ mod text;
 mod values;
 mod window;
 
-pub(crate) use super::eval::{is_special_form_name, native_form_fallback_arity};
+pub(crate) use super::eval::is_special_form_name;
 pub(crate) use accessors_random::*;
 pub(crate) use buffers::*;
 pub(crate) use case::case_table_default_value;
@@ -92,7 +92,6 @@ pub(crate) use interactive::*;
 pub(crate) use keys::*;
 pub(crate) use loading::*;
 pub(crate) use numeric_time::*;
-pub(crate) use objects::*;
 pub(crate) use print::*;
 pub(crate) use processes::*;
 pub(crate) use sequences::*;
@@ -132,69 +131,20 @@ pub(crate) const STANDARD_FRINGE_BITMAPS: &[&str] = &[
 
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
-type FileChangeFingerprint = Option<(u64, u128)>;
-type FileChangeCache = HashMap<String, FileChangeFingerprint>;
 type VectorSlotCache = HashMap<usize, (WeakConsSlot, Rc<Vec<ConsSlot>>), dispatch::FnvBuildHasher>;
 static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
-static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MAKE_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FILE_NOTIFY_DESCRIPTOR_COUNTER: AtomicU64 = AtomicU64::new(1);
 static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
-static FILE_CHANGE_CACHE: OnceLock<Mutex<FileChangeCache>> = OnceLock::new();
-const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
-const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
-const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
 
 thread_local! {
     static VECTOR_SLOT_CACHE: RefCell<VectorSlotCache> = RefCell::new(HashMap::default());
 }
 
-fn treesit_linecol_cache_value(line: i64, col: i64, bytepos: i64) -> Value {
-    Value::list([
-        Value::Symbol(":line".into()),
-        Value::Integer(line),
-        Value::Symbol(":col".into()),
-        Value::Integer(col),
-        Value::Symbol(":bytepos".into()),
-        Value::Integer(bytepos),
-    ])
-}
-
-fn treesit_default_linecol_cache() -> Value {
-    treesit_linecol_cache_value(0, 0, 0)
-}
-
-fn treesit_linecol_at(interp: &Interpreter, pos: usize) -> Result<Value, LispError> {
-    let buffer = interp.current_buffer();
-    if pos < buffer.point_min() || pos > buffer.point_max() {
-        return Err(LispError::Signal("args-out-of-range".into()));
-    }
-    let mut line = 1i64;
-    let mut col = 0i64;
-    for current in buffer.point_min()..pos {
-        match buffer.char_at(current) {
-            Some('\n') => {
-                line += 1;
-                col = 0;
-            }
-            Some(_) => col += 1,
-            None => {}
-        }
-    }
-    Ok(Value::cons(Value::Integer(line), Value::Integer(col)))
-}
-
 fn signal_condition(condition: &str) -> LispError {
     LispError::SignalValue(Value::list([Value::Symbol(condition.into()), Value::Nil]))
-}
-
-fn scan_error() -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::Symbol("scan-error".into()),
-        Value::Nil,
-    ]))
 }
 
 fn beginning_of_line_at(interp: &mut Interpreter, pos: usize) -> usize {
@@ -249,88 +199,6 @@ fn line_distance_in_buffer(
     text.chars().filter(|ch| *ch == '\n').count()
 }
 
-fn replace_buffer_contents(
-    interp: &mut Interpreter,
-    buffer_id: u64,
-    text: &str,
-) -> Result<(), LispError> {
-    let buffer = interp
-        .get_buffer_by_id_mut(buffer_id)
-        .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-    let end = buffer.point_max();
-    let _ = buffer.delete_region(1, end);
-    buffer.goto_char(1);
-    buffer.insert(text);
-    buffer.goto_char(1);
-    Ok(())
-}
-
-fn current_line_text(interp: &mut Interpreter) -> Result<String, LispError> {
-    let saved = interp.buffer.point();
-    let start = interp.buffer.beginning_of_line();
-    interp.buffer.goto_char(saved);
-    let end = interp.buffer.end_of_line();
-    interp.buffer.goto_char(saved);
-    interp
-        .buffer
-        .buffer_substring(start, end)
-        .map_err(|error| LispError::Signal(error.to_string()))
-}
-
-fn advertised_function_name(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
-    interp.function_binding_name(value).ok_or_else(|| {
-        LispError::SignalValue(Value::list([
-            Value::Symbol("invalid-function".into()),
-            value.clone(),
-        ]))
-    })
-}
-
-fn thread_list_thread_at_point(interp: &mut Interpreter) -> Result<u64, LispError> {
-    let line = current_line_text(interp)?;
-    let Some(name) = line.split_whitespace().next() else {
-        return Err(LispError::Signal("No thread at point".into()));
-    };
-    for thread in interp.live_threads() {
-        let thread_id = interp.resolve_thread_id(&thread)?;
-        if interp.thread_name(thread_id).as_deref() == Some(name) {
-            return Ok(thread_id);
-        }
-    }
-    Err(LispError::Signal("No thread at point".into()))
-}
-
-fn thread_list_row(
-    interp: &mut Interpreter,
-    thread_id: u64,
-    env: &Env,
-) -> Result<String, LispError> {
-    let thread_value = Value::Record(thread_id);
-    let thread_name = interp.thread_name(thread_id).unwrap_or_else(|| {
-        if thread_value == interp.current_thread_value() {
-            "Main".into()
-        } else {
-            format!("#<thread id:{thread_id}>")
-        }
-    });
-    let (status, blocker) = if !interp.thread_live(thread_id) {
-        (String::from("Finished"), String::new())
-    } else if thread_value == interp.current_thread_value() {
-        (String::from("Running"), String::new())
-    } else {
-        let blocker = interp.thread_blocker_value(thread_id);
-        if blocker.is_truthy() {
-            (
-                String::from("Blocked"),
-                render_prin1_ephemeral(interp, &blocker, env)?,
-            )
-        } else {
-            (String::from("Yielded"), String::new())
-        }
-    };
-    Ok(format!("{thread_name}\t{status}\t{blocker}\n"))
-}
-
 pub(crate) fn prefer_builtin_override(name: &str) -> bool {
     dispatch::prefer_builtin_override(name)
 }
@@ -354,7 +222,6 @@ pub(crate) use dispatch::echo_area_message;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::name_facts;
-pub(crate) use dispatch::oclosure_type_of;
 pub(crate) use dispatch::render_mode_line_glass;
 pub(crate) use dispatch::set_echo_area_message;
 pub(crate) use dispatch::set_tty_minibuffer_reader;
@@ -363,9 +230,6 @@ pub(crate) use dispatch::{next_digit_prefix, next_negative_prefix, next_universa
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod lcms_response_tests;
 
 #[cfg(test)]
 mod compat_runtime_tests;

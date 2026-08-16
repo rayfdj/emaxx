@@ -3,8 +3,23 @@ use crate::lisp::reader::Reader;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-fn upstream_emacs_repo() -> PathBuf {
-    crate::compat::project_root().join("../emacs")
+fn make_compat_temp_file(interp: &mut Interpreter, env: &mut Env, prefix: &str) -> String {
+    let absolute_prefix = std::env::temp_dir().join(prefix);
+    call(
+        interp,
+        "make-temp-file-internal",
+        &[
+            Value::String(absolute_prefix.display().to_string().into()),
+            Value::Nil,
+            Value::String(String::new().into()),
+            Value::Nil,
+        ],
+        env,
+    )
+    .expect("create compatibility fixture through GNU's C primitive")
+    .as_string()
+    .expect("temporary file path")
+    .to_string()
 }
 
 fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {

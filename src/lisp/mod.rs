@@ -28,6 +28,34 @@ macro_rules! dispatch_handles {
     };
 }
 
+#[cfg(test)]
+macro_rules! dispatch_visit_patterns {
+    ($visitor:ident;) => {
+        ()
+    };
+    ($visitor:ident; , $($rest:tt)*) => {
+        dispatch_visit_patterns!($visitor; $($rest)*)
+    };
+    (
+        $visitor:ident;
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:block
+        $($rest:tt)*
+    ) => {{
+        $visitor(stringify!($pattern));
+        dispatch_visit_patterns!($visitor; $($rest)*)
+    }};
+    (
+        $visitor:ident;
+        $(#[$attribute:meta])*
+        $pattern:pat $(if $guard:expr)? => $body:expr,
+        $($rest:tt)*
+    ) => {{
+        $visitor(stringify!($pattern));
+        dispatch_visit_patterns!($visitor; $($rest)*)
+    }};
+}
+
 macro_rules! dispatch_select_builtin_override {
     ($name:ident, $pattern:pat =>) => {
         false
@@ -151,6 +179,11 @@ macro_rules! define_dispatch {
             dispatch_property!(dispatch_select_builtin_override, name; $($arms)*)
         }
 
+        #[cfg(test)]
+        $visibility fn visit_handled_patterns(visitor: &mut impl FnMut(&'static str)) {
+            dispatch_visit_patterns!(visitor; $($arms)*);
+        }
+
         $(#[$attribute])*
         $visibility fn $call(
             $($argument: $argument_type),*
@@ -168,7 +201,7 @@ pub mod reader;
 pub mod sqlite;
 pub mod types;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::compat::TestStatus;
@@ -260,6 +293,24 @@ fn lisp_string_literal(text: &str) -> String {
     rendered
 }
 
+/// Copy one reader escape outside strings and comments.
+///
+/// GNU's reader treats the backslash and the following byte as part of the
+/// same symbol token.  Lazy `.elc' markers therefore must not recognize the
+/// escaped `#' in names such as `byte-compile--\#$'.
+fn copy_reader_escape(bytes: &[u8], index: &mut usize, out: &mut Vec<u8>) -> bool {
+    if bytes.get(*index) != Some(&b'\\') {
+        return false;
+    }
+    out.push(b'\\');
+    *index += 1;
+    if let Some(byte) = bytes.get(*index) {
+        out.push(*byte);
+        *index += 1;
+    }
+    true
+}
+
 fn rewrite_lazy_doc_refs(
     text: &str,
     path: &Path,
@@ -306,6 +357,9 @@ fn rewrite_lazy_doc_refs(
             in_comment = true;
             out.push(byte);
             index += 1;
+            continue;
+        }
+        if copy_reader_escape(bytes, &mut index, &mut out) {
             continue;
         }
 
@@ -394,6 +448,9 @@ pub(crate) fn preprocess_lazy_doc_source(
             index += 1;
             continue;
         }
+        if copy_reader_escape(bytes, &mut index, &mut out) {
+            continue;
+        }
 
         if bytes[index..].starts_with(b"#@") {
             let digits_start = index + 2;
@@ -442,50 +499,181 @@ pub(crate) fn preprocess_lazy_doc_source(
     rewrite_lazy_doc_refs(&out, path, &docs, force_load_doc_strings)
 }
 
-fn contains_gnu_byte_code_literal(value: &types::Value) -> bool {
-    fn quoted_byte_code_function(value: &types::Value) -> bool {
-        value.to_vec().ok().is_some_and(|items| {
-            matches!(
-                items.as_slice(),
-                [types::Value::Symbol(quote), types::Value::Symbol(kind)]
-                    if quote == "quote" && kind == "byte-code-function"
-            )
-        })
+fn push_raw_source_string_byte(output: &mut String, byte: u8, in_string: bool) -> bool {
+    if !in_string {
+        return false;
     }
-
-    fn visit(value: &types::Value, seen: &mut HashSet<usize>) -> bool {
-        let Some((car, cdr)) = (value).cons_cells() else {
-            return false;
-        };
-        let identity = car.cell_id();
-        if !seen.insert(identity) {
-            return false;
-        }
-        let head = car.borrow().clone();
-        let tail = cdr.borrow().clone();
-        if matches!(&head, types::Value::Symbol(name) if name == reader::CLOSURE_LITERAL_SYMBOL)
-            && let types::Value::Cons(cell) = &tail
-            && quoted_byte_code_function(&cell.car.borrow())
-        {
-            return true;
-        }
-        visit(&head, seen) || visit(&tail, seen)
-    }
-
-    visit(value, &mut HashSet::new())
+    // A no-conversion .elc embeds the byte-code instruction stream directly
+    // inside a Lisp string.  Those bytes are not necessarily a well-formed
+    // utf-8-emacs sequence.  Re-express one such byte as a reader escape so
+    // the resulting Lisp string stays unibyte and recovers the exact octet.
+    output.push_str(&format!("\\x{byte:X}\\ "));
+    true
 }
 
-fn headered_elc_is_interpretable_lisp(path: &Path, source: &str) -> bool {
-    let source = preprocess_lazy_doc_source(path, source, false);
-    reader::Reader::new(&source)
-        .read_all()
-        .is_ok_and(|forms| !forms.iter().any(contains_gnu_byte_code_literal))
+fn decode_utf8_emacs_source(path: &Path, bytes: &[u8]) -> Result<String, types::LispError> {
+    let mut output = String::with_capacity(bytes.len());
+    let mut index = 0usize;
+    let mut in_string = false;
+    let mut in_comment = false;
+    let mut escaped = false;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte < 0x80 {
+            let ch = char::from(byte);
+            output.push(ch);
+            index += 1;
+            if in_comment {
+                if ch == '\n' {
+                    in_comment = false;
+                }
+                continue;
+            }
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            if ch == ';' {
+                in_comment = true;
+            } else if ch == '"' {
+                in_string = true;
+            }
+            continue;
+        }
+
+        let (width, raw_byte8) = match byte {
+            0xC0..=0xC1 => (2, true),
+            0xC2..=0xDF => (2, false),
+            0xE0..=0xEF => (3, false),
+            0xF0..=0xF7 => (4, false),
+            0xF8 => (5, false),
+            _ if push_raw_source_string_byte(&mut output, byte, in_string) => {
+                index += 1;
+                continue;
+            }
+            _ => {
+                return Err(types::LispError::Signal(format!(
+                    "Cannot decode {} as utf-8-emacs at byte {}",
+                    path.display(),
+                    index
+                )));
+            }
+        };
+        let Some(sequence) = bytes.get(index..index + width) else {
+            if push_raw_source_string_byte(&mut output, byte, in_string) {
+                index += 1;
+                continue;
+            }
+            return Err(types::LispError::Signal(format!(
+                "Truncated utf-8-emacs sequence in {} at byte {}",
+                path.display(),
+                index
+            )));
+        };
+        if !sequence[1..]
+            .iter()
+            .all(|continuation| (0x80..=0xBF).contains(continuation))
+        {
+            if push_raw_source_string_byte(&mut output, byte, in_string) {
+                index += 1;
+                continue;
+            }
+            return Err(types::LispError::Signal(format!(
+                "Invalid utf-8-emacs sequence in {} at byte {}",
+                path.display(),
+                index
+            )));
+        }
+        let mut code = u32::from(byte & (0x7F >> width));
+        for continuation in &sequence[1..] {
+            code = (code << 6) | u32::from(continuation & 0x3F);
+        }
+        let minimum = match width {
+            2 => 0x80,
+            3 => 0x800,
+            4 => 0x1_0000,
+            5 => 0x20_0000,
+            _ => unreachable!(),
+        };
+        if raw_byte8 {
+            // GNU's internal C0/C1 two-byte form carries a raw byte in
+            // 0x3FFF80..0x3FFFFF, not the public BYTE8_TO_CHAR base used
+            // before subtracting the high-bit offset.
+            code += 0x3F_FF80;
+        } else if code < minimum || code > 0x3F_FF7F || (width == 4 && code > 0x1F_FFFF) {
+            if push_raw_source_string_byte(&mut output, byte, in_string) {
+                index += 1;
+                continue;
+            }
+            return Err(types::LispError::Signal(format!(
+                "Invalid utf-8-emacs codepoint in {} at byte {}",
+                path.display(),
+                index
+            )));
+        }
+        if let Some(ch) = char::from_u32(code) {
+            output.push(ch);
+        } else if in_comment {
+            // Comments are not reader data.  Keep the diagnostic meaning
+            // without pretending the out-of-Unicode codepoint is a Rust char.
+            output.push_str(&format!("U+{code:X}"));
+        } else if in_string {
+            // The reader owns the typed representation of extended string
+            // characters.  Re-express the raw utf-8-emacs spelling as an
+            // unambiguous GNU hex escape; backslash-space terminates the
+            // variable-width escape without adding a character.
+            output.push_str(&format!("\\x{code:X}\\ "));
+        } else if output.ends_with('?') {
+            // The Lisp reader already represents characters as integers up to
+            // MAX_CHAR.  Re-express the utf-8-emacs byte spelling as GNU's
+            // equivalent hex character-literal spelling so no string-level
+            // surrogate representation is introduced.
+            output.push_str(&format!("\\x{code:X}"));
+        } else {
+            return Err(types::LispError::Signal(format!(
+                "Cannot represent utf-8-emacs character U+{code:X} from {} in a Lisp symbol",
+                path.display()
+            )));
+        }
+        index += width;
+    }
+
+    Ok(output)
+}
+
+fn decode_source_bytes(path: &Path, bytes: Vec<u8>) -> Result<String, types::LispError> {
+    // `byte-write-target-file' binds `coding-system-for-write' to
+    // `no-conversion': a compiled file therefore contains Emacs's internal
+    // utf-8-emacs byte representation and has no source coding cookie.  The
+    // `;ELC' magic is the authoritative format marker.
+    if bytes.starts_with(b";ELC") {
+        return decode_utf8_emacs_source(path, &bytes);
+    }
+    match String::from_utf8(bytes) {
+        Ok(source) => Ok(source),
+        Err(error) => {
+            let bytes = error.into_bytes();
+            match primitives::coding_tag_from_bytes(&bytes).as_deref() {
+                Some("utf-8-emacs") => decode_utf8_emacs_source(path, &bytes),
+                coding => Err(types::LispError::Signal(format!(
+                    "Cannot read {} as {} source",
+                    path.display(),
+                    coding.unwrap_or("UTF-8")
+                ))),
+            }
+        }
+    }
 }
 
 fn read_source(path: &Path) -> Result<String, types::LispError> {
-    String::from_utf8(read_source_bytes(path)?).map_err(|error| {
-        types::LispError::Signal(format!("Cannot read {}: {}", path.display(), error))
-    })
+    decode_source_bytes(path, read_source_bytes(path)?)
 }
 
 fn read_source_bytes(path: &Path) -> Result<Vec<u8>, types::LispError> {
@@ -618,25 +806,12 @@ pub fn load_file_strict(
     path: &Path,
 ) -> Result<(), types::LispError> {
     let requested_source = read_source_bytes(path)?;
-    // A versioned `;ELC' header does not by itself imply bytecode:
-    // `byte-compile-insert-header' is also used for files containing ordinary
-    // readable Lisp.  Execute those directly.  Genuine `#[...]' bytecode
-    // executes on the VM when EMAXX_BYTECODE_VM=1 or when no sibling `.el'
-    // exists; otherwise the sibling source remains the default until the
-    // VM path is sweep-validated end to end.
-    let compiled_source_path = path.with_extension("el");
+    // Resolution has already selected the file.  GNU executes that exact
+    // path: an explicit or resolver-selected `.elc' must never silently run a
+    // sibling `.el'.  Versioned `.elc' files can contain ordinary readable
+    // Lisp as well as `#[...]' bytecode objects; the same reader handles both.
     let versioned_elc = requested_source.starts_with(b";ELC\x1e");
-    let source = if versioned_elc && compiled_source_path.is_file() {
-        let vm_enabled = bytecode_vm_enabled();
-        match String::from_utf8(requested_source) {
-            Ok(source) if vm_enabled || headered_elc_is_interpretable_lisp(path, &source) => source,
-            Ok(_) | Err(_) => read_source(&compiled_source_path)?,
-        }
-    } else {
-        String::from_utf8(requested_source).map_err(|error| {
-            types::LispError::Signal(format!("Cannot read {}: {}", path.display(), error))
-        })?
-    };
+    let source = decode_source_bytes(path, requested_source)?;
     // GNU readevalloop decides this once, before reading the first form: it
     // eagerly expands source only when macroexp.el's owner function is
     // already installed, and never for byte-compiled input.  A nested
@@ -661,140 +836,185 @@ pub fn load_file_strict(
         .load_source_provenance_path(path)
         .display()
         .to_string();
-    let previous = interp.set_current_load_file(Some(load_file.clone()));
-    let mut env = types::Env::new();
-    // GNU `load' establishes these as real specbind layers.  A Rust-only
-    // current-file side channel is insufficient: an outer Lisp binding such
-    // as `(let ((load-file-name nil)) (load ...))' must be shadowed by the
-    // file being loaded, then restored on every exit path.
-    let mut dynamic_restores = Vec::with_capacity(8);
-    for (name, value) in [
-        (
-            "load-file-name",
-            types::Value::String(load_file.clone().into()),
-        ),
-        (
-            "load-true-file-name",
-            types::Value::String(load_file.clone().into()),
-        ),
-        ("inhibit-file-name-operation", types::Value::Nil),
-        ("load-in-progress", types::Value::T),
-        (
-            "lexical-binding",
-            if settings.lexical_binding {
-                types::Value::T
-            } else {
-                types::Value::Nil
-            },
-        ),
-        (
-            "read-symbol-shorthands",
-            read_symbol_shorthands_value(&settings.read_symbol_shorthands),
-        ),
-        (
-            "current-load-list",
-            types::Value::list([types::Value::String(load_file.clone().into())]),
-        ),
-        ("lread--unescaped-character-literals", types::Value::Nil),
-    ] {
-        match interp.bind_special_dynamic(name, value, &mut env) {
-            Ok(restore) => dynamic_restores.push(restore),
-            Err(error) => {
-                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-                interp.set_current_load_file(previous);
-                return Err(error);
-            }
-        }
-    }
-    let mut source_reader =
-        reader::Reader::with_symbol_shorthands(&source, settings.read_symbol_shorthands.clone());
-    let forms = match source_reader.read_all() {
-        Ok(forms) => forms,
-        Err(error) => {
-            let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-            interp.set_current_load_file(previous);
-            return Err(error);
-        }
-    };
-    interp.set_variable(
-        "lread--unescaped-character-literals",
-        unescaped_character_literal_value(&source_reader),
-        &mut env,
-    );
-    let warning_message =
-        match unescaped_character_literal_warning(interp, &mut env).and_then(|warning| {
-            warning
-                .map(|warning| format_loading_warning(interp, &mut env, path, warning))
-                .transpose()
-        }) {
-            Ok(message) => message,
-            Err(error) => {
-                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-                interp.set_current_load_file(previous);
-                return Err(error);
-            }
-        };
-    // Reader labels are scoped to one object returned by `read'.  Source
-    // evaluation normally resolves them at `quote', but compiled top-level
-    // forms also contain labels inside raw bytecode constants and defconst
-    // payloads.  Resolve each complete `.elc' form once so every nested
-    // `#N#' shares the same label table, exactly as it did in GNU's reader.
-    let forms = if versioned_elc {
-        forms
-            .into_iter()
-            .map(|form| {
-                let form = if reader::contains_circular_read_syntax(&form) {
-                    reader::resolve_circular_read_syntax(form)
-                } else {
-                    Ok(form)
-                }?;
-                interp.materialize_read_record_literals(&form)
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        forms
-    };
-    // GNU's reader interns ordinary symbols as it constructs each form.
-    // Emaxx deliberately keeps parsing independent from an Interpreter, so
-    // reproduce that reader side effect at the common file-load boundary
-    // before evaluation can inspect symbol identity via `intern-soft'.
-    for form in &forms {
-        interp.intern_symbols_in_value(form);
-    }
-    for (form_index, form) in forms.iter().enumerate() {
-        let result = if eager_macroexpand {
-            primitives::eager_expand_eval(interp, form, &mut env)
+    interp.with_lambda_eval_context(settings.lexical_binding, false, |interp| {
+        let previous = interp.set_current_load_file(Some(load_file.clone()));
+        let mut env = if settings.lexical_binding {
+            vec![types::EnvFrame::with_lisp_environment_and_identity(
+                Vec::new(),
+                types::Value::list([types::Value::T]),
+                eval::Interpreter::fresh_frame_identity(),
+            )]
         } else {
-            interp.eval(form, &mut env)
+            types::Env::new()
         };
-        if let Err(error) = result {
-            if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
-                let head = form
-                    .car()
-                    .ok()
-                    .and_then(|value| value.as_symbol().ok().map(str::to_owned))
-                    .unwrap_or_else(|| form.type_name());
-                eprintln!(
-                    "load error in {} at form {} ({head}): {error:?}",
-                    path.display(),
-                    form_index + 1
-                );
+        // GNU `load' establishes these as real specbind layers.  A Rust-only
+        // current-file side channel is insufficient: an outer Lisp binding such
+        // as `(let ((load-file-name nil)) (load ...))' must be shadowed by the
+        // file being loaded, then restored on every exit path.
+        let macroexp_dynvars = interp
+            .lookup_var("macroexp--dynvars", &env)
+            .unwrap_or(types::Value::Nil);
+        let mut dynamic_restores = Vec::with_capacity(9);
+        for (name, value) in [
+            (
+                "load-file-name",
+                types::Value::String(load_file.clone().into()),
+            ),
+            (
+                "load-true-file-name",
+                types::Value::String(load_file.clone().into()),
+            ),
+            ("inhibit-file-name-operation", types::Value::Nil),
+            ("load-in-progress", types::Value::T),
+            (
+                "lexical-binding",
+                if settings.lexical_binding {
+                    types::Value::T
+                } else {
+                    types::Value::Nil
+                },
+            ),
+            ("macroexp--dynvars", macroexp_dynvars),
+            (
+                "read-symbol-shorthands",
+                read_symbol_shorthands_value(&settings.read_symbol_shorthands),
+            ),
+            (
+                "current-load-list",
+                types::Value::list([types::Value::String(load_file.clone().into())]),
+            ),
+            ("lread--unescaped-character-literals", types::Value::Nil),
+        ] {
+            match interp.bind_special_dynamic(name, value, &mut env) {
+                Ok(restore) => dynamic_restores.push(restore),
+                Err(error) => {
+                    let _ =
+                        restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                    interp.set_current_load_file(previous);
+                    return Err(error);
+                }
             }
-            let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-            interp.set_current_load_file(previous);
-            return Err(error);
         }
-    }
-    let current_load_list = interp
-        .lookup_var("current-load-list", &types::Env::new())
-        .unwrap_or_else(|| types::Value::list([types::Value::String(load_file.clone().into())]));
-    interp.commit_entire_load_history(&load_file, current_load_list);
-    if let Some(message) = warning_message {
-        append_message(interp, &message);
-    }
-    restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env)?;
-    interp.set_current_load_file(previous);
-    Ok(())
+        let mut source_reader = reader::Reader::with_symbol_shorthands(
+            &source,
+            settings.read_symbol_shorthands.clone(),
+        );
+        let forms = match source_reader.read_all() {
+            Ok(forms) => forms,
+            Err(error) => {
+                if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+                    eprintln!(
+                        "read error in {} at byte offset {}: {error:?}",
+                        path.display(),
+                        source_reader.position()
+                    );
+                }
+                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                interp.set_current_load_file(previous);
+                return Err(error);
+            }
+        };
+        interp.set_variable(
+            "lread--unescaped-character-literals",
+            unescaped_character_literal_value(&source_reader),
+            &mut env,
+        );
+        let warning_message =
+            match unescaped_character_literal_warning(interp, &mut env).and_then(|warning| {
+                warning
+                    .map(|warning| format_loading_warning(interp, &mut env, path, warning))
+                    .transpose()
+            }) {
+                Ok(message) => message,
+                Err(error) => {
+                    let _ =
+                        restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                    interp.set_current_load_file(previous);
+                    return Err(error);
+                }
+            };
+        // GNU's readevalloop reads, constructs, and evaluates one top-level object
+        // before reading the next.  Emaxx's parser produces all syntax trees up
+        // front, but the observable Interpreter-dependent reader work must remain
+        // in that same per-form order: a later compiled object can depend on a
+        // definition installed by an earlier top-level form.
+        for (form_index, form) in forms.into_iter().enumerate() {
+            // GNU's reader interns ordinary symbols and returns fully constructed
+            // identity-bearing objects before invoking the Lisp-owned eager
+            // macroexpander.  Delaying source `#^[...]' materialization until eval
+            // leaked a private ReaderForm into macroexp.el and made generated
+            // Unicode tables look like source syntax instead of opaque values.
+            interp.intern_symbols_in_value(&form);
+            let form = match interp.materialize_read_object_literals(form) {
+                Ok(form) => form,
+                Err(error) => {
+                    if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+                        eprintln!(
+                            "literal materialization error in {} at form {}: {error:?}",
+                            path.display(),
+                            form_index + 1
+                        );
+                    }
+                    let _ =
+                        restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                    interp.set_current_load_file(previous);
+                    return Err(error);
+                }
+            };
+            let result = if eager_macroexpand {
+                primitives::eager_expand_eval(interp, &form, &mut env)
+            } else {
+                interp.eval(&form, &mut env)
+            };
+            if let Err(error) = result {
+                if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+                    let head = form
+                        .car()
+                        .ok()
+                        .and_then(|value| value.as_symbol().ok().map(str::to_owned))
+                        .unwrap_or_else(|| form.type_name());
+                    eprintln!(
+                        "load error in {} at form {} ({head}): {error:?}",
+                        path.display(),
+                        form_index + 1
+                    );
+                    if let Some(snapshot) = interp.take_batch_error_backtrace() {
+                        for (_, function, _, _) in snapshot.frames.into_iter().take(20) {
+                            eprintln!("  load frame: {function}");
+                        }
+                    }
+                }
+                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                interp.set_current_load_file(previous);
+                return Err(error);
+            }
+        }
+        let current_load_list = interp
+            .lookup_var("current-load-list", &types::Env::new())
+            .unwrap_or_else(|| {
+                types::Value::list([types::Value::String(load_file.clone().into())])
+            });
+        interp.commit_entire_load_history(&load_file, current_load_list);
+        if let Some(message) = warning_message {
+            append_message(interp, &message);
+        }
+        restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env)?;
+        interp.set_current_load_file(previous);
+
+        // GNU 30.2 lread.c:Fload calls the Lisp-owned
+        // `do-after-load-evaluation' only after all load bindings unwind.
+        // Invoke that actual GNU Elisp owner when it is present; early
+        // bootstrap loads deliberately have no such function yet.
+        if let Ok(after_load) = interp.lookup_function("do-after-load-evaluation", &env) {
+            interp.call_function_value(
+                after_load,
+                Some("do-after-load-evaluation"),
+                &[types::Value::String(load_file.into())],
+                &mut env,
+            )?;
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn bytecode_vm_enabled() -> bool {
@@ -896,8 +1116,8 @@ pub fn run_ert_file(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_file_local_variable, parse_symbol_shorthands, preprocess_lazy_doc_source,
-        source_settings,
+        decode_source_bytes, extract_file_local_variable, parse_symbol_shorthands,
+        preprocess_lazy_doc_source, read_source_forms, source_settings,
     };
     use std::path::Path;
 
@@ -957,7 +1177,8 @@ mod tests {
     #[test]
     fn lazy_doc_preprocessing_ignores_markers_inside_strings_and_comments() {
         let source = ";ELC\x1e\n(#[0 \"raw #@12 bytes #$ (#$ . 9) \\\"tail\" [nil] 1])\n\
-                      ; #@7 and #$ are comment text\n";
+                      ; #@7 and #$ are comment text\n\
+                      (list byte-compile--\\#$ byte-compile--\\#@7)\n";
 
         assert_eq!(
             preprocess_lazy_doc_source(Path::new("/tmp/sample.elc"), source, false),
@@ -986,5 +1207,212 @@ mod tests {
                 ";ELC\x1e\n(list \"/tmp/sample.elc\" \"hello\" \"#$ (#$ . {content_offset})\")"
             )
         );
+    }
+
+    #[test]
+    fn utf8_emacs_source_preserves_extended_character_literals_as_integers() {
+        let mut bytes = b";;; -*- coding: utf-8-emacs; -*-\n(setq sample ?".to_vec();
+        bytes.extend([0xF6, 0xA0, 0x87, 0x8A]);
+        bytes.extend(b")\n");
+        let source = decode_source_bytes(Path::new("ethiopic-sample.el"), bytes)
+            .expect("decode utf-8-emacs character literal");
+        assert!(source.contains(r"?\x1A01CA"));
+        assert_eq!(
+            read_source_forms(&source).expect("read decoded source")[0],
+            super::types::Value::list([
+                super::types::Value::symbol("setq"),
+                super::types::Value::symbol("sample"),
+                super::types::Value::Integer(0x1A_01CA),
+            ])
+        );
+    }
+
+    #[test]
+    fn utf8_emacs_source_preserves_extended_string_characters() {
+        let mut bytes = b";;; -*- coding: utf-8-emacs; -*-\n(setq sample \"".to_vec();
+        bytes.extend([0xF6, 0xA0, 0x87, 0x8A]);
+        bytes.extend(b"\")\n");
+        let source = decode_source_bytes(Path::new("extended-string.el"), bytes)
+            .expect("decode extended string character");
+        assert!(source.contains(r"\x1A01CA\ "));
+        let form = read_source_forms(&source)
+            .expect("read decoded source")
+            .remove(0)
+            .to_vec()
+            .expect("setq form");
+        let string = super::primitives::string_like(&form[2]).expect("string value");
+        assert_eq!(string.character_codes(), vec![0x1A_01CA]);
+        assert_eq!(string.extended_chars, vec![(0, 0x1A_01CA)]);
+        assert_eq!(string.byte_len().expect("utf-8-emacs byte length"), 4);
+        assert_eq!(
+            super::primitives::internal_string_bytes(&string)
+                .expect("encode utf-8-emacs string bytes"),
+            [0xF6, 0xA0, 0x87, 0x8A]
+        );
+    }
+
+    #[test]
+    fn utf8_emacs_source_decodes_five_byte_and_raw_byte8_characters() {
+        let mut bytes = b";;; -*- coding: utf-8-emacs; -*-\n(setq sample \"".to_vec();
+        bytes.extend([0xF8, 0x88, 0x80, 0x80, 0x80]);
+        bytes.extend([0xC0, 0x80]);
+        bytes.extend(b"\")\n");
+        let source = decode_source_bytes(Path::new("extended-ranges.el"), bytes)
+            .expect("decode complete utf-8-emacs character range");
+        let form = read_source_forms(&source)
+            .expect("read decoded source")
+            .remove(0)
+            .to_vec()
+            .expect("setq form");
+        let string = super::primitives::string_like(&form[2]).expect("string value");
+        assert_eq!(string.character_codes(), vec![0x20_0000, 0x3F_FF80]);
+        assert_eq!(string.byte_len().expect("utf-8-emacs byte length"), 7);
+        assert_eq!(
+            super::primitives::internal_string_bytes(&string)
+                .expect("encode complete utf-8-emacs range"),
+            [0xF8, 0x88, 0x80, 0x80, 0x80, 0xC0, 0x80]
+        );
+    }
+
+    #[test]
+    fn compiled_lisp_decodes_internal_utf8_emacs_without_a_cookie() {
+        let mut bytes = b";ELC\x1e\0\0\0\n(setq sample \"".to_vec();
+        bytes.extend([0xF6, 0xA0, 0x87, 0x8A]);
+        bytes.extend(b"\")\n");
+        let source = decode_source_bytes(Path::new("extended-string.elc"), bytes)
+            .expect("decode compiled utf-8-emacs string");
+        let form = read_source_forms(&source)
+            .expect("read decoded compiled form")
+            .remove(0)
+            .to_vec()
+            .expect("setq form");
+        let string = super::primitives::string_like(&form[2]).expect("string value");
+        assert_eq!(string.character_codes(), vec![0x1A_01CA]);
+        assert_eq!(
+            super::primitives::internal_string_bytes(&string)
+                .expect("encode compiled utf-8-emacs string bytes"),
+            [0xF6, 0xA0, 0x87, 0x8A]
+        );
+    }
+
+    #[test]
+    fn compiled_lisp_preserves_raw_bytecode_octets_inside_strings() {
+        let mut bytes = b";ELC\x1e\0\0\0\n(setq sample \"".to_vec();
+        bytes.extend([0xC0, 0x01, 0xC2, 0xFF]);
+        bytes.extend(b"\")\n");
+        let source = decode_source_bytes(Path::new("raw-bytecode.elc"), bytes)
+            .expect("decode compiled raw byte string");
+        let form = read_source_forms(&source)
+            .expect("read decoded raw byte form")
+            .remove(0)
+            .to_vec()
+            .expect("setq form");
+        let string = super::primitives::string_like(&form[2]).expect("string value");
+        assert!(!string.multibyte);
+        assert_eq!(
+            super::primitives::internal_string_bytes(&string)
+                .expect("recover compiled raw byte string"),
+            [0xC0, 0x01, 0xC2, 0xFF]
+        );
+    }
+
+    #[test]
+    fn file_loader_materializes_reader_objects_before_macroexpansion_and_eval() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "emaxx-reader-boundary-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("create reader-boundary fixture directory");
+
+        let roots = std::iter::repeat_n("nil", 64).collect::<Vec<_>>().join(" ");
+        let source_path = directory.join("reader-object.el");
+        std::fs::write(
+            &source_path,
+            format!("(setq loaded-source-table #^[nil nil test nil {roots}])\n"),
+        )
+        .expect("write source reader-object fixture");
+        let compiled_path = directory.join("reader-object.elc");
+        std::fs::write(
+            &compiled_path,
+            format!(";ELC\x1e\n(setq loaded-compiled-table #^[nil nil test nil {roots}])\n"),
+        )
+        .expect("write compiled reader-object fixture");
+
+        let mut interp = super::eval::Interpreter::new();
+        let mut env = super::types::Env::new();
+        for form in super::reader::Reader::new(
+            "(setq eager-owner-saw-char-table nil)\n\
+             (defalias 'internal-macroexpand-for-load\n\
+               (function\n\
+                 (lambda (form full)\n\
+                   (if (and full\n\
+                            (eq (car-safe form) 'setq)\n\
+                            (char-table-p\n\
+                              (car-safe (cdr-safe (cdr-safe form)))))\n\
+                       (setq eager-owner-saw-char-table t))\n\
+                   form)))",
+        )
+        .read_all()
+        .expect("read eager-owner fixture")
+        {
+            interp
+                .eval(&form, &mut env)
+                .expect("install eager-owner fixture");
+        }
+
+        super::load_file_strict(&mut interp, &source_path)
+            .expect("load source reader-object fixture");
+        assert_eq!(
+            interp.lookup_var("eager-owner-saw-char-table", &env),
+            Some(super::types::Value::T),
+            "GNU's Lisp macroexpander must receive the C-reader object, not a private placeholder"
+        );
+        assert!(matches!(
+            interp.lookup_var("loaded-source-table", &env),
+            Some(super::types::Value::CharTable(_))
+        ));
+
+        super::load_file_strict(&mut interp, &compiled_path)
+            .expect("load compiled reader-object fixture");
+        assert!(matches!(
+            interp.lookup_var("loaded-compiled-table", &env),
+            Some(super::types::Value::CharTable(_))
+        ));
+
+        std::fs::remove_dir_all(directory).expect("remove reader-boundary fixture directory");
+    }
+
+    #[test]
+    fn closure_reader_materialization_never_evaluates_slot_data() {
+        let callable_looking_data = super::types::Value::list([
+            super::types::Value::symbol("reader-data-must-not-be-called"),
+            super::types::Value::symbol("payload"),
+        ]);
+        let literal =
+            super::types::Value::ReaderForm(std::rc::Rc::new(super::types::ReaderForm::Closure {
+                kind: super::types::ReaderClosureKind::ByteCode,
+                slots: vec![
+                    super::types::Value::Integer(0),
+                    super::types::Value::String(String::new().into()),
+                    super::types::Value::list([super::types::Value::symbol("vector-literal")]),
+                    super::types::Value::Integer(0),
+                    callable_looking_data.clone(),
+                ],
+            }));
+        let mut interp = super::eval::Interpreter::new();
+        let materialized = interp
+            .materialize_read_object_literals(literal)
+            .expect("reader construction must treat every closure slot as data");
+        let super::types::Value::Record(record_id) = materialized else {
+            panic!("byte-code reader form must become a closure pseudovector");
+        };
+        let record = interp
+            .find_record(record_id)
+            .expect("materialized closure record");
+        assert_eq!(record.slots[4], callable_looking_data);
     }
 }

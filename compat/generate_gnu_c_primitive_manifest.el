@@ -106,11 +106,20 @@ mirror without surface-contract coverage fails the fast suite."
       (insert (format
                "pub(crate) const GNU_C_PRIMITIVE_AVAILABLE_COUNT: usize = %d;\n"
                available))
-      (insert "\npub(crate) fn generated_gnu_c_primitive_available(name: &str) -> Option<bool> {\n")
+      (insert "\npub(crate) fn generated_gnu_c_primitive_contract(\n")
+      (insert "    name: &str,\n")
+      (insert ") -> Option<&'static GnuCPrimitiveContract> {\n")
       (insert "    let index = GNU_C_PRIMITIVES\n")
       (insert "        .binary_search_by_key(&name, |contract| contract.name)\n")
       (insert "        .ok()?;\n")
-      (insert "    Some(GNU_C_PRIMITIVES[index].arity.is_some())\n")
+      (insert "    Some(&GNU_C_PRIMITIVES[index])\n")
+      (insert "}\n\n")
+      (insert "pub(crate) fn generated_gnu_c_primitive_available(name: &str) -> Option<bool> {\n")
+      (insert "    Some(generated_gnu_c_primitive_contract(name)?.arity.is_some())\n")
+      (insert "}\n\n")
+      (insert "pub(crate) fn generated_gnu_c_primitive_special_form(name: &str) -> bool {\n")
+      (insert "    generated_gnu_c_primitive_contract(name)\n")
+      (insert "        .is_some_and(|contract| contract.arity.is_some() && contract.special_form)\n")
       (insert "}\n"))))
 
 (provide 'generate_gnu_c_primitive_manifest)

@@ -172,36 +172,11 @@ fn materialize_constant_inner(
     env: &mut Env,
     seen: &mut std::collections::HashSet<usize>,
 ) -> Result<Value, LispError> {
+    if matches!(constant, Value::ReaderForm(_)) {
+        return interp.materialize_read_object_literals(constant.clone());
+    }
     let head = constant.car().ok();
     match head.as_ref() {
-        Some(Value::Symbol(marker))
-            if marker == "emaxx--record-literal" || marker == "emaxx--closure-literal" =>
-        {
-            interp.eval(constant, env)
-        }
-        Some(Value::Symbol(marker)) if marker == "emaxx--hash-table-literal" => {
-            // Same materialization `sf_quote' applies to quoted literals.
-            primitives::materialize_read_hash_table_literals(interp, constant)
-        }
-        // The reader wraps `#s(hash-table ...)' in a quote; GNU constants
-        // hold the table itself, so unwrap exactly that artifact.
-        Some(Value::Symbol(quote)) if quote == "quote" => {
-            let Ok(items) = constant.to_vec() else {
-                return Ok(constant.clone());
-            };
-            if items.len() == 2
-                && items[1].to_vec().ok().is_some_and(|inner| {
-                    matches!(
-                        inner.first(),
-                        Some(Value::Symbol(marker)) if marker == "emaxx--hash-table-literal"
-                    )
-                })
-            {
-                primitives::materialize_read_hash_table_literals(interp, &items[1])
-            } else {
-                materialize_constant_cons(interp, constant, env, seen)
-            }
-        }
         Some(_) => materialize_constant_cons(interp, constant, env, seen),
         None => Ok(constant.clone()),
     }
@@ -626,7 +601,7 @@ fn run_with_stack(
             }
             Op::Consp => {
                 let a = pop!();
-                stack.push(if matches!(a, Value::Cons(..)) {
+                stack.push(if primitives::is_cons_value(interp, &a) {
                     Value::T
                 } else {
                     Value::Nil
@@ -1119,10 +1094,7 @@ fn run_with_stack(
                     }
                 }
                 Op::Return => {
-                    return Err(LispError::Throw(
-                        Value::Symbol("--emaxx-bytecode-return--".into()),
-                        pop!(),
-                    ));
+                    return Err(LispError::VmReturn(pop!()));
                 }
                 Op::PushCatch { target } => {
                     let tag = pop!();
@@ -1347,7 +1319,7 @@ fn run_with_stack(
                 }
                 Op::Consp => {
                     let a = pop!();
-                    stack.push(if matches!(a, Value::Cons(..)) {
+                    stack.push(if primitives::is_cons_value(interp, &a) {
                         Value::T
                     } else {
                         Value::Nil
@@ -1409,8 +1381,7 @@ fn run_with_stack(
 
         match step {
             Ok(()) => {}
-            Err(LispError::Throw(tag, value)) if matches!(&tag, Value::Symbol(name) if name == "--emaxx-bytecode-return--") =>
-            {
+            Err(LispError::VmReturn(value)) => {
                 break 'run Ok(value);
             }
             Err(error) => {
@@ -1568,6 +1539,10 @@ mod tests {
                 Value::list([Value::Integer(5), Value::symbol("tagged")])
             )
         );
+
+        let vector = Value::list([Value::symbol("vector-literal"), Value::Integer(9)]);
+        let value = run("emaxx-fx-branch", std::slice::from_ref(&vector)).unwrap();
+        assert_eq!(value, Value::list([vector, Value::symbol("tagged")]));
     }
 
     #[test]
@@ -1647,18 +1622,27 @@ mod phase_c_tests {
         execute(&mut interp, &object, args, &mut env)
     }
 
+    fn run2_with_gnu_early_lisp(name: &str, args: &[Value]) -> Result<Value, LispError> {
+        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+        let mut env = Env::new();
+        let object = named_objects(ORACLE_ELC2)
+            .remove(name)
+            .unwrap_or_else(|| panic!("fixture {name} missing"));
+        execute(&mut interp, &object, args, &mut env)
+    }
+
     #[test]
     fn executes_buffer_ops_fixture() {
         // (with-temp-buffer (insert "hello world") (goto-char (point-min))
         //   (forward-word 1) (list (point) (buffer-substring ...) (point-max)))
-        let value = run2("emaxx-fx2-buffer", &[]).unwrap();
+        let value = run2_with_gnu_early_lisp("emaxx-fx2-buffer", &[]).unwrap();
         assert_eq!(format!("{value}"), "(6 \"hello\" 12)");
     }
 
     #[test]
     fn executes_save_excursion_fixture() {
         // Point restored to 3 after save-excursion moves to point-max.
-        let value = run2("emaxx-fx2-excursion", &[]).unwrap();
+        let value = run2_with_gnu_early_lisp("emaxx-fx2-excursion", &[]).unwrap();
         assert_eq!(value, Value::Integer(3));
     }
 

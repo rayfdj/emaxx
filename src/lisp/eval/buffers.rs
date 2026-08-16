@@ -145,6 +145,25 @@ impl Interpreter {
         self.mirror_insert_to_related_buffers(&related, pos, s, Some(props), true);
     }
 
+    /// Attach non-Unicode GNU character codes to text just inserted into the
+    /// current buffer and every indirect/base buffer sharing that text.
+    pub(crate) fn set_inserted_extended_chars(&mut self, start: usize, chars: &[(usize, u32)]) {
+        if chars.is_empty() {
+            return;
+        }
+        let current_id = self.current_buffer_id();
+        let related = self.related_buffer_ids(current_id);
+        self.buffer.set_inserted_extended_chars(start, chars);
+        for buffer_id in related {
+            if buffer_id == current_id {
+                continue;
+            }
+            if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                buffer.set_inserted_extended_chars(start, chars);
+            }
+        }
+    }
+
     pub fn delete_region_current_buffer(
         &mut self,
         from: usize,

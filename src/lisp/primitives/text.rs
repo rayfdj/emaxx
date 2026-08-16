@@ -1,22 +1,29 @@
 use super::*;
 
-pub(crate) fn string_slice_chars(
-    text: &str,
-    start: Option<&Value>,
-    end: Option<&Value>,
-) -> Result<String, LispError> {
-    let chars: Vec<char> = text.chars().collect();
-    let start = normalize_string_index(start, 0, chars.len() as i64)? as usize;
-    let end = normalize_string_index(end, chars.len() as i64, chars.len() as i64)? as usize;
-    Ok(chars[start..end].iter().collect())
-}
-
 pub(crate) fn internal_text_bytes(text: &str, multibyte: bool) -> Result<Vec<u8>, LispError> {
     if multibyte {
-        Ok(text.as_bytes().to_vec())
+        let mut bytes = Vec::with_capacity(text.len());
+        for ch in text.chars() {
+            let code = public_buffer_char_code(ch, true) as u32;
+            push_emacs_multibyte_char(&mut bytes, code)?;
+        }
+        Ok(bytes)
     } else {
         encode_raw_text_bytes(text)
     }
+}
+
+pub(crate) fn internal_string_bytes(string: &StringLike) -> Result<Vec<u8>, LispError> {
+    if !string.multibyte {
+        return encode_raw_text_bytes(&string.text);
+    }
+    let mut bytes = Vec::with_capacity(string.byte_len()?);
+    for code in string.character_codes() {
+        let code =
+            u32::try_from(code).map_err(|_| LispError::Signal("Invalid character".into()))?;
+        push_emacs_multibyte_char(&mut bytes, code)?;
+    }
+    Ok(bytes)
 }
 
 pub(crate) fn secure_hash_source_bytes(
@@ -61,8 +68,20 @@ pub(crate) fn secure_hash_source_bytes(
         _ => {
             let string = string_like(source)
                 .ok_or_else(|| LispError::TypeError("string".into(), source.type_name()))?;
-            let slice = string_slice_chars(&string.text, start, end)?;
-            internal_text_bytes(&slice, string.multibyte)
+            let codes = string.character_codes();
+            let start = normalize_string_index(start, 0, codes.len() as i64)? as usize;
+            let end = normalize_string_index(end, codes.len() as i64, codes.len() as i64)? as usize;
+            let mut bytes = Vec::new();
+            for code in &codes[start..end] {
+                if string.multibyte {
+                    push_emacs_multibyte_char(&mut bytes, *code as u32)?;
+                } else if (0..=0xFF).contains(code) {
+                    bytes.push(*code as u8);
+                } else {
+                    return Err(LispError::Signal("Character cannot be encoded".into()));
+                }
+            }
+            Ok(bytes)
         }
     }
 }
@@ -173,8 +192,8 @@ pub(crate) fn string_distance_value(
         .ok_or_else(|| LispError::TypeError("string".into(), right.type_name()))?;
 
     let distance = if compare_bytes {
-        let left_bytes = internal_text_bytes(&left_string.text, left_string.multibyte)?;
-        let right_bytes = internal_text_bytes(&right_string.text, right_string.multibyte)?;
+        let left_bytes = internal_string_bytes(&left_string)?;
+        let right_bytes = internal_string_bytes(&right_string)?;
         levenshtein_distance(&left_bytes, &right_bytes)
     } else {
         let left_chars = left_string.text.chars().collect::<Vec<_>>();
@@ -278,6 +297,17 @@ pub(crate) fn format_s_conversion(
     // `%s' uses princ semantics: a buffer prints as its name.
     if let Value::Buffer(buffer) = arg {
         let mut text = buffer.name.to_string();
+        if let Some(precision) = precision {
+            text = text.chars().take(precision).collect();
+        }
+        return Ok((text, Vec::new()));
+    }
+    // GNU format.c implements %s through the ordinary unescaped printer.
+    // In particular, src/print.c's PVEC_SYMBOL_WITH_POS branch must see
+    // `print-symbols-bare'; Value's host Display cannot represent that
+    // dynamic Lisp contract.
+    if symbol_with_pos_parts(interp, arg).is_some() {
+        let mut text = render_native_princ(interp, arg, env)?;
         if let Some(precision) = precision {
             text = text.chars().take(precision).collect();
         }

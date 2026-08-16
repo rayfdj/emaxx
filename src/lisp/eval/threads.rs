@@ -151,7 +151,7 @@ fn terminate_child_without_blocking(mut runtime: RunningProcess) {
     // Retain the Child and its pipes in one detached reaper until wait(2)
     // completes, so prompt deletion does not trade the stall for a zombie.
     let _ = std::thread::Builder::new()
-        .name("emaxx-process-reaper".into())
+        .name("process-reaper".into())
         .spawn(move || {
             let _ = runtime.child.wait();
         });
@@ -736,9 +736,9 @@ impl Interpreter {
     }
 
     /// Return child/pipe exit events that still need their one terminal
-    /// sentinel call.  A child's linked stderr pipe closes first, matching
-    /// GNU's pipe EOF ordering and allowing Eshell's primary sentinel to
-    /// finish after its shared stderr-live flag is cleared.
+    /// sentinel call.  GNU prepends every process to `Vprocess_alist' and
+    /// `status_notify' walks that alist in order, so a newer child is
+    /// notified before the older pipe supplied through its `:stderr' option.
     pub fn take_pending_subprocess_exit_events(&mut self) -> Vec<(u64, String)> {
         let active_thread_id = self.active_thread_id;
         let completed_children = self
@@ -768,7 +768,9 @@ impl Interpreter {
         }
 
         let mut events = Vec::new();
-        for process in &mut self.process_states {
+        // `process_states' is append-only creation order.  Reverse iteration
+        // mirrors GNU's newest-first `Vprocess_alist' status traversal.
+        for process in self.process_states.iter_mut().rev() {
             if !matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
                 || !matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
                 || process.sentinel_notified
@@ -2026,7 +2028,15 @@ impl Interpreter {
             .to_vec()
             .unwrap_or_default();
         for timer in timers {
-            if primitives::call(self, "timerp", std::slice::from_ref(&timer), env)?.is_nil() {
+            if self
+                .call_function_value(
+                    Value::Symbol("timerp".into()),
+                    Some("timerp"),
+                    std::slice::from_ref(&timer),
+                    env,
+                )?
+                .is_nil()
+            {
                 continue;
             }
             let timer_time = self.call_function_value(

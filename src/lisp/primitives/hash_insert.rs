@@ -137,19 +137,6 @@ pub(crate) fn hash_table_entries_to_value(entries: Vec<(Value, Value)>) -> Value
     )
 }
 
-pub(crate) fn list_sequence_items(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<Vec<Value>, LispError> {
-    if let Some(items) = keymap_list_items(interp, value)? {
-        Ok(items)
-    } else {
-        value
-            .to_vec()
-            .map_err(|_| wrong_type_argument("listp", value.clone()))
-    }
-}
-
 pub(crate) fn keymap_list_items(
     interp: &Interpreter,
     value: &Value,
@@ -238,99 +225,12 @@ fn project_embedded_keymaps(
     }
 }
 
-pub(crate) fn context_menu_keymap_items(
-    interp: &Interpreter,
-    keymap: &Value,
-) -> Result<Value, LispError> {
-    let Some(id) = keymap_record_id(interp, keymap) else {
-        return Ok(keymap.clone());
-    };
-    let Some(record) = interp.find_record(id) else {
-        return Ok(keymap.clone());
-    };
-    let bindings = keymap_bindings(record)?;
-    let mut items = vec![Value::Symbol("keymap".into())];
-    items.extend(
-        bindings
-            .iter()
-            .filter(|binding| !binding.after_prompt)
-            .map(keymap_binding_entry),
-    );
-    if let Some(name) = record.slots.first()
-        && !name.is_nil()
-    {
-        items.push(name.clone());
-    }
-    items.extend(
-        bindings
-            .iter()
-            .filter(|binding| binding.after_prompt)
-            .map(keymap_binding_entry),
-    );
-    Ok(Value::list(trim_redundant_separator_items(interp, items)))
-}
-
-pub(crate) fn trim_redundant_separator_items(
-    interp: &Interpreter,
-    items: Vec<Value>,
-) -> Vec<Value> {
-    if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap") {
-        return items;
-    }
-
-    let mut cleaned = Vec::with_capacity(items.len());
-    cleaned.push(Value::Symbol("keymap".into()));
-
-    let mut pending_separator_index = Some(0usize);
-    for item in items.into_iter().skip(1) {
-        if is_separator_keymap_entry(interp, &item) {
-            if pending_separator_index.is_some() {
-                continue;
-            }
-            pending_separator_index = Some(cleaned.len());
-            cleaned.push(item);
-            continue;
-        }
-
-        if matches!(item, Value::Cons(_)) {
-            pending_separator_index = None;
-        }
-        cleaned.push(item);
-    }
-
-    if let Some(index) = pending_separator_index
-        && index > 0
-        && index < cleaned.len()
-    {
-        cleaned.remove(index);
-    }
-
-    cleaned
-}
-
-pub(crate) fn is_separator_keymap_entry(interp: &Interpreter, entry: &Value) -> bool {
-    let Some((_, binding)) = entry.cons_values() else {
-        return false;
-    };
-    matches!(binding, Value::Symbol(ref symbol) if symbol == "menu-bar-separator")
-        || interp
-            .lookup_var("menu-bar-separator", &Vec::new())
-            .is_some_and(|separator| values_equal(interp, &binding, &separator))
-}
-
 #[derive(Clone)]
 pub(crate) struct RuntimeKeymapBinding {
     pub(crate) key: String,
     pub(crate) parts: Option<Vec<String>>,
     pub(crate) value: Value,
     pub(crate) after_prompt: bool,
-}
-
-pub(crate) fn keymap_binding_entry(binding: &RuntimeKeymapBinding) -> Value {
-    Value::cons(
-        keymap_entry_key_value(&binding_key_parts(binding), &binding.key),
-        binding.value.clone(),
-    )
 }
 
 pub(crate) fn keymap_entry_key_value(parts: &[String], key: &str) -> Value {
@@ -602,6 +502,7 @@ pub(crate) fn insert_impl(
         interp,
         &combined.text,
         &combined.props,
+        &combined.extended_chars,
         inherit,
         before_markers,
         env,
@@ -622,41 +523,6 @@ pub(crate) fn insert_impl(
     Ok(Value::Nil)
 }
 
-pub(crate) fn skeleton_insert_value(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-    point: &mut Option<usize>,
-) -> Result<(), LispError> {
-    match value {
-        Value::Nil => Ok(()),
-        Value::String(_) | Value::StringObject(_) => {
-            insert_impl(interp, std::slice::from_ref(value), env, false, false)?;
-            Ok(())
-        }
-        Value::Integer(code) => {
-            insert_char_impl(interp, std::slice::from_ref(value), env)?;
-            if char::from_u32(*code as u32).is_none() {
-                return Err(LispError::Signal(format!("Invalid character: {code}")));
-            }
-            Ok(())
-        }
-        Value::Symbol(symbol) if symbol == "_" => {
-            point.get_or_insert_with(|| interp.buffer.point());
-            Ok(())
-        }
-        Value::Symbol(_) => Ok(()),
-        Value::Cons(_) => {
-            let items = value.to_vec()?;
-            for item in items.iter().skip(1) {
-                skeleton_insert_value(interp, item, env, point)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
 pub(crate) fn insert_char_impl(
     interp: &mut Interpreter,
     args: &[Value],
@@ -672,18 +538,16 @@ pub(crate) fn insert_char_impl(
     if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&ch) {
         let byte = (ch - RAW_BYTE8_BASE as i64) as u8;
         let text: String = std::iter::repeat_n(raw_byte_regex_char(byte), count).collect();
-        insert_text_with_hooks(interp, &text, &[], inherit, false, env)?;
+        insert_text_with_hooks(interp, &text, &[], &[], inherit, false, env)?;
     } else if let Some(c) = char::from_u32(ch as u32) {
         let text: String = std::iter::repeat_n(c, count).collect();
-        insert_text_with_hooks(interp, &text, &[], inherit, false, env)?;
+        insert_text_with_hooks(interp, &text, &[], &[], inherit, false, env)?;
     } else if (0..=0x3F_FFFF).contains(&ch) {
         let text: String = std::iter::repeat_n(RAW_CHAR_SENTINEL, count).collect();
-        let props = vec![TextPropertySpan {
-            start: 0,
-            end: count,
-            props: vec![("emaxx-raw-char".into(), Value::Integer(ch))],
-        }];
-        insert_text_with_hooks(interp, &text, &props, inherit, false, env)?;
+        let extended_chars = (0..count)
+            .map(|offset| (offset, ch as u32))
+            .collect::<Vec<_>>();
+        insert_text_with_hooks(interp, &text, &[], &extended_chars, inherit, false, env)?;
     } else {
         return Err(LispError::Signal(format!("Invalid character: {}", ch)));
     }
@@ -694,6 +558,7 @@ pub(crate) fn insert_text_with_hooks(
     interp: &mut Interpreter,
     text: &str,
     props: &[TextPropertySpan],
+    extended_chars: &[(usize, u32)],
     inherit: bool,
     before_markers: bool,
     env: &mut crate::lisp::types::Env,
@@ -730,6 +595,7 @@ pub(crate) fn insert_text_with_hooks(
             .buffer
             .set_text_properties(start + span.start, start + span.end, &span.props);
     }
+    interp.set_inserted_extended_chars(start, extended_chars);
     let end = start + text.chars().count();
     run_change_hooks(
         interp,
@@ -749,11 +615,18 @@ pub(crate) fn insert_text_with_hooks(
 pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispError> {
     let mut text = String::new();
     let mut props = Vec::new();
+    let mut extended_chars = Vec::new();
     for arg in args {
         if let Some(string) = string_like(arg) {
             let offset = text.chars().count();
             text.push_str(&string.text);
             props.extend(shift_string_props(&string.props, offset));
+            extended_chars.extend(
+                string
+                    .extended_chars
+                    .into_iter()
+                    .map(|(position, code)| (offset + position, code)),
+            );
         } else {
             let fragment = match arg {
                 Value::Integer(n) => {
@@ -763,11 +636,7 @@ pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispErro
                     } else if let Some(c) = char::from_u32(*n as u32) {
                         c.to_string()
                     } else if (0..=0x3F_FFFF).contains(n) {
-                        props.push(TextPropertySpan {
-                            start: offset,
-                            end: offset + 1,
-                            props: vec![("emaxx-raw-char".into(), Value::Integer(*n))],
-                        });
+                        extended_chars.push((offset, *n as u32));
                         RAW_CHAR_SENTINEL.to_string()
                     } else {
                         String::new()
@@ -783,5 +652,6 @@ pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispErro
         multibyte: text.chars().any(|ch| (ch as u32) > 0x7F),
         text,
         props: merge_string_props(props),
+        extended_chars,
     })
 }

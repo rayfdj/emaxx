@@ -30,17 +30,86 @@ fn letrec_preserves_recursive_lambda_bindings() {
 }
 
 #[test]
+fn letrec_preserves_an_uninterned_recursive_binding_like_gnu_subr_el() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (require 'macroexp)
+                 (let* ((name (make-symbol "--cl-loop--"))
+                        (form
+                         `(letrec
+                              ((,name
+                                (lambda (n)
+                                  (if (zerop n)
+                                      'done
+                                    (funcall ,name (1- n))))))
+                            (funcall ,name 3))))
+                   (eval form t)))"#,
+        ),
+        Value::Symbol("done".into())
+    );
+}
+
+#[test]
+fn letrec_preserves_uninterned_binding_across_non_tail_recursive_calls() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (require 'macroexp)
+                 (let* ((name (make-symbol "--cl-loop--"))
+                        (form
+                         `(letrec
+                              ((,name
+                                (lambda (tree)
+                                  (cond
+                                   ((eq tree 'needle) t)
+                                   ((consp tree)
+                                    (or (funcall ,name (car tree))
+                                        (funcall ,name (cdr tree))))))))
+                            (funcall ,name '(alpha (beta needle) gamma)))))
+                   (eval form t)))"#,
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn named_let_expands_to_recursive_binding() {
     assert_eq!(
         eval_str(
             r#"
-                (named-let loop ((n 3) (acc nil))
-                  (if (> n 0)
-                      (loop (1- n) (cons n acc))
-                    acc))
+                (progn
+                  (require 'pcase)
+                  (require 'macroexp)
+                  (require 'subr-x)
+                  (named-let loop ((n 3) (acc nil))
+                    (if (> n 0)
+                        (loop (1- n) (cons n acc))
+                      acc)))
                 "#
         ),
         Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3),])
+    );
+}
+
+#[test]
+fn named_let_keeps_its_non_tail_recursive_function_binding() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (require 'pcase)
+                 (require 'macroexp)
+                 (require 'subr-x)
+                 (named-let walk ((tree '(alpha (beta needle) gamma))
+                                  (depth 10))
+                   (cond
+                    ((<= depth 0) nil)
+                    ((eq tree 'needle) t)
+                    ((consp tree)
+                     (or (walk (car tree) (1- depth))
+                         (walk (cdr tree) (1- depth)))))))"#,
+        ),
+        Value::T
     );
 }
 
@@ -949,14 +1018,15 @@ fn no_event_minibuffer_runs_setup_hook_before_batch_input_and_restores_state() {
     assert_eq!(
         eval_str(
             r#"(let ((minibuffer-setup-hook
-                       (list
-                        (lambda ()
+                      (list
+                        (function
+                         (lambda ()
                           (throw 'state
                             (list (minibuffer-depth)
                                   (minibuffer-prompt)
                                   (point)
                                   (minibuffer-contents)
-                                  (windowp (active-minibuffer-window))))))))
+                                  (windowp (active-minibuffer-window)))))))))
                  (list
                   (catch 'state
                     (read-from-minibuffer "Prompt: " "seed"))
@@ -1050,21 +1120,21 @@ fn completing_read_consumes_keyboard_macro_input_in_the_minibuffer() {
     assert_eq!(
         eval_str(
             r#"(progn
-                 (defvar emaxx--completion-target-called nil)
-                 (defun emaxx--completion-target ()
+                 (defvar completion-target-called nil)
+                 (defun completion-target ()
                    (interactive)
-                   (setq emaxx--completion-target-called t))
-                 (defun emaxx--completion-driver (name)
+                   (setq completion-target-called t))
+                 (defun completion-driver (name)
                    (interactive
                     (list (completing-read
-                           "Command: " '("emaxx--completion-target"))))
+                           "Command: " '("completion-target"))))
                    (call-interactively (intern name)))
-                 (global-set-key (kbd "C-t") 'emaxx--completion-driver)
+                 (global-set-key (kbd "C-t") 'completion-driver)
                  (with-temp-buffer
                    (execute-kbd-macro
                     (vconcat (kbd "C-t")
-                             "emaxx--completion-target" [return])))
-                 emaxx--completion-target-called)"#
+                             "completion-target" [return])))
+                 completion-target-called)"#
         ),
         Value::T
     );
@@ -1168,7 +1238,7 @@ fn timer_queue_variables_default_to_empty_lists() {
 #[test]
 fn native_timer_queues_are_special_and_waits_drain_the_dynamic_queue() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             "(progn
                  (require 'timer)
                  (let ((timer-list (copy-sequence timer-list))
@@ -1260,8 +1330,14 @@ fn recursive_edit_pumps_loaded_elisp_timers_and_propagates_nonlocal_exits() {
 
 #[test]
 fn repeated_whole_file_load_and_unload_replace_generic_methods_exactly_once() {
+    // GNU cl-generic.el keeps the generic function cell after unloading the
+    // twice-loaded feature, removes its public method table, and the next call
+    // reaches the surviving compiled dispatch closure after the fixture's log
+    // variable was unbound.  Assert that real lifecycle directly; the former
+    // Emaxx-only specializer property was not a GNU ownership contract.
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch_feature(
+            "cl-generic",
             r#"(progn
                  (load "seq" nil nil)
                  (require 'loadhist)
@@ -1295,11 +1371,13 @@ fn repeated_whole_file_load_and_unload_replace_generic_methods_exactly_once() {
                                    . emaxx-generic-unload-feature)
                                  (cdr entry)))
                               load-history))
-                            (get 'emaxx-generic-unload
-                                 'emaxx-cl-defmethod-specializers)
+                            (cl--generic-method-table
+                             (cl--generic 'emaxx-generic-unload))
+                            (fboundp 'emaxx-generic-unload)
                             (condition-case condition
                                 (emaxx-generic-unload 1)
-                              (error (car condition))))))
+                              (error (list (car condition)
+                                           (cadr condition)))))))
                      (ignore-errors (delete-file file)))))"#
         ),
         Value::list([
@@ -1309,7 +1387,11 @@ fn repeated_whole_file_load_and_unload_replace_generic_methods_exactly_once() {
             ]),
             Value::Integer(0),
             Value::Nil,
-            Value::Symbol("cl-no-applicable-method".into()),
+            Value::T,
+            Value::list([
+                Value::Symbol("void-variable".into()),
+                Value::Symbol("emaxx-generic-unload-log".into()),
+            ]),
         ])
     );
 }
@@ -1420,7 +1502,6 @@ fn insert_file_contents_replace_never_prompts_about_supersession() {
     let path_text = path.to_string_lossy();
     let form = format!(
         r#"(progn
-                 (require 'cl-lib)
                  (let ((buf (find-file-noselect "{path_text}"))
                        (asked nil))
                    (unwind-protect
@@ -1446,7 +1527,7 @@ fn insert_file_contents_replace_never_prompts_about_supersession() {
                        (kill-buffer buf)))))"#
     );
     assert_eq!(
-        eval_str_with_upstream_load_path(&form),
+        eval_str_with_upstream_batch_feature("cl-macs", &form),
         Value::list([Value::String("new".into()), Value::Nil])
     );
     let _ = fs::remove_file(path);
@@ -2224,7 +2305,7 @@ fn revert_buffer_refreshes_related_indirect_buffers() {
                    (kill-buffer base)))"#
     );
     assert_eq!(
-        eval_str_with_upstream_load_path(&form),
+        eval_str_with_upstream_batch(&form),
         Value::list([Value::String("new".into()), Value::String("new".into())])
     );
     let _ = fs::remove_file(path);
@@ -2324,7 +2405,11 @@ fn call_interactively_follows_symbol_aliases_for_interactive_specs() {
 #[test]
 fn string_and_region_upcase_share_unicode_special_case_mappings() {
     assert_eq!(
-        eval_str(
+        // GNU 30.2 defines `get-char-code-property' in the Elisp-owned,
+        // dumped international/mule-cmds.el.  Exercise that real owner from
+        // the reconstructed batch image; a bare interpreter must not grow a
+        // Rust substitute merely to make this assertion callable.
+        eval_str_with_upstream_batch(
             r#"(with-temp-buffer
                   (insert "Straße ﬁsh")
                   (let ((string (upcase (buffer-string))))
@@ -2463,6 +2548,49 @@ fn editfns_edge_contracts_preserve_float_character_and_undo_semantics() {
                 Value::Symbol("marker".into()),
                 Value::Symbol("marker".into()),
             ]),
+        ])
+    );
+}
+
+#[test]
+fn non_unicode_buffer_characters_are_typed_state_not_lisp_properties() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((source (get-buffer-create "typed-character-source"))
+                      (string-target (get-buffer-create "typed-character-string-target"))
+                      (buffer-target (get-buffer-create "typed-character-buffer-target")))
+                  (set-buffer source)
+                  (erase-buffer)
+                  (insert "x" #x3fffff "y")
+                  (let ((slice (buffer-substring-no-properties 2 3)))
+                    (goto-char 1)
+                    (insert "p")
+                    (delete-region 1 2)
+                    (list
+                     (list (char-after 2)
+                           (text-properties-at 2)
+                           (aref (buffer-string) 1))
+                     (progn
+                       (set-buffer string-target)
+                       (erase-buffer)
+                       (insert slice)
+                       (list (char-after 1) (text-properties-at 1)))
+                     (progn
+                       (set-buffer buffer-target)
+                       (erase-buffer)
+                       (insert-buffer-substring source 2 3)
+                       (list (char-after 1) (text-properties-at 1))))))
+            "#,
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(0x3f_ffff),
+                Value::Nil,
+                Value::Integer(0x3f_ffff)
+            ]),
+            Value::list([Value::Integer(0x3f_ffff), Value::Nil]),
+            Value::list([Value::Integer(0x3f_ffff), Value::Nil]),
         ])
     );
 }
@@ -3160,7 +3288,7 @@ fn generated_forms_can_embed_runtime_vectors_as_self_evaluating_data() {
 
 #[test]
 fn backquote_preserves_record_literal_dotted_pair_tails() {
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     let value = eval_str_with(&mut interp, r#"`(#s(a 1) . #s(b 2))"#);
     let (left, right) = value.cons_values().expect("dotted pair");
     assert!(matches!(left, Value::Record(_)));
@@ -3169,7 +3297,7 @@ fn backquote_preserves_record_literal_dotted_pair_tails() {
 
 #[test]
 fn macroexpanded_backquote_preserves_record_literal_dotted_pair_tails() {
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     let value = eval_str_with(
         &mut interp,
         r#"(eval (macroexpand '`((#s(a 1) . #s(b 2)))))"#,
@@ -3182,7 +3310,7 @@ fn macroexpanded_backquote_preserves_record_literal_dotted_pair_tails() {
 
 #[test]
 fn backquote_materializes_record_literals() {
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     let value = eval_str_with(&mut interp, r#"`(#s(a b) #s(#s(c d) e))"#);
     let items = value.to_vec().expect("backquoted list");
     assert_eq!(items.len(), 2);
@@ -3190,16 +3318,14 @@ fn backquote_materializes_record_literals() {
         panic!("expected inner record");
     };
     let inner = interp.find_record(*inner_id).expect("inner record");
-    assert_eq!(inner.type_name, "a");
+    assert_eq!(inner.type_tag, Value::symbol("a"));
     assert_eq!(inner.slots, vec![Value::Symbol("b".into())]);
     let Value::Record(outer_id) = &items[1] else {
         panic!("expected outer record");
     };
     let outer = interp.find_record(*outer_id).expect("outer record");
-    assert_eq!(outer.type_name, "literal-record");
-    assert_eq!(outer.slots.len(), 2);
-    assert!(matches!(outer.slots[0], Value::Record(_)));
-    assert!(matches!(outer.slots[1], Value::Symbol(ref symbol) if symbol == "e"));
+    assert!(matches!(outer.type_tag, Value::Record(_)));
+    assert_eq!(outer.slots, vec![Value::symbol("e")]);
 }
 
 #[test]
@@ -4341,9 +4467,9 @@ fn wrapper_hook_non_nil_wraps_body_through_continuation() {
 #[test]
 fn inverse_add_abbrev_skips_trailing_nonword() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch_features(
+            &["cl-macs", "abbrev"],
             r#"
-                (require 'abbrev)
                 (let ((table (make-abbrev-table)))
                   (with-temp-buffer
                     (insert "some text foo ")
@@ -4730,11 +4856,11 @@ fn substitute_in_file_name_uses_the_lisp_process_environment() {
 }
 
 #[test]
-fn native_completion_observes_lexically_scoped_completion_policy() {
+fn completion_observes_lexically_scoped_policy_with_real_cl_letf() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             r#"(progn
-                 (require 'cl-lib)
                  (with-temp-buffer
                    (insert "foo")
                    (setq-local
@@ -4866,7 +4992,8 @@ fn standard_obarray_intern_soft_stays_indexed_at_scale() {
 #[test]
 fn lexical_onload_closure_can_define_a_function_in_a_dynamic_obarray() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             r#"
                 (let* ((obarray (obarray-make))
                        (on-load nil)
@@ -5563,6 +5690,129 @@ fn regexp_word_atoms_follow_the_current_syntax_table_without_cache_leakage() {
 }
 
 #[test]
+fn regexp_syntax_atoms_follow_all_effective_table_classes_like_gnu() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (with-temp-buffer
+              (let* ((table (copy-syntax-table))
+                     (cases
+                      (list
+                       (list 97 45 " ")
+                       (list 98 46 ".")
+                       (list 99 119 "w")
+                       (list 100 95 "_")
+                       (list 101 40 "(z")
+                       (list 102 41 ")z")
+                       (list 103 39 (string 39))
+                       (list 104 34 (string 34))
+                       (list 105 36 "$")
+                       (list 106 92 (string 92))
+                       (list 107 47 "/")
+                       (list 108 60 "<")
+                       (list 109 62 ">")
+                       (list 110 64 "@")
+                       (list 111 33 "!")
+                       (list 112 124 "|"))))
+                (mapc
+                 (lambda (case)
+                   (modify-syntax-entry (nth 0 case) (nth 2 case) table))
+                 cases)
+                (set-syntax-table table)
+                (mapcar
+                 (lambda (case)
+                   (let* ((character (nth 0 case))
+                          (code (nth 1 case))
+                          (text (string character)))
+                     (list
+                      (char-syntax character)
+                      (string-match-p (format "\\s%c" code) text)
+                      (string-match-p (format "\\S%c" code) text))))
+                 cases)))
+            "#,
+        ),
+        Value::list([
+            Value::list([Value::Integer(32), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(46), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(119), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(95), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(40), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(41), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(39), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(34), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(36), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(92), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(47), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(60), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(62), Value::Integer(0), Value::Nil]),
+            // `@' inherits the standard table's word entry instead of
+            // remaining an observable effective syntax class.
+            Value::list([Value::Integer(119), Value::Nil, Value::Integer(0)]),
+            Value::list([Value::Integer(33), Value::Integer(0), Value::Nil]),
+            Value::list([Value::Integer(124), Value::Integer(0), Value::Nil]),
+        ])
+    );
+}
+
+#[test]
+fn regexp_whitespace_atom_stops_before_a_table_classed_comment_end_newline() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (with-temp-buffer
+              (set-syntax-table (copy-syntax-table))
+              (modify-syntax-entry ?\n ">")
+              (insert "  \nX")
+              (goto-char 1)
+              (let ((first (looking-at "\\s-*\\(\n\\|\\s>\\)")))
+                (list
+                 first
+                 (mapcar
+                  (lambda (index)
+                    (cons (match-beginning index) (match-end index)))
+                  '(0 1))
+                 (progn (goto-char 1) (looking-at "\\s-+"))
+                 (cons (match-beginning 0) (match-end 0))
+                 (progn (goto-char 3) (looking-at "\\s>"))
+                 (cons (match-beginning 0) (match-end 0))
+                 (progn (goto-char 3) (looking-at "\\S-"))
+                 (cons (match-beginning 0) (match-end 0)))))
+            "#,
+        ),
+        Value::list([
+            Value::T,
+            Value::list([
+                Value::cons(Value::Integer(1), Value::Integer(4)),
+                Value::cons(Value::Integer(3), Value::Integer(4)),
+            ]),
+            Value::T,
+            Value::cons(Value::Integer(1), Value::Integer(3)),
+            Value::T,
+            Value::cons(Value::Integer(3), Value::Integer(4)),
+            Value::T,
+            Value::cons(Value::Integer(3), Value::Integer(4)),
+        ])
+    );
+}
+
+#[test]
+fn regexp_syntax_atom_with_backslash_designator_remains_repeatable() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (let ((pattern (concat "\\s" (string 92) "+")))
+              (list
+               (string-match-p pattern (string 92 92))
+               (with-temp-buffer
+                 (modify-syntax-entry 92 ".")
+                 (string-match-p pattern (string 92 92)))))
+            "#,
+        ),
+        Value::list([Value::Integer(0), Value::Nil])
+    );
+}
+
+#[test]
 fn regexp_word_class_does_not_cache_mutable_syntax_table_entries() {
     assert_eq!(
         eval_str(
@@ -5817,6 +6067,26 @@ fn copied_syntax_tables_clear_the_root_default_and_inherit_standard_syntax() {
             Value::Nil,
             Value::T,
         ])
+    );
+}
+
+#[test]
+fn copy_syntax_table_without_an_argument_copies_the_standard_table() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (with-temp-buffer
+              (let ((custom (make-syntax-table)))
+                (modify-syntax-entry ?! "w" custom)
+                (set-syntax-table custom)
+                (let ((copy (copy-syntax-table)))
+                  (set-syntax-table copy)
+                  (list (char-syntax ?!)
+                        (eq (char-table-parent copy)
+                            (standard-syntax-table))))))
+            "#,
+        ),
+        Value::list([Value::Integer('.' as i64), Value::T])
     );
 }
 

@@ -1,35 +1,5 @@
 use super::*;
 
-fn macro_environment_contains_name(environment: &Value, wanted: &str) -> bool {
-    let Ok(entries) = environment.to_vec() else {
-        return false;
-    };
-    entries.iter().any(|entry| {
-        entry
-            .cons_values()
-            .and_then(|(name, _)| name.as_symbol().ok().map(|name| name == wanted))
-            .unwrap_or(false)
-    })
-}
-
-fn form_has_environment_function_quote(form: &Value, environment: &Value) -> bool {
-    let Ok(items) = form.to_vec() else {
-        return false;
-    };
-    if matches!(items.first(), Some(Value::Symbol(head)) if head == "quote") {
-        return false;
-    }
-    if let [Value::Symbol(head), Value::Symbol(name)] = items.as_slice()
-        && head == "function"
-        && macro_environment_contains_name(environment, name)
-    {
-        return true;
-    }
-    items
-        .iter()
-        .any(|item| form_has_environment_function_quote(item, environment))
-}
-
 fn fringe_bitmap_id(interp: &Interpreter, name: &str) -> Option<i64> {
     interp
         .fringe_bitmap_states
@@ -189,17 +159,74 @@ fn destroy_fringe_bitmap(
     Ok(Value::Nil)
 }
 
-#[derive(Clone, Copy)]
-enum MacroexpandKind {
-    Repeated,
-    Once,
-    All,
+/// Bare name of VALUE when it is a symbol, or a positioned symbol while
+/// `symbols-with-pos-enabled' is non-nil — the same view GNU's `eq' takes
+/// inside `assq'/`plist-get' during byte compilation.
+fn bare_symbol_name(interp: &Interpreter, env: &Env, value: &Value) -> Option<String> {
+    if let Ok(symbol) = value.as_symbol() {
+        return Some(symbol.to_string());
+    }
+    if symbols_with_pos_enabled(interp, env)
+        && let Some((bare, _)) = symbol_with_pos_parts(interp, value)
+        && let Ok(symbol) = bare.as_symbol()
+    {
+        return Some(symbol.to_string());
+    }
+    None
+}
+
+/// The non-nil value of PROPERTY for SYMBOL from the first matching
+/// `overriding-plist-environment' entry, GNU fns.c:Fget's pre-plist source.
+fn overriding_plist_property(
+    interp: &Interpreter,
+    env: &Env,
+    symbol: &str,
+    property: &str,
+) -> Option<Value> {
+    let mut entries = interp
+        .lookup_var("overriding-plist-environment", env)
+        .filter(|value| !value.is_nil())?;
+    let mut entry_guard = crate::lisp::types::CycleGuard::new();
+    while let Value::Cons(ref entries_cell) = entries {
+        if entry_guard.step(crate::lisp::types::ConsCell::identity(entries_cell)) {
+            break;
+        }
+        let entry = entries.car().ok()?;
+        let entry_key = entry
+            .car()
+            .ok()
+            .and_then(|key| bare_symbol_name(interp, env, &key));
+        if entry_key.as_deref() == Some(symbol) {
+            let mut plist = entry.cdr().ok()?;
+            let mut plist_guard = crate::lisp::types::CycleGuard::new();
+            while let Value::Cons(ref plist_cell) = plist {
+                if plist_guard.step(crate::lisp::types::ConsCell::identity(plist_cell)) {
+                    break;
+                }
+                let key = plist.car().ok()?;
+                let rest = plist.cdr().ok()?;
+                if !matches!(rest, Value::Cons(_)) {
+                    break;
+                }
+                if bare_symbol_name(interp, env, &key).as_deref() == Some(property) {
+                    let value = rest.car().ok()?;
+                    if !value.is_nil() {
+                        return Some(value);
+                    }
+                }
+                plist = rest.cdr().ok()?;
+            }
+            // GNU reads only the first assq hit before the real plist.
+            return None;
+        }
+        entries = entries.cdr().ok()?;
+    }
+    None
 }
 
 fn macroexpand_dispatch(
     interp: &mut Interpreter,
     name: &str,
-    kind: MacroexpandKind,
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
@@ -207,71 +234,13 @@ fn macroexpand_dispatch(
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
     let environment = args.get(1).filter(|value| value.is_truthy());
-    match kind {
-        MacroexpandKind::All => {
-            // GNU macroexpand-all dynamically binds
-            // `macroexpand-all-environment' around the expansion so env
-            // expanders like cl--labels-convert can read it back.  Only
-            // bind it for environments carrying a `function' expander
-            // (cl-flet/cl-labels): binding it unconditionally makes
-            // expander sets like bindat's re-read the variable from their
-            // helpers and re-expand already-processed type specs forever.
-            let environment_reads_function_quotes = environment
-                .and_then(|value| value.to_vec().ok())
-                .is_some_and(|entries| {
-                    entries.iter().any(|entry| {
-                        matches!(
-                            entry.car(),
-                            // cl-flet/cl-labels use a `function'
-                            // expander; rx-let/rx-let-eval carry
-                            // `:rx-locals' that the rx macro reads back.
-                            Ok(Value::Symbol(head)) if head == "function" || head == ":rx-locals"
-                        )
-                    })
-                })
-                || environment.is_some_and(|environment| {
-                    // Obsolete `labels' first supplies its local function
-                    // expanders, then `lexical-let' installs the generic
-                    // `function' converter in a nested macroexpand-all.
-                    // Make that outer environment dynamically visible
-                    // when it owns an actual #'<name> reference, without
-                    // reintroducing Bindat's recursive type expansion.
-                    form_has_environment_function_quote(&args[0], environment)
-                });
-            let previous = if environment_reads_function_quotes {
-                let previous = interp.global_binding_value("macroexpand-all-environment");
-                interp.set_global_binding(
-                    "macroexpand-all-environment",
-                    environment.cloned().unwrap_or(Value::Nil),
-                );
-                Some(previous)
-            } else {
-                None
-            };
-            let result = interp.macroexpand_all_scoped_with_environment(&args[0], environment, env);
-            if let Some(previous) = previous {
-                match previous {
-                    Some(value) => interp.set_global_binding("macroexpand-all-environment", value),
-                    None => interp.remove_global_binding("macroexpand-all-environment"),
-                }
-            }
-            result
+    let mut form = args[0].clone();
+    loop {
+        let expanded = interp.macroexpand_1_form_with_environment(&form, environment, env)?;
+        if expanded == form {
+            return Ok(form);
         }
-        MacroexpandKind::Once => {
-            interp.macroexpand_1_form_with_environment(&args[0], environment, env)
-        }
-        MacroexpandKind::Repeated => {
-            let mut form = args[0].clone();
-            loop {
-                let expanded =
-                    interp.macroexpand_1_form_with_environment(&form, environment, env)?;
-                if expanded == form {
-                    break;
-                }
-                form = expanded;
-            }
-            Ok(form)
-        }
+        form = expanded;
     }
 }
 
@@ -393,17 +362,6 @@ define_dispatch!(
                 };
                 Ok(Value::String(format!("{:x}", md5::compute(bytes)).into()))
             }
-            "sha1" => {
-                need_arg_range(name, args, 1, 4)?;
-                secure_hash_value(
-                    interp,
-                    "sha1",
-                    &args[0],
-                    args.get(1),
-                    args.get(2),
-                    args.get(3),
-                )
-            }
             "secure-hash" => {
                 need_arg_range(name, args, 2, 5)?;
                 let algorithm = args[0].as_symbol()?;
@@ -417,81 +375,6 @@ define_dispatch!(
                 )
             }
             // hex-util.el (native for speed; the feature is compat-preloaded).
-            "decode-hex-string" => {
-                need_args(name, args, 1)?;
-                let text = string_text(&args[0])?;
-                let chars: Vec<char> = text.chars().collect();
-                if !chars.len().is_multiple_of(2) {
-                    return Err(LispError::Signal(format!(
-                        "Args out of range: {:?}, {}",
-                        text,
-                        chars.len()
-                    )));
-                }
-                let mut out = Vec::with_capacity(chars.len() / 2);
-                for pair in chars.chunks(2) {
-                    let hi = hex_util_digit(pair[0])?;
-                    let lo = hex_util_digit(pair[1])?;
-                    out.push((hi * 16 + lo) as u8);
-                }
-                Ok(bytes_to_shared_unibyte_value(&out))
-            }
-            "encode-hex-string" => {
-                need_args(name, args, 1)?;
-                let text = string_text(&args[0])?;
-                let bytes = internal_text_bytes(&text, false)?;
-                let mut dst = String::with_capacity(bytes.len() * 2);
-                for byte in bytes {
-                    dst.push(HEX_UTIL_DIGITS[(byte / 16) as usize] as char);
-                    dst.push(HEX_UTIL_DIGITS[(byte % 16) as usize] as char);
-                }
-                Ok(Value::String(dst.into()))
-            }
-            // rfc2104.el HMAC (native for speed; the feature is compat-preloaded).
-            // HASH is funcalled for wrapper functions (sasl-scram-sha256 etc.);
-            // known algorithm symbols hash natively.
-            "rfc2104-hash" => {
-                need_args(name, args, 5)?;
-                let block_length = usize::try_from(args[1].as_integer()?)
-                    .map_err(|_| LispError::TypeError("natnum".into(), args[1].type_name()))?;
-                let hash_length = usize::try_from(args[2].as_integer()?)
-                    .map_err(|_| LispError::TypeError("natnum".into(), args[2].type_name()))?;
-                let key_text = string_text(&args[3])?;
-                let text = string_text(&args[4])?;
-                let mut key = internal_text_bytes(&key_text, false)?;
-                let text_bytes = internal_text_bytes(&text, false)?;
-                // GNU: a key longer than the block is replaced by the HASH's
-                // return value -- the hex STRING itself, not its octets.
-                if key.len() > block_length {
-                    key = rfc2104_hash_hex(interp, &args[0], &key, env)?.into_bytes();
-                }
-                if key.len() > block_length {
-                    return Err(LispError::Signal(format!(
-                        "Args out of range: {}, {}",
-                        key.len(),
-                        block_length
-                    )));
-                }
-                let mut ipad = vec![0x36u8; block_length];
-                let mut opad = vec![0x5cu8; block_length];
-                for (index, byte) in key.iter().enumerate() {
-                    ipad[index] ^= byte;
-                    opad[index] ^= byte;
-                }
-                ipad.extend_from_slice(&text_bytes);
-                let inner = rfc2104_hash_digest(interp, &args[0], &ipad, env)?;
-                if inner.len() < hash_length {
-                    return Err(LispError::Signal(format!(
-                        "Args out of range: {}, {}",
-                        inner.len(),
-                        hash_length
-                    )));
-                }
-                opad.extend_from_slice(&inner[..hash_length]);
-                Ok(Value::String(
-                    rfc2104_hash_hex(interp, &args[0], &opad, env)?.into(),
-                ))
-            }
             "secure-hash-algorithms" => {
                 need_args(name, args, 0)?;
                 Ok(Value::list([
@@ -539,38 +422,6 @@ define_dispatch!(
                 interp.request_termination(termination.clone());
                 Err(LispError::Terminate(termination))
             }
-            "error" => {
-                let msg = if args.is_empty() {
-                    "error".to_string()
-                } else if matches!(args[0], Value::String(_) | Value::StringObject(_)) {
-                    if args.len() > 1 {
-                        string_text(&super::call(interp, "format", args, env)?)?
-                    } else {
-                        string_text(&args[0])?
-                    }
-                } else {
-                    args[0].to_string()
-                };
-                Err(LispError::Signal(msg))
-            }
-            #[dispatch(builtin_override)]
-            "user-error" => {
-                let msg = if args.is_empty() {
-                    "user-error".to_string()
-                } else if let Ok(fmt) = string_text(&args[0]) {
-                    if args.len() > 1 {
-                        string_text(&super::call(interp, "format", args, env)?)?
-                    } else {
-                        fmt
-                    }
-                } else {
-                    args[0].to_string()
-                };
-                Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("user-error".into()),
-                    Value::String(msg.into()),
-                ])))
-            }
             "signal" => {
                 if args.is_empty() {
                     return Err(LispError::Signal("signal".into()));
@@ -598,7 +449,10 @@ define_dispatch!(
             }
             "provide" => {
                 need_arg_range(name, args, 1, 2)?;
-                let feature = args[0].as_symbol()?.to_string();
+                // GNU 30.2 fns.c:Fprovide uses CHECK_SYMBOL/XSYMBOL, so
+                // positioned reader symbols denote their underlying symbol
+                // while `symbols-with-pos-enabled' is dynamically non-nil.
+                let feature = checked_symbol_name(interp, &args[0], env)?;
                 let subfeatures = args.get(1).cloned().unwrap_or(Value::Nil);
                 // GNU rejects improper/non-list subfeature values even when the
                 // feature was already present.
@@ -606,11 +460,15 @@ define_dispatch!(
                 if subfeatures.is_truthy() {
                     interp.put_symbol_property(&feature, "subfeatures", subfeatures);
                 }
-                interp.provide_feature_with_after_load(&feature)
+                interp
+                    .provide_feature_with_after_load(&feature, env)
+                    .map(|_| args[0].clone())
             }
             "require" => {
                 need_arg_range(name, args, 1, 3)?;
-                let feature = args[0].as_symbol()?.to_string();
+                // Like `provide', GNU's Frequire accepts a positioned symbol
+                // through CHECK_SYMBOL and returns the original object.
+                let feature = checked_symbol_name(interp, &args[0], env)?;
                 let target = match args.get(1) {
                     Some(value) if value.is_truthy() => Some(string_text(value)?),
                     _ => None,
@@ -626,47 +484,7 @@ define_dispatch!(
                 {
                     return Ok(Value::Nil);
                 }
-                result
-            }
-            "define-error" => {
-                need_arg_range(name, args, 2, 3)?;
-                let condition_name = args[0].as_symbol()?.to_string();
-                let parent = args.get(2).filter(|value| value.is_truthy()).cloned();
-                let parent = parent.unwrap_or_else(|| Value::Symbol("error".into()));
-                let parent_is_list = matches!(parent, Value::Cons(_));
-                let parents = if parent_is_list {
-                    parent.to_vec()?
-                } else {
-                    vec![parent]
-                };
-
-                let mut conditions = vec![Value::Symbol(condition_name.clone().into())];
-                for parent in parents {
-                    let parent_name = parent.as_symbol()?.to_string();
-                    if !conditions.contains(&parent) {
-                        conditions.push(parent.clone());
-                    }
-                    let inherited = interp
-                        .get_symbol_property(&parent_name, "error-conditions")
-                        .and_then(|value| value.to_vec().ok());
-                    if parent_is_list && inherited.is_none() {
-                        return Err(LispError::Signal(format!("Unknown signal `{parent_name}'")));
-                    }
-                    for ancestor in inherited.unwrap_or_default() {
-                        if !conditions.contains(&ancestor) {
-                            conditions.push(ancestor);
-                        }
-                    }
-                }
-                interp.put_symbol_property(
-                    &condition_name,
-                    "error-conditions",
-                    Value::list(conditions),
-                );
-                if args[1].is_truthy() {
-                    interp.put_symbol_property(&condition_name, "error-message", args[1].clone());
-                }
-                Ok(args[0].clone())
+                result.map(|_| args[0].clone())
             }
             "define-fringe-bitmap" => {
                 need_arg_range(name, args, 2, 5)?;
@@ -714,29 +532,6 @@ define_dispatch!(
                 // The headless renderer retains no glyph matrix, so no display
                 // row can own fringe bitmaps.  GNU returns nil in this state.
                 Ok(Value::Nil)
-            }
-            "define-mail-user-agent" => {
-                need_arg_range(name, args, 3, 5)?;
-                let symbol = args[0].as_symbol()?;
-                interp.put_symbol_property(symbol, "composefunc", args[1].clone());
-                interp.put_symbol_property(symbol, "sendfunc", args[2].clone());
-                interp.put_symbol_property(
-                    symbol,
-                    "abortfunc",
-                    args.get(3)
-                        .filter(|value| value.is_truthy())
-                        .cloned()
-                        .unwrap_or_else(|| Value::Symbol("kill-buffer".into())),
-                );
-                interp.put_symbol_property(
-                    symbol,
-                    "hookvar",
-                    args.get(4)
-                        .filter(|value| value.is_truthy())
-                        .cloned()
-                        .unwrap_or_else(|| Value::Symbol("mail-send-hook".into())),
-                );
-                Ok(args[0].clone())
             }
             "intern" => {
                 if args.is_empty() || args.len() > 2 {
@@ -830,6 +625,36 @@ define_dispatch!(
                             Value::Nil
                         });
                     }
+                    positioned
+                        if symbols_with_pos_enabled(interp, env)
+                            && symbol_with_pos_parts(interp, positioned).is_some() =>
+                    {
+                        // GNU 30.2 lread.c:Fintern_soft treats a positioned
+                        // symbol as a symbol while the dynamic switch is on,
+                        // searches for its bare symbol, and returns the exact
+                        // positioned object on a hit.
+                        let (bare, _) = symbol_with_pos_parts(interp, positioned)
+                            .expect("guard established symbol-with-position");
+                        let bare_name = bare.as_symbol()?;
+                        if obarray.is_none() {
+                            return Ok(if interp.standard_obarray_contains_symbol(bare_name) {
+                                positioned.clone()
+                            } else {
+                                Value::Nil
+                            });
+                        }
+                        let obarray = obarray.as_ref().expect("checked above");
+                        let interned = intern_soft_in_obarray(
+                            interp,
+                            obarray,
+                            crate::lisp::types::visible_symbol_name(bare_name),
+                        )?;
+                        return Ok(if interned == bare {
+                            positioned.clone()
+                        } else {
+                            Value::Nil
+                        });
+                    }
                     _ => string_text(&args[0])?,
                 };
                 let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
@@ -879,22 +704,6 @@ define_dispatch!(
                 let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
                 Ok(Value::Symbol(
                     crate::lisp::types::make_uninterned_symbol_name(&base, id).into(),
-                ))
-            }
-            "gensym" => {
-                need_arg_range(name, args, 0, 1)?;
-                let prefix = gensym_prefix(args.first())?;
-                // The visible number comes from the `gensym-counter' variable so
-                // callers can rebind it; the uninterned identity stays unique.
-                let counter = interp
-                    .lookup_var("gensym-counter", env)
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or_else(|| GENSYM_COUNTER.load(AtomicOrdering::Relaxed) as i64);
-                interp.set_variable("gensym-counter", Value::Integer(counter + 1), env);
-                let id = GENSYM_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-                let visible = format!("{prefix}{counter}");
-                Ok(Value::Symbol(
-                    crate::lisp::types::make_uninterned_symbol_name(&visible, id).into(),
                 ))
             }
             "autoload" => {
@@ -954,13 +763,6 @@ define_dispatch!(
                 if funname.is_nil() || ignore_errors {
                     return Ok(Value::Nil);
                 }
-                if loads_macro {
-                    let symbol = funname.as_symbol()?;
-                    if let Some(function) = interp.macro_function_value(symbol) {
-                        interp.set_function_binding(symbol, Some(function.clone()));
-                        return Ok(function);
-                    }
-                }
                 let function = super::call(
                     interp,
                     "indirect-function",
@@ -977,7 +779,9 @@ define_dispatch!(
             }
             "set" => {
                 need_args(name, args, 2)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                // GNU 30.2 data.c:Fset reaches set_internal's CHECK_SYMBOL.
+                let checked = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_name(&checked)?;
                 let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
                 let buffer_id = interp.assignment_buffer_id(&symbol);
                 interp.notify_variable_watchers(&symbol, value.clone(), "set", buffer_id, env)?;
@@ -986,39 +790,44 @@ define_dispatch!(
             }
             "set-default" => {
                 need_args(name, args, 2)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                // GNU 30.2 data.c:Fset_default reaches
+                // set_default_internal's CHECK_SYMBOL.
+                let checked = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_name(&checked)?;
                 let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
                 interp.notify_variable_watchers(&symbol, value.clone(), "set", None, env)?;
                 interp.set_global_binding(&symbol, value.clone());
                 Ok(value)
             }
-            "customize-set-variable" => {
-                need_arg_range(name, args, 2, 3)?;
-                let symbol = args[0].as_symbol()?;
-                interp.set_custom_option(symbol, args[1].clone(), env)
-            }
             "symbol-value" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
-                interp.symbol_value_cell(symbol)
+                // GNU 30.2 data.c:Fsymbol_value reaches
+                // find_symbol_value's CHECK_SYMBOL.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                interp.symbol_value_cell(&symbol)
             }
             "default-value" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
-                interp
-                    .default_value(symbol)
-                    .ok_or_else(|| LispError::Void(symbol.to_string()))
+                // GNU 30.2 data.c:Fdefault_value delegates to
+                // default_value, which uses CHECK_SYMBOL/XSYMBOL.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                interp.default_value(&symbol).ok_or(LispError::Void(symbol))
             }
             "default-toplevel-value" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
+                // GNU 30.2 eval.c:Fdefault_toplevel_value ultimately uses
+                // the same CHECK_SYMBOL default-value path.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
                 interp
-                    .default_toplevel_value(symbol)
-                    .ok_or_else(|| LispError::Void(symbol.to_string()))
+                    .default_toplevel_value(&symbol)
+                    .ok_or(LispError::Void(symbol))
             }
             "set-default-toplevel-value" => {
                 need_args(name, args, 2)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                // GNU 30.2 eval.c:Fset_default_toplevel_value uses the
+                // CHECK_SYMBOL default binding path.
+                let checked = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_name(&checked)?;
                 let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
                 interp.notify_variable_watchers(&symbol, value.clone(), "set", None, env)?;
                 interp.set_default_toplevel_value(&symbol, value.clone());
@@ -1026,11 +835,15 @@ define_dispatch!(
             }
             "symbol-plist" => {
                 need_args(name, args, 1)?;
-                Ok(interp.symbol_plist(args[0].as_symbol()?))
+                // GNU 30.2 data.c:Fsymbol_plist uses CHECK_SYMBOL/XSYMBOL.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                Ok(interp.symbol_plist(&symbol))
             }
             "setplist" => {
                 need_args(name, args, 2)?;
-                interp.set_symbol_plist(args[0].as_symbol()?, args[1].clone())
+                // GNU 30.2 data.c:Fsetplist uses CHECK_SYMBOL.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                interp.set_symbol_plist(&symbol, args[1].clone())
             }
             "interactive-form" => {
                 need_args(name, args, 1)?;
@@ -1072,132 +885,6 @@ define_dispatch!(
                     .map(Value::list)
                     .unwrap_or(Value::Nil))
             }
-            "autoloadp" => {
-                need_args(name, args, 1)?;
-                let autoload = autoload_parts(&args[0]).is_some();
-                Ok(if autoload { Value::T } else { Value::Nil })
-            }
-            "macrop" => {
-                need_args(name, args, 1)?;
-                if let Ok(symbol) = args[0].as_symbol()
-                    && interp.has_macro_binding(symbol)
-                {
-                    return Ok(Value::T);
-                }
-                // An unbound symbol is simply not a macro.
-                let Ok(definition) =
-                    super::call(interp, "indirect-function", &[args[0].clone()], env)
-                else {
-                    return Ok(Value::Nil);
-                };
-                // A live macro's function cell is the dotted pair
-                // `(macro . FUNCTION)', not a proper list.  Inspect its cons
-                // head directly; `to_vec' intentionally rejects that GNU
-                // representation and made `macrop' return nil for macros
-                // loaded from the real preloaded libraries.
-                let is_macro =
-                    definition.cons_values().is_some_and(
-                        |(head, _)| matches!(head, Value::Symbol(symbol) if symbol == "macro"),
-                    ) || autoload_is_macro(interp, args[0].as_symbol().ok(), &definition);
-                Ok(if is_macro { Value::T } else { Value::Nil })
-            }
-            "apropos-internal" => {
-                need_arg_range(name, args, 1, 2)?;
-                let pattern = string_like(&args[0])
-                    .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
-                regexp::validate_elisp_regex(&pattern.text)?;
-                let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
-                let predicate = args.get(1).cloned().filter(|value| !value.is_nil());
-                let mut found = Vec::new();
-                for symbol_name in interp.known_symbol_names() {
-                    if !regex
-                        .is_match(&symbol_name)
-                        .map_err(|error| LispError::Signal(error.to_string()))?
-                    {
-                        continue;
-                    }
-                    let symbol = Value::Symbol(symbol_name.into());
-                    if let Some(predicate) = &predicate {
-                        let keep = interp.call_function_value(
-                            predicate.clone(),
-                            None,
-                            std::slice::from_ref(&symbol),
-                            env,
-                        )?;
-                        if !keep.is_truthy() {
-                            continue;
-                        }
-                    }
-                    found.push(symbol);
-                }
-                found.sort_by(|left, right| {
-                    left.as_symbol()
-                        .unwrap_or("")
-                        .cmp(right.as_symbol().unwrap_or(""))
-                });
-                Ok(Value::list(found))
-            }
-            "custom-autoload" => {
-                need_arg_range(name, args, 2, 3)?;
-                let symbol = args[0].as_symbol()?;
-                let load = args[1].clone();
-                let autoload_flag = if args.get(2).is_some_and(Value::is_truthy) {
-                    Value::Symbol("noset".into())
-                } else {
-                    Value::T
-                };
-                interp.put_symbol_property(symbol, "custom-autoload", autoload_flag);
-
-                let existing = interp
-                    .get_symbol_property(symbol, "custom-loads")
-                    .unwrap_or(Value::Nil);
-                let already_present = existing
-                    .to_vec()
-                    .map(|items| items.iter().any(|item| item == &load))
-                    .unwrap_or(existing == load);
-                if !already_present {
-                    interp.put_symbol_property(symbol, "custom-loads", Value::cons(load, existing));
-                }
-                Ok(Value::Nil)
-            }
-            "custom-set-variables" => {
-                let mut result = Value::Nil;
-                for entry in args {
-                    let items = entry.to_vec()?;
-                    if items.len() < 2 {
-                        return Err(LispError::Signal("Incompatible Custom theme spec".into()));
-                    }
-                    let symbol = items[0].as_symbol()?.to_string();
-                    interp.put_symbol_property(
-                        &symbol,
-                        "saved-value",
-                        Value::list([items[1].clone()]),
-                    );
-                    // GNU sets an already-defined option immediately; NOW only
-                    // forces a binding for options not yet defined.
-                    if items.get(2).is_some_and(Value::is_truthy)
-                        || interp.default_toplevel_value(&symbol).is_some()
-                    {
-                        let value = interp.eval(&items[1], env)?;
-                        result = interp.set_custom_option(&symbol, value, env)?;
-                    }
-                }
-                Ok(result)
-            }
-            "custom-add-to-group" => {
-                need_args(name, args, 3)?;
-                custom_add_to_group(
-                    interp,
-                    args[0].as_symbol()?,
-                    args[1].clone(),
-                    args[2].clone(),
-                );
-                Ok(Value::Nil)
-            }
-            "custom-current-group" => {
-                need_args(name, args, 0)?;
-                Ok(custom_current_group(interp).unwrap_or(Value::Nil))
-            }
             "daemonp" => {
                 need_args(name, args, 0)?;
                 Ok(Value::Nil)
@@ -1233,67 +920,28 @@ define_dispatch!(
             }
             "get" => {
                 need_arg_range(name, args, 2, 3)?;
-                let symbol = args[0].as_symbol()?;
+                // GNU 30.2 fns.c:Fget applies CHECK_SYMBOL to SYMBOL and
+                // XSYMBOL to the same underlying bare symbol.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
                 let property = args[1].as_symbol()?;
-                Ok(interp
-                    .get_symbol_property(symbol, property)
-                    .unwrap_or(Value::Nil))
-            }
-            "function-get" => {
-                need_arg_range(name, args, 2, 3)?;
-                let mut symbol = args[0].as_symbol()?.to_string();
-                let property = args[1].as_symbol()?;
-                let autoload = args.get(2).cloned().unwrap_or(Value::Nil);
-                // GNU follows aliases until a non-nil property is found.  With
-                // AUTOLOAD, a lazy definition is loaded before retrying the same
-                // symbol: declaration side effects such as `gv-expander' are
-                // intentionally installed by the owning file, not loaddefs.
-                let mut hops = 0;
-                loop {
-                    if let Some(value) = interp.get_symbol_property(&symbol, property)
-                        && !value.is_nil()
-                    {
-                        return Ok(value);
-                    }
-                    hops += 1;
-                    if hops > 10 {
-                        return Ok(Value::Nil);
-                    }
-                    let Some(function) = interp.raw_function_binding(&symbol, env) else {
-                        return Ok(Value::Nil);
-                    };
-                    if autoload.is_truthy() && autoload_parts(&function).is_some() {
-                        let macro_only = if matches!(
-                            &autoload,
-                            Value::Symbol(name) if name == "macro"
-                        ) {
-                            Value::Symbol("macro".into())
-                        } else {
-                            Value::Nil
-                        };
-                        let loaded = super::call(
-                            interp,
-                            "autoload-do-load",
-                            &[
-                                function.clone(),
-                                Value::Symbol(symbol.clone().into()),
-                                macro_only,
-                            ],
-                            env,
-                        )?;
-                        if !values_equal(interp, &function, &loaded) {
-                            continue;
-                        }
-                    }
-                    match function {
-                        Value::Symbol(next) if next != symbol => symbol = next.to_string(),
-                        _ => return Ok(Value::Nil),
-                    }
+                // GNU fns.c:Fget consults `overriding-plist-environment'
+                // (populated by bytecomp's compile-time handler for top-level
+                // `function-put'/`define-symbol-prop') before the symbol's
+                // own plist, returning the first non-nil hit.
+                if let Some(overriding) = overriding_plist_property(interp, env, &symbol, property)
+                {
+                    return Ok(overriding);
                 }
+                Ok(interp
+                    .get_symbol_property(&symbol, property)
+                    .unwrap_or(Value::Nil))
             }
             "makunbound" => {
                 need_args(name, args, 1)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                // GNU 30.2 data.c:Fmakunbound uses CHECK_SYMBOL/XSYMBOL and
+                // returns the original symbol argument.
+                let checked = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_name(&checked)?;
                 if symbol == "initial-window-system"
                     || matches!(
                         symbol.as_str(),
@@ -1303,7 +951,7 @@ define_dispatch!(
                 {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("setting-constant".into()),
-                        Value::Symbol(symbol.into()),
+                        args[0].clone(),
                     ])));
                 }
                 if interp
@@ -1332,7 +980,7 @@ define_dispatch!(
                     )?;
                     interp.remove_global_binding(&symbol);
                 }
-                Ok(Value::Symbol(symbol.into()))
+                Ok(args[0].clone())
             }
             "lread--substitute-object-in-subtree" => {
                 need_args(name, args, 3)?;
@@ -1377,68 +1025,10 @@ define_dispatch!(
                 }
                 Ok(Value::Symbol(alias.into()))
             }
-            "define-obsolete-variable-alias" => {
-                if args.len() < 3 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let alias = args[0].as_symbol()?.to_string();
-                let target = args[1].as_symbol()?.to_string();
-                let alias_value = interp.lookup_var(&alias, env);
-                let target_value = interp.lookup_var(&target, env);
-                if !interp.variable_watchers(&alias).is_empty() {
-                    interp.notify_variable_watchers(
-                        &alias,
-                        Value::Symbol(target.clone().into()),
-                        "defvaralias",
-                        None,
-                        env,
-                    )?;
-                    interp.clear_variable_watchers(&alias);
-                }
-                interp.set_variable_alias(&alias, &target)?;
-                interp.remove_global_binding(&alias);
-                interp.remove_buffer_local_value(interp.current_buffer_id(), &alias);
-                if let Some(doc) = args.get(3).filter(|value| !value.is_nil()) {
-                    interp.put_symbol_property(&alias, "variable-documentation", doc.clone());
-                }
-                interp.put_symbol_property(
-                    &alias,
-                    "byte-obsolete-variable",
-                    Value::list([
-                        Value::Symbol(target.clone().into()),
-                        Value::Nil,
-                        args[2].clone(),
-                    ]),
-                );
-                if alias_value
-                    .as_ref()
-                    .zip(target_value.as_ref())
-                    .is_some_and(|(left, right)| left != right)
-                {
-                    let warning = Value::list([
-                        Value::Symbol("defvaralias".into()),
-                        Value::Symbol("losing-value".into()),
-                        Value::Symbol(alias.clone().into()),
-                    ]);
-                    call_named_function(interp, "display-warning", &[warning], env)?;
-                }
-                Ok(Value::Symbol(alias.into()))
-            }
             "indirect-variable" => {
                 need_args(name, args, 1)?;
                 let symbol = args[0].as_symbol()?;
                 Ok(Value::Symbol(interp.indirect_variable_name(symbol)?.into()))
-            }
-            "internal-delete-indirect-variable" => {
-                need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
-                if !interp.remove_variable_alias(symbol) {
-                    return Err(LispError::Signal("Variable is not indirect".into()));
-                }
-                interp.remove_global_binding(symbol);
-                interp.remove_buffer_local_value(interp.current_buffer_id(), symbol);
-                interp.remove_symbol_property(symbol, "variable-documentation");
-                Ok(Value::Symbol(symbol.to_string().into()))
             }
             "internal--define-uninitialized-variable" => {
                 // GNU: (SYMBOL &optional DOC) — cus-start.el passes one arg.
@@ -1486,19 +1076,32 @@ define_dispatch!(
             "make-interpreted-closure" => {
                 need_arg_range(name, args, 3, 5)?;
                 let mut slots = vec![args[0].clone(), args[1].clone(), args[2].clone()];
+                let documentation = args.get(3).filter(|value| !value.is_nil()).cloned();
+                let interactive = match args.get(4).filter(|value| !value.is_nil()) {
+                    Some(iform) => {
+                        let items = iform.to_vec()?;
+                        Some(
+                            crate::lisp::types::LambdaValue::interactive_slot_from_iform_items(
+                                &items,
+                            ),
+                        )
+                    }
+                    None => None,
+                };
                 // Slot 3 is the bytecode stack-depth position and is unused
-                // by interpreted closures.  Preserve GNU's slot layout so
-                // the primitive and `#[...]' reader share one implementation.
-                if args.len() > 3 {
+                // by interpreted closures.  GNU chooses the public size from
+                // the values, not from whether optional arguments were
+                // syntactically supplied.
+                if interactive.is_some() || documentation.is_some() {
                     slots.push(Value::Nil);
-                    slots.push(args[3].clone());
+                    slots.push(documentation.unwrap_or(Value::Nil));
                 }
-                if args.len() > 4 {
-                    slots.push(args[4].clone());
+                if let Some(interactive) = interactive {
+                    slots.push(interactive);
                 }
                 interp.make_interpreted_closure_value(&slots)
             }
-            "getenv" | "getenv-internal" => {
+            "getenv-internal" => {
                 need_args(name, args, 1)?;
                 let variable = string_text(&args[0])?;
                 let from_explicit_env = args.get(1).is_some_and(|value| !value.is_nil());
@@ -1522,342 +1125,16 @@ define_dispatch!(
                         .unwrap_or(Value::Nil),
                 )
             }
-            "set-language-environment" => {
-                need_args(name, args, 1)?;
-                let language = if args[0].is_nil() {
-                    "English".to_string()
-                } else if let Ok(symbol) = args[0].as_symbol() {
-                    symbol.to_string()
-                } else {
-                    string_text(&args[0])?
-                };
-                let value = Value::String(language.into());
-                interp.set_global_binding("current-language-environment", value.clone());
-                Ok(value)
-            }
-            "setenv" => {
-                need_arg_range(name, args, 1, 3)?;
-                let variable = string_text(&args[0])?;
-                if variable.contains('=') {
-                    return Err(LispError::Signal(format!(
-                        "Environment variable name `{variable}` contains `='"
-                    )));
-                }
 
-                let mut value = args
-                    .get(1)
-                    .filter(|value| !value.is_nil())
-                    .map(string_text)
-                    .transpose()?;
-                if let Some(text) = value.as_mut()
-                    && args.get(2).is_some_and(Value::is_truthy)
-                {
-                    *text = substitute_in_file_name_in_env(interp, env, text);
-                }
-                let process_environment = interp
-                    .lookup_var("process-environment", env)
-                    .unwrap_or(Value::Nil);
-                let updated = updated_process_environment(
-                    &process_environment,
-                    &variable,
-                    value.as_deref(),
-                    true,
-                )?;
-                interp.set_variable("process-environment", updated, env);
-                if variable == "TZ" {
-                    interp.local_time_zone_rule = value
-                        .as_ref()
-                        .map(|rule| Value::String(rule.clone().into()))
-                        .unwrap_or_else(|| Value::Symbol("wall".into()));
-                }
-                Ok(value
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
-            }
-            "ignore" => Ok(Value::Nil),
             // Load-time compatibility shims for upstream Lisp helpers whose exact
             // side effects are not needed by the currently exercised batch paths.
             "purecopy" => {
                 need_args(name, args, 1)?;
                 Ok(args[0].clone())
             }
-            "help--docstring-quote" => {
-                need_args(name, args, 1)?;
-                let text = string_text(&args[0])?;
-                Ok(Value::String(
-                    text.chars()
-                        .flat_map(|ch| match ch {
-                            '\'' | '`' | '\u{2018}' | '\u{2019}' => vec!['\\', '=', ch],
-                            _ => vec![ch],
-                        })
-                        .collect(),
-                ))
-            }
-            "help-add-fundoc-usage" => {
-                need_args(name, args, 2)?;
-                Ok(args[0].clone())
-            }
-            "pcase--mutually-exclusive-p" => {
-                need_args(name, args, 2)?;
-                Ok(Value::Nil)
-            }
-            "make-obsolete" => {
-                need_arg_range(name, args, 3, 4)?;
-                let obsolete_name = obsolete_definition_symbol(&args[0])?;
-                Ok(Value::Symbol(obsolete_name.to_string().into()))
-            }
-            "define-obsolete-face-alias" => Ok(Value::Nil),
-            "define-obsolete-function-alias" => {
-                // GNU byte-run.el: (defalias OBSOLETE CURRENT DOC) +
-                // (make-obsolete ...); the alias must actually be installed
-                // (rx.el aliases rx-submatch-n to rx-to-string).
-                need_arg_range(name, args, 2, 4)?;
-                let obsolete = obsolete_definition_symbol(&args[0])?.to_string();
-                // defalias is a special form: eval a quoted (defalias 'OLD
-                // 'NEW DOC) form rather than dispatching it as a primitive.
-                let doc = args.get(3).cloned().unwrap_or(Value::Nil);
-                let defalias_form = Value::list([
-                    Value::Symbol("defalias".into()),
-                    Value::list([Value::Symbol("quote".into()), args[0].clone()]),
-                    Value::list([Value::Symbol("quote".into()), args[1].clone()]),
-                    Value::list([Value::Symbol("quote".into()), doc]),
-                ]);
-                interp.eval(&defalias_form, env)?;
-                let mut make_obsolete = vec![args[0].clone(), args[1].clone()];
-                if let Some(when) = args.get(2) {
-                    make_obsolete.push(when.clone());
-                }
-                let _ = super::call(interp, "make-obsolete", &make_obsolete, env);
-                Ok(Value::Symbol(obsolete.into()))
-            }
-            "make-obsolete-variable" => {
-                need_arg_range(name, args, 3, 4)?;
-                let obsolete_name = obsolete_definition_symbol(&args[0])?;
-                let access_type = args.get(3).cloned().unwrap_or(Value::Nil);
-                interp.put_symbol_property(
-                    obsolete_name,
-                    "byte-obsolete-variable",
-                    Value::list([args[1].clone(), access_type, args[2].clone()]),
-                );
-                Ok(Value::Symbol(obsolete_name.to_string().into()))
-            }
-            "macroexp-warn-and-return" => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
-            "cl--generic-method-files" => {
-                need_args(name, args, 1)?;
-                let method_name = args[0].as_symbol()?;
-                Ok(Value::list(cl_generic_method_file_entries(
-                    interp,
-                    env,
-                    method_name,
-                )))
-            }
-            "cl--generic-describe" => {
-                need_args(name, args, 1)?;
-                let method_name = args[0].as_symbol()?;
-                for entry in cl_generic_method_file_entries(interp, env, method_name) {
-                    let Some((_file, method)) = entry.cons_values() else {
-                        continue;
-                    };
-                    let rendered = render_prin1(interp, &method, env)?;
-                    interp.insert_current_buffer(&rendered);
-                    interp.insert_current_buffer("\n");
-                }
-                Ok(Value::Nil)
-            }
-            "describe-function" => {
-                need_args(name, args, 1)?;
-                let (help_id, _) = get_or_create_buffer(interp, "*Help*");
-                let mut docs = Vec::new();
-                let target = args[0].as_symbol().ok().map(str::to_string);
-                if let Some(symbol) = target.as_deref() {
-                    if let Some(doc) =
-                        interp.get_symbol_property(symbol, "emaxx-cl-defgeneric-documentation")
-                    {
-                        docs.push(string_text(&doc)?);
-                    } else if let Some(doc) = function_documentation(interp, &args[0], env) {
-                        docs.push(string_text(&doc)?);
-                    }
-                    if let Some(method_docs) =
-                        interp.get_symbol_property(symbol, "emaxx-cl-defmethod-documentation")
-                        && let Ok(items) = method_docs.to_vec()
-                    {
-                        for doc in items {
-                            docs.push(string_text(&doc)?);
-                        }
-                    }
-                    if docs.is_empty() {
-                        // Same fallbacks as `documentation': the version's DOC
-                        // file, then the lisp sources on the load path.
-                        if let Some(doc) = fallback_function_documentation(interp, symbol) {
-                            docs.push(doc);
-                        }
-                    }
-                } else if let Some(doc) = function_documentation(interp, &args[0], env) {
-                    docs.push(string_text(&doc)?);
-                }
-                // GNU renders the description into *Help*: a "NAME is a
-                // function" header line followed by the docstring.
-                let mut help_text = String::new();
-                if let Some(symbol) = target.as_deref() {
-                    help_text.push_str(&format!("{symbol} is a function.\n\n"));
-                }
-                help_text.push_str(&docs.join("\n"));
-                help_text.push('\n');
-                let previous_buffer = interp.current_buffer_id();
-                interp.switch_to_buffer_id(help_id)?;
-                let start = interp.buffer.point_min();
-                let end = interp.buffer.point_max();
-                let _ = interp.delete_region_current_buffer(start, end);
-                interp.insert_current_buffer(&help_text);
-                interp.switch_to_buffer_id(previous_buffer)?;
-                Ok(Value::String(docs.join("\n").into()))
-            }
-            "macroexp-quote" => {
-                need_args(name, args, 1)?;
-                Ok(match &args[0] {
-                    Value::Cons(_) | Value::Symbol(_) => {
-                        Value::list([Value::Symbol("quote".into()), args[0].clone()])
-                    }
-                    other => other.clone(),
-                })
-            }
-            "macroexp-progn" => {
-                need_args(name, args, 1)?;
-                let forms = args[0].to_vec().unwrap_or_default();
-                Ok(match forms.as_slice() {
-                    [] => Value::Nil,
-                    [single] => single.clone(),
-                    many => Value::list(
-                        std::iter::once(Value::Symbol("progn".into())).chain(many.iter().cloned()),
-                    ),
-                })
-            }
-            "macroexp-compiling-p" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                Ok(Value::Nil)
-            }
-            "macroexp--dynamic-variable-p" => {
-                need_args(name, args, 1)?;
-                let var = args[0].as_symbol()?;
-                // GNU: (or (not lexical-binding) (special-variable-p var)
-                //          (memq var macroexp--dynvars) ...)
-                let lexical = interp
-                    .lookup_var("lexical-binding", env)
-                    .is_some_and(|value| value.is_truthy());
-                if !lexical
-                    || interp.is_dynamic_binding_name(var)
-                    || interp.local_special_declared(var)
-                {
-                    return Ok(Value::T);
-                }
-                let dynvars = interp
-                    .lookup_var("macroexp--dynvars", env)
-                    .unwrap_or(Value::Nil);
-                let found = dynvars.to_vec().is_ok_and(|items| {
-                    items
-                        .iter()
-                        .any(|item| matches!(item, Value::Symbol(name) if name == var))
-                });
-                Ok(if found { Value::T } else { Value::Nil })
-            }
-            "macroexpand" => {
-                macroexpand_dispatch(interp, name, MacroexpandKind::Repeated, args, env)
-            }
-            #[dispatch(builtin_override)]
-            "macroexpand-1" => macroexpand_dispatch(interp, name, MacroexpandKind::Once, args, env),
-            #[dispatch(builtin_override)]
-            "macroexpand-all" => {
-                macroexpand_dispatch(interp, name, MacroexpandKind::All, args, env)
-            }
-            "run-at-time" | "run-with-timer" | "run-with-idle-timer" => {
-                if args.len() < 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let repeat_secs = match args.get(1) {
-                    Some(Value::Integer(n)) => Some(*n as f64),
-                    Some(Value::Float(f)) => Some(*f),
-                    _ => None,
-                };
-                // GNU run-at-time TIME: nil/0 means fire at the next idle
-                // opportunity; a number is seconds from now; t means the next
-                // integral multiple of REPEAT.  Other forms (relative-time
-                // strings, absolute timestamps) fall back to firing promptly.
-                let delay_secs = match &args[0] {
-                    Value::Integer(n) => *n as f64,
-                    Value::Float(f) => *f,
-                    Value::T => repeat_secs.unwrap_or(0.0),
-                    _ => 0.0,
-                };
-                interp.schedule_timer_after(
-                    args[2].clone(),
-                    args[3..].to_vec(),
-                    delay_secs,
-                    repeat_secs,
-                );
-                // GNU returns a 10-slot timer vector (timer.el's cl-defstruct
-                // with :type vector): [triggered high low usecs repeat-delay
-                // function args idle-delay psecs integral-multiple].
-                Ok(Value::list([
-                    Value::symbol("vector-literal"),
-                    Value::Nil,
-                    Value::Integer(0),
-                    Value::Integer(0),
-                    Value::Integer(0),
-                    args.get(1).cloned().unwrap_or(Value::Nil),
-                    args[2].clone(),
-                    Value::list(args[3..].to_vec()),
-                    if name == "run-with-idle-timer" {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                    Value::Integer(0),
-                    Value::Nil,
-                ]))
-            }
-            "cancel-timer" => {
-                need_arg_range(name, args, 1, 1)?;
-                if let Ok(items) = vector_items(&args[0])
-                    && items.len() == 10
-                {
-                    let timer_args = items[6].to_vec().unwrap_or_default();
-                    interp.unschedule_timer_by_function_and_args(&items[5], &timer_args);
-                }
-                Ok(Value::Nil)
-            }
-            "timer-event-handler" => {
-                need_args(name, args, 1)?;
-                let items = vector_items(&args[0])?;
-                if items.len() != 10 {
-                    return Err(LispError::TypeError("timerp".into(), args[0].type_name()));
-                }
-                // Fire the timer once, removing it from the native queue so a
-                // later drain doesn't run it twice.  GNU reschedules repeating
-                // timers; the native queue models one-shot firing.
-                let timer_args = items[6].to_vec().unwrap_or_default();
-                interp.unschedule_timer_by_function_and_args(&items[5], &timer_args);
-                call_function_value(interp, &items[5], &timer_args, env)
-            }
-            #[dispatch(builtin_override)]
-            "timerp" => {
-                need_args(name, args, 1)?;
-                // GNU timer.el: timers are plain 10-slot vectors.
-                let vector_timer = is_vector_value(&args[0])
-                    && vector_items(&args[0]).is_ok_and(|items| items.len() == 10);
-                Ok(
-                    if vector_timer
-                        || matches!(&args[0], Value::String(text) if text == "#<timer>")
-                        || matches!(&args[0], Value::StringObject(state) if state.borrow().text == "#<timer>")
-                        || matches!(&args[0], Value::Record(id) if interp.find_record(*id).is_some_and(|record| record.type_name == "timer"))
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
+
+            "macroexpand" => macroexpand_dispatch(interp, name, args, env),
+
             "current-idle-time" => {
                 need_args(name, args, 0)?;
                 // Batch Emaxx has no input loop in which idle time accumulates.
@@ -1941,97 +1218,8 @@ define_dispatch!(
                 }
                 Ok(Value::Integer(interp.lossage_size))
             }
-            "executable-find" => {
-                need_arg_range(name, args, 1, 2)?;
-                let path = interp.lookup_var("exec-path", env).unwrap_or(Value::Nil);
-                let suffixes = interp
-                    .lookup_var("exec-suffixes", env)
-                    .unwrap_or_else(|| Value::list([Value::String(String::new().into())]));
-                // Keep the search semantics in the same producer as `locate-file':
-                // in particular, an empty `exec-path' is one empty entry denoting
-                // the dynamically bound `default-directory'.
-                locate_file_internal(interp, &args[0], &path, &suffixes, &Value::Integer(1), env)
-            }
-            "add-hook" => {
-                need_args(name, args, 2)?;
-                let hook_name = args[0].as_symbol()?.to_string();
-                let function = args[1].clone();
-                // Since Emacs 29 the third argument is a numeric DEPTH.  The
-                // historical non-nil APPEND values retain their old meaning by
-                // mapping to depth 90.
-                let depth = match args.get(2) {
-                    Some(Value::Integer(depth)) => *depth,
-                    Some(value) if value.is_truthy() => 90,
-                    _ => 0,
-                };
-                let local = args.get(3).is_some_and(|value| value.is_truthy());
-                let buffer_id = interp.current_buffer_id();
-                let dynamically_local =
-                    !local && interp.has_active_buffer_local_special_binding(buffer_id, &hook_name);
-                // GNU add-hook: a hook whose current value is a single function
-                // (not a list) is first wrapped in a one-element list, so the
-                // existing handler survives (erc's `422' hook holds the bare
-                // symbol `erc-server-376' before the networks module adds to it).
-                let mut hooks = if local {
-                    interp
-                        .buffer_local_hook(interp.current_buffer_id(), &hook_name)
-                        .unwrap_or_else(|| vec![Value::T])
-                } else if !dynamically_local
-                    && interp.buffer_local_hook(buffer_id, &hook_name).is_some()
-                {
-                    // The buffer-local mirror (including its `t' splice
-                    // sentinel) shadows the global value here; GNU's global
-                    // add-hook reads the DEFAULT.
-                    interp
-                        .default_value(&hook_name)
-                        .map(hook_value_to_vec)
-                        .unwrap_or_default()
-                } else {
-                    interp
-                        .lookup_var(&hook_name, env)
-                        .map(hook_value_to_vec)
-                        .unwrap_or_default()
-                };
-                if !hooks.contains(&function) {
-                    if depth > 0 {
-                        hooks.push(function);
-                    } else {
-                        hooks.insert(0, function);
-                    }
-                    if depth != 0 {
-                        set_hook_function_depth(interp, &hook_name, &args[1], depth, local);
-                    }
-                    if let Some(depths) = hook_function_depths(interp, &hook_name, local) {
-                        hooks.sort_by_key(|hook| hook_function_depth(&depths, hook));
-                    }
-                }
-                if local {
-                    interp.set_buffer_local_hook(buffer_id, &hook_name, hooks.clone());
-                    // Keep GNU's `t' sentinel in its depth-sorted position.  It
-                    // splices the default hook at depth zero, so positive local
-                    // functions run after the default while negative ones run
-                    // before it.
-                    interp.set_buffer_local_value(buffer_id, &hook_name, Value::list(hooks));
-                } else if !dynamically_local
-                    && interp.buffer_local_hook(buffer_id, &hook_name).is_some()
-                {
-                    // A plain set would hit the buffer-local mirror; GNU's
-                    // global add-hook writes the default (setq-default).
-                    super::call(
-                        interp,
-                        "set-default",
-                        &[Value::Symbol(hook_name.clone().into()), Value::list(hooks)],
-                        env,
-                    )?;
-                } else if dynamically_local {
-                    interp.set_variable(&hook_name, Value::list(hooks), env);
-                } else {
-                    interp.set_variable(&hook_name, Value::list(hooks), &mut Vec::new());
-                }
-                Ok(Value::Nil)
-            }
             "run-hooks" => run_hooks_dispatch(interp, args, env, false),
-            "run-mode-hooks" => run_hooks_dispatch(interp, args, env, true),
+
             "run-hook-with-args" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -2068,7 +1256,7 @@ define_dispatch!(
                 }
                 Ok(Value::T)
             }
-            "eval-after-load" => Ok(Value::Nil),
+
             "run-hook-wrapped" => {
                 if args.len() < 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -2090,7 +1278,7 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
-            "ert-simulate-command" => ert_simulate_command(interp, args, env),
+
             "mapatoms" => {
                 need_arg_range(name, args, 1, 2)?;
                 let callback = resolve_callable(interp, &args[0], env)?;
@@ -2111,74 +1299,6 @@ define_dispatch!(
                         &[symbol],
                         env,
                     )?;
-                }
-                Ok(Value::Nil)
-            }
-            "remove-hook" => {
-                need_args(name, args, 2)?;
-                let hook_name = args[0].as_symbol()?.to_string();
-                let function = args[1].clone();
-                // (remove-hook HOOK FUNCTION &optional LOCAL) — no DEPTH slot.
-                let local = args.get(2).is_some_and(|value| value.is_truthy());
-                let buffer_id = interp.current_buffer_id();
-                let dynamically_local =
-                    !local && interp.has_active_buffer_local_special_binding(buffer_id, &hook_name);
-                if local && interp.buffer_local_hook(buffer_id, &hook_name).is_none() {
-                    return Ok(Value::Nil);
-                }
-                let mut hooks = if local {
-                    interp
-                        .buffer_local_hook(interp.current_buffer_id(), &hook_name)
-                        .unwrap_or_default()
-                } else if !dynamically_local
-                    && interp.buffer_local_hook(buffer_id, &hook_name).is_some()
-                {
-                    // The buffer-local mirror (including its `t' splice
-                    // sentinel) shadows the global value here; GNU's global
-                    // remove-hook reads the DEFAULT.
-                    interp
-                        .default_value(&hook_name)
-                        .map(hook_value_to_vec)
-                        .unwrap_or_default()
-                } else {
-                    interp
-                        .lookup_var(&hook_name, env)
-                        .map(hook_value_to_vec)
-                        .unwrap_or_default()
-                };
-                let removed = hooks.iter().find(|hook| *hook == &function).cloned();
-                hooks.retain(|hook| hook != &function);
-                if let Some(removed) = removed {
-                    remove_hook_function_depth(interp, &hook_name, &removed, local);
-                }
-                if local {
-                    if hooks == [Value::T] {
-                        // GNU kills the local binding when only the default-hook
-                        // sentinel remains.
-                        interp.remove_buffer_local_hook(buffer_id, &hook_name);
-                        super::call(
-                            interp,
-                            "kill-local-variable",
-                            &[Value::Symbol(hook_name.clone().into())],
-                            env,
-                        )?;
-                    } else {
-                        interp.set_buffer_local_hook(buffer_id, &hook_name, hooks.clone());
-                        interp.set_buffer_local_value(buffer_id, &hook_name, Value::list(hooks));
-                    }
-                } else if !dynamically_local
-                    && interp.buffer_local_hook(buffer_id, &hook_name).is_some()
-                {
-                    super::call(
-                        interp,
-                        "set-default",
-                        &[Value::Symbol(hook_name.clone().into()), Value::list(hooks)],
-                        env,
-                    )?;
-                } else if dynamically_local {
-                    interp.set_variable(&hook_name, Value::list(hooks), env);
-                } else {
-                    interp.set_variable(&hook_name, Value::list(hooks), &mut Vec::new());
                 }
                 Ok(Value::Nil)
             }
@@ -2221,160 +1341,6 @@ fn process_cpu_time_value() -> Result<Value, LispError> {
 #[cfg(not(unix))]
 fn process_cpu_time_value() -> Result<Value, LispError> {
     system_time_list_value(SystemTime::now())
-}
-
-fn hook_value_to_vec(value: Value) -> Vec<Value> {
-    match value.to_vec() {
-        Ok(items) => items,
-        Err(_) if value.is_nil() => Vec::new(),
-        Err(_) => vec![value],
-    }
-}
-
-fn hook_depth_symbol_name(interp: &Interpreter, hook_name: &str) -> Option<String> {
-    interp
-        .get_symbol_property(hook_name, "hook--depth-alist")
-        .and_then(|value| value.as_symbol().ok().map(str::to_string))
-}
-
-fn ensure_hook_depth_symbol(interp: &mut Interpreter, hook_name: &str) -> String {
-    if let Some(name) = hook_depth_symbol_name(interp, hook_name) {
-        return name;
-    }
-    let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-    let name = crate::lisp::types::make_uninterned_symbol_name("depth-alist", id);
-    interp.put_symbol_property(
-        hook_name,
-        "hook--depth-alist",
-        Value::Symbol(name.clone().into()),
-    );
-    interp.set_global_binding(&name, Value::Nil);
-    name
-}
-
-fn hook_function_depths(
-    interp: &Interpreter,
-    hook_name: &str,
-    local: bool,
-) -> Option<Vec<(Value, i64)>> {
-    let depth_name = hook_depth_symbol_name(interp, hook_name)?;
-    let value = if local {
-        interp
-            .buffer_local_value(interp.current_buffer_id(), &depth_name)
-            .or_else(|| interp.default_value(&depth_name))
-    } else {
-        interp.default_value(&depth_name)
-    }
-    .unwrap_or(Value::Nil);
-    Some(
-        value
-            .to_vec()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|entry| {
-                let (function, depth) = entry.cons_values()?;
-                Some((function, depth.as_integer().ok()?))
-            })
-            .collect(),
-    )
-}
-
-fn store_hook_function_depths(
-    interp: &mut Interpreter,
-    depth_name: &str,
-    depths: Vec<(Value, i64)>,
-    local: bool,
-) {
-    let value = Value::list(
-        depths
-            .into_iter()
-            .map(|(function, depth)| Value::cons(function, Value::Integer(depth))),
-    );
-    if local {
-        interp.set_buffer_local_value(interp.current_buffer_id(), depth_name, value);
-    } else {
-        interp.set_global_binding(depth_name, value);
-    }
-}
-
-fn set_hook_function_depth(
-    interp: &mut Interpreter,
-    hook_name: &str,
-    function: &Value,
-    depth: i64,
-    local: bool,
-) {
-    let depth_name = ensure_hook_depth_symbol(interp, hook_name);
-    if local
-        && interp
-            .buffer_local_value(interp.current_buffer_id(), &depth_name)
-            .is_none()
-    {
-        let inherited = interp.default_value(&depth_name).unwrap_or(Value::Nil);
-        interp.set_buffer_local_value(interp.current_buffer_id(), &depth_name, inherited);
-    }
-    let mut depths = hook_function_depths(interp, hook_name, local).unwrap_or_default();
-    depths.retain(|(existing, _)| existing != function);
-    depths.push((function.clone(), depth));
-    store_hook_function_depths(interp, &depth_name, depths, local);
-}
-
-fn remove_hook_function_depth(
-    interp: &mut Interpreter,
-    hook_name: &str,
-    function: &Value,
-    local: bool,
-) {
-    let Some(depth_name) = hook_depth_symbol_name(interp, hook_name) else {
-        return;
-    };
-    let Some(mut depths) = hook_function_depths(interp, hook_name, local) else {
-        return;
-    };
-    let before = depths.len();
-    depths.retain(|(existing, _)| existing != function);
-    if depths.len() != before {
-        store_hook_function_depths(interp, &depth_name, depths, local);
-    }
-}
-
-fn hook_function_depth(depths: &[(Value, i64)], hook: &Value) -> i64 {
-    depths
-        .iter()
-        .find_map(|(function, depth)| (function == hook).then_some(*depth))
-        .unwrap_or(0)
-}
-
-fn cl_generic_method_file_entries(
-    interp: &Interpreter,
-    env: &Env,
-    method_name: &str,
-) -> Vec<Value> {
-    let load_history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
-    let mut result = Vec::new();
-    for load_entry in load_history.to_vec().unwrap_or_default() {
-        let Some((file, defs)) = load_entry.cons_values() else {
-            continue;
-        };
-        for def in defs.to_vec().unwrap_or_default() {
-            let Ok(parts) = def.to_vec() else {
-                continue;
-            };
-            if matches!(parts.first(), Some(Value::Symbol(kind)) if kind == "cl-defmethod")
-                && matches!(parts.get(1), Some(Value::Symbol(method)) if method == method_name)
-            {
-                result.push(Value::cons(file.clone(), Value::list(parts[1..].to_vec())));
-            }
-        }
-    }
-    result
-}
-
-fn obsolete_definition_symbol(value: &Value) -> Result<&str, LispError> {
-    match value {
-        Value::Symbol(name) => Ok(name),
-        _ => Err(LispError::TypeError("symbol".into(), value.type_name())),
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -3061,56 +2027,4 @@ fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
         map.entry(name).or_insert(doc);
     }
     map
-}
-
-const HEX_UTIL_DIGITS: &[u8; 16] = b"0123456789abcdef";
-
-// hex-util.el hex-char-to-num, including its error for non-hex digits.
-fn hex_util_digit(ch: char) -> Result<u32, LispError> {
-    match ch {
-        'a'..='f' => Ok(ch as u32 - 'a' as u32 + 10),
-        'A'..='F' => Ok(ch as u32 - 'A' as u32 + 10),
-        '0'..='9' => Ok(ch as u32 - '0' as u32),
-        other => Err(LispError::Signal(format!(
-            "Invalid hexadecimal digit `{other}'"
-        ))),
-    }
-}
-
-// Run rfc2104's HASH over INPUT, returning the hex string HASH yields.
-fn rfc2104_hash_hex(
-    interp: &mut Interpreter,
-    hash: &Value,
-    input: &[u8],
-    env: &mut crate::lisp::types::Env,
-) -> Result<String, LispError> {
-    if let Value::Symbol(algorithm) = hash
-        && matches!(
-            algorithm.as_str(),
-            "md5" | "sha1" | "sha224" | "sha256" | "sha384" | "sha512"
-        )
-    {
-        return Ok(digest_hex(&secure_hash_digest(algorithm, input)?));
-    }
-    let arg = bytes_to_shared_unibyte_value(input);
-    let result = interp.call_function_value(hash.clone(), None, &[arg], env)?;
-    string_text(&result)
-}
-
-// As above but decoded to octets (the inner-hash packing step).
-fn rfc2104_hash_digest(
-    interp: &mut Interpreter,
-    hash: &Value,
-    input: &[u8],
-    env: &mut crate::lisp::types::Env,
-) -> Result<Vec<u8>, LispError> {
-    let hex = rfc2104_hash_hex(interp, hash, input, env)?;
-    let chars: Vec<char> = hex.chars().collect();
-    let mut out = Vec::with_capacity(chars.len() / 2);
-    for pair in chars.chunks(2) {
-        if pair.len() == 2 {
-            out.push((hex_util_digit(pair[0])? * 16 + hex_util_digit(pair[1])?) as u8);
-        }
-    }
-    Ok(out)
 }

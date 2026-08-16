@@ -91,7 +91,7 @@ pub(super) fn standard_syntax_table_entries() -> Vec<CharTableEntry> {
         CharTableEntry {
             start: '\'' as u32,
             end: '\'' as u32,
-            value: syntax_spec_value("'"),
+            value: syntax_spec_value("."),
         },
         CharTableEntry {
             start: '"' as u32,

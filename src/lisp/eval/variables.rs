@@ -17,36 +17,61 @@ impl BacktraceFrame {
         };
         tail.to_vec().unwrap_or_else(|_| vec![tail])
     }
-
-    fn first_arg_snapshot(&self) -> Option<Value> {
-        if let Some(form) = &self.source_form {
-            return form.cdr().ok()?.car().ok();
-        }
-        self.args.first().cloned()
-    }
 }
 
 impl Interpreter {
+    pub(crate) fn begin_minibuffer_runtime(
+        &mut self,
+        buffer_id: u64,
+        window_id: u64,
+        prompt: String,
+    ) -> MinibufferRuntimeState {
+        let previous = self.minibuffer_runtime.clone();
+        self.minibuffer_runtime = MinibufferRuntimeState {
+            active_buffer_id: Some(buffer_id),
+            active_window_id: Some(window_id),
+            depth: previous.depth.saturating_add(1),
+            prompt: Some(prompt),
+        };
+        previous
+    }
+
+    pub(crate) fn restore_minibuffer_runtime(&mut self, state: MinibufferRuntimeState) {
+        self.minibuffer_runtime = state;
+    }
+
+    pub(crate) fn active_minibuffer_buffer_id(&self) -> Option<u64> {
+        self.minibuffer_runtime.active_buffer_id
+    }
+
+    pub(crate) fn active_minibuffer_window_value(&self) -> Option<Value> {
+        self.minibuffer_runtime
+            .active_window_id
+            .filter(|window_id| self.find_record(*window_id).is_some())
+            .map(Value::Record)
+    }
+
+    pub(crate) fn minibuffer_depth(&self) -> usize {
+        self.minibuffer_runtime.depth
+    }
+
+    pub(crate) fn minibuffer_prompt_text(&self) -> Option<&str> {
+        self.minibuffer_runtime.prompt.as_deref()
+    }
+
     /// Set the current buffer's visited name together with metadata derived
     /// from that name.  `buffer-file-name' is one logical state transition:
     /// callers must not have to remember a second remote-visit registration
     /// for modification-time, locking, or supersession policy to work.
     pub(crate) fn set_current_buffer_file_name(&mut self, file: Option<String>) {
-        let buffer_id = self.current_buffer_id();
-        let remote_prefix = file
-            .as_deref()
-            .and_then(primitives::parse_remote_file_name)
-            .map(|remote| remote.prefix);
         self.buffer.file = file;
-        if let Some(prefix) = remote_prefix {
-            self.set_buffer_local_value(
-                buffer_id,
-                "emaxx--visited-remote-prefix",
-                Value::String(prefix.into()),
-            );
-        } else {
-            self.remove_buffer_local_value(buffer_id, "emaxx--visited-remote-prefix");
-        }
+    }
+
+    pub(crate) fn buffer_remote_prefix(&self, buffer_id: u64) -> Option<String> {
+        self.get_buffer_by_id(buffer_id)
+            .and_then(|buffer| buffer.file.as_deref())
+            .and_then(primitives::parse_remote_file_name)
+            .map(|remote| remote.prefix)
     }
 
     pub fn buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> Option<Vec<Value>> {
@@ -249,7 +274,7 @@ impl Interpreter {
     pub fn mark_per_buffer_special(&mut self, name: &str) {
         self.mark_auto_buffer_local(name);
         self.mark_special_variable(name);
-        self.put_symbol_property(name, "emaxx-per-buffer-special", Value::T);
+        self.per_buffer_specials.insert(name.to_string());
     }
 
     /// Mark a native DEFVAR_PER_BUFFER variable whose GNU buffer slot has
@@ -257,17 +282,15 @@ impl Interpreter {
     /// buffer must not forward into another buffer for this subset.
     pub fn mark_always_buffer_local_special(&mut self, name: &str) {
         self.mark_per_buffer_special(name);
-        self.put_symbol_property(name, "emaxx-always-buffer-local-special", Value::T);
+        self.always_buffer_local_specials.insert(name.to_string());
     }
 
     pub fn is_per_buffer_special(&self, name: &str) -> bool {
-        self.get_symbol_property(name, "emaxx-per-buffer-special")
-            .is_some_and(|value| value.is_truthy())
+        self.per_buffer_specials.contains(name)
     }
 
     pub fn is_always_buffer_local_special(&self, name: &str) -> bool {
-        self.get_symbol_property(name, "emaxx-always-buffer-local-special")
-            .is_some_and(|value| value.is_truthy())
+        self.always_buffer_local_specials.contains(name)
     }
 
     pub fn mark_special_variable(&mut self, name: &str) {
@@ -277,7 +300,6 @@ impl Interpreter {
     }
 
     pub fn unmark_special_variable(&mut self, name: &str) {
-        self.soft_special_names.remove(name);
         if let Some(index) = self
             .special_variables
             .iter()
@@ -291,48 +313,36 @@ impl Interpreter {
     /// Record a GNU "locally special" declaration: a bare one-arg `defvar'
     /// evaluated inside a lexical scope makes same-scope `let's of the name
     /// bind dynamically without setting the global special flag.  The
-    /// marker lives in the innermost env frame, so it pops with its scope
-    /// and is captured by closures created in the scope (GNU stores a
-    /// `(defvar . NAME)' entry in the interpreter environment, which
-    /// closures inherit).
-    pub(crate) fn push_local_special_marker(&mut self, name: &str, env: &mut Env) {
-        let marker_key = format!("--emaxx-local-special--{name}");
-        let activation = Value::Integer(self.current_activation_id as i64);
-        if let Some(frame) = env.last_mut() {
-            frame.push((marker_key.clone(), activation));
+    /// marker is a new persistent environment prefix, so closures created
+    /// before and after the declaration share their older tail without
+    /// becoming the same environment snapshot.  This is GNU eval.c's exact
+    /// `Vinternal_interpreter_environment = Fcons (sym, ...)` ownership
+    /// model, represented as typed Rust state.
+    pub(crate) fn push_local_special_declaration(&mut self, name: &str, env: &mut Env) {
+        let identity = Self::fresh_frame_identity();
+        if env.last().is_some_and(EnvFrame::is_local_special_snapshot) {
+            let mut names = env
+                .last()
+                .expect("checked local-special snapshot")
+                .local_special_declarations()
+                .iter()
+                .map(|(_, name)| name.clone())
+                .collect::<Vec<_>>();
+            names.push(name.to_string());
+            *env.last_mut().expect("checked local-special snapshot") =
+                EnvFrame::with_local_specials(names, identity);
+        } else {
+            env.push(EnvFrame::with_local_special(name, identity));
         }
-        if self.local_special_names.insert(name.to_string()) {
-            // GNU's load-time macroexpansion records the declaration in
-            // `macroexp--dynvars' for the rest of the enclosing form, so
-            // expansion-time predicates (cl-macs tail-call elimination,
-            // &key argument renaming) treat the name as dynamic.
-            let existing = self.global_value("macroexp--dynvars").unwrap_or(Value::Nil);
-            self.set_global_binding(
-                "macroexp--dynvars",
-                Value::cons(Value::Symbol(name.to_string().into()), existing),
-            );
-        }
+        self.local_special_names.insert(name.to_string());
     }
 
     /// Reconstitute a bare-symbol entry from GNU's serialized lexical
     /// environment.  Such an entry declares NAME dynamically scoped inside
     /// this closure.  Unlike evaluating a local `defvar', deserialization
     /// must not alter the surrounding macro-expansion environment.
-    pub(crate) fn captured_local_special_marker(&mut self, name: &str) -> (String, Value) {
+    pub(crate) fn note_captured_local_special(&mut self, name: &str) {
         self.local_special_names.insert(name.to_string());
-        (
-            format!("--emaxx-local-special--{name}"),
-            Value::Integer(self.current_activation_id as i64),
-        )
-    }
-
-    /// Whether NAME has ever been declared locally special (one-arg
-    /// `defvar' in a lexical scope).  GNU's eager load-time macroexpansion
-    /// records such names in `macroexp--dynvars' for the rest of the
-    /// enclosing top-level form; expansion-time predicates use this set as
-    /// the equivalent signal.
-    pub(crate) fn local_special_declared(&self, name: &str) -> bool {
-        self.local_special_names.contains(name)
     }
 
     /// Whether NAME is declared locally special in the current scope: the
@@ -345,34 +355,25 @@ impl Interpreter {
         if !self.local_special_names.contains(name) {
             return false;
         }
-        let marker_key = format!("--emaxx-local-special--{name}");
-        env.iter()
-            .skip(self.special_scan_floor)
-            .any(|frame| frame.iter().any(|(key, _)| key == &marker_key))
+        env.iter().skip(self.special_scan_floor).any(|frame| {
+            frame.lisp_environment().is_some_and(|environment| {
+                super::bindings::lisp_environment_declares_special(environment, name)
+            }) || frame.declares_local_special(name)
+        })
     }
 
-    /// Record a top-level one-arg `defvar': dynamic-binding treatment
-    /// without the official special flag (GNU file-scoped declaration).
-    /// The name is also exposed through `macroexp--dynvars' so GNU
-    /// cl-macs gives same-named function arguments lexical aliases
-    /// (bug#47552) exactly as it does during a file compile.
-    pub(crate) fn mark_soft_special(&mut self, name: &str) {
-        if self.soft_special_names.insert(name.to_string()) {
-            let existing = self.global_value("macroexp--dynvars").unwrap_or(Value::Nil);
-            self.set_global_binding(
-                "macroexp--dynvars",
-                Value::cons(Value::Symbol(name.to_string().into()), existing),
-            );
-        }
+    /// Whether GNU's hidden `internal-interpreter-environment' is non-nil.
+    /// Explicit evaluator entry points carry the dialect in the override;
+    /// direct internal evaluation uses a nonempty typed environment as its
+    /// lexical marker.
+    pub(crate) fn interpreter_environment_is_lexical(&self, env: &Env) -> bool {
+        self.lambda_capture_override().unwrap_or(!env.is_empty())
     }
 
     /// Whether `let's of NAME bind dynamically and references resolve
-    /// dynamically across call boundaries: officially special variables
-    /// plus file-scoped (soft) declarations.
+    /// dynamically across call boundaries.
     pub(crate) fn is_dynamic_binding_name(&self, name: &str) -> bool {
-        self.soft_special_names.contains(name)
-            || self.dlet_active_names.contains_key(name)
-            || self.is_special_variable(name)
+        self.dlet_active_names.contains_key(name) || self.is_special_variable(name)
     }
 
     /// Whether a binding form must use GNU's dynamic value-cell semantics.
@@ -383,20 +384,6 @@ impl Interpreter {
         self.lambda_capture_override() == Some(false)
             || self.is_dynamic_binding_name(name)
             || self.local_special_active(name, env)
-    }
-
-    pub(crate) fn enter_dlet_name(&mut self, name: &str) {
-        *self.dlet_active_names.entry(name.to_string()).or_insert(0) += 1;
-    }
-
-    pub(crate) fn leave_dlet_name(&mut self, name: &str) {
-        if let Some(count) = self.dlet_active_names.get_mut(name) {
-            if *count <= 1 {
-                self.dlet_active_names.remove(name);
-            } else {
-                *count -= 1;
-            }
-        }
     }
 
     pub fn is_special_variable(&self, name: &str) -> bool {
@@ -1153,18 +1140,6 @@ impl Interpreter {
         self.restore_special_binding(restore, env)
     }
 
-    pub(crate) fn has_active_buffer_local_special_binding(
-        &self,
-        buffer_id: u64,
-        name: &str,
-    ) -> bool {
-        self.active_special_restores.iter().any(|restore| {
-            !restore.local_binding_killed
-                && restore.name == name
-                && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
-        })
-    }
-
     /// Detach every active dynamic binding from a local cell removed by
     /// `kill-all-local-variables'.  The restore record remains on the stack:
     /// if the body creates a fresh local cell before unwinding, GNU restores
@@ -1341,114 +1316,6 @@ impl Interpreter {
                 self.backtrace_args_pool.push(args);
             }
         }
-    }
-
-    // GNU `called-interactively-p' walks the backtrace and only skips
-    // frames it recognizes: nadvice's advice OBJECTS, apply/funcall
-    // plumbing, and the interactive dispatch itself.  A USER advice lambda
-    // (the body of an :around advice) is not skippable, so the function it
-    // wraps does not count as called interactively even under
-    // `call-interactively' (nadvice-tests encodes this as expected
-    // failures).
-    pub(crate) fn called_interactively_by_backtrace(&self) -> bool {
-        if !self.in_interactive_call() {
-            return false;
-        }
-        let frame_is_oclosure = |function: &Value| -> bool {
-            match function {
-                Value::Lambda(_) => crate::lisp::primitives::oclosure_type_of(function).is_some(),
-                Value::Symbol(symbol) => self
-                    .functions
-                    .iter()
-                    .rev()
-                    .find(|(name, _)| name == symbol)
-                    .is_some_and(|(_, value)| {
-                        crate::lisp::primitives::oclosure_type_of(value).is_some()
-                    }),
-                _ => false,
-            }
-        };
-        let frame_name = |function: &Value| -> Option<String> {
-            match function {
-                Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.to_string()),
-                _ => None,
-            }
-        };
-        if std::env::var_os("EMAXX_DBG_CIP").is_some() {
-            for (index, frame) in self.backtrace_frames.iter().rev().enumerate().take(14) {
-                let function = frame.function_snapshot();
-                eprintln!(
-                    "EMAXX-DBG cip frame[{index}] evald={} fn={:.60}",
-                    frame.evald,
-                    format!("{function:?}")
-                );
-            }
-        }
-        let mut frames = self.backtrace_frames.iter().rev().peekable();
-        // Drop this call's own frames (the called-interactively-p builtin
-        // plus the unevald list frame recording it).
-        while frames.peek().is_some_and(|frame| {
-            frame_name(&frame.function_snapshot()).as_deref() == Some("called-interactively-p")
-        }) {
-            frames.next();
-        }
-        // Skip the current function's in-progress body forms (unevald list
-        // frames whose applications have not happened yet).
-        while frames.peek().is_some_and(|frame| !frame.evald) {
-            frames.next();
-        }
-        // Drop the current function's frame(s): the evald application and,
-        // when it was called by name, the unevald list frame for the call.
-        let Some(current) = frames.next() else {
-            return true;
-        };
-        let current_function = current.function_snapshot();
-        if let Some(next) = frames.peek()
-            && !next.evald
-            && next.function_snapshot() == current_function
-        {
-            frames.next();
-        }
-        // GNU's advice--called-interactively-skip pairs an :around advice's
-        // user lambda with the (apply INNER-ADVICE args) call in its body:
-        // the lambda frame is skippable exactly when control continued DOWN
-        // the advice chain through it.  The innermost :around (whose apply
-        // dispatches the plain original function) is not skippable — that
-        // is nadvice's documented broken case.
-        let mut descended_through_advice = false;
-        for frame in frames {
-            let function = frame.function_snapshot();
-            let name = frame_name(&function);
-            match name.as_deref() {
-                Some("apply") | Some("funcall") => {
-                    descended_through_advice = frame
-                        .first_arg_snapshot()
-                        .as_ref()
-                        .is_some_and(&frame_is_oclosure);
-                    continue;
-                }
-                Some("call-interactively")
-                | Some("funcall-interactively")
-                | Some("command-execute") => return true,
-                _ => {}
-            }
-            if frame_is_oclosure(&function) {
-                continue;
-            }
-            // An unevald list frame duplicates the evald application that
-            // follows it; judge on the evald one.
-            if !frame.evald {
-                continue;
-            }
-            if descended_through_advice {
-                descended_through_advice = false;
-                continue;
-            }
-            return false;
-        }
-        // The interactive dispatch (native command loop, kmacro) may invoke
-        // commands without a visible call-interactively frame.
-        true
     }
 
     pub fn set_current_backtrace_debug(&mut self, enabled: bool) {
