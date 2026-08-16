@@ -908,6 +908,62 @@ SCENARIOS = [
         "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
         [b"\x1b[21~"] + [b"\x1b[C"] * 4 + [b"\x1b[B"] * 2 + [b"\r"],
     ),
+    # The File pane is taller than the glass: Up at the top wraps to the
+    # menu's last window with the final item selected (MI_SCROLL_BACK).
+    (
+        "menu-scroll-wrap-up",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[A"],
+    ),
+    # Down past the last visible row advances the window one item at a
+    # time (MI_SCROLL_FORWARD) while the selection rides the bottom row.
+    (
+        "menu-scroll-forward",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~"] + [b"\x1b[B"] * 24,
+    ),
+    # M-` runs the real tmm.el: split window, shortcut-lettered
+    # *Completions*, and the Menu bar prompt.
+    (
+        "tmm-open",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b`"],
+    ),
+    # A shortcut letter descends into that menu's own tmm level, key
+    # hints and :enable states computed after the first level tore down.
+    (
+        "tmm-pick-file",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b`", b"f"],
+    ),
+    # C-g aborts: the split heals and the pre-read window layout returns.
+    (
+        "tmm-cancel",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b`", b"\x07"],
+    ),
+    # SGR mouse press+release on the menu bar (xterm-mouse-mode decodes
+    # in GNU; the frontend's terminal layer cooks the same events):
+    # [menu-bar mouse-1] finds menu-bar-open-mouse, Edit's pane drops.
+    (
+        "mouse-bar-click",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1bxxterm-mouse-mode\r", b"\x1b[<0;6;1M", b"\x1b[<0;6;1m"],
+    ),
+    # The clicked menu dismisses with C-g and the glass heals.
+    (
+        "mouse-bar-click-dismiss",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1bxxterm-mouse-mode\r", b"\x1b[<0;6;1M", b"\x1b[<0;6;1m", b"\x07", b"\x0e"],
+    ),
+    # C-mouse-3's menu-item filter yields the menu-bar keymap; a keymap
+    # bound to a click pops up at the click point with the pending-keys
+    # echo ("C-down-mouse-3- (C-h for help)") under it.
+    (
+        "mouse-cmenu",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1bxxterm-mouse-mode\r", b"\x1b[<18;10;5M", b"\x1b[<18;10;5m"],
+    ),
 ]
 
 

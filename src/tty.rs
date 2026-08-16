@@ -261,6 +261,7 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
             draw_echo_row(&state);
             match queue.try_next_event() {
                 Err(()) => None,
+                Ok(Some(event)) if is_raw_mouse_token(&event) => Some(None),
                 Ok(Some(event)) => Some(Some(event)),
                 Ok(None) => {
                     let _ = event::poll(std::time::Duration::from_millis(50));
@@ -352,14 +353,22 @@ impl SharedEventQueue {
             let Ok(event) = event::read() else {
                 return Err(());
             };
-            if let Event::Key(key) = event {
-                let mut events = encode_key(key);
-                if events.is_empty() {
-                    continue;
+            match event {
+                Event::Key(key) => {
+                    let mut events = encode_key(key);
+                    if events.is_empty() {
+                        continue;
+                    }
+                    let first = events.remove(0);
+                    self.0.borrow_mut().extend(events);
+                    return Ok(Some(first));
                 }
-                let first = events.remove(0);
-                self.0.borrow_mut().extend(events);
-                return Ok(Some(first));
+                Event::Mouse(mouse) => {
+                    if let Some(event) = encode_mouse(mouse) {
+                        return Ok(Some(event));
+                    }
+                }
+                _ => {}
             }
         }
         Ok(None)
@@ -375,14 +384,22 @@ impl SharedEventQueue {
             let Ok(event) = event::read() else {
                 return None;
             };
-            if let Event::Key(key) = event {
-                let mut events = encode_key(key);
-                if events.is_empty() {
-                    continue;
+            match event {
+                Event::Key(key) => {
+                    let mut events = encode_key(key);
+                    if events.is_empty() {
+                        continue;
+                    }
+                    let first = events.remove(0);
+                    self.0.borrow_mut().extend(events);
+                    return Some(first);
                 }
-                let first = events.remove(0);
-                self.0.borrow_mut().extend(events);
-                return Some(first);
+                Event::Mouse(mouse) => {
+                    if let Some(event) = encode_mouse(mouse) {
+                        return Some(event);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -399,12 +416,52 @@ fn make_event_reader(
 ) -> Box<dyn FnMut() -> Option<Value>> {
     Box::new(move || {
         draw_echo_row(&state);
-        let event = queue.next_event()?;
+        let event = loop {
+            let event = queue.next_event()?;
+            // Raw mouse tokens are command-loop currency; a blocking
+            // Lisp reader never sees them.
+            if !is_raw_mouse_token(&event) {
+                break event;
+            }
+        };
         if event == Value::Integer(7) {
             return None;
         }
         Some(event)
     })
+}
+
+/// The composed echo repaint for contexts that hold the interpreter —
+/// the menu executor's message3-style paint carries face spans (the
+/// C-h help hint's help-key-binding face), which the interpreter-less
+/// draw_echo_row cannot resolve.
+fn draw_echo_row_composed(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
+) {
+    let Ok((cols, rows)) = terminal::size() else {
+        return;
+    };
+    let Ok(mut state) = state.try_borrow_mut() else {
+        return;
+    };
+    if state.minibuffer_owns_echo {
+        return;
+    }
+    let frontend_echo = state.echo.clone();
+    let (row, _) = compose_echo_row(
+        interpreter,
+        env,
+        &frontend_echo,
+        cols.max(10) as usize,
+        &mut state.face_cache,
+    );
+    let mut out = io::stdout();
+    let _ = paint_row(&mut out, rows.max(4) as usize - 1, &row);
+    let _ = out.flush();
+    state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
+    state.painted_echo = row;
 }
 
 /// Paint the live echo-area line without interpreter access; the message
@@ -507,10 +564,26 @@ fn command_loop(
             }
             let _ = event::poll(std::time::Duration::from_millis(50));
         };
+        // A raw mouse token becomes GNU's click event now that the frame
+        // state is in reach; motion and wheel produce nothing.
+        let event = if is_raw_mouse_token(&event) {
+            match synthesize_mouse_event(interpreter, env, &event) {
+                Some(event) => event,
+                None => continue,
+            }
+        } else {
+            event
+        };
+        // read_char wipes a lingering message the moment any input event
+        // arrives — sequences and silently-discarded button-downs
+        // included; the glass catches up at the next redisplay.
+        crate::lisp::primitives::expire_echo_area_message();
         // The state borrow is scoped: `execute_binding' below may re-enter
-        // redisplay through the minibuffer's frame-redraw hook, which
-        // borrows the same cell.
-        let dispatch = {
+        // redisplay through the minibuffer's frame-redraw hook, and
+        // resolution itself can run the whole dropdown executor (a
+        // keymap-bound mouse click pops it), both of which borrow the
+        // same cell.
+        let pending_snapshot = {
             let state = &mut *shared_state.borrow_mut();
 
             // A fresh key erases a previous command's echo, but not the
@@ -520,8 +593,11 @@ fn command_loop(
                 state.echo.clear();
             }
             state.pending.push(event);
-
-            let resolution = resolve_pending(interpreter, env, &state.pending);
+            state.pending.clone()
+        };
+        let resolution = resolve_pending(interpreter, env, &pending_snapshot);
+        let dispatch = {
+            let state = &mut *shared_state.borrow_mut();
             debug_log(&format!(
                 "keys {:?} -> {}",
                 describe_keys(&state.pending),
@@ -549,7 +625,16 @@ fn command_loop(
                     None
                 }
                 Resolution::Undefined => {
-                    state.echo = format!("{} is undefined", describe_keys(&state.pending));
+                    // keyboard.c discards unbound button-down events
+                    // silently; unbound clicks echo like any key.
+                    let silent = state.pending.len() == 1
+                        && matches!(
+                            state.pending[0].car(),
+                            Ok(Value::Symbol(head)) if head.contains("down-mouse-")
+                        );
+                    if !silent {
+                        state.echo = format!("{} is undefined", describe_keys(&state.pending));
+                    }
                     state.pending.clear();
                     state.prefix_active = false;
                     None
@@ -637,6 +722,122 @@ fn command_error_text(interpreter: &mut Interpreter, env: &mut Env, error: &Lisp
 }
 
 // ── Event encoding ──────────────────────────────────────────────────────
+
+/// A terminal mouse press or release as an internal raw token; the
+/// command loop turns it into GNU's click event shape once it can see
+/// the frame (term.c's GPM path builds tty mouse events at the same
+/// C layer).  The token never reaches Lisp.
+fn encode_mouse(mouse: event::MouseEvent) -> Option<Value> {
+    use event::{MouseButton, MouseEventKind};
+    let (press, button) = match mouse.kind {
+        MouseEventKind::Down(button) => (true, button),
+        MouseEventKind::Up(button) => (false, button),
+        _ => return None,
+    };
+    let number = match button {
+        MouseButton::Left => 1,
+        MouseButton::Middle => 2,
+        MouseButton::Right => 3,
+    };
+    let mut modifier_bits = 0i64;
+    if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+        modifier_bits |= 1;
+    }
+    if mouse.modifiers.contains(KeyModifiers::ALT) {
+        modifier_bits |= 2;
+    }
+    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+        modifier_bits |= 4;
+    }
+    Some(Value::list([
+        Value::Symbol("emaxx--raw-mouse".into()),
+        Value::Integer(number),
+        Value::Integer(modifier_bits),
+        Value::Integer(mouse.column as i64),
+        Value::Integer(mouse.row as i64),
+        Value::Symbol(if press { "press" } else { "release" }.into()),
+    ]))
+}
+
+/// Whether VALUE is the internal raw-mouse token.
+fn is_raw_mouse_token(value: &Value) -> bool {
+    matches!(value.car(), Ok(Value::Symbol(head)) if head == "emaxx--raw-mouse")
+}
+
+/// Build GNU's click event from a raw mouse token: (EVENT-SYMBOL POSN),
+/// posn being (FRAME menu-bar (X . Y) TIME) on the menu-bar row and
+/// (WINDOW POS (X . Y) TIME) with window-relative coordinates in a text
+/// area — the shapes xt-mouse.el and term.c's GPM support hand to the
+/// command loop.  POS stands in with the window's point: the tty layer
+/// has no per-cell buffer-position map yet, and the mouse consumers the
+/// frontend drives (menu-bar-open-mouse, keymap popups) read only the
+/// coordinates.
+fn synthesize_mouse_event(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    raw: &Value,
+) -> Option<Value> {
+    let fields = raw.to_vec().ok()?;
+    let button = fields.get(1)?.as_integer().ok()?;
+    let modifier_bits = fields.get(2)?.as_integer().ok()?;
+    let col = fields.get(3)?.as_integer().ok()?;
+    let row = fields.get(4)?.as_integer().ok()?;
+    let press = matches!(fields.get(5), Some(Value::Symbol(phase)) if phase == "press");
+    let mut name = String::new();
+    if modifier_bits & 2 != 0 {
+        name.push_str("M-");
+    }
+    if modifier_bits & 1 != 0 {
+        name.push_str("C-");
+    }
+    if modifier_bits & 4 != 0 {
+        name.push_str("S-");
+    }
+    if press {
+        name.push_str("down-");
+    }
+    name.push_str(&format!("mouse-{button}"));
+
+    let (_, rows) = terminal::size().ok()?;
+    let menu_bar_rows = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1);
+    let posn = if menu_bar_rows > 0 && row == 0 {
+        // xt-mouse builds the menu-bar posn with a nil window slot —
+        // menu-bar-open-mouse refuses events that sit inside a window.
+        let _ = env;
+        Value::list([
+            Value::Nil,
+            Value::Symbol("menu-bar".into()),
+            Value::cons(Value::Integer(col), Value::Integer(0)),
+            Value::Integer(0),
+        ])
+    } else {
+        let layout = crate::lisp::primitives::window_render_layout(interpreter);
+        let window = layout.iter().find(|info| {
+            (info.left as i64) <= col
+                && col < (info.left + info.width) as i64
+                && (info.top as i64) <= row
+                && row < (info.top + info.height) as i64
+        })?;
+        let pos = if window.buffer_id == interpreter.current_buffer_id() {
+            interpreter.buffer.point()
+        } else {
+            interpreter
+                .get_buffer_by_id(window.buffer_id)
+                .map(|buffer| buffer.point())
+                .unwrap_or(1)
+        };
+        Value::list([
+            Value::Record(window.window_id),
+            Value::Integer(pos as i64),
+            Value::cons(
+                Value::Integer(col - window.left as i64),
+                Value::Integer(row - window.top as i64),
+            ),
+            Value::Integer(0),
+        ])
+    };
+    Some(Value::list([Value::Symbol(name.into()), posn]))
+}
 
 /// Translate a terminal key event into GNU key events.  Meta becomes the
 /// ESC prefix so the runtime's standard `esc-map' resolves M- bindings, and
@@ -758,6 +959,91 @@ struct WindowPlan {
 /// instead of wrapping them.
 const TRUNCATE_PARTIAL_WIDTH: usize = 50;
 
+/// The `display' `(space :align-to COL)' target of the property value,
+/// if the value is such a space spec (xdisp.c's stretch glyphs;
+/// completion--insert-strings builds its columns from them).
+fn space_align_to_target(value: &Value) -> Option<usize> {
+    let items = value.to_vec().ok()?;
+    if !matches!(items.first(), Some(Value::Symbol(head)) if head == "space") {
+        return None;
+    }
+    let position = items
+        .iter()
+        .position(|item| matches!(item, Value::Symbol(name) if name == ":align-to"))?;
+    match items.get(position + 1) {
+        Some(Value::Integer(column)) if *column >= 0 => Some(*column as usize),
+        _ => None,
+    }
+}
+
+/// One buffer line as redisplay lays it out: a character carrying a
+/// `(space :align-to COL)' `display' property renders as blank space up
+/// to display column COL in place of the character itself.  Returns the
+/// laid-out text and, when any expansion happened, a map from raw char
+/// offsets to laid-out char offsets (face spans anchor on raw buffer
+/// positions).
+fn displayed_line_with_map(
+    buffer: &crate::buffer::Buffer,
+    line: usize,
+) -> (String, Option<Vec<usize>>) {
+    let raw = buffer
+        .lines_from(line, 1)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    if !buffer.has_text_property_named("display") {
+        return (raw, None);
+    }
+    let line_begin = buffer.line_start_of(line);
+    let mut expanded = String::new();
+    let mut expanded_chars = 0usize;
+    let mut map = Vec::with_capacity(raw.chars().count() + 1);
+    let mut col = 0usize;
+    let mut changed = false;
+    for (offset, ch) in raw.chars().enumerate() {
+        map.push(expanded_chars);
+        let target = buffer
+            .text_property_at(line_begin + offset, "display")
+            .and_then(|value| space_align_to_target(&value));
+        if let Some(target) = target {
+            changed = true;
+            let pad = target.saturating_sub(col);
+            for _ in 0..pad {
+                expanded.push(' ');
+            }
+            expanded_chars += pad;
+            col += pad;
+        } else if ch == '\t' {
+            expanded.push(ch);
+            expanded_chars += 1;
+            col += 8 - (col % 8);
+        } else {
+            expanded.push(ch);
+            expanded_chars += 1;
+            col += 1;
+        }
+    }
+    map.push(expanded_chars);
+    if changed {
+        (expanded, Some(map))
+    } else {
+        (raw, None)
+    }
+}
+
+fn displayed_line_text(buffer: &crate::buffer::Buffer, line: usize) -> String {
+    displayed_line_with_map(buffer, line).0
+}
+
+fn displayed_lines_from(buffer: &crate::buffer::Buffer, from: usize, count: usize) -> Vec<String> {
+    if !buffer.has_text_property_named("display") {
+        return buffer.lines_from(from, count);
+    }
+    (from..from + count)
+        .map(|line| displayed_line_text(buffer, line))
+        .collect()
+}
+
 /// Plan one window's text: adopt a commanded window-start, keep point
 /// visible with GNU's recenter-on-jump model (selected window only), and
 /// render the visible rows under the window's own wrap-or-truncate
@@ -781,13 +1067,7 @@ fn plan_window_text(
             segment_count(display_width(line), usable)
         }
     };
-    let line_text_at = |line: usize| {
-        buffer
-            .lines_from(line, 1)
-            .into_iter()
-            .next()
-            .unwrap_or_default()
-    };
+    let line_text_at = |line: usize| displayed_line_text(buffer, line);
 
     let point_line = buffer.line_number_at_pos(point); // 1-based
     let point_line_text = line_text_at(point_line);
@@ -830,7 +1110,10 @@ fn plan_window_text(
         } else {
             let span = point_line - view.top_line;
             let mut rows_before = 0usize;
-            for (index, line) in buffer.lines_from(view.top_line, span).iter().enumerate() {
+            for (index, line) in displayed_lines_from(buffer, view.top_line, span)
+                .iter()
+                .enumerate()
+            {
                 let segs = segs_of(line);
                 let skipped = if index == 0 { view.top_seg } else { 0 };
                 rows_before += segs.saturating_sub(skipped);
@@ -873,7 +1156,7 @@ fn plan_window_text(
     // Fetch only the window: redisplay cost must follow the screen size,
     // never the buffer size.  Each line yields at least one visual row,
     // so text_rows lines always cover the window.
-    let lines = buffer.lines_from(view.top_line, text_rows);
+    let lines = displayed_lines_from(buffer, view.top_line, text_rows);
     let mut rendered: Vec<(String, usize, usize, usize)> = Vec::with_capacity(text_rows);
     // First row past the window, as (line, segment): the window's end.
     let mut past_window: Option<(usize, usize)> = None;
@@ -1160,11 +1443,7 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             if row_end <= *row_start {
                 continue;
             }
-            let line_text = buffer
-                .lines_from(*line, 1)
-                .into_iter()
-                .next()
-                .unwrap_or_default();
+            let (line_text, offset_map) = displayed_line_with_map(buffer, *line);
             let line_begin = buffer.line_start_of(*line);
             for (span_begin, span_end, attrs) in &resolved {
                 let begin = (*span_begin).max(*row_start);
@@ -1173,8 +1452,14 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
                     continue;
                 }
                 let col_of = |pos: usize| {
-                    display_column(&line_text, pos.saturating_sub(line_begin))
-                        .saturating_sub(seg * job.usable)
+                    let mut offset = pos.saturating_sub(line_begin);
+                    if let Some(map) = &offset_map {
+                        offset = map
+                            .get(offset)
+                            .copied()
+                            .unwrap_or_else(|| map.last().copied().unwrap_or(offset));
+                    }
+                    display_column(&line_text, offset).saturating_sub(seg * job.usable)
                 };
                 let from_col = col_of(begin).min(job.body_width);
                 // A span covering the newline paints its glyph's cell —
@@ -1713,6 +1998,30 @@ mod tests {
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn align_to_display_specs_lay_out_as_blank_columns() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let forms = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"ab \\tcd\\n\")
+               (put-text-property 4 5 'display '(space :align-to 10)))",
+        )
+        .read_all()
+        .unwrap();
+        for form in &forms {
+            interp.eval(form, &mut env).unwrap();
+        }
+        let (text, map) = displayed_line_with_map(&interp.buffer, 1);
+        // "ab " is 3 columns; the propertized tab becomes 7 blanks up
+        // to column 10, exactly where xdisp.c's stretch glyph ends.
+        assert_eq!(text, "ab        cd");
+        let map = map.expect("expansion happened");
+        // Raw offsets: a=0 b=1 space=2 tab=3 c=4 d=5 map onto the
+        // laid-out string, with cd starting at column 10.
+        assert_eq!(&map[..6], &[0, 1, 2, 3, 10, 11]);
     }
 
     #[test]
@@ -2343,7 +2652,7 @@ fn make_menu_executor(
             // The title cell: the pane name with the " >" submenu marker,
             // in the selected face — ' File > ' clobbering the bar.
             let title_width = pane.title.chars().count() + 4;
-            let draw = |state: &mut TtyState, selection: usize| {
+            let draw = |state: &mut TtyState, selected_row: usize, first_item: usize| {
                 let mut out = io::stdout();
                 let _ = queue!(out, cursor::Hide);
                 if title_row < state.painted_rows.len() {
@@ -2356,12 +2665,20 @@ fn make_menu_executor(
                     let _ = paint_row(&mut out, title_row, &cell);
                     state.painted_rows[title_row] = cell;
                 }
-                for (index, item) in pane.items.iter().take(max_items).enumerate() {
+                // tty_menu_display starts at FIRST_ITEM: a pane taller
+                // than the glass shows a window of itself and scrolls.
+                for (index, item) in pane
+                    .items
+                    .iter()
+                    .skip(first_item)
+                    .take(max_items)
+                    .enumerate()
+                {
                     let row = y0 + index;
                     if row >= state.painted_rows.len() {
                         break;
                     }
-                    let attrs = if index == selection {
+                    let attrs = if index == selected_row {
                         if item.enabled {
                             selected_attrs
                         } else {
@@ -2379,11 +2696,14 @@ fn make_menu_executor(
                 let _ = out.flush();
             };
 
-            let mut selection = 0usize;
+            // GNU's virtual mouse: a visible row plus the scroll base
+            // (tty_menu_activate's y and first_item).
+            let mut selected_row = 0usize;
+            let mut first_item = 0usize;
             let outcome = loop {
                 {
                     let mut state = state.borrow_mut();
-                    draw(&mut state, selection);
+                    draw(&mut state, selected_row, first_item);
                 }
                 // One key sequence under the navigation map; prefixes keep
                 // reading, everything else maps per read_menu_input.
@@ -2400,11 +2720,14 @@ fn make_menu_executor(
                         .try_borrow()
                         .is_ok_and(|state| state.painted_message_tick != emitted)
                     {
-                        draw_echo_row(&state);
+                        draw_echo_row_composed(interpreter, env, &state);
                     }
                     let Some(event) = queue.next_event() else {
                         break Value::T;
                     };
+                    if is_raw_mouse_token(&event) {
+                        continue;
+                    }
                     if event == Value::Integer(7) {
                         break Value::T;
                     }
@@ -2425,14 +2748,37 @@ fn make_menu_executor(
                     "tty-menu-next-menu" => break TtyMenuOutcome::NextMenu,
                     "tty-menu-prev-menu" => break TtyMenuOutcome::PrevMenu,
                     "tty-menu-next-item" => {
-                        selection = (selection + 1) % max_items;
+                        // Below the last visible row GNU scrolls forward
+                        // (MI_SCROLL_FORWARD): the window advances until
+                        // the selection sits on the final item, and one
+                        // more step wraps to the top of the whole menu.
+                        if selected_row + 1 < max_items {
+                            selected_row += 1;
+                        } else if selected_row + first_item + 1 == pane.items.len() {
+                            selected_row = 0;
+                            first_item = 0;
+                        } else {
+                            first_item += 1;
+                        }
                     }
                     "tty-menu-prev-item" => {
-                        selection = (selection + max_items - 1) % max_items;
+                        // MI_SCROLL_BACK: above the first visible row the
+                        // window retreats; at the very top it wraps to
+                        // the menu's last window with the final item
+                        // selected.
+                        if selected_row > 0 {
+                            selected_row -= 1;
+                        } else if first_item == 0 {
+                            selected_row = max_items - 1;
+                            first_item = pane.items.len() - max_items;
+                        } else {
+                            first_item -= 1;
+                        }
                     }
                     "tty-menu-select" => {
                         // A separator or disabled item answers no selection
                         // (TTYM_IA_SELECT), like GNU.
+                        let selection = selected_row + first_item;
                         if pane.items[selection].enabled {
                             break TtyMenuOutcome::Selected(selection);
                         }

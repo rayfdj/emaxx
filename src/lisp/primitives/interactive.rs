@@ -689,14 +689,49 @@ fn command_loop_call(
 /// (`key-binding'), classifying strict prefixes so a multi-key sequence
 /// keeps reading.  This is the single resolution path for every command
 /// loop — the frame's and the minibuffer's recursive one.
+/// The event-head symbol of a parameterized mouse click event —
+/// ("C-down-mouse-3" POSN) answers the symbol; anything else nil.
+fn mouse_event_head(event: &Value) -> Option<String> {
+    let items = event.to_vec().ok()?;
+    match (items.first(), items.get(1)) {
+        (Some(Value::Symbol(head)), Some(Value::Cons(_))) if head.contains("mouse-") => {
+            Some(head.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Whether a click event's posn sits on the menu-bar area.
+fn mouse_event_on_menu_bar(event: &Value) -> bool {
+    event
+        .to_vec()
+        .ok()
+        .and_then(|items| items.get(1)?.to_vec().ok())
+        .is_some_and(|posn| matches!(posn.get(1), Some(Value::Symbol(area)) if area == "menu-bar"))
+}
+
 pub(crate) fn resolve_key_sequence(
     interp: &mut Interpreter,
     env: &mut Env,
     pending: &[Value],
 ) -> KeyResolution {
-    let key_vector = Value::list(
-        std::iter::once(Value::Symbol("vector-literal".into())).chain(pending.iter().cloned()),
-    );
+    // keyboard.c's read_key_sequence: a click's keymap key is its head
+    // symbol, and a click on the menu-bar area inserts the fake
+    // `menu-bar' prefix before it ([menu-bar mouse-1] finds
+    // menu-bar-open-mouse).
+    let mut lookup_events: Vec<Value> = Vec::with_capacity(pending.len() + 1);
+    for (index, event) in pending.iter().enumerate() {
+        if let Some(head) = mouse_event_head(event) {
+            if index == 0 && mouse_event_on_menu_bar(event) {
+                lookup_events.push(Value::Symbol("menu-bar".into()));
+            }
+            lookup_events.push(Value::Symbol(head.into()));
+        } else {
+            lookup_events.push(event.clone());
+        }
+    }
+    let key_vector =
+        Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(lookup_events));
     let binding = match command_loop_call(interp, env, "key-binding", &[key_vector, Value::T]) {
         Ok(binding) => binding,
         Err(_) => Value::Nil,
@@ -721,6 +756,57 @@ pub(crate) fn resolve_key_sequence(
         binding.clone()
     };
     if crate::lisp::primitives::is_keymap_value(interp, &resolved) {
+        // A keymap bound to a parameterized click pops up as a menu
+        // (read_key_sequence's mouse-menu path — C-down-mouse-3's
+        // menu-item filter yields the menu-bar keymap); the chosen
+        // item's key path finishes the sequence.
+        if let Some(event) = pending
+            .last()
+            .filter(|event| mouse_event_head(event).is_some())
+            && has_tty_menu_executor()
+        {
+            // The sequence is still pending while the menu is up:
+            // echo-keystrokes shows it with keyboard.c's help hint
+            // ("C-down-mouse-3- (C-h for help)", the C-h in
+            // help-key-binding face), painted through the frozen
+            // redisplay like any message emission.
+            if let Some(head) = mouse_event_head(event) {
+                let hint_start = head.chars().count() + 3;
+                crate::lisp::primitives::set_echo_area_message_with_spans(
+                    format!("{head}- (C-h for help)"),
+                    vec![(
+                        hint_start,
+                        hint_start + 3,
+                        Value::Symbol("help-key-binding".into()),
+                    )],
+                );
+            }
+            let answer = super::call(
+                interp,
+                "x-popup-menu",
+                &[(*event).clone(), resolved.clone()],
+                env,
+            )
+            .unwrap_or(Value::Nil);
+            let path = answer.to_vec().unwrap_or_default();
+            if path.is_empty() {
+                // Cancelled: the sequence dissolves with no command and
+                // no quit (MENU_FOR_CLICK).
+                return KeyResolution::Command(Value::Symbol("ignore".into()));
+            }
+            let vector =
+                Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(path));
+            let chosen = super::call(interp, "lookup-key", &[resolved, vector], env)
+                .ok()
+                .filter(|value| !value.is_nil())
+                .and_then(|value| {
+                    crate::lisp::primitives::keymap_get_keyelt(interp, &value, true, env).ok()
+                });
+            if let Some(command) = chosen.filter(|value| !value.is_nil()) {
+                return KeyResolution::Command(command);
+            }
+            return KeyResolution::Command(Value::Symbol("ignore".into()));
+        }
         KeyResolution::Prefix
     } else {
         KeyResolution::Command(binding)

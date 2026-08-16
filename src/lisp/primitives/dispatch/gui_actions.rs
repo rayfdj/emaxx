@@ -117,7 +117,25 @@ fn tty_popup_menu(
     menu: &Value,
 ) -> Result<Value, LispError> {
     let mut env = Vec::new();
-    let (x, y) = popup_position_xy(position).unwrap_or((0, 0));
+    let (mut x, mut y) = popup_position_xy(position).unwrap_or((0, 0));
+    // A click event's posn carries window-relative coordinates; the
+    // dropdown draws in frame coordinates (Fx_popup_menu converts the
+    // same way before calling the terminal's menu hook).
+    if let Some(window_id) = position
+        .to_vec()
+        .ok()
+        .and_then(|items| items.get(1)?.to_vec().ok())
+        .and_then(|posn| match posn.first() {
+            Some(Value::Record(id)) => Some(*id),
+            _ => None,
+        })
+    {
+        let layout = crate::lisp::primitives::window_render_layout(interp);
+        if let Some(info) = layout.iter().find(|info| info.window_id == window_id) {
+            x += info.left as i64;
+            y += info.top as i64;
+        }
+    }
     // The pane title is the menu keymap's prompt string ("File").
     let title = {
         let projected = crate::lisp::primitives::public_keymap_value(interp, menu);
