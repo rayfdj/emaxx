@@ -1084,6 +1084,12 @@ pub(crate) fn run_active_minibuffer<T>(
     minibuffer: ActiveMinibuffer,
     body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
 ) -> Result<T, LispError> {
+    // read_minibuf registers its window-configuration restore BEFORE
+    // selecting the minibuffer window or running the setup hook: a
+    // pop-up the hook itself makes (tmm-add-prompt's completion window)
+    // vanishes when the read finishes, on every exit path, quits
+    // included, and the pre-read window selection returns.
+    let saved_windows = minibuffer.saved_windows.clone();
     let result = (|| {
         run_named_hooks(
             interp,
@@ -1101,11 +1107,21 @@ pub(crate) fn run_active_minibuffer<T>(
         body(interp, env)
     })();
     restore_active_minibuffer(interp, minibuffer);
+    if interp
+        .lookup_var("read-minibuffer-restore-windows", env)
+        .is_none_or(|restore| restore.is_truthy())
+    {
+        let _ = interp.restore_window_configuration(saved_windows);
+    }
     result
 }
 
 pub(crate) struct ActiveMinibuffer {
     pub(crate) buffer_id: u64,
+    /// The window tree as it stood BEFORE the minibuffer window was
+    /// selected — read_minibuf saves its configuration first, so the
+    /// restore never re-selects the minibuffer.
+    saved_windows: crate::lisp::eval::WindowConfigurationSnapshot,
     saved_buffer_id: u64,
     saved_selected_window_id: u64,
     saved_selected_window_buffer_id: u64,
@@ -1171,6 +1187,7 @@ pub(crate) fn activate_minibuffer(
     local_map: Value,
     env: &Env,
 ) -> Result<ActiveMinibuffer, LispError> {
+    let saved_windows = interp.snapshot_window_configuration();
     let previous_depth = interp
         .lookup_var("emaxx--minibuffer-depth", env)
         .and_then(|value| value.as_integer().ok())
@@ -1290,6 +1307,7 @@ pub(crate) fn activate_minibuffer(
 
     Ok(ActiveMinibuffer {
         buffer_id,
+        saved_windows,
         saved_buffer_id,
         saved_selected_window_id,
         saved_selected_window_buffer_id,

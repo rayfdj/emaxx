@@ -7373,6 +7373,34 @@ fn key_binding_resolves_function_keys_and_menu_entries() {
 }
 
 #[test]
+fn where_is_internal_prefers_ascii_and_rejects_menus_under_firstonly() {
+    let mut interp = Interpreter::new();
+    let result = eval_str_with(
+        &mut interp,
+        "(progn
+           (defun demo-where-is-command () (interactive))
+           (global-set-key [f6] 'demo-where-is-command)
+           (global-set-key \"\\C-t\" 'demo-where-is-command)
+           (define-key global-map [menu-bar demo]
+             (cons \"Demo\" (make-sparse-keymap \"Demo\")))
+           (defun demo-menu-only-command () (interactive))
+           (define-key global-map [menu-bar demo run]
+             '(menu-item \"Run\" demo-menu-only-command))
+           (prin1-to-string
+            (list (key-description (where-is-internal 'demo-where-is-command nil t))
+                  (where-is-internal 'demo-menu-only-command nil t)
+                  (key-description
+                   (car (where-is-internal
+                         (lookup-key global-map [menu-bar demo])))))))",
+    );
+    // A character sequence (C-t) beats the symbolic f6 no matter the
+    // definition order; a non-nil FIRSTONLY rejects menu bindings
+    // entirely (keymap.c's nomenus); and a keymap object as DEFINITION
+    // finds the key bound to that very keymap when menus are allowed.
+    assert_string_value(result, "(\"C-t\" nil \"<menu-bar> <demo>\")");
+}
+
+#[test]
 fn unread_command_events_pop_ahead_of_the_terminal() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();

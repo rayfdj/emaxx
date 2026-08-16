@@ -3638,13 +3638,19 @@ pub(crate) fn key_parts_to_sequence_value(parts: &[String]) -> Value {
     Value::list(items)
 }
 
-fn where_is_binding_rank(parts: &[String]) -> (usize, bool) {
+fn where_is_binding_rank(parts: &[String]) -> (bool, usize) {
     let events = key_parts_to_sequence_value(parts)
         .to_vec()
         .unwrap_or_default();
     let event_count = events.len().saturating_sub(1);
-    let starts_with_function_key = !matches!(events.get(1), Some(Value::Integer(_)));
-    (event_count, starts_with_function_key)
+    // keymap.c's preferred_sequence_p: a sequence of characters (C-x
+    // C-f) beats any sequence carrying a symbolic event ([open]), no
+    // matter their lengths — GNU returns the first preferred match.
+    let has_symbolic_event = events
+        .iter()
+        .skip(1)
+        .any(|event| !matches!(event, Value::Integer(_)));
+    (has_symbolic_event, event_count)
 }
 
 pub(crate) fn accessible_keymaps(
@@ -3994,28 +4000,87 @@ pub(crate) fn where_is_internal_maps(
     Ok(maps)
 }
 
+/// keymap.c's Vmouse_events: the event prefixes `nomenus' rejects,
+/// after stripping event modifiers (C-down-mouse-3's base is mouse-3).
+fn first_event_is_mouse_prefix(parts: &[String]) -> bool {
+    let Some(first) = parts.first() else {
+        return false;
+    };
+    let mut base = first.trim_start_matches('<').trim_end_matches('>');
+    loop {
+        let stripped = base
+            .strip_prefix("C-")
+            .or_else(|| base.strip_prefix("M-"))
+            .or_else(|| base.strip_prefix("S-"))
+            .or_else(|| base.strip_prefix("s-"))
+            .or_else(|| base.strip_prefix("H-"))
+            .or_else(|| base.strip_prefix("A-"))
+            .or_else(|| base.strip_prefix("down-"))
+            .or_else(|| base.strip_prefix("drag-"))
+            .or_else(|| base.strip_prefix("double-"))
+            .or_else(|| base.strip_prefix("triple-"));
+        match stripped {
+            Some(rest) => base = rest,
+            None => break,
+        }
+    }
+    matches!(
+        base,
+        "menu-bar"
+            | "tab-bar"
+            | "tool-bar"
+            | "tab-line"
+            | "header-line"
+            | "mode-line"
+            | "mouse-1"
+            | "mouse-2"
+            | "mouse-3"
+            | "mouse-4"
+            | "mouse-5"
+    )
+}
+
 pub(crate) fn where_is_internal(
     interp: &mut Interpreter,
-    command: &str,
+    definition: &Value,
     keymaps: &[Value],
     first_only: bool,
+    nomenus: bool,
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
+    // GNU's DEFINITION may be any object, matched against bindings by
+    // identity: a command symbol by name, a keymap object by its record
+    // (tmm hands each menu's keymap straight in).  Other objects (an
+    // anonymous lambda) have no name to search by and answer nil.
+    let (command_owned, definition_keymap_id) = match definition {
+        Value::Symbol(name) => (name.to_string(), None),
+        other => match keymap_record_id(interp, other) {
+            Some(id) => (String::new(), Some(id)),
+            None => return Ok(Vec::new()),
+        },
+    };
+    let command = command_owned.as_str();
     let maps_value = Value::list(keymaps.iter().cloned());
-    let remapped_command = command_remapping(
-        interp,
-        &Value::Symbol(command.into()),
-        Some(&maps_value),
-        env,
-    )
-    .ok()
-    .and_then(|value| command_name_for_remapping(&value));
+    let remapped_command = if definition_keymap_id.is_some() {
+        None
+    } else {
+        command_remapping(
+            interp,
+            &Value::Symbol(command.into()),
+            Some(&maps_value),
+            env,
+        )
+        .ok()
+        .and_then(|value| command_name_for_remapping(&value))
+    };
     let target_command = remapped_command.as_deref().unwrap_or(command);
 
-    let target_keymap_id = interp
-        .lookup_function(target_command, env)
-        .ok()
-        .and_then(|function| keymap_record_id(interp, &function));
+    let target_keymap_id = definition_keymap_id.or_else(|| {
+        interp
+            .lookup_function(target_command, env)
+            .ok()
+            .and_then(|function| keymap_record_id(interp, &function))
+    });
     let mut matches = Vec::<Vec<String>>::new();
     let mut collector = WhereIsCollector {
         target_command,
@@ -4027,6 +4092,12 @@ pub(crate) fn where_is_internal(
     };
     for keymap in keymaps {
         collect_where_is_matches(interp, keymap, &[], &mut collector)?;
+    }
+    // A non-nil FIRSTONLY other than `non-ascii' rejects menu bindings
+    // entirely (keymap.c's nomenus): sequences starting with a
+    // mouse-events prefix never answer.
+    if nomenus {
+        matches.retain(|parts| !first_event_is_mouse_prefix(parts));
     }
 
     let active_maps = Value::list(keymaps.iter().cloned());
@@ -4611,7 +4682,7 @@ pub(crate) fn keymap_binding_text_for_command(
 ) -> Option<String> {
     let id = keymap_record_id(interp, keymap)?;
     let record = interp.find_record(id)?;
-    let mut best = None::<((usize, bool), String)>;
+    let mut best = None::<((bool, usize), String)>;
     for binding in keymap_bindings(record).ok()?.into_iter().rev() {
         if !keymap_binding_matches_command(&binding.value, command) {
             continue;

@@ -9703,8 +9703,9 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
     assert_eq!(
         where_is_internal(
             &mut interp,
-            "keymap-tests-command",
+            &Value::Symbol("keymap-tests-command".into()),
             &[keymap],
+            false,
             false,
             &mut env,
         )

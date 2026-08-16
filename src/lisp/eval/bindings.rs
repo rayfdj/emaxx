@@ -687,6 +687,8 @@ impl Interpreter {
             // xdisp.c: the frame whose menu bar is being updated, nil
             // outside menu updates (menu-bar.el's :enable forms read it).
             "menu-updating-frame" => Some(Value::Nil),
+            // xdisp.c's DEFVAR_BOOL, default off; xt-mouse consults it.
+            "x-stretch-cursor" => Some(Value::Nil),
             // startup.el's dumped defcustom default; the File menu's
             // session-recovery :enable reads it.
             "auto-save-list-file-prefix" => {
