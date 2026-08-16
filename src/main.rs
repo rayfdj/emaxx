@@ -71,6 +71,7 @@ fn try_main() -> Result<u8, String> {
                     .iter()
                     .map(|path| path.display().to_string())
                     .collect(),
+                defer_delayed_custom_init: false,
             },
             actions,
         )?;

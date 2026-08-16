@@ -18,6 +18,11 @@ pub struct BatchRunOptions {
     pub eval: Vec<String>,
     pub funcall: Vec<String>,
     pub args_left: Vec<String>,
+    /// Leave `custom-delayed-init-variables' queued instead of replaying
+    /// at the end of the dumped-image reconstruction.  GNU's dump keeps
+    /// the queue for startup.el to replay in the real session mode; the
+    /// interactive frontend replays it once, under `noninteractive' nil.
+    pub defer_delayed_custom_init: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -313,25 +318,22 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
     if let Ok(paths) = env::var("EMACSLOADPATH") {
         options.load_path = env::split_paths(&paths).collect();
     }
+    // GNU's dump leaves `custom-delayed-init-variables' queued for
+    // startup.el to replay in the live session; deferring here keeps the
+    // queue open across the whole reconstruction and the preloads below.
+    options.defer_delayed_custom_init = true;
     let mut interpreter = initialize_batch_interpreter(&options)?;
     // GNU dumps isearch.el, minibuffer.el, and rfn-eshadow.el into the
     // image; an interactive session must have C-s, the minibuffer's own
     // command set (exit-minibuffer, minibuffer-complete), and file-name
     // shadowing ready before the first keystroke.  A load-path without
     // the real Lisp tree (unit tests) simply leaves them unbound,
-    // exactly like the batch runtime.  Reopen loadup's delayed-Custom
-    // phase around these preloads: a global minor mode's
+    // exactly like the batch runtime.  These preloads run with the
+    // delayed-Custom queue still open: a global minor mode's
     // `custom-initialize-delay' defcustom runs before its mode function
     // exists mid-load, so it must queue and replay through startup.el's
     // custom-reevaluate-setting walk — file-name-shadow-mode turns on
     // through that replay, as in GNU's dumped image.
-    let reopen = Reader::new("(setq custom-delayed-init-variables nil)")
-        .read_all()
-        .map_err(|error| format!("read delayed Custom reopen form: {error}"))?
-        .remove(0);
-    interpreter
-        .eval(&reopen, &mut Vec::new())
-        .map_err(|error| format!("reopen delayed Custom phase: {error}"))?;
     for target in ["isearch", "minibuffer", "rfn-eshadow", "loaddefs"] {
         if interpreter.resolve_load_target(target).is_some() {
             interpreter
@@ -339,6 +341,15 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
                 .map_err(|error| format!("preload {target}: {error}"))?;
         }
     }
+    // The dump ran under `noninteractive' t, but startup.el's single
+    // custom-reevaluate-setting walk runs in the live session — a
+    // delayed :init-value that consults `noninteractive' (frame.el's
+    // blink-cursor-mode) sees nil there, as it does in GNU.  startup.el
+    // defvars the -D/--basic-display flags before the walk; delayed
+    // forms read them once `noninteractive' stops short-circuiting.
+    interpreter.set_variable("noninteractive", Value::Nil, &mut Vec::new());
+    interpreter.set_variable("emacs-basic-display", Value::Nil, &mut Vec::new());
+    interpreter.set_variable("no-blinking-cursor", Value::Nil, &mut Vec::new());
     complete_delayed_custom_initialization(&mut interpreter)?;
     // startup.el enables transient-mark-mode for interactive sessions
     // (batch keeps the dumped nil default): the region highlights.
@@ -386,7 +397,9 @@ pub(crate) fn initialize_batch_interpreter(
     // `.elc' requires a coherent dumped-image/runtime project of its own.
     interpreter.set_prefer_compiled_loads(lisp::bytecode_vm_enabled());
     initialize_batch_documentation(&mut interpreter)?;
-    complete_delayed_custom_initialization(&mut interpreter)?;
+    if !options.defer_delayed_custom_init {
+        complete_delayed_custom_initialization(&mut interpreter)?;
+    }
     initialize_batch_locale_environment(&mut interpreter)?;
     let after_init_time = lisp::primitives::system_time_list_value(std::time::SystemTime::now())
         .map_err(|error| format!("record batch initialization end: {error}"))?;
