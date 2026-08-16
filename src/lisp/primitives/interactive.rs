@@ -299,19 +299,209 @@ pub(crate) fn parse_interactive_string(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
+    // callint.c's leading flag characters, handled once at the start of
+    // the whole spec: `*' barfs on a read-only buffer, `^' runs the
+    // shift-selection protocol, `@' selects the event's window (a mouse
+    // affair the keyboard frontend has no window position for), and `-'
+    // is ignored for Lucid compatibility.
+    let mut rest = spec;
+    loop {
+        match rest.chars().next() {
+            Some('*') => {
+                super::call(interp, "barf-if-buffer-read-only", &[], env)?;
+            }
+            Some('^') => {
+                // GNU always has simple.el's handle-shift-selection
+                // dumped; a runtime without it (its autoload target not
+                // loaded) treats the flag as a no-op rather than failing
+                // every `(interactive "^p")' motion command.
+                if let Err(error) = super::call(interp, "handle-shift-selection", &[], env) {
+                    let missing = matches!(&error, LispError::VoidFunction(_))
+                        || matches!(&error, LispError::Signal(message)
+                            if message.contains("Unknown function"));
+                    if !missing {
+                        return Err(error);
+                    }
+                }
+            }
+            Some('@') | Some('-') => {}
+            _ => break,
+        }
+        rest = &rest[1..];
+    }
+    let call1 = |interp: &mut Interpreter, env: &mut Env, name: &str, args: &[Value]| {
+        interp.call_function_value(Value::Symbol(name.into()), Some(name), args, env)
+    };
+    // callint.c's check_mark: the mark must exist in this buffer, and
+    // under transient-mark-mode an inactive mark signals `mark-inactive'
+    // unless mark-even-if-inactive overrides.
+    let check_mark =
+        |interp: &mut Interpreter, env: &mut Env, for_region: bool| -> Result<usize, LispError> {
+            let mark = interp.buffer.mark().ok_or_else(|| {
+                LispError::Signal(
+                    if for_region {
+                        "The mark is not set now, so there is no region"
+                    } else {
+                        "The mark is not set now"
+                    }
+                    .into(),
+                )
+            })?;
+            let transient = interp
+                .lookup_var("transient-mark-mode", env)
+                .is_some_and(|value| value.is_truthy());
+            let even_if_inactive = interp
+                .lookup_var("mark-even-if-inactive", env)
+                .is_some_and(|value| value.is_truthy());
+            if transient && !even_if_inactive && !interp.buffer.mark_active() {
+                return Err(LispError::SignalValue(Value::list([Value::Symbol(
+                    "mark-inactive".into(),
+                )])));
+            }
+            Ok(mark)
+        };
     let mut values = Vec::new();
-    for line in spec.split('\n') {
+    // GNU formats each prompt with `format-message' against the
+    // arguments read so far (callint.c builds callint_message from the
+    // visargs); a later prompt's %s shows the earlier answer.
+    let mut visible: Vec<Value> = Vec::new();
+    for line in rest.split('\n') {
         if line.is_empty() {
             continue;
         }
-        let mut chars = line.chars().skip_while(|ch| matches!(ch, '*' | '@' | '^'));
+        let mut chars = line.chars();
         let Some(code) = chars.next() else {
             continue;
         };
+        let raw_prompt: String = chars.collect();
+        // GNU builds every prompt through Fformat_message against the
+        // visible arguments read so far; that also converts quote
+        // characters per text-quoting-style, exactly as the glass shows.
+        let formatted_prompt = |interp: &mut Interpreter,
+                                env: &mut Env,
+                                visible: &[Value]|
+         -> Result<Value, LispError> {
+            let mut args = vec![Value::String(raw_prompt.clone().into())];
+            args.extend(visible.iter().cloned());
+            call1(interp, env, "format-message", &args)
+        };
+        // Each answer's visible form feeds later prompts' formats; the
+        // no-I/O codes leave nil there exactly as GNU's visargs do.
+        let mut seen = Value::Nil;
         match code {
-            'k' => {
+            'a' | 'C' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+                let predicate =
+                    Value::Symbol(if code == 'a' { "fboundp" } else { "commandp" }.into());
+                let name = call1(
+                    interp,
+                    env,
+                    "completing-read",
+                    &[message, obarray, predicate, Value::T],
+                )?;
+                let text = crate::lisp::primitives::string_text(&name)?;
+                seen = Value::String(text.clone().into());
+                values.push(Value::Symbol(text.into()));
+            }
+            'b' | 'B' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let current = call1(interp, env, "current-buffer", &[])?;
+                let in_minibuffer = call1(interp, env, "window-minibuffer-p", &[])
+                    .map(|flag| flag.is_truthy())
+                    .unwrap_or(false);
+                let default = if code == 'B' || in_minibuffer {
+                    call1(interp, env, "other-buffer", &[current])?
+                } else {
+                    current
+                };
+                let require = if code == 'b' { Value::T } else { Value::Nil };
+                let name = call1(interp, env, "read-buffer", &[message, default, require])?;
+                seen = name.clone();
+                values.push(name);
+            }
+            'c' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                // GNU shows the prompt in minibuffer-prompt face while
+                // read-char waits on the echo area.
+                let message = call1(
+                    interp,
+                    env,
+                    "propertize",
+                    &[
+                        message,
+                        Value::Symbol("face".into()),
+                        Value::Symbol("minibuffer-prompt".into()),
+                    ],
+                )
+                .unwrap_or_else(|_| Value::String(raw_prompt.clone().into()));
+                let event = call1(interp, env, "read-char", &[message])?;
+                if !matches!(event, Value::Integer(_)) {
+                    return Err(LispError::Signal("Non-character input-event".into()));
+                }
+                seen = call1(interp, env, "char-to-string", std::slice::from_ref(&event))?;
+                values.push(event);
+            }
+            'd' => values.push(Value::Integer(interp.buffer.point() as i64)),
+            'D' | 'f' | 'F' | 'G' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                // callint.c's read_file_name helper: Fread_file_name
+                // (PROMPT, nil, DEFAULT, MUSTMATCH, INITIAL, PREDICATE).
+                let (default, mustmatch, initial, predicate) = match code {
+                    'D' => (
+                        interp
+                            .lookup_var("default-directory", env)
+                            .unwrap_or(Value::Nil),
+                        Value::Symbol("lambda".into()),
+                        Value::Nil,
+                        Value::Symbol("file-directory-p".into()),
+                    ),
+                    'f' => (
+                        Value::Nil,
+                        Value::Symbol("lambda".into()),
+                        Value::Nil,
+                        Value::Nil,
+                    ),
+                    'G' => (Value::Nil, Value::Nil, Value::String("".into()), Value::Nil),
+                    _ => (Value::Nil, Value::Nil, Value::Nil, Value::Nil),
+                };
+                let name = call1(
+                    interp,
+                    env,
+                    "read-file-name",
+                    &[message, Value::Nil, default, mustmatch, initial, predicate],
+                )?;
+                seen = name.clone();
+                values.push(name);
+            }
+            'e' => {
+                // The invoking event, which must carry parameters (a
+                // mouse posn); keyboard keys never do.
+                let event = interp
+                    .lookup_var("this-command-keys-vector", env)
+                    .and_then(|keys| keys.to_vec().ok())
+                    .and_then(|events| {
+                        events
+                            .into_iter()
+                            .skip(1)
+                            .find(|event| matches!(event, Value::Cons(_)))
+                    });
+                match event {
+                    Some(event) => values.push(event),
+                    None => {
+                        return Err(LispError::Signal(
+                            "command must be bound to an event with parameters".into(),
+                        ));
+                    }
+                }
+            }
+            'k' | 'K' => {
                 let ch = unread_command_event_char(&pop_unread_command_event_value(interp, env)?)?;
                 values.push(Value::String(ch.to_string().into()));
+            }
+            'm' => {
+                let mark = check_mark(interp, env, false)?;
+                values.push(Value::Integer(mark as i64));
             }
             'p' => {
                 let prefix = interp
@@ -329,24 +519,107 @@ pub(crate) fn parse_interactive_string(
             // "i": an ignored argument — always nil, no I/O (window.el's
             // commands pass their INTERACTIVE params through it).
             'i' => values.push(Value::Nil),
-            'N' => {
+            'n' | 'N' => {
+                let prefix = interp
+                    .lookup_var("current-prefix-arg", env)
+                    .unwrap_or(Value::Nil);
+                if code == 'N' && prefix.is_truthy() {
+                    values.push(prefix_numeric_value(&prefix)?);
+                } else {
+                    let message = formatted_prompt(interp, env, &visible)?;
+                    let number = call1(interp, env, "read-number", &[message])?;
+                    seen = call1(
+                        interp,
+                        env,
+                        "number-to-string",
+                        std::slice::from_ref(&number),
+                    )
+                    .unwrap_or(Value::Nil);
+                    values.push(number);
+                }
+            }
+            'r' => {
+                let mark = check_mark(interp, env, true)?;
+                let point = interp.buffer.point();
+                values.push(Value::Integer(point.min(mark) as i64));
+                values.push(Value::Integer(point.max(mark) as i64));
+            }
+            's' | 'M' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                // 'M' inherits the input method; the tty session reads
+                // plain strings either way.
+                let inherit = if code == 'M' { Value::T } else { Value::Nil };
+                let text = call1(
+                    interp,
+                    env,
+                    "read-string",
+                    &[message, Value::Nil, Value::Nil, Value::Nil, inherit],
+                )?;
+                seen = text.clone();
+                values.push(text);
+            }
+            'S' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let text = call1(
+                    interp,
+                    env,
+                    "read-string",
+                    &[message, Value::Nil, Value::Nil, Value::Nil, Value::Nil],
+                )?;
+                seen = text.clone();
+                values.push(Value::Symbol(
+                    crate::lisp::primitives::string_text(&text)?.into(),
+                ));
+            }
+            'U' => {
+                // The up-event recorded by a preceding k/K; the keyboard
+                // frontend records none, exactly like GNU without one.
+                values.push(Value::Nil);
+            }
+            'v' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let variable = call1(interp, env, "read-variable", &[message])?;
+                seen = interp
+                    .lookup_var("minibuffer-history", env)
+                    .and_then(|history| history.car().ok())
+                    .unwrap_or(Value::Nil);
+                values.push(variable);
+            }
+            'x' | 'X' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let reader = if code == 'x' {
+                    "read-minibuffer"
+                } else {
+                    "eval-minibuffer"
+                };
+                let form = call1(interp, env, reader, &[message])?;
+                values.push(form);
+            }
+            'z' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let coding = call1(interp, env, "read-coding-system", &[message, Value::Nil])?;
+                values.push(coding);
+            }
+            'Z' => {
                 let prefix = interp
                     .lookup_var("current-prefix-arg", env)
                     .unwrap_or(Value::Nil);
                 if prefix.is_truthy() {
-                    values.push(prefix_numeric_value(&prefix)?);
+                    let message = formatted_prompt(interp, env, &visible)?;
+                    let coding = call1(interp, env, "read-non-nil-coding-system", &[message])?;
+                    values.push(coding);
                 } else {
-                    let prompt = chars.collect::<String>();
-                    values.push(interp.call_function_value(
-                        Value::Symbol("read-number".into()),
-                        Some("read-number"),
-                        &[Value::String(prompt.into())],
-                        env,
-                    )?);
+                    values.push(Value::Nil);
                 }
             }
             _ => return Err(invalid_interactive_control_letter(code)),
         }
+        if seen.is_nil()
+            && let Some(Value::String(_) | Value::StringObject(_)) = values.last()
+        {
+            seen = values.last().cloned().unwrap_or(Value::Nil);
+        }
+        visible.push(seen);
     }
     Ok(values)
 }

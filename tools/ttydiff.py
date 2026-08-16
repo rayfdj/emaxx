@@ -879,6 +879,35 @@ SCENARIOS = [
         "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
         [b"\x1b[21~", b"\x07", b"\x0e"],
     ),
+    # RET on Edit's "Search >" descends into the submenu: popup-menu's
+    # loop reopens x-popup-menu with the sub-keymap at the same spot.
+    (
+        "submenu-open",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[C"] + [b"\x1b[B"] * 9 + [b"\r"],
+    ),
+    # Selecting "String Backwards..." runs an `(interactive "s...")'
+    # command: the prompt reads through the real minibuffer and the bar
+    # gains its Minibuf entry.
+    (
+        "submenu-string-search",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[C"] + [b"\x1b[B"] * 9 + [b"\r", b"\x1b[B", b"\r"],
+    ),
+    # Right-arrow inside a submenu cycles to the next menu-bar menu;
+    # Options draws its checkboxes ([X] Blink Cursor needs the delayed
+    # Custom replay to run in interactive session mode).
+    (
+        "submenu-cycle-options",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[C"] + [b"\x1b[B"] * 9 + [b"\r", b"\x1b[C"],
+    ),
+    # Two levels down: Tools, then its Shell Commands submenu.
+    (
+        "submenu-nested",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~"] + [b"\x1b[C"] * 4 + [b"\x1b[B"] * 2 + [b"\r"],
+    ),
 ]
 
 
