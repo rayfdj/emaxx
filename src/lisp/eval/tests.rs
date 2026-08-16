@@ -90,15 +90,6 @@ fn eval_str_with(interp: &mut Interpreter, src: &str) -> Value {
     result
 }
 
-fn eval_str_with_upstream_load_path(src: &str) -> Value {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    eval_str_with(&mut interp, src)
-}
-
 fn eval_str_with_upstream_batch(src: &str) -> Value {
     // GNU's batch image executes these same GNU Lisp owners from its dump.
     // Use their compiled `.elc' representation so each ownership-sensitive

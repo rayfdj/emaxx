@@ -756,16 +756,27 @@ define_dispatch!(
             }
             "func-arity" => {
                 need_args(name, args, 1)?;
+                // GNU eval.c:Ffunc_arity strips a `(macro . FN)' wrapper and
+                // reports the expander's arity.
+                let unwrap_macro = |value: &Value| -> Value {
+                    if let Some((car, cdr)) = value.cons_values()
+                        && matches!(&car, Value::Symbol(head) if head == "macro")
+                    {
+                        cdr
+                    } else {
+                        value.clone()
+                    }
+                };
                 match &args[0] {
                     Value::Symbol(symbol) => {
                         if let Some(arity) = special_form_arity_value(symbol) {
                             Ok(arity)
                         } else {
                             let function = interp.lookup_function(symbol, env)?;
-                            function_arity_value(interp, &function, env)
+                            function_arity_value(interp, &unwrap_macro(&function), env)
                         }
                     }
-                    other => function_arity_value(interp, other, env),
+                    other => function_arity_value(interp, &unwrap_macro(other), env),
                 }
             }
             "subr-name" => {
