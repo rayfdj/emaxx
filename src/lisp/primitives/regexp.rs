@@ -7,10 +7,10 @@ const REGEX_SYMBOL_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\-\x{2620}]";
 const REGEX_NON_SYMBOL_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\-\x{2620}]";
 const REGEX_WHITESPACE_CLASS: &str = r"[\p{White_Space}]";
 const REGEX_NON_WHITESPACE_CLASS: &str = r"[^\p{White_Space}]";
-const TABLE_WORD_CLASS_MARKER: char = '\u{f0000}';
-const TABLE_NON_WORD_CLASS_MARKER: char = '\u{f0001}';
-const TABLE_CASE_SENSITIVE_START_MARKER: char = '\u{f0002}';
-const TABLE_CASE_SENSITIVE_END_MARKER: char = '\u{f0003}';
+// A syntax/category opcode always has a one-character consuming shape even
+// when no character belongs to its class.  A bare `(?! )'-style assertion is
+// zero-width and cannot legally receive a repeat operator in the delegate.
+const NEVER_MATCH_ONE_CHAR: &str = r"(?:(?![\s\S])[\s\S])";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SyntaxPropertySentinel {
@@ -26,13 +26,6 @@ struct SyntaxPropertyEncoding {
 }
 
 impl SyntaxPropertyEncoding {
-    fn class_sentinels(&self, class: char) -> Vec<char> {
-        self.sentinels
-            .iter()
-            .filter_map(|entry| (entry.class == class).then_some(entry.sentinel))
-            .collect()
-    }
-
     fn original_sentinels(&self, original: char, case_fold: bool) -> Vec<char> {
         self.sentinels
             .iter()
@@ -197,7 +190,7 @@ fn category_regex_fragment(
         return if negated {
             r"[\s\S]".to_string()
         } else {
-            "(?!)".to_string()
+            NEVER_MATCH_ONE_CHAR.to_string()
         };
     }
 
@@ -301,7 +294,21 @@ fn translate_elisp_regex_with_point(
     interp: Option<&Interpreter>,
     category_table_id: Option<u64>,
 ) -> String {
-    let symbol_boundary_class = boundary_character_class(REGEX_SYMBOL_CLASS, encoding, &['w', '_']);
+    let rendered_syntax_classes = interp
+        .filter(|_| pattern_depends_on_syntax_table(pattern))
+        .map(|interp| rendered_table_syntax_classes(interp, encoding));
+    let word_class = rendered_syntax_classes.as_ref().map_or_else(
+        || boundary_character_class(REGEX_WORD_CLASS, encoding, &['w']),
+        |rendered| table_syntax_class_fragment(rendered, super::syntax::SyntaxClass::Word, false),
+    );
+    let non_word_class = rendered_syntax_classes.as_ref().map_or_else(
+        || boundary_character_class(REGEX_NON_WORD_CLASS, encoding, &['w']),
+        |rendered| table_syntax_class_fragment(rendered, super::syntax::SyntaxClass::Word, true),
+    );
+    let symbol_boundary_class = rendered_syntax_classes.as_ref().map_or_else(
+        || boundary_character_class(REGEX_SYMBOL_CLASS, encoding, &['w', '_']),
+        table_symbol_class_fragment,
+    );
     let property_newline_sentinels = encoding
         .map(|encoding| encoding.original_sentinels('\n', false))
         .unwrap_or_default();
@@ -326,7 +333,11 @@ fn translate_elisp_regex_with_point(
         }
         if ch == '[' {
             translated.push_str(&translate_bracket_expression(
-                &mut chars, encoding, case_fold, interp,
+                &mut chars,
+                encoding,
+                case_fold,
+                interp,
+                rendered_syntax_classes.as_ref(),
             ));
             at_branch_start = false;
             can_repeat_previous = true;
@@ -425,13 +436,23 @@ fn translate_elisp_regex_with_point(
                     last_was_quantifier = true;
                 }
                 Some('s') => {
-                    translated.push_str(&regex_syntax_class(&mut chars, false, encoding));
+                    translated.push_str(&regex_syntax_class(
+                        &mut chars,
+                        false,
+                        encoding,
+                        rendered_syntax_classes.as_ref(),
+                    ));
                     at_branch_start = false;
                     can_repeat_previous = true;
                     last_was_quantifier = false;
                 }
                 Some('S') => {
-                    translated.push_str(&regex_syntax_class(&mut chars, true, encoding));
+                    translated.push_str(&regex_syntax_class(
+                        &mut chars,
+                        true,
+                        encoding,
+                        rendered_syntax_classes.as_ref(),
+                    ));
                     at_branch_start = false;
                     can_repeat_previous = true;
                     last_was_quantifier = false;
@@ -449,25 +470,35 @@ fn translate_elisp_regex_with_point(
                     last_was_quantifier = false;
                 }
                 Some('w') => {
-                    translated.push_str(REGEX_WORD_CLASS);
+                    translated.push_str(&word_class);
                     at_branch_start = false;
                     can_repeat_previous = true;
                     last_was_quantifier = false;
                 }
                 Some('W') => {
-                    translated.push_str(REGEX_NON_WORD_CLASS);
+                    translated.push_str(&non_word_class);
                     at_branch_start = false;
                     can_repeat_previous = true;
                     last_was_quantifier = false;
                 }
                 Some('b') => {
-                    translated.push_str(&translate_zero_width_assertion(&mut chars, r"\b"));
+                    translated.push_str(&translate_zero_width_assertion(
+                        &mut chars,
+                        &format!(
+                            "(?:(?<!{word_class})(?={word_class})|(?<={word_class})(?!{word_class}))"
+                        ),
+                    ));
                     at_branch_start = false;
                     can_repeat_previous = false;
                     last_was_quantifier = false;
                 }
                 Some('B') => {
-                    translated.push_str(&translate_zero_width_assertion(&mut chars, r"\B"));
+                    translated.push_str(&translate_zero_width_assertion(
+                        &mut chars,
+                        &format!(
+                            "(?:(?<={word_class})(?={word_class})|(?<!{word_class})(?!{word_class}))"
+                        ),
+                    ));
                     at_branch_start = false;
                     can_repeat_previous = false;
                     last_was_quantifier = false;
@@ -475,7 +506,7 @@ fn translate_elisp_regex_with_point(
                 Some('<') => {
                     translated.push_str(&translate_zero_width_assertion(
                         &mut chars,
-                        r"(?<![\p{Alphabetic}\p{Number}_\x{2620}])(?=[\p{Alphabetic}\p{Number}_\x{2620}])",
+                        &format!("(?<!{word_class})(?={word_class})"),
                     ));
                     at_branch_start = false;
                     can_repeat_previous = false;
@@ -484,7 +515,7 @@ fn translate_elisp_regex_with_point(
                 Some('>') => {
                     translated.push_str(&translate_zero_width_assertion(
                         &mut chars,
-                        r"(?<=[\p{Alphabetic}\p{Number}_\x{2620}])(?![\p{Alphabetic}\p{Number}_\x{2620}])",
+                        &format!("(?<={word_class})(?!{word_class})"),
                     ));
                     at_branch_start = false;
                     can_repeat_previous = false;
@@ -759,10 +790,6 @@ fn translate_zero_width_assertion(
     }
 }
 
-// Rewrite syntax atoms whose meaning cannot be represented by a fixed Rust
-// regex character class.  Comment delimiters come from explicit table
-// entries; symbol and string constituents must include mode-specific ASCII
-// assignments such as Ruby's single-quote string delimiter.
 pub(super) fn pattern_depends_on_syntax_table(pattern: &str) -> bool {
     // POSIX `word' is the bracket-expression spelling of the same current
     // syntax-table predicate as `\w'.  This conservative text probe may do
@@ -790,134 +817,35 @@ pub(super) fn pattern_depends_on_syntax_table(pattern: &str) -> bool {
     false
 }
 
-fn resolve_table_syntax_classes(
-    interp: &Interpreter,
-    pattern: &str,
-    encoding: Option<&SyntaxPropertyEncoding>,
-) -> String {
-    if !pattern_depends_on_syntax_table(pattern) {
-        return pattern.to_string();
-    }
-    let class_expansion = |class_char: char, negated: bool| -> String {
-        let mut chars = if matches!(class_char, '_' | '!' | '|' | '"') {
-            super::syntax::syntax_class_ascii_chars(interp, class_char)
-        } else {
-            super::syntax::syntax_class_explicit_chars(interp, class_char)
-        };
-        if let Some(encoding) = encoding {
-            chars.extend(encoding.class_sentinels(class_char));
-        }
-        if chars.is_empty() {
-            let class = if negated {
-                // Anything (GNU: no character has the class).
-                "\\(?:.\\|\n\\)".to_string()
-            } else {
-                // Nothing can match.
-                "\\`X\\`".to_string()
-            };
-            return format!(
-                "{TABLE_CASE_SENSITIVE_START_MARKER}{class}{TABLE_CASE_SENSITIVE_END_MARKER}"
-            );
-        }
-        let mut set = String::new();
-        if negated {
-            set.push('^');
-        }
-        // This bracket expression is an internal bridge to the delegate,
-        // not an Emacs regexp returned to Lisp.  Keep `-' last so our Emacs
-        // bracket parser treats it as a literal member.  Escaping it in its
-        // ASCII sort position can form a spurious `\\-/' range and silently
-        // drop both symbol constituents.
-        let contains_hyphen = chars.contains(&'-');
-        for ch in chars.into_iter().filter(|ch| *ch != '-') {
-            if matches!(ch, ']' | '^' | '\\') {
-                set.push('\\');
-            }
-            set.push(ch);
-        }
-        if contains_hyphen {
-            set.push('-');
-        }
-        format!("{TABLE_CASE_SENSITIVE_START_MARKER}[{set}]{TABLE_CASE_SENSITIVE_END_MARKER}")
-    };
-    let mut result = String::new();
-    let mut chars = pattern.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            result.push(ch);
-            continue;
-        }
-        match chars.peek() {
-            Some('w') => {
-                chars.next();
-                result.push(TABLE_WORD_CLASS_MARKER);
-            }
-            Some('W') => {
-                chars.next();
-                result.push(TABLE_NON_WORD_CLASS_MARKER);
-            }
-            Some('s') | Some('S') => {
-                let escape = *chars.peek().expect("peeked");
-                let mut lookahead = chars.clone();
-                lookahead.next();
-                match lookahead.peek() {
-                    Some('w') => {
-                        chars.next();
-                        chars.next();
-                        result.push(if escape == 'S' {
-                            TABLE_NON_WORD_CLASS_MARKER
-                        } else {
-                            TABLE_WORD_CLASS_MARKER
-                        });
-                    }
-                    Some('<') | Some('>') | Some('_') | Some('!') | Some('|') | Some('"') => {
-                        chars.next();
-                        let class_char = chars.next().expect("peeked class");
-                        result.push_str(&class_expansion(class_char, escape == 'S'));
-                    }
-                    _ => {
-                        result.push(ch);
-                    }
-                }
-            }
-            Some(_) => {
-                result.push(ch);
-                if let Some(next) = chars.next() {
-                    result.push(next);
-                }
-            }
-            None => result.push(ch),
-        }
-    }
-    result
-}
-
-/// Render the effective one-character word/non-word classes for the current
-/// syntax table.  GNU's standard table makes `$' and `%' word constituents,
-/// while `_` is a symbol constituent; a fixed Unicode `\w' approximation
-/// therefore cannot implement either `\w' or `\sw'.
-fn rendered_table_word_classes(
+/// Render every effective one-character syntax class for the current syntax
+/// table.  GNU's regexp opcodes compare the current character's syntax code
+/// at match time; fixed Unicode classes cannot reproduce mode-specific table
+/// entries, inherited wide ranges, or the standard table's non-Unicode
+/// choices (`$' and `%' are words, while `_` is a symbol).
+///
+/// The table and all of its parents are piecewise constant.  Collecting their
+/// range boundaries lets one pass produce exact, compact delegate classes for
+/// all 16 GNU syntax codes without scanning every Unicode scalar value.
+fn rendered_table_syntax_classes(
     interp: &Interpreter,
     encoding: Option<&SyntaxPropertyEncoding>,
-) -> (String, String) {
+) -> [String; 16] {
     let table_id = interp.current_syntax_table_id();
     if encoding.is_none()
-        && let Some(word) = interp.cached_regexp_syntax_word_class(table_id)
+        && let Some(rendered) = interp.cached_regexp_syntax_classes(table_id)
     {
-        let non_word = format!("(?!{word})[\\s\\S]");
-        return (word, non_word);
+        return rendered;
     }
     #[cfg(test)]
     REGEXP_SYNTAX_CLASS_RENDER_COUNT.with(|count| count.set(count.get() + 1));
-    #[derive(Clone, Copy, Eq, PartialEq)]
-    enum WordSegment {
-        Word,
-        StandardDefault,
-        NonWord,
-    }
 
     const SCALAR_END: u32 = char::MAX as u32 + 1;
-    let mut boundaries = vec![0, 0xd800, 0xe000, SCALAR_END];
+    // Every standard-table default transition is in ASCII; all GNU
+    // multibyte characters are words by default.  Individual ASCII
+    // boundaries therefore make the terminal synthesized default constant
+    // within every segment, while the other boundaries exclude surrogates.
+    let mut boundaries = (0..=0x80).collect::<Vec<_>>();
+    boundaries.extend([0xd800, 0xe000, SCALAR_END]);
     let mut current = Some(table_id);
     let mut seen = HashSet::new();
     let mut cacheable = encoding.is_none();
@@ -952,36 +880,21 @@ fn rendered_table_word_classes(
     boundaries.sort_unstable();
     boundaries.dedup();
 
-    let mut segments = Vec::<(u32, u32, WordSegment)>::new();
+    let mut segments = Vec::<(u32, u32, super::syntax::SyntaxClass)>::new();
     for window in boundaries.windows(2) {
         let start = window[0];
         let end = window[1] - 1;
         if char::from_u32(start).is_none() {
             continue;
         }
-        let Some((explicit, terminal)) = interp.char_table_explicit_or_terminal(table_id, start)
-        else {
-            continue;
-        };
-        let kind = if explicit.is_none()
-            && terminal.id == interp.standard_syntax_table_id()
-            && terminal.default.is_nil()
-        {
-            WordSegment::StandardDefault
-        } else if super::syntax::syntax_entry_for_code(interp, table_id, start).class
-            == super::syntax::SyntaxClass::Word
-        {
-            WordSegment::Word
-        } else {
-            WordSegment::NonWord
-        };
-        if let Some((_, previous_end, previous_kind)) = segments.last_mut()
-            && *previous_kind == kind
+        let class = super::syntax::syntax_entry_for_code(interp, table_id, start).class;
+        if let Some((_, previous_end, previous_class)) = segments.last_mut()
+            && *previous_class == class
             && previous_end.saturating_add(1) == start
         {
             *previous_end = end;
         } else {
-            segments.push((start, end, kind));
+            segments.push((start, end, class));
         }
     }
 
@@ -992,54 +905,90 @@ fn rendered_table_word_classes(
             format!(r"\x{{{start:x}}}-\x{{{end:x}}}")
         }
     };
-    let explicit_word_members = segments
-        .iter()
-        .filter(|(_, _, kind)| *kind == WordSegment::Word)
-        .map(|(start, end, _)| range_members(*start, *end))
-        .collect::<String>();
-    let mut branches = Vec::new();
-    if !explicit_word_members.is_empty() {
-        branches.push(format!("[{explicit_word_members}]"));
+    let mut members: [String; 16] = std::array::from_fn(|_| String::new());
+    for (start, end, class) in segments {
+        members[class as usize].push_str(&range_members(start, end));
     }
-    branches.extend(
-        segments
-            .iter()
-            .filter(|(_, _, kind)| *kind == WordSegment::StandardDefault)
-            .map(|(start, end, _)| {
-                format!(
-                    "(?=[{}])(?:{REGEX_WORD_CLASS}|[$%])",
-                    range_members(*start, *end)
-                )
-            }),
-    );
-    let word_sentinels = encoding
-        .map(|encoding| encoding.class_sentinels('w'))
-        .unwrap_or_default();
-    if !word_sentinels.is_empty() {
-        let members = word_sentinels
-            .iter()
-            .map(|ch| format!(r"\x{{{:x}}}", *ch as u32))
-            .collect::<String>();
-        branches.push(format!("[{members}]"));
-    }
-    let word = if branches.is_empty() {
-        "(?!)".to_string()
-    } else {
-        format!("(?:{})", branches.join("|"))
-    };
+    let mut rendered = members.map(|members| {
+        if members.is_empty() {
+            NEVER_MATCH_ONE_CHAR.to_string()
+        } else {
+            format!("[{members}]")
+        }
+    });
     if cacheable {
-        interp.cache_regexp_syntax_word_class(table_id, word.clone());
+        interp.cache_regexp_syntax_classes(table_id, rendered.clone());
     }
-    let non_word = format!("(?!{word})[\\s\\S]");
-    (word, non_word)
+
+    let Some(encoding) = encoding else {
+        return rendered;
+    };
+    let all_sentinels = encoding
+        .sentinels
+        .iter()
+        .map(|entry| format!(r"\x{{{:x}}}", entry.sentinel as u32))
+        .collect::<String>();
+    for (index, class_pattern) in rendered.iter_mut().enumerate() {
+        let matching_sentinels = encoding
+            .sentinels
+            .iter()
+            .filter(|entry| {
+                super::syntax::syntax_class_from_char(entry.class)
+                    .is_some_and(|class| class as usize == index)
+            })
+            .map(|entry| format!(r"\x{{{:x}}}", entry.sentinel as u32))
+            .collect::<String>();
+        let guarded = format!("(?![{all_sentinels}])(?:{class_pattern})");
+        *class_pattern = if matching_sentinels.is_empty() {
+            guarded
+        } else {
+            format!("(?:{guarded}|[{matching_sentinels}])")
+        };
+    }
+    rendered
+}
+
+fn table_syntax_class_fragment(
+    rendered: &[String; 16],
+    class: super::syntax::SyntaxClass,
+    negated: bool,
+) -> String {
+    let positive = &rendered[class as usize];
+    let fragment = if negated {
+        format!("(?!{positive})[\\s\\S]")
+    } else {
+        positive.clone()
+    };
+    format!("(?-i:{fragment})")
+}
+
+fn table_symbol_class_fragment(rendered: &[String; 16]) -> String {
+    let word = &rendered[super::syntax::SyntaxClass::Word as usize];
+    let symbol = &rendered[super::syntax::SyntaxClass::Symbol as usize];
+    format!("(?-i:(?:{word}|{symbol}))")
 }
 
 fn regex_syntax_class(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
     negated: bool,
     encoding: Option<&SyntaxPropertyEncoding>,
+    rendered_syntax_classes: Option<&[String; 16]>,
 ) -> String {
     let class_char = chars.next();
+    if let Some(rendered) = rendered_syntax_classes {
+        return class_char
+            .and_then(super::syntax::syntax_class_from_char)
+            .map_or_else(
+                || {
+                    if negated {
+                        r"[\s\S]".to_string()
+                    } else {
+                        NEVER_MATCH_ONE_CHAR.to_string()
+                    }
+                },
+                |class| table_syntax_class_fragment(rendered, class, negated),
+            );
+    }
     let base = match class_char {
         Some('w') => {
             if negated {
@@ -1219,6 +1168,7 @@ fn translate_bracket_expression(
     encoding: Option<&SyntaxPropertyEncoding>,
     case_fold: bool,
     interp: Option<&Interpreter>,
+    rendered_syntax_classes: Option<&[String; 16]>,
 ) -> String {
     let mut translated = String::from("[");
     let mut saw_atom = false;
@@ -1256,8 +1206,31 @@ fn translate_bracket_expression(
                     None
                 };
                 let positive = ordinary.map_or_else(
-                    || TABLE_WORD_CLASS_MARKER.to_string(),
-                    |ordinary| format!("(?:{ordinary}|{TABLE_WORD_CLASS_MARKER})"),
+                    || {
+                        rendered_syntax_classes.map_or_else(
+                            || REGEX_WORD_CLASS.to_string(),
+                            |rendered| {
+                                table_syntax_class_fragment(
+                                    rendered,
+                                    super::syntax::SyntaxClass::Word,
+                                    false,
+                                )
+                            },
+                        )
+                    },
+                    |ordinary| {
+                        let word = rendered_syntax_classes.map_or_else(
+                            || REGEX_WORD_CLASS.to_string(),
+                            |rendered| {
+                                table_syntax_class_fragment(
+                                    rendered,
+                                    super::syntax::SyntaxClass::Word,
+                                    false,
+                                )
+                            },
+                        );
+                        format!("(?:{ordinary}|{word})")
+                    },
                 );
                 if negated {
                     format!("(?!{positive})[\\s\\S]")
@@ -1380,9 +1353,9 @@ fn record_sentinel_atom_members(
     };
     for (member, entry) in members.iter_mut().zip(&encoding.sentinels) {
         let matches = match atom {
-            // `resolve_table_syntax_classes' emits the sentinel itself into
-            // an internal bracket class for a matching `\\sX' atom.  Source
-            // patterns cannot contain these dynamically selected sentinels.
+            // The syntax renderer can emit the sentinel itself for a
+            // matching `\\sX' atom.  Source patterns cannot contain these
+            // dynamically selected sentinels.
             RegexClassAtom::Char(ch) => {
                 chars_equal_for_regexp(entry.original, *ch, case_fold) || entry.sentinel == *ch
             }
@@ -1593,13 +1566,6 @@ fn invalid_regexp_error(message: impl Into<String>) -> LispError {
     ]))
 }
 
-pub(super) fn non_subregexp_context_error(error: &LispError) -> bool {
-    let rendered = error.to_string();
-    rendered.contains("Unmatched [ or [^")
-        || rendered.contains("Unmatched \\{")
-        || rendered.contains("Trailing backslash")
-}
-
 pub(super) fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
     let mut chars = pattern.chars().peekable();
     let mut max_group = 0usize;
@@ -1661,7 +1627,7 @@ pub(super) fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
                         return Err(invalid_regexp_error("Unmatched \\{"));
                     }
                 }
-                Some('c' | 'C') => {
+                Some('c' | 'C' | 's' | 'S') => {
                     if chars.next().is_none() {
                         return Err(invalid_regexp_error("Premature end of regular expression"));
                     }
@@ -1868,9 +1834,8 @@ fn linear_boundary_prefilter(rendered: &str) -> Option<LinearBoundaryPrefilter> 
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct CompiledElispRegexKey {
     pattern: String,
-    syntax_word_class: String,
     syntax_property_sentinels: Vec<SyntaxPropertySentinel>,
-    category_translation: String,
+    runtime_table_translation: String,
     point_assertion: String,
     at_absolute_start: bool,
     case_fold: bool,
@@ -1945,12 +1910,6 @@ fn encode_syntax_property_haystack(
         .chars()
         .chain(pattern.chars())
         .collect::<HashSet<_>>();
-    forbidden.extend([
-        TABLE_WORD_CLASS_MARKER,
-        TABLE_NON_WORD_CLASS_MARKER,
-        TABLE_CASE_SENSITIVE_START_MARKER,
-        TABLE_CASE_SENSITIVE_END_MARKER,
-    ]);
     let mut next_sentinel = 0xF0100u32;
     let mut sentinels = Vec::<SyntaxPropertySentinel>::new();
     let mut encoded = String::with_capacity(haystack.len());
@@ -2011,23 +1970,14 @@ fn buffer_regexp_haystack(
         .buffer
         .buffer_substring(start, end)
         .map_err(|error| LispError::Signal(error.to_string()))?;
-    let has_raw_char_properties = interp.buffer.has_text_property_named("emaxx-raw-char");
-    if interp.buffer.is_multibyte() && !has_raw_char_properties {
+    let extended_chars = interp.buffer.substring_extended_chars(start, end);
+    if interp.buffer.is_multibyte() && extended_chars.is_empty() {
         return Ok(text);
     }
 
     let mut raw_codes = vec![None; text.chars().count()];
-    if has_raw_char_properties {
-        for span in interp.buffer.substring_property_spans(start, end) {
-            let raw_code = span
-                .props
-                .iter()
-                .find(|(name, _)| name == "emaxx-raw-char")
-                .and_then(|(_, value)| value.as_integer().ok());
-            if let Some(raw_code) = raw_code {
-                raw_codes[span.start..span.end].fill(Some(raw_code));
-            }
-        }
+    for (offset, code) in extended_chars {
+        raw_codes[offset] = Some(i64::from(code));
     }
 
     Ok(text
@@ -2076,28 +2026,18 @@ fn compile_elisp_regex_with_syntax_properties(
     encoding: Option<&SyntaxPropertyEncoding>,
     category_scope: RegexpCategoryScope,
 ) -> Result<CompiledElispRegex, LispError> {
-    // GNU resolves syntax atoms against the current buffer's syntax table.
-    // The rewritten pattern doubles as the cache key, so changing tables
-    // cannot reuse a stale class expansion.
-    let pattern_text = resolve_table_syntax_classes(interp, &pattern.text, encoding);
-    // Most regexps contain no syntax-table-dependent word atom.  Rendering
-    // both effective ASCII classes before consulting the compiled-regexp
-    // cache made even a cache HIT scan 256 syntax entries and allocate two
-    // large key strings.  Keep that work in the dependent-pattern path; an
-    // empty component is a complete cache key for table-independent forms.
-    let uses_table_word_class = pattern_text.contains(TABLE_WORD_CLASS_MARKER)
-        || pattern_text.contains(TABLE_NON_WORD_CLASS_MARKER)
-        || pattern_text.contains("[:word:]");
-    let (syntax_word_class, syntax_non_word_class) = if uses_table_word_class {
-        rendered_table_word_classes(interp, encoding)
-    } else {
-        (String::new(), String::new())
-    };
+    let pattern_text = pattern.text.clone();
     let case_fold = interp
         .lookup_var("case-fold-search", env)
         .is_some_and(|value| value.is_truthy());
     let category_table_id = category_scope.table_id(interp);
-    let category_translation = if pattern_depends_on_category_table(&pattern_text) {
+    // Translation is the single owner of Emacs regexp grammar.  When a
+    // pattern depends on mutable runtime tables, its exact translation also
+    // forms the compiled-cache key; a regexp compiled under one syntax or
+    // category table can therefore never leak into another table's search.
+    let runtime_table_translation = (pattern_depends_on_syntax_table(&pattern_text)
+        || pattern_depends_on_category_table(&pattern_text))
+    .then(|| {
         translate_elisp_regex_with_point(
             &pattern_text,
             point_assertion,
@@ -2107,12 +2047,9 @@ fn compile_elisp_regex_with_syntax_properties(
             Some(interp),
             category_table_id,
         )
-    } else {
-        String::new()
-    };
+    });
     let key = CompiledElispRegexKey {
         pattern: pattern_text.clone(),
-        syntax_word_class: syntax_word_class.clone(),
         // Bracket expressions, line anchors, dot, and ordinary literals all
         // depend on what each encoded character originally was.  The same
         // sentinel scalar is intentionally reused by separate searches, so
@@ -2121,7 +2058,7 @@ fn compile_elisp_regex_with_syntax_properties(
         syntax_property_sentinels: encoding
             .map(|encoding| encoding.sentinels.clone())
             .unwrap_or_default(),
-        category_translation: category_translation.clone(),
+        runtime_table_translation: runtime_table_translation.clone().unwrap_or_default(),
         point_assertion: point_assertion.to_string(),
         at_absolute_start,
         case_fold,
@@ -2132,7 +2069,7 @@ fn compile_elisp_regex_with_syntax_properties(
 
     validate_elisp_regex(&pattern.text)?;
     enforce_elisp_repeat_limit(&pattern.text)?;
-    let translated = if category_translation.is_empty() {
+    let translated = runtime_table_translation.unwrap_or_else(|| {
         translate_elisp_regex_with_point(
             &pattern_text,
             point_assertion,
@@ -2142,19 +2079,7 @@ fn compile_elisp_regex_with_syntax_properties(
             Some(interp),
             category_table_id,
         )
-    } else {
-        category_translation
-    }
-    .replace(
-        TABLE_WORD_CLASS_MARKER,
-        &format!("(?-i:{syntax_word_class})"),
-    )
-    .replace(
-        TABLE_NON_WORD_CLASS_MARKER,
-        &format!("(?-i:{syntax_non_word_class})"),
-    )
-    .replace(TABLE_CASE_SENSITIVE_START_MARKER, "(?-i:")
-    .replace(TABLE_CASE_SENSITIVE_END_MARKER, ")");
+    });
     let rendered = if case_fold {
         format!("(?mi:{translated})")
     } else {
@@ -2187,6 +2112,7 @@ fn regex_pattern_with_search_spaces(
         text: expand_search_spaces_regexp(&pattern.text, &search_spaces_regexp),
         props: pattern.props.clone(),
         multibyte: pattern.multibyte,
+        extended_chars: pattern.extended_chars.clone(),
     }
 }
 
@@ -2374,6 +2300,7 @@ fn posix_longest_match(
         text: format!(r"\(?:{}\)\'", pattern.text),
         props: pattern.props.clone(),
         multibyte: pattern.multibyte,
+        extended_chars: pattern.extended_chars.clone(),
     };
     let boundary_byte = context.point_boundary.boundary_byte(haystack);
     let maximum_match_end = match context.point_boundary {
@@ -2581,74 +2508,6 @@ pub(super) fn posix_string_match_impl(
     Ok(Value::Nil)
 }
 
-fn trim_regexp_pattern(regexp: Option<&Value>, anchored_left: bool) -> Result<String, LispError> {
-    let default_pattern = "[ \t\n\r]+";
-    let pattern = regexp
-        .filter(|value| !value.is_nil())
-        .map(string_text)
-        .transpose()?
-        .unwrap_or_else(|| default_pattern.to_string());
-    Ok(if anchored_left {
-        format!(r"\`\(?:{pattern}\)")
-    } else {
-        format!(r"\(?:{pattern}\)\'")
-    })
-}
-
-pub(super) fn string_trim_left_value(
-    interp: &mut Interpreter,
-    value: &Value,
-    regexp: Option<&Value>,
-    env: &Env,
-) -> Result<Value, LispError> {
-    let text = string_text(value)?;
-    let pattern = StringLike {
-        text: trim_regexp_pattern(regexp, true)?,
-        props: Vec::new(),
-        multibyte: false,
-    };
-    let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
-    let captures = regex
-        .captures(&text)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let Some(captures) = captures else {
-        return Ok(Value::String(text.into()));
-    };
-    let Some(matched) = captures.get(0) else {
-        return Ok(Value::String(text.into()));
-    };
-    let start = text[..matched.end()].chars().count();
-    Ok(Value::String(
-        slice_string_chars(&text, start, text.chars().count()).into(),
-    ))
-}
-
-pub(super) fn string_trim_right_value(
-    interp: &mut Interpreter,
-    value: &Value,
-    regexp: Option<&Value>,
-    env: &Env,
-) -> Result<Value, LispError> {
-    let text = string_text(value)?;
-    let pattern = StringLike {
-        text: trim_regexp_pattern(regexp, false)?,
-        props: Vec::new(),
-        multibyte: false,
-    };
-    let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
-    let captures = regex
-        .captures(&text)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let Some(captures) = captures else {
-        return Ok(Value::String(text.into()));
-    };
-    let Some(matched) = captures.get(0) else {
-        return Ok(Value::String(text.into()));
-    };
-    let end = text[..matched.start()].chars().count();
-    Ok(Value::String(slice_string_chars(&text, 0, end).into()))
-}
-
 pub(super) fn isearch_no_upper_case_p(text: &str, regexp_flag: bool) -> bool {
     let mut quote_flag = false;
     for ch in text.chars() {
@@ -2662,108 +2521,6 @@ pub(super) fn isearch_no_upper_case_p(text: &str, regexp_flag: bool) -> bool {
         quote_flag = false;
     }
     !(regexp_flag && (text.contains("[:upper:]") || text.contains("[:lower:]")))
-}
-
-pub(super) fn split_string_impl(
-    interp: &Interpreter,
-    string: &Value,
-    separator: Option<&Value>,
-    omit_nulls: Option<&Value>,
-    env: &Env,
-) -> Result<Value, LispError> {
-    let source = string_like(string)
-        .ok_or_else(|| LispError::TypeError("string".into(), string.type_name()))?;
-    let text = source.text.clone();
-    let props = source.props.clone();
-    let multibyte = source.multibyte;
-    let part_value = |text: String, start: usize, end: usize| {
-        let sliced_props = slice_string_props(&props, start, end);
-        if sliced_props.is_empty() {
-            Value::String(text.into())
-        } else {
-            string_like_value_with_multibyte(text, sliced_props, multibyte)
-        }
-    };
-    let byte_to_char = |byte: usize| text[..byte].chars().count();
-    let separator = separator
-        .filter(|value| !value.is_nil())
-        .map(|value| {
-            string_like(value)
-                .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))
-        })
-        .transpose()?;
-    let omit_nulls = omit_nulls.is_some_and(Value::is_truthy);
-    let parts = if let Some(separator) = separator {
-        if separator.text.is_empty() {
-            text.chars()
-                .enumerate()
-                .map(|(index, ch)| part_value(ch.to_string(), index, index + 1))
-                .collect::<Vec<_>>()
-        } else {
-            let regex = compile_elisp_regex(interp, &separator, env, "", true)?;
-            let mut parts = Vec::new();
-            let mut last_end = 0usize;
-            let mut search_start = 0usize;
-
-            while search_start <= text.len() {
-                let captures = regex
-                    .captures_from_pos(&text, search_start)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let Some(captures) = captures else {
-                    break;
-                };
-                let Some(matched) = captures.get(0) else {
-                    break;
-                };
-
-                let start = byte_to_char(last_end);
-                let end = byte_to_char(matched.start());
-                let part = &text[last_end..matched.start()];
-                if !(omit_nulls && part.is_empty()) {
-                    parts.push(part_value(part.to_string(), start, end));
-                }
-                last_end = matched.end();
-
-                if matched.start() == matched.end() {
-                    let Some(ch) = text[matched.end()..].chars().next() else {
-                        break;
-                    };
-                    search_start = matched.end() + ch.len_utf8();
-                } else {
-                    search_start = matched.end();
-                }
-            }
-
-            let start = byte_to_char(last_end);
-            let end = text.chars().count();
-            let tail = &text[last_end..];
-            if !(omit_nulls && tail.is_empty()) {
-                parts.push(part_value(tail.to_string(), start, end));
-            }
-            parts
-        }
-    } else {
-        let mut parts = Vec::new();
-        let mut part_start = None;
-        let mut last_index = 0usize;
-        for (index, ch) in text.chars().enumerate() {
-            if ch.is_whitespace() {
-                if let Some(start) = part_start.take() {
-                    let part = text.chars().skip(start).take(index - start).collect();
-                    parts.push(part_value(part, start, index));
-                }
-            } else if part_start.is_none() {
-                part_start = Some(index);
-            }
-            last_index = index + 1;
-        }
-        if let Some(start) = part_start {
-            let part = text.chars().skip(start).collect();
-            parts.push(part_value(part, start, last_index));
-        }
-        parts
-    };
-    Ok(Value::list(parts))
 }
 
 struct SkipCharsSpec {
@@ -2904,52 +2661,6 @@ pub(super) fn skip_chars_backward_impl(
     Ok(Value::Integer(-(skipped as i64)))
 }
 
-pub(super) fn match_string_impl(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
-    if args.is_empty() || args.len() > 3 {
-        return Err(LispError::WrongNumberOfArgs(
-            "match-string".into(),
-            args.len(),
-        ));
-    }
-    let index = args[0].as_integer()?;
-    if index < 0 {
-        return Err(LispError::Signal("Args out of range".into()));
-    }
-    let match_data = interp
-        .last_match_data
-        .as_ref()
-        .ok_or_else(|| LispError::Signal("No match data, because no search succeeded".into()))?;
-    let Some((start, end)) = match_data.get(index as usize).and_then(|entry| *entry) else {
-        return Ok(Value::Nil);
-    };
-    if let Some(string) = args.get(1).filter(|value| !value.is_nil()) {
-        let string = string_like(string)
-            .ok_or_else(|| LispError::TypeError("string".into(), string.type_name()))?;
-        let chars: Vec<char> = string.text.chars().collect();
-        if end > chars.len() {
-            return Ok(Value::Nil);
-        }
-        let text = chars[start..end].iter().collect::<String>();
-        return Ok(make_shared_string_value_with_multibyte(
-            text,
-            Vec::new(),
-            string.multibyte,
-        ));
-    }
-    let text = interp
-        .buffer
-        .buffer_substring(start, end)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let multibyte = text
-        .chars()
-        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
-    Ok(make_shared_string_value_with_multibyte(
-        text,
-        Vec::new(),
-        multibyte,
-    ))
-}
-
 pub(super) fn looking_at_impl(
     interp: &mut Interpreter,
     pattern_value: &Value,
@@ -3042,87 +2753,6 @@ pub(super) fn looking_at_impl(
                 Some(interp.current_buffer_id()),
             );
         }
-        Ok(Value::T)
-    } else {
-        Ok(Value::Nil)
-    }
-}
-
-pub(super) fn looking_back_impl(
-    interp: &mut Interpreter,
-    args: &[Value],
-    env: &Env,
-) -> Result<Value, LispError> {
-    need_arg_range("looking-back", args, 1, 3)?;
-    let pattern = string_like(&args[0])
-        .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
-    let pos = interp.buffer.point();
-    let limit = args
-        .get(1)
-        .filter(|value| !value.is_nil())
-        .map(|value| position_from_value(interp, value))
-        .transpose()?
-        .unwrap_or_else(|| interp.buffer.point_min())
-        .clamp(interp.buffer.point_min(), pos);
-    let haystack = buffer_regexp_haystack(interp, limit, pos)?;
-    let syntax_encoding =
-        encode_syntax_property_haystack(interp, env, limit, &haystack, &pattern.text);
-    let regex = compile_elisp_regex_with_syntax_properties(
-        interp,
-        &pattern,
-        env,
-        "",
-        limit == interp.buffer.point_min(),
-        syntax_encoding.as_ref(),
-        RegexpCategoryScope::CurrentBuffer,
-    )?;
-    let haystack = syntax_encoding
-        .as_ref()
-        .map(|encoding| encoding.haystack.clone())
-        .unwrap_or(haystack);
-    let greedy = args.get(2).is_some_and(Value::is_truthy);
-    let mut best = None;
-    let mut starts = haystack
-        .char_indices()
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    starts.push(haystack.len());
-    let mut empty_fallback = None;
-    for start in starts {
-        if let Some(captures) = regex
-            .captures_from_pos(&haystack, start)
-            .map_err(|error| LispError::Signal(error.to_string()))?
-            && let Some(matched) = captures.get(0)
-            && matched.end() == haystack.len()
-        {
-            let absolute_start = limit + haystack[..matched.start()].chars().count();
-            // GNU prefers the latest-starting NON-EMPTY match ending at
-            // point; a zero-length match only counts when nothing else
-            // matches (pp-fill's "#[sf]?" probe must find the "#").
-            if matched.start() == matched.end() {
-                empty_fallback = Some((absolute_start, captures));
-            } else {
-                best = Some((absolute_start, captures));
-                if greedy {
-                    break;
-                }
-            }
-        }
-    }
-    if best.is_none() {
-        best = empty_fallback;
-    }
-    if let Some((_absolute_start, captures)) = best {
-        // Captures are haystack-relative: the base for match data is the
-        // haystack origin (LIMIT), not the match start.
-        set_match_data(
-            interp,
-            limit,
-            &haystack,
-            &captures,
-            regex.capture_mapping(),
-            Some(interp.current_buffer_id()),
-        );
         Ok(Value::T)
     } else {
         Ok(Value::Nil)
@@ -3917,14 +3547,6 @@ pub(super) fn slice_string_chars(source: &str, start: usize, end: usize) -> Stri
         .collect()
 }
 
-pub(super) fn byte_index_for_char(source: &str, char_index: usize) -> usize {
-    source
-        .char_indices()
-        .nth(char_index)
-        .map(|(byte_index, _)| byte_index)
-        .unwrap_or(source.len())
-}
-
 pub(super) fn update_match_data_after_replace(
     match_data: &[Option<(usize, usize)>],
     replace_index: usize,
@@ -3978,20 +3600,4 @@ pub(super) fn update_match_data_after_replace(
             Some((updated_start, updated_end))
         })
         .collect()
-}
-
-pub(super) fn expand_symbol_at(haystack: &str, found: usize, prefix: &str) -> Option<String> {
-    let tail = &haystack[found..];
-    let end = tail
-        .char_indices()
-        .take_while(|(_, ch)| ch.is_alphanumeric() || *ch == '-' || *ch == '_')
-        .last()
-        .map(|(idx, ch)| idx + ch.len_utf8())
-        .unwrap_or(prefix.len());
-    let expansion = &tail[..end];
-    if expansion.starts_with(prefix) {
-        Some(expansion.to_string())
-    } else {
-        None
-    }
 }

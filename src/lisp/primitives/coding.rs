@@ -349,32 +349,6 @@ pub(crate) fn checked_coding_symbol(
     checked_coding_name(interp, value)?.ok_or_else(|| coding_system_error("nil"))
 }
 
-pub(crate) fn first_valid_coding_candidate(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<Option<String>, LispError> {
-    match value {
-        Value::Cons(_) => {
-            for candidate in value.to_vec()? {
-                if candidate == Value::T || candidate.is_nil() {
-                    continue;
-                }
-                if checked_coding_name(interp, &candidate)?.is_some() {
-                    return Ok(Some(candidate.as_symbol()?.to_string()));
-                }
-            }
-            Ok(None)
-        }
-        Value::Nil | Value::T => Ok(None),
-        _ => Ok(checked_coding_name(interp, value)?.map(|_| {
-            value
-                .as_symbol()
-                .map(str::to_string)
-                .unwrap_or_else(|_| "utf-8".into())
-        })),
-    }
-}
-
 pub(crate) fn coding_variant_name(
     interp: &Interpreter,
     base: &str,
@@ -493,21 +467,6 @@ pub(crate) fn aset_vector_value(
 
 pub(crate) fn base64_whitespace(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C)
-}
-
-pub(crate) fn url_encode_url(input: &str) -> String {
-    let mut output = String::new();
-    for ch in input.chars() {
-        if ch.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(ch) {
-            output.push(ch);
-        } else {
-            for byte in ch.to_string().bytes() {
-                output.push('%');
-                output.push_str(&format!("{byte:02X}"));
-            }
-        }
-    }
-    output
 }
 
 pub(crate) fn base64_char_value(byte: u8, base64url: bool) -> Option<u8> {

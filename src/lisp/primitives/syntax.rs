@@ -399,14 +399,17 @@ pub(super) fn char_table_public_value(interp: &Interpreter, table_id: u64, value
 // alongside the usual delimiter/escape assignments.
 fn default_syntax_entry(ch: char) -> SyntaxEntry {
     let class = match ch {
-        ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}' => SyntaxClass::Whitespace,
+        ' ' | '\t' | '\n' | '\r' | '\u{000C}' => SyntaxClass::Whitespace,
         '_' | '&' | '*' | '+' | '-' | '/' | '<' | '=' | '>' | '|' => SyntaxClass::Symbol,
         '$' | '%' => SyntaxClass::Word,
         '"' => SyntaxClass::StringQuote,
         '\\' => SyntaxClass::Escape,
         '(' | '[' | '{' => SyntaxClass::OpenParen,
         ')' | ']' | '}' => SyntaxClass::CloseParen,
-        ch if ch.is_alphanumeric() => SyntaxClass::Word,
+        '0'..='9' | 'A'..='Z' | 'a'..='z' => SyntaxClass::Word,
+        // GNU initializes the complete multibyte range as word syntax,
+        // independent of Unicode alphabetic properties.
+        ch if ch as u32 >= 0x80 => SyntaxClass::Word,
         _ => SyntaxClass::Punctuation,
     };
     let matching = match ch {
@@ -429,61 +432,6 @@ pub(crate) fn standard_syntax_table_default_value(code: u32) -> Option<Value> {
     char::from_u32(code).map(|ch| syntax_entry_value(default_syntax_entry(ch)))
 }
 
-// Characters explicitly assigned CLASS in the buffer's current syntax
-// table (following the parent chain).  The standard table maps no
-// character to the comment classes, so `\s<'/`\s>' regexp atoms resolve
-// from these explicit entries like GNU.
-pub(crate) fn syntax_class_explicit_chars(interp: &Interpreter, class_char: char) -> Vec<char> {
-    let mut chars: Vec<char> = Vec::new();
-    let mut table_id = Some(interp.current_syntax_table_id());
-    let mut seen = std::collections::HashSet::new();
-    while let Some(id) = table_id {
-        if !seen.insert(id) {
-            break;
-        }
-        let Some(table) = interp.find_char_table(id) else {
-            break;
-        };
-        for entry in &table.entries {
-            // Comment-class assignments are single characters in practice;
-            // ignore wide ranges to keep the expansion bounded.
-            if entry.end.saturating_sub(entry.start) > 8 {
-                continue;
-            }
-            let is_class = string_like(&entry.value)
-                .map(|spec| spec.text.starts_with(class_char))
-                .unwrap_or(false);
-            if !is_class {
-                continue;
-            }
-            for code in entry.start..=entry.end {
-                if let Some(ch) = char::from_u32(code)
-                    && !chars.contains(&ch)
-                {
-                    chars.push(ch);
-                }
-            }
-        }
-        table_id = table.parent;
-    }
-    chars
-}
-
-/// ASCII characters whose effective entry in the current syntax table has
-/// CLASS_CHAR.  Regexp syntax atoms such as `\s_' are table-dependent; a
-/// fixed Unicode "word or symbol" approximation cannot distinguish `\sw'
-/// from `\s_' and misses Lisp constituents such as `:'.
-pub(crate) fn syntax_class_ascii_chars(interp: &Interpreter, class_char: char) -> Vec<char> {
-    let Some(class) = syntax_class_from_char(class_char) else {
-        return Vec::new();
-    };
-    let table_id = interp.current_syntax_table_id();
-    (0..=0x7F)
-        .filter(|&code| syntax_entry_for_code(interp, table_id, code).class == class)
-        .map(|code| char::from_u32(code).expect("ASCII codepoint"))
-        .collect()
-}
-
 pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u32) -> SyntaxEntry {
     // GNU character codes include the raw-byte range above Unicode's scalar
     // limit.  Keep the public code as the char-table key, but use the shared
@@ -502,7 +450,7 @@ pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u
         }
         None => &terminal.default,
     };
-    match value {
+    let entry = match value {
         Value::Nil => SyntaxEntry {
             // A nil entry in a syntax table denotes whitespace.  In
             // particular, `(make-char-table 'syntax-table nil)' is the
@@ -513,6 +461,11 @@ pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u
             ..SyntaxEntry::default()
         },
         value => syntax_entry_from_value(value).unwrap_or_else(|| default_syntax_entry(ch)),
+    };
+    if entry.class == SyntaxClass::Inherit && table_id != interp.standard_syntax_table_id() {
+        syntax_entry_for_code(interp, interp.standard_syntax_table_id(), code)
+    } else {
+        entry
     }
 }
 
@@ -1699,17 +1652,6 @@ pub(super) fn scan_lists_gnu(
     Ok(Some(from as usize))
 }
 
-pub(super) fn scan_sexps_position(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    from: usize,
-    count: i64,
-) -> Option<usize> {
-    scan_lists_gnu(interp, env, from as i64, count, 0, true)
-        .ok()
-        .flatten()
-}
-
 pub(super) fn scan_sexps_position_for_scan_sexps(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1717,24 +1659,6 @@ pub(super) fn scan_sexps_position_for_scan_sexps(
     count: i64,
 ) -> Result<Option<usize>, LispError> {
     scan_lists_gnu(interp, env, from as i64, count, 0, true)
-}
-
-fn scan_string_forward(chars: &[char], quote_idx: usize, end: usize) -> Option<usize> {
-    let quote = *chars.get(quote_idx)?;
-    let mut idx = quote_idx + 1;
-    let mut escaped = false;
-    while idx < end {
-        let ch = chars[idx];
-        if escaped {
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == quote {
-            return Some(idx);
-        }
-        idx += 1;
-    }
-    None
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2352,160 +2276,6 @@ pub(super) fn scan_lists_impl(
     Ok(scan_lists_gnu(interp, env, from, count, depth, false)?
         .map(|position| Value::Integer(position as i64))
         .unwrap_or(Value::Nil))
-}
-
-pub(super) fn down_list_impl(
-    interp: &mut Interpreter,
-    count_value: Option<&Value>,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let count = count_value.map_or(Ok(1), Value::as_integer)?;
-    if count > 0 {
-        // GNU lisp.el down-list: (goto-char (scan-lists (point) 1 -1)),
-        // which honors `parse-sexp-ignore-comments' (a `(' inside a comment
-        // must not count as a list opener).
-        for _ in 0..count {
-            let from = interp.buffer.point() as i64;
-            match scan_lists_gnu(interp, env, from, 1, -1, false)? {
-                Some(position) => {
-                    interp.buffer.goto_char(position);
-                }
-                None => {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("scan-error".into()),
-                        Value::String("No containing expression".into()),
-                    ])));
-                }
-            }
-        }
-        return Ok(Value::Nil);
-    }
-    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
-    let table_id = interp.current_syntax_table_id();
-    if count < 0 {
-        // Move backward down a list level: stop just before the close paren
-        // of the previous list.
-        for _ in 0..count.unsigned_abs() {
-            let mut cursor = interp.buffer.point().checked_sub(2);
-            let mut found = None;
-            while let Some(idx) = cursor {
-                let ch = chars[idx];
-                let entry = syntax_entry_for_char(interp, table_id, ch);
-                match entry.class {
-                    SyntaxClass::StringQuote => {
-                        let mut scan = idx.checked_sub(1);
-                        while let Some(inner) = scan {
-                            if chars[inner] == ch && !(inner > 0 && chars[inner - 1] == '\\') {
-                                break;
-                            }
-                            scan = inner.checked_sub(1);
-                        }
-                        cursor = scan.and_then(|inner| inner.checked_sub(1));
-                    }
-                    SyntaxClass::CloseParen => {
-                        found = Some(idx + 1);
-                        break;
-                    }
-                    _ => cursor = idx.checked_sub(1),
-                }
-            }
-            let Some(position) = found else {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("scan-error".into()),
-                    Value::String("No containing expression".into()),
-                ])));
-            };
-            interp.buffer.goto_char(position);
-        }
-        return Ok(Value::Nil);
-    }
-    for _ in 0..count {
-        let mut idx = interp.buffer.point().saturating_sub(1);
-        let mut found = None;
-        while idx < chars.len() {
-            let ch = chars[idx];
-            let entry = syntax_entry_for_char(interp, table_id, ch);
-            match entry.class {
-                SyntaxClass::StringQuote => {
-                    idx = scan_string_forward(&chars, idx, chars.len())
-                        .map(|end| end + 1)
-                        .unwrap_or(chars.len());
-                }
-                SyntaxClass::OpenParen => {
-                    found = Some(idx + 2);
-                    break;
-                }
-                _ => idx += 1,
-            }
-        }
-        let Some(position) = found else {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("scan-error".into()),
-                Value::String("No containing expression".into()),
-            ])));
-        };
-        interp.buffer.goto_char(position);
-    }
-    Ok(Value::Nil)
-}
-
-pub(super) fn up_list_impl(
-    interp: &mut Interpreter,
-    count_value: Option<&Value>,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let count = count_value.map_or(Ok(1), Value::as_integer)?;
-    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
-    let table_id = interp.current_syntax_table_id();
-    for _ in 0..count.unsigned_abs() {
-        let point_idx = interp.buffer.point().saturating_sub(1).min(chars.len());
-        let mut stack: Vec<usize> = Vec::new();
-        let mut idx = 0;
-        while idx < point_idx {
-            let ch = chars[idx];
-            let entry = syntax_entry_for_char(interp, table_id, ch);
-            match entry.class {
-                SyntaxClass::StringQuote => {
-                    idx = scan_string_forward(&chars, idx, point_idx)
-                        .map(|end| end + 1)
-                        .unwrap_or(point_idx);
-                }
-                SyntaxClass::OpenParen => {
-                    stack.push(idx + 1);
-                    idx += 1;
-                }
-                SyntaxClass::CloseParen => {
-                    stack.pop();
-                    idx += 1;
-                }
-                _ => idx += 1,
-            }
-        }
-        let Some(open_pos) = stack.last().copied() else {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("scan-error".into()),
-                Value::String("No containing expression".into()),
-            ])));
-        };
-        if count < 0 {
-            // Negative COUNT moves backward out of the enclosing list,
-            // landing before its open paren like GNU.
-            interp.buffer.goto_char(open_pos);
-            continue;
-        }
-        let close_pos = scan_lists_impl(
-            interp,
-            &[
-                Value::Integer(open_pos as i64),
-                Value::Integer(1),
-                Value::Integer(0),
-            ],
-            env,
-        )?
-        .as_integer()? as usize;
-        interp.buffer.goto_char(close_pos);
-    }
-    Ok(Value::Nil)
 }
 
 pub(super) fn forward_comment_impl(

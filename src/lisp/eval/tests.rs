@@ -4,15 +4,75 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn eval_str(src: &str) -> Value {
+fn panic_eval_error(interp: &mut Interpreter, error: LispError) -> ! {
+    let rendered_error = match &error {
+        LispError::SignalValue(value) => {
+            crate::lisp::primitives::render_prin1_ephemeral(interp, value, &Vec::new())
+                .unwrap_or_else(|_| error.to_string())
+        }
+        _ => error.to_string(),
+    };
+    let backtrace = interp
+        .take_batch_error_backtrace()
+        .map(|snapshot| {
+            snapshot
+                .frames
+                .into_iter()
+                .take(12)
+                .map(|(_, function, args, _)| {
+                    let mut frame = bounded_lisp_display(&function);
+                    for arg in args.into_iter().take(5) {
+                        frame.push(' ');
+                        frame.push_str(&bounded_lisp_display(&arg));
+                    }
+                    frame
+                })
+                .collect::<Vec<_>>()
+                .join(" <- ")
+        })
+        .unwrap_or_default();
+    panic!("evaluation failed: {rendered_error}; Lisp backtrace: {backtrace}")
+}
+
+fn bounded_lisp_display(value: &Value) -> String {
+    const LIMIT: usize = 120;
+    let rendered = value
+        .to_string()
+        .chars()
+        .flat_map(char::escape_debug)
+        .collect::<String>();
+    let mut chars = rendered.chars();
+    let prefix = chars.by_ref().take(LIMIT).collect::<String>();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
+fn eval_str_bare(src: &str) -> Value {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();
     let forms = Reader::new(src).read_all().unwrap();
     let mut result = Value::Nil;
     for form in &forms {
-        result = interp.eval(form, &mut env).unwrap();
+        // GNU's reader interns every symbol it reads, so `intern-soft'
+        // must hit symbols that only occur in test source.
+        interp.intern_symbols_in_value(form);
+        result = interp
+            .eval(form, &mut env)
+            .unwrap_or_else(|error| panic_eval_error(&mut interp, error));
     }
     result
+}
+
+/// Evaluate ordinary Elisp test forms after executing GNU's real early Lisp
+/// owners in their `loadup.el` order.  A user-visible GNU process has these
+/// definitions in its dumped image; loading the upstream files here preserves
+/// that ownership without restoring any Rust fallback.  Tests that explicitly
+/// exercise the file-less C/Rust host must call `eval_str_bare` instead.
+fn eval_str(src: &str) -> Value {
+    eval_str_with_gnu_early_lisp(src)
 }
 
 fn eval_str_with(interp: &mut Interpreter, src: &str) -> Value {
@@ -20,7 +80,12 @@ fn eval_str_with(interp: &mut Interpreter, src: &str) -> Value {
     let forms = Reader::new(src).read_all().unwrap();
     let mut result = Value::Nil;
     for form in &forms {
-        result = interp.eval(form, &mut env).unwrap();
+        // GNU's reader interns every symbol it reads, so `intern-soft'
+        // must hit symbols that only occur in test source.
+        interp.intern_symbols_in_value(form);
+        result = interp
+            .eval(form, &mut env)
+            .unwrap_or_else(|error| panic_eval_error(interp, error));
     }
     result
 }
@@ -35,19 +100,44 @@ fn eval_str_with_upstream_load_path(src: &str) -> Value {
 }
 
 fn eval_str_with_upstream_batch(src: &str) -> Value {
-    let options = crate::batch::BatchRunOptions {
-        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-        ..Default::default()
-    };
-    let mut interp = crate::batch::initialize_batch_interpreter(&options)
-        .expect("initialize GNU-compatible batch interpreter");
+    // GNU's batch image executes these same GNU Lisp owners from its dump.
+    // Use their compiled `.elc' representation so each ownership-sensitive
+    // test does not pay the unrelated source bootstrap cost.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     eval_str_with(&mut interp, src)
 }
 
-fn load_faces_compat(interp: &mut Interpreter) {
-    let path = crate::compat::project_root().join("src/lisp/faces_compat.el");
-    crate::lisp::load_file_strict(interp, &path).unwrap();
+fn eval_str_with_upstream_batch_feature(feature: &str, src: &str) -> Value {
+    eval_str_with_upstream_batch_features(&[feature], src)
+}
+
+fn upstream_batch_interpreter_with_features(
+    features: &[&str],
+) -> (crate::test_support::HostTestPermit, Interpreter) {
+    let permit = crate::test_support::acquire_host_test_permit();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    for feature in features {
+        eval_str_with(&mut interp, &format!("(require '{feature})"));
+    }
+    (permit, interp)
+}
+
+fn eval_str_with_upstream_batch_features(features: &[&str], src: &str) -> Value {
+    let (_permit, mut interp) = upstream_batch_interpreter_with_features(features);
+    eval_str_with(&mut interp, src)
+}
+
+fn eval_str_with_gnu_early_lisp(src: &str) -> Value {
+    let mut interp = gnu_early_lisp_interpreter();
+    eval_str_with(&mut interp, src)
+}
+
+fn gnu_early_lisp_interpreter() -> Interpreter {
+    crate::test_support::initialized_gnu_early_lisp_interpreter()
+}
+
+fn load_gnu_batch_runtime(interp: &mut Interpreter) {
+    crate::test_support::replace_with_gnu_batch_runtime(interp);
 }
 
 fn upstream_emacs_repo() -> PathBuf {

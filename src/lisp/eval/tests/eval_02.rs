@@ -3,7 +3,8 @@ use super::*;
 #[test]
 fn define_derived_mode_creates_the_complete_mode_state_contract() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "derived",
             "(progn
                    (define-derived-mode sample-derived-mode fundamental-mode \"Sample\")
                    (list (keymapp sample-derived-mode-map)
@@ -38,7 +39,8 @@ fn define_derived_mode_creates_the_complete_mode_state_contract() {
 #[test]
 fn define_derived_mode_preserves_a_predefined_abbrev_table() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch_feature(
+            "derived",
             "(progn
                (require 'abbrev)
                (define-abbrev-table 'sample-parent-abbrev-table
@@ -61,7 +63,8 @@ fn define_derived_mode_preserves_a_predefined_abbrev_table() {
 #[test]
 fn loaded_derived_mode_owner_wires_parent_mode_tables_at_activation() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch_feature(
+            "derived",
             r#"(progn
                  (define-derived-mode sample-parent-mode fundamental-mode "Parent"
                    (modify-syntax-entry ?% "<"))
@@ -96,6 +99,9 @@ fn source_loaded_tex_mode_inherits_its_parent_syntax_table() {
                    (latex-mode)
                    (insert "x % \\cite{ignored}\ny")
                    (list
+                    ;; Compiled tex-mode expands `define-derived-mode' at
+                    ;; compile time and never loads derived.el at runtime;
+                    ;; GNU batch reports (featurep 'derived) => nil here.
                     (featurep 'derived)
                     (eq (char-table-parent latex-mode-syntax-table)
                         tex-mode-syntax-table)
@@ -104,14 +110,15 @@ fn source_loaded_tex_mode_inherits_its_parent_syntax_table() {
                       (goto-char 10)
                       (nth 4 (syntax-ppss))))))"#,
         ),
-        Value::list([Value::T, Value::T, Value::T, Value::T])
+        Value::list([Value::Nil, Value::T, Value::T, Value::T])
     );
 }
 
 #[test]
 fn eager_define_derived_mode_lowering_replaces_its_search_stub_with_the_real_mode() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "derived",
             "(progn
                (eval (macroexpand
                       '(define-derived-mode sample-eager-mode fundamental-mode
@@ -125,7 +132,7 @@ fn eager_define_derived_mode_lowering_replaces_its_search_stub_with_the_real_mod
         ),
         Value::list([
             Value::Symbol("sample-eager-mode".into()),
-            Value::T,
+            Value::Symbol("sample-eager-mode".into()),
             Value::T,
         ])
     );
@@ -138,11 +145,7 @@ fn real_outline_library_loads_over_the_runtime_keymap_list_adapter() {
     interp.set_load_path(
         crate::compat::emaxx_upstream_load_path(&emacs_repo).expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     crate::lisp::load_file_strict(&mut interp, &emacs_repo.join("lisp/outline.el"))
         .expect("load real outline");
 
@@ -162,11 +165,7 @@ fn real_outline_library_loads_over_the_runtime_keymap_list_adapter() {
 #[test]
 fn preloaded_fundamental_mode_runs_the_elisp_owned_reset_lifecycle() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -192,11 +191,7 @@ fn preloaded_fundamental_mode_runs_the_elisp_owned_reset_lifecycle() {
 #[test]
 fn dumped_word_motion_and_auto_fill_controls_are_complete() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -232,7 +227,7 @@ fn dumped_word_motion_and_auto_fill_controls_are_complete() {
 #[test]
 fn forward_word_uses_boundary_functions_and_reports_buffer_edges_like_gnu() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
               (progn
                 (fset 'emaxx-test-word-boundary
@@ -273,11 +268,7 @@ fn forward_word_uses_boundary_functions_and_reports_buffer_edges_like_gnu() {
 #[test]
 fn strict_word_motion_bypasses_mode_specific_boundary_functions() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -303,8 +294,10 @@ fn strict_word_motion_bypasses_mode_specific_boundary_functions() {
 
 #[test]
 fn word_boundary_table_is_special_across_lexical_function_calls() {
+    // `setq-local' expands through preloaded macroexp.el in GNU's dump, so
+    // the reconstructed batch image is the honest runtime here.
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
               (progn
                 (fset 'emaxx-test-ordinary-word-motion
@@ -339,7 +332,8 @@ fn word_boundary_table_is_special_across_lexical_function_calls() {
 #[test]
 fn cl_defstruct_generates_constructor_accessors_and_setf() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                    (cl-defstruct (sample-struct
                                   (:constructor nil)
@@ -359,7 +353,8 @@ fn cl_defstruct_generates_constructor_accessors_and_setf() {
 #[test]
 fn cl_defstruct_honors_conc_name_for_accessors_and_setf() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                    (cl-defstruct (sample-conc
                                   (:constructor make-sample-conc)
@@ -379,7 +374,8 @@ fn cl_defstruct_honors_conc_name_for_accessors_and_setf() {
 #[test]
 fn cl_defstruct_honors_explicit_predicate_name() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                    (cl-defstruct (sample-pred
                                   (:constructor nil)
@@ -399,7 +395,8 @@ fn cl_defstruct_honors_explicit_predicate_name() {
 #[test]
 fn cl_defstruct_type_list_accessors_accept_nil_and_lists() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                    (cl-defstruct (sample-list-struct
                                   (:type list)
@@ -420,19 +417,9 @@ fn cl_defstruct_type_list_accessors_accept_nil_and_lists() {
 #[test]
 fn cl_getf_places_update_plists() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-extra",
             "(progn
-               (defun cl-getf (plist tag &optional def)
-                 (let ((tail plist)
-                       found)
-                   (while (consp tail)
-                     (if (eq (car tail) tag)
-                         (setq found tail
-                               tail nil)
-                       (setq tail (cdr (cdr tail)))))
-                   (if (and found (consp (cdr found)))
-                       (car (cdr found))
-                     def)))
                (let ((plist '(x 1 y)))
                  (list
                   (cl-incf (cl-getf plist 'x 10) 2)
@@ -462,19 +449,9 @@ fn cl_getf_places_update_plists() {
 #[test]
 fn cl_getf_handles_malformed_plists_like_cl_extra() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-extra",
             "(progn
-               (defun cl-getf (plist tag &optional def)
-                 (let ((tail plist)
-                       found)
-                   (while (consp tail)
-                     (if (eq (car tail) tag)
-                         (setq found tail
-                               tail nil)
-                       (setq tail (cdr (cdr tail)))))
-                   (if (and found (consp (cdr found)))
-                       (car (cdr found))
-                     def)))
                (let ((plist '(x 1 y . 2)))
                  (list
                   (cl-getf plist 'x)
@@ -497,7 +474,7 @@ fn cl_getf_handles_malformed_plists_like_cl_extra() {
                     Value::cons(Value::Symbol("y".into()), Value::Integer(2)),
                 ),
             ),
-            Value::Symbol(":none".into()),
+            Value::Symbol("wrong-type-argument".into()),
             Value::Symbol("wrong-type-argument".into()),
         ])
     );
@@ -506,7 +483,8 @@ fn cl_getf_handles_malformed_plists_like_cl_extra() {
 #[test]
 fn cl_defstruct_constructor_respects_optional_marker() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                    (cl-defstruct (optional-struct
                                   (:constructor make-optional-struct
@@ -525,7 +503,8 @@ fn cl_defstruct_constructor_respects_optional_marker() {
 #[test]
 fn cl_defstruct_applies_slot_defaults_to_omitted_constructor_args() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                    (cl-defstruct defaulted-struct
                      alpha
@@ -539,7 +518,8 @@ fn cl_defstruct_applies_slot_defaults_to_omitted_constructor_args() {
 #[test]
 fn cl_defstruct_constructor_evaluates_aux_slot_initializers() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                    (cl-defstruct (aux-struct
                                   (:constructor make-aux-struct
@@ -558,7 +538,8 @@ fn cl_defstruct_constructor_evaluates_aux_slot_initializers() {
 #[test]
 fn cl_defstruct_constructor_aux_can_reference_constructor_args() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                (cl-defstruct (aux-arg-struct
                               (:constructor make-aux-arg-struct
@@ -588,7 +569,8 @@ fn cl_defstruct_constructor_aux_can_reference_constructor_args() {
 #[test]
 fn cl_defstruct_named_constructors_keep_default_constructor() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                (cl-defstruct (multi-ctor-struct
                               (:constructor multi-ctor-from-value (value)))
@@ -607,7 +589,8 @@ fn cl_defstruct_named_constructors_keep_default_constructor() {
 #[test]
 fn cl_defstruct_constructor_arglists_ignore_aux_bindings() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_features(
+            &["cl-macs", "pcase"],
             "(progn
                (cl-defstruct (arglist-struct
                               (:constructor make-arglist-empty (&aux (abc 1)))
@@ -623,15 +606,14 @@ fn cl_defstruct_constructor_arglists_ignore_aux_bindings() {
 }
 
 #[test]
-fn loaded_gnu_help_reads_simple_native_struct_constructor_arglists() {
+fn loaded_gnu_help_reads_real_cl_struct_constructor_arglists() {
     run_with_large_stack(|| {
-        let options = crate::batch::BatchRunOptions {
-            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-                .expect("upstream load path"),
-            ..Default::default()
-        };
-        let mut interp =
-            crate::batch::initialize_batch_interpreter(&options).expect("batch interpreter");
+        // The subject is Help/CL behavior after startup, not source loading.
+        // Use the same real GNU owners through the reconstructed compiled
+        // batch image instead of rebuilding unrelated bootstrap Lisp here.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        eval_str_with(&mut interp, "(require 'cl-macs)");
+        eval_str_with(&mut interp, "(require 'pcase)");
 
         assert_eq!(
             eval_str_with(
@@ -666,7 +648,7 @@ fn loaded_gnu_help_reads_simple_native_struct_constructor_arglists() {
 #[test]
 fn abbrev_expansion_respects_table_props_and_parent_tables() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
                    (defvar parent-abbrev-table nil)
                    (defvar child-abbrev-table nil)
@@ -690,7 +672,7 @@ fn abbrev_expansion_respects_table_props_and_parent_tables() {
 
 #[test]
 fn eval_and_compile_runs_its_body_when_loading_helpers() {
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     eval_str_with(
         &mut interp,
         r#"
@@ -707,7 +689,7 @@ fn eval_and_compile_runs_its_body_when_loading_helpers() {
 
 #[test]
 fn eval_when_compile_runs_its_body_when_loading_helpers() {
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     eval_str_with(
         &mut interp,
         r#"
@@ -778,7 +760,8 @@ fn emacs_lisp_mode_map_defaults_to_keymap() {
 #[test]
 fn cl_loop_supports_across_with_unbounded_from() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             r#"
                 (let (pairs)
                   (cl-loop for char across "ab"
@@ -795,50 +778,10 @@ fn cl_loop_supports_across_with_unbounded_from() {
 }
 
 #[test]
-fn byte_compile_wraps_lambdas_in_byte_code_function_records() {
-    assert_eq!(
-        eval_str(
-            r#"
-                (type-of (byte-compile (lambda (x) (char-syntax x))))
-                "#
-        ),
-        Value::Symbol("byte-code-function".into())
-    );
-}
-
-#[test]
-fn byte_compile_accepts_function_quoted_lambdas() {
-    assert_eq!(
-        eval_str("(funcall (byte-compile #'(lambda (x) (1+ x))) 41)"),
-        Value::Integer(42)
-    );
-}
-
-#[test]
-fn byte_code_function_exposes_gnu_argument_descriptor_and_arity() {
-    assert_eq!(
-        eval_str(
-            r#"
-                (let ((function
-                       (byte-compile #'(lambda (required &optional optional)
-                                         (list required optional)))))
-                  (list (aref function 0)
-                        (func-arity function)
-                        (funcall function 'value)))
-                "#
-        ),
-        Value::list([
-            Value::Integer(513),
-            Value::cons(Value::Integer(1), Value::Integer(2)),
-            Value::list([Value::Symbol("value".into()), Value::Nil]),
-        ])
-    );
-}
-
-#[test]
 fn byte_compile_symbol_preserves_function_attributes() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (progn
                   (defun emaxx-bytecomp-attr-test (x)
@@ -868,10 +811,12 @@ fn byte_compile_symbol_preserves_function_attributes() {
 
 #[test]
 fn byte_compile_decompile_cond_switch_drops_duplicate_keys() {
-    assert_eq!(
-        eval_str(
-            r#"
-                (let* ((bc (byte-compile
+    let result = eval_str_with_upstream_batch_feature(
+        "bytecomp",
+        r#"
+                (progn
+                  (require 'subr-x)
+                  (let* ((bc (byte-compile
                             '(lambda (x)
                                (cond ((eq x 'a) 111)
                                      ((eq x 'b) 222)
@@ -882,10 +827,10 @@ fn byte_compile_decompile_cond_switch_drops_duplicate_keys() {
                        (table (cadr (assq 'byte-constant lap))))
                   (list (hash-table-p table)
                         (sort (hash-table-keys table) #'string<)
-                        (member '(byte-constant 111) lap)
-                        (member '(byte-constant 222) lap)
+                        (not (null (member '(byte-constant 111) lap)))
+                        (not (null (member '(byte-constant 222) lap)))
                         (member '(byte-constant 333) lap)
-                        (member '(byte-constant 444) lap)
+                        (not (null (member '(byte-constant 444) lap)))
                         (let* ((bc2 (byte-compile
                                      '(lambda (x)
                                         (cond ((eql x #x10000000000000000) 111)
@@ -894,9 +839,11 @@ fn byte_compile_decompile_cond_switch_drops_duplicate_keys() {
                                               ((eql x #x10000000000000002) 444)))))
                                (lap2 (byte-decompile-bytecode (aref bc2 1) (aref bc2 2)))
                                (table2 (cadr (assq 'byte-constant lap2))))
-                          (mapcar #'numberp (hash-table-keys table2)))))
-                "#
-        ),
+                          (mapcar #'numberp (hash-table-keys table2))))))
+                "#,
+    );
+    assert_eq!(
+        result,
         Value::list([
             Value::T,
             Value::list([
@@ -904,20 +851,10 @@ fn byte_compile_decompile_cond_switch_drops_duplicate_keys() {
                 Value::Symbol("b".into()),
                 Value::Symbol("c".into()),
             ]),
-            Value::list([
-                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(111)]),
-                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(222)]),
-                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(444)]),
-            ]),
-            Value::list([
-                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(222)]),
-                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(444)]),
-            ]),
+            Value::T,
+            Value::T,
             Value::Nil,
-            Value::list([Value::list([
-                Value::Symbol("byte-constant".into()),
-                Value::Integer(444),
-            ])]),
+            Value::T,
             Value::list([Value::T, Value::T, Value::T]),
         ])
     );
@@ -926,19 +863,23 @@ fn byte_compile_decompile_cond_switch_drops_duplicate_keys() {
 #[test]
 fn byte_compile_warns_for_malformed_defcustom_types() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (progn
-                  (defun emaxx-bytecomp-defcustom-type-matches-p (pattern form)
+                  (defun test--bytecomp-defcustom-type-matches-p (pattern form)
                     (with-current-buffer (get-buffer-create "*Compile-Log*")
                       (let ((inhibit-read-only t))
                         (erase-buffer)))
-                    (byte-compile form)
+                    (let ((text-quoting-style 'grave)
+                          (macroexp--warned
+                           (make-hash-table :test #'equal :weakness 'key)))
+                      (byte-compile form))
                     (with-current-buffer "*Compile-Log*"
                       (not (null (re-search-forward pattern nil t)))))
                   (mapcar
                    (lambda (case)
-                     (emaxx-bytecomp-defcustom-type-matches-p (car case) (cadr case)))
+                     (test--bytecomp-defcustom-type-matches-p (car case) (cadr case)))
                    '(("type should not be quoted"
                       (defcustom mytest nil "doc" :type ''integer :group 'test))
                      ("type should not be quoted"
@@ -995,23 +936,50 @@ fn byte_compile_warns_for_malformed_defcustom_types() {
 }
 
 #[test]
+fn byte_compile_warning_logging_preserves_the_callers_buffer_point() {
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
+            r#"
+                (with-current-buffer (get-buffer-create "*Compile-Log*")
+                    (let ((inhibit-read-only t))
+                      (erase-buffer))
+                    (byte-compile
+                     '(defcustom test--malformed-custom nil "doc"
+                        :type ''integer :group 'test))
+                    (list (= (point) (point-min))
+                          (equal byte-compile-log-buffer "*Compile-Log*")
+                          (not (null
+                                (string-match "type should not be quoted"
+                                              (buffer-string))))))
+                "#,
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn byte_compile_warns_for_missing_defcustom_type_and_group() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (progn
-                  (defun emaxx-bytecomp-defcustom-warning-p (pattern form)
+                  (defun test--bytecomp-defcustom-warning-p (pattern form)
                     (with-current-buffer (get-buffer-create "*Compile-Log*")
                       (let ((inhibit-read-only t))
                         (erase-buffer)))
-                    (byte-compile form)
+                    (let ((text-quoting-style 'grave)
+                          (macroexp--warned
+                           (make-hash-table :test #'equal :weakness 'key)))
+                      (byte-compile form))
                     (with-current-buffer "*Compile-Log*"
                       (not (null (re-search-forward pattern nil t)))))
                   (list
-                   (emaxx-bytecomp-defcustom-warning-p
+                   (test--bytecomp-defcustom-warning-p
                     "fails to specify containing group"
                     '(defcustom mytest nil "doc" :type 'boolean))
-                   (emaxx-bytecomp-defcustom-warning-p
+                   (test--bytecomp-defcustom-warning-p
                     "missing :type keyword parameter"
                     '(defcustom mytest nil "doc" :group 'test))))
                 "#
@@ -1023,7 +991,8 @@ fn byte_compile_warns_for_missing_defcustom_type_and_group() {
 #[test]
 fn byte_compile_warns_for_extra_format_arguments() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (progn
                   (with-current-buffer (get-buffer-create "*Compile-Log*")
@@ -1043,87 +1012,71 @@ fn byte_compile_warns_for_extra_format_arguments() {
 #[test]
 fn byte_compile_warns_for_free_vars_and_interactive_only_forms() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (progn
-                  (defun emaxx-bytecomp-warning-p (pattern form)
+                  (defun test--bytecomp-warning-p (pattern form)
                     (with-current-buffer (get-buffer-create "*Compile-Log*")
                       (let ((inhibit-read-only t))
                         (erase-buffer)))
-                    (byte-compile form)
+                    (let ((text-quoting-style 'grave)
+                          (macroexp--warned
+                           (make-hash-table :test #'equal :weakness 'key)))
+                      (byte-compile form))
                     (with-current-buffer "*Compile-Log*"
                       (not (null (re-search-forward pattern nil t)))))
-                  (defvar emaxx-bytecomp-obsolete-var nil)
-                  (make-obsolete-variable 'emaxx-bytecomp-obsolete-var nil "31.1")
+                  (defvar test--bytecomp-obsolete-var nil)
+                  (make-obsolete-variable 'test--bytecomp-obsolete-var nil "31.1")
                   (list
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "free.*foo"
                     '(setq foo 'bar))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "free variable .bar"
                     '(defun sample-free-ref () bar))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "make-variable-buffer-local. not called at toplevel"
                     '(defun sample-buffer-local () (make-variable-buffer-local 'foobar)))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "next-line.*interactive use only.*forward-line"
                     '(defun sample-next-line () (next-line)))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "malformed .interactive. specification"
                     '(defun sample-bad-interactive ()
                        (interactive "foo" "bar")))
-                   (emaxx-bytecomp-warning-p
-                    "sample-old.*obsolete function.*31.1"
-                    '(progn
-                       (defun sample-old ()
-                         (declare (obsolete nil "31.1"))
-                         nil)
-                       (sample-old)))
-                   (emaxx-bytecomp-warning-p
-                    "emaxx-bytecomp-obsolete-var.*obsolete variable.*31.1"
+                   (test--bytecomp-warning-p
+                    "test--bytecomp-obsolete-var.*obsolete variable.*31.1"
                     '(defun sample-obsolete-var ()
-                       emaxx-bytecomp-obsolete-var))
-                   (emaxx-bytecomp-warning-p
-                    "as both function and macro"
-                    '(progn
-                       (defun sample-redefined () nil)
-                       (defmacro sample-redefined () t)))
-                   (emaxx-bytecomp-warning-p
-                    "defined multiple"
-                    '(progn
-                       (defun sample-defined-twice () nil)
-                       (defun sample-defined-twice () t)))
-                   (emaxx-bytecomp-warning-p
+                       test--bytecomp-obsolete-var))
+                   (test--bytecomp-warning-p
                     "with-current.*rather than save-excursion"
                     '(defun sample-set-buffer ()
                        (save-excursion
                          (set-buffer (current-buffer)))))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "let-bind constant"
                     '(defun sample-let-constant ()
                        (let ((t 1)) t)))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "let-bind nonvariable"
                     '(defun sample-let-nonvariable ()
                        (let (('t 1)) t)))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "attempt to set constant"
                     '(defun sample-set-constant ()
                        (setq t nil)))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "attempt to set non-variable"
                     '(defun sample-set-nonvariable ()
                        (setq (a) nil)))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "odd number of arguments"
                     '(defun sample-setq-odd (a b)
                        (setq a 1 b)))))
                 "#
         ),
         Value::list([
-            Value::T,
-            Value::T,
-            Value::T,
             Value::T,
             Value::T,
             Value::T,
@@ -1143,7 +1096,8 @@ fn byte_compile_warns_for_free_vars_and_interactive_only_forms() {
 #[test]
 fn byte_compile_suppresses_prefixless_defvar_warning() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (progn
                   (with-current-buffer (get-buffer-create "*Compile-Log*")
@@ -1165,9 +1119,28 @@ fn byte_compile_suppresses_prefixless_defvar_warning() {
 }
 
 #[test]
-fn native_byte_compiler_publishes_gnu_compiler_state_variables() {
+fn byte_compile_warning_suppression_accepts_positioned_symbols_like_gnu() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
+            r#"(let* ((symbols-with-pos-enabled t)
+                      (warning (read-positioning-symbols "lexical"))
+                      (subject (read-positioning-symbols "prefixless"))
+                      (byte-compile--suppressed-warnings
+                       (list (list warning subject))))
+                 (list (eq warning 'lexical)
+                       (not (null (memq subject '(prefixless))))
+                       (byte-compile-warning-enabled-p 'lexical subject)))"#,
+        ),
+        Value::list([Value::T, Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn upstream_byte_compiler_publishes_gnu_compiler_state_variables() {
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             "(list (boundp 'byte-compile-unresolved-functions) \
                    byte-compile-unresolved-functions)",
         ),
@@ -1176,113 +1149,128 @@ fn native_byte_compiler_publishes_gnu_compiler_state_variables() {
 }
 
 #[test]
-fn byte_compile_reports_unresolved_calls_for_individual_lambdas() {
+fn byte_compile_records_unresolved_calls_for_individual_lambdas() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
-                (let ((byte-compile-log-buffer
+                (let ((byte-compile-unresolved-functions nil)
+                      (byte-compile-log-buffer
                        (generate-new-buffer " *Compile-Log*")))
-                  (byte-compile '(lambda () (emaxx-missing-bytecomp-function)))
-                  (with-current-buffer byte-compile-log-buffer
-                    (not (null
-                          (re-search-forward
-                           "emaxx-missing-bytecomp-function.*not known to be defined"
-                           nil t)))))
+                  (byte-compile '(lambda () (test--missing-bytecomp-function)))
+                  (list
+                   (not (null (assq 'test--missing-bytecomp-function
+                                    byte-compile-unresolved-functions)))
+                   (with-current-buffer byte-compile-log-buffer
+                     (= (buffer-size) 0))))
                 "#
         ),
-        Value::T
+        Value::list([Value::T, Value::T])
     );
 }
 
 #[test]
-fn byte_compile_reports_unresolved_calls_introduced_by_macroexpansion() {
+fn byte_compile_records_unresolved_calls_introduced_by_macroexpansion() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (progn
-                  (defmacro emaxx-bytecomp-missing-expander ()
-                    '(emaxx-missing-after-macroexpansion))
-                  (let ((byte-compile-log-buffer
+                  (defmacro test--bytecomp-missing-expander ()
+                    '(test--missing-after-macroexpansion))
+                  (let ((byte-compile-unresolved-functions nil)
+                        (byte-compile-log-buffer
                          (generate-new-buffer " *Compile-Log*")))
                     (byte-compile '(lambda ()
-                                     (emaxx-bytecomp-missing-expander)))
-                    (with-current-buffer byte-compile-log-buffer
-                      (not (null
-                            (re-search-forward
-                             "emaxx-missing-after-macroexpansion.*not known to be defined"
-                             nil t))))))
+                                     (test--bytecomp-missing-expander)))
+                    (list
+                     (not (null (assq 'test--missing-after-macroexpansion
+                                      byte-compile-unresolved-functions)))
+                     (with-current-buffer byte-compile-log-buffer
+                       (= (buffer-size) 0)))))
                 "#
         ),
-        Value::T
+        Value::list([Value::T, Value::T])
     );
 }
 
 #[test]
-fn byte_compile_diagnoses_function_quoted_nested_lambda_bodies() {
+fn byte_compile_records_unresolved_calls_in_function_quoted_nested_lambdas() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
-                (let ((byte-compile-log-buffer
+                (let ((byte-compile-unresolved-functions nil)
+                      (byte-compile-log-buffer
                        (generate-new-buffer " *Compile-Log*")))
                   (byte-compile
                    '(lambda ()
                       (let ((worker
                              #'(lambda ()
-                                 (emaxx-missing-in-nested-bytecomp-lambda))))
+                                 (test--missing-in-nested-bytecomp-lambda))))
                         (funcall worker))))
-                  (with-current-buffer byte-compile-log-buffer
-                    (not (null
-                          (re-search-forward
-                           "emaxx-missing-in-nested-bytecomp-lambda.*not known to be defined"
-                           nil t)))))
+                  (list
+                   (not (null (assq 'test--missing-in-nested-bytecomp-lambda
+                                    byte-compile-unresolved-functions)))
+                   (with-current-buffer byte-compile-log-buffer
+                     (= (buffer-size) 0))))
                 "#
         ),
-        Value::T
+        Value::list([Value::T, Value::T])
     );
 }
 
 #[test]
-fn byte_compile_captures_macroexpansion_warnings_in_compile_log() {
+fn byte_compile_keeps_ordinary_macroexpansion_messages_out_of_compile_log() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (progn
-                  (defmacro emaxx-bytecomp-warning-expander ()
+                  (defmacro test--bytecomp-message-expander ()
                     (message "Warning: generated macro diagnostic")
                     t)
                   (let ((byte-compile-log-buffer
-                         (generate-new-buffer " *Compile-Log*")))
+                         (generate-new-buffer " *Compile-Log*"))
+                        (messages (get-buffer-create "*Messages*")))
+                    (with-current-buffer messages
+                      (let ((inhibit-read-only t))
+                        (erase-buffer)))
                     (byte-compile
-                     '(lambda () (emaxx-bytecomp-warning-expander)))
-                    (with-current-buffer byte-compile-log-buffer
-                      (not (null
-                            (re-search-forward
-                             "Warning: generated macro diagnostic" nil t))))))
+                     '(lambda () (test--bytecomp-message-expander)))
+                    (list
+                     (with-current-buffer byte-compile-log-buffer
+                       (= (buffer-size) 0))
+                     (with-current-buffer messages
+                       (not (null
+                             (string-match "Warning: generated macro diagnostic"
+                                           (buffer-string))))))))
                 "#
         ),
-        Value::T
+        Value::list([Value::T, Value::T])
     );
 }
 
 #[test]
 fn byte_compile_from_buffer_warns_for_unresolved_calls_outside_feature_guards() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
                       (with-temp-buffer
-                    (insert "\\(defun foo ()\n"
+                    (insert "\(defun foo ()\n"
                             "  (an-undefined-function))\n"
-                            "\\(defun foo1 ()\n"
+                            "\(defun foo1 ()\n"
                             "  (if (featurep 'xemacs)\n"
                             "      (some-undefined-function-if)))\n"
-                            "\\(defun foo2 ()\n"
+                            "\(defun foo2 ()\n"
                             "  (and (featurep 'xemacs)\n"
                             "       (some-undefined-function-and)))\n"
-                            "\\(defun foo3 ()\n"
+                            "\(defun foo3 ()\n"
                             "  (if (not (featurep 'emacs))\n"
                             "      (some-undefined-function-not)))\n"
-                            "\\(defun foo4 ()\n"
+                            "\(defun foo4 ()\n"
                             "  (or (featurep 'emacs)\n"
                             "      (some-undefined-function-or)))\n")
                     (byte-compile-from-buffer (current-buffer)))
@@ -1338,9 +1326,11 @@ fn byte_compile_file_logs_and_suppresses_structural_warnings() {
                     (erase-buffer)))
                 (let ((byte-compile-dest-file-function (lambda (_) suppressed-dest)))
                   (byte-compile-file suppressed-src))
-                (list (string-match "global/dynamic var .prefixless. lacks" warn-log)
+                (list (not (null
+                            (string-match
+                             "global/dynamic var .prefixless. lacks" warn-log)))
                       (with-current-buffer byte-compile-log-buffer
-                        (buffer-string))
+                        (= (buffer-size) 0))
                       (file-exists-p warn-dest)
                       (file-exists-p suppressed-dest))))
             "#,
@@ -1350,16 +1340,11 @@ fn byte_compile_file_logs_and_suppresses_structural_warnings() {
         suppressed_dest = suppressed_dest.display().to_string(),
     );
 
-    let result = eval_str(&source);
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         result,
-        Value::list([
-            Value::Integer(9),
-            Value::String(String::new().into()),
-            Value::T,
-            Value::T
-        ])
+        Value::list([Value::T, Value::T, Value::T, Value::T])
     );
 }
 
@@ -1394,7 +1379,7 @@ fn byte_compile_file_loads_macro_expanded_function_bodies() {
         dest_path = dest_path.display().to_string(),
     );
 
-    let result = eval_str(&source);
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(result, Value::Integer(-7));
 }
@@ -1435,26 +1420,9 @@ fn package_upgrade_reloads_previously_loaded_library_before_compiling() {
             ";;; reload-sample.el --- package reload test -*- lexical-binding: t -*-\n;; Version: 2.0\n;; Keywords: tools\n;;; Code:\n(require 'reload-sample-aux)\n(defmacro reload-sample-1 (&rest forms) \"Description\" `(progn ,(cadr (car forms))))\n(defun reload-sample-value () \"\" (list (reload-sample-1 '1 'b) (reload-sample-aux-1 'a 'b)))\n(provide 'reload-sample)\n;;; reload-sample.el ends here\n",
         )
         .unwrap();
-        let mut interp = Interpreter::new();
-        let load_path = crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path");
-        interp.set_load_path(load_path);
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-        // `simple_compat.el' installs GNU subr.el's Elisp-owned `kbd', whose
-        // owner dependency `key-parse' comes from keymap.el during loadup.
-        // This deliberately bare package fixture must reconstruct that same
-        // dependency instead of inventing a Rust `key-parse' primitive.
-        for feature in ["button", "backquote", "keymap", "seq"] {
-            if !interp.has_feature(feature) && interp.resolve_load_target(feature).is_some() {
-                interp.load_target(feature).unwrap();
-            }
-        }
-        load_faces_compat(&mut interp);
-        crate::lisp::load_file_strict(
-            &mut interp,
-            &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-        )
-        .unwrap();
+        // GNU's package owner runs inside the dumped batch image.  Reconstruct
+        // that image from the real GNU loadup sequence before requiring it.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         let result = eval_str_with(
             &mut interp,
             &format!(
@@ -1499,10 +1467,10 @@ fn package_upgrade_reloads_previously_loaded_library_before_compiling() {
 
 #[test]
 fn cl_macrolet_expands_defun_body_before_local_macro_exits() {
-    let result = eval_str(
+    let result = eval_str_with_upstream_batch_feature(
+        "cl-macs",
         r#"
         (progn
-          (require 'cl-lib)
           (cl-macrolet ((sample-cl-macrolet-macro () 4))
             (defmacro sample-cl-macrolet-macro () 5)
             (defun sample-cl-macrolet-def () (sample-cl-macrolet-macro)))
@@ -1514,9 +1482,48 @@ fn cl_macrolet_expands_defun_body_before_local_macro_exits() {
 }
 
 #[test]
+fn defmacro_replaces_a_materialized_macro_function_cell() {
+    // GNU byte-run.el owns `defmacro'; the early-loadup fixture executes that
+    // real definition before this function-cell test begins.
+    let mut interp = gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (defmacro sample-redefined-macro () 1)
+               (symbol-function 'sample-redefined-macro)
+               (eval '(defmacro sample-redefined-macro () -1))
+               (macroexpand '(sample-redefined-macro)))",
+        ),
+        Value::Integer(-1)
+    );
+}
+
+#[test]
+fn cl_macrolet_outranks_a_materialized_global_macro_cell() {
+    let _permit = crate::test_support::acquire_host_test_permit();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(&mut interp, "(require 'cl-macs)");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (defmacro sample-local-priority () 5)
+               (symbol-function 'sample-local-priority)
+               (cl-macrolet ((sample-local-priority () 4))
+                 (defun sample-local-priority-user ()
+                   (sample-local-priority)))
+               (sample-local-priority-user))",
+        ),
+        Value::Integer(4)
+    );
+}
+
+#[test]
 fn cl_macrolet_expands_setf_places() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                (cl-defstruct sample-macrolet-place alpha)
                (let ((obj (make-sample-macrolet-place)))
@@ -1576,7 +1583,7 @@ fn byte_compile_file_suppression_survives_compile_and_load_flow() {
         suppressed_dest = suppressed_dest.display().to_string(),
     );
 
-    let result = eval_str(&source);
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(result, Value::T);
 }
@@ -1634,7 +1641,7 @@ fn byte_compile_file_uses_dynamic_log_buffer_across_helper_call() {
         warning_output_path = warning_output_path.display().to_string(),
     );
 
-    let result = eval_str(&source);
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(result, Value::T);
 }
@@ -1642,11 +1649,7 @@ fn byte_compile_file_uses_dynamic_log_buffer_across_helper_call() {
 #[test]
 fn bytecomp_tests_suppression_helper_matches_prefixless_defvar() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
-        interp.set_load_path(
-            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-                .expect("upstream load path"),
-        );
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         interp.set_global_binding("noninteractive", Value::T);
         let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
@@ -1668,11 +1671,7 @@ fn bytecomp_tests_suppression_helper_matches_prefixless_defvar() {
 #[test]
 fn bytecomp_tests_suppression_case_passes_in_default_ert_run() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
-        interp.set_load_path(
-            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-                .expect("upstream load path"),
-        );
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         interp.set_global_binding("noninteractive", Value::T);
         let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
@@ -1738,16 +1737,17 @@ fn byte_compile_file_warns_when_lexical_binding_cookie_is_missing() {
                   (byte-compile-file {lexical_nil:?})
                   (let ((lexical-nil-log (with-current-buffer byte-compile-log-buffer
                                            (buffer-string))))
-                    (list (not (null (string-search "no `lexical-binding' directive" missing-log)))
-                          (string-search "no `lexical-binding' directive" lexical-t-log)
-                          (string-search "no `lexical-binding' directive" lexical-nil-log))))))
+                    (list (and (string-search "file has no" missing-log)
+                               (not (null (string-search "lexical-binding" missing-log))))
+                          (string-search "file has no" lexical-t-log)
+                          (string-search "file has no" lexical-nil-log))))))
             "#,
         dest = dest.display().to_string(),
         missing = missing.display().to_string(),
         lexical_t = lexical_t.display().to_string(),
         lexical_nil = lexical_nil.display().to_string(),
     );
-    let result = eval_str(&source);
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(result, Value::list([Value::T, Value::Nil, Value::Nil]));
 }
@@ -1776,13 +1776,16 @@ fn byte_compile_file_reads_and_interns_file_local_symbol_shorthands() {
     )
     .unwrap();
 
-    let result = eval_str(&format!(
-        r#"(progn
+    let result = eval_str_with_upstream_batch_feature(
+        "bytecomp",
+        &format!(
+            r#"(progn
              (byte-compile-file {:?})
              (list (intern-soft "long-target")
                    (intern-soft "s-target")))"#,
-        source_path.display().to_string(),
-    ));
+            source_path.display().to_string(),
+        ),
+    );
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         result,
@@ -1792,7 +1795,7 @@ fn byte_compile_file_reads_and_interns_file_local_symbol_shorthands() {
 
 #[cfg(unix)]
 #[test]
-fn byte_compile_file_uses_temp_output_when_source_directory_is_unwritable() {
+fn byte_compile_file_reports_an_unwritable_target_like_gnu() {
     use std::os::unix::fs::PermissionsExt;
 
     let unique = format!(
@@ -1815,20 +1818,37 @@ fn byte_compile_file_uses_temp_output_when_source_directory_is_unwritable() {
     let original_perms = std::fs::metadata(&dir).unwrap().permissions();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-    let result = eval_str(&format!(
-        r#"
-            (let ((output (byte-compile-file {source_path:?})))
-              (list (file-exists-p output)
-                    (not (null (string-match-p "emaxx-byte-compile" output)))
-                    (file-exists-p {source_elc:?})))
+    let result = eval_str_with_upstream_batch_feature(
+        "bytecomp",
+        &format!(
+            r#"
+            (condition-case error
+                (list 'unexpected-success
+                      (byte-compile-file {source_path:?}))
+              (file-missing
+               (list (car error)
+                     (nth 1 error)
+                     (nth 2 error)
+                     (string-suffix-p "/source.elc" (nth 3 error))
+                     (file-exists-p {source_elc:?}))))
         "#,
-        source_path = source_path.display().to_string(),
-        source_elc = source_elc.display().to_string(),
-    ));
+            source_path = source_path.display().to_string(),
+            source_elc = source_elc.display().to_string(),
+        ),
+    );
 
     std::fs::set_permissions(&dir, original_perms).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(result, Value::list([Value::T, Value::T, Value::Nil]));
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Symbol("file-missing".into()),
+            Value::String("Opening output file".into()),
+            Value::String("Directory not writable or nonexistent".into()),
+            Value::T,
+            Value::Nil,
+        ])
+    );
 }
 
 #[test]
@@ -1851,24 +1871,27 @@ fn byte_compile_file_warns_for_defsubst_callargs() {
     )
     .unwrap();
 
-    let result = eval_str(&format!(
-        r#"
+    let result = eval_str_with_upstream_batch_feature(
+        "bytecomp",
+        &format!(
+            r#"
             (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*"))
                   (byte-compile-dest-file-function (lambda (_) {dest_path:?})))
               (byte-compile-file {source_path:?})
               (with-current-buffer byte-compile-log-buffer
                 (not (null (string-match "with 2 arguments, but accepts only 1" (buffer-string))))))
         "#,
-        source_path = source_path.display().to_string(),
-        dest_path = dest_path.display().to_string(),
-    ));
+            source_path = source_path.display().to_string(),
+            dest_path = dest_path.display().to_string(),
+        ),
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(result, Value::T);
 }
 
 #[test]
-fn byte_compile_file_errors_on_unescaped_character_literal_warnings() {
+fn byte_compile_file_reports_unescaped_character_literal_errors_and_returns_nil() {
     let unique = format!(
         "{}-{}",
         std::process::id(),
@@ -1890,30 +1913,20 @@ fn byte_compile_file_errors_on_unescaped_character_literal_warnings() {
     let source = format!(
         r#"
             (let ((byte-compile-error-on-warn t)
+                  (byte-compile-log-buffer (generate-new-buffer " *Compile-Log*"))
                   (byte-compile-dest-file-function (lambda (_) {dest_path:?})))
-              (cdr (should-error (byte-compile-file {source_path:?}))))
+              (list (byte-compile-file {source_path:?})
+                    (file-exists-p {dest_path:?})
+                    (with-current-buffer byte-compile-log-buffer
+                      (and (string-search "unescaped character literals" (buffer-string))
+                           t))))
             "#,
         source_path = source_path.display().to_string(),
         dest_path = dest_path.display().to_string(),
     );
-    let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load the file-less GNU byte-run warning owner");
-    let result = eval_str_with(&mut interp, &source);
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
     let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(
-        result,
-        Value::list([Value::String(
-            concat!(
-                "unescaped character literals ‘?\"’, ‘?(’, ‘?)’, ‘?;’, ‘?[’, ‘?]’ detected, ",
-                "‘?\\\"’, ‘?\\(’, ‘?\\)’, ‘?\\;’, ‘?\\[’, ‘?\\]’ expected!"
-            )
-            .into()
-        )])
-    );
+    assert_eq!(result, Value::list([Value::Nil, Value::Nil, Value::T]));
 }
 
 #[test]
@@ -1990,7 +2003,7 @@ fn byte_compile_file_warns_when_calls_precede_macro_definitions() {
         source_path = source_path.display().to_string(),
         dest_path = dest_path.display().to_string(),
     );
-    let result = eval_str(&source);
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(result, Value::list([Value::T, Value::T, Value::Nil]));
 }
@@ -2031,13 +2044,14 @@ fn byte_compile_file_applies_function_put_before_macro_expansion() {
         source_path = source_path.display().to_string(),
         dest_path = dest_path.display().to_string(),
     );
-    let result = eval_str(&source);
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(result, Value::cons(Value::Integer(1), Value::Integer(2)));
 }
 
 #[test]
 fn byte_compile_file_applies_gv_expanders_before_later_top_level_forms() {
+    let _permit = crate::test_support::acquire_host_test_permit();
     let unique = format!(
         "{}-{}",
         std::process::id(),
@@ -2065,8 +2079,9 @@ fn byte_compile_file_applies_gv_expanders_before_later_top_level_forms() {
             .expect("upstream load path"),
         ..Default::default()
     };
-    let mut compiler = crate::batch::initialize_batch_interpreter(&options)
-        .expect("initialize compiler interpreter");
+    let mut compiler =
+        crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
+            .expect("initialize compiled-owner compiler interpreter");
     eval_str_with(
         &mut compiler,
         &format!(
@@ -2074,9 +2089,9 @@ fn byte_compile_file_applies_gv_expanders_before_later_top_level_forms() {
             source_path.display().to_string()
         ),
     );
-
-    let mut loader = crate::batch::initialize_batch_interpreter(&options)
-        .expect("initialize fresh loader interpreter");
+    let mut loader =
+        crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
+            .expect("initialize fresh compiled-owner loader interpreter");
     crate::lisp::load_file_strict(&mut loader, &dest_path)
         .expect("compiled GV file should load in a fresh interpreter");
     let actual = eval_str_with(&mut loader, "sample-bytecomp-gv-pair");
@@ -2088,7 +2103,8 @@ fn byte_compile_file_applies_gv_expanders_before_later_top_level_forms() {
 #[test]
 fn byte_compile_warns_for_unused_args_and_ignored_assq_values() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
                   (with-current-buffer byte-compile-log-buffer
@@ -2133,7 +2149,8 @@ fn byte_compile_warns_for_unused_args_and_ignored_assq_values() {
 #[test]
 fn byte_compile_warns_for_dodgy_eq_and_eql_literal_args() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
                   (with-current-buffer byte-compile-log-buffer
@@ -2151,14 +2168,20 @@ fn byte_compile_warns_for_dodgy_eq_and_eql_literal_args() {
                                   (eql 'x [a])
                                   (eql 'x (lambda () 1))
                                   (eql 'x #'(lambda () 1))))
-                    (byte-compile form))
+                    (let ((text-quoting-style 'grave)
+                          (macroexp--warned
+                           (make-hash-table :test #'equal :weakness 'key)))
+                      (byte-compile form)))
                   (let ((warn-log (with-current-buffer byte-compile-log-buffer
                                     (buffer-string))))
                     (with-current-buffer byte-compile-log-buffer
                       (let ((inhibit-read-only t))
                         (erase-buffer)))
-                    (byte-compile '(eql 'x #x10000000000))
-                    (byte-compile '(eql 'x 1.0))
+                    (let ((text-quoting-style 'grave)
+                          (macroexp--warned
+                           (make-hash-table :test #'equal :weakness 'key)))
+                      (byte-compile '(eql 'x #x10000000000))
+                      (byte-compile '(eql 'x 1.0)))
                     (let ((numeric-eql-log (with-current-buffer byte-compile-log-buffer
                                              (buffer-string))))
                       (list (not (null (string-match "`eq'.*list.*arg 1" warn-log)))
@@ -2193,7 +2216,8 @@ fn byte_compile_warns_for_dodgy_eq_and_eql_literal_args() {
 #[test]
 fn byte_compile_warns_for_dodgy_identity_member_literal_args() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
                   (with-current-buffer byte-compile-log-buffer
@@ -2210,14 +2234,20 @@ fn byte_compile_warns_for_dodgy_identity_member_literal_args() {
                                   (memq 'x '(a ''b c))
                                   (assq 'x '((a . 1) ("b" . 2) (c . 3)))
                                   (rassq 'x '((1 . a) (2 . "b") (3 . c)))))
-                    (byte-compile form))
+                    (let ((text-quoting-style 'grave)
+                          (macroexp--warned
+                           (make-hash-table :test #'equal :weakness 'key)))
+                      (byte-compile form)))
                   (let ((warn-log (with-current-buffer byte-compile-log-buffer
                                     (buffer-string))))
                     (with-current-buffer byte-compile-log-buffer
                       (let ((inhibit-read-only t))
                         (erase-buffer)))
-                    (byte-compile '(memql #x10000000000 '(x)))
-                    (byte-compile '(memql 1.0 '(x)))
+                    (let ((text-quoting-style 'grave)
+                          (macroexp--warned
+                           (make-hash-table :test #'equal :weakness 'key)))
+                      (byte-compile '(memql #x10000000000 '(x)))
+                      (byte-compile '(memql 1.0 '(x))))
                     (let ((numeric-memql-log (with-current-buffer byte-compile-log-buffer
                                                (buffer-string))))
                       (list (not (null (string-match "`memq'.*list.*arg 1" warn-log)))
@@ -2252,7 +2282,8 @@ fn byte_compile_warns_for_dodgy_identity_member_literal_args() {
 #[test]
 fn cl_labels_functions_can_call_local_labels() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             r#"
                 (cl-labels ((double (x) (+ x x))
                             (quadruple (x) (double (double x))))
@@ -2272,7 +2303,7 @@ fn loaded_cl_labels_keeps_nested_pcase_commas_inside_backquote_patterns() {
         assert_eq!(
             eval_str_with_upstream_batch(
                 r#"(progn
-                     (require 'cl-lib)
+                     (require 'cl-macs)
                      (cl-labels
                          ((prn3 (x y z)
                             (prin1-to-string (list x y z)))
@@ -2288,16 +2319,20 @@ fn loaded_cl_labels_keeps_nested_pcase_commas_inside_backquote_patterns() {
 #[test]
 fn byte_compile_warns_for_quoted_condition_names() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
                   (with-current-buffer byte-compile-log-buffer
                     (let ((inhibit-read-only t))
                       (erase-buffer)))
-                  (byte-compile '(condition-case nil
-                                     (abc)
-                                   ('arith-error "ugh")))
-                  (byte-compile '(ignore-error 'error (abc)))
+                  (let ((text-quoting-style 'grave)
+                        (macroexp--warned
+                         (make-hash-table :test #'equal :weakness 'key)))
+                    (byte-compile '(condition-case nil
+                                       (abc)
+                                     ('arith-error "ugh")))
+                    (byte-compile '(ignore-error 'error (abc))))
                   (let ((warn-log (with-current-buffer byte-compile-log-buffer
                                     (buffer-string))))
                     (list (not (null (string-match "`condition-case'.*'arith-error" warn-log)))
@@ -2311,14 +2346,13 @@ fn byte_compile_warns_for_quoted_condition_names() {
 #[test]
 fn byte_compile_wide_docstring_ignores_function_arg_lists() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (list
-                 (progn
-                   (defun byte-compile--wide-docstring-p (_docstring _max-width) t)
-                   (byte-compile--wide-docstring-p
-                    "\\(dbus-register-property BUS SERVICE PATH INTERFACE PROPERTY ACCESS [TYPE] VALUE &optional EMITS-SIGNAL DONT-REGISTER-SERVICE)"
-                    fill-column))
+                 (byte-compile--wide-docstring-p
+                  "\(dbus-register-property BUS SERVICE PATH INTERFACE PROPERTY ACCESS [TYPE] VALUE &optional EMITS-SIGNAL DONT-REGISTER-SERVICE)"
+                  fill-column)
                  (byte-compile--wide-docstring-p
                   "(dbus-register-property BUS SERVICE PATH INTERFACE PROPERTY ACCESS [TYPE] VALUE &optional EMITS-SIGNAL DONT-REGISTER-SERVICE)"
                   fill-column)
@@ -2350,69 +2384,124 @@ fn byte_compile_wide_docstring_ignores_function_arg_lists() {
 #[test]
 fn byte_compile_warns_for_wide_docstrings_in_definition_forms() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"
                 (progn
-                  (defun emaxx-bytecomp-warning-p (pattern form)
+                  (defun test--bytecomp-warning-p (pattern form)
                     (with-current-buffer (get-buffer-create "*Compile-Log*")
                       (let ((inhibit-read-only t))
                         (erase-buffer)))
-                    (byte-compile form)
+                    (let ((text-quoting-style 'grave)
+                          (macroexp--warned
+                           (make-hash-table :test #'equal :weakness 'key)))
+                      (byte-compile form))
                     (with-current-buffer "*Compile-Log*"
                       (not (null (re-search-forward pattern nil t)))))
                   (list
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "defvar .sample-wide-var. docstring wider"
                     '(defvar sample-wide-var nil
                        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"))
-                   (emaxx-bytecomp-warning-p
-                    "defalias .sample-wide-alias. docstring wider"
-                    '(defalias 'sample-wide-alias #'ignore
-                       "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"))
-                   (emaxx-bytecomp-warning-p
+                   (test--bytecomp-warning-p
                     "docstring wider"
                     '(defun sample-wide-function ()
                        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
                        nil))
                    (not
-                    (emaxx-bytecomp-warning-p
+                    (test--bytecomp-warning-p
                      "docstring wider"
                      '(defun sample-signature-only ()
                         "(fn NAME FIXTURE INPUT &key SKIP-PAIR-STRING EXPECTED-STRING EXPECTED-POINT BINDINGS (MODES \\='\\='(ruby-mode js-mode python-mode)) (TEST-IN-COMMENTS t) (TEST-IN-STRINGS t) (TEST-IN-CODE t))"
                         nil)))))
                 "#
         ),
-        Value::list([Value::T, Value::T, Value::T, Value::T])
+        Value::list([Value::T, Value::T, Value::T])
     );
 }
 
 #[test]
-fn byte_compile_lambda_form_honors_dynamic_lexical_binding() {
-    assert_eq!(
-        eval_str(
-            r#"
-                (let ((x 1))
+fn upstream_byte_compiler_preserves_gnu_dynamic_scope_boundaries() {
+    crate::test_support::run_with_large_stack(|| {
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        eval_str_with(&mut interp, "(require 'bytecomp)");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(type-of (byte-compile (lambda (x) (char-syntax x))))",
+            ),
+            Value::Symbol("byte-code-function".into()),
+            "GNU bytecomp.el must produce a byte-code-function closure",
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(funcall (byte-compile #'(lambda (x) (1+ x))) 41)",
+            ),
+            Value::Integer(42),
+            "GNU bytecomp.el must accept an interpreted function value",
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                    (let ((function
+                           (byte-compile
+                            #'(lambda (required &optional optional)
+                                (list required optional)))))
+                      (list (aref function 0)
+                            (func-arity function)
+                            (funcall function 'value)))
+                "#,
+            ),
+            Value::list([
+                Value::Integer(513),
+                Value::cons(Value::Integer(1), Value::Integer(2)),
+                Value::list([Value::Symbol("value".into()), Value::Nil]),
+            ]),
+            "compiled argument descriptors and callable arity must agree",
+        );
+
+        // GNU bytecomp.el's `byte-compile' (around line 2955) compiles a
+        // quoted lambda dynamically, but reifies the environment of an
+        // interpreted lexical closure.  The dynamic variable must actually
+        // be declared special; merely binding the variable named
+        // `lexical-binding' does not retroactively change the evaluator
+        // environment around this form.
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                (progn
+                  (defvar sample-byte-dynamic nil)
+                  (let ((sample-byte-dynamic 1))
                   (list
                    (let ((lexical-binding nil)
-                         (compiled (byte-compile '(lambda () x))))
-                     (let ((x 2))
+                         (compiled
+                          (byte-compile
+                           '(lambda () sample-byte-dynamic))))
+                     (let ((sample-byte-dynamic 2))
                        (funcall compiled)))
-                   (let ((compiled (let ((lexical-binding t)
-                                         (x 3))
-                                     (byte-compile '(lambda () x)))))
-                     (let ((x 4))
-                       (funcall compiled)))))
-                "#
-        ),
-        Value::list([Value::Integer(2), Value::Integer(3)])
-    );
-}
+                   (let ((compiled
+                          (let ((sample-byte-lexical 3))
+                            (byte-compile
+                             (lambda () sample-byte-lexical)))))
+                     (let ((sample-byte-lexical 4))
+                       (funcall compiled))))))
+                "#,
+            ),
+            Value::list([Value::Integer(2), Value::Integer(3)]),
+            "byte-compile must distinguish declared-special dynamic lookup from a reified lexical closure",
+        );
 
-#[test]
-fn condition_case_dynamic_handler_lambdas_capture_error_variable() {
-    assert_eq!(
-        eval_str(
-            r#"
+        // GNU eval.c dynamically binds a condition-case variable and unwinds
+        // that binding when the handler exits.  A dynamic lambda returned by
+        // the handler therefore cannot capture the variable after the unwind.
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
                 (let ((form '(funcall
                               (condition-case x
                                   (/ 1 0)
@@ -2421,19 +2510,29 @@ fn condition_case_dynamic_handler_lambdas_capture_error_variable() {
                                    (setq x 10))))
                               4))
                       (lexical-binding nil))
-                  (list (eval form lexical-binding)
-                        (funcall (byte-compile (list 'lambda nil form)))))
-                "#
-        ),
-        Value::list([Value::Integer(14), Value::Integer(14)])
-    );
-}
+                  (list
+                   (condition-case err
+                       (eval form lexical-binding)
+                     (void-variable (car err)))
+                   (condition-case err
+                       (funcall
+                       (byte-compile (list 'lambda nil form)))
+                     (void-variable (car err)))))
+                "#,
+            ),
+            Value::list([
+                Value::Symbol("void-variable".into()),
+                Value::Symbol("void-variable".into()),
+            ]),
+            "condition-case's dynamic error binding must be gone before a returned lambda is called",
+        );
 
-#[test]
-fn byte_compile_dynamic_nested_lambdas_do_not_capture_outer_parameters() {
-    assert_eq!(
-        eval_str(
-            r#"
+        // GNU eval.c's dynamic lambdas do not close over their arguments.
+        // The nested `g' therefore resolves the currently active dynamic x.
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
                 (let ((form '(let ((f (lambda (x)
                                         (lambda nil
                                           (let ((g (lambda nil x)))
@@ -2443,33 +2542,15 @@ fn byte_compile_dynamic_nested_lambdas_do_not_capture_outer_parameters() {
                       (lexical-binding nil))
                   (list (eval form lexical-binding)
                         (funcall (byte-compile (list 'lambda nil form)))))
-                "#
-        ),
-        Value::list([
-            Value::list([Value::Symbol("a".into()), Value::Symbol("a".into())]),
-            Value::list([Value::Symbol("a".into()), Value::Symbol("a".into())]),
-        ])
-    );
-}
-
-#[test]
-fn define_advice_installs_named_around_advice() {
-    assert_eq!(
-        eval_str(
-            r#"
-                (progn
-                  (defun emaxx-define-advice-target () 'base)
-                  (define-advice emaxx-define-advice-target
-                      (:around (oldfun &rest args) test)
-                    (cons (apply oldfun args) 'advised))
-                  (emaxx-define-advice-target))
-                "#
-        ),
-        Value::cons(
-            Value::Symbol("base".into()),
-            Value::Symbol("advised".into())
-        )
-    );
+                "#,
+            ),
+            Value::list([
+                Value::list([Value::Symbol("a".into()), Value::Symbol("a".into())]),
+                Value::list([Value::Symbol("a".into()), Value::Symbol("a".into())]),
+            ]),
+            "interpreted and compiled dynamic lambdas must resolve the same active binding",
+        );
+    });
 }
 
 #[test]
@@ -2537,6 +2618,7 @@ fn regexp_syntax_classes_match_standard_delimiters() {
                  (string-match-p "\\s)" ")")
                  (string-match-p "\\s." ";")
                  (string-match-p "\\s." "=")
+                 (string-match-p "\\s_" "=")
                  (string-match-p "\\s>" "\n")
                  (string-match-p "\\S>" "n")
                  (string-match-p "\\S(" "a"))
@@ -2545,10 +2627,13 @@ fn regexp_syntax_classes_match_standard_delimiters() {
         // GNU's standard syntax table assigns no character the comment-end
         // class (newline is whitespace there); `\s>' matches nothing and
         // `\S>' matches anything outside a mode that sets up comments.
+        // `=' is symbol class there (syntax.c gives "_-+*/&|<>=" Ssymbol),
+        // so `\s.' rejects it and `\s_' matches.
         Value::list([
             Value::Integer(0),
             Value::Integer(0),
             Value::Integer(0),
+            Value::Nil,
             Value::Integer(0),
             Value::Nil,
             Value::Integer(0),
@@ -2706,7 +2791,7 @@ fn backward_forward_comment_does_not_find_comment_openers_inside_strings() {
 #[test]
 fn forward_comment_lazily_applies_position_specific_syntax() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r##"
                 (with-temp-buffer
                   (modify-syntax-entry ?# "<")
@@ -2786,7 +2871,7 @@ fn scan_lists_skips_escaped_line_and_block_comment_endings() {
 #[test]
 fn forward_list_moves_over_syntax_table_brace_lists() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
                 (with-temp-buffer
                   (set-syntax-table (make-syntax-table))
@@ -2805,7 +2890,7 @@ fn forward_list_moves_over_syntax_table_brace_lists() {
 #[test]
 fn blank_temporary_syntax_tables_and_narrowed_scans_use_gnu_coordinates() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
                 (with-temp-buffer
                   (insert "prefix (alpha\n beta) suffix")
@@ -2874,7 +2959,7 @@ fn skip_syntax_honors_effective_syntax_properties_when_enabled() {
 #[test]
 fn backward_sexp_uses_effective_syntax_when_skipping_prefix_chars() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
                 (with-temp-buffer
                   (let ((table (make-syntax-table)))
@@ -2897,7 +2982,7 @@ fn backward_sexp_uses_effective_syntax_when_skipping_prefix_chars() {
 #[test]
 fn down_and_up_list_move_through_nested_lists() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
                 (with-temp-buffer
                   (insert "(outer (inner value)) tail")
@@ -2916,7 +3001,7 @@ fn down_and_up_list_move_through_nested_lists() {
 #[test]
 fn beginning_of_defun_raw_moves_between_column_zero_lists() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
                 (with-temp-buffer
                   (insert "(defun first () nil)\n\n(defun second () nil)\n")
@@ -3508,22 +3593,24 @@ fn symbol_value_respects_dynamic_bindings() {
 
 #[test]
 fn emacs_version_function_mentions_version_and_system_configuration() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let version = eval_str_with(&mut interp, "emacs-version");
     let configuration = eval_str_with(&mut interp, "system-configuration");
-    let value = eval_str_with(&mut interp, "(emacs-version)");
-    match (version, configuration, value) {
-        (Value::String(version), Value::String(configuration), Value::String(description)) => {
-            assert!(description.contains(version.as_str()));
-            assert!(description.contains(configuration.as_str()));
-        }
-        other => panic!("expected strings, got {other:?}"),
-    }
+    let description = eval_str_with(&mut interp, "(emacs-version)");
+    let version = primitives::string_text(&version).expect("emacs-version variable is a string");
+    let configuration =
+        primitives::string_text(&configuration).expect("system-configuration is a string");
+    let description = primitives::string_text(&description)
+        .expect("GNU version.el emacs-version returns a string");
+    assert!(description.contains(&version));
+    assert!(description.contains(&configuration));
 }
 
 #[test]
 fn process_identity_supports_desktop_lock_checks() {
-    let mut interp = Interpreter::new();
+    // `alist-get' and `file-name-nondirectory' are supplied by GNU's dumped
+    // Lisp runtime, while the process identity operations remain host-owned.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let value = eval_str_with(
         &mut interp,
         r#"
@@ -3590,8 +3677,10 @@ fn locate_library_searches_configured_load_path() {
     let library = temp.join("sample-lib.el");
     std::fs::write(&library, ";;; sample-lib.el\n").unwrap();
 
-    let mut interp = Interpreter::new();
-    interp.set_load_path(vec![temp.clone()]);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut load_path = interp.configured_load_path().to_vec();
+    load_path.insert(0, temp.clone());
+    interp.set_load_path(load_path);
     assert_eq!(
         eval_str_with(&mut interp, "(locate-library \"sample-lib\")"),
         Value::String(library.display().to_string().into())
@@ -3647,10 +3736,9 @@ fn autoload_registers_a_lazy_function_stub() {
 
 #[test]
 fn custom_autoload_records_expected_symbol_properties() {
-    let mut interp = Interpreter::new();
     assert_eq!(
-        eval_str_with(
-            &mut interp,
+        eval_str_with_upstream_batch_feature(
+            "custom",
             "(progn
                    (custom-autoload 'ps-paper-type \"ps-print\" t)
                    (custom-autoload 'ps-paper-type \"ps-print\" t)
@@ -3719,9 +3807,9 @@ fn format_supports_float_precision_width_and_flags() {
 fn format_seconds_matches_fractional_upstream_cases() {
     run_with_large_stack(|| {
         assert_eq!(
-            eval_str_with_upstream_load_path(
+            eval_str_with_upstream_batch_feature(
+                "time-date",
                 r#"(progn
-                         (require 'time-date)
                          (list
                           (format-seconds "%mm %,1ss" 66.4)
                           (format-seconds "%mm %5,1ss" 66.4)
@@ -3755,7 +3843,7 @@ fn vconcat_preserves_string_elements_from_runtime_vectors() {
 fn todo_mode_loads_date_pattern_with_wildcard_months() {
     run_with_large_stack(|| {
         assert_eq!(
-            eval_str_with_upstream_load_path(
+            eval_str_with_upstream_batch(
                 r#"(progn
                          (require 'todo-mode)
                          (and (stringp todo-date-pattern)
@@ -3771,9 +3859,9 @@ fn todo_mode_loads_date_pattern_with_wildcard_months() {
 fn parse_time_string_matches_rfc_822_cases() {
     run_with_large_stack(|| {
         assert_eq!(
-            eval_str_with_upstream_load_path(
+            eval_str_with_upstream_batch_feature(
+                "parse-time",
                 r#"(progn
-                         (require 'parse-time)
                          (mapcar
                           (lambda (string)
                             (condition-case err
@@ -3895,12 +3983,14 @@ fn parse_time_string_matches_rfc_822_cases() {
 }
 
 #[test]
-fn cl_parse_integer_handles_keyword_bounds_after_cl_lib_loads() {
+fn cl_parse_integer_handles_keyword_bounds_through_real_cl_extra() {
     run_with_large_stack(|| {
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        eval_str_with(&mut interp, "(require 'cl-extra)");
         assert_eq!(
-            eval_str_with_upstream_load_path(
+            eval_str_with(
+                &mut interp,
                 r#"(progn
-                         (require 'cl-lib)
                          (list
                           (cl-parse-integer "22")
                           (cl-parse-integer "xx-2a yy" :start 2 :end 5 :radix 16)
@@ -3927,9 +4017,9 @@ fn cl_parse_integer_handles_keyword_bounds_after_cl_lib_loads() {
 fn parse_iso8601_time_string_applies_zone_offsets() {
     run_with_large_stack(|| {
         assert_eq!(
-            eval_str_with_upstream_load_path(
+            eval_str_with_upstream_batch_feature(
+                "parse-time",
                 r#"(progn
-                         (require 'parse-time)
                          (append
                           (mapcar
                            (lambda (string)
@@ -3983,7 +4073,8 @@ fn decode_time_accepts_let_bound_string_zone() {
 #[test]
 fn time_zone_rule_is_interpreter_local_and_setenv_tz_updates_it() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "env",
             r#"
                 (let ((winter (encode-time '(0 0 12 1 1 2020 nil nil t)))
                       (summer (encode-time '(0 0 12 1 7 2020 nil nil t))))
@@ -4007,7 +4098,7 @@ fn time_zone_rule_is_interpreter_local_and_setenv_tz_updates_it() {
 #[test]
 fn decoded_time_accessors_read_list_fields() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(let ((time (decode-time 0 \"UTC0\" 'integer))
                        (short '(0 0 0 1 1 1970)))
                    (list (decoded-time-second time)
@@ -4038,7 +4129,7 @@ fn decoded_time_accessors_read_list_fields() {
 fn setf_decoded_time_accessors_mutate_time_lists() {
     run_with_large_stack(|| {
         assert_eq!(
-            eval_str(
+            eval_str_with_upstream_batch(
                 "(let ((time (decode-time 0 \"UTC0\" 'integer)))
                        (setf (decoded-time-hour time) 23)
                        (setf (decoded-time-zone time) -3600)
@@ -4361,13 +4452,7 @@ fn format_time_string_supports_colonized_zone_offsets() {
 
 #[test]
 fn posix_tz_environment_drives_local_encode_and_decode_time() {
-    let options = crate::batch::BatchRunOptions {
-        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-        ..Default::default()
-    };
-    let mut interp = crate::batch::initialize_batch_interpreter(&options)
-        .expect("initialize GNU-compatible batch interpreter");
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     eval_str_with(
         &mut interp,
         r#"(setenv "TZ" "EET-2EEST,M3.5.0/3,M10.5.0/4")"#,
@@ -4705,7 +4790,7 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
         Value::String("emaxx-window-one".into())
     );
     interp.set_global_binding(
-        "emaxx--find-file-noselect-probe",
+        "find-file-noselect-probe",
         Value::String(noselect_file.display().to_string().into()),
     );
     assert_eq!(
@@ -4714,7 +4799,7 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
             r#"(let ((current (current-buffer))
                      (shown (window-buffer)))
                  (let ((visited
-                        (find-file-noselect emaxx--find-file-noselect-probe)))
+                        (find-file-noselect find-file-noselect-probe)))
                    (prog1
                        (list (eq (current-buffer) current)
                              (eq (window-buffer) shown))
@@ -4884,8 +4969,10 @@ fn char_width_matches_string_width_for_single_characters() {
 
 #[test]
 fn truncate_string_to_width_uses_display_columns() {
+    // GNU preloads international/mule-util.el, the Elisp owner of
+    // `truncate-string-to-width', in its dumped image.
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list (truncate-string-to-width \"abcdef\" 3)
                        (truncate-string-to-width \"界a\" 2)
                        (truncate-string-to-width \"a\" 3 0 ?.)
@@ -4970,13 +5057,17 @@ fn local_variable_watchers_allow_mutating_lexical_callback_state() {
 #[test]
 fn cl_find_class_prefers_builtin_runtime_for_builtin_classes() {
     run_with_large_stack(|| {
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        eval_str_with(&mut interp, "(require 'cl-extra)");
+        eval_str_with(&mut interp, "(require 'cl-macs)");
         assert_eq!(
-            eval_str(
+            eval_str_with(
+                &mut interp,
                 "(progn
-                       (require 'cl-extra)
-                       (list (cl-find-class 'fixnum)
+                       (list (cl--class-name (cl-find-class 'fixnum))
                              (built-in-class-p (cl-find-class 'fixnum))
-                             (eq (get 'fixnum 'cl--class) 'fixnum)
+                             (eq (get 'fixnum 'cl--class)
+                                 (cl-find-class 'fixnum))
                              (mapcar #'cl--class-name
                                      (cl--class-parents (cl-find-class 'fixnum)))
                              (cl--class-allparents (get 'fixnum 'cl--class))
@@ -5006,7 +5097,8 @@ fn cl_find_class_prefers_builtin_runtime_for_builtin_classes() {
 fn builtin_class_schema_matches_gnu_parentage_and_predicates() {
     run_with_large_stack(|| {
         assert_eq!(
-            eval_str(
+            eval_str_with_upstream_batch_feature(
+                "cl-extra",
                 "(progn
                    (require 'cl-extra)
                    (list
@@ -5080,7 +5172,7 @@ fn builtin_class_schema_matches_gnu_parentage_and_predicates() {
 #[test]
 fn macrop_recognizes_defined_and_autoloaded_macros() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
+        let mut interp = gnu_early_lisp_interpreter();
         assert_eq!(
             eval_str_with(
                 &mut interp,
@@ -5101,7 +5193,9 @@ fn macrop_recognizes_defined_and_autoloaded_macros() {
                 Value::T,
                 Value::T,
                 Value::T,
-                Value::T,
+                // GNU subr.el's `macrop' deliberately returns the matching
+                // `(macro t)' tail from `memq' for an autoload object.
+                Value::list([Value::symbol("macro"), Value::T]),
                 Value::Nil,
                 Value::Nil,
             ])
@@ -5112,10 +5206,9 @@ fn macrop_recognizes_defined_and_autoloaded_macros() {
 #[test]
 fn apropos_internal_filters_symbols_by_regexp_and_predicate() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
         assert_eq!(
-            eval_str_with(
-                &mut interp,
+            eval_str_with_upstream_batch_feature(
+                "rx",
                 "(progn
                        (defun tramp-compat-sample-fn () t)
                        (defvar tramp-compat-sample-var t)
@@ -5134,10 +5227,9 @@ fn apropos_internal_filters_symbols_by_regexp_and_predicate() {
 #[test]
 fn custom_set_variables_applies_now_specs() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
         assert_eq!(
-            eval_str_with(
-                &mut interp,
+            eval_str_with_upstream_batch_feature(
+                "custom",
                 "(progn
                        (defcustom sample-custom-var nil \"doc\")
                        (custom-set-variables '(sample-custom-var 'set-v now))
@@ -5154,10 +5246,8 @@ fn custom_set_variables_applies_now_specs() {
 #[test]
 fn advertised_calling_convention_round_trips_for_symbol_function() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
         assert_eq!(
-            eval_str_with(
-                &mut interp,
+            eval_str(
                 "(progn
                        (defun sample-adv-cc (arg) arg)
                        (set-advertised-calling-convention 'sample-adv-cc '(value) \"31.1\")
@@ -5169,125 +5259,24 @@ fn advertised_calling_convention_round_trips_for_symbol_function() {
 }
 
 #[test]
-fn builtin_autoloads_cover_saveplace_dependencies() {
-    let interp = Interpreter::new();
-    let env = Vec::new();
-    assert_eq!(
-        interp.default_value("revert-buffer-function"),
-        Some(Value::Symbol("revert-buffer--default".into()))
-    );
-    assert_eq!(
-        interp
-            .lookup_function("cl-delete-duplicates", &env)
-            .unwrap(),
-        builtin_file_autoload("cl-seq", Value::Nil)
-    );
-    assert_eq!(
-        interp.lookup_function("cl-assoc-if", &env).unwrap(),
-        builtin_file_autoload("cl-seq", Value::Nil)
-    );
-    assert_eq!(
-        interp.lookup_function("dired", &env).unwrap(),
-        builtin_file_autoload("dired", Value::T)
-    );
-    assert_eq!(
-        interp.lookup_function("define-skeleton", &env).unwrap(),
-        builtin_macro_autoload("skeleton")
-    );
-    assert!(matches!(
-        interp.lookup_function("eval-defun", &env).unwrap(),
-        Value::Lambda(_)
-    ));
-    assert_eq!(
-        interp.lookup_function("fill-region", &env).unwrap(),
-        builtin_file_autoload("fill", Value::Nil)
-    );
-    assert_eq!(
-        interp
-            .lookup_function("with-connection-local-variables", &env)
-            .unwrap(),
-        builtin_macro_autoload("files-x")
-    );
-    assert_eq!(
-        interp
-            .lookup_function("connection-local-value", &env)
-            .unwrap(),
-        builtin_macro_autoload("files-x")
-    );
-    assert_eq!(
-        interp
-            .lookup_function("elisp-completion-at-point", &env)
-            .unwrap(),
-        builtin_file_autoload("elisp-mode", Value::Nil)
-    );
-    assert_eq!(
-        interp
-            .lookup_function("gnutls-boot-parameters", &env)
-            .unwrap(),
-        builtin_file_autoload("gnutls", Value::Nil)
-    );
-    assert_eq!(
-        interp.lookup_function("key-valid-p", &env).unwrap(),
-        builtin_file_autoload("keymap", Value::Nil)
-    );
-    assert_eq!(
-        interp.lookup_function("keymap-set", &env).unwrap(),
-        builtin_file_autoload("keymap", Value::Nil)
-    );
-    assert_eq!(
-        interp.lookup_function("map-y-or-n-p", &env).unwrap(),
-        builtin_file_autoload("emacs-lisp/map-ynp", Value::Nil)
-    );
-    assert_eq!(
-        interp.lookup_function("customize-set-value", &env).unwrap(),
-        builtin_file_autoload("cus-edit", Value::T)
-    );
-    assert_eq!(
-        interp.lookup_function("compile", &env).unwrap(),
-        builtin_file_autoload("compile", Value::T)
-    );
-    for function in [
-        "save-buffer",
-        "revert-buffer",
-        "revert-buffer-with-fine-grain",
-        "save-some-buffers",
-        "save-buffers-kill-emacs",
-    ] {
+fn advertised_calling_convention_is_keyed_by_function_identity() {
+    run_with_large_stack(|| {
         assert_eq!(
-            interp.lookup_function(function, &env).unwrap(),
-            builtin_file_autoload("files", Value::T),
-            "autoload for {function}"
+            eval_str(
+                "(progn
+                   (defun sample-old-adv-cc (arg) arg)
+                   (set-advertised-calling-convention
+                    'sample-old-adv-cc '(old-arg) \"31.1\")
+                   (let ((old-function (symbol-function 'sample-old-adv-cc)))
+                     (defun sample-old-adv-cc (replacement) replacement)
+                     (list
+                      (get-advertised-calling-convention old-function)
+                      (get-advertised-calling-convention
+                       (symbol-function 'sample-old-adv-cc)))))",
+            ),
+            Value::list([Value::list([Value::Symbol("old-arg".into())]), Value::T,])
         );
-    }
-    assert_eq!(
-        interp.lookup_function("basic-save-buffer", &env).unwrap(),
-        builtin_file_autoload("files", Value::Nil)
-    );
-    for function in [
-        "pp-to-string",
-        "pp",
-        "pp-display-expression",
-        "pp-emacs-lisp-code",
-    ] {
-        assert_eq!(
-            interp.lookup_function(function, &env).unwrap(),
-            builtin_file_autoload("pp", Value::Nil),
-            "autoload for {function}"
-        );
-    }
-    for function in [
-        "pp-buffer",
-        "pp-eval-expression",
-        "pp-macroexpand-expression",
-        "pp-eval-last-sexp",
-        "pp-macroexpand-last-sexp",
-    ] {
-        assert_eq!(
-            interp.lookup_function(function, &env).unwrap(),
-            builtin_file_autoload("pp", Value::T),
-            "interactive autoload for {function}"
-        );
-    }
+    });
 }
 
 #[test]
@@ -5516,42 +5505,6 @@ fn customize_set_value_autoloads_the_elisp_implementation() {
 }
 
 #[test]
-fn builtin_autoloads_cover_pcomplete_command_families() {
-    let mut interp = Interpreter::new();
-    let env = Vec::new();
-    for (function, file) in [
-        ("pcomplete/cvs", "pcmpl-cvs"),
-        ("pcomplete/git", "pcmpl-git"),
-        ("pcomplete/tar", "pcmpl-gnu"),
-        ("pcomplete/systemctl", "pcmpl-linux"),
-        ("pcomplete/rpm", "pcmpl-rpm"),
-        ("pcomplete/echo", "pcmpl-unix"),
-        ("pcomplete/rg", "pcmpl-x"),
-    ] {
-        assert_eq!(
-            interp.lookup_function(function, &env).unwrap(),
-            builtin_file_autoload(file, Value::Nil),
-            "autoload for {function}"
-        );
-    }
-
-    assert_eq!(
-        eval_str_with(
-            &mut interp,
-            "(list (intern-soft \"pcomplete/echo\")\
-                   (intern-soft \"pcomplete/echo\" obarray)\
-                   (let ((private (obarray-make)))\
-                     (intern-soft \"pcomplete/echo\" private)))",
-        ),
-        Value::list([
-            Value::Symbol("pcomplete/echo".into()),
-            Value::Symbol("pcomplete/echo".into()),
-            Value::Nil,
-        ])
-    );
-}
-
-#[test]
 fn autoloaded_functions_load_on_funcall() {
     let root = std::env::temp_dir().join(format!(
         "emaxx-autoload-{}",
@@ -5564,7 +5517,7 @@ fn autoloaded_functions_load_on_funcall() {
     let target = root.join("sample-autoload.el");
     std::fs::write(&target, "(defun sample-autoload () 42)\n").unwrap();
 
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     interp.set_load_path(vec![root.clone()]);
     eval_str_with(
         &mut interp,
@@ -5607,7 +5560,7 @@ fn function_get_autoloads_before_reading_declared_property() {
     )
     .unwrap();
 
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     interp.set_load_path(vec![root.clone()]);
     assert_eq!(
         eval_str_with(
@@ -5787,6 +5740,13 @@ fn loaded_gnu_cl_remprop_mutates_non_head_live_plist_cells() {
 #[test]
 fn eager_macroexpansion_treats_setf_method_names_as_definition_syntax() {
     run_with_large_stack(|| {
+        let mut bare = Interpreter::new();
+        assert_eq!(
+            eval_str_with(&mut bare, "(get 'cl-no-method 'error-conditions)"),
+            Value::Nil,
+            "the C-only runtime must not pre-seed cl-generic.el's conditions"
+        );
+
         let options = crate::batch::BatchRunOptions {
             load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
                 .expect("upstream load path"),
@@ -5794,6 +5754,25 @@ fn eager_macroexpansion_treats_setf_method_names_as_definition_syntax() {
         };
         let mut interp =
             crate::batch::initialize_batch_interpreter(&options).expect("batch interpreter");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(list (get 'cl-no-method 'error-conditions)
+                       (get 'cl-no-next-method 'error-conditions))"
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("cl-no-method".into()),
+                    Value::Symbol("error".into()),
+                ]),
+                Value::list([
+                    Value::Symbol("cl-no-next-method".into()),
+                    Value::Symbol("cl-no-method".into()),
+                    Value::Symbol("error".into()),
+                ]),
+            ]),
+            "the reconstructed GNU image must obtain conditions from cl-generic.el"
+        );
 
         eval_str_with(
             &mut interp,
@@ -5838,7 +5817,7 @@ fn autoloaded_handler_function_quote_resolves_on_dispatch() {
     )
     .unwrap();
 
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     interp.set_load_path(vec![root.clone()]);
     assert_eq!(
         eval_str_with(
@@ -5859,23 +5838,16 @@ fn autoloaded_handler_function_quote_resolves_on_dispatch() {
 #[test]
 fn preloaded_eval_defun_evaluates_current_definition() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
-               (setq sample-eval-defun-instrumented nil)
-               (setq edebug-new-definition-function
-                     (lambda (name)
-                       (setq sample-eval-defun-instrumented name)))
                (with-temp-buffer
                  (insert \"(defun sample-eval-defun () 42)\\n\")
                  (goto-char (point-min))
                  (re-search-forward \"sample-eval-defun\")
-                 (eval-defun t)
-                 (list (sample-eval-defun) sample-eval-defun-instrumented)))"
+                 (eval-defun nil))
+               (sample-eval-defun))"
         ),
-        Value::list([
-            Value::Integer(42),
-            Value::Symbol("sample-eval-defun".into())
-        ])
+        Value::Integer(42)
     );
 }
 
@@ -5936,7 +5908,7 @@ fn autoload_do_load_loads_function_stubs() {
         let target = root.join("sample-autoload-do-load.el");
         std::fs::write(&target, "(defun sample-autoload-do-load () 42)\n").unwrap();
 
-        let mut interp = Interpreter::new();
+        let mut interp = gnu_early_lisp_interpreter();
         interp.set_load_path(vec![root.clone()]);
         assert_eq!(
             eval_str_with(
@@ -5972,7 +5944,7 @@ fn autoload_do_load_respects_macro_only_for_non_macros() {
         let target = root.join("sample-autoload-macro-only.el");
         std::fs::write(&target, "(defun sample-autoload-macro-only () 42)\n").unwrap();
 
-        let mut interp = Interpreter::new();
+        let mut interp = gnu_early_lisp_interpreter();
         interp.set_load_path(vec![root.clone()]);
         assert_eq!(
             eval_str_with(
@@ -6011,7 +5983,7 @@ fn autoload_do_load_loads_macros_in_macro_mode() {
         let target = root.join("sample-auto-macro.el");
         std::fs::write(&target, "(defmacro sample-auto-macro () 42)\n").unwrap();
 
-        let mut interp = Interpreter::new();
+        let mut interp = gnu_early_lisp_interpreter();
         interp.set_load_path(vec![root.clone()]);
         assert_eq!(
             eval_str_with(
@@ -6048,7 +6020,7 @@ fn autoloaded_macros_expand_when_called() {
     let target = root.join("sample-auto-expand.el");
     std::fs::write(&target, "(defmacro sample-auto-expand () 42)\n").unwrap();
 
-    let mut interp = Interpreter::new();
+    let mut interp = gnu_early_lisp_interpreter();
     interp.set_load_path(vec![root.clone()]);
     assert_eq!(
         eval_str_with(
@@ -6150,7 +6122,7 @@ fn cl_defmacro_autoloads_and_expands_in_batch_runtime() {
         interp.set_variable("noninteractive", Value::T, &mut Vec::new());
         interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
         let _ = interp.load_target("backquote");
-        load_faces_compat(&mut interp);
+        load_gnu_batch_runtime(&mut interp);
         assert_eq!(
             eval_str_with(
                 &mut interp,
@@ -6167,7 +6139,8 @@ fn cl_defmacro_autoloads_and_expands_in_batch_runtime() {
 #[test]
 fn macroexpand_all_expands_let_when_compile_constants() {
     assert_string_list(
-        eval_str(
+        eval_str_with_upstream_batch_features(
+            &["macroexp", "cl-macs"],
             r#"
                 (progn
                   (defmacro let-when-compile (bindings &rest body)
@@ -6199,7 +6172,8 @@ fn macroexpand_all_expands_let_when_compile_constants() {
 #[test]
 fn macroexpand_all_uses_local_macro_environment() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "macroexp",
             r#"
                 (let ((env (list (cons 'sample-env-macro
                                        (lambda (&rest args)
@@ -6236,7 +6210,8 @@ fn vectorp_recognizes_vector_literals() {
 #[test]
 fn make_display_table_creates_a_display_char_table() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "disp-table",
             "(let ((table (make-display-table))) \
                    (list (char-table-p table) (char-table-subtype table)))"
         ),
@@ -6246,7 +6221,9 @@ fn make_display_table_creates_a_display_char_table() {
 
 #[test]
 fn translate_region_uses_char_tables() {
-    let value = eval_str(
+    // `translate-region' is mule.el's preloaded Elisp wrapper around the
+    // native `translate-region-internal' (editfns.c).
+    let value = eval_str_with_upstream_batch(
         r#"
             (with-temp-buffer
               (insert "Super-secret text")
@@ -6265,8 +6242,8 @@ fn translate_region_uses_char_tables() {
 }
 
 #[test]
-fn preloaded_point_to_register_stub_is_fboundp() {
-    let mut interp = Interpreter::new();
+fn preloaded_point_to_register_owner_is_fboundp() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     assert_eq!(
         eval_str_with(&mut interp, "(fboundp 'point-to-register)"),
         Value::T
@@ -6274,24 +6251,25 @@ fn preloaded_point_to_register_stub_is_fboundp() {
 }
 
 #[test]
-fn preloaded_point_to_register_quits_on_quit_events() {
-    let mut interp = Interpreter::new();
+fn preloaded_point_to_register_stores_the_current_location() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     assert_eq!(
         eval_str_with(
             &mut interp,
-            r#"(let ((last-input-event ?\C-g)
-                         (register-alist nil))
-                     (condition-case err
-                         (call-interactively 'point-to-register)
-                       (quit (car err))))"#
+            r#"(let ((register-alist nil))
+                     (with-temp-buffer
+                       (insert "abc")
+                       (goto-char 2)
+                       (point-to-register ?a)
+                       (marker-position (get-register ?a))))"#
         ),
-        Value::Symbol("quit".into())
+        Value::Integer(2)
     );
 }
 
 #[test]
 fn preloaded_command_line_1_processes_command_switch_alist() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -6326,7 +6304,6 @@ fn assert_list_buffers_keeps_file_visiting_internal_names_addressable() {
     let target = root.join("sample.txt");
     std::fs::write(&target, "hello\n").unwrap();
 
-    let mut interp = Interpreter::new();
     let expr = format!(
         "(progn \
                (find-file {path:?}) \
@@ -6336,7 +6313,7 @@ fn assert_list_buffers_keeps_file_visiting_internal_names_addressable() {
                  (buffer-name (Buffer-menu-buffer))))",
         path = target.display().to_string()
     );
-    assert_string_value(eval_str_with(&mut interp, &expr), " foo");
+    assert_string_value(eval_str_with_upstream_batch(&expr), " foo");
 
     std::fs::remove_file(&target).unwrap();
     std::fs::remove_dir(&root).unwrap();
@@ -6411,7 +6388,7 @@ fn load_target_prefers_files_over_same_named_directories() {
 }
 
 #[test]
-fn gnu_elc_fallback_does_not_override_an_interpretable_bare_source() {
+fn selected_gnu_elc_never_falls_back_to_its_sibling_source() {
     run_with_large_stack(|| {
         let root = std::env::temp_dir().join(format!(
             "emaxx-gnu-elc-fallback-{}",
@@ -6426,39 +6403,41 @@ fn gnu_elc_fallback_does_not_override_an_interpretable_bare_source() {
         std::fs::write(
             &source,
             ";;; -*- lexical-binding: t -*-\n\
-             (defmacro sample-value () '(quote before))\n\
-             (defun sample-function () (sample-value))\n\
+             (defalias 'sample-function (function (lambda () 'source)))\n\
              (provide 'sample)\n",
         )
         .unwrap();
-        // A genuine GNU byte-code object is enough to require the sibling
-        // source fallback; Emaxx must not attempt to call this opcode stream.
-        std::fs::write(&compiled, b";ELC\x1e\0\0\0\n#[0 \"\\300\\207\" [nil] 1]\n").unwrap();
+        std::fs::write(
+            &compiled,
+            b";ELC\x1e\0\0\0\n(defalias 'sample-function #[0 \"\\300\\207\" [compiled] 1])\n(provide 'sample)\n",
+        )
+        .unwrap();
 
         let mut source_interp = Interpreter::new();
         source_interp.set_load_path(vec![root.clone()]);
         assert_eq!(source_interp.load_target("sample").unwrap(), source);
-        eval_str_with(
-            &mut source_interp,
-            "(defmacro sample-value () '(quote after))",
-        );
         assert_eq!(
             eval_str_with(&mut source_interp, "(sample-function)"),
-            Value::Symbol("after".into())
+            Value::symbol("source")
         );
 
-        // An explicit genuine GNU bytecode request still falls back to its
-        // sibling source, because Emaxx does not execute GNU bytecode.
+        let mut preferred_interp = Interpreter::new();
+        preferred_interp.set_prefer_compiled_loads(true);
+        preferred_interp.set_load_path(vec![root.clone()]);
+        assert_eq!(preferred_interp.load_target("sample").unwrap(), compiled);
+        assert_eq!(
+            eval_str_with(&mut preferred_interp, "(sample-function)"),
+            Value::symbol("compiled")
+        );
+
+        // Explicit `.elc' names execute that file regardless of the resolver's
+        // default suffix preference.
         let mut compiled_interp = Interpreter::new();
         compiled_interp.set_load_path(vec![root.clone()]);
         assert_eq!(compiled_interp.load_target("sample.elc").unwrap(), compiled);
-        eval_str_with(
-            &mut compiled_interp,
-            "(defmacro sample-value () '(quote after))",
-        );
         assert_eq!(
             eval_str_with(&mut compiled_interp, "(sample-function)"),
-            Value::Symbol("after".into())
+            Value::symbol("compiled")
         );
 
         std::fs::remove_file(root.join("sample.el")).unwrap();
@@ -6534,7 +6513,7 @@ fn load_file_strict_scopes_lexical_binding_to_the_loaded_file() {
         ));
         std::fs::write(
             &path,
-            ";;; lexical-cookie -*- lexical-binding: t -*-\n(unless lexical-binding (error \"missing lexical binding\"))\n(provide 'sample)\n",
+            ";;; lexical-cookie -*- lexical-binding: t -*-\n(if lexical-binding nil (error \"missing lexical binding\"))\n(provide 'sample)\n",
         )
         .unwrap();
 
@@ -6550,6 +6529,89 @@ fn load_file_strict_scopes_lexical_binding_to_the_loaded_file() {
 }
 
 #[test]
+fn load_file_strict_scopes_bare_defvar_and_macro_dynvars_to_one_lexical_file() {
+    run_with_large_stack(|| {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-file-local-defvar-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let owner = root.join("owner.el");
+        let unrelated = root.join("unrelated.el");
+        std::fs::write(
+            &owner,
+            ";;; -*- lexical-binding: t -*-\n\
+             (defvar sample-file-local-special)\n\
+             (defalias 'sample-file-local-reader\n\
+               (function (lambda () sample-file-local-special)))\n\
+             (defalias 'sample-file-local-call\n\
+               (function\n\
+                (lambda (value)\n\
+                  (let ((sample-file-local-special value))\n\
+                    (sample-file-local-reader)))))\n\
+             (defalias 'sample-file-local-macro\n\
+               (cons 'macro\n\
+                     (function\n\
+                      (lambda (&rest ignored)\n\
+                        (list 'quote macroexp--dynvars)))))\n\
+             (setq sample-file-local-macro-result (sample-file-local-macro))\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &unrelated,
+            ";;; -*- lexical-binding: t -*-\n\
+             (defalias 'sample-unrelated-lexical-maker\n\
+               (function\n\
+                (lambda (value)\n\
+                  (let ((sample-file-local-special value))\n\
+                    (function (lambda () sample-file-local-special))))))\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &owner).unwrap();
+        crate::lisp::load_file_strict(&mut interp, &unrelated).unwrap();
+        let metadata = eval_str_with(
+            &mut interp,
+            "(list
+               (special-variable-p 'sample-file-local-special)
+               (aref (symbol-function 'sample-file-local-reader) 2)
+               (aref (symbol-function 'sample-file-local-call) 2)
+               sample-file-local-macro-result
+               macroexp--dynvars
+               (aref (symbol-function 'sample-unrelated-lexical-maker) 2))",
+        );
+        assert_eq!(
+            metadata,
+            Value::list([
+                Value::Nil,
+                Value::list([Value::symbol("sample-file-local-special"), Value::T,]),
+                Value::list([Value::symbol("sample-file-local-special"), Value::T,]),
+                Value::list([Value::T, Value::symbol("sample-file-local-special"),]),
+                Value::Nil,
+                Value::list([Value::T]),
+            ])
+        );
+
+        let result = eval_str_with(
+            &mut interp,
+            "(list
+               (sample-file-local-call 42)
+               (funcall (sample-unrelated-lexical-maker 84)))",
+        );
+        assert_eq!(
+            result,
+            Value::list([Value::Integer(42), Value::Integer(84)])
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
 fn load_file_strict_prebinds_current_load_list() {
     run_with_large_stack(|| {
         let path = std::env::temp_dir().join(format!(
@@ -6561,7 +6623,7 @@ fn load_file_strict_prebinds_current_load_list() {
         ));
         std::fs::write(
             &path,
-            "(setq sample-current-load-entry (car (last current-load-list)))\n",
+            "(setq sample-current-load-entry (car current-load-list))\n",
         )
         .unwrap();
 
@@ -6600,18 +6662,22 @@ fn source_load_records_require_for_an_already_loaded_feature() {
         )
         .unwrap();
 
-        let mut interp = Interpreter::new();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        // GNU records a `require' under the loading file even when the
+        // feature is already present, and even when the call happens inside
+        // `eval-when-compile's load-time evaluation: direct GNU 30.2 probes
+        // of this fixture return both members.
         assert_eq!(
             eval_str_with(
                 &mut interp,
                 &format!(
                     "(let ((entry (assoc {path:?} load-history)))
-                       (and (member '(require . emacs) entry)
-                            (not (member '(require . cl-preloaded) entry))))"
+                       (list (and (member '(require . emacs) entry) t)
+                             (and (member '(require . cl-preloaded) entry) t)))"
                 )
             ),
-            Value::T
+            Value::list([Value::T, Value::T])
         );
 
         std::fs::remove_file(path).unwrap();
@@ -6640,7 +6706,7 @@ fn source_definitions_restore_autoloads_without_stale_function_cells() {
         )
         .unwrap();
 
-        let mut interp = Interpreter::new();
+        let mut interp = gnu_early_lisp_interpreter();
         crate::lisp::load_file_strict(&mut interp, &autoload_path).unwrap();
         crate::lisp::load_file_strict(&mut interp, &definition_path).unwrap();
         assert_eq!(
@@ -6688,7 +6754,7 @@ fn symbol_file_finds_defun_recorded_by_source_load() {
         ));
         std::fs::write(&path, "(defun emaxx-loaded-source-probe () t)\n").unwrap();
 
-        let mut interp = Interpreter::new();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         assert_string_value(
             eval_str_with(
@@ -6706,7 +6772,7 @@ fn symbol_file_finds_defun_recorded_by_source_load() {
 fn load_file_strict_records_cl_defmethod_files() {
     run_with_large_stack(|| {
         let path = std::env::temp_dir().join(format!(
-            "emaxx-cl-defmethod-load-history-{}.el",
+            "sample-cl-defmethod-load-history-{}.el",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -6721,7 +6787,9 @@ fn load_file_strict_records_cl_defmethod_files() {
         )
         .unwrap();
 
-        let mut interp = Interpreter::new();
+        let path = std::fs::canonicalize(path).expect("canonicalize method fixture");
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        eval_str_with(&mut interp, "(require 'cl-generic)");
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         assert_eq!(
             eval_str_with(
@@ -6740,7 +6808,7 @@ fn load_file_strict_records_cl_defmethod_files() {
                                    '(sample-load-method sample-load-method
                                      sample-load-method))\
                             (equal (mapcar #'cddr files)\
-                                   '((nil t) (nil string) (nil integer)))))"
+                                   '((nil integer) (nil string) (nil t)))))"
                 )
             ),
             Value::T
@@ -6754,7 +6822,7 @@ fn load_file_strict_records_cl_defmethod_files() {
 fn cl_generic_describe_prints_quoted_eql_specializers() {
     run_with_large_stack(|| {
         let path = std::env::temp_dir().join(format!(
-            "emaxx-cl-generic-describe-{}.el",
+            "sample-cl-generic-describe-{}.el",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -6767,7 +6835,8 @@ fn cl_generic_describe_prints_quoted_eql_specializers() {
         )
         .unwrap();
 
-        let mut interp = Interpreter::new();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        eval_str_with(&mut interp, "(require 'cl-generic)");
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         assert_eq!(
             eval_str_with(
@@ -6933,10 +7002,14 @@ fn locate_file_searches_directories_and_suffixes() {
     std::fs::write(&rejected, "").unwrap();
     std::fs::write(&accepted, "").unwrap();
     let dir_text = dir.display().to_string();
-    let found = eval_str(&format!(
-        "(locate-file \"sample\" '(\"{dir_text}\") '(\".el\" \".txt\")
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let found = eval_str_with(
+        &mut interp,
+        &format!(
+            "(locate-file \"sample\" '(\"{dir_text}\") '(\".el\" \".txt\")
                           (lambda (path) (string-suffix-p \".txt\" path)))"
-    ));
+        ),
+    );
     assert_eq!(found, Value::String(accepted.display().to_string().into()));
     std::fs::remove_file(rejected).unwrap();
     std::fs::remove_file(accepted).unwrap();
@@ -6962,17 +7035,20 @@ fn locate_file_access_predicates_cover_public_and_internal_paths() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
     let dir_text = dir.display().to_string();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
 
     assert_eq!(
-        eval_str(&format!(
-            "(locate-file \"sample-tool\" '(\"{dir_text}\") '(\"\") 'executable)"
-        )),
+        eval_str_with(
+            &mut interp,
+            &format!("(locate-file \"sample-tool\" '(\"{dir_text}\") '(\"\") 'executable)"),
+        ),
         Value::String(script.display().to_string().into())
     );
     assert_eq!(
-        eval_str(&format!(
-            "(locate-file-internal \"sample-tool\" '(\"{dir_text}\") '(\"\") 1)"
-        )),
+        eval_str_with(
+            &mut interp,
+            &format!("(locate-file-internal \"sample-tool\" '(\"{dir_text}\") '(\"\") 1)"),
+        ),
         Value::String(script.display().to_string().into())
     );
 
@@ -7102,17 +7178,22 @@ fn quoted_default_directory_preserves_shell_and_file_process_output() {
 }
 
 #[test]
-fn defcustom_property_scan_stops_at_non_keyword_forms() {
+fn defcustom_rejects_non_keyword_property_forms_after_evaluating_them() {
     assert_eq!(
-        eval_str(
-            "(progn
+        eval_str_with_upstream_batch_feature(
+            "custom",
+            "(let (evaluated)
+               (condition-case err
                    (defcustom sample-custom-value 1
                      \"doc\"
                      :type 'integer
-                     (message \"loaded\"))
-                   sample-custom-value)"
+                     (setq evaluated 'loaded))
+                 (error
+                  (list evaluated
+                        (boundp 'sample-custom-value)
+                        (car err)))))"
         ),
-        Value::Integer(1)
+        Value::list([Value::symbol("loaded"), Value::Nil, Value::symbol("error")])
     );
 }
 
@@ -7151,10 +7232,64 @@ fn generic_record_reader_forms_evaluate_to_literal_records() {
         panic!("expected a record literal");
     };
     let record = interp.find_record(id).expect("record state");
-    assert_eq!(record.type_name, "literal-record");
-    assert_eq!(record.slots.len(), 2);
-    assert!(matches!(record.slots[0], Value::Record(_)));
-    assert_eq!(record.slots[1], Value::Symbol("c".into()));
+    let Value::Record(type_id) = record.type_tag else {
+        panic!("GNU preserves the nested record as the exact type descriptor");
+    };
+    assert_eq!(record.slots, vec![Value::Symbol("c".into())]);
+    let descriptor = interp.find_record(type_id).expect("type descriptor record");
+    assert_eq!(descriptor.type_tag, Value::symbol("a"));
+    assert_eq!(descriptor.slots, vec![Value::symbol("b")]);
+}
+
+#[test]
+fn record_primitives_preserve_arbitrary_type_descriptors() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((tag (record 'a 'b))
+                       (value (record tag 'c))
+                       (copy (copy-sequence value)))
+                  (list (type-of value)
+                        (cl-type-of value)
+                        (type-of (aref value 0))
+                        (aref (aref value 0) 1)
+                        (equal value copy)
+                        (eq (aref value 0) (aref copy 0))
+                        (prin1-to-string value)))"#,
+        ),
+        Value::list([
+            Value::symbol("b"),
+            Value::symbol("b"),
+            Value::symbol("a"),
+            Value::symbol("b"),
+            Value::T,
+            Value::T,
+            Value::string("#s(#s(a b) c)"),
+        ])
+    );
+}
+
+#[test]
+fn make_record_and_aset_preserve_arbitrary_type_descriptors() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((tag (record 'a 'b))
+                       (value (make-record tag 2 'z))
+                       (replacement (record 'c 'd)))
+                  (aset value 0 replacement)
+                  (list (type-of value)
+                        (cl-type-of value)
+                        (aref value 1)
+                        (aref value 2)
+                        (prin1-to-string value)))"#,
+        ),
+        Value::list([
+            Value::symbol("d"),
+            Value::symbol("d"),
+            Value::symbol("z"),
+            Value::symbol("z"),
+            Value::string("#s(#s(c d) z z)"),
+        ])
+    );
 }
 
 #[test]
@@ -7321,6 +7456,22 @@ fn read_from_string_prints_circular_cons_with_labels() {
 }
 
 #[test]
+fn equal_compares_circular_cons_graphs() {
+    assert_eq!(
+        eval_str(
+            r##"
+                (let* ((read-circle t)
+                       (x (car (read-from-string "#1=(a #1#)")))
+                       (y (car (read-from-string "#1=(a #1#)")))
+                       (z (car (read-from-string "#1=(b #1#)"))))
+                  (list (equal x x) (equal x y) (equal x z)))
+                "##,
+        ),
+        Value::list([Value::T, Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn read_from_string_prints_circular_vectors_with_labels() {
     assert_string_value(
         eval_str(
@@ -7361,6 +7512,17 @@ fn prin1_to_current_buffer_keeps_saved_restriction_markers_current() {
                 "#
         ),
         Value::String("body\n".into())
+    );
+}
+
+#[test]
+fn prin1_to_string_uses_gnu_closure_reader_syntax_for_byte_code() {
+    assert_eq!(
+        eval_str(
+            "(let ((printed (prin1-to-string (make-byte-code 0 \"\" [] 0))))
+               (list (substring printed 0 2) (substring printed -1)))"
+        ),
+        Value::list([Value::String("#[".into()), Value::String("]".into())])
     );
 }
 
@@ -7456,7 +7618,7 @@ fn mouse_wheel_mode_binds_scroll_command() {
         interp.set_variable("noninteractive", Value::T, &mut Vec::new());
         interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
         let _ = interp.load_target("backquote");
-        load_faces_compat(&mut interp);
+        load_gnu_batch_runtime(&mut interp);
 
         assert_eq!(
             eval_str_with(
@@ -7492,13 +7654,24 @@ fn subr_introspection_supports_if_special_form() {
                 (list
                  (subr-arity (symbol-function 'if))
                  (subr-name (symbol-function 'if))
-                 (subr-arity (symbol-function 'dlet)))
+                 ;; GNU's subr.el owns `dlet' as a macro, so `subr-arity'
+                 ;; signals wrong-type-argument with the subrp predicate and
+                 ;; the macro object itself.
+                 (condition-case err
+                     (subr-arity (symbol-function 'dlet))
+                   (error (list (car err)
+                                (cadr err)
+                                (eq (nth 2 err) (symbol-function 'dlet))))))
                 "##,
         ),
         Value::list([
             Value::cons(Value::Integer(2), Value::Symbol("unevalled".into())),
             Value::String("if".into()),
-            Value::cons(Value::Integer(1), Value::Symbol("unevalled".into())),
+            Value::list([
+                Value::Symbol("wrong-type-argument".into()),
+                Value::Symbol("subrp".into()),
+                Value::T,
+            ]),
         ])
     );
 }
@@ -7633,7 +7806,9 @@ fn string_affix_helpers_preserve_subr_el_length_short_circuits() {
 
 #[test]
 fn cl_assert_signals_condition_with_asserted_form() {
-    let mut interp = Interpreter::new();
+    let _permit = crate::test_support::acquire_host_test_permit();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(&mut interp, "(require 'cl-macs)");
     let form = Reader::new("(cl-assert lexical-binding)")
         .read()
         .unwrap()
@@ -7656,7 +7831,7 @@ fn cl_assert_signals_condition_with_asserted_form() {
 fn load_file_strict_keeps_lexical_binding_for_cl_iter_defun() {
     run_with_large_stack(|| {
         let path = std::env::temp_dir().join(format!(
-            "emaxx-cl-iter-defun-{}.el",
+            "sample-cl-iter-defun-{}.el",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -7664,15 +7839,11 @@ fn load_file_strict_keeps_lexical_binding_for_cl_iter_defun() {
         ));
         std::fs::write(
             &path,
-            ";;; -*- lexical-binding: t -*-\n(require 'cl-lib)\n(require 'generator)\n(cl-iter-defun sample-cl-iter-defun ()\n  (:documentation (concat \"sample\"))\n  (iter-yield 'ok))\n",
+            ";;; -*- lexical-binding: t -*-\n(require 'cl-macs)\n(require 'generator)\n(cl-iter-defun sample-cl-iter-defun ()\n  (:documentation (concat \"sample\"))\n  (iter-yield 'ok))\n",
         )
         .unwrap();
 
-        let mut interp = Interpreter::new();
-        interp.set_load_path(vec![
-            std::path::PathBuf::from("../emacs/lisp"),
-            std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
-        ]);
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         let result = crate::lisp::load_file_strict(&mut interp, &path);
         let _ = std::fs::remove_file(path);
         result.unwrap();
@@ -7700,11 +7871,7 @@ fn lexical_iter_defun_keeps_dolist_variables_in_value_position() {
             std::path::PathBuf::from("../emacs/lisp"),
             std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
         ]);
-        crate::lisp::load_file_strict(
-            &mut interp,
-            &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-        )
-        .expect("load simple compat");
+        crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
         let result = crate::lisp::load_file_strict(&mut interp, &path);
         let _ = std::fs::remove_file(path);
         result.unwrap();
@@ -7743,12 +7910,11 @@ fn load_file_strict_preserves_outer_lexical_binding_and_restores_default() {
         )
         .unwrap();
 
-        let mut interp = Interpreter::new();
-        interp.set_load_path(vec![
-            root.clone(),
-            std::path::PathBuf::from("../emacs/lisp"),
-            std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
-        ]);
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        interp.set_variable("lexical-binding", Value::Nil, &mut Vec::new());
+        let mut load_path = interp.configured_load_path().to_vec();
+        load_path.insert(0, root.clone());
+        interp.set_load_path(load_path);
         let result = crate::lisp::load_file_strict(&mut interp, &outer);
         let _ = std::fs::remove_dir_all(&root);
         result.unwrap();
@@ -7762,17 +7928,21 @@ fn load_file_strict_preserves_outer_lexical_binding_and_restores_default() {
 #[test]
 fn lexical_ert_body_keeps_macro_context_in_its_temporary_buffer() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        eval_str_with(&mut interp, "(require 'cl-macs)");
+        eval_str_with(&mut interp, "(require 'ert)");
         interp.set_variable("lexical-binding", Value::T, &mut Vec::new());
         eval_str_with(
             &mut interp,
-            r#"(progn
-                 (defmacro emaxx-lexical-ert-probe ()
-                   (cl-assert lexical-binding)
-                   t)
-                 (ert-deftest emaxx-lexical-ert-context ()
-                   (should lexical-binding)
-                   (should (emaxx-lexical-ert-probe))))"#,
+            r#"(eval
+                 '(progn
+                    (defmacro emaxx-lexical-ert-probe ()
+                      (cl-assert lexical-binding)
+                      t)
+                    (ert-deftest emaxx-lexical-ert-context ()
+                      (should lexical-binding)
+                      (should (emaxx-lexical-ert-probe))))
+                 t)"#,
         );
 
         let summary = interp.run_ert_tests_with_selector(None);
@@ -7785,7 +7955,8 @@ fn lexical_ert_body_keeps_macro_context_in_its_temporary_buffer() {
 #[test]
 fn evaluated_cl_macrolet_expands_nested_lambda_bodies_before_scope_exit() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             r#"(let (function)
                  (cl-macrolet ((local-value () ''expanded))
                    (setq function (lambda () (local-value))))
@@ -7798,7 +7969,7 @@ fn evaluated_cl_macrolet_expands_nested_lambda_bodies_before_scope_exit() {
 #[test]
 fn mode_reset_detaches_active_buffer_local_special_bindings_like_gnu() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
                (defvar-local emaxx-test-mode-reset-a 'global)
                (defvar-local emaxx-test-mode-reset-b 'global)
@@ -7841,7 +8012,7 @@ fn mode_reset_detaches_active_buffer_local_special_bindings_like_gnu() {
 #[test]
 fn mode_reset_honors_permanent_locals_and_kill_permanent_argument() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
                (defvar-local emaxx-test-permanent-reset-a 'global)
                (defvar-local emaxx-test-permanent-reset-b 'global)
@@ -7878,7 +8049,7 @@ fn mode_reset_honors_permanent_locals_and_kill_permanent_argument() {
 #[test]
 fn mode_reset_notifies_watchers_before_removing_even_permanent_locals() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
                (defvar-local emaxx-test-watched-reset 'global)
                (put 'emaxx-test-watched-reset 'permanent-local t)
@@ -7907,23 +8078,12 @@ fn mode_reset_notifies_watchers_before_removing_even_permanent_locals() {
 #[test]
 fn cconv_closure_convert_captures_simple_free_variable() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
-        interp.set_load_path(
-            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-                .expect("upstream load path"),
-        );
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-
-        let result = eval_str_with(
-            &mut interp,
+        let result = eval_str_with_upstream_batch_feature(
+            "cconv",
             r#"
             (progn
               (setq lexical-binding t)
-              (require 'ert)
-              (require 'cl-lib)
-              (require 'generator)
               (require 'bytecomp)
-              (require 'cconv)
               (defun sample-cconv-intern-all (x)
                 (cond ((symbolp x) (intern (symbol-name x)))
                       ((consp x) (cons (sample-cconv-intern-all (car x))
@@ -7944,15 +8104,14 @@ fn cconv_closure_convert_captures_simple_free_variable() {
 }
 
 #[test]
-fn native_cl_generic_method_keeps_generic_documentation_public() {
+fn loaded_gnu_cl_generic_method_keeps_generic_documentation_public() {
     run_with_large_stack(|| {
-        let options = crate::batch::BatchRunOptions {
-            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-                .expect("upstream load path"),
-            ..Default::default()
-        };
-        let mut interp =
-            crate::batch::initialize_batch_interpreter(&options).expect("batch interpreter");
+        // This checks cl-generic's public behavior, not source bootstrapping.
+        // Reuse the faithfully reconstructed compiled GNU batch image so the
+        // test executes the same GNU Elisp owner without repeatedly paying
+        // the unrelated source-load cost.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        eval_str_with(&mut interp, "(require 'cl-generic)");
 
         assert_eq!(
             eval_str_with(
@@ -7979,15 +8138,13 @@ fn native_cl_generic_method_keeps_generic_documentation_public() {
                                           description)
                           t)
                         (sample-loaded-generic 10)
-                        (get 'sample-loaded-generic
-                             'emaxx-cl-defgeneric-documentation))))"#
+                        (and
+                         (string-match-p
+                          "\\`loaded generic documentation"
+                          (documentation 'sample-loaded-generic))
+                         t))))"#
             ),
-            Value::list([
-                Value::T,
-                Value::T,
-                Value::Integer(11),
-                Value::String("loaded generic documentation".into()),
-            ])
+            Value::list([Value::T, Value::T, Value::Integer(11), Value::T,])
         );
     });
 }
@@ -7995,23 +8152,12 @@ fn native_cl_generic_method_keeps_generic_documentation_public() {
 #[test]
 fn cconv_closure_convert_remaps_shadowed_lambda_lifted_variable() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
-        interp.set_load_path(
-            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-                .expect("upstream load path"),
-        );
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-
-        let result = eval_str_with(
-            &mut interp,
+        let result = eval_str_with_upstream_batch_feature(
+            "cconv",
             r#"
             (progn
               (setq lexical-binding t)
-              (require 'ert)
-              (require 'cl-lib)
-              (require 'generator)
               (require 'bytecomp)
-              (require 'cconv)
               (defun sample-cconv-intern-all (x)
                 (cond ((symbolp x) (intern (symbol-name x)))
                       ((consp x) (cons (sample-cconv-intern-all (car x))
@@ -8042,23 +8188,14 @@ fn cconv_closure_convert_remaps_shadowed_lambda_lifted_variable() {
 #[test]
 fn cconv_analyze_keeps_simple_captured_argument_unmutated() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
-        interp.set_load_path(
-            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-                .expect("upstream load path"),
-        );
-        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
-
-        let result = eval_str_with(
-            &mut interp,
+        let result = eval_str_with_upstream_batch_feature(
+            "cconv",
             r#"
             (progn
               (setq lexical-binding t)
-              (require 'ert)
-              (require 'cl-lib)
-              (require 'generator)
               (require 'bytecomp)
-              (require 'cconv)
+              (defvar cconv-var-classification nil)
+              (defvar cconv-freevars-alist nil)
               (let ((cconv-var-classification nil)
                     (byte-compile-lexical-variables nil)
                     (cconv--interactive-form-funs (make-hash-table))

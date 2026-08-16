@@ -493,10 +493,6 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
-            "match-string" | "match-string-no-properties" => {
-                regexp::match_string_impl(interp, args)
-            }
-
             "looking-at" | "posix-looking-at" => {
                 need_arg_range(name, args, 1, 2)?;
                 let pattern = string_text(&args[0])?;
@@ -513,16 +509,6 @@ define_dispatch!(
                     env,
                 )
             }
-            "looking-at-p" => {
-                need_args(name, args, 1)?;
-                let saved_match_data = interp.last_match_data.clone();
-                let saved_match_data_buffer_id = interp.last_match_data_buffer_id;
-                let result = regexp::looking_at_impl(interp, &args[0], false, false, env);
-                interp.last_match_data = saved_match_data;
-                interp.last_match_data_buffer_id = saved_match_data_buffer_id;
-                result
-            }
-            "looking-back" => regexp::looking_back_impl(interp, args, env),
             "newline-cache-check" => {
                 need_arg_range(name, args, 0, 1)?;
                 if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
@@ -675,65 +661,6 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
 
-            "replace-region-contents" => {
-                if args.len() < 3 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let from = position_from_value(interp, &args[0])?;
-                let to = position_from_value(interp, &args[1])?;
-                let replacement = replacement_content(interp, &args[2])?;
-                let saved_point = interp.buffer.point();
-                let saved_markers =
-                    interp.live_marker_positions_for_buffer(interp.current_buffer_id());
-                let removed_len = to.saturating_sub(from);
-                let inserted_len = replacement.text.chars().count();
-                delete_region_with_hooks(interp, from, to, env)?;
-                interp.buffer.goto_char(from);
-                insert_text_with_hooks(
-                    interp,
-                    &replacement.text,
-                    &replacement.props,
-                    false,
-                    false,
-                    env,
-                )?;
-                for (marker_id, original) in saved_markers {
-                    let Some(original_pos) = original else {
-                        continue;
-                    };
-                    let insertion_type = interp.marker_insertion_type(marker_id).unwrap_or(false);
-                    let new_pos = if original_pos < from {
-                        original_pos
-                    } else if original_pos == from {
-                        from
-                    } else if original_pos < to {
-                        if insertion_type {
-                            from + inserted_len
-                        } else {
-                            from
-                        }
-                    } else {
-                        ((original_pos as isize) + inserted_len as isize - removed_len as isize)
-                            .max(from as isize) as usize
-                    };
-                    let _ = interp.set_marker(
-                        marker_id,
-                        Some(new_pos),
-                        Some(interp.current_buffer_id()),
-                    );
-                }
-                if saved_point > to {
-                    let target = ((saved_point as isize) + inserted_len as isize
-                        - removed_len as isize)
-                        .max(from as isize) as usize;
-                    interp.buffer.goto_char(target);
-                } else if (from..=to).contains(&saved_point) {
-                    let trailing = to.saturating_sub(saved_point);
-                    let target = from + inserted_len.saturating_sub(trailing);
-                    interp.buffer.goto_char(target);
-                }
-                Ok(Value::Nil)
-            }
             "replace-buffer-contents" => {
                 need_arg_range(name, args, 1, 3)?;
                 let source_id = interp.resolve_buffer_id(&args[0])?;
@@ -819,26 +746,6 @@ define_dispatch!(
                     Value::Nil
                 })
             }
-            "flush-lines" => {
-                need_args(name, args, 3)?;
-                let pattern = string_text(&args[0])?;
-                let start = position_from_value(interp, &args[1])?;
-                let end = position_from_value(interp, &args[2])?;
-                let regex = Regex::new(&regexp::translate_elisp_regex(&pattern))
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
-                let text = interp
-                    .buffer
-                    .buffer_substring(start, end)
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
-                let filtered = text
-                    .split_inclusive('\n')
-                    .filter(|line| !regex.is_match(&line.to_lowercase()))
-                    .collect::<String>();
-                delete_region_with_hooks(interp, start, end, env)?;
-                insert_text_with_hooks(interp, &filtered, &[], false, false, env)?;
-                Ok(Value::Nil)
-            }
-
             "subst-char-in-region" => {
                 // (subst-char-in-region START END FROMCHAR TOCHAR &optional NOUNDO)
                 need_arg_range(name, args, 4, 5)?;
@@ -1020,42 +927,6 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
 
-            "dabbrev-expand" => {
-                let point = interp.buffer.point();
-                let mut start = point;
-                while start > interp.buffer.point_min() {
-                    let Some(ch) = interp.buffer.char_at(start - 1) else {
-                        break;
-                    };
-                    if !(ch.is_alphanumeric() || ch == '-' || ch == '_') {
-                        break;
-                    }
-                    start -= 1;
-                }
-                let prefix = interp
-                    .buffer
-                    .buffer_substring(start, point)
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
-                if prefix.is_empty() {
-                    return Ok(Value::Nil);
-                }
-                let haystack = interp.buffer.buffer_string();
-                let prefix_start = haystack
-                    .chars()
-                    .take(start.saturating_sub(1))
-                    .map(char::len_utf8)
-                    .sum::<usize>();
-                if let Some(found) = haystack[..prefix_start].rfind(&prefix)
-                    && let Some(expansion) = regexp::expand_symbol_at(&haystack, found, &prefix)
-                    && expansion != prefix
-                {
-                    delete_region_with_hooks(interp, start, point, env)?;
-                    interp.buffer.goto_char(start);
-                    insert_text_with_hooks(interp, &expansion, &[], false, false, env)?;
-                }
-                Ok(Value::Nil)
-            }
-
             "encode-coding-region" | "decode-coding-region" => {
                 if args.len() < 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1113,7 +984,7 @@ define_dispatch!(
                         let insert_at = interp.buffer.point();
                         let text = text_for_buffer(interp.buffer.is_multibyte())?;
                         let insertion =
-                            insert_text_with_hooks(interp, &text, &[], false, false, env);
+                            insert_text_with_hooks(interp, &text, &[], &[], false, false, env);
                         interp.buffer.goto_char(insert_at);
                         let restore = interp.switch_to_buffer_id(saved_buffer_id);
                         insertion?;
@@ -1147,7 +1018,7 @@ define_dispatch!(
                     interp.switch_to_buffer_id(buffer_id)?;
                     let insert_at = interp.buffer.point();
                     let decoded_text = string_text(&decoded)?;
-                    insert_text_with_hooks(interp, &decoded_text, &[], false, false, env)?;
+                    insert_text_with_hooks(interp, &decoded_text, &[], &[], false, false, env)?;
                     interp.buffer.goto_char(insert_at);
                     let _ = interp.switch_to_buffer_id(saved_buffer_id);
                 }
@@ -1197,7 +1068,7 @@ define_dispatch!(
                 } else {
                     &serialized.bytes_text
                 };
-                insert_text_with_hooks(interp, text, &[], false, false, env)?;
+                insert_text_with_hooks(interp, text, &[], &[], false, false, env)?;
                 Ok(Value::Nil)
             }
 

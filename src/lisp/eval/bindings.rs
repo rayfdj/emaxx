@@ -1,15 +1,5 @@
 use super::*;
 
-// Prefix a macro-table entry is renamed to when a function definition
-// shadows it (see `shadow_macro_binding').
-pub(crate) const MACRO_SHADOW_PREFIX: &str = "--emaxx-shadowed-macro--";
-
-// Marks an env frame whose bindings are FUNCTION bindings (cl-flet /
-// cl-labels).  Only such frames may shadow a builtin in the function
-// position: a plain `let' of a variable named `car' to a lambda must not
-// hijack `(car x)' (GNU separates value and function cells).
-pub(crate) const FUNCTION_FRAME_MARKER: &str = "--emaxx-function-frame--";
-
 fn dynamic_library_suffix_values() -> Vec<Value> {
     #[cfg(target_os = "macos")]
     let suffixes = [".dylib", ".so"].as_slice();
@@ -31,6 +21,103 @@ fn module_file_suffix_value() -> Value {
     #[cfg(windows)]
     let suffix = ".dll";
     Value::String(suffix.into())
+}
+
+fn malformed_lisp_environment_error(environment: &Value, circular: bool) -> LispError {
+    let condition = if circular {
+        "circular-list"
+    } else {
+        "wrong-type-argument"
+    };
+    let mut data = vec![Value::Symbol(condition.into())];
+    if !circular {
+        data.push(Value::Symbol("listp".into()));
+    }
+    data.push(environment.clone());
+    LispError::SignalValue(Value::list(data))
+}
+
+/// Return the first ENV alist entry accepted by MATCHES.
+///
+/// GNU's evaluator uses `assq' directly on the live interpreted environment.
+/// Consequently, finding an entry before a malformed tail succeeds, while
+/// exhausting an improper or circular environment signals with the complete
+/// original ENV object.  Keep that decision table in one walker so reads,
+/// writes, and locally-special declarations cannot diverge.
+fn find_lisp_environment_entry(
+    environment: &Value,
+    mut matches: impl FnMut(&Value) -> bool,
+) -> Result<Option<Value>, LispError> {
+    let mut cursor = environment.clone();
+    let mut seen = HashSet::new();
+    loop {
+        match cursor {
+            Value::Nil => return Ok(None),
+            Value::Cons(list_cell) => {
+                if !seen.insert(ConsCell::identity(&list_cell)) {
+                    return Err(malformed_lisp_environment_error(environment, true));
+                }
+                let entry = list_cell.car.borrow().clone();
+                cursor = list_cell.cdr.borrow().clone();
+                if matches(&entry) {
+                    return Ok(Some(entry));
+                }
+            }
+            _ => return Err(malformed_lisp_environment_error(environment, false)),
+        }
+    }
+}
+
+pub(super) fn lisp_environment_binding_checked(
+    environment: &Value,
+    name: &str,
+) -> Result<Option<Value>, LispError> {
+    find_lisp_environment_entry(environment, |entry| {
+        let Value::Cons(binding) = entry else {
+            return false;
+        };
+        binding
+            .car
+            .borrow()
+            .as_symbol()
+            .is_ok_and(|symbol| symbol == name)
+    })
+    .map(|entry| entry.and_then(|entry| entry.cdr().ok()))
+}
+
+fn set_lisp_environment_binding_checked(
+    environment: &Value,
+    name: &str,
+    value: Value,
+) -> Result<bool, LispError> {
+    let entry = find_lisp_environment_entry(environment, |entry| {
+        let Value::Cons(binding) = entry else {
+            return false;
+        };
+        binding
+            .car
+            .borrow()
+            .as_symbol()
+            .is_ok_and(|symbol| symbol == name)
+    })?;
+    let Some(binding) = entry else {
+        return Ok(false);
+    };
+    binding.set_cdr(value)?;
+    Ok(true)
+}
+
+pub(super) fn set_lisp_environment_binding(environment: &Value, name: &str, value: Value) -> bool {
+    set_lisp_environment_binding_checked(environment, name, value).unwrap_or(false)
+}
+
+pub(super) fn lisp_environment_declares_special(environment: &Value, name: &str) -> bool {
+    find_lisp_environment_entry(environment, |entry| {
+        entry.as_symbol().is_ok_and(|symbol| symbol == name)
+    })
+    .ok()
+    .flatten()
+    .is_some()
 }
 
 fn directory_listing_before_filename_regexp() -> &'static str {
@@ -87,6 +174,8 @@ impl Interpreter {
                 .into()
         };
         self.lookup_var_with_resolved_name(name, resolved.as_ref(), env)
+            .ok()
+            .flatten()
     }
 
     fn lookup_var_with_resolved_name(
@@ -94,11 +183,11 @@ impl Interpreter {
         name: &str,
         resolved: &str,
         env: &Env,
-    ) -> Option<Value> {
+    ) -> Result<Option<Value>, LispError> {
         if resolved == "buffer-undo-list" {
-            return Some(crate::lisp::primitives::buffer_undo_list_value(
+            return Ok(Some(crate::lisp::primitives::buffer_undo_list_value(
                 &self.buffer,
-            ));
+            )));
         }
         let mut special: Option<bool> = None;
         for (index, frame) in env.iter().enumerate().rev() {
@@ -117,16 +206,25 @@ impl Interpreter {
             {
                 break;
             }
+            if let Some(environment) = frame.lisp_environment() {
+                if let Some(value) = lisp_environment_binding_checked(environment, name)? {
+                    return Ok(Some(value));
+                }
+                // The live Lisp alist is authoritative.  Its names and
+                // binding cells may have changed since construction, so the
+                // frame's typed snapshot must never become a stale fallback.
+                continue;
+            }
             let shared_updates = Self::frame_identity(frame)
                 .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
             for (k, v) in frame.iter().rev() {
                 if k == name {
-                    return Some(
+                    return Ok(Some(
                         shared_updates
                             .and_then(|updates| updates.get(name))
                             .cloned()
                             .unwrap_or_else(|| v.clone()),
-                    );
+                    ));
                 }
             }
         }
@@ -136,20 +234,20 @@ impl Interpreter {
         // cell, while the specbind layer continues to own/restores only the
         // default value.
         if let Some(value) = self.buffer_local_value(self.current_buffer_id(), resolved) {
-            return Some(value);
+            return Ok(Some(value));
         }
         if let Some(value) = self.active_global_special_value(resolved) {
-            return value.or_else(|| self.builtin_var_value(resolved));
+            return Ok(value.or_else(|| self.builtin_var_value(resolved)));
         }
         if let Some(value) = self.global_value(resolved) {
-            return Some(value);
+            return Ok(Some(value));
         }
-        self.builtin_var_value(resolved)
+        Ok(self.builtin_var_value(resolved))
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
         let resolved = self.resolve_variable_name(name)?;
-        self.lookup_var_with_resolved_name(&resolved, &resolved, &Env::new())
+        self.lookup_var_with_resolved_name(&resolved, &resolved, &Env::new())?
             .ok_or(LispError::Void(resolved))
     }
 
@@ -163,18 +261,9 @@ impl Interpreter {
         match name {
             "nil" => Some(Value::Nil),
             "t" => Some(Value::T),
-            "region-extract-function" => Some(Value::Symbol(
-                "emaxx-default-region-extract-function".into(),
-            )),
-            "region-insert-function" => {
-                Some(Value::Symbol("emaxx-default-region-insert-function".into()))
-            }
-            "redisplay-highlight-region-function" => Some(Value::Symbol(
-                "redisplay--highlight-overlay-function".into(),
-            )),
-            "redisplay-unhighlight-region-function" => Some(Value::Symbol(
-                "redisplay--unhighlight-overlay-function".into(),
-            )),
+            // casefiddle.c creates this value cell as nil; simple.el installs
+            // the real extraction policy during loadup.
+            "region-extract-function" => Some(Value::Nil),
             "case-fold-search" => Some(Value::T),
             // buffer.c's reset_buffer_local_variables defaults.  These are
             // native DEFVAR_PER_BUFFER slots, so they exist before any Lisp
@@ -345,6 +434,10 @@ impl Interpreter {
             // GNU xdisp.c defvar; simple.el reads it at load time
             // ((when (eq pre-redisplay-function #'ignore) ...)).
             "pre-redisplay-function" => Some(Value::Symbol("ignore".into())),
+            // GNU xfaces.c DEFVAR_LISP initializes the terminal color
+            // registry before tty-colors.el layers its portable policy over
+            // the host value cell.
+            "tty-defined-color-alist" => Some(Value::Nil),
             // GNU startup.el defvar; bytecomp reads it.
             "startup-redirect-eln-cache" => Some(Value::Nil),
             // GNU startup.el defcustom.  Its declared special binding is
@@ -435,8 +528,6 @@ impl Interpreter {
             "inhibit-redisplay" => Some(Value::Nil),
             "inhibit-quit" => Some(Value::Nil),
             "quit-flag" => Some(Value::Nil),
-            "overlay-arrow-position" => Some(Value::Nil),
-            "overlay-arrow-string" => Some(Value::Nil),
             "track-mouse" => Some(Value::Nil),
             "last-input-event" => Some(Value::Nil),
             "last-nonmenu-event" => Some(Value::Nil),
@@ -761,15 +852,6 @@ impl Interpreter {
             "delete-by-moving-to-trash" => Some(Value::Nil),
             "directory-files-no-dot-files-regexp" => Some(Value::String("[^.]\\|\\.\\.\\.".into())),
             "user-emacs-directory" => Some(Value::String("/nonexistent/.emacs.d/".into())),
-            // Defaults read by the Rust URL transport before url.el has
-            // loaded.  The `url' feature remains Lisp-owned, and loading the
-            // real package replaces/extends this bootstrap state.
-            "url-configuration-directory" => {
-                Some(Value::String("/nonexistent/.emacs.d/url/".into()))
-            }
-            "url-redirect-buffer" | "url-dead-buffer-list" => Some(Value::Nil),
-            "url-retrieve-number-of-calls" => Some(Value::Integer(0)),
-            "url-asynchronous" => Some(Value::T),
             "invocation-name" => Some(Value::String(
                 primitives::current_invocation_name()
                     .unwrap_or_else(|| "emaxx".into())
@@ -813,19 +895,14 @@ impl Interpreter {
             "grep-program" => Some(Value::String("grep".into())),
             _ if name.starts_with('.') => Some(Value::Nil),
             _ if name.starts_with(':') => Some(Value::Symbol(name.to_string().into())),
-            _ => generated_autoloads::generated_dumped_variable(name).and_then(|source| {
-                crate::lisp::reader::Reader::new(source)
-                    .read()
-                    .ok()
-                    .flatten()
-            }),
+            _ => None,
         }
     }
 
     /// Look up a variable in the given local env, then globals.
     pub(crate) fn lookup(&self, name: &str, env: &Env) -> Result<Value, LispError> {
         let resolved = self.resolve_variable_name(name)?;
-        self.lookup_var_with_resolved_name(name, &resolved, env)
+        self.lookup_var_with_resolved_name(name, &resolved, env)?
             .ok_or(LispError::Void(resolved))
     }
 
@@ -842,12 +919,13 @@ impl Interpreter {
     /// global resolution cache is safe only when neither is present.
     pub(crate) fn env_may_affect_function_resolution(env: &Env) -> bool {
         env.iter().any(|frame| {
-            let marker = frame.first().map(|(key, _)| key.as_str());
-            marker == Some(FUNCTION_FRAME_MARKER)
-                || (marker != Some(crate::lisp::eval::OCLOSURE_TYPE_MARKER)
-                    && frame.iter().any(|(_, value)| {
-                        matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
-                    }))
+            if frame.lisp_environment().is_some() {
+                return false;
+            }
+            frame.has_function_bindings()
+                || frame
+                    .iter()
+                    .any(|(_, value)| matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_)))
         })
     }
 
@@ -858,19 +936,15 @@ impl Interpreter {
         }
         let name_is_builtin = facts.builtin || facts.special_form;
         for frame in env.iter().rev() {
-            // Marker frames (oclosure slots, cl-flet/cl-labels functions)
-            // always carry their marker as the FIRST entry, so one
-            // comparison classifies the frame.
-            let frame_marker = frame.first().map(|(key, _)| key.as_str());
-            // Oclosure slot frames bind names like `car'/`cdr' as VALUES;
-            // GNU never resolves the function position through them.
-            if frame_marker == Some(crate::lisp::eval::OCLOSURE_TYPE_MARKER) {
+            // GNU's interpreted lexical environment is a value namespace;
+            // callable values stored there never shadow a function cell.
+            if frame.lisp_environment().is_some() {
                 continue;
             }
             // A builtin's function position can only be shadowed by a real
             // function frame (cl-flet/cl-labels); a plain `let' binding a
             // VARIABLE named `car' to a lambda must not hijack `(car x)'.
-            if name_is_builtin && frame_marker != Some(FUNCTION_FRAME_MARKER) {
+            if name_is_builtin && !frame.has_function_bindings() {
                 continue;
             }
             for (k, v) in frame.iter().rev() {
@@ -881,14 +955,6 @@ impl Interpreter {
         }
         if let Some(v) = self.functions_index.get(name) {
             return Some(v.clone());
-        }
-        if facts.autoloadable
-            && let Some(value) = builtin_autoload_function(name)
-        {
-            return Some(value);
-        }
-        if matches!(name, "incf" | "decf") {
-            return Some(Value::BuiltinFunc(name.to_string().into()));
         }
         // Special forms live in function cells in GNU Emacs, so symbol
         // indirection (indirect-function, fboundp, macrop) must resolve them
@@ -914,8 +980,8 @@ impl Interpreter {
 
     /// Resolve NAME the way GNU macro dispatch sees the function cell:
     /// macros live in function cells, so only genuine function-binding
-    /// frames (cl-flet/cl-labels push FUNCTION_FRAME_MARKER as their
-    /// FIRST entry) can shadow them — a plain `let'-bound value never
+    /// frames (typed cl-flet/cl-labels frames) can shadow them — a plain
+    /// `let'-bound value never
     /// does in GNU.  Skipping the per-entry scan of ordinary frames
     /// keeps the per-form macro probe cheap on deep call stacks.  The
     /// bool is true when the binding came from an env frame (such a
@@ -926,10 +992,7 @@ impl Interpreter {
             return Some((Value::BuiltinFunc(name.to_string().into()), false));
         }
         for frame in env.iter().rev() {
-            if frame
-                .first()
-                .is_none_or(|(key, _)| key != FUNCTION_FRAME_MARKER)
-            {
+            if !frame.has_function_bindings() {
                 continue;
             }
             for (key, value) in frame.iter().rev() {
@@ -940,11 +1003,6 @@ impl Interpreter {
         }
         if let Some(value) = self.functions_index.get(name) {
             return Some((value.clone(), false));
-        }
-        if facts.autoloadable
-            && let Some(value) = builtin_autoload_function(name)
-        {
-            return Some((value, false));
         }
         if matches!(name, "incf" | "decf") || facts.builtin || facts.special_form {
             return Some((Value::BuiltinFunc(name.to_string().into()), false));
@@ -1005,15 +1063,8 @@ impl Interpreter {
     }
 
     pub fn has_macro_binding(&self, name: &str) -> bool {
-        self.resolve_macro_binding(name).is_some()
-            || self
-                .function_cell_macro_expander(name, &Env::new())
-                .is_some()
-    }
-
-    pub(crate) fn macro_function_value(&self, name: &str) -> Option<Value> {
-        let expander = self.resolve_macro_binding(name)?;
-        Some(Value::cons(Value::Symbol("macro".into()), expander))
+        self.function_cell_macro_expander(name, &Env::new())
+            .is_some()
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {
@@ -1040,11 +1091,6 @@ impl Interpreter {
         for (name, _) in &self.functions {
             push_name(name);
         }
-        for binding in &self.macros {
-            if !binding.name.starts_with(MACRO_SHADOW_PREFIX) {
-                push_name(&binding.name);
-            }
-        }
         for (name, _) in &self.symbol_properties {
             push_name(name);
         }
@@ -1067,38 +1113,11 @@ impl Interpreter {
             || self.globals.contains_key(name)
             || self.variable_aliases_index.contains_key(name)
             || self.functions_index.contains_key(name)
-            || (self.macros_name_counts.contains_key(name)
-                && !name.starts_with(MACRO_SHADOW_PREFIX))
             || self.symbol_property_index(name).is_some()
     }
 
     pub(crate) fn standard_obarray_symbol_is_uninterned(&self, name: &str) -> bool {
         self.uninterned_standard_symbol_names.contains(name)
-    }
-
-    /// Track a macro-table insertion so name-count lookups stay in sync.
-    pub(crate) fn note_macro_added(&mut self, name: &str) {
-        *self.macros_name_counts.entry(name.to_string()).or_insert(0) += 1;
-        self.note_definition_changed();
-    }
-
-    /// Insert a macro and update every derived index atomically.
-    pub(crate) fn push_macro_binding(&mut self, binding: MacroBinding) {
-        self.note_macro_added(&binding.name);
-        self.macros.push(binding);
-    }
-
-    /// Track a macro-table removal (drain/rename); the counterpart of
-    /// `note_macro_added`.
-    pub(crate) fn note_macro_removed(&mut self, name: &str) {
-        if let Some(count) = self.macros_name_counts.get_mut(name) {
-            if *count <= 1 {
-                self.macros_name_counts.remove(name);
-            } else {
-                *count -= 1;
-            }
-        }
-        self.note_definition_changed();
     }
 
     /// Invalidate all cached not-a-macro verdicts; called on every
@@ -1130,98 +1149,39 @@ impl Interpreter {
         cache.borrow().not_macro_generation == Some(self.definition_generation)
     }
 
-    pub(super) fn cached_source_macro_expansion(
-        &self,
-        cache: &Rc<RefCell<SourceMacroCallCache>>,
-        lexical: bool,
-    ) -> Option<Value> {
-        let cache = cache.borrow();
-        let cached = cache.expansions[usize::from(lexical)].as_ref()?;
-        (cached.definition_generation == self.definition_generation
-            && cached.mutations.is_current())
-        .then(|| cached.expansion.clone())
-    }
-
     pub(super) fn cache_source_not_macro(&self, cache: &Rc<RefCell<SourceMacroCallCache>>) {
-        let mut cache = cache.borrow_mut();
-        cache.not_macro_generation = Some(self.definition_generation);
-        cache.expansions = [None, None];
-    }
-
-    pub(super) fn cache_source_macro_expansion(
-        &self,
-        cache: &Rc<RefCell<SourceMacroCallCache>>,
-        form: &Value,
-        lexical: bool,
-        expansion: Value,
-    ) {
-        // Both syntax graphs are authorities for this derived entry.  Macro
-        // execution may destructively rewrite a freshly produced expansion
-        // even when the original call form stays untouched; reusing that
-        // rewritten graph on the next evaluation would be stale.
-        let mut mutations = crate::lisp::types::ConsMutationSnapshot::tree(form);
-        mutations.include_tree(&expansion);
-        let mut cache = cache.borrow_mut();
-        cache.not_macro_generation = None;
-        cache.expansions[usize::from(lexical)] = Some(SourceMacroExpansionCacheEntry {
-            definition_generation: self.definition_generation,
-            expansion,
-            mutations,
-        });
-    }
-
-    /// Append cl-macrolet-style local macros to the positional table,
-    /// returning the (start, count) range for `drain_local_macros`.
-    pub(crate) fn push_local_macros(
-        &mut self,
-        local_macros: &[crate::lisp::eval::MacroBinding],
-    ) -> (usize, usize) {
-        let local_start = self.macros.len();
-        for binding in local_macros {
-            self.push_macro_binding(binding.clone());
-        }
-        (local_start, local_macros.len())
-    }
-
-    /// Remove the local-macro range installed by `push_local_macros`.
-    pub(crate) fn drain_local_macros(&mut self, local_start: usize, local_count: usize) {
-        let names: Vec<String> = self.macros[local_start..local_start + local_count]
-            .iter()
-            .map(|binding| binding.name.clone())
-            .collect();
-        self.macros.drain(local_start..local_start + local_count);
-        for name in names {
-            self.note_macro_removed(&name);
-        }
-    }
-
-    pub(super) fn resolve_macro_binding(&self, name: &str) -> Option<Value> {
-        let mut current = name.to_string();
-        let mut seen = Vec::new();
-        loop {
-            if seen.iter().any(|existing| existing == &current) {
-                return None;
-            }
-            seen.push(current.to_string());
-            if self.macros_name_counts.contains_key(&current)
-                && let Some(binding) = self
-                    .macros
-                    .iter()
-                    .rev()
-                    .find(|binding| binding.name == current)
-            {
-                return Some(binding.expander.clone());
-            }
-            let value = self.functions_index.get(&current)?;
-            let Value::Symbol(next) = value else {
-                return None;
-            };
-            current = next.to_string();
-        }
+        cache.borrow_mut().not_macro_generation = Some(self.definition_generation);
     }
 
     /// Set a variable in the innermost local frame, or in globals.
+    ///
+    /// Source `setq' uses the checked form so GNU's live-alist errors remain
+    /// observable.  The infallible wrapper remains for host-side state
+    /// restoration paths, whose environments are constructed internally and
+    /// therefore cannot contain malformed Lisp tails.
     pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
+        let result = self.set_variable_checked(name, value, env);
+        debug_assert!(result.is_ok(), "host environment must be well formed");
+    }
+
+    pub(super) fn set_variable_checked(
+        &mut self,
+        name: &str,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        if !self.set_lexical_variable_checked(name, value.clone(), env)? {
+            self.set_symbol_value_cell(name, value);
+        }
+        Ok(())
+    }
+
+    fn set_lexical_variable_checked(
+        &mut self,
+        name: &str,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<bool, LispError> {
         let floor = self.special_scan_floor;
         let mut special: Option<bool> = None;
         for (index, frame) in env.iter_mut().enumerate().rev() {
@@ -1230,6 +1190,17 @@ impl Interpreter {
             if index < floor && *special.get_or_insert_with(|| self.is_dynamic_binding_name(name)) {
                 break;
             }
+            if let Some(environment) = frame.lisp_environment().cloned() {
+                let frame_id = Self::frame_identity(frame);
+                let stored = Self::stored_value(value.clone());
+                if set_lisp_environment_binding_checked(&environment, name, stored.clone())? {
+                    if let Some(frame_id) = frame_id {
+                        self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
+                    }
+                    return Ok(true);
+                }
+                continue;
+            }
             let frame_id = Self::frame_identity(frame);
             if let Some(binding_index) = frame.iter().rposition(|(key, _)| key == name) {
                 let stored = Self::stored_value(value);
@@ -1237,10 +1208,29 @@ impl Interpreter {
                 if let Some(frame_id) = frame_id {
                     self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
                 }
-                return;
+                return Ok(true);
             }
         }
+        Ok(false)
+    }
+
+    /// GNU's `setq' probes the lexical alist before entering `Fset'.  A
+    /// lexical assignment therefore neither invokes variable watchers nor
+    /// reaches a buffer/global value cell, and a malformed alist errors before
+    /// either side effect.  Keep that ordering at this boundary.
+    pub(super) fn setq_variable(
+        &mut self,
+        name: &str,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        if self.set_lexical_variable_checked(name, value.clone(), env)? {
+            return Ok(());
+        }
+        let buffer_id = self.assignment_buffer_id(name);
+        self.notify_variable_watchers(name, value.clone(), "set", buffer_id, env)?;
         self.set_symbol_value_cell(name, value);
+        Ok(())
     }
 
     pub fn set_symbol_value_cell(&mut self, name: &str, value: Value) {
@@ -1320,117 +1310,9 @@ impl Interpreter {
         self.set_global_binding(&resolved, value);
     }
 
-    // Two advice functions match when `equal' (GNU advice--member-p) or,
-    // for separately evaluated lambdas, when their code is identical
-    // (captured environments are not compared).
-    pub(crate) fn advice_functions_match(&mut self, a: &Value, b: &Value) -> bool {
-        if let (Value::Lambda(a), Value::Lambda(b)) = (a, b) {
-            return a.params == b.params && a.body == b.body;
-        }
-        crate::lisp::primitives::values_equal(self, a, b)
-    }
-
-    // Compose BASE with the symbol's advice entries (newest entry ends up
-    // outermost, like add-function at depth 0).
-    pub(crate) fn compose_advice_chain(&self, name: &str, base: Value) -> Value {
-        let Some(state) = self.advice_registry.get(name) else {
-            return base;
-        };
-        let mut composed = base;
-        for entry in state.entries.iter().rev() {
-            if let Some(wrapped) = crate::lisp::primitives::wrap_advice(
-                &entry.where_kind,
-                composed.clone(),
-                entry.function.clone(),
-            ) {
-                composed = wrapped;
-            }
-        }
-        composed
-    }
-
-    // Rebuild the advised function binding from the registry.  Called after
-    // advice-add/-remove and after defun/defalias redefine an advised name.
-    pub(crate) fn advice_reapply(&mut self, name: &str) {
-        // Refresh the base from the live binding first: cl-defmethod
-        // re-registration mutates the definition captured under our
-        // wrapper, so the stored snapshot can go stale.
-        if let Ok(current) = self.lookup_function(name, &Env::new()) {
-            let stripped = crate::lisp::primitives::strip_advice_wrappers(&current);
-            if !matches!(stripped, Value::Lambda(_)) || stripped != current {
-                if let Some(state) = self.advice_registry.get_mut(name)
-                    && state.base.is_some()
-                {
-                    state.base = Some(stripped);
-                }
-            } else if let Some(state) = self.advice_registry.get_mut(name)
-                && state.base.is_some()
-                && state.entries.is_empty()
-            {
-                // Nothing wrapped (all advice removed elsewhere): the live
-                // binding IS the base.
-                state.base = Some(current);
-            }
-        }
-        let Some(state) = self.advice_registry.get(name) else {
-            return;
-        };
-        if state.entries.is_empty() {
-            let base = state.base.clone();
-            self.advice_registry.remove(name);
-            if let Some(base) = base {
-                self.set_function_binding(name, Some(base));
-            }
-            self.put_symbol_property(name, "defalias-fset-function", Value::Nil);
-            return;
-        }
-        let Some(base) = state.base.clone() else {
-            // Pending: no definition yet; defun/defalias will call back.
-            return;
-        };
-        let composed = self.compose_advice_chain(name, base);
-        self.set_function_binding(name, Some(composed));
-        // GNU marks advised symbols so defalias routes through the advice
-        // machinery; the tests observe the property's presence.
-        self.put_symbol_property(
-            name,
-            "defalias-fset-function",
-            Value::Symbol("advice--defalias-fset".into()),
-        );
-    }
-
-    // A (re)definition of NAME becomes the new advice base; the composed
-    // wrapper is reinstalled on top of it (GNU advice--defalias-fset).
-    pub(crate) fn advice_note_new_definition(&mut self, name: &str) {
-        let has_entries = self
-            .advice_registry
-            .get(name)
-            .is_some_and(|state| !state.entries.is_empty());
-        if !has_entries {
-            return;
-        }
-        if let Ok(definition) = self.lookup_function(name, &Env::new())
-            && let Some(state) = self.advice_registry.get_mut(name)
-        {
-            state.base = Some(definition);
-        }
-        self.advice_reapply(name);
-    }
-
     // GNU stores a macro in the function cell as (macro . EXPANDER); emaxx
     // keeps a native macro table, so synthesize the GNU shape on demand
     // (nadvice reads and rewrites it when advising macros).
-    pub(crate) fn macro_binding_as_function(&self, name: &str) -> Option<Value> {
-        if !self.macros_name_counts.contains_key(name) {
-            return None;
-        }
-        self.macros
-            .iter()
-            .rev()
-            .find(|binding| binding.name == name)
-            .map(|binding| Value::cons(Value::Symbol("macro".into()), binding.expander.clone()))
-    }
-
     // Follow the function cell (through symbol aliases) to a
     // (macro . EXPANDER) cons; nadvice installs advised macros that way.
     pub(crate) fn function_cell_macro_expander(&self, name: &str, env: &Env) -> Option<Value> {
@@ -1481,20 +1363,6 @@ impl Interpreter {
     // over a macro name (or voiding the cell) erases the macro definition.
     // The macro table is positional (cl-macrolet drains index ranges), so
     // entries are renamed out of resolution instead of removed.
-    pub(crate) fn shadow_macro_binding(&mut self, name: &str) {
-        let mut renamed = 0u32;
-        for entry in self.macros.iter_mut() {
-            if entry.name == name {
-                entry.name = format!("{MACRO_SHADOW_PREFIX}{name}");
-                renamed += 1;
-            }
-        }
-        for _ in 0..renamed {
-            self.note_macro_removed(name);
-            self.note_macro_added(&format!("{MACRO_SHADOW_PREFIX}{name}"));
-        }
-    }
-
     pub fn push_function_binding(&mut self, name: &str, function: Value) {
         self.functions_index
             .insert(name.to_string(), function.clone());

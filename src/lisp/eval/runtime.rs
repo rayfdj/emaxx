@@ -58,36 +58,6 @@ impl Interpreter {
             .unwrap_or_else(|_| path.to_path_buf())
     }
 
-    fn current_load_history_file(&self) -> Option<String> {
-        self.lookup_var("current-load-list", &Env::new())
-            .and_then(|value| value.to_vec().ok())
-            .and_then(|items| items.last().cloned())
-            .and_then(|value| primitives::string_text(&value).ok())
-    }
-
-    pub(crate) fn current_load_history_is_suppressed(&self) -> bool {
-        self.current_load_history_file().is_some_and(|file| {
-            self.load_history_suppressed_files
-                .iter()
-                .any(|suppressed| suppressed == &file)
-        })
-    }
-
-    pub(crate) fn with_current_load_history_suppressed<T>(
-        &mut self,
-        operation: impl FnOnce(&mut Self) -> T,
-    ) -> T {
-        let file = self.current_load_history_file();
-        if let Some(file) = &file {
-            self.load_history_suppressed_files.push(file.clone());
-        }
-        let result = operation(self);
-        if file.is_some() {
-            self.load_history_suppressed_files.pop();
-        }
-        result
-    }
-
     pub(super) fn stored_value(value: Value) -> Value {
         match value {
             Value::String(_) => {
@@ -100,12 +70,6 @@ impl Interpreter {
             }
             other => other,
         }
-    }
-
-    pub(super) fn make_generated_symbol(&mut self, prefix: &str) -> Value {
-        let id = self.next_generated_symbol_id;
-        self.next_generated_symbol_id += 1;
-        Value::Symbol(format!("{prefix}--emaxx-gensym-{id}").into())
     }
 
     pub(crate) fn resolve_load_target(&self, target: &str) -> Option<PathBuf> {
@@ -226,7 +190,6 @@ impl Interpreter {
         else {
             return Err(load_file_missing_error(target));
         };
-        self.materialize_cl_macs_runtime_dependency(target)?;
         self.load_resolved_path(&path, env, true)?;
         Ok(path)
     }
@@ -252,23 +215,6 @@ impl Interpreter {
         }
         crate::lisp::load_file_strict(self, path)?;
         Ok(Value::T)
-    }
-
-    fn materialize_cl_macs_runtime_dependency(&mut self, target: &str) -> Result<(), LispError> {
-        // GNU cl-macs.el starts with `(require 'cl-lib)'.  emaxx treats
-        // cl-lib as preloaded, so that require is a no-op here; when the
-        // runtime environment lacks cl-lib's Lisp-level helpers (e.g. a bare
-        // interpreter that never loaded simple_compat.el), load the real
-        // cl-lib.el first so cl-macs macro expanders can call them.  This
-        // must cover both explicit `load' and `require': cl-preloaded.el's
-        // eager compile-time require reaches the latter path.
-        if target == "cl-macs"
-            && self.lookup_function("cl-copy-list", &Env::new()).is_err()
-            && !self.require_nesting.iter().any(|name| name == "cl-lib")
-        {
-            self.load_target("cl-lib")?;
-        }
-        Ok(())
     }
 
     fn with_require_nesting<T>(
@@ -302,7 +248,7 @@ impl Interpreter {
         &mut self,
         feature: &str,
         target: Option<&str>,
-        env: &Env,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         // GNU records a file's dependency even when FEATURE was loaded
         // already.  `file-dependents' and `unload-feature' derive their
@@ -311,38 +257,15 @@ impl Interpreter {
         if self.has_feature(feature) {
             return Ok(Value::Symbol(feature.to_string().into()));
         }
-        // GNU does not preload map.el; its cl-generic definitions
-        // (map-put!, map-insert, ...) and the map-elt gv-expander only
-        // exist after the real library loads.  Prefer the real file over
-        // the native compat subset whenever it is on the load-path.
-        let compat_shim = is_compat_preloaded_feature(feature)
-            && !(feature == "map"
-                && crate::lisp::primitives::resolve_load_target_in_env(self, feature, env)
-                    .is_some());
-        if compat_shim {
-            // GNU cl-lib.el ends with `(load "cl-loaddefs" ...)': the
-            // autoloads for the rest of the cl- namespace must still be
-            // registered even though the library itself is preloaded.
-            if matches!(feature, "cl-lib" | "cl-extra" | "cl-generic")
-                && !self.has_feature("cl-loaddefs")
-            {
-                if let Some(path) = self.resolve_load_target("cl-loaddefs") {
-                    crate::lisp::load_file_strict(self, &path)?;
-                }
-                self.provide_feature_with_after_load("cl-loaddefs")?;
-            }
-            return self.provide_feature_with_after_load(feature);
-        }
         if feature == "cus-edit" || target == Some("cus-edit") {
             for dependency in ["custom", "lisp-mode", "pp", "tabify"] {
                 if !self.has_feature(dependency) {
-                    self.require_feature_with_target(dependency, None, &Env::new())?;
+                    self.require_feature_with_target(dependency, None, env)?;
                 }
             }
         }
         let load_target = target.unwrap_or(feature);
         self.with_require_nesting(feature, |interp| {
-            interp.materialize_cl_macs_runtime_dependency(load_target)?;
             let Some(path) =
                 crate::lisp::primitives::resolve_load_target_in_env(interp, load_target, env)
             else {
@@ -362,7 +285,7 @@ impl Interpreter {
             )));
         }
         if !self.has_feature(feature) {
-            return self.provide_feature_with_after_load(feature);
+            return self.provide_feature_with_after_load(feature, env);
         }
         Ok(Value::Symbol(feature.to_string().into()))
     }
@@ -509,6 +432,30 @@ impl Interpreter {
 
     pub(crate) fn set_selected_window_id(&mut self, id: u64) {
         self.selected_window_id = id;
+    }
+
+    pub(crate) fn root_window_value(&self) -> Value {
+        Value::Record(self.root_window_id)
+    }
+
+    pub(crate) fn set_root_window_id(&mut self, id: u64) {
+        self.root_window_id = id;
+    }
+
+    pub(crate) fn minibuffer_window_id(&self) -> u64 {
+        self.minibuffer_window_id
+    }
+
+    pub(crate) fn minibuffer_window_value(&self) -> Value {
+        Value::Record(self.minibuffer_window_id)
+    }
+
+    pub(crate) fn set_minibuffer_window_id(&mut self, id: u64) {
+        self.minibuffer_window_id = id;
+    }
+
+    pub(crate) fn minibuffer_selected_window_id(&self) -> Option<u64> {
+        self.minibuffer_selected_window_id
     }
 
     pub(crate) fn window_cursor_visible(&self, id: u64) -> bool {
@@ -701,20 +648,6 @@ impl Interpreter {
             .max(1)
     }
 
-    pub(crate) fn frame_parameter_width(&self) -> i64 {
-        self.selected_frame_state()
-            .map(|frame| frame.parameter_width)
-            .unwrap_or(1)
-            .max(1)
-    }
-
-    pub(crate) fn frame_parameter_height(&self) -> i64 {
-        self.selected_frame_state()
-            .map(|frame| frame.parameter_height)
-            .unwrap_or(1)
-            .max(1)
-    }
-
     fn window_record_geometry(&self, id: u64) -> (i64, i64, i64, i64) {
         let integer_slot = |slot: usize, fallback: i64| {
             self.find_record(id)
@@ -837,12 +770,14 @@ impl Interpreter {
         let text_height = self.frame_text_height();
         let top_margin = total_height.saturating_sub(text_height);
         let root_height = text_height.saturating_sub(1).max(1);
-        if let Some(Value::Record(root_id)) = self.global_binding_value("emaxx-root-window") {
-            self.resize_window_record_tree(root_id, (width, root_height, 0, top_margin));
+        if self.find_record(self.root_window_id).is_some() {
+            self.resize_window_record_tree(
+                self.root_window_id,
+                (width, root_height, 0, top_margin),
+            );
         }
-        if let Some(Value::Record(minibuffer_id)) =
-            self.global_binding_value("emaxx-minibuffer-window")
-        {
+        if self.find_record(self.minibuffer_window_id).is_some() {
+            let minibuffer_id = self.minibuffer_window_id;
             let old_minibuffer = self.window_record_geometry(minibuffer_id);
             self.set_window_record_geometry(
                 minibuffer_id,
@@ -892,9 +827,7 @@ impl Interpreter {
                 .filter(|record| record.kind == RecordKind::Window)
                 .map(|record| (record.id, record.slots.clone()))
                 .collect(),
-            root_window: self
-                .global_binding_value("emaxx-root-window")
-                .unwrap_or(Value::Nil),
+            root_window_id: self.root_window_id,
             frame_width: self.frame_width(),
             frame_height: self.frame_height(),
         }
@@ -911,7 +844,7 @@ impl Interpreter {
                 Value::list(snapshot.selected_window_slots),
                 Value::Integer(snapshot.frame_width),
                 Value::Integer(snapshot.frame_height),
-                snapshot.root_window,
+                Value::Record(snapshot.root_window_id),
                 Value::list(
                     snapshot.window_records.into_iter().map(|(id, slots)| {
                         Value::cons(Value::Integer(id as i64), Value::list(slots))
@@ -972,10 +905,13 @@ impl Interpreter {
             selected_window_id,
             selected_window_slots,
             window_records,
-            root_window: slots
+            root_window_id: slots
                 .get(5)
-                .cloned()
-                .unwrap_or(Value::Record(selected_window_id)),
+                .and_then(|value| match value {
+                    Value::Record(id) => Some(*id),
+                    _ => None,
+                })
+                .unwrap_or(selected_window_id),
             frame_width: slots
                 .get(3)
                 .and_then(|value| value.as_integer().ok())
@@ -1056,7 +992,7 @@ impl Interpreter {
                 }
             }
         }
-        self.set_global_binding("emaxx-root-window", snapshot.root_window);
+        self.root_window_id = snapshot.root_window_id;
         self.selected_window_id = snapshot.selected_window_id;
         if self.has_buffer_id(snapshot.current_buffer_id) {
             self.set_current_buffer_id(snapshot.current_buffer_id)?;
@@ -1068,622 +1004,9 @@ impl Interpreter {
         Ok(())
     }
 
-    pub(super) fn find_class_state(&self, name: &str) -> Option<&ClassState> {
-        self.class_states.iter().find(|state| state.name == name)
-    }
-
-    pub(super) fn find_class_state_mut(&mut self, name: &str) -> Option<&mut ClassState> {
-        self.class_states
-            .iter_mut()
-            .find(|state| state.name == name)
-    }
-
-    pub(super) fn find_class_state_by_record_id(&self, record_id: u64) -> Option<&ClassState> {
-        self.class_states
-            .iter()
-            .find(|state| state.record_id == record_id)
-    }
-
-    pub(crate) fn class_name_from_value(&self, value: &Value) -> Option<String> {
-        match value {
-            Value::T => Some("t".into()),
-            Value::Symbol(symbol) => Some(symbol.to_string()),
-            Value::Record(record_id) => self
-                .find_class_state_by_record_id(*record_id)
-                .map(|state| state.name.clone())
-                .or_else(|| {
-                    // eieio-core constructs an `eieio--class' record, fills
-                    // its inherited cl--class slots, and only then installs
-                    // it with `(setf (cl--find-class NAME) RECORD)'.  GNU's
-                    // accessors work throughout that construction phase.
-                    let record = self.find_record(*record_id)?;
-                    (record.type_name == "eieio--class")
-                        .then(|| record.slots.first()?.as_symbol().ok().map(str::to_string))
-                        .flatten()
-                }),
-            _ => None,
-        }
-    }
-
     pub(crate) fn class_value(&self, name: &str) -> Option<Value> {
-        self.find_class_state(name)
-            .map(|state| Value::Record(state.record_id))
-            // Loaded cl-preloaded.el defines `cl--find-class' as this public
-            // symbol property.  A GNU EIEIO class can therefore exist
-            // without ever passing through the bootstrap ClassState path.
-            .or_else(|| self.get_symbol_property(name, "cl--class"))
-    }
-
-    pub(crate) fn raw_eieio_class_slot(&self, class: &Value, index: usize) -> Option<Value> {
-        let Value::Record(record_id) = class else {
-            return None;
-        };
-        let record = self.find_record(*record_id)?;
-        // A class built by GNU's eieio-core.el has the complete `cl--class'
-        // plus `eieio--class' record layout (slots 0..=10).  Native
-        // bootstrap classes deliberately keep their canonical metadata in
-        // ClassState and use a compact four-slot facade.  Do not interpret
-        // facade fields using the GNU record layout.
-        (record.type_name == "eieio--class" && record.slots.len() >= 11)
-            .then(|| record.slots.get(index).cloned())
-            .flatten()
-    }
-
-    fn raw_eieio_class_parents(&self, class: &Value) -> Option<Value> {
-        self.raw_eieio_class_slot(class, 2).or_else(|| {
-            let Value::Record(record_id) = class else {
-                return None;
-            };
-            let record = self.find_record(*record_id)?;
-            // Unregistered short records are raw cl--class values used
-            // during Lisp construction and by focused compatibility tests.
-            (record.type_name == "eieio--class"
-                && self.find_class_state_by_record_id(*record_id).is_none())
-            .then(|| record.slots.get(2).cloned())
-            .flatten()
-        })
-    }
-
-    pub(crate) fn raw_eieio_class_slot_by_name(&self, name: &str, index: usize) -> Option<Value> {
-        let class = self.class_value(name)?;
-        self.raw_eieio_class_slot(&class, index)
-    }
-
-    pub(crate) fn class_default_object_cache(&self, name: &str) -> Option<Value> {
-        let class = self.class_value(name)?;
-        self.raw_eieio_class_slot(&class, 9).or_else(|| {
-            let Value::Record(record_id) = class else {
-                return None;
-            };
-            // Native bootstrap classes use the compact
-            // (name parents slots options cache) facade.
-            self.find_record(record_id)
-                .and_then(|record| record.slots.get(4).cloned())
-        })
-    }
-
-    pub(crate) fn eieio_unbound_form(&self) -> Option<Value> {
-        self.global_value("eieio--unbound-form")
-    }
-
-    pub(crate) fn eieio_unbound_value(&self) -> Option<Value> {
-        self.global_value("eieio--unbound")
-    }
-
-    pub(crate) fn value_is_eieio_unbound(&self, value: &Value) -> bool {
-        matches!(value, Value::Unbound)
-            || self
-                .eieio_unbound_value()
-                .is_some_and(|marker| primitives::values_equal(self, value, &marker))
-    }
-
-    fn raw_eieio_class_parent_names(&self, name: &str) -> Option<Vec<String>> {
-        let class = self
-            .class_value(name)
-            .or_else(|| self.get_symbol_property(name, "cl--class"))?;
-        Some(
-            self.raw_eieio_class_parents(&class)?
-                .to_vec()
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|parent| self.class_name_from_value(parent))
-                .collect(),
-        )
-    }
-
-    pub(crate) fn class_is_autoload_stub(&self, name: &str) -> bool {
-        let Some(Value::Record(record_id)) = self.class_value(name) else {
-            return false;
-        };
-        let Some(record) = self.find_record(record_id) else {
-            return false;
-        };
-        // eieio--full-class-object uses the nil default-object cache to
-        // distinguish the dummy made by eieio-defclass-autoload from a
-        // completed class.  The cache is field 9 of the full record.
-        record.type_name == "eieio--class"
-            && record.slots.len() >= 11
-            && record.slots.get(9).is_none_or(Value::is_nil)
-    }
-
-    pub(crate) fn class_parents_value(&self, class: &Value) -> Result<Value, LispError> {
-        if let Some(name) = self.class_name_from_value(class)
-            && primitives::is_builtin_class_name(&name)
-        {
-            return Ok(Value::list(
-                primitives::builtin_class_parents(&name)
-                    .iter()
-                    .map(|parent| crate::lisp::types::interned_symbol_value((*parent).into())),
-            ));
-        }
-        let Value::Record(record_id) = class else {
-            return Err(LispError::TypeError("class".into(), class.type_name()));
-        };
-        if let Some((_, parents)) = self
-            .class_parent_overrides
-            .iter()
-            .find(|(stored_id, _)| stored_id == record_id)
-        {
-            return Ok(Value::list(parents.iter().map(|parent| {
-                self.class_value(parent)
-                    .unwrap_or_else(|| Value::Symbol(parent.clone().into()))
-            })));
-        }
-        // GNU registers a new class before it fills the record's parent
-        // field.  The completed Lisp record is therefore authoritative over
-        // the initially empty ClassState snapshot.
-        if let Some(parents) = self.raw_eieio_class_parents(class) {
-            return Ok(parents);
-        }
-        if let Some(state) = self.find_class_state_by_record_id(*record_id) {
-            return Ok(Value::list(state.parents.iter().map(|parent| {
-                self.class_value(parent)
-                    .unwrap_or_else(|| Value::Symbol(parent.clone().into()))
-            })));
-        }
-        Ok(Value::Nil)
-    }
-
-    pub(crate) fn set_class_record(&mut self, name: &str, class: Value) -> Result<(), LispError> {
-        let Value::Record(record_id) = class.clone() else {
-            return Err(LispError::TypeError("class".into(), class.type_name()));
-        };
-        let overridden_parents = self
-            .class_parent_overrides
-            .iter()
-            .find(|(stored_id, _)| *stored_id == record_id)
-            .map(|(_, parents)| parents.clone());
-        let raw_parents = self
-            .find_record(record_id)
-            .and_then(|record| {
-                (record.type_name == "eieio--class")
-                    .then(|| record.slots.get(2).cloned())
-                    .flatten()
-            })
-            .and_then(|parents| parents.to_vec().ok())
-            .unwrap_or_default();
-        let parents = overridden_parents.unwrap_or_else(|| {
-            raw_parents
-                .iter()
-                .filter_map(|parent| self.class_name_from_value(parent))
-                .collect()
-        });
-        if let Some(existing) = self.find_class_state_mut(name) {
-            existing.record_id = record_id;
-            existing.parents = parents.clone();
-        } else {
-            self.class_states.push(ClassState {
-                name: name.to_string(),
-                record_id,
-                parents: parents.clone(),
-                slot_specs: Vec::new(),
-                options: Vec::new(),
-                children: Vec::new(),
-            });
-        }
-        self.put_symbol_property(name, "cl--class", Value::Record(record_id));
-        self.put_symbol_property(
-            name,
-            "emaxx-class-parents",
-            Value::list(parents.into_iter().map(|value| Value::Symbol(value.into()))),
-        );
-        Ok(())
-    }
-
-    pub(crate) fn set_class_parents_value(
-        &mut self,
-        class: &Value,
-        parents: Value,
-    ) -> Result<(), LispError> {
-        let Value::Record(record_id) = class else {
-            return Err(LispError::TypeError("class".into(), class.type_name()));
-        };
-        let parent_names = parents
-            .to_vec()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|parent| self.class_name_from_value(&parent))
-            .collect::<Vec<_>>();
-        match self
-            .class_parent_overrides
-            .iter_mut()
-            .find(|(stored_id, _)| stored_id == record_id)
-        {
-            Some((_, stored_parents)) => *stored_parents = parent_names.clone(),
-            None => self
-                .class_parent_overrides
-                .push((*record_id, parent_names.clone())),
-        }
-        let Some(class_name) = self.class_name_from_value(class) else {
-            return Ok(());
-        };
-        self.register_class(&class_name, parent_names, Vec::new(), Vec::new());
-        Ok(())
-    }
-
-    pub(super) fn register_class(
-        &mut self,
-        name: &str,
-        parents: Vec<String>,
-        slot_specs: Vec<Value>,
-        options: Vec<Value>,
-    ) -> Value {
-        let record_value = if let Some(existing) = self.find_class_state(name) {
-            Value::Record(existing.record_id)
-        } else {
-            self.create_record(
-                "eieio--class",
-                vec![
-                    Value::Symbol(name.to_string().into()),
-                    Value::list(
-                        parents
-                            .iter()
-                            .cloned()
-                            .map(|value| Value::Symbol(value.into())),
-                    ),
-                    Value::list(slot_specs.iter().cloned()),
-                    Value::list(options.iter().cloned()),
-                ],
-            )
-        };
-        let Value::Record(record_id) = record_value.clone() else {
-            unreachable!("class registration uses class records");
-        };
-
-        let old_parents = self
-            .find_class_state(name)
-            .map(|state| state.parents.clone())
-            .unwrap_or_default();
-        for parent in &old_parents {
-            if let Some(parent_state) = self.find_class_state_mut(parent) {
-                parent_state.children.retain(|child| child != name);
-            }
-        }
-
-        if let Some(record) = self.find_record_mut(record_id) {
-            record.slots = vec![
-                Value::Symbol(name.to_string().into()),
-                Value::list(
-                    parents
-                        .iter()
-                        .cloned()
-                        .map(|value| Value::Symbol(value.into())),
-                ),
-                Value::list(slot_specs.iter().cloned()),
-                Value::list(options.iter().cloned()),
-            ];
-        }
-
-        if let Some(existing) = self.find_class_state_mut(name) {
-            existing.parents = parents.clone();
-            existing.slot_specs = slot_specs.clone();
-            existing.options = options.clone();
-        } else {
-            self.class_states.push(ClassState {
-                name: name.to_string(),
-                record_id,
-                parents: parents.clone(),
-                slot_specs: slot_specs.clone(),
-                options: options.clone(),
-                children: Vec::new(),
-            });
-        }
-
-        for parent in &parents {
-            if let Some(parent_state) = self.find_class_state_mut(parent)
-                && !parent_state.children.iter().any(|child| child == name)
-            {
-                parent_state.children.push(name.to_string());
-            }
-        }
-
-        self.put_symbol_property(name, "cl--class", record_value.clone());
-        self.put_symbol_property(
-            name,
-            "emaxx-class-parents",
-            Value::list(parents.into_iter().map(|value| Value::Symbol(value.into()))),
-        );
-        self.put_symbol_property(name, "emaxx-class-slots", Value::list(slot_specs));
-        self.put_symbol_property(name, "emaxx-class-options", Value::list(options));
-        record_value
-    }
-
-    pub(crate) fn class_allparents(&self, name: &str) -> Vec<Value> {
-        if let Some(parents) = primitives::builtin_class_allparents(name) {
-            return parents
-                .iter()
-                .map(|parent| crate::lisp::types::interned_symbol_value((*parent).into()))
-                .collect();
-        }
-
-        fn parent_names(interp: &Interpreter, name: &str) -> Vec<String> {
-            let builtin_parents = primitives::builtin_class_parents(name);
-            if !builtin_parents.is_empty() {
-                builtin_parents
-                    .iter()
-                    .map(|parent| (*parent).to_string())
-                    .collect()
-            } else if name == "oclosure" {
-                vec!["closure".into()]
-            } else if interp.class_is_oclosure_type(name) {
-                vec![
-                    interp
-                        .get_symbol_property(name, "emaxx-oclosure-parent")
-                        .and_then(|value| value.as_symbol().ok().map(String::from))
-                        .unwrap_or_else(|| "oclosure".into()),
-                ]
-            } else if let Some(parents) = interp.raw_eieio_class_parent_names(name) {
-                parents
-            } else {
-                interp
-                    .find_class_state(name)
-                    .map(|state| state.parents.clone())
-                    .unwrap_or_default()
-            }
-        }
-
-        // GNU's `cl--class-allparents' merges the already ordered ancestry
-        // of every direct parent.  A depth-first walk is observably wrong for
-        // multiple inheritance: shared ancestors of the first parent must not
-        // precede the second direct parent.
-        fn merge_ordered(mut lists: Vec<Vec<String>>) -> Vec<String> {
-            lists.retain(|list| !list.is_empty());
-            let mut merged = Vec::new();
-            while lists.len() > 1 {
-                let candidate = lists.iter().find_map(|list| {
-                    let head = list.first()?;
-                    lists
-                        .iter()
-                        .all(|other| !other.iter().skip(1).any(|item| item == head))
-                        .then(|| head.clone())
-                });
-                // GNU's general class merge resolves an inconsistent graph
-                // by taking the first available head.  EIEIO's explicit C3
-                // validator is the layer that signals inconsistent ancestry.
-                let candidate = candidate.unwrap_or_else(|| lists[0][0].clone());
-                merged.push(candidate.clone());
-                for list in &mut lists {
-                    if list.first() == Some(&candidate) {
-                        list.remove(0);
-                    }
-                }
-                lists.retain(|list| !list.is_empty());
-            }
-            if let Some(last) = lists.pop() {
-                merged.extend(last);
-            }
-            merged
-        }
-
-        fn precedence(
-            interp: &Interpreter,
-            name: &str,
-            active: &mut std::collections::HashSet<String>,
-        ) -> Vec<String> {
-            if let Some(parents) = primitives::builtin_class_allparents(name) {
-                return parents.iter().map(|parent| (*parent).to_string()).collect();
-            }
-            if !active.insert(name.to_string()) {
-                return vec![name.to_string()];
-            }
-            let parents = parent_names(interp, name);
-            let mut result = vec![name.to_string()];
-            if parents.is_empty() {
-                if name != "t" {
-                    result.extend(precedence(interp, "t", active));
-                }
-            } else {
-                let parent_lists = parents
-                    .iter()
-                    .map(|parent| precedence(interp, parent, active))
-                    .collect();
-                result.extend(merge_ordered(parent_lists));
-            }
-            active.remove(name);
-            result
-        }
-
-        precedence(self, name, &mut std::collections::HashSet::new())
-            .into_iter()
-            .map(crate::lisp::types::interned_symbol_value)
-            .collect()
-    }
-
-    pub(crate) fn class_is_oclosure_type(&self, name: &str) -> bool {
-        name == "oclosure"
-            || self
-                .get_symbol_property(name, "emaxx-oclosure-slots")
-                .is_some()
-    }
-
-    // Sibling classes (neither inherits the other) have no global
-    // specificity order; CLOS resolves them through the class precedence
-    // list of the instance's class. A common subclass fixes that order
-    // statically: its precedence list mentions both, most-specific-first.
-    pub(crate) fn class_sibling_precedes(&self, left: &str, right: &str) -> bool {
-        for state in &self.class_states {
-            let parents = self.class_allparents(&state.name);
-            let left_position = parents
-                .iter()
-                .position(|parent| matches!(parent, Value::Symbol(name) if name == left));
-            let right_position = parents
-                .iter()
-                .position(|parent| matches!(parent, Value::Symbol(name) if name == right));
-            if let (Some(left_position), Some(right_position)) = (left_position, right_position) {
-                return left_position < right_position;
-            }
-        }
-        false
-    }
-
-    pub(crate) fn value_is_instance_of_class(&self, value: &Value, class_name: &str) -> bool {
-        let Value::Record(record_id) = value else {
-            return false;
-        };
-        let Some(record) = self.find_record(*record_id) else {
-            return false;
-        };
-        self.class_allparents(&record.type_name)
-            .iter()
-            .any(|parent| matches!(parent, Value::Symbol(name) if name == class_name))
-    }
-
-    pub(crate) fn value_is_eieio_object(&self, value: &Value) -> bool {
-        // Several host-backed values (hash tables, processes, markers, ...)
-        // use Value::Record too.  GNU's `recordp' accepts only actual record
-        // objects here, and `eieio--class-p' further requires their tag to
-        // resolve to an EIEIO class.  Model that semantic boundary through
-        // ancestry instead of leaking Emaxx's shared Rust representation.
-        let Value::Record(record_id) = value else {
-            return false;
-        };
-        let Some(record) = self.find_record(*record_id) else {
-            return false;
-        };
-        self.get_symbol_property(&record.type_name, "emaxx-eieio-class")
-            .is_some_and(|marker| marker.is_truthy())
-            || self.value_is_instance_of_class(value, "eieio-default-superclass")
-    }
-
-    pub(crate) fn callable_is_ignore(&self, value: &Value) -> bool {
-        fn resolves_to_ignore(
-            interp: &Interpreter,
-            value: &Value,
-            ignore_function: Option<&Value>,
-            seen_records: &mut std::collections::HashSet<u64>,
-        ) -> bool {
-            if ignore_function.is_some_and(|ignore| value == ignore) {
-                return true;
-            }
-            match value {
-                Value::BuiltinFunc(name) | Value::Symbol(name) => name == "ignore",
-                Value::Record(record_id) if seen_records.insert(*record_id) => interp
-                    .find_record(*record_id)
-                    .filter(|record| record.kind == RecordKind::Closure)
-                    .and_then(|record| record.slots.first())
-                    .is_some_and(|callable| {
-                        resolves_to_ignore(interp, callable, ignore_function, seen_records)
-                    }),
-                _ => false,
-            }
-        }
-
-        // `symbol-function' exposes a GNU-preloaded Lisp function through an
-        // observable byte-code-function facade, while Emaxx retains the host
-        // callable in slot zero.  Generic dispatch compares callable identity,
-        // so normalize that representation boundary before testing the
-        // `ignore' end-of-chain sentinel.
-        let ignore_function = self.raw_function_binding("ignore", &Env::new());
-        resolves_to_ignore(
-            self,
-            value,
-            ignore_function.as_ref(),
-            &mut std::collections::HashSet::new(),
-        )
-    }
-
-    pub(crate) fn class_children(&self, name: &str) -> Vec<Value> {
-        // GNU mutates the live eieio--class record when each subclass is
-        // defined.  A ClassState entry may have been installed earlier,
-        // before those child names were pushed, so a complete Lisp record is
-        // authoritative just as it is for parents, slots, and options.
-        if let Some(children) = self
-            .class_value(name)
-            .and_then(|class| self.raw_eieio_class_slot(&class, 5))
-            .and_then(|children| children.to_vec().ok())
-        {
-            return children;
-        }
-        self.find_class_state(name)
-            .map(|state| {
-                state
-                    .children
-                    .iter()
-                    .cloned()
-                    .map(|value| Value::Symbol(value.into()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    }
-
-    pub(super) fn register_generic_generalizer(
-        &mut self,
-        name: &str,
-        priority: i64,
-        tagcode_function: Value,
-        specializers_function: Value,
-    ) -> Value {
-        let record_value = if let Some(existing) = self
-            .generalizer_states
-            .iter()
-            .find(|state| state.name == name)
-        {
-            Value::Record(existing.record_id)
-        } else {
-            self.create_record(
-                "cl--generic-generalizer",
-                vec![
-                    Value::Symbol(name.to_string().into()),
-                    Value::Integer(priority),
-                    tagcode_function.clone(),
-                    specializers_function.clone(),
-                ],
-            )
-        };
-        let Value::Record(record_id) = record_value.clone() else {
-            unreachable!("generalizer registration uses generalizer records");
-        };
-
-        if let Some(record) = self.find_record_mut(record_id) {
-            record.slots = vec![
-                Value::Symbol(name.to_string().into()),
-                Value::Integer(priority),
-                tagcode_function.clone(),
-                specializers_function.clone(),
-            ];
-        }
-
-        if let Some(existing) = self
-            .generalizer_states
-            .iter_mut()
-            .find(|state| state.name == name)
-        {
-            existing.priority = priority;
-            existing.tagcode_function = tagcode_function.clone();
-            existing.specializers_function = specializers_function.clone();
-        } else {
-            self.generalizer_states.push(GenericGeneralizerState {
-                name: name.to_string(),
-                record_id,
-                priority,
-                tagcode_function: tagcode_function.clone(),
-                specializers_function: specializers_function.clone(),
-            });
-        }
-
-        self.set_global_binding(name, record_value.clone());
-        self.put_symbol_property(name, "emaxx-generic-generalizer", record_value.clone());
-        record_value
+        // GNU cl-macs.el defines `cl--find-class' as this public property.
+        self.get_symbol_property(name, "cl--class")
     }
 
     pub fn terminal_parameter(&self, parameter: &Value) -> Option<Value> {
@@ -2009,40 +1332,6 @@ impl Interpreter {
         Value::CharTable(id)
     }
 
-    pub fn unicode_property_table(&mut self, property: &str) -> (Value, bool) {
-        if let Some(id) = self.unicode_property_table_ids.get(property).copied()
-            && self.find_char_table(id).is_some()
-        {
-            return (Value::CharTable(id), false);
-        }
-        let table = self.make_char_table(Some("char-code-property-table".into()), Value::Nil);
-        let Value::CharTable(id) = table else {
-            unreachable!("make_char_table always returns a character table")
-        };
-        // GNU Unicode property tables keep the property name in extra slot
-        // zero and a value-description function in slot three.  Emaxx
-        // computes the generated Unicode data natively, but must expose the
-        // same table contract to the Lisp-owned mule-cmds.el accessors.
-        let state = self
-            .find_char_table_mut(id)
-            .expect("new Unicode property table must exist");
-        let description = if property == "general-category" {
-            Value::BuiltinFunc("emaxx--general-category-description".into())
-        } else {
-            Value::Nil
-        };
-        state.extra_slots = vec![
-            Value::Symbol(property.to_string().into()),
-            Value::Nil,
-            Value::Nil,
-            description,
-            Value::Nil,
-        ];
-        self.unicode_property_table_ids
-            .insert(property.to_string(), id);
-        (Value::CharTable(id), true)
-    }
-
     pub fn replace_hash_table_runtime_entries(
         &mut self,
         id: u64,
@@ -2214,8 +1503,8 @@ impl Interpreter {
             .filter(|table| table.id == id)
     }
 
-    pub(crate) fn cached_regexp_syntax_word_class(&self, table_id: u64) -> Option<String> {
-        self.regexp_syntax_word_class_cache
+    pub(crate) fn cached_regexp_syntax_classes(&self, table_id: u64) -> Option<[String; 16]> {
+        self.regexp_syntax_class_cache
             .borrow()
             .as_ref()
             .filter(|cache| {
@@ -2225,8 +1514,8 @@ impl Interpreter {
             .map(|cache| cache.rendered.clone())
     }
 
-    pub(crate) fn cache_regexp_syntax_word_class(&self, table_id: u64, rendered: String) {
-        *self.regexp_syntax_word_class_cache.borrow_mut() = Some(RegexpSyntaxWordClassCache {
+    pub(crate) fn cache_regexp_syntax_classes(&self, table_id: u64, rendered: [String; 16]) {
+        *self.regexp_syntax_class_cache.borrow_mut() = Some(RegexpSyntaxClassCache {
             table_id,
             char_table_generation: self.char_table_mutation_generation,
             rendered,
@@ -2464,7 +1753,11 @@ impl Interpreter {
     }
 
     pub fn create_record(&mut self, type_name: &str, slots: Vec<Value>) -> Value {
-        self.create_record_with_kind(type_name, slots, RecordKind::Record)
+        self.create_record_with_type(Value::symbol(type_name), slots)
+    }
+
+    pub fn create_record_with_type(&mut self, type_tag: Value, slots: Vec<Value>) -> Value {
+        self.create_record_with_kind(type_tag, slots, RecordKind::Record)
     }
 
     pub(crate) fn create_pseudovector(
@@ -2474,26 +1767,29 @@ impl Interpreter {
         slots: Vec<Value>,
     ) -> Value {
         debug_assert_ne!(kind, RecordKind::Record);
-        self.create_record_with_kind(type_name, slots, kind)
+        self.create_record_with_kind(Value::symbol(type_name), slots, kind)
     }
 
     fn create_record_with_kind(
         &mut self,
-        type_name: &str,
+        type_tag: Value,
         slots: Vec<Value>,
         kind: RecordKind,
     ) -> Value {
         let id = self.alloc_record_id();
+        let indexed_type = type_tag.as_symbol().ok().map(str::to_owned);
         self.records.push(RecordState {
             id,
-            type_name: type_name.to_string(),
+            type_tag,
             slots,
             kind,
         });
-        self.record_ids_by_type_index
-            .entry(type_name.to_string())
-            .or_default()
-            .insert(id);
+        if let Some(type_name) = indexed_type {
+            self.record_ids_by_type_index
+                .entry(type_name)
+                .or_default()
+                .insert(id);
+        }
         Value::Record(id)
     }
 
@@ -2590,7 +1886,7 @@ impl Interpreter {
     pub(crate) fn create_treesit_query(&mut self, language: Value, source: Value) -> Value {
         let query = self.create_pseudovector(
             RecordKind::TreeSitterCompiledQuery,
-            "tree-sitter-compiled-query",
+            "treesit-compiled-query",
             Vec::new(),
         );
         let Value::Record(record_id) = query else {
@@ -2627,18 +1923,6 @@ impl Interpreter {
             .find(|state| state.record_id == *record_id)
             .expect("compiled Tree-sitter query state exists")
             .query = Some(query);
-    }
-
-    // GNU eieio objects carry the class OBJECT as their record tag unless
-    // `make-instance' downgrades it to the class symbol for backward
-    // compatibility; such records print with the class object expanded in
-    // place of the type symbol.
-    pub(crate) fn mark_class_object_tagged_record(&mut self, id: u64) {
-        self.class_object_tagged_records.insert(id);
-    }
-
-    pub(crate) fn is_class_object_tagged_record(&self, id: u64) -> bool {
-        self.class_object_tagged_records.contains(&id)
     }
 
     pub(crate) fn record_ids_by_type(&self, type_name: &str) -> Vec<u64> {
@@ -2696,50 +1980,32 @@ impl Interpreter {
             .and_then(|value| value.as_symbol().ok())
             .unwrap_or("eql")
             .to_string();
-        let copy = self.create_record_with_kind(&record.type_name, slots, record.kind);
+        let copy = self.create_record_with_kind(record.type_tag, slots, record.kind);
         if let (Some(entries), Value::Record(copy_id)) = (hash_entries, &copy) {
             self.replace_hash_table_runtime_entries(*copy_id, &test, entries);
-        }
-        // GNU `copy-sequence' copies the record verbatim, including a
-        // class-object type tag.
-        if self.is_class_object_tagged_record(id)
-            && let Value::Record(copy_id) = &copy
-        {
-            self.mark_class_object_tagged_record(*copy_id);
         }
         Ok(copy)
     }
 
-    pub(crate) fn find_class_state_name_by_record_id(&self, record_id: u64) -> Option<String> {
-        self.find_class_state_by_record_id(record_id)
-            .map(|state| state.name.clone())
-    }
-
-    // `aset' on a record's type slot: a symbol clears the class-object tag,
-    // a class record sets it (GNU stores the tag value directly).
-    pub(crate) fn retag_record(
-        &mut self,
-        id: u64,
-        type_name: &str,
-        class_object_tagged: bool,
-    ) -> Result<(), LispError> {
-        let Some(previous_type_name) = self.find_record(id).map(|record| record.type_name.clone())
+    // `aset' on a record's type slot stores the Lisp object verbatim.  GNU
+    // permits both symbols and arbitrary type descriptors here.
+    pub(crate) fn retag_record(&mut self, id: u64, type_tag: Value) -> Result<(), LispError> {
+        let Some((record_kind, previous_type_name)) = self
+            .find_record(id)
+            .map(|record| (record.kind, record.symbol_type_name().map(str::to_owned)))
         else {
             return Err(LispError::TypeError(
                 "record".into(),
                 format!("record<{id}>"),
             ));
         };
-        if self
-            .find_record(id)
-            .is_some_and(|record| record.kind != RecordKind::Record)
-        {
+        if record_kind != RecordKind::Record {
             return Err(LispError::TypeError(
                 "record".into(),
                 format!("record<{id}>"),
             ));
         }
-        if previous_type_name != type_name {
+        if let Some(previous_type_name) = previous_type_name {
             let remove_previous_type = self
                 .record_ids_by_type_index
                 .get_mut(&previous_type_name)
@@ -2750,6 +2016,8 @@ impl Interpreter {
             if remove_previous_type {
                 self.record_ids_by_type_index.remove(&previous_type_name);
             }
+        }
+        if let Ok(type_name) = type_tag.as_symbol() {
             self.record_ids_by_type_index
                 .entry(type_name.to_string())
                 .or_default()
@@ -2757,17 +2025,8 @@ impl Interpreter {
         }
         self.find_record_mut(id)
             .expect("record identity was validated before retagging")
-            .type_name = type_name.to_string();
-        if class_object_tagged {
-            self.class_object_tagged_records.insert(id);
-        } else {
-            self.class_object_tagged_records.remove(&id);
-        }
+            .type_tag = type_tag;
         Ok(())
-    }
-
-    pub(crate) fn has_lisp_macro(&self, name: &str) -> bool {
-        self.has_macro_binding(name)
     }
 
     pub fn provide_feature(&mut self, feature: &str) {
@@ -2789,9 +2048,6 @@ impl Interpreter {
     }
 
     fn record_provide_in_load_history(&mut self, feature: &str) {
-        if self.current_load_history_is_suppressed() {
-            return;
-        }
         let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
             return;
         };
@@ -2812,9 +2068,6 @@ impl Interpreter {
     }
 
     fn record_require_in_load_history(&mut self, feature: &str) {
-        if self.current_load_history_is_suppressed() {
-            return;
-        }
         let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
             return;
         };
@@ -2840,9 +2093,6 @@ impl Interpreter {
     }
 
     pub(crate) fn record_definition_in_load_history(&mut self, kind: &str, name: &str) {
-        if self.current_load_history_is_suppressed() {
-            return;
-        }
         let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
             return;
         };
@@ -2876,7 +2126,7 @@ impl Interpreter {
     /// from before that file first touched the symbol, not an intermediate
     /// definition from the same load.
     pub(crate) fn record_function_redefinition(&mut self, name: &str, old_definition: Value) {
-        if old_definition.is_nil() || self.current_load_history_is_suppressed() {
+        if old_definition.is_nil() {
             return;
         }
         let file = self
@@ -2951,21 +2201,29 @@ impl Interpreter {
     pub(crate) fn provide_feature_with_after_load(
         &mut self,
         feature: &str,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         self.provide_feature(feature);
         self.record_provide_in_load_history(feature);
-        let mut pending = Vec::new();
-        let mut index = 0usize;
-        while index < self.after_load_forms.len() {
-            if self.after_load_forms[index].0 == feature {
-                let (_, body, env) = self.after_load_forms.remove(index);
-                pending.push((body, env));
-            } else {
-                index += 1;
+
+        // GNU 30.2 fns.c:Fprovide runs the functions in the matching
+        // `after-load-alist' entry after publishing FEATURE.  The alist and
+        // its closures are owned by subr.el's real `eval-after-load'; the
+        // Rust host only performs the C-owned lookup/invocation boundary.
+        let after_load_alist = self
+            .lookup_var("after-load-alist", env)
+            .unwrap_or(Value::Nil);
+        for entry in after_load_alist.to_vec()? {
+            let Some((key, functions)) = entry.cons_values() else {
+                continue;
+            };
+            if !matches!(key, Value::Symbol(name) if name == feature) {
+                continue;
             }
-        }
-        for (body, mut env) in pending {
-            self.sf_progn(&body, &mut env)?;
+            for function in functions.to_vec()? {
+                self.call_function_value(function, None, &[], env)?;
+            }
+            break;
         }
         Ok(Value::Symbol(feature.to_string().into()))
     }
@@ -3201,18 +2459,28 @@ mod runtime_index_tests {
             vec![first_id, second_id]
         );
         interp
-            .retag_record(first_id, "after", false)
+            .retag_record(first_id, Value::symbol("after"))
             .expect("record must remain live");
         assert_eq!(interp.record_ids_by_type("before"), vec![second_id]);
         assert_eq!(interp.record_ids_by_type("after"), vec![first_id]);
 
         interp
-            .retag_record(second_id, "after", false)
+            .retag_record(second_id, Value::symbol("after"))
             .expect("record must remain live");
         assert!(interp.record_ids_by_type("before").is_empty());
         assert_eq!(
             interp.record_ids_by_type("after"),
             vec![first_id, second_id]
+        );
+
+        let descriptor = interp.create_record("descriptor", vec![Value::symbol("public-type")]);
+        interp
+            .retag_record(first_id, descriptor.clone())
+            .expect("record must accept an arbitrary Lisp type descriptor");
+        assert_eq!(interp.record_ids_by_type("after"), vec![second_id]);
+        assert_eq!(
+            interp.find_record(first_id).map(|record| &record.type_tag),
+            Some(&descriptor)
         );
     }
 

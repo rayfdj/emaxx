@@ -98,6 +98,12 @@ pub struct Buffer {
     /// Sparse text property spans over [start, end) buffer positions.
     text_properties: Vec<TextPropertySpan>,
 
+    /// Sparse 1-based character positions for GNU Emacs characters outside
+    /// Unicode's scalar range.  The rope holds one placeholder scalar at each
+    /// position; this typed sidecar is runtime representation, never a Lisp
+    /// text property.
+    extended_chars: Vec<(usize, u32)>,
+
     /// When true, suppress creation/kill buffer hooks for this buffer.
     pub inhibit_hooks: bool,
 
@@ -118,6 +124,7 @@ pub enum UndoEntry {
         point_after: bool,
         text: String,
         props: Vec<TextPropertySpan>,
+        extended_chars: Vec<(usize, u32)>,
         markers: Vec<UndoMarker>,
     },
     /// A logical grouped change that should appear as a single Lisp undo entry.
@@ -288,6 +295,7 @@ impl Buffer {
             undo_disabled: false,
             overlays: Vec::new(),
             text_properties: Vec::new(),
+            extended_chars: Vec::new(),
             inhibit_hooks: false,
             multibyte: true,
         }
@@ -321,6 +329,7 @@ impl Buffer {
             undo_disabled: false,
             overlays: Vec::new(),
             text_properties: Vec::new(),
+            extended_chars: Vec::new(),
             inhibit_hooks: false,
             multibyte: true,
         }
@@ -388,6 +397,9 @@ impl Buffer {
         for span in &mut self.text_properties {
             span.start = remap(span.start);
             span.end = remap(span.end);
+        }
+        for (position, _) in &mut self.extended_chars {
+            *position = remap(*position);
         }
 
         self.text = Rope::from_str(&text);
@@ -752,6 +764,30 @@ impl Buffer {
         self.text_properties.clone()
     }
 
+    pub fn extended_char_at(&self, pos: usize) -> Option<u32> {
+        self.extended_chars
+            .binary_search_by_key(&pos, |(position, _)| *position)
+            .ok()
+            .map(|index| self.extended_chars[index].1)
+    }
+
+    /// Return character-indexed sidecar entries relative to FROM.
+    pub fn substring_extended_chars(&self, from: usize, to: usize) -> Vec<(usize, u32)> {
+        let (from, to) = if from <= to { (from, to) } else { (to, from) };
+        self.extended_chars
+            .iter()
+            .filter(|(position, _)| from <= *position && *position < to)
+            .map(|(position, code)| (position - from, *code))
+            .collect()
+    }
+
+    pub fn set_inserted_extended_chars(&mut self, start: usize, chars: &[(usize, u32)]) {
+        self.extended_chars
+            .extend(chars.iter().map(|(offset, code)| (start + *offset, *code)));
+        self.extended_chars
+            .sort_unstable_by_key(|(position, _)| *position);
+    }
+
     pub fn has_text_property_named(&self, property: &str) -> bool {
         self.text_properties
             .iter()
@@ -948,6 +984,7 @@ impl Buffer {
         crate::overlay::adjust_for_insert(&mut self.overlays, insert_at, nchars);
 
         self.adjust_text_properties_for_insert(insert_at, nchars);
+        self.adjust_extended_chars_for_insert(insert_at, nchars);
         if let Some(props) = props
             && !props.is_empty()
         {
@@ -971,11 +1008,13 @@ impl Buffer {
             self.record_first_change_for_undo();
             let old: String = self.text.slice(from0..to0).to_string();
             let props = self.substring_property_spans(from, to);
+            let extended_chars = self.substring_extended_chars(from, to);
             self.push_undo_entry(UndoEntry::Delete {
                 pos: from,
                 point_after: self.pt == to,
                 text: old,
                 props,
+                extended_chars,
                 markers: Vec::new(),
             });
             self.push_undo_entry(UndoEntry::Insert {
@@ -985,6 +1024,8 @@ impl Buffer {
         }
         self.text.remove(from0..to0);
         self.text.insert(from0, text);
+        self.extended_chars
+            .retain(|(position, _)| *position < from || *position >= to);
         self.invalidate_char_cache();
         self.modiff += 1;
         self.chars_modiff = self.modiff;
@@ -1014,6 +1055,7 @@ impl Buffer {
         // Grab text for undo before deleting
         let deleted: String = self.text.slice(from0..to0).to_string();
         let deleted_props = self.substring_property_spans(from, to);
+        let deleted_extended_chars = self.substring_extended_chars(from, to);
         let nchars = to - from;
 
         if !self.undo_disabled {
@@ -1023,6 +1065,7 @@ impl Buffer {
                 point_after: self.pt == to,
                 text: deleted.clone(),
                 props: deleted_props,
+                extended_chars: deleted_extended_chars,
                 markers: Vec::new(),
             });
         }
@@ -1050,6 +1093,7 @@ impl Buffer {
         crate::overlay::adjust_for_delete(&mut self.overlays, from, to);
         crate::overlay::evaporate(&mut self.overlays);
         self.adjust_text_properties_for_delete(from, to);
+        self.adjust_extended_chars_for_delete(from, to);
 
         // Shrink accessible region
         self.zv -= nchars;
@@ -1389,6 +1433,7 @@ impl Buffer {
         std::mem::swap(&mut self.undo_disabled, &mut other.undo_disabled);
         std::mem::swap(&mut self.overlays, &mut other.overlays);
         std::mem::swap(&mut self.text_properties, &mut other.text_properties);
+        std::mem::swap(&mut self.extended_chars, &mut other.extended_chars);
         std::mem::swap(&mut self.multibyte, &mut other.multibyte);
     }
 
@@ -1490,6 +1535,28 @@ impl Buffer {
             }
         }
         self.text_properties = merge_adjacent_spans(updated);
+    }
+
+    fn adjust_extended_chars_for_insert(&mut self, pos: usize, nchars: usize) {
+        for (position, _) in &mut self.extended_chars {
+            if *position >= pos {
+                *position += nchars;
+            }
+        }
+    }
+
+    fn adjust_extended_chars_for_delete(&mut self, from: usize, to: usize) {
+        let removed = to.saturating_sub(from);
+        self.extended_chars.retain_mut(|(position, _)| {
+            if *position < from {
+                true
+            } else if *position >= to {
+                *position -= removed;
+                true
+            } else {
+                false
+            }
+        });
     }
 
     fn modify_text_properties<F>(&mut self, start: usize, end: usize, f: F)
@@ -1792,6 +1859,7 @@ impl Buffer {
                 point_after,
                 text,
                 props,
+                extended_chars,
                 ..
             } => {
                 self.goto_char(*pos);
@@ -1804,6 +1872,7 @@ impl Buffer {
                         &span.props,
                     );
                 }
+                self.set_inserted_extended_chars(insert_at, extended_chars);
                 if !point_after {
                     self.goto_char(*pos);
                 }
@@ -1915,12 +1984,14 @@ fn map_undo_entry_through_newer(entry: &UndoEntry, newer_groups: &[Vec<UndoEntry
             point_after,
             text,
             props,
+            extended_chars,
             markers,
         } => UndoEntry::Delete {
             pos: map_position_through_groups(*pos, newer_groups, false),
             point_after: *point_after,
             text: text.clone(),
             props: props.clone(),
+            extended_chars: extended_chars.clone(),
             markers: markers.clone(),
         },
         UndoEntry::Combined { display, entries } => UndoEntry::Combined {
@@ -2450,6 +2521,25 @@ mod tests {
             buf.text_property_at(2, "markup"),
             Some(Value::String("x".into()))
         );
+    }
+
+    #[test]
+    fn extended_character_metadata_tracks_edits_and_undo() {
+        let mut buf = Buffer::new("test");
+        buf.insert("\u{e000}");
+        buf.set_inserted_extended_chars(1, &[(0, 0x3f_ffff)]);
+
+        buf.goto_char(1);
+        buf.insert("x");
+        assert_eq!(buf.extended_char_at(2), Some(0x3f_ffff));
+        buf.delete_region(1, 2).unwrap();
+        assert_eq!(buf.extended_char_at(1), Some(0x3f_ffff));
+
+        buf.clear_undo();
+        buf.delete_region(1, 2).unwrap();
+        assert_eq!(buf.extended_char_at(1), None);
+        buf.undo().unwrap();
+        assert_eq!(buf.extended_char_at(1), Some(0x3f_ffff));
     }
 
     #[test]

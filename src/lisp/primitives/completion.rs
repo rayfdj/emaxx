@@ -24,136 +24,6 @@ pub(crate) fn interaction_allowed(interp: &Interpreter, env: &Env) -> bool {
         .is_some_and(|value| value.is_truthy())
 }
 
-pub(crate) fn refresh_buffer_menu(
-    interp: &mut Interpreter,
-    files_only: bool,
-    buffer_list: Option<&Value>,
-    filter_predicate: Option<&Value>,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let entries =
-        collect_buffer_menu_entries(interp, files_only, buffer_list, filter_predicate, env)?;
-    let rendered = entries
-        .iter()
-        .filter_map(|entry| match entry {
-            Value::Buffer(buffer) => interp
-                .get_buffer_by_id(buffer.id)
-                .map(|buffer| buffer.name.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let menu_buffer = match interp.find_buffer(BUFFER_MENU_BUFFER_NAME) {
-        Some((id, name)) => Value::buffer(id, name),
-        None => {
-            let (id, _) = interp.create_buffer(BUFFER_MENU_BUFFER_NAME);
-            Value::buffer(id, BUFFER_MENU_BUFFER_NAME)
-        }
-    };
-    let menu_buffer_id = interp.resolve_buffer_id(&menu_buffer)?;
-    {
-        let buffer = interp
-            .get_buffer_by_id_mut(menu_buffer_id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", menu_buffer_id)))?;
-        let end = buffer.point_max();
-        if end > 1 {
-            buffer
-                .delete_region(1, end)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-        }
-        buffer.goto_char(1);
-        buffer.insert(&rendered);
-        buffer.goto_char(1);
-        buffer.set_unmodified();
-    }
-    interp.set_buffer_local_value(
-        menu_buffer_id,
-        BUFFER_MENU_ENTRIES_VAR,
-        Value::list(entries),
-    );
-    Ok(menu_buffer)
-}
-
-pub(crate) fn collect_buffer_menu_entries(
-    interp: &mut Interpreter,
-    files_only: bool,
-    buffer_list: Option<&Value>,
-    filter_predicate: Option<&Value>,
-    env: &mut Env,
-) -> Result<Vec<Value>, LispError> {
-    let current = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
-    let candidates = match buffer_list {
-        Some(value) if !value.is_nil() => resolve_buffer_menu_source(interp, value, env)?,
-        _ => {
-            let mut ordered = vec![current];
-            for (id, name) in interp.buffer_list.clone() {
-                if id != interp.current_buffer_id() {
-                    ordered.push(Value::buffer(id, name));
-                }
-            }
-            ordered
-        }
-    };
-
-    let mut entries = Vec::new();
-    for candidate in candidates {
-        let buffer_id = interp.resolve_buffer_id(&candidate)?;
-        let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
-            continue;
-        };
-        let name = buffer.name.clone();
-        let file = buffer.file.clone();
-        if name == BUFFER_MENU_BUFFER_NAME {
-            continue;
-        }
-        if name.starts_with(' ') && file.is_none() {
-            continue;
-        }
-        if files_only && file.is_none() {
-            continue;
-        }
-        let buffer_value = Value::buffer(buffer_id, name);
-        if let Some(predicate) = filter_predicate.filter(|value| !value.is_nil()) {
-            let keep = interp.call_function_value(
-                predicate.clone(),
-                None,
-                std::slice::from_ref(&buffer_value),
-                env,
-            )?;
-            if !keep.is_truthy() {
-                continue;
-            }
-        }
-        if entries
-            .iter()
-            .any(|entry| matches!(entry, Value::Buffer(buffer) if buffer.id == buffer_id))
-        {
-            continue;
-        }
-        entries.push(buffer_value);
-    }
-
-    Ok(entries)
-}
-
-pub(crate) fn resolve_buffer_menu_source(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-) -> Result<Vec<Value>, LispError> {
-    let source = match value {
-        Value::BuiltinFunc(_) | Value::Lambda(_) => {
-            interp.call_function_value(value.clone(), None, &[], env)?
-        }
-        Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
-            interp.call_function_value(value.clone(), None, &[], env)?
-        }
-        other => other.clone(),
-    };
-    source.to_vec()
-}
-
 pub(crate) fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
     matches!(value, Value::Symbol(symbol) if symbol == "window")
         || matches!(value, Value::Record(id) if interp.find_record(*id).is_some_and(|record|
@@ -175,23 +45,21 @@ pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result
     let Some(record) = interp.find_record_mut(*id) else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
-    match record.type_name.as_str() {
-        OBARRAY_RECORD_TYPE => {
-            if record.slots.is_empty() {
-                record.slots.push(Value::Nil);
-            } else {
-                record.slots[0] = Value::Nil;
-            }
+    if record.has_symbol_type(OBARRAY_RECORD_TYPE) {
+        if record.slots.is_empty() {
+            record.slots.push(Value::Nil);
+        } else {
+            record.slots[0] = Value::Nil;
         }
-        ABBREV_TABLE_RECORD_TYPE => {
-            if record.slots.len() <= ABBREV_TABLE_ENTRIES_SLOT {
-                record
-                    .slots
-                    .resize(ABBREV_TABLE_ENTRIES_SLOT + 1, Value::Nil);
-            }
-            record.slots[ABBREV_TABLE_ENTRIES_SLOT] = Value::Nil;
+    } else if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
+        if record.slots.len() <= ABBREV_TABLE_ENTRIES_SLOT {
+            record
+                .slots
+                .resize(ABBREV_TABLE_ENTRIES_SLOT + 1, Value::Nil);
         }
-        _ => return Err(LispError::TypeError("obarray".into(), obarray.type_name())),
+        record.slots[ABBREV_TABLE_ENTRIES_SLOT] = Value::Nil;
+    } else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     }
     Ok(Value::Nil)
 }
@@ -222,7 +90,7 @@ pub(crate) fn obarray_symbols(
     let Some(record) = interp.find_record(*id) else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
-    if record.type_name == ABBREV_TABLE_RECORD_TYPE {
+    if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
         return abbrev_table_entries(interp, obarray).map(|entries| {
             std::iter::once(Value::Symbol(abbrev_symbol_name(*id, "").into()))
                 .chain(
@@ -233,7 +101,7 @@ pub(crate) fn obarray_symbols(
                 .collect()
         });
     }
-    if record.type_name == OBARRAY_RECORD_TYPE {
+    if record.has_symbol_type(OBARRAY_RECORD_TYPE) {
         return record.slots.first().cloned().unwrap_or(Value::Nil).to_vec();
     }
     Err(LispError::TypeError("obarray".into(), obarray.type_name()))
@@ -264,7 +132,7 @@ pub(crate) fn intern_in_obarray(
     let Some(record) = interp.find_record_mut(*id) else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
-    if record.type_name == ABBREV_TABLE_RECORD_TYPE {
+    if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
         if symbol_name.is_empty() {
             let symbol = abbrev_symbol_name(*id, "");
             interp.set_global_binding(&symbol, Value::Nil);
@@ -279,7 +147,7 @@ pub(crate) fn intern_in_obarray(
         define_abbrev_entry(interp, obarray, symbol_name, Value::Nil, Value::Nil)?;
         return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name).into()));
     }
-    if record.type_name != OBARRAY_RECORD_TYPE {
+    if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     }
     let mut symbols = record
@@ -351,7 +219,7 @@ pub(crate) fn unintern_from_obarray(
     let Some(record) = interp.find_record(*id) else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
-    if record.type_name != OBARRAY_RECORD_TYPE {
+    if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     }
     let mut symbols = record
@@ -398,11 +266,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
-        (Value::Lambda(left), Value::Lambda(right)) => {
-            left.params == right.params
-                && left.body == right.body
-                && Rc::ptr_eq(&left.env, &right.env)
-        }
+        (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
@@ -815,12 +679,13 @@ fn completion_collection_function(
     collection: &Value,
     interp: &Interpreter,
     env: &Env,
-) -> Option<Value> {
-    match collection {
-        Value::BuiltinFunc(_) | Value::Lambda(_) => Some(collection.clone()),
-        Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok(),
-        _ => None,
-    }
+) -> Result<Option<Value>, LispError> {
+    let function = match collection {
+        Value::Symbol(symbol) => interp.lookup_function(symbol, env)?,
+        _ if callable_value_p(interp, collection) => collection.clone(),
+        _ => return Ok(None),
+    };
+    Ok(Some(function))
 }
 
 fn call_programmed_completion(
@@ -831,7 +696,7 @@ fn call_programmed_completion(
     action: Value,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
-    let Some(function) = completion_collection_function(collection, interp, env) else {
+    let Some(function) = completion_collection_function(collection, interp, env)? else {
         return Ok(None);
     };
     Ok(Some(interp.call_function_value(
@@ -1109,10 +974,7 @@ pub(crate) struct ActiveMinibuffer {
     saved_buffer_id: u64,
     saved_selected_window_id: u64,
     saved_selected_window_buffer_id: u64,
-    previous_active: Value,
-    previous_active_window: Value,
-    previous_depth: i64,
-    previous_prompt: Value,
+    previous_runtime: crate::lisp::eval::MinibufferRuntimeState,
 }
 
 fn activate_completing_read_minibuffer(
@@ -1171,11 +1033,7 @@ pub(crate) fn activate_minibuffer(
     local_map: Value,
     env: &Env,
 ) -> Result<ActiveMinibuffer, LispError> {
-    let previous_depth = interp
-        .lookup_var("emaxx--minibuffer-depth", env)
-        .and_then(|value| value.as_integer().ok())
-        .unwrap_or(0);
-    let depth = previous_depth + 1;
+    let depth = interp.minibuffer_depth().saturating_add(1);
     let buffer_id = interp
         .find_buffer(&format!(" *Minibuf-{depth}*"))
         .map(|(id, _)| id)
@@ -1184,16 +1042,6 @@ pub(crate) fn activate_minibuffer(
     let saved_selected_window_id = interp.selected_window_id();
     let saved_selected_window_buffer_id = interp.selected_window_buffer_id();
     let default_directory = interp.lookup_var("default-directory", env);
-    let previous_active = interp
-        .lookup_var("emaxx--active-minibuffer", env)
-        .unwrap_or(Value::Nil);
-    let previous_active_window = interp
-        .lookup_var("emaxx--active-minibuffer-window", env)
-        .unwrap_or(Value::Nil);
-    let previous_prompt = interp
-        .lookup_var("emaxx--minibuffer-prompt", env)
-        .unwrap_or(Value::Nil);
-
     interp.clear_buffer_local_state(buffer_id);
     if let Some(default_directory) = default_directory {
         interp.set_buffer_local_value(buffer_id, "default-directory", default_directory);
@@ -1216,40 +1064,20 @@ pub(crate) fn activate_minibuffer(
 
     interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
 
-    let active = interp
-        .buffer_identity_value(buffer_id)
-        .unwrap_or(Value::Nil);
-    interp.set_global_binding("emaxx--active-minibuffer", active);
-    interp.set_global_binding(
-        "emaxx--active-minibuffer-window",
-        interp.selected_window_value(),
-    );
-    interp.set_global_binding("emaxx--minibuffer-depth", Value::Integer(depth));
-    interp.set_global_binding("emaxx--minibuffer-prompt", Value::String(prompt.into()));
+    let previous_runtime =
+        interp.begin_minibuffer_runtime(buffer_id, interp.selected_window_id(), prompt.to_string());
 
     Ok(ActiveMinibuffer {
         buffer_id,
         saved_buffer_id,
         saved_selected_window_id,
         saved_selected_window_buffer_id,
-        previous_active,
-        previous_active_window,
-        previous_depth,
-        previous_prompt,
+        previous_runtime,
     })
 }
 
 pub(crate) fn restore_active_minibuffer(interp: &mut Interpreter, state: ActiveMinibuffer) {
-    interp.set_global_binding("emaxx--active-minibuffer", state.previous_active);
-    interp.set_global_binding(
-        "emaxx--active-minibuffer-window",
-        state.previous_active_window,
-    );
-    interp.set_global_binding(
-        "emaxx--minibuffer-depth",
-        Value::Integer(state.previous_depth),
-    );
-    interp.set_global_binding("emaxx--minibuffer-prompt", state.previous_prompt);
+    interp.restore_minibuffer_runtime(state.previous_runtime);
 
     interp.set_selected_window_id(state.saved_selected_window_id);
     if interp.has_buffer_id(state.saved_selected_window_buffer_id) {
@@ -1325,21 +1153,6 @@ fn completing_read_contents(
     Ok(Value::String(String::new().into()))
 }
 
-pub(crate) fn list_contains_with(
-    interp: &mut Interpreter,
-    items: &[Value],
-    needle: &Value,
-    test: &Value,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    for item in items {
-        if call_function_value(interp, test, &[needle.clone(), item.clone()], env)?.is_truthy() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     if let Value::BuiltinFunc(name) = func {
         if let Some(form) = generated_builtin_arities::generated_builtin_interactive_form(name) {
@@ -1357,11 +1170,6 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
             ]
         });
     }
-    // Advice wrappers keep the advised function interactive with the
-    // original's interactive form, like `advice--make-interactive-form'.
-    if let Some(original) = advice_wrapper_original(func) {
-        return interactive_form_items(&original);
-    }
     // A raw `(lambda ARGS . BODY)' LIST also has an interactive form (GNU
     // interactive_form handles unevaluated lambda expressions; advice.el's
     // ad-interactive-form probes stored advice bodies this way).
@@ -1373,7 +1181,9 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     let Value::Lambda(lambda) = func else {
         return None;
     };
-    interactive_form_in_body(&lambda.body)
+    lambda
+        .interactive_spec()
+        .map(|spec| vec![Value::Symbol("interactive".into()), spec])
 }
 
 /// Return GNU's `(interactive SPEC)' metadata for every callable
@@ -1384,9 +1194,6 @@ pub(crate) fn callable_interactive_form_items(
     interp: &Interpreter,
     func: &Value,
 ) -> Option<Vec<Value>> {
-    if let Some(original) = advice_wrapper_original(func) {
-        return callable_interactive_form_items(interp, &original);
-    }
     if let Value::Record(id) = func
         && let Some(record) = interp.find_record(*id)
         && record.kind == crate::lisp::eval::RecordKind::Closure
@@ -1404,8 +1211,8 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
         if matches!(form, Value::String(_) | Value::StringObject(_)) {
             continue;
         }
-        // Internal closure markers (:closure-oclosure & friends) precede
-        // the interactive form in lowered bodies.
+        // Internal evaluator closure markers precede the interactive form
+        // in lowered bodies.
         if matches!(form, Value::Symbol(marker) if marker.starts_with(":closure-")) {
             continue;
         }
@@ -1421,39 +1228,6 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
         break;
     }
     None
-}
-
-pub(crate) fn strip_advice_wrappers(func: &Value) -> Value {
-    let mut current = func.clone();
-    while let Some(inner) = advice_wrapper_original(&current) {
-        current = inner;
-    }
-    current
-}
-
-pub(crate) fn advice_wrapper_original(func: &Value) -> Option<Value> {
-    let Value::Lambda(lambda) = func else {
-        return None;
-    };
-    let params = &lambda.params;
-    let closure_env = &lambda.env;
-    if params.first().map(String::as_str) != Some("&rest")
-        || !params.get(1).is_some_and(|name| {
-            name.starts_with("__emaxx-advice-around-args-")
-                || name.starts_with("__emaxx-advice-after-args-")
-        })
-    {
-        return None;
-    }
-    closure_env
-        .borrow()
-        .iter()
-        .flatten()
-        .find(|(name, _)| {
-            name.starts_with("__emaxx-advice-around-original-")
-                || name.starts_with("__emaxx-advice-after-original-")
-        })
-        .map(|(_, value)| value.clone())
 }
 
 // Interactive specs of the built-in commands keyboard macros dispatch to;
@@ -1487,9 +1261,10 @@ pub(crate) fn interactive_list_form_items(form: &Value) -> Option<Vec<Value>> {
 }
 
 // Whether COLLECTION is a programmed completion table (a function).
-pub(crate) fn completion_table_is_function(_interp: &Interpreter, collection: &Value) -> bool {
+pub(crate) fn completion_table_is_function(interp: &Interpreter, collection: &Value) -> bool {
     match collection {
         Value::Symbol(_) | Value::Lambda(_) | Value::BuiltinFunc(_) => true,
+        Value::Record(_) => callable_value_p(interp, collection),
         Value::Cons(_) => matches!(
             collection.car(),
             Ok(Value::Symbol(head)) if head == "lambda" || head == "closure"
@@ -1513,140 +1288,6 @@ fn common_prefix(names: &[String]) -> String {
         prefix.truncate(len);
     }
     prefix.into_iter().collect()
-}
-
-fn partial_completion_wildcard_matches(pattern: &str, candidate: &str, ignore_case: bool) -> bool {
-    let pattern = pattern.chars().collect::<Vec<_>>();
-    let candidate = candidate.chars().collect::<Vec<_>>();
-    let (mut pattern_index, mut candidate_index) = (0usize, 0usize);
-    let (mut star_index, mut star_candidate_index) = (None, 0usize);
-
-    while candidate_index < candidate.len() {
-        let literal_matches = pattern.get(pattern_index).is_some_and(|literal| {
-            *literal != '*'
-                && if ignore_case {
-                    literal.eq_ignore_ascii_case(&candidate[candidate_index])
-                } else {
-                    *literal == candidate[candidate_index]
-                }
-        });
-        if literal_matches {
-            pattern_index += 1;
-            candidate_index += 1;
-        } else if pattern.get(pattern_index) == Some(&'*') {
-            star_index = Some(pattern_index);
-            pattern_index += 1;
-            star_candidate_index = candidate_index;
-        } else if let Some(star) = star_index {
-            star_candidate_index += 1;
-            candidate_index = star_candidate_index;
-            pattern_index = star + 1;
-        } else {
-            return false;
-        }
-    }
-
-    pattern[pattern_index..]
-        .iter()
-        .all(|character| *character == '*')
-}
-
-fn partial_completion_wildcard_try(
-    interp: &mut Interpreter,
-    input: &str,
-    collection: &Value,
-    predicate: &Value,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let Some(wildcard) = input.find('*') else {
-        return Ok(Value::Nil);
-    };
-    let query = &input[..wildcard];
-    let candidates = all_completions(
-        interp,
-        &[
-            Value::String(query.into()),
-            collection.clone(),
-            predicate.clone(),
-        ],
-        env,
-    )?;
-    let ignore_case = completion_ignores_case(interp, env);
-    let mut matches = candidates
-        .to_vec()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|candidate| completion_display_name(&candidate).ok())
-        .filter(|candidate| partial_completion_wildcard_matches(input, candidate, ignore_case))
-        .collect::<Vec<_>>();
-    matches.sort();
-    matches.dedup();
-
-    // A unique wildcard expansion is unambiguous.  For multiple matches,
-    // replacing the pattern with their textual prefix can discard a literal
-    // suffix after `*`; leave that case to the normal completion listing.
-    Ok(match matches.as_slice() {
-        [only] => Value::String(only.clone().into()),
-        _ => Value::Nil,
-    })
-}
-
-/// Try the configured completion styles without moving the Lisp/host boundary.
-/// Raw `try-completion` is the basic prefix style; partial completion adds the
-/// wildcard interpretation used by programmable completion clients such as
-/// pcomplete.
-pub(crate) fn try_completion_with_styles(
-    interp: &mut Interpreter,
-    input: &Value,
-    collection: &Value,
-    predicate: &Value,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let input_text = string_text(input)?;
-    let styles = interp
-        .lookup_var("completion-styles", env)
-        .and_then(|value| value.to_vec().ok())
-        .unwrap_or_else(|| {
-            vec![
-                Value::Symbol("basic".into()),
-                Value::Symbol("partial-completion".into()),
-                Value::Symbol("emacs22".into()),
-            ]
-        });
-    let mut tried_prefix = false;
-
-    for style in styles {
-        match style.as_symbol().ok() {
-            Some("basic") | Some("emacs22") => {
-                if tried_prefix {
-                    continue;
-                }
-                tried_prefix = true;
-                let result = try_completion(
-                    interp,
-                    &[input.clone(), collection.clone(), predicate.clone()],
-                    env,
-                )?;
-                if !result.is_nil() {
-                    return Ok(result);
-                }
-            }
-            Some("partial-completion") => {
-                let result = partial_completion_wildcard_try(
-                    interp,
-                    &input_text,
-                    collection,
-                    predicate,
-                    env,
-                )?;
-                if !result.is_nil() {
-                    return Ok(result);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(Value::Nil)
 }
 
 // GNU partial-completion over '/'-separated components: expand each

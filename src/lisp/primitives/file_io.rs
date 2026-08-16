@@ -81,14 +81,6 @@ pub(crate) fn unix_time_list_value(seconds: i64, nanoseconds: i64) -> Value {
     ])
 }
 
-pub(crate) fn file_attribute_field(attributes: &Value, index: usize) -> Result<Value, LispError> {
-    Ok(attributes
-        .to_vec()?
-        .get(index)
-        .cloned()
-        .unwrap_or(Value::Nil))
-}
-
 pub(crate) fn file_modtime_from_value(
     interp: &Interpreter,
     value: &Value,
@@ -169,6 +161,77 @@ pub(crate) fn lock_path_for_file(path: &str) -> PathBuf {
     directory.join(format!(".#{file_name}"))
 }
 
+fn current_lock_identity() -> (String, String, i64) {
+    let user = current_user_login_name().unwrap_or_default();
+    let host = system_name_value().replace('@', "-");
+    (user, host, i64::from(std::process::id()))
+}
+
+fn current_lock_info() -> String {
+    let (user, host, pid) = current_lock_identity();
+    format!("{user}@{host}.{pid}")
+}
+
+fn read_lock_info(path: &Path, metadata: &fs::Metadata) -> Option<String> {
+    if metadata.file_type().is_symlink() {
+        fs::read_link(path)
+            .ok()
+            .map(|target| target.to_string_lossy().into_owned())
+    } else {
+        fs::read_to_string(path).ok()
+    }
+}
+
+fn parse_lock_info(info: &str) -> Option<(&str, &str, i64)> {
+    let (user, host_and_pid) = info.rsplit_once('@')?;
+    let (host, pid_and_boot_time) = host_and_pid.rsplit_once('.')?;
+    let pid = pid_and_boot_time
+        .split_once(':')
+        .map_or(pid_and_boot_time, |(pid, _)| pid)
+        .parse()
+        .ok()?;
+    Some((user, host, pid))
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: i64) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(pid: i64) -> bool {
+    pid == i64::from(std::process::id())
+}
+
+enum LockOwnership<'a> {
+    CurrentProcess,
+    Other(&'a str),
+    Stale,
+}
+
+fn lock_ownership(info: &str) -> Option<LockOwnership<'_>> {
+    let (user, host, pid) = parse_lock_info(info)?;
+    let (_, current_host, current_pid) = current_lock_identity();
+    if host != current_host {
+        return Some(LockOwnership::Other(user));
+    }
+    if pid == current_pid {
+        return Some(LockOwnership::CurrentProcess);
+    }
+    Some(if process_is_alive(pid) {
+        LockOwnership::Other(user)
+    } else {
+        LockOwnership::Stale
+    })
+}
+
 pub(crate) fn file_error_value(message: &str, path: &str) -> Value {
     Value::list([
         Value::Symbol("file-error".into()),
@@ -182,15 +245,6 @@ pub(crate) fn file_error_with_detail_value(message: &str, detail: &str, path: &s
         Value::Symbol("file-error".into()),
         Value::String(message.into()),
         Value::String(detail.into()),
-        Value::String(path.into()),
-    ])
-}
-
-pub(crate) fn permission_denied_error_value(message: &str, path: &str) -> Value {
-    Value::list([
-        Value::Symbol("permission-denied".into()),
-        Value::String(message.into()),
-        Value::String("Permission denied".into()),
         Value::String(path.into()),
     ])
 }
@@ -253,61 +307,27 @@ pub(crate) fn file_locked_p(
                     &path,
                 )));
             }
-            let owner = if metadata.file_type().is_symlink() {
-                fs::read_link(&lock_path)
-                    .ok()
-                    .map(|target| target.to_string_lossy().into_owned())
-            } else {
-                fs::read_to_string(&lock_path).ok()
-            };
-            Ok(
-                if owner.as_deref() == Some(format!("emaxx:{}", std::process::id()).as_str()) {
-                    Value::T
-                } else {
-                    Value::String(
-                        owner
-                            .filter(|owner| !owner.is_empty())
-                            .unwrap_or_else(|| "unknown".into())
-                            .into(),
-                    )
-                },
-            )
+            let owner = read_lock_info(&lock_path, &metadata).ok_or_else(|| {
+                LispError::SignalValue(file_error_value("Testing file lock", &path))
+            })?;
+            match lock_ownership(&owner) {
+                Some(LockOwnership::CurrentProcess) => Ok(Value::T),
+                Some(LockOwnership::Other(user)) => Ok(Value::String(user.into())),
+                Some(LockOwnership::Stale) => {
+                    fs::remove_file(&lock_path).map_err(|_| {
+                        LispError::SignalValue(file_error_value("Testing file lock", &path))
+                    })?;
+                    Ok(Value::Nil)
+                }
+                None => Err(LispError::SignalValue(file_error_value(
+                    "Testing file lock",
+                    &path,
+                ))),
+            }
         }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(Value::Nil),
         Err(error) => Err(LispError::Signal(error.to_string())),
     }
-}
-
-pub(crate) fn gensym_prefix(value: Option<&Value>) -> Result<String, LispError> {
-    match value {
-        None | Some(Value::Nil) => Ok("g".into()),
-        // `gensym' renders its prefix with %s, so symbols work too.
-        Some(Value::Symbol(name)) => Ok(name.to_string()),
-        Some(value) => string_text(value),
-    }
-}
-
-pub(crate) fn file_change_cache_key(path: &str, tag: Option<&Value>) -> Result<String, LispError> {
-    let tag_name = match tag {
-        None | Some(Value::Nil) => "nil".into(),
-        Some(value) => value.as_symbol()?.to_string(),
-    };
-    Ok(format!("{tag_name}@{path}"))
-}
-
-pub(crate) fn file_change_cache_value(path: &str) -> Result<Option<(u64, u128)>, LispError> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(LispError::Signal(error.to_string())),
-    };
-    let modified = metadata
-        .modified()
-        .map_err(|error| LispError::Signal(error.to_string()))?
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| LispError::Signal(error.to_string()))?
-        .as_nanos();
-    Ok(Some((metadata.len(), modified)))
 }
 
 pub(crate) fn is_circular_list_value(value: &Value) -> bool {
@@ -588,7 +608,6 @@ pub(crate) fn write_region_value_with_logical_path(
     }
     set_last_coding_system_used(interp, &coding, env);
     dispatch_file_notification(interp, env, &path, "changed")?;
-    refresh_current_dired_buffer_for_path(interp, &path, env)?;
     if let Some(visit) = args.get(4)
         && (matches!(visit, Value::T) || string_like(visit).is_some())
     {
@@ -620,103 +639,22 @@ pub(crate) fn write_region_value_with_logical_path(
     Ok(Value::Nil)
 }
 
-pub(crate) fn write_file_value(
-    interp: &mut Interpreter,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let requested = string_text(&args[0])?;
-    if let Some(remote) = parse_remote_file_name(&requested) {
-        interp.set_buffer_local_value(
-            interp.current_buffer_id(),
-            "emaxx--visited-remote-prefix",
-            Value::String(remote.prefix.into()),
-        );
-    }
-    let mut path = resolve_file_name_in_env(interp, env, &requested);
-    if directory_name_p(&path) {
-        let base = interp
-            .buffer
-            .file
-            .as_deref()
-            .map(file_name_nondirectory)
-            .unwrap_or_else(|| file_name_nondirectory(&interp.buffer.name));
-        path = file_name_concat(&[path, base]);
-    }
-    let text = interp.buffer.buffer_string();
-    let coding = current_write_coding(interp, env, &text, true)?;
-    let inhibit_eol_conversion = interp
-        .lookup_var("inhibit-eol-conversion", env)
-        .is_some_and(|value| value.is_truthy());
-    let bytes = encode_text_bytes(interp, &text, &coding, inhibit_eol_conversion)?;
-    fs::write(&path, &bytes).map_err(|error| LispError::Signal(error.to_string()))?;
-    let visiting_new_file = interp.buffer.file.as_deref() != Some(path.as_str());
-    interp.buffer.file = Some(path.clone());
-    interp.buffer.file_truename = Some(canonical_file_name(&path));
-    interp.buffer.set_unmodified();
-    let modtime = file_modtime(&path)?;
-    interp.buffer.set_visited_file_modtime(modtime);
-    interp.set_buffer_local_value(
-        interp.current_buffer_id(),
-        "buffer-file-coding-system",
-        Value::Symbol(coding.clone().into()),
-    );
-    set_last_coding_system_used(interp, &coding, env);
-    if visiting_new_file {
-        // `write-file' goes through `set-visited-file-name': the buffer is
-        // renamed after the new file and the update hook runs (auto-revert
-        // re-watches the new name from it).
-        let new_name = file_name_nondirectory(&path);
-        if !new_name.is_empty() && interp.buffer.name != new_name && !interp.has_buffer(&new_name) {
-            let old_name = interp.buffer.name.clone();
-            if let Some(entry_position) = interp
-                .buffer_list
-                .iter()
-                .position(|(_, name)| *name == old_name)
-            {
-                interp.buffer_list[entry_position].1 = new_name.clone();
-            }
-            interp.buffer.last_name = Some(old_name);
-            interp.buffer.name = new_name;
-        }
-        let hook_buffer = Some(interp.current_buffer_id());
-        run_named_hooks(
-            interp,
-            "after-set-visited-file-name-hook",
-            &mut Env::new(),
-            hook_buffer,
-        )?;
-    }
-    Ok(Value::String(path.into()))
-}
-
 pub(crate) fn append_external_debugging_output(
     interp: &mut Interpreter,
     text: &str,
 ) -> Result<(), LispError> {
-    match interp.lookup_var("emaxx-external-debugging-output-target", &Vec::new()) {
-        Some(Value::String(path)) => {
+    match interp.external_debugging_output_target.as_deref() {
+        Some(path) => {
             let mut file = fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&path)
+                .open(path)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
             file.write_all(text.as_bytes())
                 .map_err(|error| LispError::Signal(error.to_string()))?;
             Ok(())
         }
-        Some(Value::StringObject(state)) => {
-            let path = state.borrow().text.clone();
-            let mut file = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            file.write_all(text.as_bytes())
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            Ok(())
-        }
-        _ => {
+        None => {
             let buffer_id = interp
                 .find_buffer(" *external-debugging-output*")
                 .map(|(id, _)| id)
@@ -1036,6 +974,18 @@ pub(crate) fn render_native_princ(
     value: &Value,
     env: &mut Env,
 ) -> Result<String, LispError> {
+    // GNU 30.2 print.c routes PVEC_SYMBOL_WITH_POS through the same branch
+    // for escaped and unescaped printing.  `format' uses this path for %s,
+    // which is how bytecomp renders many warning arguments.
+    if let Some((symbol, position)) = symbol_with_pos_parts(interp, value) {
+        if interp
+            .lookup_var("print-symbols-bare", env)
+            .is_some_and(|setting| setting.is_truthy())
+        {
+            return Ok(render_princ(&symbol));
+        }
+        return Ok(format!("#<symbol {} at {position}>", render_princ(&symbol)));
+    }
     if interp
         .lookup_var("print-integers-as-characters", env)
         .is_some_and(|setting| setting.is_truthy())
@@ -1044,212 +994,6 @@ pub(crate) fn render_native_princ(
         return Ok(render_princ_integer_as_character(value).unwrap_or_else(|| value.to_string()));
     }
     Ok(render_princ(value))
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ParsedFormatSpec {
-    pub(crate) flags: Vec<char>,
-    pub(crate) width: Option<usize>,
-    pub(crate) precision: Option<usize>,
-    pub(crate) specifier: char,
-    pub(crate) end: usize,
-}
-
-pub(crate) fn parse_format_spec(chars: &[char], mut i: usize) -> Option<ParsedFormatSpec> {
-    let mut flags = Vec::new();
-    while i < chars.len() && matches!(chars[i], ' ' | '0' | '<' | '>' | '^' | '_' | '-') {
-        flags.push(chars[i]);
-        i += 1;
-    }
-
-    let mut width = None;
-    if i < chars.len() && chars[i].is_ascii_digit() {
-        let mut parsed = 0usize;
-        while i < chars.len() && chars[i].is_ascii_digit() {
-            parsed = parsed
-                .saturating_mul(10)
-                .saturating_add(chars[i] as usize - '0' as usize);
-            i += 1;
-        }
-        width = Some(parsed);
-    }
-
-    let mut precision = None;
-    if i < chars.len() && chars[i] == '.' {
-        i += 1;
-        if i >= chars.len() || !chars[i].is_ascii_digit() {
-            return None;
-        }
-        let mut parsed = 0usize;
-        while i < chars.len() && chars[i].is_ascii_digit() {
-            parsed = parsed
-                .saturating_mul(10)
-                .saturating_add(chars[i] as usize - '0' as usize);
-            i += 1;
-        }
-        precision = Some(parsed);
-    }
-
-    let specifier = *chars.get(i)?;
-    if !specifier.is_alphabetic() {
-        return None;
-    }
-    Some(ParsedFormatSpec {
-        flags,
-        width,
-        precision,
-        specifier,
-        end: i + 1,
-    })
-}
-
-pub(crate) fn format_spec_replacement(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    entries: &[Value],
-    specifier: char,
-) -> Result<Option<(String, Vec<crate::lisp::types::StringPropertySpan>)>, LispError> {
-    for entry in entries {
-        let Some((key, value)) = (entry).cons_cells() else {
-            continue;
-        };
-        let key_value = key.borrow().clone();
-        let key_char = match &key_value {
-            Value::Integer(code) => char::from_u32(*code as u32),
-            Value::String(text) => text.chars().next(),
-            Value::StringObject(state) => state.borrow().text.chars().next(),
-            _ => None,
-        };
-        if key_char != Some(specifier) {
-            continue;
-        }
-
-        let mut value_value = value.borrow().clone();
-        if value_value.is_nil() {
-            return Ok(None);
-        }
-        let callable = resolve_callable(interp, &value_value, env).unwrap_or(value_value.clone());
-        if matches!(callable, Value::BuiltinFunc(_) | Value::Lambda(_))
-            || is_lambda_expression(&callable)
-        {
-            value_value = call_function_value(interp, &callable, &[], env)?;
-        }
-        // Keep the replacement's own text properties: GNU splices the
-        // string into the work buffer with `insert-and-inherit', so its
-        // props survive into the output.
-        let props = match &value_value {
-            Value::StringObject(state) => state.borrow().props.clone(),
-            _ => Vec::new(),
-        };
-        return Ok(Some((
-            string_like(&value_value)
-                .map(|value| value.text)
-                // GNU format-spec renders non-strings with `%s'/`princ'
-                // semantics.  In particular, buffers become their names,
-                // not their `#<buffer ...>' printed representations.
-                .unwrap_or_else(|| render_princ(&value_value)),
-            props,
-        )));
-    }
-    Ok(None)
-}
-
-pub(crate) fn format_spec_collapses_quoted_percent(ignore_missing: &Value) -> bool {
-    match ignore_missing {
-        Value::Nil => true,
-        Value::Symbol(symbol) => symbol == "ignore" || symbol == "delete",
-        _ => false,
-    }
-}
-
-/// Apply a %-spec's flags to TEXT and return, for each output char,
-/// the index of the input char it came from (None for padding).  GNU's
-/// implementation truncates/pads with property-preserving primitives, so
-/// text properties follow the surviving characters.
-pub(crate) fn apply_format_spec_flags_indexed(
-    text: String,
-    spec: &ParsedFormatSpec,
-) -> (String, Vec<Option<usize>>) {
-    let chop_left = spec.flags.contains(&'<');
-    let chop_right = spec.flags.contains(&'>');
-    let pad_zero = spec.flags.contains(&'0');
-    let pad_right = spec.flags.contains(&'-');
-    let mut chars: Vec<char> = text.chars().collect();
-    let mut sources: Vec<Option<usize>> = (0..chars.len()).map(Some).collect();
-    if let Some(precision) = spec.precision {
-        let width = chars.len();
-        if width > precision {
-            if chop_left {
-                chars.drain(..width - precision);
-                sources.drain(..width - precision);
-            } else {
-                chars.truncate(precision);
-                sources.truncate(precision);
-            }
-        }
-    }
-
-    if let Some(target_width) = spec.width {
-        let width = chars.len();
-        if width < target_width {
-            let padding = target_width - width;
-            let pad = if pad_zero { '0' } else { ' ' };
-            if pad_right {
-                chars.extend(std::iter::repeat_n(pad, padding));
-                sources.extend(std::iter::repeat_n(None, padding));
-            } else {
-                let mut padded: Vec<char> = std::iter::repeat_n(pad, padding).collect();
-                padded.extend(chars);
-                chars = padded;
-                let mut padded_sources: Vec<Option<usize>> =
-                    std::iter::repeat_n(None, padding).collect();
-                padded_sources.extend(sources);
-                sources = padded_sources;
-            }
-        } else if width > target_width {
-            if chop_left {
-                chars.drain(..width - target_width);
-                sources.drain(..width - target_width);
-            } else if chop_right {
-                chars.truncate(target_width);
-                sources.truncate(target_width);
-            }
-        }
-    }
-
-    // Case transforms preserve positions (multi-char expansions are rare
-    // enough that GNU's property behavior for them is not load-bearing).
-    if spec.flags.contains(&'^') {
-        let (mut new_chars, mut new_sources) = (Vec::new(), Vec::new());
-        for (ch, src) in chars.iter().zip(&sources) {
-            for up in ch.to_uppercase() {
-                new_chars.push(up);
-                new_sources.push(*src);
-            }
-        }
-        chars = new_chars;
-        sources = new_sources;
-    }
-    if spec.flags.contains(&'_') {
-        let (mut new_chars, mut new_sources) = (Vec::new(), Vec::new());
-        for (ch, src) in chars.iter().zip(&sources) {
-            for low in ch.to_lowercase() {
-                new_chars.push(low);
-                new_sources.push(*src);
-            }
-        }
-        chars = new_chars;
-        sources = new_sources;
-    }
-    (chars.into_iter().collect(), sources)
-}
-
-pub(crate) fn custom_choice_tag(choice: &Value) -> Option<Value> {
-    let items = choice.to_vec().ok()?;
-    let tag_index = items
-        .iter()
-        .position(|item| matches!(item, Value::Symbol(symbol) if symbol == ":tag"))?;
-    items.get(tag_index + 1).cloned()
 }
 
 fn auto_coding_for_file(
@@ -1510,6 +1254,7 @@ pub(crate) fn insert_file_contents(
                     interp,
                     &replacement,
                     &[],
+                    &[],
                     false,
                     false,
                     env,
@@ -1529,7 +1274,15 @@ pub(crate) fn insert_file_contents(
             ])));
         }
         let insert_at = interp.buffer.point();
-        crate::lisp::primitives::insert_text_with_hooks(interp, &text, &[], false, false, env)?;
+        crate::lisp::primitives::insert_text_with_hooks(
+            interp,
+            &text,
+            &[],
+            &[],
+            false,
+            false,
+            env,
+        )?;
         interp.buffer.goto_char(insert_at);
         Ok(())
     })();
@@ -1708,7 +1461,7 @@ pub(crate) fn lock_file_path(
         .open(lock_path)
     {
         Ok(mut lock) => lock
-            .write_all(format!("emaxx:{}", std::process::id()).as_bytes())
+            .write_all(current_lock_info().as_bytes())
             .map_err(|error| LispError::Signal(error.to_string())),
         Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(()),
         Err(error) => Err(LispError::Signal(error.to_string())),
@@ -1754,7 +1507,7 @@ pub(crate) fn unlock_file_path(
 ) -> Result<Value, LispError> {
     let path = resolve_file_name_in_env(interp, env, logical_path);
     let lock_path = lock_path_for_file(&path);
-    match fs::metadata(&lock_path) {
+    match fs::symlink_metadata(&lock_path) {
         Ok(metadata) if metadata.is_dir() => {
             call_named_function(
                 interp,
@@ -1765,9 +1518,13 @@ pub(crate) fn unlock_file_path(
             Ok(Value::Nil)
         }
         Ok(_) => {
-            let owner = fs::read_to_string(&lock_path).ok();
-            let own_lock =
-                owner.as_deref() == Some(format!("emaxx:{}", std::process::id()).as_str());
+            let metadata = fs::symlink_metadata(&lock_path)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let owner = read_lock_info(&lock_path, &metadata);
+            let own_lock = owner
+                .as_deref()
+                .and_then(lock_ownership)
+                .is_some_and(|owner| matches!(owner, LockOwnership::CurrentProcess));
             if own_lock {
                 fs::remove_file(&lock_path)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
@@ -1777,27 +1534,6 @@ pub(crate) fn unlock_file_path(
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(Value::Nil),
         Err(error) => Err(LispError::Signal(error.to_string())),
     }
-}
-
-pub(crate) fn current_buffer_file_text(
-    interp: &mut Interpreter,
-    env: &Env,
-    path: &str,
-) -> Result<(String, String, bool), LispError> {
-    let literal = interp
-        .buffer_local_value(interp.current_buffer_id(), "find-file-literally")
-        .is_some_and(|value| value.is_truthy());
-    let mut bytes = read_insert_file_bytes(path, None, None)?;
-    let mut decoding_path = path.to_string();
-    if !literal && should_auto_decompress(interp, env, path) {
-        bytes = maybe_decompress_file_bytes(path, bytes)?;
-        decoding_path = compressed_payload_path(path).unwrap_or(decoding_path);
-    }
-    if literal || !interp.buffer.is_multibyte() {
-        return Ok((decode_raw_text_bytes(&bytes), "no-conversion".into(), false));
-    }
-    let (text, coding) = decode_file_contents(interp, env, &bytes, false, Some(&decoding_path))?;
-    Ok((text, coding, true))
 }
 
 pub(crate) fn ensure_no_supersession_threat(
@@ -1823,204 +1559,25 @@ pub(crate) fn ensure_no_supersession_threat(
     let visited_modtime = interp.buffer.visited_file_modtime();
     // An unknown recorded timestamp is GNU's explicit "do not verify"
     // state (used by `set-visited-file-name', among others).
-    if visited_modtime.is_none() || visited_modtime == Some(current_modtime) {
+    let unchanged = if interp
+        .buffer_remote_prefix(interp.current_buffer_id())
+        .is_some()
+    {
+        modtimes_equal_whole_seconds(&visited_modtime, &Some(current_modtime))
+    } else {
+        visited_modtime == Some(current_modtime)
+    };
+    if visited_modtime.is_none() || unchanged {
         return Ok(());
     }
-    let remote_visit = interp
-        .buffer_local_value(interp.current_buffer_id(), "emaxx--visited-remote-prefix")
-        .is_some_and(|value| value.is_truthy());
-    if !remote_visit {
-        let (disk_text, _, _) = current_buffer_file_text(interp, env, &path)?;
-        if disk_text == interp.buffer.saved_text() {
-            interp
-                .buffer
-                .set_visited_file_modtime(Some(current_modtime));
-            return Ok(());
-        }
-    }
-    if interp
-        .lookup_var("noninteractive", env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        return Err(LispError::Signal(
-            "Cannot resolve conflict in batch mode".into(),
-        ));
-    }
-    let prompt = format!(
-        "{} changed on disk; really edit the buffer?",
-        file_name_nondirectory(&logical_path)
-    );
-    let answer = call_named_function(
+
+    // filelock.c owns the stale-file decision above, then delegates every
+    // user/content/revert policy choice to userlock.el.
+    call_named_function(
         interp,
-        "read-char-choice",
-        &[
-            Value::String(prompt.into()),
-            Value::list([
-                Value::Integer('y' as i64),
-                Value::Integer('n' as i64),
-                Value::Integer('r' as i64),
-            ]),
-        ],
+        "userlock--ask-user-about-supersession-threat",
+        &[Value::String(logical_path.into())],
         env,
     )?;
-    match answer.as_integer()? as u8 as char {
-        'y' => {
-            let _ = call(
-                interp,
-                "message",
-                &[Value::String(
-                    "File on disk now will become a backup file if you save these changes.".into(),
-                )],
-                env,
-            )?;
-            interp
-                .buffer
-                .set_visited_file_modtime(Some(current_modtime));
-            Ok(())
-        }
-        'r' => {
-            revert_current_buffer(interp, env)?;
-            Err(LispError::SignalValue(Value::list([
-                Value::Symbol("file-supersession".into()),
-                Value::String("File reverted".into()),
-                Value::String(logical_path.into()),
-            ])))
-        }
-        _ => Err(LispError::SignalValue(Value::list([
-            Value::Symbol("file-supersession".into()),
-            Value::String("File changed on disk".into()),
-            Value::String(logical_path.into()),
-        ]))),
-    }
-}
-
-pub(crate) fn revert_current_buffer(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let Some(path) = interp.buffer.file.clone() else {
-        return Ok(());
-    };
-    // GNU revert-buffer--default runs `before-revert-hook' before rereading
-    // the file; a hook may delete it, making the reread below fail with the
-    // buffer contents untouched (auto-revert's deleted-file handling).
-    let hook_buffer = interp.current_buffer_id();
-    let mut hook_env = crate::lisp::types::Env::new();
-    crate::lisp::primitives::run_named_hooks(
-        interp,
-        "before-revert-hook",
-        &mut hook_env,
-        Some(hook_buffer),
-    )?;
-    let (text, coding, multibyte) = current_buffer_file_text(interp, env, &path)?;
-    let current_id = interp.current_buffer_id();
-    let related = interp.related_buffer_ids(current_id);
-    // Like `insert-file-contents' with REPLACE: keep the common head and
-    // tail of the old and new contents, so markers outside the differing
-    // region keep pointing at the text they marked (arc-mode's
-    // `archive-proper-file-start' must collapse to the front of the raw
-    // image when the summary above it disappears on revert).
-    let old_text = interp.buffer.full_buffer_string();
-    if old_text != text {
-        let old_chars: Vec<char> = old_text.chars().collect();
-        let new_chars: Vec<char> = text.chars().collect();
-        let mut prefix = 0;
-        while prefix < old_chars.len()
-            && prefix < new_chars.len()
-            && old_chars[prefix] == new_chars[prefix]
-        {
-            prefix += 1;
-        }
-        let mut suffix = 0;
-        while suffix < old_chars.len() - prefix
-            && suffix < new_chars.len() - prefix
-            && old_chars[old_chars.len() - 1 - suffix] == new_chars[new_chars.len() - 1 - suffix]
-        {
-            suffix += 1;
-        }
-        let saved_point = interp.buffer.point();
-        interp.buffer.widen();
-        let delete_from = prefix + 1;
-        let delete_to = old_chars.len() - suffix + 1;
-        if delete_from < delete_to {
-            let _ = interp.delete_region_current_buffer(delete_from, delete_to);
-        }
-        if prefix < new_chars.len() - suffix {
-            let middle: String = new_chars[prefix..new_chars.len() - suffix].iter().collect();
-            interp.buffer.goto_char(delete_from);
-            interp.insert_current_buffer(&middle);
-        }
-        interp
-            .buffer
-            .goto_char(saved_point.min(new_chars.len() + 1));
-    }
-    interp.buffer.set_multibyte(multibyte);
-    // Replacing the text can acquire a file lock when the on-disk contents
-    // differ.  GNU's revert path finishes with `set-buffer-modified-p nil',
-    // which releases that lock before marking the buffer clean.
-    if interp.buffer.is_modified() {
-        unlock_current_buffer(interp, env)?;
-    }
-    interp.buffer.set_unmodified();
-    interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
-    interp.set_buffer_local_value(
-        interp.current_buffer_id(),
-        "buffer-file-coding-system",
-        Value::Symbol(coding.clone().into()),
-    );
-    let visited_file_modtime = file_modtime(&path)?;
-    for buffer_id in related {
-        if buffer_id == current_id {
-            continue;
-        }
-        if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-            buffer.set_multibyte(multibyte);
-            buffer.set_unmodified();
-            buffer.set_visited_file_modtime(visited_file_modtime);
-        }
-        interp.set_buffer_local_value(
-            buffer_id,
-            "buffer-file-coding-system",
-            Value::Symbol(coding.clone().into()),
-        );
-    }
-    crate::lisp::primitives::run_named_hooks(
-        interp,
-        "after-revert-hook",
-        &mut hook_env,
-        Some(hook_buffer),
-    )?;
     Ok(())
-}
-
-pub(crate) fn shell_quote_argument(argument: &str) -> String {
-    if argument.is_empty() {
-        return "''".into();
-    }
-
-    let mut quoted = String::new();
-    for ch in argument.chars() {
-        match ch {
-            '\n' => quoted.push_str("'\n'"),
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '/' => quoted.push(ch),
-            _ => {
-                quoted.push('\\');
-                quoted.push(ch);
-            }
-        }
-    }
-    quoted
-}
-
-pub(crate) fn first_choice_value(choices: &Value) -> Option<Value> {
-    choices
-        .to_vec()
-        .ok()
-        .and_then(|items| items.first().cloned())
-        .and_then(|item| {
-            item.to_vec()
-                .ok()
-                .and_then(|nested| nested.first().cloned())
-                .or(Some(item))
-        })
 }

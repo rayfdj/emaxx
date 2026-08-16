@@ -2,13 +2,11 @@ use super::eval::Interpreter;
 use super::primitives::{
     make_shared_string_value_with_multibyte, string_like, values_eql, vector_items,
 };
-use super::types::{LispError, Value, visible_symbol_name};
+use super::types::{LispError, ReaderForm, Value, visible_symbol_name};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
 pub(crate) const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
-pub(crate) const CIRCULAR_READ_SYNTAX_SYMBOL: &str = "emaxx--circular-read-syntax";
-pub(crate) const HASH_TABLE_LITERAL_SYMBOL: &str = "emaxx--hash-table-literal";
 const HASH_TABLE_RECORD_TYPE: &str = "hash-table";
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const JSON_SERIALIZATION_MAX_DEPTH: usize = 50;
@@ -789,11 +787,18 @@ fn serialize_value(
         Value::Integer(number) => Ok(number.to_string()),
         Value::BigInteger(number) => Ok(number.to_string()),
         Value::Float(number) => Ok(number.to_string()),
-        Value::Symbol(symbol) if symbol == CIRCULAR_READ_SYNTAX_SYMBOL => Err(json_error(
-            "circular-list",
-            "Circular list is not serializable as JSON",
-            1,
-        )),
+        Value::ReaderForm(form) => match form.as_ref() {
+            ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => Err(json_error(
+                "circular-list",
+                "Circular list is not serializable as JSON",
+                1,
+            )),
+            ReaderForm::HashTable { .. } => {
+                serialize_hash_table_literal(interp, value, options, depth)?
+                    .ok_or_else(|| LispError::TypeError("json-value".into(), value.type_name()))
+            }
+            _ => Err(LispError::TypeError("json-value".into(), value.type_name())),
+        },
         Value::Record(_) if is_hash_table(interp, value) => {
             serialize_hash_table(interp, value, options, depth)
         }
@@ -887,21 +892,19 @@ fn serialize_hash_table_literal(
     options: &SerializeOptions<'_>,
     depth: usize,
 ) -> Result<Option<String>, LispError> {
-    let items = value.to_vec().ok();
-    let Some(items) = items else {
+    let Value::ReaderForm(form) = value else {
         return Ok(None);
     };
-    if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == HASH_TABLE_LITERAL_SYMBOL)
-    {
+    let ReaderForm::HashTable { fields } = form.as_ref() else {
         return Ok(None);
-    }
+    };
     let depth = json_nested_depth(depth)?;
     let mut test = "eql".to_string();
     let mut data = Vec::new();
-    let mut index = 1usize;
-    while index + 1 < items.len() {
-        let key = items[index].as_symbol()?.to_string();
-        let value = items[index + 1].clone();
+    let mut index = 0usize;
+    while index + 1 < fields.len() {
+        let key = fields[index].as_symbol()?.to_string();
+        let value = fields[index + 1].clone();
         match key.as_str() {
             "test" => test = value.as_symbol()?.to_string(),
             "data" => data = list_to_flat_pairs(&value)?,

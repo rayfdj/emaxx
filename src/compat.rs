@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,6 @@ pub const BATCH_RESULT_FILE_ENV: &str = "EMAXX_BATCH_RESULT_FILE";
 /// equivalent files from an isolated runtime checkout while preserving this
 /// build-tree provenance at the Elisp boundary.
 pub const DUMP_SOURCE_DIRECTORY_ENV: &str = "EMAXX_DUMP_SOURCE_DIRECTORY";
-const ORACLE_BATCH_REPORT_BRIDGES: [&str; 1] = ["test/lisp/kmacro-tests.el"];
 pub const SUPPORTED_ENV_VARS: [&str; 4] = [
     "EMACS_TEST_TIMEOUT",
     "EMACS_TEST_VERBOSE",
@@ -334,99 +333,6 @@ pub fn write_oracle_lock(lock: &OracleLock) -> Result<(), String> {
 
 pub fn write_oracle_local_config(config: &OracleLocalConfig) -> Result<(), String> {
     write_json_file(&oracle_local_path(), config)
-}
-
-pub fn should_bridge_batch_report(relative_file: &str) -> bool {
-    ORACLE_BATCH_REPORT_BRIDGES.contains(&relative_file)
-}
-
-pub fn maybe_bridge_batch_report(
-    relative_file: &str,
-    file: &Path,
-    selector: &str,
-) -> Result<Option<BatchReport>, String> {
-    if env::var(BATCH_RESULT_FILE_ENV).is_err() || !should_bridge_batch_report(relative_file) {
-        return Ok(None);
-    }
-
-    let lock = load_oracle_lock()?;
-    let local = load_oracle_local_config()?;
-    validate_oracle(&lock, &local)?;
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("clock error: {error}"))?
-        .as_nanos();
-    let result_path = env::temp_dir().join(format!(
-        "emaxx-oracle-batch-{}-{timestamp}.json",
-        std::process::id()
-    ));
-    let helper_path = oracle_helper_path();
-    let test_directory = local.emacs_repo.join("test");
-    let mut command = Command::new(&local.emacs_binary);
-    configure_upstream_like_env(&mut command, &test_directory);
-    command.env(BATCH_RESULT_FILE_ENV, &result_path);
-    command.env("EMAXX_COMPAT_RELATIVE_FILE", relative_file);
-    command.arg("--no-init-file");
-    command.arg("--no-site-file");
-    command.arg("--no-site-lisp");
-    command.arg("--batch");
-    command.arg("-L");
-    command.arg(&test_directory);
-    command.arg("-l");
-    command.arg("ert");
-    command.arg("-l");
-    command.arg(&helper_path);
-    command.arg("-l");
-    command.arg(file);
-    command.arg("--eval");
-    command.arg(format!("(emaxx-compat-run {selector})"));
-
-    let output = command.output().map_err(|error| {
-        format!(
-            "spawn oracle batch delegation for {relative_file} with {}: {error}",
-            local.emacs_binary.display()
-        )
-    })?;
-    let mut report = if result_path.exists() {
-        BatchReport::read_json(&result_path)?
-    } else {
-        synthesize_batch_report_from_output("oracle", relative_file, selector, &output)
-    };
-    let _ = fs::remove_file(&result_path);
-    report.runner = "emaxx".into();
-    report.file = relative_file.to_string();
-    report.selector = selector.to_string();
-    Ok(Some(report))
-}
-
-fn synthesize_batch_report_from_output(
-    runner: &str,
-    relative_file: &str,
-    selector: &str,
-    output: &std::process::Output,
-) -> BatchReport {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = if stderr.trim().is_empty() {
-        stdout.trim().to_string()
-    } else {
-        stderr.trim().to_string()
-    };
-    let message = if let Some(exit_code) = output.status.code() {
-        format!(
-            "process exited {}: {}",
-            exit_code,
-            if detail.is_empty() {
-                "no structured result produced".to_string()
-            } else {
-                detail
-            }
-        )
-    } else {
-        "process terminated without a status code".to_string()
-    };
-    BatchReport::load_error(runner, relative_file, selector, message)
 }
 
 fn read_json_file<T>(path: &Path) -> Result<T, String>
@@ -903,6 +809,48 @@ pub fn filter_report_by_name(report: &BatchReport, regex: Option<&Regex>) -> Bat
     }
 }
 
+pub fn filter_report_by_exact_names(report: &BatchReport, names: &BTreeSet<String>) -> BatchReport {
+    let discovered_tests = report
+        .discovered_tests
+        .iter()
+        .filter(|test| names.contains(&test.name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let selected_tests = report
+        .selected_tests
+        .iter()
+        .filter(|name| names.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let results = report
+        .results
+        .iter()
+        .filter(|result| names.contains(&result.name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut summary = BatchSummary::default();
+    for result in &results {
+        summary.total += 1;
+        match result.status {
+            TestStatus::Passed => summary.passed += 1,
+            TestStatus::Failed => summary.failed += 1,
+            TestStatus::Skipped => summary.skipped += 1,
+        }
+    }
+    summary.unexpected = summary.failed;
+    BatchReport {
+        runner: report.runner.clone(),
+        file: report.file.clone(),
+        selector: report.selector.clone(),
+        file_status: report.file_status.clone(),
+        file_error: report.file_error.clone(),
+        discovered_tests,
+        selected_tests,
+        results,
+        summary,
+    }
+}
+
 pub fn compare_reports(expected: &BatchReport, actual: &BatchReport) -> ComparisonReport {
     let mut issues = Vec::new();
 
@@ -1220,6 +1168,49 @@ mod tests {
         assert_eq!(filtered.summary.total, 1);
         assert_eq!(filtered.summary.passed, 1);
         assert!(filtered.results.iter().all(|result| result.name == "foo"));
+    }
+
+    #[test]
+    fn filter_report_by_exact_names_cannot_match_regex_neighbors() {
+        let report = BatchReport {
+            runner: "emaxx".into(),
+            file: "test/src/foo-tests.el".into(),
+            selector: "t".into(),
+            file_status: FileStatus::Loaded,
+            file_error: None,
+            discovered_tests: ["foo", "foo-extra"]
+                .into_iter()
+                .map(|name| DiscoveredTest {
+                    name: name.into(),
+                    tags: Vec::new(),
+                    expected_result: ":passed".into(),
+                })
+                .collect(),
+            selected_tests: vec!["foo".into(), "foo-extra".into()],
+            results: ["foo", "foo-extra"]
+                .into_iter()
+                .map(|name| TestOutcome {
+                    name: name.into(),
+                    status: TestStatus::Passed,
+                    condition_type: None,
+                    message: None,
+                })
+                .collect(),
+            summary: BatchSummary {
+                total: 2,
+                passed: 2,
+                failed: 0,
+                skipped: 0,
+                unexpected: 0,
+            },
+        };
+
+        let filtered = filter_report_by_exact_names(&report, &BTreeSet::from(["foo".into()]));
+
+        assert_eq!(filtered.selected_tests, ["foo"]);
+        assert_eq!(filtered.results.len(), 1);
+        assert_eq!(filtered.summary.total, 1);
+        assert_eq!(filtered.summary.passed, 1);
     }
 
     #[test]

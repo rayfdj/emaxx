@@ -1,19 +1,17 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::ffi::OsString;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::Child;
 use std::rc::{Rc, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use super::primitives;
-use super::reader::{CHAR_TABLE_LITERAL_SYMBOL, CLOSURE_LITERAL_SYMBOL, RECORD_LITERAL_SYMBOL};
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    EmacsTermination, Env, EnvFrame, LispError, SharedEnv, Value, WeakConsSlot,
-    interned_symbol_value, shared_env,
+    ConsCell, EmacsTermination, Env, EnvFrame, LambdaValue, LispError, ReaderClosureKind,
+    ReaderForm, SharedEnv, Value, WeakConsSlot, shared_env,
 };
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use hashlink::LinkedHashMap;
@@ -22,28 +20,21 @@ use regex::Regex;
 mod bindings;
 mod bootstrap;
 mod buffers;
-mod classes;
 mod coding;
 mod control_forms;
 mod core;
 mod definitions;
 mod faces;
-mod generated_autoloads;
 mod loops;
 mod macros;
-mod preload;
 mod resource_forms;
 pub(crate) mod runtime;
-mod rx;
 mod threads;
 mod treesit;
 mod variables;
 use bootstrap::*;
-pub(crate) use core::{is_special_form_name, native_form_fallback_arity};
-pub(crate) use preload::*;
+pub(crate) use core::is_special_form_name;
 mod ert;
-
-pub(crate) use rx::compile_rx_to_string;
 
 // lread.c's complete GNU 30.2 DEFVAR_LISP/DEFVAR_BOOL contract.  C-defined
 // Lisp variables are special: a `let' binding in a lexical caller must remain
@@ -204,18 +195,12 @@ fn text_properties_subfeatures() -> Value {
 const STARTUP_FEATURES: &[StartupFeature] = &[
     // GNU bindings.el advertises this host-backed primitive family.
     StartupFeature::new("base64"),
-    // GNU dumps cl-preloaded.el's circular CL class/structure foundation.
-    StartupFeature::new("cl-preloaded"),
     StartupFeature::new("emacs"),
-    StartupFeature::new("emaxx"),
-    StartupFeature::new("ert"),
     StartupFeature::new("kqueue"),
     StartupFeature::new("lcms2"),
     StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     StartupFeature::new("md5"),
     StartupFeature::new("native-compile"),
-    // Emaxx implements preloaded oclosures natively.
-    StartupFeature::new("oclosure"),
     StartupFeature::new("overlay").with_subfeatures(overlay_subfeatures),
     StartupFeature::new("sha1"),
     StartupFeature::new("text-properties").with_subfeatures(text_properties_subfeatures),
@@ -225,6 +210,7 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
 #[derive(Clone, Copy)]
 enum StaticStartupValue {
     Nil,
+    T,
     Integer(i64),
 }
 
@@ -232,10 +218,47 @@ impl StaticStartupValue {
     fn value(self) -> Value {
         match self {
             Self::Nil => Value::Nil,
+            Self::T => Value::T,
             Self::Integer(value) => Value::Integer(value),
         }
     }
 }
+
+#[derive(Clone, Copy)]
+struct NativeGlobalVariable {
+    name: &'static str,
+    default: StaticStartupValue,
+}
+
+// xdisp.c owns these value cells and their startup defaults.  GNU Elisp
+// consumers such as simple.el and ert.el use them, but do not own or recreate
+// them.  Keep each native name, value, and special declaration in one entry.
+const GNU_XDISP_GLOBAL_VARIABLES: &[NativeGlobalVariable] = &[
+    NativeGlobalVariable {
+        name: "auto-hscroll-mode",
+        default: StaticStartupValue::T,
+    },
+    NativeGlobalVariable {
+        name: "hscroll-margin",
+        default: StaticStartupValue::Integer(5),
+    },
+    NativeGlobalVariable {
+        name: "hscroll-step",
+        default: StaticStartupValue::Integer(0),
+    },
+    NativeGlobalVariable {
+        name: "scroll-minibuffer-conservatively",
+        default: StaticStartupValue::T,
+    },
+    NativeGlobalVariable {
+        name: "truncate-partial-width-windows",
+        default: StaticStartupValue::Integer(50),
+    },
+    NativeGlobalVariable {
+        name: "message-log-max",
+        default: StaticStartupValue::Integer(1000),
+    },
+];
 
 #[derive(Clone, Copy)]
 struct DumpedAutoBufferLocal {
@@ -839,23 +862,6 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             &["json-utf8-decode-error", "json-error", "error"],
             "invalid utf-8 encoding",
         ),
-        // cl-generic is dumped in GNU and native/preprovided in Emaxx.
-        ("cl-no-method", &["cl-no-method", "error"], "No method"),
-        (
-            "cl-no-next-method",
-            &["cl-no-next-method", "cl-no-method", "error"],
-            "No next method",
-        ),
-        (
-            "cl-no-primary-method",
-            &["cl-no-primary-method", "cl-no-method", "error"],
-            "No primary method",
-        ),
-        (
-            "cl-no-applicable-method",
-            &["cl-no-applicable-method", "cl-no-method", "error"],
-            "No applicable method",
-        ),
     ];
 
     definitions
@@ -1042,10 +1048,10 @@ pub struct CharTableEntry {
 }
 
 #[derive(Clone, Debug)]
-struct RegexpSyntaxWordClassCache {
+struct RegexpSyntaxClassCache {
     table_id: u64,
     char_table_generation: u64,
-    rendered: String,
+    rendered: [String; 16],
 }
 
 impl CharTableState {
@@ -1161,9 +1167,22 @@ pub(crate) enum RecordKind {
 #[derive(Clone, Debug)]
 pub struct RecordState {
     pub id: u64,
-    pub type_name: String,
+    /// GNU stores the record type in slot zero and permits either a symbol or
+    /// an arbitrary type descriptor there.  Keep the Lisp object itself as
+    /// the single source of truth; host pseudovectors use symbol tags.
+    pub type_tag: Value,
     pub slots: Vec<Value>,
     pub(crate) kind: RecordKind,
+}
+
+impl RecordState {
+    pub(crate) fn symbol_type_name(&self) -> Option<&str> {
+        self.type_tag.as_symbol().ok()
+    }
+
+    pub(crate) fn has_symbol_type(&self, name: &str) -> bool {
+        self.symbol_type_name() == Some(name)
+    }
 }
 
 pub(crate) struct TreeSitterQueryState {
@@ -1771,7 +1790,7 @@ pub(crate) struct WindowConfigurationSnapshot {
     selected_window_id: u64,
     selected_window_slots: Vec<Value>,
     window_records: Vec<(u64, Vec<Value>)>,
-    root_window: Value,
+    root_window_id: u64,
     frame_width: i64,
     frame_height: i64,
 }
@@ -1810,25 +1829,6 @@ pub(crate) struct FileNameHandlerMatchCacheEntry {
 }
 
 #[derive(Clone, Debug)]
-struct ClassState {
-    name: String,
-    record_id: u64,
-    parents: Vec<String>,
-    slot_specs: Vec<Value>,
-    options: Vec<Value>,
-    children: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-struct GenericGeneralizerState {
-    name: String,
-    record_id: u64,
-    priority: i64,
-    tagcode_function: Value,
-    specializers_function: Value,
-}
-
-#[derive(Clone, Debug)]
 struct ScheduledTimer {
     function: Value,
     original_name: Option<String>,
@@ -1838,12 +1838,6 @@ struct ScheduledTimer {
     due: Option<std::time::Instant>,
     /// Reschedule interval in seconds for repeating timers.
     repeat: Option<f64>,
-}
-
-#[derive(Clone)]
-pub(crate) struct MacroBinding {
-    pub(crate) name: String,
-    pub(crate) expander: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -1973,6 +1967,14 @@ fn ordered_name_index(entries: &[(String, Value)]) -> OrderedNameIndex {
         .collect()
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MinibufferRuntimeState {
+    active_buffer_id: Option<u64>,
+    active_window_id: Option<u64>,
+    depth: usize,
+    prompt: Option<String>,
+}
+
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
 pub struct Interpreter {
@@ -1993,12 +1995,6 @@ pub struct Interpreter {
     /// Names ever declared locally special via a non-top-level one-arg
     /// `defvar`; lets of other names skip the env marker scan entirely.
     local_special_names: HashSet<String>,
-    /// Names declared by a TOP-LEVEL one-arg `defvar` in a lexical-binding
-    /// file: GNU scopes these to the file (dynamic `let's, dynamic
-    /// references) while `special-variable-p' stays nil.  emaxx applies
-    /// the dynamic-binding treatment session-wide but keeps them out of
-    /// the official special set.
-    soft_special_names: HashSet<String>,
     /// Names currently bound by an active `dlet': treated as dynamic for
     /// binding and reference resolution while the dlet body runs (counted,
     /// since dlets nest).
@@ -2015,6 +2011,16 @@ pub struct Interpreter {
     pub(crate) kbd_macro_committed_len: usize,
     pub(crate) keyboard_input: KeyboardInputState,
     pub(crate) command_loop_recursion_depth: usize,
+    minibuffer_runtime: MinibufferRuntimeState,
+    /// Destination installed by the native `redirect-debugging-output'
+    /// primitive.  GNU keeps this in C state; it must not leak through a
+    /// project-private Lisp variable.
+    pub(crate) external_debugging_output_target: Option<String>,
+    /// Process-local creation permissions owned by GNU's C runtime.  Keep
+    /// this as typed interpreter state so isolated Rust interpreters neither
+    /// communicate through a private Lisp variable nor mutate the host
+    /// process umask behind concurrently running tests.
+    pub(crate) default_file_modes: i64,
     /// GNU's process-local time-zone rule.  Keep it interpreter-local here:
     /// Rust tests run interpreters concurrently in one host process, so
     /// mutating the host `TZ' would leak state between otherwise isolated
@@ -2062,6 +2068,11 @@ pub struct Interpreter {
     current_buffer_id: u64,
     /// The currently selected window record.
     selected_window_id: u64,
+    /// Root and minibuffer window identities are interpreter/frame state,
+    /// never Lisp variables.
+    root_window_id: u64,
+    minibuffer_window_id: u64,
+    minibuffer_selected_window_id: Option<u64>,
     /// Whether each window should display its cursor on the next redisplay.
     /// Missing entries retain GNU's visible-by-default state.
     window_cursor_visibility: HashMap<u64, bool>,
@@ -2116,17 +2127,13 @@ pub struct Interpreter {
     /// single generation owned by the character-table mutation door avoids
     /// duplicating descendant invalidation logic at every Lisp operation.
     char_table_mutation_generation: u64,
-    /// The rendered current-table `\\w' class is expensive to derive and is
-    /// reused by many different compiled patterns.  This one-entry cache is
-    /// stamped with both table identity and the mutation generation; regexp
-    /// code declines to populate it for tables containing mutable Lisp
-    /// entry objects whose in-place changes bypass the table mutation door.
-    regexp_syntax_word_class_cache: RefCell<Option<RegexpSyntaxWordClassCache>>,
-    /// Stable lazy tables returned by `unicode-property-table-internal'.
-    /// GNU caches these in `char-code-property-alist'; recreating a table on
-    /// every character lookup makes Unicode-wide scans catastrophically
-    /// quadratic in allocation and also loses `put-char-code-property' data.
-    unicode_property_table_ids: HashMap<String, u64>,
+    /// The rendered current-table syntax classes are expensive to derive and
+    /// are reused by many different compiled patterns.  This one-entry cache
+    /// is stamped with both table identity and the mutation generation;
+    /// regexp code declines to populate it for tables containing mutable
+    /// Lisp entry objects whose in-place changes bypass the table mutation
+    /// door.
+    regexp_syntax_class_cache: RefCell<Option<RegexpSyntaxClassCache>>,
     /// Indexed storage for GNU `equal' hash tables.  Record slots retain
     /// metadata compatibility, while this sidecar gives structured Lisp keys
     /// the same hashed lookup shape as Emacs's native implementation.
@@ -2203,16 +2210,11 @@ pub struct Interpreter {
     treesit_nodes: Vec<TreeSitterNodeState>,
     /// Loaded grammar modules, deliberately dropped after parsers and trees.
     treesit_languages: Vec<TreeSitterLanguageState>,
-    // nadvice state: per-symbol advice entries (newest first = outermost)
-    // plus the unadvised base definition; entries added before the symbol
-    // is defined stay pending until a defun/defalias installs a base.
-    pub(crate) advice_registry: std::collections::HashMap<String, AdviceState>,
     /// Next record ID for identity tracking.
     next_record_id: u64,
     /// Next finalizer ID for identity tracking.
     next_finalizer_id: u64,
     /// Next generated symbol ID used by built-in macro expansion helpers.
-    next_generated_symbol_id: u64,
     /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
     /// order.  This is the sole backing store for local hook metadata.
     buffer_local_hooks: BufferLocalHooks,
@@ -2224,6 +2226,12 @@ pub struct Interpreter {
     buffer_syntax_tables: Vec<(u64, u64)>,
     /// Variables that automatically become buffer-local when set.
     auto_buffer_locals: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
+    /// Native DEFVAR_PER_BUFFER variables, kept as host metadata rather than
+    /// exposed through private Lisp symbol properties.
+    per_buffer_specials: HashSet<String>,
+    /// The DEFVAR_PER_BUFFER subset whose GNU slot index is -1 and therefore
+    /// remains local in every buffer.
+    always_buffer_local_specials: HashSet<String>,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -2233,11 +2241,6 @@ pub struct Interpreter {
     indirect_buffers: Vec<(u64, u64)>,
     /// Prevent recursive before/after-change hook re-entry.
     change_hooks_running: usize,
-    /// User-defined macros: name → (params, body).
-    macros: Vec<MacroBinding>,
-    /// Occurrence counts per macro name so the hot macroexpansion path can
-    /// reject non-macro heads without scanning the positional table.
-    macros_name_counts: HashMap<String, u32, crate::lisp::primitives::FnvBuildHasher>,
     /// User-defined functions in the function namespace.
     functions: Vec<(String, Value)>,
     /// Last-wins index over `functions` so the hot function-lookup path is
@@ -2276,16 +2279,12 @@ pub struct Interpreter {
     /// Features currently available in this interpreter.
     provided_features: Vec<String>,
     /// Forms waiting for a feature to be provided.
-    after_load_forms: Vec<(String, Vec<Value>, Env)>,
     /// File currently being loaded, if any.
     current_load_file: Option<String>,
     /// Physical standard-Lisp source prefix and the build-tree prefix GNU's
     /// dumped load path exposes for that source.  File reads stay isolated;
     /// observable load provenance follows the image/runtime contract.
     load_source_provenance_remap: Option<(PathBuf, PathBuf)>,
-    /// Source files whose compile-time-only forms must not acquire runtime
-    /// load-history entries while Emaxx interprets their source fallback.
-    load_history_suppressed_files: Vec<String>,
     // File the currently-running ERT test was defined in; used by
     // `ert-resource-directory' without making `load-file-name' non-nil
     // during test bodies (it is nil there in GNU).
@@ -2382,14 +2381,6 @@ pub struct Interpreter {
     condition_variables: Vec<ConditionVariableState>,
     combined_after_change: Option<CombinedAfterChangeState>,
     process_states: Vec<ProcessState>,
-    class_states: Vec<ClassState>,
-    class_parent_overrides: Vec<(u64, Vec<String>)>,
-    // Object records whose GNU type tag is the class object rather than the
-    // class symbol (objects created with `eieio-backward-compatibility' nil
-    // and every class's default-object cache); they print with the class
-    // object expanded in place of the type symbol.
-    class_object_tagged_records: HashSet<u64>,
-    generalizer_states: Vec<GenericGeneralizerState>,
     pending_timers: Vec<ScheduledTimer>,
     /// Source-loaded callbacks stand in for GNU's byte-compiled Lisp.  Keep
     /// defsubst definitions removed by loadhist alive until the active timer
@@ -2407,8 +2398,6 @@ pub struct Interpreter {
         FileNameHandlerMatchCacheEntry,
         crate::lisp::primitives::FnvBuildHasher,
     >,
-    pub(crate) gnu_pcase_load_attempted: bool,
-    pub(crate) gnu_rx_load_attempted: bool,
     main_thread_id: u64,
     active_thread_id: u64,
     last_thread_error: Option<Value>,
@@ -2453,12 +2442,6 @@ impl<T> ConsMutationStamped<T> {
     }
 }
 
-struct SourceMacroExpansionCacheEntry {
-    definition_generation: u64,
-    expansion: Value,
-    mutations: crate::lisp::types::ConsMutationSnapshot,
-}
-
 struct SourceFunctionCallCacheEntry {
     definition_generation: u64,
     resolution: FunctionResolution,
@@ -2467,7 +2450,6 @@ struct SourceFunctionCallCacheEntry {
 #[derive(Default)]
 struct SourceMacroCallCache {
     not_macro_generation: Option<u64>,
-    expansions: [Option<SourceMacroExpansionCacheEntry>; 2],
 }
 
 struct SourceFormCacheEntry {
@@ -2486,9 +2468,10 @@ struct SourceFormAnalysis {
     native_form: Option<core::NativeForm>,
     literal_kind: core::SourceLiteralKind,
     if_test_mentions_setcdr: bool,
-    /// Callsite-local macro verdicts share the source-analysis lifetime. This
-    /// avoids a second identity hash on every evaluation while retaining
-    /// independent lexical/dynamic expansions and tree-mutation validity.
+    /// The generation-stamped non-macro verdict shares the source-analysis
+    /// lifetime.  Actual macro expansions are deliberately never cached:
+    /// GNU's interpreted evaluator invokes the macro expander on every
+    /// evaluation, and expanders may depend on state or create fresh objects.
     macro_calls: Rc<RefCell<SourceMacroCallCache>>,
     /// Generation-stamped function-cell resolution for this exact callsite.
     /// Local cl-flet/cl-labels frames bypass it before lookup.
@@ -2644,11 +2627,16 @@ impl Interpreter {
                 // reconstructed dump/startup phase.
                 ("build-files".into(), Value::Nil),
                 ("case-replace".into(), Value::T),
-                ("byte-compile-log-buffer".into(), Value::Nil),
-                // Emaxx keeps byte compilation native, but Lisp callers may
-                // inspect the same dynamically scoped compiler state that
-                // GNU bytecomp.el publishes around `byte-compile'.
-                ("byte-compile-unresolved-functions".into(), Value::Nil),
+                // xdisp.c publishes the complete overlay-arrow value-cell
+                // cluster before loadup.el begins.  simple.el extends the
+                // variable list while it is preloaded, so the list and its
+                // member variables must share this native startup owner.
+                ("overlay-arrow-position".into(), Value::Nil),
+                ("overlay-arrow-string".into(), Value::String("=>".into())),
+                (
+                    "overlay-arrow-variable-list".into(),
+                    Value::list([Value::symbol("overlay-arrow-position")]),
+                ),
                 ("defining-kbd-macro".into(), Value::Nil),
                 ("delay-mode-hooks".into(), Value::Nil),
                 ("delayed-after-hook-functions".into(), Value::Nil),
@@ -2659,10 +2647,14 @@ impl Interpreter {
                 ("kbd-macro-termination-hook".into(), Value::Nil),
                 ("last-kbd-macro".into(), Value::Nil),
                 ("file-name-handler-alist".into(), Value::Nil),
+                // fileio.c owns this DEFVAR_LISP cell.  The native
+                // `insert-file-contents' tail reads it after either the host
+                // reader or a file-name handler returns, so a lexical
+                // caller's `let' must remain dynamically visible there.
+                ("after-insert-file-functions".into(), Value::Nil),
                 // File-less embeddings need a compact mode-selection
                 // fallback.  Keep it as removable provisional state so GNU
                 // files.el can replace it atomically during batch startup.
-                ("auto-mode-alist".into(), builtin_auto_mode_alist()),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
                 ("inhibit-file-name-operation".into(), Value::Nil),
                 ("inhibit-read-only".into(), Value::Nil),
@@ -2722,16 +2714,11 @@ impl Interpreter {
                 ("warning-suppress-log-types".into(), Value::Nil),
                 ("warning-suppress-types".into(), Value::Nil),
                 ("warning-type-format".into(), Value::String(" (%s)".into())),
-                (
-                    "vc-directory-exclusion-list".into(),
-                    preloaded_vc_directory_exclusion_list(),
-                ),
                 ("lread--unescaped-character-literals".into(), Value::Nil),
                 (
                     "standard-output".into(),
                     Value::Symbol("external-debugging-output".into()),
                 ),
-                ("emaxx-external-debugging-output-target".into(), Value::Nil),
                 (
                     "code-conversion-map-vector".into(),
                     Value::list(
@@ -2760,7 +2747,6 @@ impl Interpreter {
             variable_aliases_index: HashMap::new(),
             special_variables_index: HashSet::default(),
             local_special_names: HashSet::new(),
-            soft_special_names: HashSet::new(),
             dlet_active_names: HashMap::new(),
             special_scan_floor: 0,
             lisp_eval_depth: 0,
@@ -2769,6 +2755,9 @@ impl Interpreter {
             kbd_macro_committed_len: 0,
             keyboard_input: KeyboardInputState::default(),
             command_loop_recursion_depth: 0,
+            minibuffer_runtime: MinibufferRuntimeState::default(),
+            external_debugging_output_target: None,
+            default_file_modes: 0o755,
             local_time_zone_rule,
             special_variables: vec![
                 "case-fold-search".into(),
@@ -2800,11 +2789,7 @@ impl Interpreter {
                 "unread-command-events".into(),
                 "coding-system-alist".into(),
                 "char-code-property-alist".into(),
-                "overlay-arrow-position".into(),
-                "overlay-arrow-string".into(),
                 "load-read-function".into(),
-                "byte-compile-log-buffer".into(),
-                "byte-compile-unresolved-functions".into(),
                 "command-line-args".into(),
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),
@@ -2877,6 +2862,9 @@ impl Interpreter {
             keymap_public_cons_ids: HashMap::new(),
             current_buffer_id: 0,
             selected_window_id: 0,
+            root_window_id: 0,
+            minibuffer_window_id: 0,
+            minibuffer_selected_window_id: None,
             window_cursor_visibility: HashMap::new(),
             old_selected_window_id: 0,
             frame_old_selected_window_id: None,
@@ -2972,8 +2960,7 @@ impl Interpreter {
                 ),
             ],
             char_table_mutation_generation: 0,
-            regexp_syntax_word_class_cache: RefCell::new(None),
-            unicode_property_table_ids: HashMap::new(),
+            regexp_syntax_class_cache: RefCell::new(None),
             equal_hash_tables: HashMap::default(),
             charset_aliases: Vec::new(),
             charset_ids: vec![
@@ -3051,13 +3038,13 @@ impl Interpreter {
             records: vec![
                 RecordState {
                     id: main_thread_id,
-                    type_name: "thread".into(),
+                    type_tag: Value::symbol("thread"),
                     slots: Vec::new(),
                     kind: RecordKind::Thread,
                 },
                 RecordState {
                     id: standard_obarray_id,
-                    type_name: "obarray".into(),
+                    type_tag: Value::symbol("obarray"),
                     slots: vec![Value::Nil],
                     kind: RecordKind::Obarray,
                 },
@@ -3075,10 +3062,8 @@ impl Interpreter {
             treesit_languages: Vec::new(),
             treesit_parsers: Vec::new(),
             treesit_nodes: Vec::new(),
-            advice_registry: std::collections::HashMap::new(),
             next_record_id: 3,
             next_finalizer_id: 1,
-            next_generated_symbol_id: 1,
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),
@@ -3086,13 +3071,13 @@ impl Interpreter {
                 .iter()
                 .map(|variable| variable.name.to_string())
                 .collect(),
+            per_buffer_specials: HashSet::new(),
+            always_buffer_local_specials: HashSet::new(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
-            macros: Vec::new(),
-            macros_name_counts: HashMap::default(),
             functions: Vec::new(),
             functions_index: HashMap::default(),
             network_connect_counter: 0,
@@ -3105,10 +3090,8 @@ impl Interpreter {
                 .iter()
                 .map(|feature| feature.name.to_string())
                 .collect(),
-            after_load_forms: Vec::new(),
             current_load_file: None,
             load_source_provenance_remap: None,
-            load_history_suppressed_files: Vec::new(),
             ert_test_source_file: None,
             current_ert_test_name: None,
             ert_tests: Vec::new(),
@@ -3180,10 +3163,6 @@ impl Interpreter {
             condition_variables: Vec::new(),
             combined_after_change: None,
             process_states: Vec::new(),
-            class_states: Vec::new(),
-            class_parent_overrides: Vec::new(),
-            class_object_tagged_records: HashSet::new(),
-            generalizer_states: Vec::new(),
             pending_timers: Vec::new(),
             timer_callback_depth: 0,
             deferred_defsubst_unbindings: Vec::new(),
@@ -3191,8 +3170,6 @@ impl Interpreter {
             pending_file_notifications: Vec::new(),
             file_notify_watches: HashMap::new(),
             file_name_handler_match_cache: HashMap::default(),
-            gnu_pcase_load_attempted: false,
-            gnu_rx_load_attempted: false,
             main_thread_id,
             active_thread_id: main_thread_id,
             last_thread_error: None,
@@ -3219,11 +3196,6 @@ impl Interpreter {
             interp.mark_special_variable(&name);
         }
         interp.initialize_native_face_variables();
-        // GNU's dumped autoload variables originate in `defvar' / `defcustom'
-        // forms: keep their defaults lazy, but install the special declaration.
-        for name in generated_autoloads::generated_dumped_variable_names() {
-            interp.mark_special_variable(name);
-        }
         // gnutls.c publishes both variables before preloading gnutls.el.
         // The shared library is resolved dynamically here, so availability
         // refreshes the version value while preserving GNU's unavailable
@@ -3244,14 +3216,19 @@ impl Interpreter {
                 ),
             ]),
         );
-        // xdisp.c's horizontal scrolling controls are host-owned value cells
-        // read by the upstream simple.el motion commands.
-        interp.define_special_variable("auto-hscroll-mode", Value::T);
-        interp.define_special_variable("hscroll-margin", Value::Integer(5));
-        interp.define_special_variable("hscroll-step", Value::Integer(0));
-        // xdisp.c: minibuffer windows scroll conservatively (bug#44070);
-        // simple.el's end-of-buffer reads this before recentering.
-        interp.define_special_variable("scroll-minibuffer-conservatively", Value::T);
+        // data.c exposes the symbol-position comparison switch as a native
+        // DEFVAR_BOOL.  It is globally bound to nil and intrinsically
+        // special before bytecomp.el loads; the compiler dynamically binds
+        // it around `eq', whose C contract then treats positioned symbols as
+        // their bare symbols.
+        interp.define_special_variable("symbols-with-pos-enabled", Value::Nil);
+        // fns.c's compile-time plist shadow: bytecomp's top-level
+        // `function-put'/`define-symbol-prop' handler pushes entries here and
+        // `get' consults it before the symbol's own plist.
+        interp.define_special_variable("overriding-plist-environment", Value::Nil);
+        for variable in GNU_XDISP_GLOBAL_VARIABLES {
+            interp.define_special_variable(variable.name, variable.default.value());
+        }
         // coding.c's end-of-line mnemonics, read by the dumped mode-line
         // spec (mode-line-eol-desc).
         interp.define_special_variable("eol-mnemonic-unix", Value::String(":".into()));
@@ -3294,175 +3271,6 @@ impl Interpreter {
             if let Some(subfeatures) = feature.subfeatures {
                 interp.put_symbol_property(feature.name, "subfeatures", subfeatures());
             }
-        }
-        for class in primitives::builtin_classes() {
-            interp.put_symbol_property(
-                class.name,
-                "cl--class",
-                interned_symbol_value(class.name.into()),
-            );
-            if let Some(predicate) = class.predicate {
-                interp.put_symbol_property(
-                    class.name,
-                    "cl-deftype-satisfies",
-                    Value::Symbol(predicate.into()),
-                );
-            }
-        }
-        for (type_name, predicate) in primitives::builtin_cl_satisfies_types() {
-            interp.put_symbol_property(
-                type_name,
-                "cl-deftype-satisfies",
-                Value::Symbol((*predicate).into()),
-            );
-        }
-        // simple.el dumps decoded-time's `:type list' cl-defstruct.  Emaxx
-        // keeps its accessors host-backed, but must publish the same struct
-        // and compiler-macro metadata so GNU gv.el can lower their setf
-        // places to list cells.
-        let decoded_time_slots = [
-            "second", "minute", "hour", "day", "month", "year", "weekday", "dst", "zone",
-        ];
-        interp.put_symbol_property(
-            "decoded-time",
-            "emaxx-struct-slots",
-            Value::list(decoded_time_slots.into_iter().map(Value::symbol)),
-        );
-        interp.put_symbol_property(
-            "decoded-time",
-            "emaxx-struct-defaults",
-            Value::list(
-                decoded_time_slots
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, _)| {
-                        if index == 7 {
-                            Value::Integer(-1)
-                        } else {
-                            Value::Nil
-                        }
-                    }),
-            ),
-        );
-        interp.put_symbol_property(
-            "decoded-time",
-            "emaxx-struct-slot-descs",
-            Value::list(
-                std::iter::once(Value::list([Value::symbol("cl-tag-slot")])).chain(
-                    decoded_time_slots
-                        .into_iter()
-                        .map(|slot| Value::list([Value::symbol(slot)])),
-                ),
-            ),
-        );
-        interp.put_symbol_property(
-            "decoded-time",
-            "emaxx-struct-sequence-type",
-            Value::symbol("list"),
-        );
-        for (index, slot) in decoded_time_slots.into_iter().enumerate() {
-            let accessor = format!("decoded-time-{slot}");
-            interp.put_symbol_property(
-                &accessor,
-                "emaxx-struct-type",
-                Value::symbol("decoded-time"),
-            );
-            interp.put_symbol_property(
-                &accessor,
-                "emaxx-struct-slot",
-                Value::Integer(index as i64),
-            );
-            interp.install_struct_accessor_compiler_macro(&accessor, "nth", index);
-        }
-
-        // cl-preloaded.el also dumps cl-slot-descriptor before ordinary
-        // libraries run.  Its accessors stay host-backed in Emaxx, while the
-        // structure and compiler-macro metadata remain observable Lisp
-        // contract (notably to gv.el and CEDET).
-        let cl_slot_descriptor_slots = ["name", "initform", "type", "props"];
-        interp.put_symbol_property(
-            "cl-slot-descriptor",
-            "emaxx-struct-slots",
-            Value::list(cl_slot_descriptor_slots.into_iter().map(Value::symbol)),
-        );
-        interp.put_symbol_property(
-            "cl-slot-descriptor",
-            "emaxx-struct-defaults",
-            Value::list(std::iter::repeat_n(
-                Value::Nil,
-                cl_slot_descriptor_slots.len(),
-            )),
-        );
-        interp.put_symbol_property(
-            "cl-slot-descriptor",
-            "emaxx-struct-slot-descs",
-            Value::list(
-                std::iter::once(Value::list([Value::symbol("cl-tag-slot")])).chain(
-                    cl_slot_descriptor_slots
-                        .into_iter()
-                        .map(|slot| Value::list([Value::symbol(slot)])),
-                ),
-            ),
-        );
-        interp.put_symbol_property(
-            "cl-slot-descriptor",
-            "emaxx-struct-sequence-type",
-            Value::Nil,
-        );
-        for (index, slot) in cl_slot_descriptor_slots.into_iter().enumerate() {
-            let accessor = format!("cl--slot-descriptor-{slot}");
-            interp.put_symbol_property(
-                &accessor,
-                "emaxx-struct-type",
-                Value::symbol("cl-slot-descriptor"),
-            );
-            interp.put_symbol_property(
-                &accessor,
-                "emaxx-struct-slot",
-                Value::Integer(index as i64),
-            );
-            interp.install_struct_accessor_compiler_macro(&accessor, "aref", index + 1);
-        }
-
-        // cl-preloaded.el creates this parent before eieio-core defines
-        // `eieio--class' with (:include cl--class).  The source bootstrap is
-        // intentionally circular and builds GNU's record/class object
-        // representation; Emaxx owns that low-level representation in Rust,
-        // so install the dumped parent metadata at the same boundary.  The
-        // ordinary `cl-defstruct' producer then derives every inherited
-        // EIEIO accessor and `(setf ACCESSOR)' function from this one table.
-        let cl_class_slots = ["name", "docstring", "parents", "slots", "index-table"];
-        interp.put_symbol_property(
-            "cl--class",
-            "emaxx-struct-slots",
-            Value::list(cl_class_slots.into_iter().map(Value::symbol)),
-        );
-        interp.put_symbol_property(
-            "cl--class",
-            "emaxx-struct-defaults",
-            Value::list(std::iter::repeat_n(Value::Nil, cl_class_slots.len())),
-        );
-        interp.put_symbol_property(
-            "cl--class",
-            "emaxx-struct-slot-descs",
-            Value::list(
-                std::iter::once(Value::list([Value::symbol("cl-tag-slot")])).chain(
-                    cl_class_slots
-                        .into_iter()
-                        .map(|slot| Value::list([Value::symbol(slot)])),
-                ),
-            ),
-        );
-        interp.put_symbol_property("cl--class", "emaxx-struct-sequence-type", Value::Nil);
-        for (slot, index) in [("name", 0usize), ("parents", 2), ("index-table", 4)] {
-            let accessor = format!("cl--class-{slot}");
-            interp.put_symbol_property(&accessor, "emaxx-struct-type", Value::symbol("cl--class"));
-            interp.put_symbol_property(
-                &accessor,
-                "emaxx-struct-slot",
-                Value::Integer(index as i64),
-            );
-            interp.install_struct_accessor_compiler_macro(&accessor, "aref", index + 1);
         }
         let esc_map = primitives::make_runtime_full_keymap(&mut interp, Some("esc-map"));
         interp.set_global_binding("esc-map", esc_map.clone());
@@ -3908,9 +3716,13 @@ impl Interpreter {
         // keyboard.c installs `list' as the pass-through input method before
         // dumped Lisp loads.  Isearch saves and buffer-locally suppresses it.
         interp.define_special_variable("input-method-function", Value::Symbol("list".into()));
-        // GNU keeps this dynamically scoped variable globally bound to nil;
-        // loading a lexical file binds it to t only for that load.
-        interp.define_always_buffer_local_special("lexical-binding", Value::Nil);
+        // GNU 30.2 lread.c defines the global cell and then calls
+        // `make-variable-buffer-local': fresh buffers inherit nil and only
+        // acquire a local binding when a file cookie or explicit assignment
+        // sets one.  Treating it as an always-local buffer slot makes
+        // `local-variable-p' lie and suppresses bytecomp's missing-cookie
+        // warning.
+        interp.define_per_buffer_special("lexical-binding", Value::Nil);
         // GNU preloads files.el, where this defcustom is globally bound.
         // abbrev.el consumes it without requiring files.el itself.
         interp.define_special_variable("save-abbrevs", Value::T);
@@ -3974,6 +3786,10 @@ impl Interpreter {
             ("print-continuous-numbering", Value::Nil),
             ("print-gensym", Value::Nil),
             ("print-integers-as-characters", Value::Nil),
+            // GNU print.c owns this DEFVAR_BOOL.  The byte compiler binds it
+            // while source-position symbols are enabled so diagnostics and
+            // generated output contain ordinary symbol names.
+            ("print-symbols-bare", Value::Nil),
             (
                 "print-charset-text-property",
                 Value::Symbol("default".into()),
@@ -4095,11 +3911,16 @@ impl Interpreter {
         // dynamically shorten it, so both the native default and special
         // binding contract must exist before their lexical code is loaded.
         interp.define_special_variable("minibuffer-message-timeout", Value::Integer(2));
-        // minibuffer.el preloads these dispatch hooks.  Callers dynamically
-        // override them around a separately defined reader (ERT does this to
-        // make prompts deterministic), so lexical fallback bindings are not
-        // sufficient.
-        for name in ["read-buffer-function", "read-file-name-function"] {
+        // minibuf.c owns `read-expression-history' and
+        // `read-buffer-function'; fileio.c owns `read-file-name-function'.
+        // Each DEFVAR_LISP exists before dumped Lisp runs and declares the
+        // value cell special, so lexical callers can dynamically bind it
+        // around separately defined prompt code.
+        for name in [
+            "read-expression-history",
+            "read-buffer-function",
+            "read-file-name-function",
+        ] {
             interp.define_special_variable(name, Value::Nil);
         }
         interp.define_special_variable(
@@ -4285,13 +4106,7 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, Value::Nil);
         }
-        for name in [
-            "mode-line-in-non-selected-windows",
-            "auto-window-vscroll",
-            // xdisp.c dumps this on; simple.el's line-move consults it on
-            // every interactive vertical motion.
-            "auto-hscroll-mode",
-        ] {
+        for name in ["mode-line-in-non-selected-windows", "auto-window-vscroll"] {
             interp.define_special_variable(name, Value::T);
         }
         // keyboard.c's dumped translation table default; simple.el reads it
@@ -4299,11 +4114,6 @@ impl Interpreter {
         interp.define_special_variable("keyboard-translate-table", Value::Nil);
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
-            // xdisp.c dumped horizontal-scroll defaults consulted by
-            // simple.el's interactive vertical motion.
-            ("hscroll-margin", Value::Integer(5)),
-            ("hscroll-step", Value::Integer(0)),
-            ("scroll-minibuffer-conservatively", Value::T),
             ("eol-mnemonic-unix", Value::String(":".into())),
             ("eol-mnemonic-dos", Value::String("(DOS)".into())),
             ("eol-mnemonic-mac", Value::String("(Mac)".into())),
@@ -4327,11 +4137,6 @@ impl Interpreter {
                 Value::list([quoted_literal(&temp_dir)]),
             );
         }
-        interp.put_symbol_property(
-            "window-parameter",
-            "emaxx-gv-setter",
-            Value::Symbol("set-window-parameter".into()),
-        );
         let selected_window = interp.create_pseudovector(
             RecordKind::Window,
             "window",
@@ -4347,11 +4152,11 @@ impl Interpreter {
                 ),
             ),
         );
-        interp.set_global_binding("emaxx-root-window", selected_window.clone());
         let Value::Record(selected_window_id) = selected_window else {
             unreachable!("window records use Value::Record");
         };
         interp.selected_window_id = selected_window_id;
+        interp.root_window_id = selected_window_id;
         interp.old_selected_window_id = selected_window_id;
         if let Some(window) = interp.find_record_mut(selected_window_id) {
             window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
@@ -4372,8 +4177,10 @@ impl Interpreter {
                 ),
             ),
         );
-        interp.set_global_binding("emaxx-minibuffer-window", minibuffer_window);
-        interp.set_global_binding("emaxx-minibuffer-selected-window", Value::Nil);
+        let Value::Record(minibuffer_window_id) = minibuffer_window else {
+            unreachable!("window records use Value::Record");
+        };
+        interp.minibuffer_window_id = minibuffer_window_id;
         // Interpreter::new also constructs several dumped values after the
         // base struct exists (keymaps, tables, and window objects).  Reconcile
         // the completed image through the same registry before exposing it;
@@ -4426,6 +4233,18 @@ impl Interpreter {
         self.lambda_trim_overrides.push(trim_context);
     }
 
+    pub(crate) fn with_lambda_eval_context<T>(
+        &mut self,
+        capture: bool,
+        trim_context: bool,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.push_lambda_eval_context(capture, trim_context);
+        let result = operation(self);
+        self.pop_lambda_capture_override();
+        result
+    }
+
     pub(crate) fn pop_lambda_capture_override(&mut self) {
         self.lambda_capture_overrides.pop();
         self.lambda_trim_overrides.pop();
@@ -4468,6 +4287,123 @@ impl Interpreter {
         self.closure_eval_context(env) == Some(true)
     }
 
+    /// Materialize the six GNU-visible interpreted-closure slots from the
+    /// typed runtime representation.  Every Lisp-facing consumer (`aref',
+    /// equality, hashing, documentation, and interactive metadata) must use
+    /// this owner rather than reconstructing a partial slot layout.
+    pub(crate) fn interpreted_closure_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
+        let environment = if let Some(environment) = &lambda.public_environment {
+            environment.clone()
+        } else {
+            let mut environment = Vec::new();
+            for frame in lambda.env.borrow().iter().rev() {
+                let shared_updates = Self::frame_identity(frame)
+                    .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
+                for position in (0..=frame.len()).rev() {
+                    for (_, name) in frame
+                        .local_special_declarations()
+                        .iter()
+                        .rev()
+                        .filter(|(declared_at, _)| *declared_at == position)
+                    {
+                        environment.push(Value::Symbol(name.clone().into()));
+                    }
+                    if position > 0 {
+                        let (name, value) = &frame[position - 1];
+                        environment.push(Value::cons(
+                            Value::Symbol(name.clone().into()),
+                            shared_updates
+                                .and_then(|updates| updates.get(name))
+                                .cloned()
+                                .unwrap_or_else(|| value.clone()),
+                        ));
+                    }
+                }
+            }
+            // GNU represents an EMPTY lexical environment as `(t)'.  A
+            // nonempty lexical environment is just its bindings; appending
+            // `t' there changes the public ENV supplied to
+            // `make-interpreted-closure'.
+            if environment.is_empty() && self.closure_env_is_lexical(&lambda.env) {
+                environment.push(Value::T);
+            }
+            Value::list(environment)
+        };
+
+        let mut slots = vec![
+            Value::list(
+                lambda
+                    .params
+                    .iter()
+                    .map(|param| Value::Symbol(param.clone().into())),
+            ),
+            Value::list(lambda.body.as_ref().clone()),
+            environment,
+        ];
+        if lambda.interactive.is_some() || lambda.documentation.is_some() {
+            slots.push(Value::Nil);
+            slots.push(lambda.documentation.clone().unwrap_or(Value::Nil));
+        }
+        if let Some(interactive) = &lambda.interactive {
+            slots.push(interactive.clone());
+        }
+        slots
+    }
+
+    /// Build the GNU-visible lexical-environment alist for a source lambda
+    /// and attach its binding conses to the typed captured frames.  Each
+    /// closure gets its own alist spine, while sibling closures reuse the
+    /// same binding conses, matching GNU's observable `(nil t t ...)'
+    /// identity pattern for their two slot-two objects and first entries.
+    pub(crate) fn materialize_public_interpreted_environment(
+        &self,
+        closure_env: &SharedEnv,
+    ) -> Value {
+        let lexical = self.closure_env_is_lexical(closure_env);
+        let mut all_entries = Vec::new();
+        let mut frames = closure_env.borrow_mut();
+        for index in (0..frames.len()).rev() {
+            let bindings = frames[index].iter().cloned().collect::<Vec<_>>();
+            let entries = if let Some(environment) = frames[index].lisp_environment() {
+                lisp_environment_entries(environment)
+            } else {
+                let shared_updates = Self::frame_identity(&frames[index])
+                    .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
+                let mut entries = Vec::new();
+                for position in (0..=bindings.len()).rev() {
+                    for (_, name) in frames[index]
+                        .local_special_declarations()
+                        .iter()
+                        .rev()
+                        .filter(|(declared_at, _)| *declared_at == position)
+                    {
+                        entries.push(Value::Symbol(name.clone().into()));
+                    }
+                    if position > 0 {
+                        let (name, value) = &bindings[position - 1];
+                        entries.push(Value::cons(
+                            Value::Symbol(name.clone().into()),
+                            shared_updates
+                                .and_then(|updates| updates.get(name))
+                                .cloned()
+                                .unwrap_or_else(|| value.clone()),
+                        ));
+                    }
+                }
+                entries
+            };
+            if frames[index].lisp_environment().is_none() {
+                frames[index].set_lisp_environment(Value::list(entries.iter().cloned()));
+            }
+            all_entries.extend(entries);
+        }
+        if all_entries.is_empty() && lexical {
+            Value::list([Value::T])
+        } else {
+            Value::list(all_entries)
+        }
+    }
+
     pub(crate) fn register_captured_lexical_frames(&mut self, closure_env: &SharedEnv) {
         let identity = Rc::as_ptr(closure_env) as usize;
         if self
@@ -4487,7 +4423,7 @@ impl Interpreter {
         let frame_ids = closure_env
             .borrow()
             .iter()
-            .filter_map(|frame| Self::frame_identity(frame))
+            .filter_map(Self::frame_identity)
             .collect::<Vec<_>>();
         let owner = Rc::downgrade(closure_env);
         for frame_id in frame_ids {
@@ -4525,6 +4461,21 @@ impl Interpreter {
                 .entry(frame_id)
                 .or_default()
                 .insert(name.to_string(), value.clone());
+            if let Some(owners) = self.captured_lexical_frames.get(&frame_id) {
+                for owner in owners.iter().filter_map(Weak::upgrade) {
+                    for frame in owner.borrow().iter() {
+                        if Self::frame_identity(frame) == Some(frame_id)
+                            && let Some(environment) = frame.lisp_environment()
+                        {
+                            bindings::set_lisp_environment_binding(
+                                environment,
+                                name,
+                                value.clone(),
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -4541,27 +4492,6 @@ impl Interpreter {
                 }
             }
         }
-    }
-
-    /// Read a closure binding through the same shared-cell overlay used when
-    /// the closure is invoked.  Captured environments are snapshots, while
-    /// assignments made after capture live in `lexical_cell_updates' until
-    /// the next invocation refreshes that snapshot.  Observers such as
-    /// `equal' must not see a stale pre-assignment value in the meantime.
-    pub(crate) fn effective_captured_binding(
-        &self,
-        closure_env: &SharedEnv,
-        name: &str,
-    ) -> Option<Value> {
-        for frame in closure_env.borrow().iter().rev() {
-            let shared_update = Self::frame_identity(frame)
-                .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id))
-                .and_then(|updates| updates.get(name));
-            if let Some((_, value)) = frame.iter().rev().find(|(bound, _)| bound == name) {
-                return Some(shared_update.cloned().unwrap_or_else(|| value.clone()));
-            }
-        }
-        None
     }
 
     pub(crate) fn eval_with_closure_env<F>(
@@ -4785,7 +4715,10 @@ fn bounded_env_eq(left: &Env, right: &Env, budget: &mut usize) -> bool {
         return false;
     }
     left.iter().zip(right.iter()).all(|(a, b)| {
-        a.len() == b.len()
+        a.identity() == b.identity()
+            && a.has_function_bindings() == b.has_function_bindings()
+            && a.local_special_declarations() == b.local_special_declarations()
+            && a.len() == b.len()
             && a.iter()
                 .zip(b.iter())
                 .all(|((an, av), (bn, bv))| an == bn && bounded_value_eq(av, bv, budget))
@@ -4817,17 +4750,6 @@ fn bounded_value_eq(left: &Value, right: &Value, budget: &mut usize) -> bool {
 
 fn symbol_name(value: &Value) -> Option<String> {
     match value {
-        Value::Symbol(name) => Some(name.to_string()),
-        _ => None,
-    }
-}
-
-fn keyword_symbol_name(value: &Value) -> Option<String> {
-    symbol_name(value)
-}
-
-fn quoted_symbol_name(value: &Value) -> Option<String> {
-    match unquote(value) {
         Value::Symbol(name) => Some(name.to_string()),
         _ => None,
     }
@@ -4882,106 +4804,8 @@ fn unquote(value: &Value) -> Value {
     }
 }
 
-pub(crate) const OCLOSURE_TYPE_MARKER: &str = "--emaxx-oclosure-type";
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct AdviceState {
-    pub(crate) entries: Vec<AdviceEntry>,
-    pub(crate) base: Option<Value>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct AdviceEntry {
-    pub(crate) where_kind: String,
-    pub(crate) function: Value,
-    pub(crate) name: Option<Value>,
-}
-
 fn quoted_literal(value: &Value) -> Value {
     Value::list([Value::Symbol("quote".into()), value.clone()])
-}
-
-fn decoded_time_accessor_index(name: &str) -> Option<usize> {
-    match name {
-        "decoded-time-second" => Some(0),
-        "decoded-time-minute" => Some(1),
-        "decoded-time-hour" => Some(2),
-        "decoded-time-day" => Some(3),
-        "decoded-time-month" => Some(4),
-        "decoded-time-year" => Some(5),
-        "decoded-time-weekday" => Some(6),
-        "decoded-time-dst" => Some(7),
-        "decoded-time-zone" => Some(8),
-        _ => None,
-    }
-}
-
-fn decoded_time_accessor_value(index: usize, target: &Value) -> Result<Value, LispError> {
-    let mut cell = target.clone();
-    for _ in 0..index {
-        cell = cell.cdr()?;
-    }
-    cell.car()
-}
-
-fn set_decoded_time_accessor_value(
-    index: usize,
-    target: &mut Value,
-    value: Value,
-) -> Result<(), LispError> {
-    for _ in 0..index {
-        *target = target.cdr()?;
-    }
-    target.set_car(value)
-}
-
-fn forms_to_progn(forms: &[Value]) -> Value {
-    match forms {
-        [] => Value::Nil,
-        [single] => single.clone(),
-        _ => {
-            Value::list(std::iter::once(Value::Symbol("progn".into())).chain(forms.iter().cloned()))
-        }
-    }
-}
-
-fn normalize_if_let_spec(spec: &Value) -> Result<Vec<Value>, LispError> {
-    let items = spec.to_vec()?;
-    let old_single_binding_syntax =
-        !items.is_empty() && items.len() <= 2 && !matches!(items[0], Value::Nil | Value::Cons(_));
-    Ok(if old_single_binding_syntax {
-        vec![spec.clone()]
-    } else {
-        items
-    })
-}
-
-fn named_let_tail_call(name: &str, forms: &[Value]) -> Option<(Vec<Value>, Vec<Value>)> {
-    let (tail, prefix) = forms.split_last()?;
-    let items = tail.to_vec().ok()?;
-    match items.split_first() {
-        Some((Value::Symbol(symbol), args)) if symbol == name => {
-            Some((prefix.to_vec(), args.to_vec()))
-        }
-        _ => None,
-    }
-}
-
-fn named_let_contains_call(name: &str, value: &Value) -> bool {
-    if let Ok(items) = value.to_vec() {
-        if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == name) {
-            return true;
-        }
-        return items.iter().any(|item| named_let_contains_call(name, item));
-    }
-    false
-}
-
-fn named_let_branch_safe_for_loop(name: &str, forms: &[Value]) -> bool {
-    named_let_tail_call(name, forms).is_some()
-        || forms
-            .iter()
-            .all(|form| !named_let_contains_call(name, form))
 }
 
 pub(crate) fn error_condition_value(error: &LispError) -> Value {
@@ -5028,8 +4852,9 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             Value::list([Value::Symbol("no-catch".into()), tag.clone(), value.clone()])
         }
         LispError::Terminate(_) => {
-            Value::list([Value::Symbol("emaxx--process-termination".into())])
+            unreachable!("process termination cannot be converted to a Lisp condition")
         }
+        LispError::VmReturn(_) => unreachable!("bytecode return escaped the VM"),
         LispError::SignalValue(value) => value.clone(),
     }
 }
@@ -5050,50 +4875,12 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
                 point_after: pos < 0,
                 text: text.to_string(),
                 props: Vec::new(),
+                extended_chars: Vec::new(),
                 markers: Vec::new(),
             },
             _ => crate::buffer::UndoEntry::Opaque(value.clone()),
         },
         _ => crate::buffer::UndoEntry::Opaque(value.clone()),
-    }
-}
-
-fn combined_undo_display(entries: &[crate::buffer::UndoEntry]) -> Value {
-    Value::list([
-        Value::Symbol("apply".into()),
-        Value::Integer(2),
-        Value::Integer(1),
-        Value::Integer(1),
-        Value::Symbol("undo--wrap-and-run-primitive-undo".into()),
-        Value::Integer(1),
-        Value::Integer(1),
-        Value::list(entries.iter().map(undo_entry_display)),
-    ])
-}
-
-fn undo_entry_display(entry: &crate::buffer::UndoEntry) -> Value {
-    match entry {
-        // GNU records an insertion as (BEG . END).
-        crate::buffer::UndoEntry::Insert { pos, len } => Value::cons(
-            Value::Integer(*pos as i64),
-            Value::Integer((*pos + *len) as i64),
-        ),
-        crate::buffer::UndoEntry::Delete {
-            pos,
-            point_after,
-            text,
-            ..
-        } => Value::cons(
-            Value::String(text.clone().into()),
-            Value::Integer(if *point_after {
-                -(*pos as i64)
-            } else {
-                *pos as i64
-            }),
-        ),
-        crate::buffer::UndoEntry::Combined { display, .. }
-        | crate::buffer::UndoEntry::Opaque(display) => display.clone(),
-        crate::buffer::UndoEntry::Boundary => Value::Nil,
     }
 }
 
@@ -5118,12 +4905,24 @@ fn function_executable_body(body: &[Value]) -> &[Value] {
             Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
                 || marker == ":closure-isolated-current-env"
                 || marker == ":closure-transparent-env"
-                || marker == ":closure-oclosure"
         )
     {
         start += 1;
     }
     &body[start..]
+}
+
+fn lisp_environment_entries(environment: &Value) -> Vec<Value> {
+    let mut entries = Vec::new();
+    let mut cursor = environment.clone();
+    for _ in 0..65_536 {
+        let Value::Cons(list_cell) = cursor else {
+            break;
+        };
+        entries.push(list_cell.car.borrow().clone());
+        cursor = list_cell.cdr.borrow().clone();
+    }
+    entries
 }
 
 fn body_has_marker(body: &[Value], marker_name: &str) -> bool {
@@ -5156,52 +4955,6 @@ fn is_function_declare_form(form: &Value) -> bool {
     )
 }
 
-fn function_declare_gv_setter(form: &Value) -> Option<String> {
-    let items = form.to_vec().ok()?;
-    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "declare") {
-        return None;
-    }
-    items[1..].iter().find_map(|declaration| {
-        let declaration_items = declaration.to_vec().ok()?;
-        match declaration_items.as_slice() {
-            [Value::Symbol(kind), Value::Symbol(setter)] if kind == "gv-setter" => {
-                Some(setter.to_string())
-            }
-            _ => None,
-        }
-    })
-}
-
-fn function_declare_gv_setter_handler(form: &Value) -> Option<Value> {
-    let items = form.to_vec().ok()?;
-    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "declare") {
-        return None;
-    }
-    items[1..].iter().find_map(|declaration| {
-        let declaration_items = declaration.to_vec().ok()?;
-        match declaration_items.as_slice() {
-            [Value::Symbol(kind), handler @ Value::Cons(_)] if kind == "gv-setter" => {
-                Some(handler.clone())
-            }
-            _ => None,
-        }
-    })
-}
-
-pub(crate) fn function_declare_gv_expander(form: &Value) -> Option<Value> {
-    let items = form.to_vec().ok()?;
-    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "declare") {
-        return None;
-    }
-    items[1..].iter().find_map(|declaration| {
-        let declaration_items = declaration.to_vec().ok()?;
-        match declaration_items.as_slice() {
-            [Value::Symbol(kind), handler] if kind == "gv-expander" => Some(handler.clone()),
-            _ => None,
-        }
-    })
-}
-
 fn is_function_interactive_form(form: &Value) -> bool {
     form.to_vec().ok().is_some_and(
         |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "interactive"),
@@ -5212,97 +4965,6 @@ fn is_vector_literal(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(
         |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal"),
     )
-}
-
-fn is_bool_vector_literal(value: &Value) -> bool {
-    value.to_vec().ok().is_some_and(
-        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "bool-vector-literal"),
-    )
-}
-
-fn is_record_literal_slot_form(value: &Value) -> bool {
-    match value {
-        Value::Nil
-        | Value::T
-        | Value::Integer(_)
-        | Value::BigInteger(_)
-        | Value::Float(_)
-        | Value::String(_)
-        | Value::StringObject(_)
-        | Value::Buffer(_)
-        | Value::Marker(_)
-        | Value::Overlay(_)
-        | Value::CharTable(_)
-        | Value::Frame(_)
-        | Value::Terminal(_)
-        | Value::Record(_)
-        | Value::Finalizer(_)
-        | Value::BuiltinFunc(_)
-        | Value::Lambda(_)
-        | Value::Unbound => true,
-        Value::Cons(_) => {
-            let Ok(items) = value.to_vec() else {
-                return false;
-            };
-            matches!(items.as_slice(), [Value::Symbol(symbol), _] if symbol == "quote")
-                || is_vector_literal(value)
-                || is_bool_vector_literal(value)
-                || is_char_table_literal_reader_form(value)
-                || is_closure_literal_reader_form(value)
-                || is_record_literal_reader_form(value)
-        }
-        Value::Symbol(_) => false,
-    }
-}
-
-fn is_record_literal_reader_form(value: &Value) -> bool {
-    // Cheap car probe first: every list evaluation passes through here,
-    // and to_vec would allocate for each one.
-    let Some((car, _)) = (value).cons_cells() else {
-        return false;
-    };
-    if !matches!(&*car.borrow(), Value::Symbol(name) if name == RECORD_LITERAL_SYMBOL) {
-        return false;
-    }
-    let Ok(items) = value.to_vec() else {
-        return false;
-    };
-    items[1..].iter().all(is_record_literal_slot_form)
-}
-
-fn is_closure_literal_reader_form(value: &Value) -> bool {
-    let Some((car, _)) = value.cons_cells() else {
-        return false;
-    };
-    if !matches!(&*car.borrow(), Value::Symbol(name) if name == CLOSURE_LITERAL_SYMBOL) {
-        return false;
-    }
-    let Ok(items) = value.to_vec() else {
-        return false;
-    };
-    items[1..].iter().all(is_record_literal_slot_form)
-}
-
-fn is_char_table_literal_reader_form(value: &Value) -> bool {
-    let Some((car, _)) = (value).cons_cells() else {
-        return false;
-    };
-    matches!(&*car.borrow(), Value::Symbol(name) if name == CHAR_TABLE_LITERAL_SYMBOL)
-}
-
-fn is_quote_form(value: &Value) -> bool {
-    value.to_vec().ok().is_some_and(
-        |items| matches!(items.as_slice(), [Value::Symbol(symbol), _] if symbol == "quote"),
-    )
-}
-
-fn is_backquote_atomic_cons_tail(value: &Value) -> bool {
-    is_quote_form(value)
-        || is_vector_literal(value)
-        || is_bool_vector_literal(value)
-        || is_char_table_literal_reader_form(value)
-        || is_closure_literal_reader_form(value)
-        || is_record_literal_reader_form(value)
 }
 
 fn is_lambda_form(value: &Value) -> bool {
@@ -5334,118 +4996,6 @@ fn invalid_function(value: Value) -> LispError {
         Value::Symbol("invalid-function".into()),
         value,
     ]))
-}
-
-fn is_backquote_head(symbol: &str) -> bool {
-    symbol == "backquote" || symbol == "`"
-}
-
-fn comma_head_kind(symbol: &str) -> Option<&'static str> {
-    match symbol {
-        "comma" | "," => Some("comma"),
-        "comma-at" | ",@" => Some("comma-at"),
-        _ => None,
-    }
-}
-
-fn backquote_unquote_form(value: &Value) -> Option<(&'static str, Value)> {
-    let items = value.to_vec().ok()?;
-    match items.as_slice() {
-        [Value::Symbol(symbol), value] => comma_head_kind(symbol).map(|kind| (kind, value.clone())),
-        _ => None,
-    }
-}
-
-fn nested_backquote_body(value: &Value) -> Option<Value> {
-    let items = value.to_vec().ok()?;
-    match items.as_slice() {
-        // GNU's reader represents backquote syntax with the raw `\`` symbol.
-        // The spelled-out `(backquote ...)' inside another template is an
-        // ordinary list, so commas within it still belong to the surrounding
-        // backquote level (use-package's :custom-face handler relies on this).
-        [Value::Symbol(symbol), body] if symbol == "`" => Some(body.clone()),
-        _ => None,
-    }
-}
-
-fn defface_spec_literal(spec_form: &Value) -> Option<Value> {
-    match spec_form {
-        Value::Cons(_) => {
-            let items = spec_form.to_vec().ok()?;
-            match items.as_slice() {
-                [Value::Symbol(symbol), value] if symbol == "quote" => Some(value.clone()),
-                _ if items
-                    .iter()
-                    .all(|item| matches!(item, Value::Cons(_) | Value::Nil)) =>
-                {
-                    Some(spec_form.clone())
-                }
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-fn defface_runtime_attributes(spec: &Value) -> Option<Vec<(String, Value)>> {
-    let clauses = spec.to_vec().ok()?;
-    clauses
-        .iter()
-        .find_map(|clause| defface_clause_attributes(clause, true))
-}
-
-fn defface_clause_attributes(
-    clause: &Value,
-    require_default_clause: bool,
-) -> Option<Vec<(String, Value)>> {
-    let parts = clause.to_vec().ok()?;
-    if parts.len() < 2 {
-        return None;
-    }
-    if require_default_clause && !defface_matches_default_display(&parts[0]) {
-        return None;
-    }
-
-    let attribute_source = if parts.len() == 2
-        && matches!(&parts[1], Value::Cons(_))
-        && parts[1].to_vec().ok().is_some_and(|items| {
-            items
-                .first()
-                .and_then(|item| item.as_symbol().ok())
-                .is_some_and(|symbol| symbol.starts_with(':'))
-        }) {
-        parts[1].to_vec().ok()?
-    } else {
-        parts[1..].to_vec()
-    };
-
-    let mut attributes = Vec::new();
-    let mut index = 0;
-    while index + 1 < attribute_source.len() {
-        let attribute = attribute_source[index].as_symbol().ok()?;
-        if attribute.starts_with(':') {
-            attributes.push((attribute.to_string(), attribute_source[index + 1].clone()));
-        }
-        index += 2;
-    }
-    if attributes.is_empty() {
-        None
-    } else {
-        Some(attributes)
-    }
-}
-
-fn defface_matches_default_display(display: &Value) -> bool {
-    matches!(display, Value::T)
-        || matches!(display, Value::Symbol(symbol) if symbol == "t" || symbol == "default")
-}
-
-fn cons_list_with_tail(items: Vec<Value>, tail: Value) -> Value {
-    let mut out = tail;
-    for item in items.into_iter().rev() {
-        out = Value::cons(item, out);
-    }
-    out
 }
 
 fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> {
@@ -5488,1723 +5038,6 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
     }
 
     Ok(())
-}
-
-struct LoweredClDefun {
-    params: Vec<Value>,
-    destructuring_bindings: Vec<(Value, String)>,
-    raw_rest_param: Option<String>,
-    remaining_args_name: Option<String>,
-    optional_bindings: Vec<ClOptionalBinding>,
-    rest_binding: Option<Value>,
-    reject_remaining_args: bool,
-    required_count: usize,
-    keyword_bindings: Vec<ClKeyBinding>,
-    // (PATTERN INIT) pairs from `&aux', bound sequentially after the
-    // arguments; PATTERN may destructure.
-    aux_bindings: Vec<(Value, Value)>,
-}
-
-struct ClOptionalBinding {
-    pattern: Value,
-    default_value: Value,
-    supplied_name: Option<String>,
-}
-
-struct ClKeyBinding {
-    variable_name: String,
-    keyword_name: String,
-    default_value: Value,
-    supplied_name: Option<String>,
-}
-
-fn cl_keyword_name_for_variable(variable_name: &str) -> String {
-    format!(":{}", variable_name.trim_start_matches('_'))
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ClDefunSection {
-    Required,
-    Optional,
-    RestName,
-    AfterRest,
-    Key,
-    Aux,
-}
-
-fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun, LispError> {
-    let items = match spec {
-        Value::Nil => Vec::new(),
-        Value::Cons(_) => spec.to_vec()?,
-        _ => return Err(invalid_function(spec.clone())),
-    };
-
-    let mut lowered = Vec::with_capacity(items.len());
-    let mut destructuring_bindings = Vec::new();
-    let mut optional_bindings = Vec::new();
-    let mut rest_binding = None;
-    let mut keyword_bindings = Vec::new();
-    let mut aux_bindings = Vec::new();
-    let mut section = ClDefunSection::Required;
-    let mut saw_key = false;
-    let mut required_count = 0;
-
-    for (index, item) in items.into_iter().enumerate() {
-        if let Value::Symbol(symbol) = &item {
-            match symbol.as_str() {
-                "&optional" => {
-                    if section != ClDefunSection::Required {
-                        return Err(invalid_function(spec.clone()));
-                    }
-                    section = ClDefunSection::Optional;
-                    continue;
-                }
-                "&rest" | "&body" => {
-                    if !matches!(section, ClDefunSection::Required | ClDefunSection::Optional) {
-                        return Err(invalid_function(spec.clone()));
-                    }
-                    section = ClDefunSection::RestName;
-                    continue;
-                }
-                "&key" => {
-                    if !matches!(
-                        section,
-                        ClDefunSection::Required
-                            | ClDefunSection::Optional
-                            | ClDefunSection::AfterRest
-                    ) {
-                        return Err(invalid_function(spec.clone()));
-                    }
-                    section = ClDefunSection::Key;
-                    saw_key = true;
-                    continue;
-                }
-                "&allow-other-keys" if section == ClDefunSection::Key => continue,
-                "&aux" => {
-                    if section == ClDefunSection::RestName {
-                        return Err(invalid_function(spec.clone()));
-                    }
-                    section = ClDefunSection::Aux;
-                    continue;
-                }
-                "&whole" | "&environment" => {
-                    return Err(LispError::Signal(format!(
-                        "Unsupported cl-defun lambda list keyword: {symbol}"
-                    )));
-                }
-                _ => {}
-            }
-        }
-
-        match section {
-            ClDefunSection::Required => {
-                required_count += 1;
-                if let Value::Symbol(symbol) = item {
-                    lowered.push(Value::Symbol(symbol));
-                } else if matches!(item, Value::Cons(_)) {
-                    let temp_name = format!("emaxx--cl-defun-{name}-arg-{index}");
-                    lowered.push(Value::Symbol(temp_name.clone().into()));
-                    destructuring_bindings.push((item, temp_name));
-                } else {
-                    return Err(invalid_function(spec.clone()));
-                }
-            }
-            ClDefunSection::Optional => {
-                optional_bindings.push(parse_cl_defun_optional_binding(item)?);
-            }
-            ClDefunSection::RestName => {
-                if !matches!(item, Value::Symbol(_) | Value::Cons(_)) {
-                    return Err(invalid_function(spec.clone()));
-                }
-                rest_binding = Some(item);
-                section = ClDefunSection::AfterRest;
-            }
-            ClDefunSection::AfterRest => return Err(invalid_function(spec.clone())),
-            ClDefunSection::Key => match item {
-                Value::Symbol(symbol) => keyword_bindings.push(ClKeyBinding {
-                    variable_name: symbol.to_string(),
-                    keyword_name: cl_keyword_name_for_variable(&symbol),
-                    default_value: Value::Nil,
-                    supplied_name: None,
-                }),
-                Value::Cons(_) => {
-                    keyword_bindings.push(parse_cl_defun_key_binding(item)?);
-                }
-                _ => return Err(invalid_function(spec.clone())),
-            },
-            ClDefunSection::Aux => {
-                if let Value::Symbol(symbol) = item {
-                    aux_bindings.push((Value::Symbol(symbol), Value::Nil));
-                    continue;
-                }
-                let parts = item.to_vec()?;
-                let pattern = parts
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| invalid_function(spec.clone()))?;
-                let init = parts.get(1).cloned().unwrap_or(Value::Nil);
-                aux_bindings.push((pattern, init));
-            }
-        }
-    }
-
-    if section == ClDefunSection::RestName {
-        return Err(invalid_function(spec.clone()));
-    }
-
-    let uses_rest_args = !optional_bindings.is_empty() || rest_binding.is_some() || saw_key;
-    let reject_remaining_args = !optional_bindings.is_empty() && rest_binding.is_none() && !saw_key;
-    let (raw_rest_param, remaining_args_name) = if uses_rest_args {
-        let raw_name = format!("emaxx--cl-defun-{name}-raw-rest");
-        let remaining_name = format!("emaxx--cl-defun-{name}-remaining");
-        lowered.push(Value::Symbol("&rest".into()));
-        lowered.push(Value::Symbol(raw_name.clone().into()));
-        (Some(raw_name), Some(remaining_name))
-    } else {
-        (None, None)
-    };
-
-    Ok(LoweredClDefun {
-        params: lowered,
-        destructuring_bindings,
-        raw_rest_param,
-        remaining_args_name,
-        optional_bindings,
-        rest_binding,
-        reject_remaining_args,
-        required_count,
-        keyword_bindings,
-        aux_bindings,
-    })
-}
-
-fn parse_cl_defun_optional_binding(spec: Value) -> Result<ClOptionalBinding, LispError> {
-    let (pattern, default_value, supplied_name) = match spec {
-        Value::Symbol(_) => (spec, Value::Nil, None),
-        Value::Cons(_) => {
-            let items = spec.to_vec()?;
-            if items.is_empty() || items.len() > 3 {
-                return Err(LispError::Signal(
-                    "Unsupported cl-defun &optional binding".into(),
-                ));
-            }
-            let pattern = items[0].clone();
-            if !matches!(pattern, Value::Symbol(_) | Value::Cons(_)) {
-                return Err(LispError::Signal(
-                    "Unsupported cl-defun &optional binding".into(),
-                ));
-            }
-            let default_value = items.get(1).cloned().unwrap_or(Value::Nil);
-            let supplied_name = match items.get(2) {
-                Some(Value::Symbol(name)) => Some(name.clone()),
-                Some(_) => {
-                    return Err(LispError::Signal(
-                        "Unsupported cl-defun &optional binding".into(),
-                    ));
-                }
-                None => None,
-            };
-            (pattern, default_value, supplied_name)
-        }
-        _ => {
-            return Err(LispError::Signal(
-                "Unsupported cl-defun &optional binding".into(),
-            ));
-        }
-    };
-
-    Ok(ClOptionalBinding {
-        pattern,
-        default_value,
-        supplied_name: supplied_name.map(|name| name.to_string()),
-    })
-}
-
-fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
-    if let Value::Symbol(variable_name) = spec {
-        return Ok(ClKeyBinding {
-            keyword_name: cl_keyword_name_for_variable(&variable_name),
-            variable_name: variable_name.to_string(),
-            default_value: Value::Nil,
-            supplied_name: None,
-        });
-    }
-    let items = spec.to_vec()?;
-    if items.is_empty() {
-        return Err(LispError::Signal(
-            "Unsupported cl-defun &key binding".into(),
-        ));
-    }
-
-    let (keyword_name, variable_name, default_value, supplied_name) = match items.as_slice() {
-        [Value::Symbol(variable_name)] => (
-            cl_keyword_name_for_variable(variable_name),
-            variable_name.to_string(),
-            Value::Nil,
-            None,
-        ),
-        [Value::Symbol(variable_name), default_value] => (
-            cl_keyword_name_for_variable(variable_name),
-            variable_name.to_string(),
-            default_value.clone(),
-            None,
-        ),
-        [
-            Value::Symbol(variable_name),
-            default_value,
-            Value::Symbol(supplied_name),
-        ] => (
-            cl_keyword_name_for_variable(variable_name),
-            variable_name.to_string(),
-            default_value.clone(),
-            Some(supplied_name.to_string()),
-        ),
-        [pattern @ Value::Cons(_)] => {
-            let pair = pattern.to_vec()?;
-            let [Value::Symbol(keyword_name), Value::Symbol(variable_name)] = pair.as_slice()
-            else {
-                return Err(LispError::Signal(
-                    "Unsupported cl-defun &key binding".into(),
-                ));
-            };
-            (
-                keyword_name.to_string(),
-                variable_name.to_string(),
-                Value::Nil,
-                None,
-            )
-        }
-        [pattern @ Value::Cons(_), default_value] => {
-            let pair = pattern.to_vec()?;
-            let [Value::Symbol(keyword_name), Value::Symbol(variable_name)] = pair.as_slice()
-            else {
-                return Err(LispError::Signal(
-                    "Unsupported cl-defun &key binding".into(),
-                ));
-            };
-            (
-                keyword_name.to_string(),
-                variable_name.to_string(),
-                default_value.clone(),
-                None,
-            )
-        }
-        [
-            pattern @ Value::Cons(_),
-            default_value,
-            Value::Symbol(supplied_name),
-        ] => {
-            let pair = pattern.to_vec()?;
-            let [Value::Symbol(keyword_name), Value::Symbol(variable_name)] = pair.as_slice()
-            else {
-                return Err(LispError::Signal(
-                    "Unsupported cl-defun &key binding".into(),
-                ));
-            };
-            (
-                keyword_name.to_string(),
-                variable_name.to_string(),
-                default_value.clone(),
-                Some(supplied_name.to_string()),
-            )
-        }
-        _ => {
-            return Err(LispError::Signal(
-                "Unsupported cl-defun &key binding".into(),
-            ));
-        }
-    };
-
-    Ok(ClKeyBinding {
-        variable_name,
-        keyword_name,
-        default_value,
-        supplied_name,
-    })
-}
-
-fn is_lambda_list_keyword(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "&optional" | "&rest" | "&body" | "&key" | "&allow-other-keys" | "&aux"
-    )
-}
-
-fn cl_defmethod_destructuring_parameter_name(index: usize) -> String {
-    format!("emaxx--cl-defmethod-arg-{index}")
-}
-
-struct LoweredClDefmethodLambdaList {
-    value: Value,
-    destructuring_bindings: Vec<(Value, String)>,
-}
-
-fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<LoweredClDefmethodLambdaList, LispError> {
-    let items = spec.to_vec()?;
-    let mut lowered = Vec::with_capacity(items.len());
-    let mut destructuring_bindings = Vec::new();
-    let mut skipping_context = false;
-    let mut required = true;
-    let mut expecting_rest_parameter = false;
-    let mut rest_parameter = None;
-    let mut key_pattern: Option<Vec<Value>> = None;
-
-    for (index, item) in items.into_iter().enumerate() {
-        if let Some(pattern) = &mut key_pattern {
-            pattern.push(item);
-            continue;
-        }
-        match item {
-            Value::Symbol(symbol) if symbol == "&context" => {
-                skipping_context = true;
-            }
-            Value::Symbol(symbol) => {
-                if skipping_context {
-                    if is_lambda_list_keyword(&symbol) {
-                        skipping_context = false;
-                    } else {
-                        continue;
-                    }
-                }
-                if symbol == "&key" {
-                    required = false;
-                    key_pattern = Some(vec![Value::Symbol(symbol)]);
-                    continue;
-                }
-                if expecting_rest_parameter {
-                    rest_parameter = Some(symbol.clone());
-                    expecting_rest_parameter = false;
-                } else if matches!(symbol.as_str(), "&rest" | "&body") {
-                    expecting_rest_parameter = true;
-                }
-                if is_lambda_list_keyword(&symbol) {
-                    required = false;
-                }
-                lowered.push(Value::Symbol(symbol));
-            }
-            Value::Cons(_) => {
-                if skipping_context {
-                    continue;
-                }
-                let parts = item.to_vec()?;
-                if required
-                    && let Some(pattern @ Value::Cons(_)) = parts.first()
-                    && cl_defmethod_specializer_kind(parts.get(1)).is_some()
-                {
-                    let parameter = cl_defmethod_destructuring_parameter_name(index);
-                    lowered.push(Value::Symbol(parameter.clone().into()));
-                    destructuring_bindings.push((pattern.clone(), parameter));
-                } else if let Some(Value::Symbol(variable_name)) = parts.first() {
-                    lowered.push(Value::Symbol(variable_name.clone()));
-                } else if required {
-                    let parameter = cl_defmethod_destructuring_parameter_name(index);
-                    lowered.push(Value::Symbol(parameter.clone().into()));
-                    destructuring_bindings.push((item, parameter));
-                } else {
-                    lowered.push(item);
-                }
-            }
-            other => {
-                if !skipping_context {
-                    lowered.push(other);
-                }
-            }
-        }
-    }
-
-    if let Some(pattern) = key_pattern {
-        let parameter = if let Some(parameter) = rest_parameter {
-            parameter.to_string()
-        } else {
-            let parameter = cl_defmethod_destructuring_parameter_name(lowered.len());
-            lowered.push(Value::Symbol("&rest".into()));
-            lowered.push(Value::Symbol(parameter.clone().into()));
-            parameter
-        };
-        destructuring_bindings.push((Value::list(pattern), parameter));
-    }
-
-    Ok(LoweredClDefmethodLambdaList {
-        value: Value::list(lowered),
-        destructuring_bindings,
-    })
-}
-
-fn lambda_list_fixed_params(params: &[String]) -> Vec<String> {
-    let mut fixed = Vec::new();
-    for param in params {
-        if param == "&rest" || param == "&body" {
-            break;
-        }
-        if !is_lambda_list_keyword(param) {
-            fixed.push(param.clone());
-        }
-    }
-    fixed
-}
-
-fn lambda_list_rest_param_from_params(params: &[String]) -> Option<String> {
-    params.windows(2).find_map(|pair| match pair {
-        [keyword, name] if keyword == "&rest" || keyword == "&body" => Some(name.clone()),
-        _ => None,
-    })
-}
-
-fn lambda_list_arity_range(params: &[String]) -> (usize, Option<usize>) {
-    let mut required = 0;
-    let mut maximum = 0;
-    let mut optional = false;
-    for param in params {
-        match param.as_str() {
-            "&optional" => optional = true,
-            "&rest" | "&body" => return (required, None),
-            keyword if is_lambda_list_keyword(keyword) => {}
-            _ => {
-                maximum += 1;
-                if !optional {
-                    required += 1;
-                }
-            }
-        }
-    }
-    (required, Some(maximum))
-}
-
-fn cl_defmethod_dispatch_wrapper_params(
-    spec: &Value,
-    specializer_variable: &str,
-    rest_param: &str,
-) -> Result<Vec<String>, LispError> {
-    let mut params = Vec::new();
-    let mut previous_was_rest_keyword = false;
-    let items = spec.to_vec()?;
-    if items.is_empty() {
-        return Ok(params);
-    }
-    for item in items {
-        let name = item.as_symbol()?.to_string();
-        params.push(name.clone());
-        if name == specializer_variable {
-            if previous_was_rest_keyword {
-                return Ok(params);
-            }
-            params.push("&rest".into());
-            params.push(rest_param.into());
-            return Ok(params);
-        }
-        previous_was_rest_keyword = name == "&rest" || name == "&body";
-    }
-    Err(LispError::Signal(
-        "cl-defmethod dispatch lost specializer variable".into(),
-    ))
-}
-
-fn cl_defmethod_dispatch_stop_variable(
-    dispatch_spec: &Value,
-    specialized_variable_names: &[String],
-    default_variable: &str,
-) -> Result<String, LispError> {
-    let specialized_variables = specialized_variable_names
-        .iter()
-        .map(|variable| variable.trim_start_matches('_').to_string())
-        .collect::<HashSet<_>>();
-    let mut stop_variable = default_variable.to_string();
-    for item in dispatch_spec.to_vec()? {
-        if let Ok(name) = item.as_symbol() {
-            let argument_key = name.trim_start_matches('_');
-            if specialized_variables.contains(argument_key) {
-                stop_variable = name.to_string();
-            }
-        }
-    }
-    Ok(stop_variable)
-}
-
-#[derive(Clone)]
-enum ClDefmethodSpecializerKind {
-    Class(String),
-    Subclass(String),
-    Eql(Value),
-    Head(Value),
-}
-
-#[derive(Clone)]
-struct ClDefmethodSpecializer {
-    variable: String,
-    kind: ClDefmethodSpecializerKind,
-    is_context: bool,
-    /// For `&context (EXPR SPEC)` entries whose first element is an
-    /// expression (context rewriters expand to these): the form the
-    /// dispatch evaluates instead of reading `variable`.
-    context_expr: Option<Value>,
-}
-
-impl ClDefmethodSpecializer {
-    fn class_name(&self) -> Option<&str> {
-        match &self.kind {
-            ClDefmethodSpecializerKind::Class(class_name) => Some(class_name),
-            ClDefmethodSpecializerKind::Subclass(_)
-            | ClDefmethodSpecializerKind::Eql(_)
-            | ClDefmethodSpecializerKind::Head(_) => None,
-        }
-    }
-
-    fn metadata_value(&self) -> Value {
-        match &self.kind {
-            ClDefmethodSpecializerKind::Class(class_name) => Value::list([
-                Value::Symbol("class".into()),
-                Value::Symbol(class_name.clone().into()),
-            ]),
-            ClDefmethodSpecializerKind::Subclass(class_name) => Value::list([
-                Value::Symbol("subclass".into()),
-                Value::Symbol(class_name.clone().into()),
-            ]),
-            ClDefmethodSpecializerKind::Eql(value) => {
-                Value::list([Value::Symbol("eql".into()), value.clone()])
-            }
-            ClDefmethodSpecializerKind::Head(value) => {
-                Value::list([Value::Symbol("head".into()), value.clone()])
-            }
-        }
-    }
-}
-
-/// Parse the SPEC half of a specializer entry ((ARG SPEC)) into a kind.
-fn cl_defmethod_specializer_kind(spec: Option<&Value>) -> Option<ClDefmethodSpecializerKind> {
-    match spec {
-        Some(Value::Symbol(class_name)) => {
-            Some(ClDefmethodSpecializerKind::Class(class_name.to_string()))
-        }
-        Some(Value::T) => Some(ClDefmethodSpecializerKind::Class("t".into())),
-        Some(compound @ Value::Cons(_)) => {
-            let specializer = compound.to_vec().ok()?;
-            match specializer.first() {
-                Some(Value::Symbol(name)) if name == "eql" => {
-                    Some(ClDefmethodSpecializerKind::Eql(specializer.get(1)?.clone()))
-                }
-                Some(Value::Symbol(name)) if name == "subclass" => match specializer.get(1) {
-                    Some(Value::Symbol(class_name)) => {
-                        Some(ClDefmethodSpecializerKind::Subclass(class_name.to_string()))
-                    }
-                    _ => None,
-                },
-                Some(Value::Symbol(name)) if name == "head" => Some(
-                    ClDefmethodSpecializerKind::Head(specializer.get(1)?.clone()),
-                ),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>, LispError> {
-    let mut next_is_context = false;
-    let mut specializers = Vec::new();
-    for (index, item) in spec.to_vec()?.into_iter().enumerate() {
-        if matches!(&item, Value::Symbol(symbol) if symbol == "&context") {
-            next_is_context = true;
-            continue;
-        }
-        let Value::Cons(_) = item else {
-            continue;
-        };
-        let parts = item.to_vec()?;
-        // &context (EXPR SPEC) where EXPR is an expression, not a variable
-        // (context rewriters expand to this shape): dispatch evaluates EXPR.
-        if next_is_context && let Some(expr @ Value::Cons(_)) = parts.first() {
-            if let Some(kind) = cl_defmethod_specializer_kind(parts.get(1)) {
-                // Two methods that differ only in their context EXPR are
-                // distinct methods, so the variable naming (which feeds the
-                // method identity key) must incorporate the expression.
-                let fingerprint = expr
-                    .to_string()
-                    .chars()
-                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                    .collect::<String>();
-                specializers.push(ClDefmethodSpecializer {
-                    variable: format!("--cl-context-{}-{fingerprint}", specializers.len()),
-                    kind,
-                    is_context: true,
-                    context_expr: Some(expr.clone()),
-                });
-            }
-            next_is_context = false;
-            continue;
-        }
-        if let Some(Value::Cons(_)) = parts.first()
-            && let Some(kind) = cl_defmethod_specializer_kind(parts.get(1))
-        {
-            specializers.push(ClDefmethodSpecializer {
-                variable: cl_defmethod_destructuring_parameter_name(index),
-                kind,
-                is_context: false,
-                context_expr: None,
-            });
-            next_is_context = false;
-            continue;
-        }
-        let Some(Value::Symbol(variable)) = parts.first() else {
-            continue;
-        };
-        if next_is_context && let Some(Value::Cons(_)) = parts.get(1) {
-            let specializer = parts[1].to_vec()?;
-            if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "eql")
-                && let Some(value) = specializer.get(1)
-            {
-                specializers.push(ClDefmethodSpecializer {
-                    variable: variable.to_string(),
-                    kind: ClDefmethodSpecializerKind::Eql(value.clone()),
-                    is_context: true,
-                    context_expr: None,
-                });
-            }
-            next_is_context = false;
-            continue;
-        }
-        if let Some(kind) = cl_defmethod_specializer_kind(parts.get(1)) {
-            specializers.push(ClDefmethodSpecializer {
-                variable: variable.to_string(),
-                kind,
-                is_context: next_is_context,
-                context_expr: None,
-            });
-        }
-        next_is_context = false;
-    }
-    Ok(specializers)
-}
-
-fn cl_defmethod_qualifier_key(qualifiers: &[Value]) -> String {
-    let parts = qualifiers
-        .iter()
-        .filter_map(|value| value.as_symbol().ok())
-        .map(|name| name.trim_start_matches(':'))
-        .map(|name| name.replace([':', '\'', ' ', '(', ')', '-'], "_"))
-        .collect::<Vec<_>>();
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!("{}_", parts.join("_"))
-    }
-}
-
-fn cl_defmethod_load_history_specializers(spec: &Value) -> Vec<Value> {
-    let Ok(items) = spec.to_vec() else {
-        return Vec::new();
-    };
-    let mut specializers = Vec::new();
-    let mut is_context = false;
-    for item in items {
-        if matches!(&item, Value::Symbol(symbol) if symbol == "&context") {
-            is_context = true;
-            continue;
-        }
-        if matches!(&item, Value::Symbol(symbol) if symbol.starts_with('&')) {
-            break;
-        }
-        let Ok(parts) = item.to_vec() else {
-            // Every unspecialized mandatory argument is represented by `t'
-            // in GNU cl-generic's load-history key.  Omitting these entries
-            // makes default methods indistinguishable from a generic with no
-            // methods and breaks both unloading and Elisp xref discovery.
-            specializers.push(Value::T);
-            continue;
-        };
-        if is_context {
-            specializers.push(item);
-            is_context = false;
-        } else if let Some(specializer) = parts.get(1) {
-            specializers.push(specializer.clone());
-        } else {
-            specializers.push(Value::T);
-        }
-    }
-    specializers
-}
-
-fn cl_generic_no_applicable_function(method_name: &str, params: &[String]) -> Value {
-    let fixed_params = lambda_list_fixed_params(params);
-    let rest_param = lambda_list_rest_param_from_params(params);
-    let mut args = vec![Value::Symbol("list".into())];
-    args.extend(
-        fixed_params
-            .iter()
-            .cloned()
-            .map(|value| Value::Symbol(value.into())),
-    );
-    let args = if let Some(rest_param) = rest_param {
-        Value::list([
-            Value::Symbol("append".into()),
-            Value::list(args),
-            Value::Symbol(rest_param.into()),
-        ])
-    } else {
-        Value::list(args)
-    };
-    Value::lambda(
-        params.to_vec().into(),
-        vec![Value::list([
-            Value::Symbol("emaxx--cl-generic-apply-next".into()),
-            Value::Nil,
-            Value::list([
-                Value::Symbol("quote".into()),
-                Value::Symbol(method_name.to_string().into()),
-            ]),
-            Value::list([
-                Value::Symbol("quote".into()),
-                Value::Symbol("no-applicable".into()),
-            ]),
-            args,
-        ])]
-        .into(),
-        shared_env(Vec::new()),
-    )
-}
-
-fn cl_defmethod_around_previous_binding(
-    function: &Value,
-    method_name: &str,
-    is_applicable: &mut impl FnMut(&str) -> bool,
-) -> Option<(SharedEnv, String, Value)> {
-    let prefix = format!(
-        "__emaxx_previous_method_{}_around_",
-        method_name.replace('-', "_")
-    );
-    let Value::Lambda(lambda) = function else {
-        return None;
-    };
-    let closure_env = &lambda.env;
-    for frame in closure_env.borrow().iter() {
-        for (name, value) in frame {
-            if name.starts_with(&prefix) {
-                let around_class_key = &name[prefix.len()..];
-                let around_class = around_class_key
-                    .split_once("class_")
-                    .map(|(_, class_name)| class_name)
-                    .unwrap_or(around_class_key);
-                // The specializer-less :around wrapper binds
-                // `..._around_class_t_method' (note the suffix).
-                let around_class = around_class.strip_suffix("_method").unwrap_or(around_class);
-                if is_applicable(around_class) {
-                    let method_previous_name = format!("{name}_method");
-                    let current_method_name = format!("{method_previous_name}_current");
-                    for frame in closure_env.borrow().iter() {
-                        for (candidate_name, candidate_value) in frame {
-                            if candidate_name != &current_method_name {
-                                continue;
-                            }
-                            let Value::Lambda(current_method) = candidate_value else {
-                                continue;
-                            };
-                            let current_method_env = &current_method.env;
-                            for current_method_frame in current_method_env.borrow().iter() {
-                                for (current_method_name, current_method_value) in
-                                    current_method_frame
-                                {
-                                    if current_method_name == &method_previous_name {
-                                        return Some((
-                                            current_method_env.clone(),
-                                            current_method_name.clone(),
-                                            current_method_value.clone(),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return Some((closure_env.clone(), name.clone(), value.clone()));
-                }
-                if let Some(nested) =
-                    cl_defmethod_around_previous_binding(value, method_name, is_applicable)
-                {
-                    return Some(nested);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn cl_defmethod_advice_original_binding(function: &Value) -> Option<(SharedEnv, String, Value)> {
-    // GNU nadvice advice OBJECTS (oclosures): the dispatch root is the
-    // chain's innermost `cdr' slot; method registration grafts the rebuilt
-    // dispatch back by mutating that slot in place (advice--subst-main).
-    if oclosure_lambda_type(function).is_some_and(|type_name| type_name == "advice") {
-        let mut current = function.clone();
-        loop {
-            let Value::Lambda(lambda) = &current else {
-                return None;
-            };
-            let closure_env = lambda.env.clone();
-            let cdr = {
-                let contents = closure_env.borrow();
-                contents.iter().rev().find_map(|frame| {
-                    frame
-                        .iter()
-                        .any(|(key, _)| key == OCLOSURE_TYPE_MARKER)
-                        .then(|| {
-                            frame
-                                .iter()
-                                .find(|(key, _)| key == "cdr")
-                                .map(|(_, value)| value.clone())
-                                .unwrap_or(Value::Nil)
-                        })
-                })?
-            };
-            if oclosure_lambda_type(&cdr).is_some_and(|type_name| type_name == "advice") {
-                current = cdr;
-                continue;
-            }
-            return Some((closure_env, "cdr".to_string(), cdr));
-        }
-    }
-    let Value::Lambda(lambda) = function else {
-        return None;
-    };
-    let params = &lambda.params;
-    let closure_env = &lambda.env;
-    // Only a function that IS an advice wrapper counts: its rest parameter
-    // carries the wrapper's unique suffix, which names the captured original.
-    // Dispatch wrappers can capture unrelated advice activations in their
-    // closure env, so scanning every frame for any original binding would
-    // misroute method registration through the advice-splice path.
-    let rest_param = params.last()?;
-    let original_name = rest_param
-        .strip_prefix("__emaxx-advice-around-args-")
-        .map(|unique| format!("__emaxx-advice-around-original-{unique}"))
-        .or_else(|| {
-            rest_param
-                .strip_prefix("__emaxx-advice-after-args-")
-                .map(|unique| format!("__emaxx-advice-after-original-{unique}"))
-        })?;
-    for frame in closure_env.borrow().iter() {
-        for (name, value) in frame {
-            if name == &original_name {
-                return Some((closure_env.clone(), name.clone(), value.clone()));
-            }
-        }
-    }
-    None
-}
-
-fn oclosure_lambda_type(value: &Value) -> Option<String> {
-    let Value::Lambda(lambda) = value else {
-        return None;
-    };
-    let body = &lambda.body;
-    let closure_env = &lambda.env;
-    // Real oclosures carry the oclosure marker as their first executable
-    // body form; a dispatch wrapper that merely CAPTURED an oclosure's
-    // frames must not be mistaken for one.
-    let first = body
-        .iter()
-        .find(|form| !matches!(form, Value::String(_) | Value::StringObject(_)))?;
-    if !matches!(first, Value::Symbol(marker) if marker == ":closure-oclosure") {
-        return None;
-    }
-    let contents = closure_env.borrow();
-    contents.iter().rev().find_map(|frame| {
-        frame
-            .iter()
-            .find(|(key, _)| key == OCLOSURE_TYPE_MARKER)
-            .and_then(|(_, value)| value.as_symbol().ok().map(String::from))
-    })
-}
-
-fn cl_defmethod_previous_binding(
-    function: &Value,
-    previous_method_symbol: &str,
-) -> Option<(SharedEnv, String, Value)> {
-    let mut seen = HashSet::new();
-    let mut seen_cons = HashSet::new();
-    cl_defmethod_previous_binding_inner(function, previous_method_symbol, &mut seen, &mut seen_cons)
-}
-
-// Scan a generic function's closure graph for a binding with the given
-// name, returning its value (used to find a re-registered method's stored
-// body so it can be replaced in place like GNU).
-fn cl_defmethod_find_named_binding(function: &Value, name: &str) -> Option<Value> {
-    let mut seen_envs = HashSet::new();
-    cl_defmethod_named_binding_inner(function, name, None, &mut seen_envs)
-}
-
-fn cl_defmethod_set_named_binding(function: &Value, name: &str, replacement: &Value) -> bool {
-    let mut seen_envs = HashSet::new();
-    cl_defmethod_named_binding_inner(function, name, Some(replacement), &mut seen_envs).is_some()
-}
-
-fn cl_defmethod_replace_child_environment(
-    function: &Value,
-    target_env_id: usize,
-    replacement: &Value,
-) -> bool {
-    fn replace(
-        function: &Value,
-        target_env_id: usize,
-        replacement: &Value,
-        seen_envs: &mut HashSet<usize>,
-    ) -> bool {
-        let Value::Lambda(lambda) = function else {
-            return false;
-        };
-        let closure_env = &lambda.env;
-        let env_id = closure_env.as_ptr() as usize;
-        if !seen_envs.insert(env_id) {
-            return false;
-        }
-        let mut changed = false;
-        let mut nested = Vec::new();
-        {
-            let mut closure_env = closure_env.borrow_mut();
-            for frame in closure_env.iter_mut() {
-                for (name, value) in frame.iter_mut() {
-                    if !name.starts_with("__emaxx_") {
-                        continue;
-                    }
-                    if matches!(value, Value::Lambda(child) if child.env.as_ptr() as usize == target_env_id)
-                    {
-                        *value = replacement.clone();
-                        changed = true;
-                    } else {
-                        nested.push(value.clone());
-                    }
-                }
-            }
-        }
-        for value in nested {
-            changed |= replace(&value, target_env_id, replacement, seen_envs);
-        }
-        changed
-    }
-
-    replace(function, target_env_id, replacement, &mut HashSet::new())
-}
-
-fn cl_defmethod_contains_binding_fragment(function: &Value, fragment: &str) -> bool {
-    fn contains(function: &Value, fragment: &str, seen_envs: &mut HashSet<usize>) -> bool {
-        let Value::Lambda(lambda) = function else {
-            return false;
-        };
-        let closure_env = &lambda.env;
-        let env_id = closure_env.as_ptr() as usize;
-        if !seen_envs.insert(env_id) {
-            return false;
-        }
-        let nested = closure_env
-            .borrow()
-            .iter()
-            .flat_map(|frame| frame.iter())
-            .filter(|(name, _)| name.starts_with("__emaxx_"))
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect::<Vec<_>>();
-        nested.iter().any(|(name, _)| name.contains(fragment))
-            || nested
-                .into_iter()
-                .any(|(_, value)| contains(&value, fragment, seen_envs))
-    }
-
-    contains(function, fragment, &mut HashSet::new())
-}
-
-fn cl_defmethod_named_binding_inner(
-    function: &Value,
-    name: &str,
-    replacement: Option<&Value>,
-    seen_envs: &mut HashSet<usize>,
-) -> Option<Value> {
-    let Value::Lambda(lambda) = function else {
-        return None;
-    };
-    let closure_env = &lambda.env;
-    let env_id = closure_env.as_ptr() as usize;
-    if !seen_envs.insert(env_id) {
-        return None;
-    }
-    let mut nested = Vec::new();
-    {
-        let mut closure_env = closure_env.borrow_mut();
-        for frame in closure_env.iter_mut() {
-            for (binding_name, value) in frame.iter_mut() {
-                if binding_name == name {
-                    let found = value.clone();
-                    if let Some(replacement) = replacement {
-                        *value = replacement.clone();
-                    }
-                    return Some(found);
-                }
-                if binding_name.starts_with("__emaxx_") {
-                    nested.push(value.clone());
-                }
-            }
-        }
-    }
-    nested
-        .into_iter()
-        .find_map(|value| cl_defmethod_named_binding_inner(&value, name, replacement, seen_envs))
-}
-
-fn cl_defmethod_replace_ignore_previous_bindings(
-    interp: &Interpreter,
-    function: &Value,
-    replacement: &Value,
-) -> bool {
-    let mut seen_envs = HashSet::new();
-    let mut seen_cons = HashSet::new();
-    cl_defmethod_replace_ignore_previous_bindings_inner(
-        interp,
-        function,
-        replacement,
-        &mut seen_envs,
-        &mut seen_cons,
-    )
-}
-
-fn cl_defmethod_replace_ignore_previous_bindings_inner(
-    interp: &Interpreter,
-    function: &Value,
-    replacement: &Value,
-    seen_envs: &mut HashSet<usize>,
-    seen_cons: &mut HashSet<usize>,
-) -> bool {
-    match function {
-        Value::Lambda(lambda_value) => {
-            let _ = &lambda_value.params;
-            let _ = &lambda_value.body;
-            let closure_env = &lambda_value.env;
-            let env_id = closure_env.as_ptr() as usize;
-            if !seen_envs.insert(env_id) {
-                return false;
-            }
-            let mut replaced = false;
-            let mut nested = Vec::new();
-            {
-                let mut closure_env = closure_env.borrow_mut();
-                for frame in closure_env.iter_mut() {
-                    for (name, value) in frame.iter_mut() {
-                        if (name.starts_with("__emaxx_previous_method_")
-                            || name.starts_with("__emaxx_"))
-                            && interp.callable_is_ignore(value)
-                        {
-                            *value = replacement.clone();
-                            replaced = true;
-                        } else {
-                            nested.push(value.clone());
-                        }
-                    }
-                }
-            }
-            nested.into_iter().fold(replaced, |replaced, value| {
-                cl_defmethod_replace_ignore_previous_bindings_inner(
-                    interp,
-                    &value,
-                    replacement,
-                    seen_envs,
-                    seen_cons,
-                ) || replaced
-            })
-        }
-        Value::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            let cons_id = crate::lisp::types::ConsCell::identity(cons_cell);
-            if !seen_cons.insert(cons_id) {
-                return false;
-            }
-            cl_defmethod_replace_ignore_previous_bindings_inner(
-                interp,
-                &car.borrow(),
-                replacement,
-                seen_envs,
-                seen_cons,
-            ) || cl_defmethod_replace_ignore_previous_bindings_inner(
-                interp,
-                &cdr.borrow(),
-                replacement,
-                seen_envs,
-                seen_cons,
-            )
-        }
-        _ => false,
-    }
-}
-
-// Replace the terminal/default callable captured by an existing generic
-// dispatch graph.  Re-evaluating `cl-defgeneric' changes that default method
-// but preserves methods which other libraries have already registered.
-fn cl_defmethod_replace_terminal_previous_bindings(function: &Value, replacement: &Value) -> bool {
-    fn is_dispatch_chain(function: &Value) -> bool {
-        ["previous_method_", "before_method_", "after_method_"]
-            .iter()
-            .any(|fragment| cl_defmethod_contains_binding_fragment(function, fragment))
-    }
-
-    fn replace(
-        function: &Value,
-        replacement: &Value,
-        seen_envs: &mut HashSet<usize>,
-        seen_cons: &mut HashSet<usize>,
-    ) -> bool {
-        match function {
-            Value::Lambda(lambda_value) => {
-                let _ = &lambda_value.params;
-                let _ = &lambda_value.body;
-                let closure_env = &lambda_value.env;
-                let env_id = closure_env.as_ptr() as usize;
-                if !seen_envs.insert(env_id) {
-                    return false;
-                }
-                let mut replaced = false;
-                let mut nested = Vec::new();
-                {
-                    let mut closure_env = closure_env.borrow_mut();
-                    for frame in closure_env.iter_mut() {
-                        for (name, value) in frame.iter_mut() {
-                            if (name.starts_with("__emaxx_previous_method_")
-                                || name.starts_with("__emaxx_before_method_")
-                                || name.starts_with("__emaxx_after_method_"))
-                                && !is_dispatch_chain(value)
-                            {
-                                *value = replacement.clone();
-                                replaced = true;
-                            } else if name.starts_with("__emaxx_") {
-                                nested.push(value.clone());
-                            }
-                        }
-                    }
-                }
-                nested.into_iter().fold(replaced, |replaced, value| {
-                    replace(&value, replacement, seen_envs, seen_cons) || replaced
-                })
-            }
-            Value::Cons(cons_cell) => {
-                let car = &cons_cell.car;
-                let cdr = &cons_cell.cdr;
-                let cons_id = crate::lisp::types::ConsCell::identity(cons_cell);
-                if !seen_cons.insert(cons_id) {
-                    return false;
-                }
-                replace(&car.borrow(), replacement, seen_envs, seen_cons)
-                    || replace(&cdr.borrow(), replacement, seen_envs, seen_cons)
-            }
-            _ => false,
-        }
-    }
-
-    replace(
-        function,
-        replacement,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
-    )
-}
-
-// A :before/:after wrapper's first closure frame binds the previous chain
-// under a `__emaxx_{before,after}_method_...' name plus its specializer
-// metadata, so registration can walk the qualifier stack and keep it
-// ordered most-specific-outermost with primaries below the whole stack.
-fn cl_defmethod_qualifier_wrapper_parts(
-    function: &Value,
-) -> Option<(SharedEnv, String, Value, Option<Value>)> {
-    let Value::Lambda(lambda) = function else {
-        return None;
-    };
-    let closure_env = &lambda.env;
-    let borrowed = closure_env.borrow();
-    let frame = borrowed.first()?;
-    let mut previous = None;
-    let mut specializer = None;
-    for (name, value) in frame {
-        if name.starts_with("__emaxx_before_method_") || name.starts_with("__emaxx_after_method_") {
-            previous = Some((name.clone(), value.clone()));
-        } else if name == "__emaxx-qualifier-specializer" {
-            specializer = Some(value.clone());
-        }
-    }
-    let (name, value) = previous?;
-    drop(borrowed);
-    Some((closure_env.clone(), name, value, specializer))
-}
-
-fn cl_defmethod_previous_binding_inner(
-    function: &Value,
-    previous_method_symbol: &str,
-    seen_envs: &mut HashSet<usize>,
-    seen_cons: &mut HashSet<usize>,
-) -> Option<(SharedEnv, String, Value)> {
-    match function {
-        Value::Lambda(lambda_value) => {
-            let _ = &lambda_value.params;
-            let _ = &lambda_value.body;
-            let closure_env = &lambda_value.env;
-            let env_id = closure_env.as_ptr() as usize;
-            if !seen_envs.insert(env_id) {
-                return None;
-            }
-            for frame in closure_env.borrow().iter() {
-                for (name, value) in frame {
-                    if name == previous_method_symbol {
-                        return Some((closure_env.clone(), name.clone(), value.clone()));
-                    }
-                }
-            }
-            for frame in closure_env.borrow().iter() {
-                for (_, value) in frame {
-                    if let Some(found) = cl_defmethod_previous_binding_inner(
-                        value,
-                        previous_method_symbol,
-                        seen_envs,
-                        seen_cons,
-                    ) {
-                        return Some(found);
-                    }
-                }
-            }
-            None
-        }
-        Value::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            let cons_id = crate::lisp::types::ConsCell::identity(cons_cell);
-            if !seen_cons.insert(cons_id) {
-                return None;
-            }
-            cl_defmethod_previous_binding_inner(
-                &car.borrow(),
-                previous_method_symbol,
-                seen_envs,
-                seen_cons,
-            )
-            .or_else(|| {
-                cl_defmethod_previous_binding_inner(
-                    &cdr.borrow(),
-                    previous_method_symbol,
-                    seen_envs,
-                    seen_cons,
-                )
-            })
-        }
-        _ => None,
-    }
-}
-
-fn rewrite_cl_call_next_method_forms(
-    forms: &[Value],
-    generic_name: &str,
-    previous_method_symbol: &str,
-    default_args: &Value,
-    next_method_p: Value,
-) -> Result<Vec<Value>, LispError> {
-    forms
-        .iter()
-        .map(|form| {
-            rewrite_cl_call_next_method_form(
-                form,
-                generic_name,
-                previous_method_symbol,
-                default_args,
-                &next_method_p,
-            )
-        })
-        .collect()
-}
-
-fn rewrite_cl_next_method_p_forms(
-    forms: &[Value],
-    generic_name: &str,
-    default_args: &Value,
-    next_method_p: Value,
-) -> Result<Vec<Value>, LispError> {
-    forms
-        .iter()
-        .map(|form| {
-            rewrite_cl_call_next_method_form(
-                form,
-                generic_name,
-                "ignore",
-                default_args,
-                &next_method_p,
-            )
-        })
-        .collect()
-}
-
-fn rewrite_cl_call_next_method_form(
-    form: &Value,
-    generic_name: &str,
-    previous_method_symbol: &str,
-    default_args: &Value,
-    next_method_p: &Value,
-) -> Result<Value, LispError> {
-    let Ok(items) = form.to_vec() else {
-        return Ok(form.clone());
-    };
-    let Some(Value::Symbol(head)) = items.first() else {
-        return items
-            .iter()
-            .map(|item| {
-                rewrite_cl_call_next_method_form(
-                    item,
-                    generic_name,
-                    previous_method_symbol,
-                    default_args,
-                    next_method_p,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::list);
-    };
-    match head.as_str() {
-        // `(apply #'cl-call-next-method ...)' captures the next method as a
-        // function value (eieio-base.el's `eieio-named' constructor).  The
-        // previous-method symbol is a variable holding that function, so the
-        // sharp-quote rewrites to a plain variable reference.
-        "function"
-            if items.len() == 2
-                && matches!(&items[1], Value::Symbol(symbol) if symbol == "cl-call-next-method") =>
-        {
-            Ok(if previous_method_symbol == "ignore" {
-                Value::list([
-                    Value::Symbol("function".into()),
-                    Value::Symbol("ignore".into()),
-                ])
-            } else {
-                Value::Symbol(previous_method_symbol.to_string().into())
-            })
-        }
-        "quote" | "function" => Ok(form.clone()),
-        "cl-next-method-p" if items.len() == 1 => Ok(next_method_p.clone()),
-        "cl-call-next-method" => {
-            let args = if items.len() == 1 {
-                default_args.clone()
-            } else {
-                let mut list_form = Vec::with_capacity(items.len());
-                list_form.push(Value::Symbol("list".into()));
-                list_form.extend(items[1..].iter().cloned());
-                Value::list(list_form)
-            };
-            // The previous-method variable keeps the `ignore' sentinel until
-            // a later registration splices a method below this one; the
-            // runtime helper applies a real next method and routes the
-            // sentinel to `cl-no-next-method' like GNU.  A method installed
-            // directly as the generic function has no previous variable at
-            // all — pass nil so the helper always dispatches the hook.
-            let previous_reference = if previous_method_symbol == "ignore" {
-                Value::Nil
-            } else {
-                Value::Symbol(previous_method_symbol.to_string().into())
-            };
-            Ok(Value::list([
-                Value::Symbol("emaxx--cl-generic-apply-next".into()),
-                previous_reference,
-                Value::list([
-                    Value::Symbol("quote".into()),
-                    Value::Symbol(generic_name.to_string().into()),
-                ]),
-                Value::list([
-                    Value::Symbol("quote".into()),
-                    Value::Symbol("no-next".into()),
-                ]),
-                args,
-            ]))
-        }
-        _ => items
-            .iter()
-            .map(|item| {
-                rewrite_cl_call_next_method_form(
-                    item,
-                    generic_name,
-                    previous_method_symbol,
-                    default_args,
-                    next_method_p,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::list),
-    }
-}
-
-fn substitute_symbol_macros(
-    form: &Value,
-    expansions: &HashMap<String, Value>,
-) -> Result<Value, LispError> {
-    match form {
-        Value::Symbol(symbol) => Ok(expansions
-            .get(symbol.as_str())
-            .cloned()
-            .unwrap_or_else(|| form.clone())),
-        Value::Cons(_) => substitute_symbol_macros_in_list(form, expansions),
-        _ => Ok(form.clone()),
-    }
-}
-
-fn substitute_symbol_macros_in_list(
-    form: &Value,
-    expansions: &HashMap<String, Value>,
-) -> Result<Value, LispError> {
-    let items = form.to_vec()?;
-    let Some(Value::Symbol(head)) = items.first() else {
-        return items
-            .iter()
-            .map(|item| substitute_symbol_macros(item, expansions))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::list);
-    };
-    match head.as_str() {
-        "quote" | "function" => Ok(form.clone()),
-        "lambda" => substitute_symbol_macros_in_lambda(&items, expansions),
-        "let" => substitute_symbol_macros_in_let(&items, expansions, false),
-        "let*" => substitute_symbol_macros_in_let(&items, expansions, true),
-        "cl-letf" => substitute_symbol_macros_in_cl_letf(&items, expansions),
-        "setq" => substitute_symbol_macros_in_setq(&items, expansions),
-        _ => {
-            let mut rewritten = Vec::with_capacity(items.len());
-            rewritten.push(items[0].clone());
-            for item in &items[1..] {
-                rewritten.push(substitute_symbol_macros(item, expansions)?);
-            }
-            Ok(Value::list(rewritten))
-        }
-    }
-}
-
-fn substitute_symbol_macros_in_lambda(
-    items: &[Value],
-    expansions: &HashMap<String, Value>,
-) -> Result<Value, LispError> {
-    let Some(params) = items.get(1) else {
-        return Ok(Value::list(items.iter().cloned()));
-    };
-    let scoped = symbol_macro_expansions_without_bindings(expansions, params)?;
-    let mut rewritten = Vec::with_capacity(items.len());
-    rewritten.extend(items[..2].iter().cloned());
-    for form in &items[2..] {
-        rewritten.push(substitute_symbol_macros(form, &scoped)?);
-    }
-    Ok(Value::list(rewritten))
-}
-
-fn substitute_symbol_macros_in_let(
-    items: &[Value],
-    expansions: &HashMap<String, Value>,
-    sequential: bool,
-) -> Result<Value, LispError> {
-    let Some(bindings_value) = items.get(1) else {
-        return Ok(Value::list(items.iter().cloned()));
-    };
-    let bindings = bindings_value.to_vec()?;
-    let mut scoped = expansions.clone();
-    let mut rewritten_bindings = Vec::with_capacity(bindings.len());
-    for binding in &bindings {
-        match binding {
-            Value::Symbol(symbol) => {
-                scoped.remove(symbol.as_str());
-                rewritten_bindings.push(Value::Symbol(symbol.clone()));
-            }
-            Value::Cons(_) => {
-                let parts = binding.to_vec()?;
-                let Some(Value::Symbol(symbol)) = parts.first() else {
-                    rewritten_bindings.push(substitute_symbol_macros(binding, &scoped)?);
-                    continue;
-                };
-                let init_scope = if sequential { &scoped } else { expansions };
-                let mut rewritten = Vec::with_capacity(parts.len());
-                rewritten.push(Value::Symbol(symbol.clone()));
-                for form in &parts[1..] {
-                    rewritten.push(substitute_symbol_macros(form, init_scope)?);
-                }
-                scoped.remove(symbol.as_str());
-                rewritten_bindings.push(Value::list(rewritten));
-            }
-            other => rewritten_bindings.push(substitute_symbol_macros(other, &scoped)?),
-        }
-    }
-    let body_scope = if sequential {
-        scoped
-    } else {
-        let mut body_scope = expansions.clone();
-        for binding in &bindings {
-            match binding {
-                Value::Symbol(symbol) => {
-                    body_scope.remove(symbol.as_str());
-                }
-                Value::Cons(_) => {
-                    if let Ok(parts) = binding.to_vec()
-                        && let Some(Value::Symbol(symbol)) = parts.first()
-                    {
-                        body_scope.remove(symbol.as_str());
-                    }
-                }
-                _ => {}
-            }
-        }
-        body_scope
-    };
-    let mut rewritten = Vec::with_capacity(items.len());
-    rewritten.push(items[0].clone());
-    rewritten.push(Value::list(rewritten_bindings));
-    for form in &items[2..] {
-        rewritten.push(substitute_symbol_macros(form, &body_scope)?);
-    }
-    Ok(Value::list(rewritten))
-}
-
-fn substitute_symbol_macros_in_cl_letf(
-    items: &[Value],
-    expansions: &HashMap<String, Value>,
-) -> Result<Value, LispError> {
-    let Some(bindings_value) = items.get(1) else {
-        return Ok(Value::list(items.iter().cloned()));
-    };
-    let mut rewritten_bindings = Vec::new();
-    for binding in bindings_value.to_vec()? {
-        let parts = binding.to_vec()?;
-        if parts.is_empty() {
-            rewritten_bindings.push(Value::list(parts));
-            continue;
-        }
-        let mut rewritten = Vec::with_capacity(parts.len());
-        rewritten.push(substitute_symbol_macros(&parts[0], expansions)?);
-        for form in &parts[1..] {
-            rewritten.push(substitute_symbol_macros(form, expansions)?);
-        }
-        rewritten_bindings.push(Value::list(rewritten));
-    }
-
-    let mut rewritten = Vec::with_capacity(items.len());
-    rewritten.push(items[0].clone());
-    rewritten.push(Value::list(rewritten_bindings));
-    for form in &items[2..] {
-        rewritten.push(substitute_symbol_macros(form, expansions)?);
-    }
-    Ok(Value::list(rewritten))
-}
-
-fn substitute_symbol_macros_in_setq(
-    items: &[Value],
-    expansions: &HashMap<String, Value>,
-) -> Result<Value, LispError> {
-    let mut rewritten = Vec::new();
-    let mut index = 1;
-    while index + 1 < items.len() {
-        if let Some(symbol) = items[index].as_symbol().ok()
-            && let Some(expansion) = expansions.get(symbol)
-        {
-            rewritten.push(Value::list([
-                Value::Symbol("setf".into()),
-                expansion.clone(),
-                substitute_symbol_macros(&items[index + 1], expansions)?,
-            ]));
-        } else {
-            rewritten.push(Value::list([
-                Value::Symbol("setq".into()),
-                items[index].clone(),
-                substitute_symbol_macros(&items[index + 1], expansions)?,
-            ]));
-        }
-        index += 2;
-    }
-    Ok(match rewritten.len() {
-        0 => Value::Nil,
-        1 => rewritten.pop().unwrap_or(Value::Nil),
-        _ => {
-            let mut progn = Vec::with_capacity(rewritten.len() + 1);
-            progn.push(Value::Symbol("progn".into()));
-            progn.extend(rewritten);
-            Value::list(progn)
-        }
-    })
-}
-
-fn symbol_macro_expansions_without_bindings(
-    expansions: &HashMap<String, Value>,
-    params: &Value,
-) -> Result<HashMap<String, Value>, LispError> {
-    let mut scoped = expansions.clone();
-    for item in params.to_vec()? {
-        if let Ok(symbol) = item.as_symbol()
-            && !is_lambda_list_keyword(symbol)
-        {
-            scoped.remove(symbol);
-        }
-    }
-    Ok(scoped)
-}
-
-fn lower_define_inline_form(value: &Value) -> Value {
-    let Ok(items) = value.to_vec() else {
-        return value.clone();
-    };
-    let Some(Value::Symbol(head)) = items.first() else {
-        return value.clone();
-    };
-    match head.as_str() {
-        "inline-quote" => items
-            .get(1)
-            .map(lower_inline_quote_form)
-            .unwrap_or(Value::Nil),
-        "inline-letevals" => lower_inline_progn(&items[2..]),
-        "inline-const-val" => items
-            .get(1)
-            .map(lower_define_inline_form)
-            .unwrap_or(Value::Nil),
-        "inline-const-p" => Value::T,
-        "inline-error" => {
-            let mut lowered = vec![Value::Symbol("error".into())];
-            lowered.extend(items[1..].iter().map(lower_define_inline_form));
-            Value::list(lowered)
-        }
-        _ => Value::list(
-            items
-                .into_iter()
-                .map(|item| lower_define_inline_form(&item)),
-        ),
-    }
-}
-
-fn lower_inline_quote_form(value: &Value) -> Value {
-    let Ok(items) = value.to_vec() else {
-        return value.clone();
-    };
-    let Some(Value::Symbol(head)) = items.first() else {
-        return value.clone();
-    };
-    match head.as_str() {
-        "comma" | "," => items
-            .get(1)
-            .map(lower_define_inline_form)
-            .unwrap_or(Value::Nil),
-        "quote" if items.len() == 2 => match items[1].to_vec() {
-            Ok(quoted) if matches!(quoted.first(), Some(Value::Symbol(name)) if comma_head_kind(name) == Some("comma")) => {
-                quoted
-                    .get(1)
-                    .map(lower_define_inline_form)
-                    .unwrap_or(Value::Nil)
-            }
-            _ => Value::list([Value::Symbol("quote".into()), items[1].clone()]),
-        },
-        "function" | "function-quote" if items.len() == 2 => match items[1].to_vec() {
-            Ok(quoted) if matches!(quoted.first(), Some(Value::Symbol(name)) if comma_head_kind(name) == Some("comma")) => {
-                quoted
-                    .get(1)
-                    .map(lower_define_inline_form)
-                    .unwrap_or(Value::Nil)
-            }
-            _ => Value::list([Value::Symbol(head.clone()), items[1].clone()]),
-        },
-        _ => Value::list(items.into_iter().map(|item| lower_inline_quote_form(&item))),
-    }
-}
-
-fn lower_inline_progn(forms: &[Value]) -> Value {
-    match forms {
-        [] => Value::Nil,
-        [single] => lower_define_inline_form(single),
-        many => Value::list(
-            std::iter::once(Value::Symbol("progn".into()))
-                .chain(many.iter().map(lower_define_inline_form)),
-        ),
-    }
 }
 
 fn setcdr_tail_aliases(
@@ -7300,612 +5133,8 @@ fn deep_copy_value(value: &Value) -> Value {
     }
 }
 
-fn parse_cl_defstruct_constructor_params(
-    items: Vec<Value>,
-) -> (Vec<String>, Vec<(String, Value)>, bool) {
-    let mut params = Vec::new();
-    let mut aux_bindings = Vec::new();
-    let mut in_aux = false;
-    let mut direct_lambda = true;
-    for item in items {
-        if matches!(&item, Value::Symbol(name) if name == "&aux") {
-            in_aux = true;
-            continue;
-        }
-        if in_aux {
-            match item {
-                Value::Symbol(name) => aux_bindings.push((name.to_string(), Value::Nil)),
-                Value::Cons(_) => {
-                    if let Ok(parts) = item.to_vec()
-                        && let Some(name) = parts.first().and_then(|value| value.as_symbol().ok())
-                    {
-                        aux_bindings.push((
-                            name.to_string(),
-                            parts.get(1).cloned().unwrap_or(Value::Nil),
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        } else if let Ok(name) = item.as_symbol() {
-            if name.starts_with('&') && name != "&optional" {
-                direct_lambda = false;
-            }
-            params.push(name.to_string());
-        } else {
-            // Destructuring and default-bearing CL parameters require the
-            // general &rest parser below; ordinary interpreted lambdas
-            // cannot represent them directly.
-            direct_lambda = false;
-        }
-    }
-    (params, aux_bindings, direct_lambda)
-}
-
-fn cl_defstruct_constructor_aux_let_bindings(
-    params: &[String],
-    aux_bindings: Vec<(String, Value)>,
-) -> Vec<Value> {
-    let mut bindings = Vec::new();
-    let mut positional_index = 0usize;
-    let mut mode = "required";
-    for param in params {
-        match param.as_str() {
-            "&optional" => {
-                mode = "optional";
-                continue;
-            }
-            "&key" => {
-                mode = "key";
-                continue;
-            }
-            "&rest" | "&body" => {
-                mode = "rest";
-                continue;
-            }
-            "&allow-other-keys" => continue,
-            marker if marker.starts_with('&') => continue,
-            _ => {}
-        }
-
-        let value_form = match mode {
-            "key" => Value::list([
-                Value::Symbol("plist-get".into()),
-                Value::Symbol("args".into()),
-                Value::Symbol(format!(":{param}").into()),
-            ]),
-            "rest" => {
-                mode = "after-rest";
-                Value::list([
-                    Value::Symbol("nthcdr".into()),
-                    Value::Integer(positional_index as i64),
-                    Value::Symbol("args".into()),
-                ])
-            }
-            "after-rest" => continue,
-            _ => {
-                let form = Value::list([
-                    Value::Symbol("nth".into()),
-                    Value::Integer(positional_index as i64),
-                    Value::Symbol("args".into()),
-                ]);
-                positional_index += 1;
-                form
-            }
-        };
-        bindings.push(Value::list([
-            Value::Symbol(param.clone().into()),
-            value_form,
-        ]));
-    }
-    bindings.extend(
-        aux_bindings
-            .into_iter()
-            .map(|(name, form)| Value::list([Value::Symbol(name.into()), form])),
-    );
-    bindings
-}
-
-fn pcase_pattern_bindings(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    pattern: &Value,
-    value: &Value,
-    bindings: &mut Vec<(String, Value)>,
-) -> Result<bool, LispError> {
-    pcase_pattern_bindings_with_mode(interp, env, pattern, value, bindings, false)
-}
-
-fn pcase_pattern_bindings_lenient_list(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    pattern: &Value,
-    value: &Value,
-    bindings: &mut Vec<(String, Value)>,
-) -> Result<bool, LispError> {
-    pcase_pattern_bindings_with_mode(interp, env, pattern, value, bindings, true)
-}
-
-fn pcase_pattern_bindings_with_mode(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    pattern: &Value,
-    value: &Value,
-    bindings: &mut Vec<(String, Value)>,
-    lenient_list_match: bool,
-) -> Result<bool, LispError> {
-    pcase_pattern_bindings_inner(
-        interp,
-        env,
-        pattern,
-        value,
-        bindings,
-        lenient_list_match,
-        false,
-    )
-}
-
 // GNU pcase--funcall for `app' patterns: a call form may name the object
 // with `_'; without a placeholder the object becomes the last argument.
-fn pcase_apply_app_function(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    function: &Value,
-    value: &Value,
-) -> Result<Value, LispError> {
-    if let Ok(items) = function.to_vec()
-        && !items.is_empty()
-        && !matches!(items.first(), Some(Value::Symbol(head)) if head == "lambda" || head == "closure")
-    {
-        let mut call_form = Vec::with_capacity(items.len() + 1);
-        let mut saw_placeholder = false;
-        for (index, item) in items.iter().enumerate() {
-            if index > 0 && matches!(item, Value::Symbol(name) if name == "_") {
-                saw_placeholder = true;
-                call_form.push(quoted_literal(value));
-            } else {
-                call_form.push(item.clone());
-            }
-        }
-        if !saw_placeholder {
-            call_form.push(quoted_literal(value));
-        }
-        return interp.eval(&Value::list(call_form), env);
-    }
-    interp.call_function_value(function.clone(), None, std::slice::from_ref(value), env)
-}
-
-fn pcase_pattern_bindings_inner(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    pattern: &Value,
-    value: &Value,
-    bindings: &mut Vec<(String, Value)>,
-    lenient_list_match: bool,
-    backquoted: bool,
-) -> Result<bool, LispError> {
-    if !backquoted && matches!(pattern, Value::Symbol(name) if name == "_") {
-        return Ok(true);
-    }
-    if let Value::Symbol(name) = pattern
-        && name != "nil"
-        && name != "t"
-    {
-        // GNU pcase-let only destructures: membership tests on literal
-        // symbols inside a backquote (like the `_ _' in icons.el's
-        // `(,parent ,spec _ _)) are dropped, not checked.
-        if name.starts_with(':') {
-            return Ok((lenient_list_match && backquoted) || pattern == value);
-        }
-        if backquoted {
-            return Ok(lenient_list_match || pattern == value);
-        }
-        bindings.push((name.to_string(), value.clone()));
-        return Ok(true);
-    }
-    if let Ok(parts) = pattern.to_vec() {
-        if matches!(parts.first(), Some(Value::Symbol(name)) if is_backquote_head(name)) {
-            return pcase_pattern_bindings_inner(
-                interp,
-                env,
-                parts.get(1).unwrap_or(&Value::Nil),
-                value,
-                bindings,
-                lenient_list_match,
-                true,
-            );
-        }
-        if backquoted {
-            if matches!(parts.first(), Some(Value::Symbol(name)) if comma_head_kind(name).is_some())
-            {
-                let Some(pattern) = parts.get(1) else {
-                    return Ok(false);
-                };
-                if let Value::Symbol(name) = pattern {
-                    bindings.push((name.to_string(), value.clone()));
-                    return Ok(true);
-                }
-                return pcase_pattern_bindings_inner(
-                    interp,
-                    env,
-                    pattern,
-                    value,
-                    bindings,
-                    lenient_list_match,
-                    false,
-                );
-            }
-        } else {
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "or") {
-                let original = bindings.clone();
-                for candidate in &parts[1..] {
-                    let mut trial = original.clone();
-                    if pcase_pattern_bindings_inner(
-                        interp,
-                        env,
-                        candidate,
-                        value,
-                        &mut trial,
-                        lenient_list_match,
-                        backquoted,
-                    )? {
-                        *bindings = trial;
-                        return Ok(true);
-                    }
-                }
-                *bindings = original;
-                return Ok(false);
-            }
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "and") {
-                let start = bindings.len();
-                for candidate in &parts[1..] {
-                    if !pcase_pattern_bindings_inner(
-                        interp,
-                        env,
-                        candidate,
-                        value,
-                        bindings,
-                        lenient_list_match,
-                        backquoted,
-                    )? {
-                        bindings.truncate(start);
-                        return Ok(false);
-                    }
-                }
-                return Ok(true);
-            }
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "let")
-                && parts.len() >= 3
-            {
-                env.push(bindings.clone().into());
-                let evaluated = interp.eval(&parts[2], env);
-                env.pop();
-                return pcase_pattern_bindings_inner(
-                    interp,
-                    env,
-                    &parts[1],
-                    &evaluated?,
-                    bindings,
-                    lenient_list_match,
-                    backquoted,
-                );
-            }
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "guard")
-                && parts.len() >= 2
-            {
-                env.push(bindings.clone().into());
-                let guard = interp.eval(&parts[1], env);
-                env.pop();
-                return Ok(guard?.is_truthy());
-            }
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "pred")
-                && parts.len() >= 2
-            {
-                let (negated, predicate_form) = if let Ok(predicate_parts) = parts[1].to_vec() {
-                    if matches!(predicate_parts.first(), Some(Value::Symbol(name)) if name == "not")
-                        && predicate_parts.len() >= 2
-                    {
-                        (true, predicate_parts[1].clone())
-                    } else {
-                        (false, parts[1].clone())
-                    }
-                } else {
-                    (false, parts[1].clone())
-                };
-                let matches = pcase_predicate_matches(interp, env, &predicate_form, value)?;
-                return Ok(if negated { !matches } else { matches });
-            }
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "cl-struct")
-                && parts.len() >= 2
-            {
-                let Some(type_name) = parts.get(1).and_then(|value| value.as_symbol().ok()) else {
-                    return Ok(false);
-                };
-                let Value::Record(record_id) = value else {
-                    return Ok(false);
-                };
-                let Some(record) = interp.find_record(*record_id) else {
-                    return Ok(false);
-                };
-                if record.type_name != type_name {
-                    return Ok(false);
-                }
-                let slots = record.slots.clone();
-                let slot_names = interp
-                    .get_symbol_property(type_name, "emaxx-struct-slots")
-                    .and_then(|value| value.to_vec().ok())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|value| value.as_symbol().ok().map(str::to_string))
-                    .collect::<Vec<_>>();
-                let start = bindings.len();
-                for slot_pattern in &parts[2..] {
-                    let (slot_name, nested_pattern) = match slot_pattern {
-                        Value::Symbol(name) => (name.to_string(), slot_pattern.clone()),
-                        Value::Cons(_) => {
-                            let Ok(slot_parts) = slot_pattern.to_vec() else {
-                                bindings.truncate(start);
-                                return Ok(false);
-                            };
-                            let Some(slot_name) =
-                                slot_parts.first().and_then(|value| value.as_symbol().ok())
-                            else {
-                                bindings.truncate(start);
-                                return Ok(false);
-                            };
-                            (
-                                slot_name.to_string(),
-                                slot_parts
-                                    .get(1)
-                                    .cloned()
-                                    .unwrap_or_else(|| slot_pattern.clone()),
-                            )
-                        }
-                        _ => {
-                            bindings.truncate(start);
-                            return Ok(false);
-                        }
-                    };
-                    let Some(slot_index) = slot_names.iter().position(|name| name == &slot_name)
-                    else {
-                        bindings.truncate(start);
-                        return Ok(false);
-                    };
-                    let slot_value = slots.get(slot_index).cloned().unwrap_or(Value::Nil);
-                    if !pcase_pattern_bindings_inner(
-                        interp,
-                        env,
-                        &nested_pattern,
-                        &slot_value,
-                        bindings,
-                        lenient_list_match,
-                        backquoted,
-                    )? {
-                        bindings.truncate(start);
-                        return Ok(false);
-                    }
-                }
-                return Ok(true);
-            }
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "seq") {
-                let values = value.to_vec().unwrap_or_default();
-                let start = bindings.len();
-                let mut value_index = 0usize;
-                let mut pattern_index = 1usize;
-                while pattern_index < parts.len() {
-                    if matches!(&parts[pattern_index], Value::Symbol(name) if name == "&rest") {
-                        let Some(rest_pattern) = parts.get(pattern_index + 1) else {
-                            bindings.truncate(start);
-                            return Ok(false);
-                        };
-                        let rest = Value::list(values[value_index..].iter().cloned());
-                        if !pcase_pattern_bindings_inner(
-                            interp,
-                            env,
-                            rest_pattern,
-                            &rest,
-                            bindings,
-                            lenient_list_match,
-                            backquoted,
-                        )? {
-                            bindings.truncate(start);
-                            return Ok(false);
-                        }
-                        return Ok(true);
-                    }
-                    let item = values.get(value_index).cloned().unwrap_or(Value::Nil);
-                    if !pcase_pattern_bindings_inner(
-                        interp,
-                        env,
-                        &parts[pattern_index],
-                        &item,
-                        bindings,
-                        lenient_list_match,
-                        backquoted,
-                    )? {
-                        bindings.truncate(start);
-                        return Ok(false);
-                    }
-                    value_index += 1;
-                    pattern_index += 1;
-                }
-                return Ok(true);
-            }
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
-                return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
-            }
-            if matches!(parts.first(), Some(Value::Symbol(name)) if comma_head_kind(name).is_some())
-                && let Some(Value::Symbol(name)) = parts.get(1)
-            {
-                bindings.push((name.to_string(), value.clone()));
-                return Ok(true);
-            }
-            // GNU (app FUN PAT): apply FUN to the object (`_' in a call
-            // form stands for the object; otherwise it is appended as the
-            // last argument) and match PAT against the result.
-            if !backquoted
-                && matches!(parts.first(), Some(Value::Symbol(name)) if name == "app")
-                && parts.len() >= 3
-            {
-                let result = pcase_apply_app_function(interp, env, &parts[1], value)?;
-                return pcase_pattern_bindings_inner(
-                    interp,
-                    env,
-                    &parts[2],
-                    &result,
-                    bindings,
-                    lenient_list_match,
-                    backquoted,
-                );
-            }
-            // pcase-defmacro extensions (map.el's `(map ...)', ...):
-            // expand through the head symbol's `pcase-macroexpander' and
-            // match the expansion.
-            if !backquoted
-                && let Some(Value::Symbol(head)) = parts.first()
-                && let Some(expander) = interp.get_symbol_property(head, "pcase-macroexpander")
-                && expander.is_truthy()
-            {
-                let expanded = interp.call_function_value(expander, None, &parts[1..], env)?;
-                return pcase_pattern_bindings_inner(
-                    interp,
-                    env,
-                    &expanded,
-                    value,
-                    bindings,
-                    lenient_list_match,
-                    backquoted,
-                );
-            }
-        }
-    }
-
-    match (pattern, value) {
-        (Value::Cons(pattern), Value::Cons(value)) => {
-            let start = bindings.len();
-            let pattern_car = pattern.car.borrow().clone();
-            let pattern_cdr = pattern.cdr.borrow().clone();
-            let value_car = value.car.borrow().clone();
-            let value_cdr = value.cdr.borrow().clone();
-            if !pcase_pattern_bindings_inner(
-                interp,
-                env,
-                &pattern_car,
-                &value_car,
-                bindings,
-                lenient_list_match,
-                backquoted,
-            )? {
-                bindings.truncate(start);
-                return Ok(false);
-            }
-            if !pcase_pattern_bindings_inner(
-                interp,
-                env,
-                &pattern_cdr,
-                &value_cdr,
-                bindings,
-                lenient_list_match,
-                backquoted,
-            )? {
-                bindings.truncate(start);
-                return Ok(false);
-            }
-            Ok(true)
-        }
-        (Value::Cons(pattern), Value::Nil) if lenient_list_match => {
-            let start = bindings.len();
-            let pattern_car = pattern.car.borrow().clone();
-            let pattern_cdr = pattern.cdr.borrow().clone();
-            if !pcase_pattern_bindings_inner(
-                interp,
-                env,
-                &pattern_car,
-                &Value::Nil,
-                bindings,
-                lenient_list_match,
-                backquoted,
-            )? {
-                bindings.truncate(start);
-                return Ok(false);
-            }
-            if !pcase_pattern_bindings_inner(
-                interp,
-                env,
-                &pattern_cdr,
-                &Value::Nil,
-                bindings,
-                lenient_list_match,
-                backquoted,
-            )? {
-                bindings.truncate(start);
-                return Ok(false);
-            }
-            Ok(true)
-        }
-        (Value::Nil, Value::Cons(_)) if lenient_list_match => Ok(true),
-        (Value::Nil, Value::Nil) => Ok(true),
-        _ => Ok(pattern == value),
-    }
-}
-
-fn pcase_predicate_matches(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    predicate_form: &Value,
-    value: &Value,
-) -> Result<bool, LispError> {
-    if let Ok(mut items) = predicate_form.to_vec()
-        && !items.is_empty()
-    {
-        // A (lambda ...) pred is a function to call on VALUE; any other list
-        // form is a partial application that VALUE gets appended to, e.g.
-        // `(pred (> 5))' matches when `(> 5 VALUE)' is non-nil.
-        if matches!(items.first(), Some(Value::Symbol(head)) if head == "lambda" || head == "function" || head == "closure")
-        {
-            let function = interp.eval(predicate_form, env)?;
-            return Ok(crate::lisp::primitives::call_function_value(
-                interp,
-                &function,
-                std::slice::from_ref(value),
-                env,
-            )?
-            .is_truthy());
-        }
-        items.push(quoted_literal(value));
-        return Ok(interp.eval(&Value::list(items), env)?.is_truthy());
-    }
-    let predicate = match interp.eval(predicate_form, env) {
-        Ok(predicate) => predicate,
-        Err(LispError::Void(_)) if matches!(predicate_form, Value::Symbol(_)) => {
-            predicate_form.clone()
-        }
-        Err(error) => return Err(error),
-    };
-    Ok(crate::lisp::primitives::call_function_value(
-        interp,
-        &predicate,
-        std::slice::from_ref(value),
-        env,
-    )?
-    .is_truthy())
-}
-
-fn is_compat_preloaded_feature(feature: &str) -> bool {
-    matches!(
-        feature,
-        "cl-extra"
-            | "cl-generic"
-            | "cl-lib"
-            | "cus-load"
-            | "edmacro"
-            | "hex-util"
-            | "map"
-            | "rfc2104"
-            | "seq"
-            | "thread"
-    )
-}
 
 fn build_signal_value(condition: Value, data: Value) -> Value {
     if let Ok(items) = data.to_vec() {

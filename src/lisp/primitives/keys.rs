@@ -332,10 +332,6 @@ pub(crate) fn textual_key_sequence_binding_parts(value: &Value) -> Result<Vec<St
     key_sequence_binding_parts(value)
 }
 
-pub(crate) fn textual_key_sequence_binding_text(value: &Value) -> Result<String, LispError> {
-    Ok(textual_key_sequence_binding_parts(value)?.join(" "))
-}
-
 pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, LispError> {
     if let Ok(events) = vector_items(value)
         && let [event] = events.as_slice()
@@ -528,9 +524,9 @@ pub(crate) fn sequence_values(
 
 pub(crate) fn string_sequence_values(string: &StringLike) -> Vec<Value> {
     string
-        .text
-        .chars()
-        .map(|ch| string_sequence_value(string, ch))
+        .character_codes()
+        .into_iter()
+        .map(Value::Integer)
         .collect()
 }
 
@@ -814,32 +810,6 @@ pub(crate) fn text_char_description_text(code: i64) -> Result<String, LispError>
             .ok_or_else(|| LispError::Signal("Invalid character".into()))?
             .to_string(),
     })
-}
-
-pub(crate) fn seq_subseq(
-    sequence: &Value,
-    start: i64,
-    end: Option<i64>,
-) -> Result<Value, LispError> {
-    let start = start.max(0) as usize;
-    match sequence {
-        Value::String(text) => {
-            let chars = text.chars().collect::<Vec<_>>();
-            let end = end.unwrap_or(chars.len() as i64).max(start as i64) as usize;
-            let bounded_end = end.min(chars.len());
-            Ok(Value::String(
-                chars[start.min(bounded_end)..bounded_end].iter().collect(),
-            ))
-        }
-        _ => {
-            let items = sequence.to_vec()?;
-            let end = end.unwrap_or(items.len() as i64).max(start as i64) as usize;
-            let bounded_end = end.min(items.len());
-            Ok(Value::list(
-                items[start.min(bounded_end)..bounded_end].iter().cloned(),
-            ))
-        }
-    }
 }
 
 pub(crate) fn auto_save_path_for_buffer(buffer: &crate::buffer::Buffer) -> String {

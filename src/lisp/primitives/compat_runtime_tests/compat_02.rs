@@ -204,119 +204,6 @@ fn decode_coding_region_reports_the_detected_eol_variant() {
 }
 
 #[test]
-fn add_function_supports_local_place_spec() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-
-    assert_eq!(
-        call(
-            &mut interp,
-            "add-function",
-            &[
-                Value::Symbol(":around".into()),
-                Value::list([
-                    Value::Symbol("emaxx-local-function-place".into()),
-                    Value::Symbol("revert-buffer-function".into()),
-                ]),
-                Value::Symbol("archive--mode-revert".into()),
-            ],
-            &mut env,
-        )
-        .expect("install local function"),
-        Value::Nil
-    );
-    assert_eq!(
-        interp.buffer_local_value(interp.current_buffer_id(), "revert-buffer-function"),
-        Some(Value::Symbol("archive--mode-revert".into()))
-    );
-}
-
-#[test]
-fn add_function_supports_symbol_variable_place() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let forms = Reader::new(
-        r#"
-            (progn
-              (defun emaxx-add-function-original () "base")
-              (defun emaxx-add-function-around (orig)
-                (concat "wrapped-" (funcall orig)))
-              (setq emaxx-add-function-target #'emaxx-add-function-original)
-              (add-function :around emaxx-add-function-target
-                            #'emaxx-add-function-around)
-              (funcall emaxx-add-function-target))
-            "#,
-    )
-    .read_all()
-    .expect("add-function symbol-place test should parse");
-    let result = forms
-        .iter()
-        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
-        .expect("add-function symbol-place should evaluate");
-    assert_eq!(result, Value::String("wrapped-base".into()));
-}
-
-#[test]
-fn advice_add_supports_around_message_builtin() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let forms = Reader::new(
-        r#"
-            (progn
-              (setq emaxx-test-message-log nil)
-              (defun emaxx-test-message-advice (orig &rest args)
-                (setq emaxx-test-message-log (apply #'format-message args))
-                (funcall orig "%s" emaxx-test-message-log))
-              (advice-add 'message :around #'emaxx-test-message-advice)
-              (let ((result (message "value=%s" 42))
-                    (current (current-message)))
-                (advice-remove 'message #'emaxx-test-message-advice)
-                (list emaxx-test-message-log result current)))
-            "#,
-    )
-    .read_all()
-    .expect("message advice test should parse");
-    let result = forms
-        .iter()
-        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
-        .expect("message advice should evaluate");
-    let values = result.to_vec().expect("message result list");
-    assert_eq!(values.len(), 3);
-    for value in values {
-        assert_eq!(string_text(&value).expect("message string"), "value=42");
-    }
-}
-
-#[test]
-fn advice_add_accepts_forward_referenced_advice_symbol() {
-    let forms = Reader::new(
-        "(progn
-           (defun sample-forward-target () 'original)
-           (advice-add 'sample-forward-target :around #'sample-forward-advice)
-           (defun sample-forward-advice (orig &rest args)
-             (list 'wrapped (apply orig args)))
-           (sample-forward-target))",
-    )
-    .read_all()
-    .expect("forward advice test should parse");
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let mut result = Value::Nil;
-    for form in forms {
-        result = interp
-            .eval(&form, &mut env)
-            .expect("forward advice symbol should resolve when invoked");
-    }
-    assert_eq!(
-        result,
-        Value::list([
-            Value::Symbol("wrapped".into()),
-            Value::Symbol("original".into()),
-        ])
-    );
-}
-
-#[test]
 fn funcall_message_builtin_from_lambda() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -415,51 +302,214 @@ fn user_error_formats_message_arguments() {
 }
 
 #[test]
-fn advice_add_supports_around_read_event_override_without_side_effects() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let forms = Reader::new(
-        r#"
-            (progn
-              (defun emaxx-test-read-event-advice (_orig &rest _args)
-                ?x)
-              (advice-add 'read-event :around #'emaxx-test-read-event-advice)
-              (let ((last-input-event nil)
-                    (unread-command-events nil))
-                (prog1
-                    (list (read-event)
-                          last-input-event
-                          unread-command-events)
-                  (advice-remove 'read-event #'emaxx-test-read-event-advice))))
-            "#,
-    )
-    .read_all()
-    .expect("read-event advice test should parse");
-    let result = forms
-        .iter()
-        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
-        .expect("read-event advice should evaluate");
-    assert_eq!(
-        result,
-        Value::list([Value::Integer('x' as i64), Value::Nil, Value::Nil,])
-    );
+fn advice_add_supports_after_function() {
+    run_with_large_stack(advice_add_supports_after_function_inner);
 }
 
-#[test]
-fn advice_add_supports_after_function() {
-    let mut interp = Interpreter::new();
+fn advice_add_supports_after_function_inner() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let forms = Reader::new(
         r#"
             (progn
+              (unless (and (not (subrp (symbol-function 'advice-add)))
+                           (string-match-p "nadvice\\.el"
+                                           (symbol-file 'advice-add 'defun))
+                           (macrop 'add-function)
+                           (string-match-p "nadvice\\.el"
+                                           (symbol-file 'add-function 'defun))
+                           (macrop 'define-advice))
+                (error "advice owners did not resolve to GNU nadvice.el"))
+              (unless (equal
+                       '(car cdr how props)
+                       (mapcar #'cl--slot-descriptor-name
+                               (oclosure--class-slots
+                                (get 'advice 'cl--class))))
+                (error "advice OClosure slot layout differs from GNU"))
               (setq emaxx-test-after-log nil)
               (defun emaxx-test-after-target () 'done)
               (defun emaxx-test-after-advice (&rest _args)
                 (setq emaxx-test-after-log 'after))
               (advice-add 'emaxx-test-after-target :after #'emaxx-test-after-advice)
-              (prog1
-                  (list (emaxx-test-after-target) emaxx-test-after-log)
-                (advice-remove 'emaxx-test-after-target #'emaxx-test-after-advice)))
+              (let ((advice-result
+                     (prog1
+                         (list (emaxx-test-after-target)
+                               emaxx-test-after-log)
+                       (advice-remove
+                        'emaxx-test-after-target
+                        #'emaxx-test-after-advice))))
+                (defun emaxx-test-function-base (value)
+                  (list 'base value))
+                (defun emaxx-test-function-around (original value)
+                  (list 'wrapped (funcall original value)))
+                (setq emaxx-test-function-value
+                      #'emaxx-test-function-base)
+                (add-function :around emaxx-test-function-value
+                              #'emaxx-test-function-around)
+                (setq emaxx-test-add-function-result
+                      (funcall emaxx-test-function-value 7))
+                (remove-function emaxx-test-function-value
+                                 #'emaxx-test-function-around)
+                (setq emaxx-test-nil-function-value nil)
+                (remove-function emaxx-test-nil-function-value #'ignore)
+                (setq-default emaxx-test-local-function-value
+                              #'emaxx-test-function-base)
+                (add-function :around
+                              (local emaxx-test-local-function-value)
+                              #'emaxx-test-function-around)
+                (setq emaxx-test-local-function-result
+                      (funcall emaxx-test-local-function-value 10))
+                (remove-function (local emaxx-test-local-function-value)
+                                 #'emaxx-test-function-around)
+                (setq emaxx-test-nested-lexical-add-function-result
+                      (eval
+                       '(let ((target
+                               (lambda (value) (list 'base value))))
+                          (mapc
+                           (lambda (tag)
+                             (let ((captured-tag nil))
+                               (let ((layer
+                                      (lambda (oldfun value)
+                                        (cons captured-tag
+                                              (funcall oldfun value)))))
+                                 (setq captured-tag tag)
+                                 (add-function :around (var target) layer))))
+                           '(outer inner))
+                          (funcall target 7))
+                       t))
+                (setq emaxx-test-nested-dynamic-add-function-result
+                      (eval
+                       '(progn
+                          (defvar emaxx-test-dynamic-function nil)
+                          (let ((emaxx-test-dynamic-function
+                                 (lambda (value) (list 'base value))))
+                            (add-function
+                             :around (var emaxx-test-dynamic-function)
+                             (lambda (oldfun value)
+                               (cons 'outer (funcall oldfun value))))
+                            (add-function
+                             :around (var emaxx-test-dynamic-function)
+                             (lambda (oldfun value)
+                               (cons 'inner (funcall oldfun value))))
+                            (funcall emaxx-test-dynamic-function 7)))
+                       t))
+                (defun emaxx-test-buffer-size-around (original)
+                  (list 'builtin (funcall original)))
+                (advice-add 'buffer-size :around
+                            #'emaxx-test-buffer-size-around)
+                (setq emaxx-test-builtin-advice-result
+                      (with-temp-buffer
+                        (insert "abc")
+                        (buffer-size)))
+                (advice-remove 'buffer-size
+                               #'emaxx-test-buffer-size-around)
+                (defun emaxx-test-read-event-advice
+                    (_original &rest _args)
+                  ?x)
+                (advice-add 'read-event :around
+                            #'emaxx-test-read-event-advice)
+                (setq emaxx-test-read-event-advice-result
+                      (let ((last-input-event nil)
+                            (unread-command-events nil))
+                        (list (read-event)
+                              last-input-event
+                              unread-command-events)))
+                (advice-remove 'read-event
+                               #'emaxx-test-read-event-advice)
+                (defun emaxx-test-forward-target () 'original)
+                (advice-add 'emaxx-test-forward-target :around
+                            #'emaxx-test-forward-advice)
+                (defun emaxx-test-forward-advice (original &rest args)
+                  (list 'forward (apply original args)))
+                (setq emaxx-test-forward-advice-result
+                      (emaxx-test-forward-target))
+                (advice-remove 'emaxx-test-forward-target
+                               #'emaxx-test-forward-advice)
+                (defun emaxx-test-define-advice-target () 'base)
+                (define-advice emaxx-test-define-advice-target
+                    (:around (original &rest args) named)
+                  (cons (apply original args) 'defined))
+                (setq emaxx-test-define-advice-result
+                      (emaxx-test-define-advice-target))
+                (advice-remove 'emaxx-test-define-advice-target 'named)
+                (cl-defgeneric emaxx-test-advised-generic (x y))
+                (cl-defmethod emaxx-test-advised-generic (x y)
+                  (list x y))
+                (defun emaxx-test-generic-advice (&rest args)
+                  (cons 'advice (apply args)))
+                (advice-add 'emaxx-test-advised-generic :around
+                            #'emaxx-test-generic-advice)
+                (setq emaxx-test-generic-before
+                      (emaxx-test-advised-generic 4 5))
+                (cl-defmethod emaxx-test-advised-generic
+                  ((_x integer) _y)
+                  (cons 'integer (cl-call-next-method)))
+                (setq emaxx-test-generic-during
+                      (emaxx-test-advised-generic 4 5))
+                (advice-remove 'emaxx-test-advised-generic
+                               #'emaxx-test-generic-advice)
+                (setq emaxx-test-generic-after
+                      (emaxx-test-advised-generic 4 5))
+                (let ((seen nil)
+                      (capture
+                       (lambda (original &rest args)
+                         (setq seen (apply #'format args))
+                         (apply original args))))
+                  (unwind-protect
+                      (progn
+                        (advice-add 'message :around capture)
+                        (execute-kbd-macro (kbd "C-c C-z"))
+                        (setq emaxx-test-message-advice-result seen))
+                    (advice-remove 'message capture)))
+                (setq emaxx-test-kmacro-after-log nil)
+                (defun emaxx-test-end-kbd-macro-advice (&rest _args)
+                  (setq emaxx-test-kmacro-after-log 'after))
+                (advice-add 'end-kbd-macro :after
+                            #'emaxx-test-end-kbd-macro-advice)
+                (kmacro-start-macro nil)
+                (setq emaxx-test-kmacro-advice-result
+                      (list (end-kbd-macro)
+                            emaxx-test-kmacro-after-log))
+                (advice-remove 'end-kbd-macro
+                               #'emaxx-test-end-kbd-macro-advice)
+                (oclosure-define
+                    (emaxx-test-mutable-cell
+                     (:predicate emaxx-test-mutable-cell-p))
+                  (value :mutable t))
+                (cl-defgeneric emaxx-test-oclosure-dispatch (object))
+                (cl-defmethod emaxx-test-oclosure-dispatch
+                  ((object emaxx-test-mutable-cell)) 'specific)
+                (cl-defmethod emaxx-test-oclosure-dispatch
+                  ((object interpreted-function)) 'representation)
+                (let ((object
+                       (oclosure-lambda
+                           (emaxx-test-mutable-cell (value 1)) ()
+                         value)))
+                  (let ((environment (aref object 2)))
+                    (list advice-result
+                          emaxx-test-add-function-result
+                          (funcall emaxx-test-function-value 9)
+                          emaxx-test-nil-function-value
+                          emaxx-test-local-function-result
+                          emaxx-test-nested-lexical-add-function-result
+                          emaxx-test-nested-dynamic-add-function-result
+                          emaxx-test-builtin-advice-result
+                          emaxx-test-read-event-advice-result
+                          emaxx-test-forward-advice-result
+                          emaxx-test-define-advice-result
+                          emaxx-test-generic-before
+                          emaxx-test-generic-during
+                          emaxx-test-generic-after
+                          emaxx-test-message-advice-result
+                          emaxx-test-kmacro-advice-result
+                          (eq environment (aref object 2))
+                          (emaxx-test-mutable-cell--value object)
+                          (progn
+                            (setf (emaxx-test-mutable-cell--value object) 2)
+                            (emaxx-test-mutable-cell--value object))
+                          (funcall object)
+                          (emaxx-test-oclosure-dispatch object)
+                          (cdr (car environment)))))))
             "#,
     )
     .read_all()
@@ -470,54 +520,79 @@ fn advice_add_supports_after_function() {
         .expect("after advice should evaluate");
     assert_eq!(
         result,
-        Value::list([Value::Symbol("done".into()), Value::Symbol("after".into())])
-    );
-}
-
-#[test]
-fn kmacro_batch_stub_loads_and_runs_end_macro_advice() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    interp.load_target("kmacro").expect("load kmacro");
-    let mut env = Vec::new();
-    let forms = Reader::new(
-        r#"
-            (progn
-              (setq emaxx-test-after-log nil)
-              (defun emaxx-test-end-kbd-macro-advice (&rest _args)
-                (setq emaxx-test-after-log 'after))
-              (advice-add 'end-kbd-macro :after #'emaxx-test-end-kbd-macro-advice)
-              (kmacro-start-macro nil)
-              (prog1
-                  (list (end-kbd-macro) emaxx-test-after-log)
-                (advice-remove 'end-kbd-macro #'emaxx-test-end-kbd-macro-advice)))
-            "#,
-    )
-    .read_all()
-    .expect("kmacro batch advice test should parse");
-    let result = forms
-        .iter()
-        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
-        .expect("kmacro batch advice should evaluate");
-    assert_eq!(
-        result,
-        Value::list([Value::Nil, Value::Symbol("after".into())])
+        Value::list([
+            Value::list([Value::Symbol("done".into()), Value::Symbol("after".into())]),
+            Value::list([
+                Value::Symbol("wrapped".into()),
+                Value::list([Value::Symbol("base".into()), Value::Integer(7)]),
+            ]),
+            Value::list([Value::Symbol("base".into()), Value::Integer(9)]),
+            Value::Nil,
+            // GNU's `(local VAR)' proxy does not manufacture a local cell
+            // when VAR currently has only a default function value.
+            Value::list([Value::Symbol("base".into()), Value::Integer(10)]),
+            Value::list([
+                Value::Symbol("inner".into()),
+                Value::Symbol("outer".into()),
+                Value::Symbol("base".into()),
+                Value::Integer(7),
+            ]),
+            Value::list([
+                Value::Symbol("inner".into()),
+                Value::Symbol("outer".into()),
+                Value::Symbol("base".into()),
+                Value::Integer(7),
+            ]),
+            Value::list([Value::Symbol("builtin".into()), Value::Integer(3)]),
+            Value::list([Value::Integer('x' as i64), Value::Nil, Value::Nil]),
+            Value::list([
+                Value::Symbol("forward".into()),
+                Value::Symbol("original".into()),
+            ]),
+            Value::cons(
+                Value::Symbol("base".into()),
+                Value::Symbol("defined".into()),
+            ),
+            Value::list([
+                Value::Symbol("advice".into()),
+                Value::Integer(4),
+                Value::Integer(5),
+            ]),
+            Value::list([
+                Value::Symbol("advice".into()),
+                Value::Symbol("integer".into()),
+                Value::Integer(4),
+                Value::Integer(5),
+            ]),
+            Value::list([
+                Value::Symbol("integer".into()),
+                Value::Integer(4),
+                Value::Integer(5),
+            ]),
+            // GNU's command-loop undefined-key diagnostic bypasses Lisp
+            // `message' advice as well.
+            Value::Nil,
+            Value::list([Value::Nil, Value::Symbol("after".into())]),
+            Value::T,
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Symbol("specific".into()),
+            Value::Integer(2),
+        ])
     );
 }
 
 #[test]
 fn make_temp_file_creates_a_file_for_relative_prefix() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
 
-    let path = call(
+    let path = crate::test_support::call_lisp_function(
         &mut interp,
+        &mut env,
         "make-temp-file",
         &[Value::String("emaxx-compat-".into())],
-        &mut env,
     )
     .expect("create temp file")
     .as_string()
@@ -529,35 +604,35 @@ fn make_temp_file_creates_a_file_for_relative_prefix() {
 
 #[test]
 fn file_name_extension_helpers_match_archive_usage() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
 
     assert_eq!(
-        call(
+        crate::test_support::call_lisp_function(
             &mut interp,
+            &mut env,
             "file-name-base",
             &[Value::String("/tmp/demo.tar.gz".into())],
-            &mut env,
         )
         .expect("base name"),
         Value::String("demo.tar".into())
     );
     assert_eq!(
-        call(
+        crate::test_support::call_lisp_function(
             &mut interp,
+            &mut env,
             "file-name-sans-extension",
             &[Value::String("demo.tar.gz".into())],
-            &mut env,
         )
         .expect("strip suffix"),
         Value::String("demo.tar".into())
     );
     assert_eq!(
-        call(
+        crate::test_support::call_lisp_function(
             &mut interp,
+            &mut env,
             "file-name-extension",
             &[Value::String("demo.tar.gz".into()), Value::T],
-            &mut env,
         )
         .expect("extension with period"),
         Value::String(".gz".into())
@@ -566,18 +641,9 @@ fn file_name_extension_helpers_match_archive_usage() {
 
 #[test]
 fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
-    let old_path = call(
-        &mut interp,
-        "make-temp-file",
-        &[Value::String("emaxx-rename-visited-file-".into())],
-        &mut env,
-    )
-    .expect("create source file")
-    .as_string()
-    .expect("temp file path")
-    .to_string();
+    let old_path = make_compat_temp_file(&mut interp, &mut env, "emaxx-rename-visited-file-");
     let new_path = format!("{old_path}.zip");
 
     interp.buffer.file = Some(old_path.clone());
@@ -586,11 +652,11 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
         .buffer
         .set_visited_file_modtime(file_modtime(&old_path).expect("source modtime"));
 
-    call(
+    crate::test_support::call_lisp_function(
         &mut interp,
+        &mut env,
         "rename-visited-file",
         &[Value::String(new_path.clone().into())],
-        &mut env,
     )
     .expect("rename visited file");
 
@@ -609,18 +675,9 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
 
 #[test]
 fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
-    let path = call(
-        &mut interp,
-        "make-temp-file",
-        &[Value::String("emaxx-revert-raw-buffer-".into())],
-        &mut env,
-    )
-    .expect("create source file")
-    .as_string()
-    .expect("temp file path")
-    .to_string();
+    let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-raw-buffer-");
     let bytes = [0xFF, b'a'];
     std::fs::write(&path, bytes).expect("write raw bytes");
 
@@ -632,7 +689,8 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
         .buffer
         .set_visited_file_modtime(file_modtime(&path).expect("source modtime"));
 
-    call(&mut interp, "revert-buffer", &[], &mut env).expect("revert raw buffer");
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(revert-buffer)")
+        .expect("revert raw buffer");
 
     assert_eq!(interp.buffer.buffer_string(), decode_raw_text_bytes(&bytes));
     assert!(!interp.buffer.is_multibyte());
@@ -642,18 +700,9 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
 
 #[test]
 fn save_buffer_skips_unmodified_and_unchanged_files() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
-    let path = call(
-        &mut interp,
-        "make-temp-file",
-        &[Value::String("emaxx-save-unmodified-".into())],
-        &mut env,
-    )
-    .expect("create source file")
-    .as_string()
-    .expect("temp file path")
-    .to_string();
+    let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-save-unmodified-");
     std::fs::write(&path, "fresh").expect("write source file");
 
     interp.buffer = crate::buffer::Buffer::from_text("*save*", "fresh");
@@ -666,9 +715,11 @@ fn save_buffer_skips_unmodified_and_unchanged_files() {
     permissions.set_readonly(true);
     std::fs::set_permissions(&path, permissions).expect("make file read-only");
 
-    call(&mut interp, "save-buffer", &[], &mut env).expect("unmodified save is a no-op");
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(save-buffer)")
+        .expect("unmodified save is a no-op");
     interp.buffer.set_modified();
-    call(&mut interp, "save-buffer", &[], &mut env).expect("unchanged text does not need a write");
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(save-buffer)")
+        .expect("unchanged text does not need a write");
 
     std::fs::set_permissions(&path, original_permissions).expect("restore writable file");
     std::fs::remove_file(path).expect("cleanup unmodified save file");
@@ -676,18 +727,9 @@ fn save_buffer_skips_unmodified_and_unchanged_files() {
 
 #[test]
 fn buffer_stale_default_detects_clean_file_modtime_changes() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
-    let path = call(
-        &mut interp,
-        "make-temp-file",
-        &[Value::String("emaxx-buffer-stale-".into())],
-        &mut env,
-    )
-    .expect("create source file")
-    .as_string()
-    .expect("temp file path")
-    .to_string();
+    let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-buffer-stale-");
     std::fs::write(&path, "fresh").expect("write initial file contents");
 
     interp.buffer = crate::buffer::Buffer::from_text("*stale*", "fresh");
@@ -701,25 +743,23 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
     interp.buffer.set_unmodified();
 
     assert_eq!(
-        call(
+        crate::test_support::eval_lisp(
             &mut interp,
-            "buffer-stale--default-function",
-            &[Value::T],
             &mut env,
+            "(buffer-stale--default-function t)",
         )
-        .expect("check stale file"),
+            .expect("check stale file"),
         Value::T
     );
 
     interp.buffer.set_modified();
     assert_eq!(
-        call(
+        crate::test_support::eval_lisp(
             &mut interp,
-            "buffer-stale--default-function",
-            &[Value::T],
             &mut env,
+            "(buffer-stale--default-function t)",
         )
-        .expect("modified buffers are not stale"),
+            .expect("modified buffers are not stale"),
         Value::Nil
     );
 
@@ -729,42 +769,30 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
 #[test]
 fn revert_buffer_honors_buffer_local_revert_function() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         let mut env = Vec::new();
-        let path = call(
-            &mut interp,
-            "make-temp-file",
-            &[Value::String("emaxx-revert-buffer-function-".into())],
-            &mut env,
-        )
-        .expect("create source file")
-        .as_string()
-        .expect("temp file path")
-        .to_string();
+        let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-buffer-function-");
         std::fs::write(&path, "fresh").expect("write file contents");
 
         interp.buffer = crate::buffer::Buffer::from_text("*revert*", "stale");
         interp.buffer.file = Some(path.clone());
         interp.buffer.file_truename = Some(path.clone());
 
-        let forms = Reader::new(
+        let result = crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
             r#"
                 (progn
-                  (defun sample-revert-wrapper (orig-fun &rest _args)
+                  (defun sample-revert-function (ignore-auto noconfirm)
                     (setq sample-revert-called t)
-                    (funcall orig-fun))
-                  (setq-local sample-revert-called nil)
-                  (setq-local revert-buffer-function 'sample-revert-wrapper)
+                    (revert-buffer--default ignore-auto noconfirm))
+                  (setq sample-revert-called nil)
+                  (setq-local revert-buffer-function 'sample-revert-function)
                   (revert-buffer)
                   sample-revert-called)
                 "#,
         )
-        .read_all()
-        .expect("parse wrapper forms");
-        let mut result = Value::Nil;
-        for form in forms {
-            result = interp.eval(&form, &mut env).expect("evaluate wrapper form");
-        }
+        .expect("evaluate wrapper form");
 
         assert_eq!(result, Value::T);
         assert_eq!(interp.buffer.buffer_string(), "fresh");
@@ -776,25 +804,18 @@ fn revert_buffer_honors_buffer_local_revert_function() {
 #[test]
 fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         let mut env = Vec::new();
-        let path = call(
-            &mut interp,
-            "make-temp-file",
-            &[Value::String("emaxx-revert-buffer-dynamic-".into())],
-            &mut env,
-        )
-        .expect("create source file")
-        .as_string()
-        .expect("temp file path")
-        .to_string();
+        let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-revert-buffer-dynamic-");
         std::fs::write(&path, "fresh").expect("write file contents");
 
         interp.buffer = crate::buffer::Buffer::from_text("*revert*", "stale");
         interp.buffer.file = Some(path.clone());
         interp.buffer.file_truename = Some(path.clone());
 
-        let forms = Reader::new(
+        let result = crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
             r#"
                 (progn
                   (defun sample-revert-wrapper (_orig-fun &rest _args)
@@ -805,12 +826,7 @@ fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
                   (buffer-string))
                 "#,
         )
-        .read_all()
-        .expect("parse dynamic suppression forms");
-        let mut result = Value::Nil;
-        for form in forms {
-            result = interp.eval(&form, &mut env).expect("evaluate revert form");
-        }
+        .expect("evaluate revert form");
 
         assert_eq!(result, Value::String("fresh".into()));
         std::fs::remove_file(path).expect("cleanup dynamic revert file");

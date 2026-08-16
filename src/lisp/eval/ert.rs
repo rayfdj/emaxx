@@ -1,181 +1,7 @@
 use super::*;
 
 impl Interpreter {
-    pub(super) fn sf_with_eval_after_load(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 2 {
-            return Err(LispError::WrongNumberOfArgs(
-                "with-eval-after-load".into(),
-                0,
-            ));
-        }
-        let feature_value = self.eval(&items[1], env)?;
-        let feature = match feature_value {
-            Value::Symbol(name) => name.to_string(),
-            Value::String(name) => name.to_string(),
-            Value::StringObject(state) => state.borrow().text.clone(),
-            other => {
-                return Err(LispError::TypeError(
-                    "string-or-symbol".into(),
-                    other.type_name(),
-                ));
-            }
-        };
-        if self.has_feature(&feature) {
-            self.sf_progn(&items[2..], env)
-        } else {
-            self.after_load_forms
-                .push((feature, items[2..].to_vec(), env.clone()));
-            Ok(Value::Nil)
-        }
-    }
-
-    pub(super) fn sf_with_memoization(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 3 {
-            return Err(LispError::WrongNumberOfArgs(
-                "with-memoization".into(),
-                items.len().saturating_sub(1),
-            ));
-        }
-        let place = self.resolve_setf_place(&items[1], env)?;
-        let current = self.eval_resolved_setf_place_current_value(&place, env)?;
-        if current.is_truthy() {
-            return Ok(current);
-        }
-        let value = self.sf_progn(&items[2..], env)?;
-        self.set_resolved_setf_place_value(&place, value.clone(), env)?;
-        Ok(value)
-    }
-
-    pub(super) fn sf_with_mutex(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 2 {
-            return Err(LispError::WrongNumberOfArgs(
-                "with-mutex".into(),
-                items.len().saturating_sub(1),
-            ));
-        }
-        let mutex_value = self.eval(&items[1], env)?;
-        let mutex_id = self.resolve_mutex_id(&mutex_value)?;
-        self.lock_mutex_for_current_thread(mutex_id, env)?;
-        let result = self.sf_progn(&items[2..], env);
-        let _ = self.unlock_mutex_for_current_thread(mutex_id);
-        result
-    }
-
     // ── ERT support ──
-
-    pub(super) fn sf_ert_deftest(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 3 {
-            return Ok(Value::Nil);
-        }
-        let name = match &items[1] {
-            Value::Symbol(s) => s.clone(),
-            _ => return Ok(Value::Nil),
-        };
-        if self.ert_tests.iter().any(|test| test.name == name) {
-            return Err(LispError::Signal(format!(
-                "Test `{name}` redefined (or loaded twice)"
-            )));
-        }
-
-        // items[2] is the param list (always empty for ert-deftest)
-        // items[3..] is docstring, keyword metadata, then body forms.
-        let mut cursor = 3;
-        if items
-            .get(cursor)
-            .is_some_and(|value| matches!(value, Value::String(_) | Value::StringObject(_)))
-        {
-            cursor += 1;
-        }
-
-        let mut tags = Vec::new();
-        let mut expected_result = ":passed".to_string();
-        while cursor + 1 < items.len()
-            && items
-                .get(cursor)
-                .and_then(keyword_symbol_name)
-                .is_some_and(|name| name.starts_with(':'))
-        {
-            let keyword = keyword_symbol_name(&items[cursor]).unwrap_or_default();
-            let value = &items[cursor + 1];
-            match keyword.as_str() {
-                // ert-deftest is a macro in GNU: metadata expressions become
-                // arguments to make-ert-test and are evaluated when the test
-                // is defined.  This matters for conditional tag forms such
-                // as `(and (null (getenv "CI")) '(:unstable))'.
-                ":tags" => tags = parse_ert_tags(&self.eval(value, env)?),
-                ":expected-result" => expected_result = selector_atom(&self.eval(value, env)?),
-                _ => {}
-            }
-            cursor += 2;
-        }
-
-        // GNU's ert-deftest macro expands the test body while its defining
-        // file is still the active load context.  Do the same in the native
-        // bootstrap fallback instead of carrying a synthetic file-name
-        // variable throughout execution (which corrupts a nested runtime
-        // `macroexpand').
-        let body = items[cursor..]
-            .iter()
-            .map(|form| self.macroexpand_all_form_with_environment(form, None, env))
-            .collect::<Result<Vec<_>, _>>()?;
-        let closure_env = shared_env(env.clone());
-        if self
-            .lookup_var("lexical-binding", env)
-            .is_some_and(|value| value.is_truthy())
-        {
-            self.mark_lexical_closure_env(&closure_env);
-        }
-        let body = Value::lambda(Vec::new().into(), body.into(), closure_env);
-        // Mirror `ert-set-test': tests are also reachable through the
-        // `ert--test' symbol property as an `ert-test' struct, which
-        // `ert-get-test' and the struct accessors read.
-        let docstring = items
-            .get(3)
-            .filter(|value| matches!(value, Value::String(_) | Value::StringObject(_)))
-            .cloned()
-            .unwrap_or(Value::Nil);
-        let record = self.create_record(
-            "ert-test",
-            vec![
-                Value::Symbol(name.clone()),
-                docstring,
-                body.clone(),
-                Value::Nil,
-                Value::Symbol(expected_result.clone().into()),
-                Value::list(
-                    tags.iter()
-                        .map(|tag| Value::Symbol(tag.clone().into()))
-                        .collect::<Vec<_>>(),
-                ),
-                self.current_load_file
-                    .clone()
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil),
-            ],
-        );
-        // `ert_set_test' is the single registration boundary for both the
-        // public symbol property and the native execution index.  Keeping a
-        // second inline write here made `ert-deftest' and `ert-set-test'
-        // capable of exposing different metadata for the same record.
-        self.ert_set_test(&name, &record)?;
-        Ok(Value::Nil)
-    }
 
     // GNU `ert-set-test' stores an `ert-test' struct under the symbol's
     // `ert--test' property; ert-font-lock's deftest macros register tests
@@ -187,7 +13,7 @@ impl Interpreter {
         };
         let slots = self
             .find_record(*record_id)
-            .filter(|record| record.type_name == "ert-test")
+            .filter(|record| record.has_symbol_type("ert-test"))
             .map(|record| record.slots.clone())
             .ok_or_else(|| LispError::TypeError("ert-test".into(), test.type_name()))?;
         let body = slots.get(2).cloned().unwrap_or(Value::Nil);
@@ -225,9 +51,9 @@ impl Interpreter {
         let Some(record) = self.find_record_mut(*record_id) else {
             return;
         };
-        debug_assert_eq!(record.type_name, "ert-test");
+        debug_assert!(record.has_symbol_type("ert-test"));
         debug_assert!(record.slots.len() > 3);
-        if record.type_name == "ert-test" && record.slots.len() > 3 {
+        if record.has_symbol_type("ert-test") && record.slots.len() > 3 {
             record.slots[3] = result;
         }
     }
@@ -246,97 +72,6 @@ impl Interpreter {
             slots.extend([error_condition_value(error), Value::Nil, Value::Nil]);
         }
         self.create_record(type_name, slots)
-    }
-
-    pub(super) fn sf_should(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() < 2 {
-            return Err(LispError::WrongNumberOfArgs("should".into(), 0));
-        }
-        let val = self.eval(&items[1], env)?;
-        if val.is_truthy() {
-            // GNU `should' returns the value of FORM.
-            Ok(val)
-        } else {
-            Err(LispError::ErtTestFailed(format!(
-                "Test failed: expected truthy value from {}",
-                items[1]
-            )))
-        }
-    }
-
-    pub(super) fn sf_should_not(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 2 {
-            return Err(LispError::WrongNumberOfArgs("should-not".into(), 0));
-        }
-        let val = self.eval(&items[1], env)?;
-        if val.is_nil() {
-            Ok(Value::Nil)
-        } else {
-            Err(LispError::ErtTestFailed(format!(
-                "Test failed: expected nil from {}; got {}",
-                items[1], val
-            )))
-        }
-    }
-
-    pub(super) fn sf_should_error(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 2 {
-            return Err(LispError::WrongNumberOfArgs("should-error".into(), 0));
-        }
-        // GNU `should-error' expands to a `condition-case' with an `error'
-        // clause; register it so signal-time `handler-bind' dispatch (e.g.
-        // ert's own test-runner handlers) leaves the error to us.
-        let handler_start = self.push_condition_case_handler(vec![Value::Symbol("error".into())]);
-        let body_result = self.eval(&items[1], env);
-        self.pop_handler_bindings(handler_start);
-        match body_result {
-            Err(error @ LispError::Terminate(_)) => Err(error),
-            Err(e) => {
-                if self.take_condition_case_suspend() {
-                    return Err(e);
-                }
-                // GNU matches when the expected type is memq in the
-                // signaled condition's `error-conditions' (every error
-                // derives from `error').
-                let condition = e.condition_type();
-                let condition_names = self
-                    .get_symbol_property(&condition, "error-conditions")
-                    .and_then(|value| value.to_vec().ok())
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| item.as_symbol().ok().map(str::to_string))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if let Some(expected_types) = should_error_types(items)
-                    && !expected_types.iter().any(|expected| {
-                        expected == &condition
-                            || condition_names.iter().any(|name| name == expected)
-                            || (expected == "error" && condition_names.is_empty())
-                    })
-                {
-                    return Err(LispError::ErtTestFailed(format!(
-                        "Test failed: expected error type {} but got {}",
-                        expected_types.join(" or "),
-                        e.condition_type()
-                    )));
-                }
-                Ok(error_condition_value(&e))
-            }
-            Ok(val) => Err(LispError::ErtTestFailed(format!(
-                "Test failed: expected error but got {}",
-                val
-            ))),
-        }
     }
 
     pub fn discovered_tests(&self) -> Vec<DiscoveredTest> {
@@ -430,15 +165,15 @@ impl Interpreter {
             // buffer ("For now, each test gets its own temp buffer ...
             // just to be safe"); erc's helpers rely on starting in one.
             let saved_buffer_id = self.current_buffer_id();
-            let temp_buffer_result = primitives::call(
-                self,
-                "generate-new-buffer",
-                &[Value::String(" *temp*".into())],
-                &mut env,
-            );
-            let temp_buffer_id = temp_buffer_result
-                .ok()
-                .and_then(|buffer| self.resolve_buffer_id(&buffer).ok());
+            let temp_buffer_result = self
+                .call_function_value(
+                    Value::Symbol("generate-new-buffer".into()),
+                    Some("generate-new-buffer"),
+                    &[Value::String(" *temp*".into())],
+                    &mut env,
+                )
+                .and_then(|buffer| self.resolve_buffer_id(&buffer));
+            let temp_buffer_id = temp_buffer_result.as_ref().ok().copied();
             if let Some(id) = temp_buffer_id {
                 let _ = self.set_current_buffer_id(id);
             }
@@ -458,9 +193,15 @@ impl Interpreter {
             self.active_catch_tags
                 .push(Value::Symbol("ert--pass".into()));
             let test_started = std::time::Instant::now();
-            let mut result = match (stats_restore.as_ref(), lexical_restore.as_ref()) {
-                (Ok(_), Ok(_)) => self.call_function_value(test.body.clone(), None, &[], &mut env),
-                (Err(error), _) | (_, Err(error)) => Err(error.clone()),
+            let mut result = match (
+                stats_restore.as_ref(),
+                lexical_restore.as_ref(),
+                temp_buffer_result.as_ref(),
+            ) {
+                (Ok(_), Ok(_), Ok(_)) => {
+                    self.call_function_value(test.body.clone(), None, &[], &mut env)
+                }
+                (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error.clone()),
             };
             self.active_catch_tags.pop();
             // GNU's native `kill-emacs` exits immediately: ERT never turns it
@@ -580,39 +321,6 @@ fn selector_atom(value: &Value) -> String {
         Value::String(value) => value.to_string(),
         other => other.to_string(),
     }
-}
-
-fn parse_ert_tags(value: &Value) -> Vec<String> {
-    match unquote(value) {
-        Value::Nil => Vec::new(),
-        Value::Cons(_) => unquote(value)
-            .to_vec()
-            .map(|values| values.iter().map(selector_atom).collect())
-            .unwrap_or_default(),
-        other => vec![selector_atom(&other)],
-    }
-}
-
-fn should_error_types(items: &[Value]) -> Option<Vec<String>> {
-    let mut cursor = 2;
-    while cursor + 1 < items.len() {
-        match keyword_symbol_name(&items[cursor]).as_deref() {
-            Some(":type") => {
-                let raw = unquote(&items[cursor + 1]);
-                if let Ok(values) = raw.to_vec() {
-                    let names = values
-                        .into_iter()
-                        .map(|value| selector_atom(&value))
-                        .collect();
-                    return Some(names);
-                }
-                return Some(vec![selector_atom(&raw)]);
-            }
-            Some(_) => cursor += 2,
-            None => break,
-        }
-    }
-    None
 }
 
 fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {

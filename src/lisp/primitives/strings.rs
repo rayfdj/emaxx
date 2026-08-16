@@ -1,60 +1,112 @@
 use super::*;
 
-pub(crate) fn replacement_content(
-    interp: &Interpreter,
-    source: &Value,
-) -> Result<StringLike, LispError> {
-    if let Some(string) = string_like(source) {
-        return Ok(string);
-    }
-    match source {
-        Value::Buffer(buffer_value) => {
-            let id = buffer_value.id;
-            let _ = &buffer_value.name;
-            let buffer = interp
-                .get_buffer_by_id(id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", id)))?;
-            let text = buffer
-                .buffer_substring(buffer.point_min(), buffer.point_max())
-                .map_err(|e| LispError::Signal(e.to_string()))?;
-            Ok(StringLike {
-                multibyte: text.chars().any(|ch| (ch as u32) > 0x7F),
-                text,
-                props: buffer.substring_property_spans(buffer.point_min(), buffer.point_max()),
-            })
-        }
-        _ => {
-            let items = vector_items(source)?;
-            if items.len() >= 3 {
-                let buffer_id = interp.resolve_buffer_id(&items[0])?;
-                let start = position_from_value(interp, &items[1])?;
-                let end = position_from_value(interp, &items[2])?;
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-                let text = buffer
-                    .buffer_substring(start, end)
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
-                Ok(StringLike {
-                    multibyte: text.chars().any(|ch| (ch as u32) > 0x7F),
-                    text,
-                    props: buffer.substring_property_spans(start, end),
-                })
-            } else {
-                Err(LispError::TypeError(
-                    "string-or-buffer".into(),
-                    source.type_name(),
-                ))
-            }
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct StringLike {
     pub(crate) text: String,
     pub(crate) props: Vec<TextPropertySpan>,
     pub(crate) multibyte: bool,
+    pub(crate) extended_chars: Vec<(usize, u32)>,
+}
+
+impl StringLike {
+    pub(crate) fn char_code_at(&self, index: usize) -> Option<i64> {
+        if let Ok(position) = self
+            .extended_chars
+            .binary_search_by_key(&index, |(position, _)| *position)
+        {
+            return Some(i64::from(self.extended_chars[position].1));
+        }
+        self.text
+            .chars()
+            .nth(index)
+            .map(|ch| string_character_code(self.multibyte, ch))
+    }
+
+    pub(crate) fn character_codes(&self) -> Vec<i64> {
+        self.text
+            .chars()
+            .enumerate()
+            .map(|(index, ch)| {
+                self.extended_chars
+                    .binary_search_by_key(&index, |(position, _)| *position)
+                    .ok()
+                    .map(|position| i64::from(self.extended_chars[position].1))
+                    .unwrap_or_else(|| string_character_code(self.multibyte, ch))
+            })
+            .collect()
+    }
+
+    pub(crate) fn byte_len(&self) -> Result<usize, LispError> {
+        if !self.multibyte {
+            return Ok(encode_raw_text_bytes(&self.text)?.len());
+        }
+        self.character_codes()
+            .into_iter()
+            .try_fold(0usize, |len, code| {
+                let code = u32::try_from(code)
+                    .map_err(|_| LispError::Signal("Invalid character".into()))?;
+                Ok(len + emacs_multibyte_char_len(code)?)
+            })
+    }
+}
+
+pub(crate) fn emacs_multibyte_char_len(code: u32) -> Result<usize, LispError> {
+    Ok(match code {
+        0x000000..=0x00007F => 1,
+        0x000080..=0x0007FF => 2,
+        0x000800..=0x00FFFF => 3,
+        0x010000..=0x1FFFFF => 4,
+        0x200000..=0x3FFF7F => 5,
+        0x3FFF80..=0x3FFFFF => 2,
+        _ => return Err(LispError::Signal("Invalid character".into())),
+    })
+}
+
+pub(crate) fn push_emacs_multibyte_char(output: &mut Vec<u8>, code: u32) -> Result<(), LispError> {
+    match emacs_multibyte_char_len(code)? {
+        1 => output.push(code as u8),
+        2 if code <= 0x7FF => {
+            output.push(0xC0 | (code >> 6) as u8);
+            output.push(0x80 | (code & 0x3F) as u8);
+        }
+        2 => {
+            let payload = code - 0x3F_FF80;
+            output.push(0xC0 | (payload >> 6) as u8);
+            output.push(0x80 | (payload & 0x3F) as u8);
+        }
+        3 => {
+            output.push(0xE0 | (code >> 12) as u8);
+            output.push(0x80 | ((code >> 6) & 0x3F) as u8);
+            output.push(0x80 | (code & 0x3F) as u8);
+        }
+        4 => {
+            output.push(0xF0 | (code >> 18) as u8);
+            output.push(0x80 | ((code >> 12) & 0x3F) as u8);
+            output.push(0x80 | ((code >> 6) & 0x3F) as u8);
+            output.push(0x80 | (code & 0x3F) as u8);
+        }
+        5 => {
+            output.push(0xF8);
+            output.push(0x80 | ((code >> 18) & 0x0F) as u8);
+            output.push(0x80 | ((code >> 12) & 0x3F) as u8);
+            output.push(0x80 | ((code >> 6) & 0x3F) as u8);
+            output.push(0x80 | (code & 0x3F) as u8);
+        }
+        _ => unreachable!("validated Emacs multibyte length"),
+    }
+    Ok(())
+}
+
+fn string_character_code(multibyte: bool, ch: char) -> i64 {
+    if let Some(byte) = raw_byte_from_regex_char(ch) {
+        if multibyte {
+            RAW_BYTE8_BASE as i64 + i64::from(byte)
+        } else {
+            i64::from(byte)
+        }
+    } else {
+        ch as i64
+    }
 }
 
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
@@ -62,6 +114,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
         Value::String(text) => Some(StringLike {
             text: text.to_string(),
             props: Vec::new(),
+            extended_chars: Vec::new(),
             multibyte: text
                 .chars()
                 .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
@@ -80,6 +133,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                     })
                     .collect(),
                 multibyte: state.multibyte,
+                extended_chars: state.extended_chars.clone(),
             })
         }
         Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") =>
@@ -111,6 +165,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 text: text.to_string(),
                 props,
                 multibyte,
+                extended_chars: Vec::new(),
             })
         }
         Value::Cons(_) => None,
@@ -254,13 +309,6 @@ pub(crate) fn validate_collation_locale(locale: Option<&Value>) -> Result<(), Li
     Ok(())
 }
 
-pub(crate) fn is_rtl_char(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x0590..=0x08ff | 0xfb1d..=0xfdff | 0xfe70..=0xfeff | 0x10800..=0x10fff
-    )
-}
-
 pub(crate) fn assoc_string_text(value: &Value) -> Result<String, LispError> {
     match value {
         Value::Nil => Ok("nil".into()),
@@ -369,11 +417,34 @@ pub(crate) fn make_shared_string_value_with_multibyte(
     props: Vec<TextPropertySpan>,
     multibyte: bool,
 ) -> Value {
+    make_shared_string_value_with_extended_chars(text, props, multibyte, Vec::new())
+}
+
+pub(crate) fn make_shared_string_value_with_extended_chars(
+    text: String,
+    props: Vec<TextPropertySpan>,
+    multibyte: bool,
+    extended_chars: Vec<(usize, u32)>,
+) -> Value {
     Value::StringObject(Rc::new(RefCell::new(SharedStringState {
         text,
         props: shared_string_props(&props),
         multibyte,
+        extended_chars,
     })))
+}
+
+pub(crate) fn string_like_value_with_extended_chars(
+    text: String,
+    props: Vec<TextPropertySpan>,
+    multibyte: bool,
+    extended_chars: Vec<(usize, u32)>,
+) -> Value {
+    if extended_chars.is_empty() {
+        string_like_value_with_multibyte(text, props, multibyte)
+    } else {
+        make_shared_string_value_with_extended_chars(text, props, multibyte, extended_chars)
+    }
 }
 
 pub(crate) fn string_like_value_with_multibyte(
@@ -381,14 +452,11 @@ pub(crate) fn string_like_value_with_multibyte(
     props: Vec<TextPropertySpan>,
     multibyte: bool,
 ) -> Value {
-    let inferred_multibyte = text
-        .chars()
-        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
-    if props.is_empty() && !multibyte && !inferred_multibyte {
-        Value::String(text.into())
-    } else {
-        make_shared_string_value_with_multibyte(text, props, multibyte)
-    }
+    // GNU string-producing primitives allocate mutable Lisp string objects
+    // even when the result is ASCII and has no properties yet.  Collapsing
+    // that case into Emaxx's immutable host-text representation breaks
+    // subsequent `aset' and text-property mutation through aliases.
+    make_shared_string_value_with_multibyte(text, props, multibyte)
 }
 
 pub(crate) fn string_like_value(text: String, props: Vec<TextPropertySpan>) -> Value {

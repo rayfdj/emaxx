@@ -1,6 +1,10 @@
 use std::cell::RefCell;
 use std::sync::{Condvar, Mutex, OnceLock};
 
+use crate::lisp::eval::Interpreter;
+use crate::lisp::reader::Reader;
+use crate::lisp::types::{Env, LispError, Value};
+
 const MAX_CONCURRENT_HOST_HEAVY_TESTS: usize = 2;
 
 #[derive(Default)]
@@ -107,6 +111,18 @@ fn process_test_gate() -> &'static HostTestGate {
     GATE.get_or_init(HostTestGate::new)
 }
 
+/// Source reconstruction tree-walks and macroexpands the entire GNU preload
+/// image.  Running several copies at once only multiplies wall time and makes
+/// libtest's 60-second warning look like a product hang.  Serialize that
+/// setup phase while leaving both compiled startup and the test bodies under
+/// the ordinary bounded-parallel scheduler.
+pub(crate) fn acquire_batch_source_bootstrap_permit() -> std::sync::MutexGuard<'static, ()> {
+    static GATE: OnceLock<Mutex<()>> = OnceLock::new();
+    GATE.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 thread_local! {
     /// Held until libtest tears down the current test thread. This makes the
     /// process boundary the single owner of process-test serialization: a new
@@ -138,9 +154,103 @@ pub(crate) fn mark_process_test() {
     });
 }
 
+/// Initialize GNU's early Lisp owners in their `loadup.el` order.
+///
+/// This is the smallest honest runtime for tests whose subject executes
+/// portable definitions from subr.el (for example, compiled expansions of
+/// `with-temp-buffer`).  Tests of the file-less C/Rust host must continue to
+/// construct `Interpreter::new` directly.
+pub(crate) fn initialized_gnu_early_lisp_interpreter() -> Interpreter {
+    let upstream = crate::compat::project_root().join("../emacs");
+    let mut interpreter = Interpreter::new();
+    interpreter.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream)
+            .expect("resolve upstream GNU Lisp load path"),
+    );
+    interpreter.set_prefer_compiled_loads(crate::lisp::bytecode_vm_enabled());
+    for library in [
+        "emacs-lisp/debug-early",
+        "emacs-lisp/byte-run",
+        "emacs-lisp/backquote",
+        "subr",
+    ] {
+        interpreter
+            .load_target(library)
+            .unwrap_or_else(|error| panic!("load GNU early owner {library}: {error}"));
+    }
+    interpreter
+}
+
+/// Replace a bare test interpreter with the same GNU Lisp image used by
+/// normal Emaxx batch startup.
+///
+/// Tests must exercise the upstream Lisp owners directly.  In particular,
+/// they must not load project-local compatibility facades that can mask a
+/// missing primitive or move policy across the GNU C/Elisp boundary.
+pub(crate) fn replace_with_gnu_batch_runtime(interpreter: &mut Interpreter) {
+    let emacs_repo = crate::compat::project_root().join("../emacs");
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&emacs_repo)
+            .expect("resolve upstream GNU Lisp load path"),
+        ..Default::default()
+    };
+    *interpreter = crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
+        .expect("reconstruct compiled GNU batch Lisp image");
+}
+
+/// Initialize the same GNU-owned Lisp environment used by Emaxx batch mode.
+/// Ownership-sensitive tests use this instead of rebuilding partial load
+/// paths or quietly calling a dormant native dispatch arm.
+pub(crate) fn initialized_upstream_batch_interpreter() -> Interpreter {
+    let upstream = crate::compat::project_root().join("../emacs");
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream)
+            .expect("upstream GNU Emacs load path"),
+        ..Default::default()
+    };
+    crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
+        .expect("initialize compiled GNU-compatible batch interpreter")
+}
+
+pub(crate) fn eval_lisp(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    source: &str,
+) -> Result<Value, LispError> {
+    let forms = Reader::new(source).read_all()?;
+    let mut result = Value::Nil;
+    for form in forms {
+        result = interpreter.eval(&form, environment)?;
+    }
+    Ok(result)
+}
+
+pub(crate) fn call_lisp_function(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    name: &str,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
+    let function = interpreter.lookup_function(name, environment)?;
+    interpreter.call_function_value(function, Some(name), arguments, environment)
+}
+
+pub(crate) fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
+    let permit = acquire_host_test_permit();
+    std::thread::Builder::new()
+        .stack_size(128 * 1024 * 1024)
+        .spawn(move || {
+            let _permit = permit;
+            test();
+        })
+        .expect("spawn large-stack test thread")
+        .join()
+        .expect("join large-stack test thread");
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{HostTestGate, mark_process_test};
+    use super::{HostTestGate, acquire_batch_source_bootstrap_permit, mark_process_test};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
@@ -190,6 +300,25 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("exclusive test should enter alone");
         exclusive.join().expect("exclusive waiter should finish");
+    }
+
+    #[test]
+    fn batch_source_bootstrap_gate_serializes_only_the_setup_region() {
+        let first = acquire_batch_source_bootstrap_permit();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).expect("announce bootstrap waiter");
+            let _permit = acquire_batch_source_bootstrap_permit();
+            entered_tx.send(()).expect("announce bootstrap permit");
+        });
+        started_rx.recv().expect("bootstrap waiter should start");
+        assert!(entered_rx.recv_timeout(Duration::from_millis(25)).is_err());
+        drop(first);
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("bootstrap waiter should enter after setup releases");
+        waiter.join().expect("bootstrap waiter should finish");
     }
 
     #[test]

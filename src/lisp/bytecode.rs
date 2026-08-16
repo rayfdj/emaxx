@@ -881,28 +881,16 @@ pub(crate) mod tests {
     const ORACLE_ELC: &str = include_str!("bytecode/fixture-oracle-30.2.elc");
 
     fn collect_byte_code_slot_lists(value: &Value, found: &mut Vec<Vec<Value>>) {
-        let Ok(items) = value.to_vec() else { return };
-        if let [Value::Symbol(marker), kind, slots @ ..] = items.as_slice()
-            && marker == super::super::reader::CLOSURE_LITERAL_SYMBOL
-            && kind.to_vec().is_ok_and(|kind_items| {
-                matches!(
-                    kind_items.as_slice(),
-                    [Value::Symbol(quote), Value::Symbol(name)]
-                        if quote == "quote" && name == "byte-code-function"
-                )
-            })
-        {
-            // Undo the reader's slot-eval wrapping: `(quote X)` -> X.
-            let unwrapped = slots
-                .iter()
-                .map(|slot| match slot.to_vec().ok().as_deref() {
-                    Some([Value::Symbol(quote), inner]) if quote == "quote" => inner.clone(),
-                    _ => slot.clone(),
-                })
-                .collect();
-            found.push(unwrapped);
+        if let Value::ReaderForm(form) = value {
+            let crate::lisp::types::ReaderForm::Closure { kind, slots } = form.as_ref() else {
+                return;
+            };
+            if *kind == crate::lisp::types::ReaderClosureKind::ByteCode {
+                found.push(slots.clone());
+            }
             return;
         }
+        let Ok(items) = value.to_vec() else { return };
         for item in items {
             collect_byte_code_slot_lists(&item, found);
         }
@@ -969,7 +957,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let elc = dir.join("fixture-src2.elc");
         std::fs::write(&elc, ORACLE_ELC2).unwrap();
-        let mut interp = super::super::eval::Interpreter::new();
+        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
         super::super::load_file_strict(&mut interp, &elc).unwrap();
         let mut env = super::super::types::Env::new();
         let value = interp
