@@ -9,7 +9,7 @@ use crate::lisp::primitives::processes::wait_pumping_processes;
 /// (START, END, FACE) face runs in char offsets, the currency between
 /// renderers and the frontend's paint layer.
 pub(crate) type FaceSpans = Vec<(usize, usize, Value)>;
-type EchoSpans = FaceSpans;
+pub(crate) type EchoSpans = FaceSpans;
 
 thread_local! {
     static ECHO_AREA_MESSAGE: std::cell::RefCell<Option<(String, EchoSpans)>> =
@@ -1693,12 +1693,16 @@ define_dispatch!(
                 ))
             }
             "message" => {
-                let (text, text_spans) =
+                let (text, text_spans, formatted) =
                     if args.is_empty() || args.first().is_some_and(Value::is_nil) {
-                        (String::new(), Vec::new())
+                        (String::new(), Vec::new(), None)
                     } else {
                         let formatted = super::call(interp, "format", args, env)?;
-                        (string_text(&formatted)?, string_face_spans(&formatted))
+                        (
+                            string_text(&formatted)?,
+                            string_face_spans(&formatted),
+                            Some(formatted),
+                        )
                     };
                 let buffer_name = interp
                     .lookup_var("messages-buffer-name", env)
@@ -1756,9 +1760,50 @@ define_dispatch!(
                     .is_none_or(|value| value.is_nil())
                 {
                     if text.is_empty() {
-                        set_echo_area_message(None);
+                        // xdisp.c clear_message: `clear-message-function'
+                        // clears its own display first (the minibuffer's
+                        // transient overlay); `dont-clear-message' keeps
+                        // the echo area untouched.
+                        let kept = interp
+                            .lookup_var("clear-message-function", env)
+                            .filter(|function| !function.is_nil())
+                            .and_then(|function| {
+                                interp.call_function_value(function, None, &[], env).ok()
+                            })
+                            .is_some_and(|result| {
+                                matches!(&result, Value::Symbol(answer)
+                                    if answer == "dont-clear-message")
+                            });
+                        if !kept {
+                            set_echo_area_message(None);
+                        }
                     } else {
-                        set_echo_area_message_with_spans(text.clone(), text_spans);
+                        // xdisp.c set_message: `set-message-function' may
+                        // replace the string or consume it entirely
+                        // (set-minibuffer-message displays it inside the
+                        // active minibuffer instead of the echo area).
+                        let mut display = Some((text.clone(), text_spans));
+                        if let Some(function) = interp
+                            .lookup_var("set-message-function", env)
+                            .filter(|function| !function.is_nil())
+                        {
+                            let string = formatted
+                                .clone()
+                                .unwrap_or_else(|| Value::String(text.clone().into()));
+                            if let Ok(result) =
+                                interp.call_function_value(function, None, &[string], env)
+                            {
+                                if result.is_string() {
+                                    display =
+                                        Some((string_text(&result)?, string_face_spans(&result)));
+                                } else if result.is_truthy() {
+                                    display = None;
+                                }
+                            }
+                        }
+                        if let Some((text, spans)) = display {
+                            set_echo_area_message_with_spans(text, spans);
+                        }
                     }
                 }
                 // There is no echo area in batch mode.  GNU writes messages to
@@ -2016,11 +2061,15 @@ define_dispatch!(
             }
             "input-pending-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                Ok(if unread_command_events(interp, env)?.is_empty() {
-                    Value::Nil
-                } else {
-                    Value::T
-                })
+                Ok(
+                    if unread_command_events(interp, env)?.is_empty()
+                        && !crate::lisp::primitives::tty_input_pending()
+                    {
+                        Value::Nil
+                    } else {
+                        Value::T
+                    },
+                )
             }
             "discard-input" => {
                 need_args(name, args, 0)?;
@@ -3774,8 +3823,11 @@ define_dispatch!(
             }
             "redisplay" => {
                 need_arg_range(name, args, 0, 1)?;
-                // The cache-free batch renderer cannot be preempted by pending
-                // terminal input, so redisplay always completes.
+                // A live frontend repaints through its redraw hook
+                // (sit-for redisplays before waiting); the cache-free
+                // batch renderer cannot be preempted by pending terminal
+                // input, so redisplay always completes.
+                crate::lisp::primitives::run_tty_frame_redraw(interp, env);
                 Ok(Value::T)
             }
             "redraw-frame" => {

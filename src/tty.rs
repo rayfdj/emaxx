@@ -164,6 +164,11 @@ struct TtyState {
     /// generation is unchanged (GNU's face_change flag).
     face_cache: std::collections::HashMap<String, CellAttrs>,
     face_cache_generation: u64,
+    /// The composed echo row currently belongs to an active minibuffer:
+    /// the interpreter-less blocking-read repaint must not overwrite it
+    /// with the plain message channel (the composed paint carries the
+    /// prompt face and overlay strings).
+    minibuffer_owns_echo: bool,
     /// The menu-bar row's caption text, valid while the selected
     /// window's buffer, major mode, and active keymap set are unchanged
     /// — GNU recomputes menu_bar_items on buffer, window, or mode-line
@@ -183,6 +188,7 @@ impl TtyState {
             painted_size: (0, 0),
             face_cache: std::collections::HashMap::new(),
             face_cache_generation: 0,
+            minibuffer_owns_echo: false,
             menu_bar_row: None,
         }
     }
@@ -239,6 +245,24 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
         queue.clone(),
         std::rc::Rc::clone(&state),
     )));
+    // The polling companion: one short wait per call, `None' inner value
+    // when the terminal stays quiet — blocking reads pump ripe timers
+    // between polls, GNU read_char's timer_check.
+    crate::lisp::primitives::set_tty_event_poller(Some(Box::new({
+        let queue = queue.clone();
+        let state = std::rc::Rc::clone(&state);
+        move || {
+            draw_echo_row(&state);
+            match queue.try_next_event() {
+                Err(()) => None,
+                Ok(Some(event)) => Some(Some(event)),
+                Ok(None) => {
+                    let _ = event::poll(std::time::Duration::from_millis(50));
+                    Some(None)
+                }
+            }
+        }
+    })));
     // Command code that reads events itself (the minibuffer) repaints the
     // frame through this hook, so window-configuration changes made
     // mid-read — a *Completions* pop-up — reach the glass immediately.
@@ -254,9 +278,17 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
             }
         }
     })));
+    // keyboard.c's input_pending probe: `input-pending-p' and sit-for's
+    // early exit see queued terminal input without consuming it.
+    crate::lisp::primitives::set_tty_input_pending_check(Some(Box::new({
+        let queue = queue.clone();
+        move || queue.input_pending()
+    })));
     let code = command_loop(&mut interpreter, &mut env, &queue, &state);
     crate::lisp::primitives::set_tty_frame_redraw(None);
     crate::lisp::primitives::set_tty_event_reader(None);
+    crate::lisp::primitives::set_tty_event_poller(None);
+    crate::lisp::primitives::set_tty_input_pending_check(None);
     crate::lisp::primitives::set_interactive_window_metrics(None);
     drop(guard);
     code
@@ -355,6 +387,13 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
     let mut text = crate::lisp::primitives::echo_area_message().unwrap_or_default();
     text.truncate(cols.max(10) as usize);
     if let Ok(state) = state.try_borrow() {
+        // An active minibuffer's composed row (prompt face, overlay
+        // strings) belongs to full redisplay; commands are the only
+        // thing that changes it, and the frame-redraw hook repaints
+        // after each one.
+        if state.minibuffer_owns_echo {
+            return;
+        }
         let painted: String = state.painted_echo.text.iter().collect();
         if painted.trim_end_matches(' ') == text {
             return;
@@ -1265,13 +1304,14 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     // properties read_minibuf applied — the prompt's face reaches the
     // glass.
     let frontend_echo = state.echo.clone();
-    let echo_row = compose_echo_row(
+    let (echo_row, from_minibuffer) = compose_echo_row(
         interpreter,
         env,
         &frontend_echo,
         cols,
         &mut state.face_cache,
     );
+    state.minibuffer_owns_echo = from_minibuffer;
     if state.painted_echo != echo_row {
         paint_row(&mut out, frame_rows, &echo_row)?;
         state.painted_echo = echo_row;
@@ -1294,7 +1334,7 @@ fn compose_echo_row(
     frontend_echo: &str,
     cols: usize,
     face_cache: &mut std::collections::HashMap<String, CellAttrs>,
-) -> PaintRow {
+) -> (PaintRow, bool) {
     let mut row = PaintRow::blank(cols);
     let minibuffer_id = if frontend_echo.is_empty() {
         interpreter
@@ -1308,7 +1348,19 @@ fn compose_echo_row(
         None
     };
     if let Some(buffer_id) = minibuffer_id {
-        let cells: Vec<(char, Option<Value>)> = {
+        // The minibuffer's row renders like any window line in GNU:
+        // buffer text under its face spans (text properties, overlays —
+        // rfn-eshadow's shadow), with overlay before/after-strings
+        // spliced in at their positions (set-minibuffer-message's
+        // " [No match]" lives in an after-string at the end).
+        struct OverlayString {
+            position: usize,
+            after: bool,
+            id: u64,
+            text: String,
+            spans: crate::lisp::primitives::EchoSpans,
+        }
+        let (text, point_min, mut strings) = {
             let buffer = if buffer_id == interpreter.current_buffer_id() {
                 &interpreter.buffer
             } else if let Some(buffer) = interpreter.get_buffer_by_id(buffer_id) {
@@ -1316,33 +1368,91 @@ fn compose_echo_row(
             } else {
                 &interpreter.buffer
             };
-            let text = buffer.buffer_string();
-            text.chars()
-                .take(cols)
-                .enumerate()
-                .map(|(index, c)| {
-                    (
-                        c,
-                        buffer
-                            .text_property_at(buffer.point_min() + index, "face")
-                            .filter(|face| !face.is_nil()),
-                    )
-                })
-                .collect()
-        };
-        for (col, (c, face)) in cells.into_iter().enumerate() {
-            let attrs = match face {
-                Some(face) => {
-                    let key = format!("{face}");
-                    *face_cache.entry(key).or_insert_with(|| {
-                        crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-                    })
+            let mut strings = Vec::new();
+            for overlay in &buffer.overlays {
+                if overlay.is_dead() {
+                    continue;
                 }
-                None => CellAttrs::default(),
-            };
-            row.blit(col, &c.to_string(), attrs);
+                for (name, after) in [("before-string", false), ("after-string", true)] {
+                    let Some(value) = overlay.get_prop(&Value::Symbol(name.into())) else {
+                        continue;
+                    };
+                    let Ok(text) = crate::lisp::primitives::string_text(value) else {
+                        continue;
+                    };
+                    strings.push(OverlayString {
+                        position: if after { overlay.end } else { overlay.beg },
+                        after,
+                        id: overlay.id,
+                        text,
+                        spans: crate::lisp::primitives::string_face_spans(value),
+                    });
+                }
+            }
+            (buffer.buffer_string(), buffer.point_min(), strings)
+        };
+        strings.sort_by_key(|string| (string.position, string.after, string.id));
+        let face_spans = crate::lisp::primitives::window_face_spans(
+            interpreter,
+            env,
+            buffer_id,
+            point_min,
+            point_min + text.chars().count(),
+            buffer_id == interpreter.current_buffer_id(),
+        );
+        // Lay the cells out with their source: buffer positions keep a
+        // column map for the face spans; overlay strings carry their own.
+        let mut col = 0usize;
+        let mut column_of = std::collections::HashMap::new();
+        let mut chars = text.chars();
+        let splice = |row: &mut PaintRow,
+                      col: &mut usize,
+                      string: &OverlayString,
+                      face_cache: &mut std::collections::HashMap<String, CellAttrs>,
+                      interpreter: &mut Interpreter,
+                      env: &mut Env| {
+            let start = *col;
+            row.blit(start, &string.text, CellAttrs::default());
+            *col += string.text.chars().count();
+            for (from, to, face) in &string.spans {
+                let key = format!("{face}");
+                let attrs = *face_cache.entry(key).or_insert_with(|| {
+                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
+                });
+                row.overlay((start + from).min(cols), (start + to).min(cols), attrs);
+            }
+        };
+        let mut index = 0usize;
+        for position in point_min..=point_min + text.chars().count() {
+            while index < strings.len() && strings[index].position <= position {
+                splice(
+                    &mut row,
+                    &mut col,
+                    &strings[index],
+                    face_cache,
+                    interpreter,
+                    env,
+                );
+                index += 1;
+            }
+            if let Some(c) = chars.next() {
+                column_of.insert(position, col);
+                row.blit(col, &c.to_string(), CellAttrs::default());
+                col += 1;
+            }
         }
-        return row;
+        for (from, to, face) in &face_spans {
+            let key = format!("{face}");
+            let attrs = *face_cache.entry(key).or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
+            });
+            for position in *from..*to {
+                if let Some(&col) = column_of.get(&position) {
+                    row.overlay(col.min(cols), (col + 1).min(cols), attrs);
+                }
+            }
+        }
+        return (row, true);
     }
     let (mut echo, spans) = if frontend_echo.is_empty() {
         crate::lisp::primitives::echo_area_message_with_spans().unwrap_or_default()
@@ -1358,7 +1468,7 @@ fn compose_echo_row(
         });
         row.overlay(from.min(cols), to.min(cols), attrs);
     }
-    row
+    (row, false)
 }
 
 /// The SGR sequence selecting ATTRS from a reset state.

@@ -12930,3 +12930,35 @@ mouse-1: Previous buffer\nmouse-3: Next buffer")
 (defvar mode-line-process nil
   "Mode line construct for displaying info on process status.")
 (make-variable-buffer-local 'mode-line-process)
+
+;; subr.el (verbatim): sit-for moved from C to Lisp in Emacs 22; the
+;; native stand-in only serves sessions without this definition.
+(defun sit-for (seconds &optional nodisp)
+  "Redisplay, then wait for SECONDS seconds; stop when input is available.
+SECONDS may be a floating-point value.
+\(On operating systems that do not support waiting for fractions of a
+second, floating-point values are rounded down to the nearest integer.)
+
+If there's pending input, return nil immediately without redisplaying
+and without waiting.
+If optional arg NODISP is t, don't redisplay, just wait for input (but
+still return nil immediately if there's pending input).
+
+Value is t if waited the full time with no input arriving, and nil otherwise."
+  (cond
+   (noninteractive
+    (sleep-for seconds)
+    t)
+   ((input-pending-p t)
+    nil)
+   ((or (<= seconds 0)
+        defining-kbd-macro)
+    (or nodisp (redisplay)))
+   (t
+    (or nodisp (redisplay))
+    (let ((read (let ((input-method-function nil))
+                  (read-event nil t seconds))))
+      (or (null read)
+	  (progn
+	    (push (cons t read) unread-command-events)
+	    nil))))))

@@ -362,12 +362,32 @@ thread_local! {
 
 pub(crate) type TtyEventReader = Box<dyn FnMut() -> Option<Value>>;
 
+// A non-blocking companion to the reader: wait briefly for one event and
+// answer None when the terminal stays quiet.  Blocking reads poll
+// through it so ripe timers keep firing while a command waits for input
+// (GNU's read_char runs timer_check inside its wait) — the minibuffer's
+// own reads included.
+thread_local! {
+    static TTY_EVENT_POLLER: std::cell::RefCell<Option<TtyEventPoller>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) type TtyEventPoller = Box<dyn FnMut() -> Option<Option<Value>>>;
+
 pub(crate) fn set_tty_event_reader(reader: Option<TtyEventReader>) {
     TTY_EVENT_READER.with_borrow_mut(|slot| *slot = reader);
 }
 
+pub(crate) fn set_tty_event_poller(poller: Option<TtyEventPoller>) {
+    TTY_EVENT_POLLER.with_borrow_mut(|slot| *slot = poller);
+}
+
 fn read_via_tty_event_reader() -> Option<Option<Value>> {
     TTY_EVENT_READER.with_borrow_mut(|slot| slot.as_mut().map(|reader| reader()))
+}
+
+fn poll_via_tty_event_poller() -> Option<Option<Option<Value>>> {
+    TTY_EVENT_POLLER.with_borrow_mut(|slot| slot.as_mut().map(|poller| poller()))
 }
 
 /// Whether a terminal frontend is feeding events this session; the
@@ -491,6 +511,13 @@ pub(crate) fn execute_command_binding(
     let prefix = interp.lookup_var("prefix-arg", env).unwrap_or(Value::Nil);
     interp.set_variable("current-prefix-arg", prefix.clone(), env);
     interp.set_variable("prefix-arg", Value::Nil, env);
+    // Timers may have messed with `deactivate-mark'; the command starts
+    // with it reset (keyboard.c command_loop_1).
+    interp.set_variable("deactivate-mark", Value::Nil, env);
+    let modified_before = (
+        interp.current_buffer_id(),
+        interp.buffer.chars_modified_tick(),
+    );
     // pre-command-hook may rewrite `this-command' (isearch's exit path
     // does); GNU executes whatever the hook left there.
     let buffer_id = interp.current_buffer_id();
@@ -518,6 +545,19 @@ pub(crate) fn execute_command_binding(
         Some(buffer_id),
     )
     .unwrap_or(());
+    // After post-command-hook GNU deactivates the mark when the command
+    // asked for it (keyboard.c calls the real `deactivate-mark' so its
+    // hook runs).  Buffer-modifying primitives are insdel.c's trigger
+    // for the same flag; until every native arm publishes it, a changed
+    // modification tick stands in for that side of the protocol.
+    let deactivate = interp
+        .lookup_var("deactivate-mark", env)
+        .is_some_and(|value| value.is_truthy())
+        || (interp.current_buffer_id() == modified_before.0
+            && interp.buffer.chars_modified_tick() != modified_before.1);
+    if deactivate && interp.buffer.mark_active() {
+        let _ = super::call(interp, "deactivate-mark", &[], env);
+    }
     // GNU takes last-command from this-command AFTER the command ran: a
     // prefix command (universal-argument) restores the previous value
     // there via prefix-command-preserve-state, keeping last-command
@@ -689,6 +729,28 @@ pub(crate) fn pop_unread_command_event_value(
                 env,
             );
             return Ok(event);
+        }
+        // Poll for the event so ripe timers fire during the wait, as
+        // GNU's read_char does; the blocking reader stands in when the
+        // frontend installed no poller.
+        let mut idle_start: Option<std::time::Instant> = None;
+        while let Some(step) = poll_via_tty_event_poller() {
+            match step {
+                None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+                Some(Some(event)) => {
+                    if event == Value::Integer(7) {
+                        return Err(LispError::SignalValue(Value::Symbol("quit".into())));
+                    }
+                    record_external_input_event(interp, &event);
+                    return Ok(event);
+                }
+                Some(None) => {
+                    let idle = idle_start
+                        .get_or_insert_with(std::time::Instant::now)
+                        .elapsed();
+                    run_due_timers(interp, env, idle.as_secs_f64());
+                }
+            }
         }
         if let Some(read) = read_via_tty_event_reader() {
             return match read {
@@ -1502,5 +1564,61 @@ pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env)
     match &event {
         Value::Cons(_) if matches!(event.car(), Ok(Value::T)) => event.cdr().ok(),
         _ => Some(event),
+    }
+}
+
+// Whether terminal input is ready without consuming it — keyboard.c's
+// input_pending, for `input-pending-p' and sit-for's early exit.
+thread_local! {
+    static TTY_INPUT_PENDING: std::cell::RefCell<Option<Box<dyn Fn() -> bool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn set_tty_input_pending_check(check: Option<Box<dyn Fn() -> bool>>) {
+    TTY_INPUT_PENDING.with_borrow_mut(|slot| *slot = check);
+}
+
+pub(crate) fn tty_input_pending() -> bool {
+    TTY_INPUT_PENDING.with_borrow(|slot| slot.as_ref().is_some_and(|check| check()))
+}
+
+pub(crate) fn has_tty_event_poller() -> bool {
+    TTY_EVENT_POLLER.with_borrow(|slot| slot.is_some())
+}
+
+/// A timed event read on the live terminal: the first event within
+/// TIMEOUT, or None when it elapses quietly.  Ripe timers fire between
+/// polls, exactly like the untimed read.
+pub(crate) fn read_tty_event_with_timeout(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    timeout: std::time::Duration,
+) -> Result<Option<Value>, LispError> {
+    let deadline = std::time::Instant::now() + timeout;
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(event) = take_unread_command_event(interp, env) {
+            record_external_input_event(interp, &event);
+            return Ok(Some(event));
+        }
+        let Some(step) = poll_via_tty_event_poller() else {
+            return Ok(None);
+        };
+        match step {
+            None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+            Some(Some(event)) => {
+                if event == Value::Integer(7) {
+                    return Err(LispError::SignalValue(Value::Symbol("quit".into())));
+                }
+                record_external_input_event(interp, &event);
+                return Ok(Some(event));
+            }
+            Some(None) => {
+                run_due_timers(interp, env, started.elapsed().as_secs_f64());
+                if std::time::Instant::now() >= deadline {
+                    return Ok(None);
+                }
+            }
+        }
     }
 }

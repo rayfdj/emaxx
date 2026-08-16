@@ -7216,3 +7216,100 @@ fn dumped_simple_completion_policies_exist_before_minibuffer_display() {
         Value::list([Value::T, Value::Nil, Value::T, Value::T])
     );
 }
+
+#[test]
+fn evaporating_overlays_die_empty_and_revive_through_move_overlay() {
+    let values = eval_str(
+        "(with-temp-buffer
+           (insert \"alpha\")
+           (let ((ov (make-overlay 3 3)))
+             (overlay-put ov 'before-string \"{\")
+             (list (progn (overlay-put ov 'evaporate t) (overlay-buffer ov))
+                   (progn (move-overlay ov 2 4) (overlay-buffer ov))
+                   (overlay-get ov 'before-string)
+                   (progn (move-overlay ov 3 3) (overlay-buffer ov))
+                   (progn (move-overlay ov 1 2) (goto-char 1)
+                          (insert \"x\")
+                          (list (overlay-start ov) (overlay-end ov))))))",
+    )
+    .to_vec()
+    .unwrap();
+    assert!(
+        values[0].is_nil(),
+        "overlay-put of evaporate on an empty overlay deletes it"
+    );
+    assert!(!values[1].is_nil(), "move-overlay revives it with a span");
+    assert_string_value(values[2].clone(), "{");
+    assert!(values[3].is_nil(), "moving to an empty span deletes again");
+    assert_eq!(
+        values[4],
+        Value::list([Value::Integer(1), Value::Integer(3)]),
+        "a live span survives modification, growing over the insertion"
+    );
+}
+
+#[test]
+fn the_mark_keeps_its_place_across_insertion_at_point() {
+    let values = eval_str(
+        "(with-temp-buffer
+           (insert \"ab\")
+           (goto-char 2)
+           (set-marker (mark-marker) 2)
+           (insert \"XY\")
+           (list (mark t) (point)))",
+    )
+    .to_vec()
+    .unwrap();
+    assert_eq!(
+        values[0],
+        Value::Integer(2),
+        "the mark marker has nil insertion type: text inserted at it goes after it"
+    );
+    assert_eq!(values[1], Value::Integer(4));
+}
+
+#[test]
+fn menu_bar_captions_follow_keymap_order_and_final_items() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (define-key global-map [menu-bar help-menu] (cons \"Help\" (make-sparse-keymap \"Help\")))
+           (define-key global-map [menu-bar tools] (cons \"Tools\" (make-sparse-keymap \"Tools\")))
+           (define-key global-map [menu-bar file]
+             (list 'menu-item \"File\" (make-sparse-keymap \"File\")))
+           (define-key global-map [menu-bar hidden]
+             (list 'menu-item \"Hidden\" (make-sparse-keymap) :visible nil))
+           (define-key global-map [menu-bar broken] 'undefined)
+           (setq menu-bar-final-items '(help-menu)))",
+    );
+    let mut env: Env = Vec::new();
+    let captions = crate::lisp::primitives::menu_bar_row_captions(&mut interp, &mut env);
+    assert_eq!(
+        captions,
+        vec!["File".to_string(), "Tools".to_string(), "Help".to_string()],
+        "definition order with final items moved to the end; invisible and undefined dropped"
+    );
+}
+
+#[test]
+fn unread_command_events_pop_ahead_of_the_terminal() {
+    let mut interp = Interpreter::new();
+    let mut env: Env = Vec::new();
+    eval_str_with(
+        &mut interp,
+        "(setq unread-command-events (list 97 (cons t 98)))",
+    );
+    let first = crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env);
+    assert_eq!(first, Some(Value::Integer(97)));
+    let second = crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env);
+    assert_eq!(
+        second,
+        Some(Value::Integer(98)),
+        "the (t . EVENT) don't-re-record form unwraps"
+    );
+    assert_eq!(
+        crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env),
+        None
+    );
+}

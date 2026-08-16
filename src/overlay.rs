@@ -110,16 +110,21 @@ pub fn adjust_for_delete(overlays: &mut [Overlay], from: usize, to: usize) {
     }
 }
 
-/// Remove overlays that have the `evaporate` property and are now empty.
-pub fn evaporate(overlays: &mut Vec<Overlay>) {
-    overlays.retain(|ov| {
+/// Delete overlays that have the `evaporate` property and are now
+/// empty.  Like GNU's Fdelete_overlay the object keeps its properties:
+/// `move-overlay` revives it (rfn-eshadow's shadow overlay cycles
+/// through exactly this).
+pub fn evaporate(overlays: &mut [Overlay]) {
+    for ov in overlays.iter_mut() {
         if ov.beg == ov.end
-            && let Some(val) = ov.get_prop(&Value::Symbol("evaporate".into()))
+            && !ov.is_dead()
+            && ov
+                .get_prop(&Value::Symbol("evaporate".into()))
+                .is_some_and(|value| value.is_truthy())
         {
-            return !val.is_truthy();
+            ov.buffer_id = None;
         }
-        true
-    });
+    }
 }
 
 #[cfg(test)]

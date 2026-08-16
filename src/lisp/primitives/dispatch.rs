@@ -22,8 +22,8 @@ pub(crate) use buffer_edit::{visual_line_bounds, visual_segment_starts};
 #[cfg(test)]
 pub(crate) use display::render_mode_line_glass;
 pub(crate) use display::{
-    TtyFaceAttrs, WindowRenderInfo, render_window_mode_line, resolve_tty_face_attrs,
-    window_face_spans, window_render_layout,
+    EchoSpans, TtyFaceAttrs, WindowRenderInfo, render_window_mode_line, resolve_tty_face_attrs,
+    string_face_spans, window_face_spans, window_render_layout,
 };
 pub(crate) use display::{
     echo_area_message, echo_area_message_with_spans, echo_area_print, set_echo_area_message,
