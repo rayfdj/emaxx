@@ -937,15 +937,19 @@ impl Buffer {
         // Adjust zv (the buffer grew)
         self.zv += nchars;
 
-        // Adjust mark if it's at or after the insertion point
+        // The mark is a marker with nil insertion type: text inserted at
+        // its position goes after it, so only a mark strictly beyond the
+        // insertion point advances (yank-pop deletes the (mark, point)
+        // stretch a yank at mark left behind).
         if let Some(ref mut m) = self.mark
-            && *m >= self.pt - nchars
+            && *m > self.pt - nchars
         {
             *m += nchars;
         }
 
         // Adjust overlays
         crate::overlay::adjust_for_insert(&mut self.overlays, insert_at, nchars);
+        crate::overlay::evaporate(&mut self.overlays);
 
         self.adjust_text_properties_for_insert(insert_at, nchars);
         if let Some(props) = props

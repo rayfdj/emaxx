@@ -3176,6 +3176,23 @@ define_dispatch!(
                 let timed_poll = args.len() >= 3 && args[2].is_truthy();
                 if timed_poll {
                     let timeout = wait_duration(std::slice::from_ref(&args[2]))?;
+                    // A live terminal answers the first event inside the
+                    // window, or nil when it elapses (keyboard.c's timed
+                    // read); the process pump below is the batch stand-in.
+                    if crate::lisp::primitives::has_tty_event_poller() {
+                        return match crate::lisp::primitives::read_tty_event_with_timeout(
+                            interp, env, timeout,
+                        )? {
+                            Some(event) => {
+                                if read_event {
+                                    normalize_input_event_value(event)
+                                } else {
+                                    Ok(Value::Integer(unread_command_event_char(&event)? as i64))
+                                }
+                            }
+                            None => Ok(Value::Nil),
+                        };
+                    }
                     let previous_wait = interp.set_waiting_for_user_input(true);
                     let wait_result =
                         wait_pumping_processes(interp, env, Some(timeout), false, None);

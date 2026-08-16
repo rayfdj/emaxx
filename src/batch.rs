@@ -314,18 +314,32 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
         options.load_path = env::split_paths(&paths).collect();
     }
     let mut interpreter = initialize_batch_interpreter(&options)?;
-    // GNU dumps isearch.el and minibuffer.el into the image; an
-    // interactive session must have C-s and the minibuffer's own command
-    // set (exit-minibuffer, minibuffer-complete) ready before the first
-    // keystroke.  A load-path without the real Lisp tree (unit tests)
-    // simply leaves them unbound, exactly like the batch runtime.
-    for target in ["isearch", "minibuffer"] {
+    // GNU dumps isearch.el, minibuffer.el, and rfn-eshadow.el into the
+    // image; an interactive session must have C-s, the minibuffer's own
+    // command set (exit-minibuffer, minibuffer-complete), and file-name
+    // shadowing ready before the first keystroke.  A load-path without
+    // the real Lisp tree (unit tests) simply leaves them unbound,
+    // exactly like the batch runtime.  Reopen loadup's delayed-Custom
+    // phase around these preloads: a global minor mode's
+    // `custom-initialize-delay' defcustom runs before its mode function
+    // exists mid-load, so it must queue and replay through startup.el's
+    // custom-reevaluate-setting walk — file-name-shadow-mode turns on
+    // through that replay, as in GNU's dumped image.
+    let reopen = Reader::new("(setq custom-delayed-init-variables nil)")
+        .read_all()
+        .map_err(|error| format!("read delayed Custom reopen form: {error}"))?
+        .remove(0);
+    interpreter
+        .eval(&reopen, &mut Vec::new())
+        .map_err(|error| format!("reopen delayed Custom phase: {error}"))?;
+    for target in ["isearch", "minibuffer", "rfn-eshadow"] {
         if interpreter.resolve_load_target(target).is_some() {
             interpreter
                 .load_target(target)
                 .map_err(|error| format!("preload {target}: {error}"))?;
         }
     }
+    complete_delayed_custom_initialization(&mut interpreter)?;
     // startup.el enables transient-mark-mode for interactive sessions
     // (batch keeps the dumped nil default): the region highlights.
     interpreter.set_variable("transient-mark-mode", Value::T, &mut Vec::new());

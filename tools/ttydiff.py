@@ -830,6 +830,31 @@ SCENARIOS = [
         "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 30)),
         [b"\x00", b"\x0e\x0e", b"\x07", b"\x0e"],
     ),
+    # C-x C-x re-activates the region and swaps point with mark.
+    (
+        "exchange-point-mark",
+        "alpha one\nbeta two\ngamma three\n",
+        [b"\x00", b"\x0e\x0e", b"\x18\x18"],
+    ),
+    # M-y replaces the just-yanked text with the previous kill.
+    (
+        "yank-pop",
+        "alpha one\nbeta two\ngamma three\n",
+        [b"\x0b", b"\x0e", b"\x0b", b"\x1b>", b"\x19", b"\x1by"],
+    ),
+    # The file-name prompt shadows the ignored prefix; a tty without a
+    # displayable shadow face brackets it instead (rfn-eshadow).
+    (
+        "filename-shadow",
+        "fixture\n",
+        [b"\x18\x06", b"/etc", b"\x07"],
+    ),
+    # TAB with no completion shows minibuffer-message's transient.
+    (
+        "completion-no-match",
+        "fixture\n",
+        [b"\x18\x06", b"/nonexistent-zz", b"\t"],
+    ),
 ]
 
 
