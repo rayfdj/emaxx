@@ -4434,6 +4434,21 @@ pub(crate) fn key_binding(
     env: &Env,
 ) -> Result<Value, LispError> {
     let key_parts = approximate_key_parts(key);
+    key_binding_with_parts(interp, key, &key_parts, accept_default, no_remap, env)
+}
+
+/// `key-binding' over already-parsed event parts: a symbolic event in a
+/// key vector must not round-trip through kbd text, where a bare "f10"
+/// re-reads as the three keys f 1 0.
+pub(crate) fn key_binding_with_parts(
+    interp: &Interpreter,
+    key: &str,
+    key_parts: &[String],
+    accept_default: bool,
+    no_remap: bool,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let key_parts = key_parts.to_vec();
     let maps = active_command_keymaps(interp, env)?;
     let mut raw_binding = Value::Nil;
     for map in &maps {

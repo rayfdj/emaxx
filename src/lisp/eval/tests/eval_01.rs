@@ -7293,6 +7293,86 @@ fn menu_bar_captions_follow_keymap_order_and_final_items() {
 }
 
 #[test]
+fn tty_menu_pane_lays_out_margins_hints_and_submenu_markers() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (global-set-key \"\\C-t\" 'transpose-chars)
+           (defun demo-noop () (interactive))
+           (defvar demo-submenu (make-sparse-keymap \"More\"))
+           (defvar demo-menu (make-sparse-keymap \"Demo\"))
+           (define-key demo-menu [more] (list 'menu-item \"More\" demo-submenu))
+           (define-key demo-menu [toggle]
+             '(menu-item \"Marker\" demo-noop :button (:toggle . t)))
+           (define-key demo-menu [sep] '(\"--\"))
+           (define-key demo-menu [swap] '(menu-item \"Swap\" transpose-chars)))",
+    );
+    let mut env: Env = Vec::new();
+    let menu = eval_str_with(&mut interp, "demo-menu");
+    let pane =
+        crate::lisp::primitives::tty_menu_pane_from_keymap(&mut interp, &mut env, &menu, "Demo");
+    let texts: Vec<&str> = pane.items.iter().map(|item| item.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        vec!["    Swap    C-t", "--", "[X] Marker", "    More >"],
+        "a pane with a button gains the four-blank checkbox margin \
+         (separators excepted), submenus carry the \" >\" marker before \
+         the width scan, and key hints sit two blanks past the widest name"
+    );
+    assert_eq!(pane.width, 15, "pane width is the widest laid-out item");
+    assert!(
+        pane.items[1].enabled,
+        "a separator draws in the enabled face; only the menu bar drops it"
+    );
+}
+
+#[test]
+fn menu_bar_menu_at_x_y_maps_columns_to_bar_items() {
+    let mut interp = Interpreter::new();
+    let result = eval_str_with(
+        &mut interp,
+        "(progn
+           (define-key global-map [menu-bar edit]
+             (cons \"Edit\" (make-sparse-keymap \"Edit\")))
+           (define-key global-map [menu-bar file]
+             (cons \"File\" (make-sparse-keymap \"File\")))
+           (prin1-to-string
+            (list (menu-bar-menu-at-x-y 0 0)
+                  (menu-bar-menu-at-x-y 4 0)
+                  (menu-bar-menu-at-x-y 5 0)
+                  (menu-bar-menu-at-x-y 42 0)
+                  (menu-bar-menu-at-x-y 0 1))))",
+    );
+    assert_string_value(
+        result,
+        "(file file edit nil nil)",
+        // Each caption owns its columns plus the separating blank
+        // (menu.c's menu_bar_menu_at_x_y); anything off the bar row or
+        // past the last caption answers nil.
+    );
+}
+
+#[test]
+fn key_binding_resolves_function_keys_and_menu_entries() {
+    let mut interp = Interpreter::new();
+    let result = eval_str_with(
+        &mut interp,
+        "(progn
+           (global-set-key [f9] 'ignore)
+           (define-key global-map [menu-bar demo]
+             (cons \"Demo\" (make-sparse-keymap \"Demo\")))
+           (prin1-to-string
+            (list (key-binding [f9])
+                  (car (key-binding [menu-bar demo])))))",
+    );
+    // A symbolic event must not round-trip through kbd text (a bare
+    // \"f9\" re-reads as the keys f 9), and a (\"Demo\" . KEYMAP) menu
+    // entry resolves through get_keyelt to the keymap itself.
+    assert_string_value(result, "(ignore keymap)");
+}
+
+#[test]
 fn unread_command_events_pop_ahead_of_the_terminal() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();

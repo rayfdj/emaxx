@@ -489,9 +489,12 @@ pub(crate) fn execute_command_binding(
     // (undo-auto--add-boundary after every command); `undo' relies on the
     // boundary to skip before replaying the previous group.
     interp.buffer.push_undo_boundary();
-    // A lingering echo-area message belongs to the previous command; GNU
-    // clears it when the next command runs (its own `message' then shows).
-    crate::lisp::primitives::set_echo_area_message(None);
+    // keyboard.c read_char wipes a lingering message when the next input
+    // event arrives: the channel empties before the command runs, but the
+    // glass only catches up at the next redisplay — so a command that
+    // blocks with redisplay frozen (the F10 menu) keeps the old message
+    // visible until an explicit `message' repaints the row.
+    crate::lisp::primitives::expire_echo_area_message();
     interp.set_variable("last-command-event", last_event, env);
     // The canonical key-state channel: this-command-keys,
     // this-single-command-keys, and their raw variants all read it
@@ -1369,6 +1372,19 @@ pub(crate) fn is_composed_accessor_name(name: &str) -> bool {
 /// merge into existing entries; the keys named by
 /// `menu-bar-final-items' move to the end (Help).
 pub(crate) fn menu_bar_row_captions(interp: &mut Interpreter, env: &mut Env) -> Vec<String> {
+    menu_bar_row_items(interp, env)
+        .into_iter()
+        .map(|(caption, _, _)| caption)
+        .collect()
+}
+
+/// The menu bar's items with their display geometry: (CAPTION, KEY,
+/// COLUMN), column being where the caption starts on the row — the
+/// coordinates menu.c's menu-bar-menu-at-x-y answers from.
+pub(crate) fn menu_bar_row_items(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Vec<(String, Value, usize)> {
     let maps = super::call(interp, "current-active-maps", &[Value::T], env)
         .ok()
         .and_then(|maps| maps.to_vec().ok())
@@ -1445,13 +1461,49 @@ pub(crate) fn menu_bar_row_captions(interp: &mut Interpreter, env: &mut Env) -> 
             }
         }
     }
-    items.into_iter().map(|(_, caption)| caption).collect()
+    let mut column = 0usize;
+    items
+        .into_iter()
+        .map(|(key, caption)| {
+            let start = column;
+            column += caption.chars().count() + 1;
+            (caption, key, start)
+        })
+        .collect()
 }
 
 /// parse_menu_item for the menu bar: the caption of a live top-level
 /// item, or None when the item is invisible, disabled, undefined, or
 /// not a menu item at all.
 fn menu_item_caption(interp: &mut Interpreter, env: &mut Env, item: &Value) -> Option<String> {
+    let (caption, def, enabled) = menu_item_details(interp, env, item)?;
+    // The menu bar drops disabled and definition-less items
+    // (parse_menu_item's inmenubar rules); a dropdown keeps them greyed.
+    (enabled && !def.is_nil()).then_some(caption)
+}
+
+/// parse_menu_item for a dropdown pane: (CAPTION, DEF, ENABLED) of a
+/// visible item — disabled and unselectable entries stay, drawn in
+/// tty-menu-disabled-face.  None only for invisible or non-items.
+pub(crate) fn menu_item_details(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    item: &Value,
+) -> Option<(String, Value, bool)> {
+    menu_item_details_with_button(interp, env, item).map(|(c, d, e, _)| (c, d, e))
+}
+
+/// A parsed pane item: (CAPTION, DEF, ENABLED, BUTTON), button being
+/// the :button spec's (TYPE-KEYWORD, SELECTED) for toggle/radio items —
+/// menu.c's checkbox prefix source.
+pub(crate) type MenuItemDetails = (String, Value, bool, Option<(String, bool)>);
+
+/// menu_item_details plus the :button spec.
+pub(crate) fn menu_item_details_with_button(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    item: &Value,
+) -> Option<MenuItemDetails> {
     if !matches!(item, Value::Cons(_)) {
         return None;
     }
@@ -1464,8 +1516,7 @@ fn menu_item_caption(interp: &mut Interpreter, env: &mut Env, item: &Value) -> O
     };
     let car = item.car().ok()?;
     if let Ok(name) = crate::lisp::primitives::string_text(&car) {
-        // Old format (NAME [HELP-STRING] [CACHE] . DEF): a menu-bar item
-        // needs a live definition after the optional extras.
+        // Old format (NAME [HELP-STRING] [CACHE] . DEF).
         let mut def = item.cdr().ok()?;
         if def.car().is_ok_and(|help| help.is_string()) {
             def = def.cdr().ok()?;
@@ -1476,10 +1527,9 @@ fn menu_item_caption(interp: &mut Interpreter, env: &mut Env, item: &Value) -> O
         }) {
             def = def.cdr().ok()?;
         }
-        if def.is_nil() {
-            return None;
-        }
-        return Some(name);
+        // Unselectable text (a separator) still draws in the enabled
+        // face; only the menu bar drops definition-less items.
+        return Some((name, def, true, None));
     }
     if !matches!(&car, Value::Symbol(tag) if tag == "menu-item") {
         return None;
@@ -1493,18 +1543,31 @@ fn menu_item_caption(interp: &mut Interpreter, env: &mut Env, item: &Value) -> O
         index = 3;
     }
     let mut filter = None;
+    let mut enabled = true;
+    let mut button = None;
     while index + 1 < rest.len() {
         let Value::Symbol(keyword) = &rest[index] else {
             break;
         };
         let value = &rest[index + 1];
         match keyword.as_ref() {
-            ":visible" | ":enable" => {
+            ":visible" => {
                 if eval_property(interp, env, value).is_nil() {
                     return None;
                 }
             }
+            ":enable" => {
+                if eval_property(interp, env, value).is_nil() {
+                    enabled = false;
+                }
+            }
             ":filter" => filter = Some(value.clone()),
+            ":button" => {
+                if let (Ok(Value::Symbol(kind)), Ok(selected)) = (value.car(), value.cdr()) {
+                    let selected = eval_property(interp, env, &selected).is_truthy();
+                    button = Some((kind.to_string(), selected));
+                }
+            }
             _ => {}
         }
         index += 2;
@@ -1514,13 +1577,9 @@ fn menu_item_caption(interp: &mut Interpreter, env: &mut Env, item: &Value) -> O
             .call_function_value(filter, None, std::slice::from_ref(&def), env)
             .unwrap_or(Value::Nil);
     }
-    if def.is_nil() {
-        return None;
-    }
     let name = eval_property(interp, env, &name_form);
-    crate::lisp::primitives::string_text(&name)
-        .ok()
-        .map(|name| name.to_string())
+    let caption = crate::lisp::primitives::string_text(&name).ok()?;
+    Some((caption, def, enabled, button))
 }
 
 /// The menu bar's cheap per-redraw change signal: how many minor-mode
@@ -1620,5 +1679,222 @@ pub(crate) fn read_tty_event_with_timeout(
                 }
             }
         }
+    }
+}
+
+/// One dropdown pane ready for the glass: term.c's tty_menu built from
+/// a menu keymap, item text already NAME-padded-plus-key-hint as
+/// tty_menu_show lays it out.
+pub(crate) struct TtyMenuPane {
+    pub title: String,
+    pub items: Vec<TtyMenuPaneItem>,
+    /// Pane text width (the widest NAME+DESCRIP); the drawn box adds
+    /// the two padding blanks.
+    pub width: usize,
+}
+
+pub(crate) struct TtyMenuPaneItem {
+    pub text: String,
+    pub enabled: bool,
+    pub key: Value,
+}
+
+pub(crate) enum TtyMenuOutcome {
+    Selected(usize),
+    NextMenu,
+    PrevMenu,
+    /// A separator or disabled item was chosen: no selection, no quit
+    /// signal (GNU's TTYM_IA_SELECT).
+    NoSelect,
+    Quit,
+}
+
+// The frontend's modal dropdown executor — term.c's tty_menu_activate.
+thread_local! {
+    static TTY_MENU_EXECUTOR: std::cell::RefCell<Option<TtyMenuExecutor>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) type TtyMenuExecutor =
+    Box<dyn FnMut(&mut Interpreter, &mut Env, &TtyMenuPane, usize, usize) -> TtyMenuOutcome>;
+
+pub(crate) fn set_tty_menu_executor(executor: Option<TtyMenuExecutor>) {
+    TTY_MENU_EXECUTOR.with_borrow_mut(|slot| *slot = executor);
+}
+
+pub(crate) fn has_tty_menu_executor() -> bool {
+    TTY_MENU_EXECUTOR.with_borrow(|slot| slot.is_some())
+}
+
+pub(crate) fn run_tty_menu_executor(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pane: &TtyMenuPane,
+    x: usize,
+    y: usize,
+) -> Option<TtyMenuOutcome> {
+    let executor = TTY_MENU_EXECUTOR.with_borrow_mut(|slot| slot.take());
+    let mut executor = executor?;
+    let outcome = executor(interp, env, pane, x, y);
+    TTY_MENU_EXECUTOR.with_borrow_mut(|slot| {
+        if slot.is_none() {
+            *slot = Some(executor);
+        }
+    });
+    Some(outcome)
+}
+
+/// tty_menu_show's pane construction: walk MENU's entries in keymap
+/// order, item text = NAME padded to the widest name + "  KEY-HINT"
+/// (parse_menu_item's equivalent-key description).
+pub(crate) fn tty_menu_pane_from_keymap(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    menu: &Value,
+    title: &str,
+) -> TtyMenuPane {
+    let menu = {
+        if let Some(id) = super::keymap_record_id(interp, menu) {
+            let _ = super::refresh_runtime_keymap_public_view(interp, id);
+        }
+        super::public_keymap_value(interp, menu)
+    };
+    #[allow(clippy::type_complexity)]
+    let mut raw: Vec<(Value, String, Value, bool, Option<(String, bool)>)> = Vec::new();
+    let mut tail = menu.cdr().unwrap_or(Value::Nil);
+    let mut seen: Vec<Value> = Vec::new();
+    let same_key = |a: &Value, b: &Value| match (a, b) {
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        _ => false,
+    };
+    while let Value::Cons(_) = tail {
+        let Ok(entry) = tail.car() else { break };
+        let next = tail.cdr().unwrap_or(Value::Nil);
+        if let Value::Cons(_) = &entry {
+            let key = entry.car().unwrap_or(Value::Nil);
+            let item = entry.cdr().unwrap_or(Value::Nil);
+            if !seen.iter().any(|earlier| same_key(earlier, &key)) {
+                seen.push(key.clone());
+                if let Some((caption, def, enabled, button)) =
+                    menu_item_details_with_button(interp, env, &item)
+                {
+                    // A tty submenu item carries GNU's " >" marker,
+                    // counted by the pane's width scan.
+                    let caption = if super::is_keymap_value(interp, &def)
+                        || matches!(&def, Value::Symbol(name)
+                            if interp.lookup_function(name, env)
+                                .is_ok_and(|f| super::is_keymap_value(interp, &f)))
+                    {
+                        format!("{caption} >")
+                    } else {
+                        caption
+                    };
+                    raw.push((key, caption, def, enabled, button));
+                }
+            }
+        }
+        tail = next;
+    }
+    // menu.c's checkbox column: once any item in the pane is a
+    // toggle/radio button, every other item gains a four-blank prefix
+    // so captions line up with "[X] " — separators and empty names
+    // excepted.  A buttonless pane keeps bare captions (Edit).
+    let has_buttons = raw.iter().any(|(_, _, _, _, button)| button.is_some());
+    let raw: Vec<(Value, String, Value, bool)> = raw
+        .into_iter()
+        .map(|(key, caption, def, enabled, button)| {
+            let prefixed = match button {
+                Some((kind, selected)) => {
+                    let mark = match (kind.as_str(), selected) {
+                        (":radio", true) => "(*) ",
+                        (":radio", false) => "( ) ",
+                        (_, true) => "[X] ",
+                        (_, false) => "[ ] ",
+                    };
+                    format!("{mark}{caption}")
+                }
+                None if has_buttons && !caption.is_empty() && !caption.starts_with('-') => {
+                    format!("    {caption}")
+                }
+                None => caption,
+            };
+            (key, prefixed, def, enabled)
+        })
+        .collect();
+    // The widest NAME sets the padding column for every key hint.
+    let max_name = raw
+        .iter()
+        .map(|(_, caption, _, _)| caption.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut items = Vec::new();
+    let mut width = 0usize;
+    for (key, caption, def, enabled) in raw {
+        // parse_menu_item's equivalent-key hint: the first non-menu
+        // binding of the command, through the real where-is machinery
+        // (a [menu-bar ...] or [open]-style menu path is not a key).
+        let hint = if matches!(&def, Value::Symbol(_)) {
+            super::call(interp, "where-is-internal", std::slice::from_ref(&def), env)
+                .ok()
+                .and_then(|keys| keys.to_vec().ok())
+                .and_then(|keys| {
+                    // GNU prefers a typed key sequence (its where-is
+                    // sorts ASCII sequences first) and never shows a
+                    // menu path as the equivalent key.
+                    let event_kinds = |key: &Value| {
+                        key.to_vec()
+                            .ok()
+                            .map(|events| events.iter().skip(1).cloned().collect::<Vec<_>>())
+                            .unwrap_or_default()
+                    };
+                    let is_menu_path = |key: &Value| {
+                        matches!(
+                            event_kinds(key).first(),
+                            Some(Value::Symbol(head))
+                                if head == "menu-bar"
+                                    || head == "tool-bar"
+                                    || head == "tab-bar"
+                                    || head == "mode-line"
+                        )
+                    };
+                    let typed = keys.iter().find(|key| {
+                        event_kinds(key)
+                            .first()
+                            .is_some_and(|event| matches!(event, Value::Integer(_)))
+                    });
+                    typed
+                        .or_else(|| keys.iter().find(|key| !is_menu_path(key)))
+                        .cloned()
+                })
+                .and_then(|key| {
+                    super::call(interp, "key-description", &[key], env)
+                        .ok()
+                        .and_then(|description| {
+                            crate::lisp::primitives::string_text(&description).ok()
+                        })
+                })
+        } else {
+            None
+        };
+        let text = match hint {
+            Some(hint) => {
+                let mut text = caption.clone();
+                for _ in caption.chars().count()..max_name {
+                    text.push(' ');
+                }
+                text.push_str("  ");
+                text.push_str(&hint);
+                text
+            }
+            None => caption,
+        };
+        width = width.max(text.chars().count());
+        items.push(TtyMenuPaneItem { text, enabled, key });
+    }
+    TtyMenuPane {
+        title: title.to_string(),
+        items,
+        width,
     }
 }

@@ -174,6 +174,11 @@ struct TtyState {
     /// — GNU recomputes menu_bar_items on buffer, window, or mode-line
     /// changes (isearch entering is one), not per key.
     menu_bar_row: Option<((u64, String, usize), String)>,
+    /// The message-emission count the glass reflects.  A menu's modal
+    /// loop repaints the echo row only when this falls behind — GNU's
+    /// message3 paints through a frozen redisplay while read_char's
+    /// input-arrival wipe waits for the next redisplay.
+    painted_message_tick: u64,
 }
 
 impl TtyState {
@@ -190,6 +195,7 @@ impl TtyState {
             face_cache_generation: 0,
             minibuffer_owns_echo: false,
             menu_bar_row: None,
+            painted_message_tick: 0,
         }
     }
 }
@@ -278,17 +284,42 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
             }
         }
     })));
+    // term.c's menu_show_hook: the dropdown executor F10's popup path
+    // reaches through x-popup-menu.
+    crate::lisp::primitives::set_tty_menu_executor(Some(make_menu_executor(
+        queue.clone(),
+        std::rc::Rc::clone(&state),
+    )));
     // keyboard.c's input_pending probe: `input-pending-p' and sit-for's
     // early exit see queued terminal input without consuming it.
     crate::lisp::primitives::set_tty_input_pending_check(Some(Box::new({
         let queue = queue.clone();
         move || queue.input_pending()
     })));
+    // startup.el's display-startup-echo-area-message: the startup hint
+    // sits in the echo area until the first command replaces it (F10's
+    // menu leaves it visible, as GNU does).
+    if let Ok(message) = interpreter.call_function_value(
+        Value::Symbol("substitute-command-keys".into()),
+        None,
+        &[Value::String(
+            "For information about GNU Emacs and the GNU system, type \\[about-emacs].".into(),
+        )],
+        &mut env,
+    ) && let Ok(text) = crate::lisp::primitives::string_text(&message)
+    {
+        // The substituted key carries help-key-binding face (help.el's
+        // substitute-command-keys propertizes it); the echo row paints
+        // the span like GNU's startup echo.
+        let spans = crate::lisp::primitives::string_face_spans(&message);
+        crate::lisp::primitives::set_echo_area_message_with_spans(text, spans);
+    }
     let code = command_loop(&mut interpreter, &mut env, &queue, &state);
     crate::lisp::primitives::set_tty_frame_redraw(None);
     crate::lisp::primitives::set_tty_event_reader(None);
     crate::lisp::primitives::set_tty_event_poller(None);
     crate::lisp::primitives::set_tty_input_pending_check(None);
+    crate::lisp::primitives::set_tty_menu_executor(None);
     crate::lisp::primitives::set_interactive_window_metrics(None);
     drop(guard);
     code
@@ -386,7 +417,7 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
     };
     let mut text = crate::lisp::primitives::echo_area_message().unwrap_or_default();
     text.truncate(cols.max(10) as usize);
-    if let Ok(state) = state.try_borrow() {
+    if let Ok(mut state) = state.try_borrow_mut() {
         // An active minibuffer's composed row (prompt face, overlay
         // strings) belongs to full redisplay; commands are the only
         // thing that changes it, and the frame-redraw hook repaints
@@ -394,6 +425,9 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
         if state.minibuffer_owns_echo {
             return;
         }
+        // Painting (or confirming) the channel brings the glass up to
+        // date with every message emitted so far.
+        state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
         let painted: String = state.painted_echo.text.iter().collect();
         if painted.trim_end_matches(' ') == text {
             return;
@@ -1312,6 +1346,9 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         &mut state.face_cache,
     );
     state.minibuffer_owns_echo = from_minibuffer;
+    // Full redisplay reflects the message channel; the glass is caught
+    // up with every emission made so far.
+    state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
     if state.painted_echo != echo_row {
         paint_row(&mut out, frame_rows, &echo_row)?;
         state.painted_echo = echo_row;
@@ -1455,7 +1492,7 @@ fn compose_echo_row(
         return (row, true);
     }
     let (mut echo, spans) = if frontend_echo.is_empty() {
-        crate::lisp::primitives::echo_area_message_with_spans().unwrap_or_default()
+        crate::lisp::primitives::echo_display_message().unwrap_or_default()
     } else {
         (frontend_echo.to_string(), Vec::new())
     };
@@ -2232,4 +2269,192 @@ fn tty_smoke_end_to_end() {
         .status()
         .expect("run tools/tty-smoke.py");
     assert!(status.success(), "tty smoke test failed");
+}
+
+/// term.c's tty_menu_activate: draw the dropdown over the glass, run a
+/// modal key loop under tty-menu-navigation-map (bound by the caller),
+/// and restore the screen behind on exit.  Keyboard navigation drives a
+/// virtual selection row exactly as GNU drives its virtual mouse.
+fn make_menu_executor(
+    queue: SharedEventQueue,
+    state: std::rc::Rc<std::cell::RefCell<TtyState>>,
+) -> crate::lisp::primitives::TtyMenuExecutor {
+    use crate::lisp::primitives::{TtyMenuOutcome, TtyMenuPane};
+    Box::new(
+        move |interpreter: &mut Interpreter,
+              env: &mut Env,
+              pane: &TtyMenuPane,
+              x0: usize,
+              y0: usize| {
+            let Ok((cols, rows)) = terminal::size() else {
+                return TtyMenuOutcome::Quit;
+            };
+            let (cols, rows) = (cols.max(10) as usize, rows.max(4) as usize);
+            let mut resolve_face = |name: &str| {
+                let mut state = state.borrow_mut();
+                *state.face_cache.entry(name.into()).or_insert_with(|| {
+                    crate::lisp::primitives::resolve_tty_face_attrs(
+                        interpreter,
+                        env,
+                        &Value::Symbol(name.into()),
+                    )
+                })
+            };
+            let disabled_attrs = resolve_face("tty-menu-disabled-face");
+            let enabled_attrs = resolve_face("tty-menu-enabled-face");
+            let selected_raw = resolve_face("tty-menu-selected-face");
+            // GNU derives the selected face over the enabled one
+            // (lookup_derived_face with faces[1] as its base).
+            let selected_attrs = merge_cell_attrs(enabled_attrs, selected_raw);
+
+            let left = x0.saturating_sub(1).min(cols.saturating_sub(1));
+            let box_width = (pane.width + 2).min(cols - left);
+            let title_row = y0.saturating_sub(1);
+            let max_items = pane
+                .items
+                .len()
+                .min(rows.saturating_sub(1) - y0.min(rows - 2));
+            if max_items == 0 {
+                return TtyMenuOutcome::Quit;
+            }
+
+            // The screen behind the menu, restored on the way out
+            // (save_and_enable_current_matrix / screen_update).
+            let saved: Vec<(usize, PaintRow)> = {
+                let state = state.borrow();
+                std::iter::once(title_row)
+                    .chain(y0..y0 + max_items)
+                    .filter(|row| *row < state.painted_rows.len())
+                    .map(|row| (row, state.painted_rows[row].clone()))
+                    .collect()
+            };
+
+            let menu_cell = |text: &str, width: usize, attrs: CellAttrs, base: &PaintRow| {
+                let mut row = base.clone();
+                let mut painted = String::from(" ");
+                painted.push_str(text);
+                while painted.chars().count() < width {
+                    painted.push(' ');
+                }
+                let painted: String = painted.chars().take(width).collect();
+                row.blit(left, &painted, attrs);
+                row
+            };
+            // The title cell: the pane name with the " >" submenu marker,
+            // in the selected face — ' File > ' clobbering the bar.
+            let title_width = pane.title.chars().count() + 4;
+            let draw = |state: &mut TtyState, selection: usize| {
+                let mut out = io::stdout();
+                let _ = queue!(out, cursor::Hide);
+                if title_row < state.painted_rows.len() {
+                    let cell = menu_cell(
+                        &format!("{} >", pane.title),
+                        title_width.min(cols - left),
+                        selected_attrs,
+                        &state.painted_rows[title_row],
+                    );
+                    let _ = paint_row(&mut out, title_row, &cell);
+                    state.painted_rows[title_row] = cell;
+                }
+                for (index, item) in pane.items.iter().take(max_items).enumerate() {
+                    let row = y0 + index;
+                    if row >= state.painted_rows.len() {
+                        break;
+                    }
+                    let attrs = if index == selection {
+                        if item.enabled {
+                            selected_attrs
+                        } else {
+                            merge_cell_attrs(disabled_attrs, selected_raw)
+                        }
+                    } else if item.enabled {
+                        enabled_attrs
+                    } else {
+                        disabled_attrs
+                    };
+                    let cell = menu_cell(&item.text, box_width, attrs, &state.painted_rows[row]);
+                    let _ = paint_row(&mut out, row, &cell);
+                    state.painted_rows[row] = cell;
+                }
+                let _ = out.flush();
+            };
+
+            let mut selection = 0usize;
+            let outcome = loop {
+                {
+                    let mut state = state.borrow_mut();
+                    draw(&mut state, selection);
+                }
+                // One key sequence under the navigation map; prefixes keep
+                // reading, everything else maps per read_menu_input.
+                let mut pending: Vec<Value> = Vec::new();
+                let command = loop {
+                    // Live echo under the menu, but only for messages
+                    // emitted since the glass was last painted: GNU's
+                    // message3 repaints through a frozen redisplay (the
+                    // `(message "")' between cycled menus), while
+                    // read_char's input-arrival wipe leaves the old
+                    // pixels alone until the next full redisplay.
+                    let emitted = crate::lisp::primitives::echo_area_message_tick();
+                    if state
+                        .try_borrow()
+                        .is_ok_and(|state| state.painted_message_tick != emitted)
+                    {
+                        draw_echo_row(&state);
+                    }
+                    let Some(event) = queue.next_event() else {
+                        break Value::T;
+                    };
+                    if event == Value::Integer(7) {
+                        break Value::T;
+                    }
+                    pending.push(event);
+                    match resolve_pending(interpreter, env, &pending) {
+                        Resolution::Command(binding) => break binding,
+                        Resolution::Prefix => {}
+                        Resolution::Undefined => break Value::Nil,
+                    }
+                };
+                let name = match &command {
+                    Value::Symbol(name) => name.as_ref(),
+                    Value::T => "tty-menu-exit",
+                    _ => "",
+                };
+                match name {
+                    "tty-menu-exit" => break TtyMenuOutcome::Quit,
+                    "tty-menu-next-menu" => break TtyMenuOutcome::NextMenu,
+                    "tty-menu-prev-menu" => break TtyMenuOutcome::PrevMenu,
+                    "tty-menu-next-item" => {
+                        selection = (selection + 1) % max_items;
+                    }
+                    "tty-menu-prev-item" => {
+                        selection = (selection + max_items - 1) % max_items;
+                    }
+                    "tty-menu-select" => {
+                        // A separator or disabled item answers no selection
+                        // (TTYM_IA_SELECT), like GNU.
+                        if pane.items[selection].enabled {
+                            break TtyMenuOutcome::Selected(selection);
+                        }
+                        break TtyMenuOutcome::NoSelect;
+                    }
+                    _ => {}
+                }
+            };
+
+            // screen_update: put back what the menu covered.
+            {
+                let mut state = state.borrow_mut();
+                let mut out = io::stdout();
+                for (row, cell) in saved {
+                    let _ = paint_row(&mut out, row, &cell);
+                    if row < state.painted_rows.len() {
+                        state.painted_rows[row] = cell;
+                    }
+                }
+                let _ = out.flush();
+            }
+            outcome
+        },
+    )
 }
