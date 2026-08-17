@@ -241,11 +241,6 @@ pub(crate) fn symbol_with_pos_eq_in_env(
     )
 }
 
-pub(crate) fn is_lambda_value(value: &Value) -> bool {
-    value.to_vec().ok().is_some_and(
-        |items| matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "lambda"),
-    )
-}
 
 pub(crate) fn eval_callable_metadata_form(
     interp: &mut Interpreter,

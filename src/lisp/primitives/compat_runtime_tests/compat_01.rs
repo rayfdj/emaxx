@@ -226,8 +226,16 @@ fn directory_files_and_attributes_reports_entries_and_arity() {
     assert_eq!(entries.len(), 1);
     let (name, attributes) = entries[0].cons_values().expect("entry cons");
     assert_eq!(name, Value::String("sample.txt".into()));
+    // `file-attribute-size' lives in GNU files.el; the bare runtime has no
+    // preloaded Lisp, so index the C-owned attribute list directly.
     assert_eq!(
-        call(&mut interp, "file-attribute-size", &[attributes], &mut env,).expect("attribute size"),
+        call(
+            &mut interp,
+            "nth",
+            &[Value::Integer(7), attributes],
+            &mut env,
+        )
+        .expect("attribute size"),
         Value::Integer(6)
     );
 

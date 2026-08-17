@@ -708,13 +708,6 @@ define_dispatch!(
                                 ])));
                             }
                             seen.push(symbol.clone());
-                            if let Some(function) =
-                                super::misc_keymaps::materialize_preloaded_lisp_function(
-                                    interp, symbol, env,
-                                )
-                            {
-                                return Ok(function);
-                            }
                             match interp.lookup_function(symbol, env) {
                                 Ok(resolved) if matches!(resolved, Value::Symbol(_)) => {
                                     current = resolved;
@@ -743,9 +736,13 @@ define_dispatch!(
             "subr-arity" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::BuiltinFunc(symbol) => Ok(builtin_arity_value(symbol)
+                    Value::BuiltinFunc(symbol) => builtin_arity_value(symbol)
                         .or_else(|| special_form_arity_value(symbol))
-                        .unwrap_or_else(|| fallback_subr_arity_value(symbol))),
+                        .ok_or_else(|| {
+                            LispError::Signal(format!(
+                                "emaxx: no GNU-derived arity for subr {symbol}"
+                            ))
+                        }),
                     // GNU data.c CHECK_SUBR signals the subrp predicate with
                     // the offending value itself.
                     other => Err(crate::lisp::primitives::wrong_type_argument(
@@ -813,7 +810,11 @@ define_dispatch!(
                 };
                 let arity = builtin_arity_value(symbol)
                     .or_else(|| special_form_arity_value(symbol))
-                    .unwrap_or_else(|| fallback_subr_arity_value(symbol));
+                    .ok_or_else(|| {
+                        LispError::Signal(format!(
+                            "emaxx: no GNU-derived arity for subr {symbol}"
+                        ))
+                    })?;
                 Ok(Value::String(
                     format!("{symbol}{}", render_prin1(interp, &arity, env)?).into(),
                 ))

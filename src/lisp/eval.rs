@@ -2467,7 +2467,6 @@ struct SourceFormAnalysis {
     items: Rc<Vec<Value>>,
     native_form: Option<core::NativeForm>,
     literal_kind: core::SourceLiteralKind,
-    if_test_mentions_setcdr: bool,
     /// The generation-stamped non-macro verdict shares the source-analysis
     /// lifetime.  Actual macro expansions are deliberately never cached:
     /// GNU's interpreted evaluator invokes the macro expander on every
@@ -5040,98 +5039,12 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
     Ok(())
 }
 
-fn setcdr_tail_aliases(
-    interp: &Interpreter,
-    value: &Value,
-    tail: &Value,
-    env: &Env,
-) -> Vec<String> {
-    let mut aliases = Vec::new();
-    collect_setcdr_tail_aliases(interp, value, tail, env, &mut aliases);
-    aliases
-}
 
-/// Allocation-free pre-scan for `setcdr' anywhere in FORM, so the hot
-/// `if' path skips the tail-alias machinery entirely.  BUDGET caps the
-/// walk (reader forms can be circular); an exhausted budget reports
-/// true, deferring to the cycle-safe slow path.
-pub(crate) fn form_mentions_setcdr(value: &Value, budget: &mut u32) -> bool {
-    if *budget == 0 {
-        return true;
-    }
-    *budget -= 1;
-    match value {
-        Value::Symbol(name) => name == "setcdr",
-        Value::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            form_mentions_setcdr(&car.borrow(), budget)
-                || form_mentions_setcdr(&cdr.borrow(), budget)
-        }
-        _ => false,
-    }
-}
 
-fn collect_setcdr_tail_aliases(
-    interp: &Interpreter,
-    value: &Value,
-    tail: &Value,
-    env: &Env,
-    aliases: &mut Vec<String>,
-) {
-    let Ok(items) = value.to_vec() else {
-        return;
-    };
-    if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "setcdr")
-        && let Some(Value::Symbol(name)) = items.get(1)
-        && interp.lookup_var(name, env).as_ref() == Some(tail)
-        && !aliases.iter().any(|alias| alias == name)
-    {
-        aliases.push(name.to_string());
-    }
-    for item in &items {
-        collect_setcdr_tail_aliases(interp, item, tail, env, aliases);
-    }
-}
 
-fn tail_aliases_became_improper(interp: &Interpreter, aliases: &[String], env: &Env) -> bool {
-    aliases.iter().any(|name| {
-        interp
-            .lookup_var(name, env)
-            .is_some_and(|value| value.to_vec().is_err())
-    })
-}
 
-fn snapshot_tail_alias_values(
-    interp: &Interpreter,
-    aliases: &[String],
-    env: &Env,
-) -> Vec<(String, Value)> {
-    aliases
-        .iter()
-        .filter_map(|name| {
-            interp
-                .lookup_var(name, env)
-                .map(|value| (name.clone(), deep_copy_value(&value)))
-        })
-        .collect()
-}
 
-fn restore_tail_alias_values(interp: &mut Interpreter, aliases: &[(String, Value)], env: &mut Env) {
-    for (name, value) in aliases {
-        interp.set_variable(name, value.clone(), env);
-    }
-}
 
-fn deep_copy_value(value: &Value) -> Value {
-    match value {
-        Value::Cons(cell) => Value::cons(
-            deep_copy_value(&cell.car.borrow()),
-            deep_copy_value(&cell.cdr.borrow()),
-        ),
-        _ => value.clone(),
-    }
-}
 
 // GNU pcase--funcall for `app' patterns: a call form may name the object
 // with `_'; without a placeholder the object becomes the last argument.
