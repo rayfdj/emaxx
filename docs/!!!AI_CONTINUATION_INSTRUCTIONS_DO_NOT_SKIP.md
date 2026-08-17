@@ -25,6 +25,52 @@ parallel-only noise.
 
 ## Current Resume Point
 
+- 2026-08-17 EVAL_05 NEAR-CLEAN CHECKPOINT (commit 52a0cdf): 341 of 347
+  `eval_05` tests pass serially, with one test quarantined and six red.
+  Fixed this round: all stale-runtime conversions; GNU-probed
+  expectation corrections (derived-mode-p mode-symbol returns,
+  cl-generic method docstrings, skip-when/skip-unless failing outside
+  ert-deftest, make-obsolete's plain error, setopt's curly-quoted
+  warning at offset 30, tex-mode void-variable, dolist-with-progress-
+  reporter misuse, global define-minor-mode not running its body at
+  define time); explicit ert temp-file suffixes (string evaluation has
+  no source name for the generated-suffix path; GNU --eval fails the
+  same way, and `ert-temp-file-suffix' short-circuits it for eshell's
+  with-temp-eshell); the invented tex-mode variable fallback removed
+  from bindings.rs; process filters now hand Lisp mutable shared
+  strings (GNU filters propertize output in place — this fixed the
+  eshell pipeline/unix suites); and string-property writers now drop
+  writes to immutable interned strings instead of signaling, mirroring
+  the pre-existing set-text-properties policy (fixed $PWD-family
+  eshell cases).
+
+  Remaining red (six) and their diagnoses:
+  - upstream_completion_preview (1/11): ARCHITECTURAL — GNU mutates
+    capf-returned string literals in place (set-text-properties on the
+    suffix, concat carries the face); Emaxx's immutable interned
+    Value::String cannot host that write.  Needs the string-identity/
+    mutability design (same caliber as the issue-11 dump work); do not
+    patch cosmetically.
+  - upstream_eshell_external (4/5): esh-ext-test/explicitly-remote-
+    command — probe GNU for skip-vs-fail parity before touching.
+  - find_function_suite (4/6): locate-library returns nil somewhere,
+    and locate-symbols wants C-source knowledge for `goto-char'
+    (find-function-C-source-directory handling).
+  - edebug_instrumented_cl_macrolet (0/1), dumped_bootstrap contracts
+    (one flag in a long boolean list), real_gnu_cl_generic
+    introspection (a generic-function record where a symbol is
+    expected): undiagnosed; probe GNU per item.
+  - QUARANTINED HANG: eshell_matching_input_navigation_crosses_
+    nonsticky_prompts deterministically hangs (killed two full gates at
+    exactly this test); run with --skip until diagnosed solo (sample
+    the stuck process; suspect eshell-insert-command's process wait or
+    prompt-field navigation loop).
+
+  After eval_05: ~500 never-run non-eval tests (primitives 270,
+  compat_runtime 101, reader/json/tty/etc., plus 37 compat-harness bin
+  tests outside --lib), then one uninterrupted full serial gate, then
+  the honest canonical X/7080 harness measurement.
+
 - 2026-08-17 EVAL_04 MODULE-CLEAN CHECKPOINT: the complete `eval_04`
   module is authoritatively clean: all 240 tests passed in one
   `--test-threads=1` process in 1864.56 seconds.  The 103 gate failures
