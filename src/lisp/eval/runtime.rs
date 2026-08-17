@@ -257,13 +257,6 @@ impl Interpreter {
         if self.has_feature(feature) {
             return Ok(Value::Symbol(feature.to_string().into()));
         }
-        if feature == "cus-edit" || target == Some("cus-edit") {
-            for dependency in ["custom", "lisp-mode", "pp", "tabify"] {
-                if !self.has_feature(dependency) {
-                    self.require_feature_with_target(dependency, None, env)?;
-                }
-            }
-        }
         let load_target = target.unwrap_or(feature);
         self.with_require_nesting(feature, |interp| {
             let Some(path) =
@@ -274,18 +267,18 @@ impl Interpreter {
             interp.load_resolved_path(&path, env, true)?;
             Ok(())
         })?;
-        if (feature == "semantic/symref" || load_target == "semantic/symref")
-            && let Some(grep_path) = self.resolve_load_target("semantic/symref/grep")
-        {
-            self.load_resolved_path(&grep_path, env, true)?;
-        }
         if !self.has_feature(feature) && target.is_some() {
             return Err(LispError::Signal(format!(
                 "Loading file {load_target} failed to provide feature {feature}"
             )));
         }
         if !self.has_feature(feature) {
-            return self.provide_feature_with_after_load(feature, env);
+            // GNU fns.c:Frequire signals unconditionally when the loaded
+            // file did not provide FEATURE; self-providing here fabricated
+            // success and a bogus load-history provide entry.
+            return Err(LispError::Signal(format!(
+                "Loading file {load_target} failed to provide feature {feature}"
+            )));
         }
         Ok(Value::Symbol(feature.to_string().into()))
     }

@@ -309,7 +309,6 @@ impl Interpreter {
             "case-symbols-as-words" => Some(Value::Nil),
             "use-hard-newlines" => Some(Value::Nil),
             "fill-column" => Some(Value::Integer(70)),
-            "indent-according-to-mode" => Some(Value::Symbol("indent-according-to-mode".into())),
             "filter-buffer-substring-function" => {
                 Some(Value::Symbol("buffer-substring--filter".into()))
             }
@@ -439,7 +438,6 @@ impl Interpreter {
             // the host value cell.
             "tty-defined-color-alist" => Some(Value::Nil),
             // GNU startup.el defvar; bytecomp reads it.
-            "startup-redirect-eln-cache" => Some(Value::Nil),
             // GNU startup.el defcustom.  Its declared special binding is
             // observable by separately loaded lexical libraries such as
             // time-stamp.el, even when the user leaves the value nil.
@@ -593,7 +591,6 @@ impl Interpreter {
             "post-self-insert-hook" => Some(Value::Nil),
             "macroexp--dynvars" => Some(Value::Nil),
             "macroexpand-all-environment" => Some(Value::Nil),
-            "ls-lisp-use-insert-directory-program" => Some(Value::T),
             "transient-mark-mode" => Some(Value::Nil),
             "select-active-regions" => Some(Value::T),
             "saved-region-selection" => Some(Value::Nil),
@@ -651,7 +648,6 @@ impl Interpreter {
             "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
             "menu-bar-separator" => Some(Value::Symbol("menu-bar-separator".into())),
-            "mode-line-modes" => Some(Value::Nil),
             "window-display-table" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
             "text-mode-syntax-table" => Some(Value::CharTable(2)),
@@ -850,7 +846,6 @@ impl Interpreter {
             "read-buffer-function" | "read-file-name-function" => Some(Value::Nil),
             "delete-by-moving-to-trash" => Some(Value::Nil),
             "directory-files-no-dot-files-regexp" => Some(Value::String("[^.]\\|\\.\\.\\.".into())),
-            "user-emacs-directory" => Some(Value::String("/nonexistent/.emacs.d/".into())),
             "invocation-name" => Some(Value::String(
                 primitives::current_invocation_name()
                     .unwrap_or_else(|| "emaxx".into())
@@ -892,7 +887,6 @@ impl Interpreter {
             )),
             "find-program" => Some(Value::String("find".into())),
             "grep-program" => Some(Value::String("grep".into())),
-            _ if name.starts_with('.') => Some(Value::Nil),
             _ if name.starts_with(':') => Some(Value::Symbol(name.to_string().into())),
             _ => None,
         }

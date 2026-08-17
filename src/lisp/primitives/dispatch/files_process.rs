@@ -721,11 +721,10 @@ define_dispatch!(
                     modified,
                     changed,
                     Value::Integer(metadata.len() as i64),
-                    Value::String(if file_type.is_dir() {
-                        "drwxr-xr-x".into()
-                    } else {
-                        "-rw-r--r--".into()
-                    }),
+                    // GNU dired.c renders the real lstat mode bits through
+                    // filemodestring; fabricating a constant here diverges
+                    // for every chmod'd file.
+                    Value::String(file_mode_string_for_metadata(&metadata).into()),
                     Value::Nil,
                     Value::Integer(inode),
                     Value::Integer(device),
@@ -2614,4 +2613,63 @@ fn signal_process_target_pid(
         .process_os_id(process_id)
         .map(|pid| Some(pid as libc::pid_t))
         .ok_or_else(|| LispError::Signal(format!("Cannot signal process {name}")))
+}
+
+/// GNU dired.c formats slot 8 of `file-attributes' with filemodestring
+/// over the real lstat mode: a file-type character followed by three
+/// permission triads with setuid/setgid/sticky markers.
+#[cfg(unix)]
+fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    let mode = metadata.mode();
+    let type_char = match mode & (libc::S_IFMT as u32) {
+        m if m == libc::S_IFDIR as u32 => 'd',
+        m if m == libc::S_IFLNK as u32 => 'l',
+        m if m == libc::S_IFCHR as u32 => 'c',
+        m if m == libc::S_IFBLK as u32 => 'b',
+        m if m == libc::S_IFIFO as u32 => 'p',
+        m if m == libc::S_IFSOCK as u32 => 's',
+        _ => '-',
+    };
+    let mut rendered = String::with_capacity(10);
+    rendered.push(type_char);
+    for (read_bit, write_bit, exec_bit, special_bit, exec_char, no_exec_char) in [
+        (0o400u32, 0o200u32, 0o100u32, 0o4000u32, 's', 'S'),
+        (0o040, 0o020, 0o010, 0o2000, 's', 'S'),
+        (0o004, 0o002, 0o001, 0o1000, 't', 'T'),
+    ] {
+        rendered.push(if mode & read_bit != 0 { 'r' } else { '-' });
+        rendered.push(if mode & write_bit != 0 { 'w' } else { '-' });
+        let executable = mode & exec_bit != 0;
+        rendered.push(if mode & special_bit != 0 {
+            if executable { exec_char } else { no_exec_char }
+        } else if executable {
+            'x'
+        } else {
+            '-'
+        });
+    }
+    rendered
+}
+
+#[cfg(not(unix))]
+fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
+    let writable = !metadata.permissions().readonly();
+    let type_char = if metadata.file_type().is_dir() {
+        'd'
+    } else {
+        '-'
+    };
+    let mut rendered = String::with_capacity(10);
+    rendered.push(type_char);
+    for _ in 0..3 {
+        rendered.push('r');
+        rendered.push(if writable { 'w' } else { '-' });
+        rendered.push(if metadata.file_type().is_dir() {
+            'x'
+        } else {
+            '-'
+        });
+    }
+    rendered
 }

@@ -3958,16 +3958,6 @@ pub(crate) fn key_binding(
         }
     }
 
-    if raw_binding.is_nil()
-        && key == "\""
-        && matches!(
-            interp.lookup_var("major-mode", env),
-            Some(Value::Symbol(mode)) if mode == "tex-mode"
-        )
-    {
-        raw_binding = Value::Symbol("tex-insert-quote".into());
-    }
-
     let global_map = interp.current_global_map_value();
     if raw_binding.is_nil() && is_keymap_value(interp, &global_map) {
         let binding = keymap_lookup_binding_exact_parts_with_default(

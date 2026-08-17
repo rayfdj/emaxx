@@ -25,6 +25,57 @@ parallel-only noise.
 
 ## Current Resume Point
 
+- 2026-08-18 DE-CHEAT PHASES 1-3 CHECKPOINT: a four-way honesty audit
+  (primitives dispatch, eval core, runtime/harness/anti-cheat, test
+  integrity) ran before the 7080 measurement; its findings are recorded
+  in the session and the first three fix phases are complete:
+
+  Phase 1, fabrications removed: the invented tex-mode `"' keybinding
+  injection in key-binding; file-attributes' hardcoded mode strings
+  (now a real filemodestring port over lstat bits, GNU-verified);
+  forward-sexp/backward-sexp's wrong interactive spec (now "^p\nd",
+  with the `d' callint letter implemented); the dot-prefix catch-all
+  that bound every `.foo' symbol.
+
+  Phase 2, poisoning and silent successes removed: `defvar' now skips
+  its init form only when a REAL global binding exists — the lazily
+  synthesized builtin fallback table no longer counts, so loaded GNU
+  files' defvars initialize honestly (mode-line-modes and
+  user-emacs-directory were the proven poisonings; five bogus table
+  entries deleted).  The autoload native fallback fires only on
+  file-missing (a found file's eval errors propagate like GNU's
+  Fautoload_do_load).  `require' signals GNU's "failed to provide"
+  error instead of self-providing (GNU probe: float-sup and lisp
+  signal identically, so two tests requiring non-providing preloaded
+  files were corrected to use the batch preload).  The hardcoded
+  cus-edit and semantic/symref dependency knowledge is gone.
+
+  Phase 3, hardening: tests/ert_runner.rs now fails on load errors,
+  timeouts, and any failing test.  tty.rs lost its silent find-file
+  fallback (panics loudly), its fabricated mode line (explicit render
+  error marker), and its locale-coding mask.  Anti-cheat gates now scan
+  tty.rs/bin/frontends, ban the removed fallback patterns, and a new
+  gate regenerates the GNU C manifest from the pinned sibling and
+  requires byte identity (passing).  Consequential fix: honest
+  data-directory made describe-function scan real NEWS files like GNU,
+  exceeding the regex delegate's default backtrack cap — the cap is
+  raised (GNU has none).
+
+  Validation: anti-cheat 13/13; targeted de-cheat tests 20/20; the
+  eval_01+eval_02 pair reran 591 tests with the only three failures
+  fixed as above.  Remaining audit backlog (phases 4-6, NOT started):
+  regenerate the oracle manifest on this machine (two of the nine
+  excluded "timed out" files load cleanly today — the 7080 denominator
+  is stale); retire the preloaded-Lisp disguise stack (counterfeit
+  byte-code wrappers, subrp lies, transcribed preloaded-file-list) and
+  the displacement backlog (native isearch/kill-line/prefix-arg paths,
+  auto-compression, version-to-list, completion styles, default keymap
+  table, Unicode special-case subset, gnutls digest table,
+  completing-read fabrication); replace the native ERT runner with the
+  Lisp-driven runner on the measured side.  The 176 non-eval-sweep
+  failures should be triaged only after those phases, since many test
+  the very facades slated for removal.
+
 - 2026-08-17 EVAL_05 CERTIFIED CHECKPOINT: the complete `eval_05` module
   ran serially with no skips: 347 of 348 passed in 8490.81 seconds.  The
   single failure is upstream_completion_preview_uses_preloaded_forward_

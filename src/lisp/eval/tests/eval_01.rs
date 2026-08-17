@@ -823,7 +823,7 @@ fn eval_arithmetic() {
     assert_eq!(eval_str("(logior 1 2 4)"), Value::Integer(7));
     assert_eq!(eval_str("(logxor 1 2 3)"), Value::Integer(0));
     assert_eq!(eval_str("(lognot 5)"), Value::Integer(-6));
-    let (_permit, mut interp) = upstream_batch_interpreter_with_features(&["cl-lib", "float-sup"]);
+    let (_permit, mut interp) = upstream_batch_interpreter_with_features(&["cl-lib"]);
     assert_eq!(
         // `cl-evenp' and `cl-oddp' are GNU Elisp functions in cl-lib.el.
         eval_str_with(
@@ -4941,10 +4941,13 @@ fn letstar_initializer_closure_does_not_capture_a_later_binding() {
 #[test]
 fn locate_user_emacs_file_uses_user_emacs_directory() {
     assert_eq!(
-        // GNU 30.2 owns `locate-user-emacs-file' in files.el.
+        // GNU 30.2 owns `locate-user-emacs-file' in files.el.  Bind the
+        // directory explicitly: the real subr.el defvar computes it from
+        // the live HOME, so an unbound test would depend on the machine.
         eval_str_with_upstream_batch_feature(
             "files",
-            r#"(locate-user-emacs-file "ido.last" ".ido.last")"#,
+            r#"(let ((user-emacs-directory "/nonexistent/.emacs.d/"))
+                 (locate-user-emacs-file "ido.last" ".ido.last"))"#,
         ),
         Value::String("/nonexistent/.emacs.d/ido.last".into())
     );
@@ -6974,10 +6977,10 @@ fn defun_navigation_defaults_bracket_the_current_top_level_form() {
 #[test]
 fn forward_sexp_honors_syntax_table_category_properties() {
     assert_eq!(
-        // GNU 30.2 owns `forward-sexp' in emacs-lisp/lisp.el; its scanner
-        // ultimately delegates to C-owned syntax primitives.
-        eval_str_with_upstream_batch_feature(
-            "lisp",
+        // GNU 30.2 owns `forward-sexp' in emacs-lisp/lisp.el, which loadup
+        // preloads without providing a feature — `(require 'lisp)' signals
+        // in GNU too, so the batch image's preload is the honest source.
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                    (set-syntax-table (make-syntax-table))
                    (modify-syntax-entry ?< \".\")

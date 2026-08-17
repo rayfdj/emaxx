@@ -294,6 +294,10 @@ pub(crate) fn parse_interactive_string(
                         .unwrap_or(Value::Nil),
                 );
             }
+            'd' => {
+                // GNU callint.c: the value of point as a number, no I/O.
+                values.push(Value::Integer(interp.buffer.point() as i64));
+            }
             'N' => {
                 let prefix = interp
                     .lookup_var("current-prefix-arg", env)
