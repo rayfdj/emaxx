@@ -25,6 +25,38 @@ parallel-only noise.
 
 ## Current Resume Point
 
+- 2026-08-17 EVAL_05 CERTIFIED CHECKPOINT: the complete `eval_05` module
+  ran serially with no skips: 347 of 348 passed in 8490.81 seconds.  The
+  single failure is upstream_completion_preview_uses_preloaded_forward_
+  symbol, the documented string-mutability quarantine (GitHub issue #14;
+  GNU mutates capf-returned string literals in place, which Emaxx's
+  immutable interned strings cannot host).  Every other eval_05 item is
+  repaired, including the former "hang": eshell_matching_input_
+  navigation passes in ~11s now — the hang was process-pipe writes
+  failing with EAGAIN and each eshell command then burning its 300s
+  wait, fixed by GNU send_process semantics (retry the nonblocking
+  write while accepting pending process output).  Other native repairs
+  in this round: doc-directory falls back to the pinned sibling's etc/
+  so Snarf-documentation and help-C-file-name read GNU's DOC database;
+  VM condition-case frames now register in the interpreter's handler
+  stack so signal-time `handler-bind' dispatch at native-call
+  boundaries cannot bypass a compiled condition-case (GNU handlerlist
+  parity — this was making ERT capture errors that custom.el had
+  handled); and `call-interactively' resolves interactive forms of
+  compiled OClosures through `oclosure-interactive-form', so advised
+  commands like edebug's eval-defun receive their composed "P"
+  argument.  GNU-probed test corrections: cl--generic-name projection
+  (the raw generic struct is not assertable), dumped_bootstrap's
+  lexical-binding t under batch eval.
+
+  ALL FIVE EVAL MODULES ARE NOW CERTIFIED in complete serial runs:
+  eval_01 313, eval_02 278, eval_03 310, eval_04 240, eval_05 347/348
+  (one issue-#14 quarantine).  Next: the ~500 never-run non-eval
+  suites (lisp::primitives tests 270, compat_runtime_tests 101,
+  reader/json/tty/perf/etc., plus the compat-harness bin tests outside
+  --lib), then one uninterrupted full serial publication gate, then
+  the honest canonical X/7080 harness measurement.
+
 - 2026-08-17 EVAL_05 NEAR-CLEAN CHECKPOINT (commit 52a0cdf): 341 of 347
   `eval_05` tests pass serially, with one test quarantined and six red.
   Fixed this round: all stale-runtime conversions; GNU-probed

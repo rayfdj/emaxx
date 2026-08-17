@@ -4486,7 +4486,7 @@ fn real_gnu_cl_generic_exposes_complete_method_introspection() {
                  \"integer-doc\" x)
                (let ((generic (cl--generic
                                'emaxx-introspection-generic)))
-                 (list generic
+                 (list (cl--generic-name generic)
                        (mapcar
                         (lambda (method)
                           (list (cl--generic-method-qualifiers method)
@@ -5783,7 +5783,9 @@ fn dumped_bootstrap_exposes_core_preload_contracts() {
         Value::list([
             Value::T,
             Value::T,
-            Value::Nil,
+            // GNU batch evaluation sees *scratch*'s buffer-local
+            // lexical-binding t (probed: (t nil) against the default).
+            Value::T,
             Value::T,
             Value::T,
             Value::Nil,
