@@ -1599,30 +1599,71 @@ impl Interpreter {
             self.connection_send(record_id, input)?;
             return Ok((Vec::new(), Vec::new()));
         }
-        let process = self
-            .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
-        let Some(runtime) = process.runtime.as_mut() else {
-            return Ok((input.to_vec(), Vec::new()));
-        };
-        let stdin: &mut dyn Write = if let Some(pty) = runtime.pty_input.as_mut() {
-            pty
-        } else if let Some(stdin) = runtime.child.stdin.as_mut() {
-            stdin
-        } else {
-            return Err(LispError::Signal("Process stdin is closed".into()));
-        };
-        stdin
-            .write_all(input)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        stdin
-            .flush()
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+        // GNU's send_process blocks until the pty or pipe accepts the bytes,
+        // accepting pending process output while it waits so a full write
+        // buffer cannot deadlock against an unread child.  A nonblocking fd
+        // therefore retries on EAGAIN instead of surfacing "Resource
+        // temporarily unavailable" to Lisp.
+        let mut pumped_stdout = Vec::new();
+        let mut pumped_stderr = Vec::new();
+        let mut offset = 0usize;
+        while offset < input.len() {
+            let write_result = {
+                let process = self
+                    .find_process_state_mut(record_id)
+                    .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+                let Some(runtime) = process.runtime.as_mut() else {
+                    return Ok((input[offset..].to_vec(), Vec::new()));
+                };
+                let stdin: &mut dyn Write = if let Some(pty) = runtime.pty_input.as_mut() {
+                    pty
+                } else if let Some(stdin) = runtime.child.stdin.as_mut() {
+                    stdin
+                } else {
+                    return Err(LispError::Signal("Process stdin is closed".into()));
+                };
+                stdin.write(&input[offset..])
+            };
+            match write_result {
+                Ok(0) => return Err(LispError::Signal("Process stdin is closed".into())),
+                Ok(written) => offset += written,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    let (out, err) = self.poll_process_output(record_id)?;
+                    pumped_stdout.extend_from_slice(&out);
+                    pumped_stderr.extend_from_slice(&err);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(LispError::Signal(error.to_string())),
+            }
+        }
+        {
+            let process = self
+                .find_process_state_mut(record_id)
+                .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            if let Some(runtime) = process.runtime.as_mut() {
+                let stdin: Option<&mut dyn Write> = if let Some(pty) = runtime.pty_input.as_mut() {
+                    Some(pty)
+                } else if let Some(stdin) = runtime.child.stdin.as_mut() {
+                    Some(stdin)
+                } else {
+                    None
+                };
+                if let Some(stdin) = stdin
+                    && let Err(error) = stdin.flush()
+                    && !matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    )
+                {
+                    return Err(LispError::Signal(error.to_string()));
+                }
+            }
+        }
         // GNU queues the bytes and returns; filters run when the event loop
-        // later accepts process output.  Waiting here made every send block
-        // for up to 100 ms and hid ordering bugs behind an accidental
-        // synchronous drain.
-        Ok((Vec::new(), Vec::new()))
+        // later accepts process output.  Only output drained while waiting
+        // for a full pipe is handed back for delivery here.
+        Ok((pumped_stdout, pumped_stderr))
     }
 
     pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {

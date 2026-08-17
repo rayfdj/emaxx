@@ -1470,7 +1470,7 @@ impl Interpreter {
         start
     }
 
-    pub(super) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
+    pub(crate) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
         let start = self.active_handlers.len();
         self.active_handlers.push(ActiveHandler::Case(heads));
         start
