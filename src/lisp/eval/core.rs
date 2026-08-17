@@ -809,10 +809,16 @@ impl Interpreter {
                     };
                     match self.load_target_with_env(&file, env) {
                         Ok(_) => self.lookup_function(name, env)?,
-                        // A file-less environment (unit tests) falls back to
-                        // the native arm when one exists.
+                        // Only a genuinely file-less environment (unit tests
+                        // with no resolvable Lisp tree) may fall back to a
+                        // native arm.  An error raised while EVALUATING a
+                        // found file must propagate like GNU's
+                        // Fautoload_do_load; anything else would make a
+                        // broken .el invisible for every native-armed name.
                         Err(error) => {
-                            if crate::lisp::primitives::is_builtin(name) {
+                            if error.condition_type() == "file-missing"
+                                && crate::lisp::primitives::is_builtin(name)
+                            {
                                 Value::BuiltinFunc(name.to_string().into())
                             } else {
                                 return Err(error);

@@ -13,9 +13,10 @@ fn emacs_test_dir() -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
-/// Run a single .el test file and report results.
-/// This is a lightweight smoke harness; the authoritative compatibility
-/// runner lives in `cargo run --bin compat-harness`.
+/// Run a single upstream .el test file and fail on any dishonest outcome:
+/// a load error, a timeout, a wedged worker, or any failing test.  The
+/// compat harness owns oracle comparison; this target owns "these three
+/// upstream files run clean through the library entry point".
 fn run_el_test(filename: &str) {
     let test_dir = emacs_test_dir().expect("Cannot find emacs test/src directory");
     let path = test_dir.join(filename);
@@ -40,32 +41,28 @@ fn run_el_test(filename: &str) {
                     }
                 }
                 lines.push(format!("  [{passed}/{total}] passed, {failed} failed"));
-                (passed > 0 || total == 0, lines)
+                (failed == 0, lines)
             }
             Err(error) => (
-                true,
+                false,
                 vec![format!("  ERROR loading {filename_for_thread}: {error}")],
             ),
         };
         let _ = tx.send(report);
     });
 
-    match rx.recv_timeout(Duration::from_secs(60)) {
-        Ok((has_passed_tests, lines)) => {
+    match rx.recv_timeout(Duration::from_secs(300)) {
+        Ok((clean, lines)) => {
             for line in lines {
                 println!("{line}");
             }
-            // Keep this permissive: the dedicated compatibility harness
-            // owns strict oracle comparisons now.
-            assert!(has_passed_tests, "No tests passed in {}", filename);
+            assert!(clean, "Load error or failing tests in {}", filename);
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            println!(
-                "  TIMEOUT loading/running {filename}; compatibility harness owns strict coverage"
-            );
+            panic!("Timed out loading/running {filename}");
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            println!("  ERROR running {filename}: worker exited before reporting");
+            panic!("Worker exited before reporting for {filename}");
         }
     }
 }

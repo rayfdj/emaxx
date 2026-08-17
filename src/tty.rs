@@ -84,19 +84,6 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     let mut interpreter = batch::initialize_interactive_interpreter()?;
     let mut env: Env = Vec::new();
     interpreter.set_variable("noninteractive", Value::Nil, &mut env);
-    // GNU's interactive startup derives the default coding from the
-    // locale; this container runs UTF-8, so buffers with no detected
-    // coding show `U' in the mode line exactly like GNU under it.
-    let _ = call(
-        &mut interpreter,
-        &mut env,
-        "set-default",
-        &[
-            Value::Symbol("buffer-file-coding-system".into()),
-            Value::Symbol("utf-8-unix".into()),
-        ],
-    );
-
     if let Some(path) = initial_file {
         let path = path.display().to_string();
         let find_file = call(
@@ -106,10 +93,10 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
             &[Value::String(path.clone().into())],
         );
         if let Err(error) = &find_file {
-            debug_log(&format!("find-file {path}: {error:?}"));
-            // A runtime without a working `find-file' still edits: read the
-            // file directly into a buffer carrying its name.
-            visit_file_directly(&mut interpreter, &mut env, &path);
+            // The real files.el `find-file' is the only honest visit path;
+            // fabricating a native visit here would keep the screen
+            // plausible while hiding the breakage.
+            panic!("find-file {path} failed: {error:?}");
         }
         debug_log(&format!(
             "startup buffer={:?} point={}",
@@ -202,29 +189,6 @@ fn draw_echo_row() {
         style::Print(&text),
     );
     let _ = out.flush();
-}
-
-fn visit_file_directly(interpreter: &mut Interpreter, env: &mut Env, path: &str) {
-    let name = std::path::Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string());
-    let _ = call(
-        interpreter,
-        env,
-        "switch-to-buffer",
-        &[Value::String(name.into())],
-    );
-    if let Ok(contents) = std::fs::read_to_string(path) {
-        interpreter.buffer.insert(&contents);
-        interpreter.buffer.goto_char(interpreter.buffer.point_min());
-    }
-    let _ = call(
-        interpreter,
-        env,
-        "set-visited-file-name",
-        &[Value::String(path.to_string().into())],
-    );
 }
 
 fn command_loop(
@@ -828,22 +792,16 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
 
     // Mode line: the buffer's real `mode-line-format', rendered by the
     // interpreter's engine (the metrics published above feed %p).
-    let mut mode_line = crate::lisp::primitives::render_mode_line_glass(interpreter, env)
-        .inspect_err(|error| debug_log(&format!("mode-line render: {error:?}")))
-        .ok()
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| {
-            // A session whose spec fails to render still shows the basics.
-            let modified = if interpreter.buffer.is_modified() {
-                "**"
-            } else {
-                "--"
-            };
-            format!(
-                "-UUU:{modified}-  {}   L{point_line}   (Fundamental)",
-                interpreter.buffer.name
-            )
-        });
+    let mut mode_line = match crate::lisp::primitives::render_mode_line_glass(interpreter, env) {
+        Ok(text) if !text.is_empty() => text,
+        // A GNU-shaped fabrication here would feed the very differential
+        // tool that checks mode lines; render failures must be visible.
+        Ok(_) => "[mode-line: empty render]".to_string(),
+        Err(error) => {
+            debug_log(&format!("mode-line render: {error:?}"));
+            format!("[mode-line render error: {error:?}]")
+        }
+    };
     if mode_line.chars().count() < cols {
         let missing = cols - mode_line.chars().count();
         mode_line.extend(std::iter::repeat_n('-', missing));

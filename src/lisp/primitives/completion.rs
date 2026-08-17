@@ -1240,9 +1240,10 @@ fn builtin_interactive_string(name: &str) -> Option<&'static str> {
         | "backward-char"
         | "forward-line"
         | "move-beginning-of-line"
-        | "move-end-of-line"
-        | "forward-sexp"
-        | "backward-sexp" => "^p",
+        | "move-end-of-line" => "^p",
+        // GNU lisp/emacs-lisp/lisp.el: (interactive "^p\nd") — the second
+        // letter is consumed and discarded by the &optional ARG lambda list.
+        "forward-sexp" | "backward-sexp" => "^p\nd",
         "delete-char" => "p\nP",
         "kill-line" | "eval-defun" => "P",
         _ => return None,

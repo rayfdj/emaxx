@@ -943,6 +943,20 @@ impl Interpreter {
         true
     }
 
+    /// Whether NAME has a real global default binding, ignoring the
+    /// synthesized builtin fallback table.  `defvar' consults this: a table
+    /// answer is not a binding and must not suppress a loaded file's
+    /// init form.
+    pub fn global_default_binding_exists(&self, name: &str) -> bool {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        if let Some(previous) = self.active_global_toplevel_value(&resolved) {
+            return previous.is_some();
+        }
+        self.global_value(&resolved).is_some()
+    }
+
     pub fn default_toplevel_value(&self, name: &str) -> Option<Value> {
         let resolved = self
             .resolve_variable_name(name)
