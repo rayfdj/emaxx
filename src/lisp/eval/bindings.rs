@@ -662,7 +662,6 @@ impl Interpreter {
                 Some(Value::CharTable(self.lisp_data_syntax_table_id()))
             }
             "prog-mode-syntax-table" => Some(Value::CharTable(self.standard_syntax_table_id())),
-            "tex-mode" => Some(Value::Symbol("tex-mode".into())),
             "frame-internal-parameters" => Some(Value::Nil),
             "password-word-equivalents" => Some(Value::list([
                 Value::String("password".into()),

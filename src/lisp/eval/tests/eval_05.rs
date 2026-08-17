@@ -1130,7 +1130,8 @@ fn prog_mode_is_callable_without_recording_fundamental_as_a_parent() {
             Value::Symbol("prog-mode".into()),
             Value::String("Prog".into()),
             Value::T,
-            Value::T,
+            // GNU `derived-mode-p' returns the matched mode symbol.
+            Value::Symbol("prog-mode".into()),
             Value::Nil,
             Value::Nil,
         ])
@@ -1161,9 +1162,13 @@ fn ruby_mode_marks_single_quotes_as_string_delimiters() {
 fn tex_mode_is_callable_and_available_as_mode_symbol() {
     assert_eq!(
         eval_str_with_upstream_batch(
-            "(with-temp-buffer (funcall tex-mode) (equal (list major-mode comment-start) '(tex-mode \"%\")))"
+            "(condition-case err
+                 (with-temp-buffer (funcall tex-mode) major-mode)
+               (void-variable (list 'void (cadr err))))"
         ),
-        Value::T
+        // GNU: `tex-mode' is a function, not a variable; funcalling the
+        // variable signals (void-variable tex-mode), probed on GNU 30.2.
+        Value::list([Value::symbol("void"), Value::symbol("tex-mode")])
     );
 }
 
@@ -2627,6 +2632,7 @@ fn c_toggle_electric_state_updates_c_electric_flag() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
+              (require 'cc-mode)
               (setq c-electric-flag t)
               (c-toggle-electric-state -1)
               (prog1 c-electric-flag
@@ -2636,7 +2642,7 @@ fn c_toggle_electric_state_updates_c_electric_flag() {
     );
     assert_eq!(
         eval_str_with_upstream_batch(
-            "(progn (setq c-electric-flag nil) (c-toggle-electric-state 1) c-electric-flag)"
+            "(progn (require 'cc-mode) (setq c-electric-flag nil) (c-toggle-electric-state 1) c-electric-flag)"
         ),
         Value::T
     );
@@ -3025,7 +3031,8 @@ fn keyboard_macro_decimal_prefix_moves_the_requested_number_of_lines() {
 #[test]
 fn execute_kbd_macro_reports_an_undefined_key_sequence() {
     assert_eq!(
-        eval_str_with_upstream_batch(
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
             r#"
                 (ert-with-message-capture messages
                   (execute-kbd-macro "\C-c\C-z")
@@ -3039,7 +3046,8 @@ fn execute_kbd_macro_reports_an_undefined_key_sequence() {
 #[test]
 fn recursive_keymap_unset_removes_the_nested_binding() {
     assert_eq!(
-        eval_str_with_upstream_batch(
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
             r#"(let ((map (make-sparse-keymap)))
                  (keymap-set map "C-c C-c" #'ignore)
                  (keymap-unset map "C-c C-c" t)
@@ -3081,7 +3089,8 @@ fn execute_kbd_macro_propagates_non_minibuffer_command_errors() {
 #[test]
 fn message_capture_updates_inside_nested_lexical_callbacks() {
     assert_eq!(
-        eval_str_with_upstream_batch(
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
             r#"(progn
                  (defun sample-message-capture-caller (callback)
                    (funcall callback))
@@ -3741,14 +3750,14 @@ fn define_global_minor_mode_init_value_runs_body() {
                           #'electric-indent-post-self-insert-function
                           60))
               (list electric-indent-mode
-                    sample-init-mode-body-ran
+                    (bound-and-true-p sample-init-mode-body-ran)
                     post-self-insert-hook))"
         ),
-        Value::list([
-            Value::T,
-            Value::T,
-            Value::list([Value::symbol("electric-indent-post-self-insert-function")]),
-        ])
+        // GNU does not run a global minor mode's body at definition even
+        // with :init-value t: the mode variable becomes t but the body and
+        // its hook registration wait for the first mode call (probed on
+        // GNU 30.2 → (t nil nil)).
+        Value::list([Value::T, Value::Nil, Value::Nil])
     );
 }
 
@@ -4530,7 +4539,8 @@ fn implicit_native_generic_keeps_gnu_documentation_sentinel() {
                  \"default-doc\" x)
                (documentation 'emaxx-implicit-introspection-generic t))",
         ),
-        Value::String("\n\n(fn ARG &rest ARGS)".into())
+        // GNU returns the sole method's docstring here (probed on 30.2).
+        Value::String("default-doc".into())
     );
 }
 
@@ -4646,13 +4656,12 @@ fn make_obsolete_rejects_nil_and_t_names() {
     assert_eq!(
         eval_str(
             "(list
-               (condition-case err (make-obsolete nil 'sample-new \"31.1\") (wrong-type-argument (car err)))
-               (condition-case err (make-obsolete t 'sample-new \"31.1\") (wrong-type-argument (car err))))"
+               (condition-case err (make-obsolete nil 'sample-new \"31.1\") (error (car err)))
+               (condition-case err (make-obsolete t 'sample-new \"31.1\") (error (car err))))"
         ),
-        Value::list([
-            Value::symbol("wrong-type-argument"),
-            Value::symbol("wrong-type-argument"),
-        ])
+        // GNU byte-run.el signals a plain `error' ("Can't make 'nil'
+        // obsolete") for these, probed on GNU 30.2.
+        Value::list([Value::symbol("error"), Value::symbol("error")])
     );
 }
 
@@ -4661,13 +4670,12 @@ fn make_obsolete_variable_rejects_nil_and_t_names() {
     assert_eq!(
         eval_str(
             "(list
-               (condition-case err (make-obsolete-variable nil 'sample-new \"31.1\") (wrong-type-argument (car err)))
-               (condition-case err (make-obsolete-variable t 'sample-new \"31.1\") (wrong-type-argument (car err))))"
+               (condition-case err (make-obsolete-variable nil 'sample-new \"31.1\") (error (car err)))
+               (condition-case err (make-obsolete-variable t 'sample-new \"31.1\") (error (car err))))"
         ),
-        Value::list([
-            Value::symbol("wrong-type-argument"),
-            Value::symbol("wrong-type-argument"),
-        ])
+        // GNU byte-run.el signals a plain `error' ("Can't make 'nil'
+        // obsolete") for these, probed on GNU 30.2.
+        Value::list([Value::symbol("error"), Value::symbol("error")])
     );
 }
 
@@ -4680,15 +4688,20 @@ fn batch_window_hscroll_defaults_to_zero() {
 fn dolist_with_progress_reporter_uses_dolist_semantics() {
     assert_eq!(
         eval_str(
-            "(let ((seen nil) (reporter nil))
-               (dolist-with-progress-reporter (item '(1 2 3) (nreverse seen))
-                   (setq reporter 'evaluated)
-                 (push (list reporter item) seen)))"
+            "(condition-case err
+                 (let ((seen nil) (reporter nil))
+                   (dolist-with-progress-reporter (item '(1 2 3) (nreverse seen))
+                       (setq reporter 'evaluated)
+                     (push (list reporter item) seen)))
+               (wrong-type-argument (list (car err) (cadr err) (caddr err))))"
         ),
+        // GNU evaluates the reporter argument and then rejects it as a
+        // spec list: (wrong-type-argument listp evaluated), probed on
+        // GNU 30.2.
         Value::list([
-            Value::list([Value::symbol("evaluated"), Value::Integer(1)]),
-            Value::list([Value::symbol("evaluated"), Value::Integer(2)]),
-            Value::list([Value::symbol("evaluated"), Value::Integer(3)]),
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("listp"),
+            Value::symbol("evaluated"),
         ])
     );
 }
@@ -4848,10 +4861,12 @@ fn setopt_warns_when_value_does_not_match_custom_type() {
                     (let ((inhibit-read-only t))
                       (erase-buffer))
                     (setopt sample-setopt-number :bad)
-                    (string-search "Value `:bad' does not match type number"
+                    (string-search "does not match type number"
                                    (buffer-string))))"#
         ),
-        Value::Integer(9)
+        // GNU's warning uses curly quotes; the quote-free substring sits at
+        // offset 30 of the *Warnings* buffer (probed on GNU 30.2).
+        Value::Integer(30)
     );
 }
 
@@ -5137,7 +5152,7 @@ fn dired_reuses_directory_buffer_and_preserves_file_point() {
              (setq noninteractive t)
              (require 'dired)
              (require 'ert-x)
-             (ert-with-temp-directory test-dir
+             (ert-with-temp-directory test-dir :suffix "-emaxx"
                (let ((dired-auto-revert-buffer t)
                      buffers
                      step)
@@ -5190,7 +5205,7 @@ fn dired_delete_empty_marked_directories_removes_entries() {
              (setq noninteractive t)
              (require 'dired)
              (require 'ert-x)
-             (ert-with-temp-directory test-dir
+             (ert-with-temp-directory test-dir :suffix "-emaxx"
                  (let* ((dired-deletion-confirmer (lambda (_) "yes"))
                       (inhibit-message t)
                       (default-directory test-dir)
@@ -5222,7 +5237,7 @@ fn dired_revert_preserves_line_when_header_length_changes() {
              (setq noninteractive t)
              (require 'dired)
              (require 'ert-x)
-             (ert-with-temp-directory top-dir
+             (ert-with-temp-directory top-dir :suffix "-emaxx"
                (let* ((subdir (expand-file-name "subdir" top-dir))
                       (header-len-fn (lambda ()
                                        (save-excursion
@@ -5348,7 +5363,8 @@ fn cl_case_rejects_misplaced_otherwise() {
 #[test]
 fn sqlite_execute_surfaces_sql_input_errors_as_sqlite_error() {
     assert_eq!(
-        eval_str_with_upstream_batch(
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
             r#"
                 (let ((db (sqlite-open)))
                   (sqlite-execute db "create table test (a)")
@@ -5800,10 +5816,14 @@ fn unicode_normalization_builtins_cover_canonical_and_compatibility_forms() {
     assert_eq!(
         eval_str_with(
             &mut interp,
-            r#"(list (ucs-normalize-NFC-string "LÅRSI")
+            r#"(progn
+                 ;; GNU preloads ucs-normalize only in the NS loadup branch;
+                 ;; a TTY/batch build (Emaxx's model) must require it.
+                 (require 'ucs-normalize)
+                 (list (ucs-normalize-NFC-string "LÅRSI")
                      (ucs-normalize-NFD-string "LÅRSI")
                      (ucs-normalize-NFKC-string "LÅRSI")
-                     (ucs-normalize-NFKD-string "LÅRSI"))"#,
+                     (ucs-normalize-NFKD-string "LÅRSI")))"#,
         ),
         Value::list([
             Value::String("LÅRSI".into()),
@@ -7433,9 +7453,11 @@ fn loaded_ert_assertion_macros_preserve_nested_test_result_protocol() {
                        (make-ert-test
                         :body (lambda () (skip-unless nil))))))"#,
             ),
+            // GNU: `skip-when'/`skip-unless' outside `ert-deftest' produce
+            // failed results, not skips (probed on GNU 30.2).
             Value::list([
-                Value::symbol("ert-test-skipped"),
-                Value::symbol("ert-test-skipped"),
+                Value::symbol("ert-test-failed"),
+                Value::symbol("ert-test-failed"),
             ])
         );
         let selector = eval_str_with(
@@ -7700,6 +7722,15 @@ fn eshell_test_interpreter(test_file: &str) -> Interpreter {
         Value::Integer(300),
         &mut Vec::new(),
     );
+    // `with-temp-eshell' expands `ert-with-temp-directory', whose suffix
+    // generator needs a source file name that string evaluation lacks
+    // (GNU --eval fails identically).  A non-nil `ert-temp-file-suffix'
+    // short-circuits the generator at expansion time.
+    interp.set_variable(
+        "ert-temp-file-suffix",
+        Value::String("-emaxx".into()),
+        &mut Vec::new(),
+    );
     interp
 }
 
@@ -7898,7 +7929,7 @@ fn eshell_glob_completion_inserts_its_single_match() {
             eval_str_with(
                 &mut interp,
                 r#"(with-temp-eshell
-                     (ert-with-temp-directory default-directory
+                     (ert-with-temp-directory default-directory :suffix "-emaxx"
                        (write-region nil nil (expand-file-name "file.txt"))
                        (write-region nil nil (expand-file-name "file.el"))
                        (eshell-insert-and-complete "echo fi*.el")))"#
@@ -7917,7 +7948,7 @@ fn eshell_ambiguous_completion_displays_candidates_on_second_attempt() {
             eval_str_with(
                 &mut interp,
                 r#"(with-temp-eshell
-                     (ert-with-temp-directory default-directory
+                     (ert-with-temp-directory default-directory :suffix "-emaxx"
                        (write-region nil nil (expand-file-name "file.txt"))
                        (write-region nil nil (expand-file-name "file.el"))
                        (let ((first (eshell-insert-and-complete "echo fi")))
@@ -8016,7 +8047,7 @@ fn eshell_cd_can_list_files_without_replacing_last_command_metadata() {
             eval_str_with(
                 &mut interp,
                 r#"(let ((eshell-list-files-after-cd t))
-                     (ert-with-temp-directory tmpdir
+                     (ert-with-temp-directory tmpdir :suffix "-emaxx"
                        (write-region "text" nil
                                      (expand-file-name "file.txt" tmpdir))
                        (with-temp-eshell
@@ -8058,7 +8089,7 @@ fn eshell_external_pipeline_finishes_redirected_output_before_returning() {
         assert_eq!(
             eval_str_with(
                 &mut interp,
-                r#"(ert-with-temp-file temp
+                r#"(ert-with-temp-file temp :suffix "-emaxx"
                      (with-temp-eshell
                        (eshell-insert-command
                         (format "echo \"bar\" *| rev >%s" temp))
@@ -8108,7 +8139,7 @@ fn eshell_internal_command_feeds_external_pipeline_before_returning() {
         assert_eq!(
             eval_str_with(
                 &mut interp,
-                r#"(ert-with-temp-file temp
+                r#"(ert-with-temp-file temp :suffix "-emaxx"
                      (with-temp-eshell
                        (eshell-insert-command
                         (format "echo \"bar\" | rev *>%s" temp))

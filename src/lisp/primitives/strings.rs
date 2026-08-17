@@ -936,6 +936,13 @@ where
     F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
 {
     let Value::StringObject(state) = value else {
+        // A plain interned string has no shared property state to mutate.
+        // GNU mutates any string in place; Emaxx's immutable representation
+        // drops the write instead of signaling, mirroring the existing
+        // `set-text-properties' policy for this case.
+        if matches!(value, Value::String(_)) {
+            return Ok(());
+        }
         return Err(LispError::TypeError("string".into(), value.type_name()));
     };
     let mut state = state.borrow_mut();

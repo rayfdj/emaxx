@@ -482,12 +482,19 @@ pub(crate) fn deliver_process_output(
         {
             interp.switch_to_buffer_id(buffer_id)?;
         }
+        // GNU hands the filter an ordinary mutable string; filters such as
+        // eshell's propertize it in place, so the value must carry live
+        // text-property state.
         let result = call_function_value(
             interp,
             &filter,
             &[
                 Value::Record(process_id),
-                Value::String(output.to_string().into()),
+                crate::lisp::primitives::strings::make_shared_string_value_with_multibyte(
+                    output.to_string(),
+                    Vec::new(),
+                    true,
+                ),
             ],
             env,
         );
