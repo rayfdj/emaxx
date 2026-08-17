@@ -23,9 +23,9 @@ use emaxx::compat::{
 const ADVANCE_COMPAT_PREFIX: &str = "Advance compatibility for ";
 const COMPAT_REGRESSION_MANIFEST_PATH: &str = "compat/compat_regressions.json";
 const FROZEN_COMPAT_MANIFEST_PATH: &str = "compat/oracle_tests_all.txt";
-const FROZEN_COMPAT_FILE_COUNT: usize = 510;
-const FROZEN_COMPAT_LOAD_ERROR_COUNT: usize = 9;
-const FROZEN_COMPAT_OUTCOME_COUNT: usize = 7_080;
+const FROZEN_COMPAT_FILE_COUNT: usize = 515;
+const FROZEN_COMPAT_LOAD_ERROR_COUNT: usize = 4;
+const FROZEN_COMPAT_OUTCOME_COUNT: usize = 7_595;
 const TARGET_OWNER_FILE: &str = ".emaxx-source-root";
 const SUBJECT_LOCK_FILE: &str = ".emaxx-compat.lock";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 180;
@@ -1006,15 +1006,15 @@ fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
     let selector = compat::resolve_selector(&context.lock, "default")?;
     let files = manifest.executable_files(&context.local.emacs_repo)?;
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
-    let artifact_root = make_artifact_root("frozen-7080")?;
+    let artifact_root = make_artifact_root("frozen-7595")?;
     let subject = ensure_emaxx_binary(args.subject_root.as_deref())?;
     let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
     run_compat_files(
         &context,
         CompatRunPlan {
-            mode: "frozen-7080",
-            scope: "Frozen7080".into(),
+            mode: "frozen-7595",
+            scope: "Frozen7595".into(),
             selector: &selector,
             files,
             name_filter: None,
@@ -3009,7 +3009,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checked_in_frozen_manifest_is_exactly_7080_outcomes() {
+    fn checked_in_frozen_manifest_is_exactly_7595_outcomes() {
         let manifest = FrozenCompatibilityManifest::load().expect("load frozen manifest");
 
         assert_eq!(manifest.entries.len(), FROZEN_COMPAT_FILE_COUNT);
@@ -3027,7 +3027,7 @@ mod tests {
                 .values()
                 .filter(|names| !names.is_empty())
                 .count(),
-            453
+            458
         );
     }
 

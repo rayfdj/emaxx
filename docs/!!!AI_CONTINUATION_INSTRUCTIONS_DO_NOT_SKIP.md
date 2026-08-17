@@ -13,8 +13,9 @@ The canonical ordered manifest is:
 - `compat/oracle_tests_all.txt`
 - `compat/oracle_tests_all.md`
 
-The denominator is 7080 selected tests. Do not use source-tree `ert-deftest`
-counts as the progress denominator.
+The denominator is 7595 selected tests (regenerated 2026-08-18; older
+checkpoints below cite the stale 7080 figure). Do not use source-tree
+`ert-deftest` counts as the progress denominator.
 
 The authoritative Rust publication/correctness gate runs serially with
 `--test-threads=1`.  Parallel execution may be used only as a non-authoritative
@@ -24,6 +25,69 @@ files serially.  Do not spend compatibility time diagnosing aggregate
 parallel-only noise.
 
 ## Current Resume Point
+
+- 2026-08-18 DE-CHEAT PHASES 4-5 CHECKPOINT (phase 6 pending): the
+  oracle manifest was regenerated on this machine with the identical
+  command and 20-second per-file timeout: 7595 tests across 515 files
+  (was 7080/510).  Five previously timed-out files now load and are
+  included: ert-tests (55), simple-tests (53), python-tests (366),
+  process-tests (37), c-ts-mode-tests (4).  The four remaining
+  exclusions are environment-bound (tramp needs remote access, eglot
+  needs LSP servers, comp-tests is native-comp-specific,
+  emacs-module-tests needs a compiled C module).  compat-harness
+  frozen-manifest constants and its unit test now assert 515/4/7595
+  ("frozen-7595" mode); `compat/oracle_tests_all.md` and this file
+  record the new denominator.
+
+  Phase 5 disguise/displacement removals this round: the preloaded-Lisp
+  docstring scraper (builtin_doc_from_lisp_sources and its parser
+  helpers) is deleted — native documentation comes only from GNU's
+  etc/DOC database; func-arity/subr-arity no longer reverse-engineer
+  arities from docstrings nor fabricate (0 . many) — a manifest miss
+  signals "emaxx: no GNU-derived arity for subr NAME"; the
+  `(vals start end)` semantic-lambda hijack and its entire hand-rolled
+  mini-evaluator (semantic_action_* family in eval/core.rs) are
+  deleted — such lambdas now take normal application; the if/cond
+  tail-alias machinery (setcdr_tail_aliases and friends), which
+  detected self-mutating test forms, REVERSED the user's mutation and
+  fabricated a canned Void error, is deleted — a Vec-snapshot
+  evaluator honestly cannot see GNU's cons-mutation semantics, and any
+  affected oracle tests must fail as a tracked architectural gap.
+  Facade-dependent unit tests fixed honestly: func-arity caar → format
+  (caar is subr.el Lisp; bare runtime leaves it void),
+  file-attribute-size → (nth 7 ...) (files.el Lisp), describe-vector's
+  bare-runtime half rewritten with C-owned buffer primitives and
+  #'(lambda ...) (bare `lambda' is a subr.el macro and honestly void;
+  its GNU contract re-probed and passing).
+
+  Validation so far: anti-cheat 13/13 serial; compat-harness bin tests
+  37/37; arity/subrp/documentation/symbol-function/describe slices
+  green serially.  A full serial compat_runtime_tests run has ~30+
+  pre-existing failures (part of the deferred 176 non-eval sweep
+  backlog; many assert facades that phases 1-5 removed) — triage after
+  phase 6.
+
+  Phase 5 remaining backlog: dead hand-patched arities
+  (caar/remq/version-to-list/sha1 in builtin_arity_value — now
+  unreachable, delete); native isearch C-s interception; native
+  minibuffer editing + prefix-arg simulation; narrow-to-region
+  special-case (lists.rs); auto-compression/jka-compr
+  (buffers.rs/file_io.rs); completion styles + completing-read
+  fabrication (completion.rs); default_global_binding_for_key table
+  (values.rs); Unicode special-case subset (case.rs); gnutls digest
+  table (gnutls.rs); remaining Lisp-command entries in
+  builtin_interactive_string; safe_run_hooks recovery divergence.
+
+  Phase 6 design (next): make the harness invoke the measured side
+  exactly like the oracle — `-l ert -l compat/emacs_compat_runner.el
+  -l FILE --eval (emaxx-compat-run SEL)` with the runner name
+  parameterized by env var — and delete batch.rs's
+  extract_ert_batch_selector interception plus the native Rust ERT
+  batch reporting path, so real ert.el runs the tests and the shared
+  Lisp reporter writes the JSON on both sides.  Review the
+  put/ert--test native-index mirror (buffer_edit.rs) once nothing
+  consumes the native index.
+
 
 - 2026-08-18 DE-CHEAT PHASES 1-3 CHECKPOINT: a four-way honesty audit
   (primitives dispatch, eval core, runtime/harness/anti-cheat, test

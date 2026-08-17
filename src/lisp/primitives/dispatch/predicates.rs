@@ -369,15 +369,10 @@ define_dispatch!(
             }
             "subrp" => {
                 need_args(name, args, 1)?;
-                // Native emaxx builtins that GNU defines in preloaded LISP
-                // (mark-sexp, zap-to-char...) are NOT subrs in GNU; find-func
-                // relies on subr-primitive-p being nil to consult symbol-file.
+                // GNU data.c: t exactly for subr objects.  A native builtin
+                // is a subr; disguising any as Lisp forged provenance.
                 Ok(match &args[0] {
-                    Value::BuiltinFunc(builtin)
-                        if !super::misc_keymaps::builtin_is_gnu_preloaded_lisp(interp, builtin) =>
-                    {
-                        Value::T
-                    }
+                    Value::BuiltinFunc(_) => Value::T,
                     _ => Value::Nil,
                 })
             }

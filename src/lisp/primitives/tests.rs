@@ -8779,17 +8779,46 @@ fn describe_vector_groups_equal_ranges_and_shares_standard_output_with_describer
     let expected = "((nil \"\nC-@ .. C-a\tfoo\nC-c .. C-e\tbar\n\") (nil \"\nC-@\t\t<foo>\nC-b\t\t<bar>\n\") (nil \"\nA .. C\t\tfoo\nF\t\tbar\n\") t (arg1 &optional arg2))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
+    // The bare runtime has no preloaded Lisp, so drive the same C-owned
+    // describe-vector through C buffer primitives instead of subr.el's
+    // `with-temp-buffer' and skip help-fns.el's `help-function-arglist'.
+    let bare_program = r#"
+        (let ((table (make-char-table nil nil)))
+          (set-char-table-range table (cons 65 67) 'foo)
+          (set-char-table-range table 70 'bar)
+          (list
+           (let ((buf (get-buffer-create (generate-new-buffer-name " *temp*"))))
+             (save-current-buffer
+               (set-buffer buf)
+               (list (describe-vector [foo foo nil bar bar bar])
+                     (buffer-string))))
+           (let ((buf (get-buffer-create (generate-new-buffer-name " *temp*"))))
+             (save-current-buffer
+               (set-buffer buf)
+               (list (describe-vector
+                      [foo nil bar]
+                      #'(lambda (value) (insert (format "<%S>" value))))
+                     (buffer-string))))
+           (let ((buf (get-buffer-create (generate-new-buffer-name " *temp*"))))
+             (save-current-buffer
+               (set-buffer buf)
+               (list (describe-vector table) (buffer-string))))
+           (subrp (symbol-function 'describe-vector))))"#;
+    let bare_expected = "((nil \"\nC-@ .. C-a\tfoo\nC-c .. C-e\tbar\n\") (nil \"\nC-@\t\t<foo>\nC-b\t\t<bar>\n\") (nil \"\nA .. C\t\tfoo\nF\t\tbar\n\") t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {bare_program})"), bare_expected);
+
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    let form = Reader::new(program)
+    let mut form = Reader::new(bare_program)
         .read()
         .expect("vector description contract should parse")
         .expect("vector description contract should contain a form");
+    interp.intern_symbols_in_value(&mut form);
     assert_eq!(
         interp
             .eval(&form, &mut env)
             .expect("vector and char-table descriptions should match GNU"),
-        Reader::new(expected)
+        Reader::new(bare_expected)
             .read()
             .expect("expected vector description result should parse")
             .expect("expected vector description result should exist")
