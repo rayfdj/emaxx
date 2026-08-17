@@ -353,6 +353,30 @@ pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, L
     Ok(parts)
 }
 
+/// keyboard.c's lucid_event_type_list_p: a proper list of fixnums and
+/// symbols whose head is not one of the posn-bearing pseudo-event kinds.
+fn lucid_event_type_list_p(event: &Value) -> bool {
+    if !matches!(event, Value::Cons(_)) {
+        return false;
+    }
+    if matches!(
+        event.car(),
+        Ok(Value::Symbol(head)) if head == "help-echo"
+            || head == "vertical-line"
+            || head == "mode-line"
+            || head == "tab-line"
+            || head == "header-line"
+    ) {
+        return false;
+    }
+    let Ok(items) = event.to_vec() else {
+        return false;
+    };
+    items
+        .iter()
+        .all(|item| matches!(item, Value::Integer(_) | Value::Symbol(_)))
+}
+
 /// Return the event path used to store or traverse a keymap binding.
 ///
 /// GNU represents Meta-modified character keys as an ESC prefix followed by
@@ -372,6 +396,29 @@ pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, Li
         return keymap_parts_from_display_parts(key_sequence_binding_parts(&parse_kbd_sequence(
             &string.text,
         )?)?);
+    }
+    // keymap.c's access_keymap traverses a parameterized event by its
+    // EVENT_HEAD: (C-down-mouse-3 POSN) inside a key vector looks up as
+    // the bare C-down-mouse-3 symbol.  Lucid-style event descriptions such
+    // as (control ?c) are not events; lookup converts those through
+    // event-convert-list instead of taking their car.
+    if let Ok(events) = vector_items(value)
+        && events.iter().any(|event| {
+            matches!(event.car(), Ok(Value::Symbol(_))) && !lucid_event_type_list_p(event)
+        })
+    {
+        let heads = events.into_iter().map(|event| {
+            if lucid_event_type_list_p(&event) {
+                return event;
+            }
+            match event.car() {
+                Ok(Value::Symbol(head)) => Value::Symbol(head),
+                _ => event,
+            }
+        });
+        let vector =
+            Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(heads));
+        return keymap_parts_from_display_parts(key_sequence_binding_parts(&vector)?);
     }
     keymap_parts_from_display_parts(key_sequence_binding_parts(value)?)
 }

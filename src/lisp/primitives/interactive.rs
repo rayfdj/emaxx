@@ -685,10 +685,95 @@ fn command_loop_call(
     interp.call_function_value(Value::Symbol(name.into()), None, args, env)
 }
 
-/// Resolve a pending key sequence through the runtime's own keymaps
-/// (`key-binding'), classifying strict prefixes so a multi-key sequence
-/// keeps reading.  This is the single resolution path for every command
-/// loop — the frame's and the minibuffer's recursive one.
+// GNU's kboard->echo_string for the frontend: the echo of a key
+// sequence that is still pending while its read blocks (the mouse-menu
+// popup).  The blocking reader displays it once `echo-keystrokes' idle
+// seconds pass, exactly as read_char's echo timer does.
+thread_local! {
+    static PENDING_KEYSTROKE_ECHO: std::cell::RefCell<
+        Option<(String, crate::lisp::primitives::EchoSpans)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn set_pending_keystroke_echo(
+    echo: Option<(String, crate::lisp::primitives::EchoSpans)>,
+) {
+    PENDING_KEYSTROKE_ECHO.with_borrow_mut(|slot| *slot = echo);
+}
+
+pub(crate) fn take_pending_keystroke_echo() -> Option<(String, crate::lisp::primitives::EchoSpans)>
+{
+    PENDING_KEYSTROKE_ECHO.with_borrow_mut(|slot| slot.take())
+}
+
+/// keyboard.c's echo pipeline for a pending key sequence: echo_add_key
+/// renders each event space-separated (a composite event echoes its
+/// bare head symbol name, a character its key description), echo_dash
+/// appends the trailing dash, and — when `echo-keystrokes-help' is on —
+/// help.el's own `help--append-keystrokes-help' decides whether the C-h
+/// hint follows, reading `this-single-command-keys' against the active
+/// maps and propertizing the key through substitute-command-keys.
+pub(crate) fn pending_keystroke_echo(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pending: &[Value],
+) -> (String, crate::lisp::primitives::EchoSpans) {
+    let mut text = String::new();
+    for event in pending {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        let head = match event {
+            Value::Cons(_) => event.car().unwrap_or(Value::Nil),
+            other => other.clone(),
+        };
+        match head {
+            Value::Symbol(name) => text.push_str(&name),
+            other => {
+                let description = super::call(
+                    interp,
+                    "single-key-description",
+                    std::slice::from_ref(&other),
+                    env,
+                )
+                .ok()
+                .and_then(|value| crate::lisp::primitives::string_text(&value).ok());
+                match description {
+                    Some(description) => text.push_str(&description),
+                    None => text.push_str(&format!("{other}")),
+                }
+            }
+        }
+    }
+    // echo_dash: the temporary trailing dash of an unfinished sequence.
+    text.push('-');
+    let help_wanted = interp
+        .lookup_var("echo-keystrokes-help", env)
+        .is_none_or(|value| value.is_truthy());
+    if help_wanted
+        && interp
+            .lookup_function("help--append-keystrokes-help", env)
+            .is_ok()
+    {
+        // The Lisp side reads this-single-command-keys, exactly what
+        // read_key_sequence has accumulated at this point.
+        set_command_key_state(interp, pending.to_vec(), pending.to_vec(), env);
+        // help.el's function is interpreted Lisp: route through the
+        // full function channel, not the builtin dispatch.
+        if let Ok(appended) = interp.call_function_value(
+            Value::Symbol("help--append-keystrokes-help".into()),
+            Some("help--append-keystrokes-help"),
+            &[Value::String(text.clone().into())],
+            env,
+        ) && let Ok(appended_text) = crate::lisp::primitives::string_text(&appended)
+        {
+            let spans = crate::lisp::primitives::string_face_spans(&appended);
+            return (appended_text, spans);
+        }
+    }
+    (text, Vec::new())
+}
+
 /// The event-head symbol of a parameterized mouse click event —
 /// ("C-down-mouse-3" POSN) answers the symbol; anything else nil.
 fn mouse_event_head(event: &Value) -> Option<String> {
@@ -710,6 +795,10 @@ fn mouse_event_on_menu_bar(event: &Value) -> bool {
         .is_some_and(|posn| matches!(posn.get(1), Some(Value::Symbol(area)) if area == "menu-bar"))
 }
 
+/// Resolve a pending key sequence through the runtime's own keymaps
+/// (`key-binding'), classifying strict prefixes so a multi-key sequence
+/// keeps reading.  This is the single resolution path for every command
+/// loop — the frame's and the minibuffer's recursive one.
 pub(crate) fn resolve_key_sequence(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -765,22 +854,13 @@ pub(crate) fn resolve_key_sequence(
             .filter(|event| mouse_event_head(event).is_some())
             && has_tty_menu_executor()
         {
-            // The sequence is still pending while the menu is up:
-            // echo-keystrokes shows it with keyboard.c's help hint
-            // ("C-down-mouse-3- (C-h for help)", the C-h in
-            // help-key-binding face), painted through the frozen
-            // redisplay like any message emission.
-            if let Some(head) = mouse_event_head(event) {
-                let hint_start = head.chars().count() + 3;
-                crate::lisp::primitives::set_echo_area_message_with_spans(
-                    format!("{head}- (C-h for help)"),
-                    vec![(
-                        hint_start,
-                        hint_start + 3,
-                        Value::Symbol("help-key-binding".into()),
-                    )],
-                );
-            }
+            // The sequence stays pending while the menu is up: GNU
+            // holds its echo in kboard->echo_string and read_char's
+            // timer displays it after `echo-keystrokes' idle seconds.
+            // Compute it through the real machinery now; the executor's
+            // modal read owns the timing.
+            let echo = pending_keystroke_echo(interp, env, pending);
+            set_pending_keystroke_echo(Some(echo));
             let answer = super::call(
                 interp,
                 "x-popup-menu",

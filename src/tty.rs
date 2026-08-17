@@ -2010,9 +2010,11 @@ mod tests {
                (put-text-property 4 5 'display '(space :align-to 10)))",
         )
         .read_all()
-        .unwrap();
+        .expect("read align-to probe");
         for form in &forms {
-            interp.eval(form, &mut env).unwrap();
+            interp
+                .eval(form, &mut env)
+                .expect("evaluate align-to probe");
         }
         let (text, map) = displayed_line_with_map(&interp.buffer, 1);
         // "ab " is 3 columns; the propertized tab becomes 7 blanks up
@@ -2612,6 +2614,30 @@ fn make_menu_executor(
             let disabled_attrs = resolve_face("tty-menu-disabled-face");
             let enabled_attrs = resolve_face("tty-menu-enabled-face");
             let selected_raw = resolve_face("tty-menu-selected-face");
+            // read_char's echo timer: a sequence still pending while
+            // this menu blocks (kboard->echo_string, computed by the
+            // resolver through the real echo machinery) is displayed
+            // after `echo-keystrokes' idle seconds; 0 or nil disables
+            // echoing entirely, as in GNU.
+            let mut pending_keystroke_echo = crate::lisp::primitives::take_pending_keystroke_echo();
+            let echo_keystrokes = interpreter
+                .lookup_var("echo-keystrokes", env)
+                .map(|value| match value {
+                    Value::Integer(seconds) => seconds as f64,
+                    Value::Float(seconds) => seconds,
+                    _ => 0.0,
+                })
+                .unwrap_or(1.0);
+            if echo_keystrokes <= 0.0 {
+                pending_keystroke_echo = None;
+            }
+            // The idle window opens when the read starts waiting with
+            // the sequence pending — one shared deadline, not one per
+            // inner read (consuming the click's release must not push
+            // the echo out).
+            let pending_echo_deadline = pending_keystroke_echo.as_ref().map(|_| {
+                std::time::Instant::now() + std::time::Duration::from_secs_f64(echo_keystrokes)
+            });
             // GNU derives the selected face over the enabled one
             // (lookup_derived_face with faces[1] as its base).
             let selected_attrs = merge_cell_attrs(enabled_attrs, selected_raw);
@@ -2722,7 +2748,43 @@ fn make_menu_executor(
                     {
                         draw_echo_row_composed(interpreter, env, &state);
                     }
-                    let Some(event) = queue.next_event() else {
+                    // A sequence still pending while this menu blocks
+                    // echoes after the shared idle window expires
+                    // (echo_now through the frozen redisplay); the read
+                    // then blocks normally.
+                    let event = match (&pending_keystroke_echo, pending_echo_deadline) {
+                        (Some(_), Some(deadline)) => {
+                            let timed = 'timed: loop {
+                                match queue.try_next_event() {
+                                    Err(()) => break 'timed Err(()),
+                                    Ok(Some(event)) => break 'timed Ok(event),
+                                    Ok(None) => {}
+                                }
+                                let now = std::time::Instant::now();
+                                if now >= deadline {
+                                    let (text, spans) = pending_keystroke_echo
+                                        .take()
+                                        .expect("pending echo present in this arm");
+                                    crate::lisp::primitives::set_echo_area_message_with_spans(
+                                        text, spans,
+                                    );
+                                    draw_echo_row_composed(interpreter, env, &state);
+                                    break 'timed Err(());
+                                }
+                                let _ = event::poll(
+                                    (deadline - now).min(std::time::Duration::from_millis(50)),
+                                );
+                            };
+                            match timed {
+                                Ok(event) => Some(event),
+                                // Echo shown (or terminal gone): a plain
+                                // blocking read takes over either way.
+                                Err(()) => queue.next_event(),
+                            }
+                        }
+                        _ => queue.next_event(),
+                    };
+                    let Some(event) = event else {
                         break Value::T;
                     };
                     if is_raw_mouse_token(&event) {

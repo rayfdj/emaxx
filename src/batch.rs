@@ -334,7 +334,16 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
     // exists mid-load, so it must queue and replay through startup.el's
     // custom-reevaluate-setting walk — file-name-shadow-mode turns on
     // through that replay, as in GNU's dumped image.
-    for target in ["isearch", "minibuffer", "rfn-eshadow", "loaddefs"] {
+    // cus-start comes after loaddefs, as loadup.el orders it ("Late to
+    // reduce customize-rogue (needs loaddefs.el anyway)"): its unbound
+    // built-in notes land at dump time in GNU, here at init.
+    for target in [
+        "isearch",
+        "minibuffer",
+        "rfn-eshadow",
+        "loaddefs",
+        "cus-start",
+    ] {
         if interpreter.resolve_load_target(target).is_some() {
             interpreter
                 .load_target(target)

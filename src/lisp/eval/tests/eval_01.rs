@@ -7401,6 +7401,51 @@ fn where_is_internal_prefers_ascii_and_rejects_menus_under_firstonly() {
 }
 
 #[test]
+fn lookup_key_converts_lucid_event_lists_but_not_event_conses() {
+    let mut interp = Interpreter::new();
+    let result = eval_str_with(
+        &mut interp,
+        "(progn
+           (defun demo-lucid-command () (interactive))
+           (define-key global-map [(control ?t)] 'demo-lucid-command)
+           (define-key global-map [C-down-mouse-3] 'demo-lucid-command)
+           (prin1-to-string
+            (list (lookup-key global-map \"\\C-t\")
+                  (lookup-key global-map
+                              (vector
+                               (list 'C-down-mouse-3
+                                     (list nil 'menu-bar (cons 5 0) 0)))))))",
+    );
+    // keymap.c's lookup converts a Lucid list such as (control ?t)
+    // through event-convert-list — its car is a modifier, not an event
+    // head — while a genuine composite event still traverses by its
+    // EVENT_HEAD symbol.
+    assert_string_value(result, "(demo-lucid-command demo-lucid-command)");
+}
+
+#[test]
+fn pending_keystroke_echo_renders_event_heads_with_the_dash() {
+    let mut interp = Interpreter::new();
+    let mut env: Env = Vec::new();
+    let click = Value::list([
+        Value::Symbol("C-down-mouse-3".into()),
+        Value::list([
+            Value::Nil,
+            Value::Symbol("menu-bar".into()),
+            Value::cons(Value::Integer(5), Value::Integer(0)),
+            Value::Integer(0),
+        ]),
+    ]);
+    let (text, spans) =
+        crate::lisp::primitives::pending_keystroke_echo(&mut interp, &mut env, &[click]);
+    // echo_add_key renders a composite event's bare head symbol and
+    // echo_dash appends the dash; without help.el loaded the C-h hint
+    // machinery has no Lisp owner to consult, so no suffix appears.
+    assert_eq!(text, "C-down-mouse-3-");
+    assert!(spans.is_empty());
+}
+
+#[test]
 fn unread_command_events_pop_ahead_of_the_terminal() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();
