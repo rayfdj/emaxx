@@ -132,69 +132,12 @@ pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result
     }
 }
 
-pub(crate) fn path_is_gzip_encoded(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".gz") || lower.ends_with(".tgz")
-}
 
-pub(crate) fn decompress_gzip_bytes(bytes: &[u8]) -> Result<Vec<u8>, LispError> {
-    let mut decoder = GzDecoder::new(bytes);
-    let mut output = Vec::new();
-    decoder
-        .read_to_end(&mut output)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    Ok(output)
-}
 
-pub(crate) fn maybe_decompress_file_bytes(
-    path: &str,
-    bytes: Vec<u8>,
-) -> Result<Vec<u8>, LispError> {
-    if path_is_gzip_encoded(path) {
-        decompress_gzip_bytes(&bytes)
-    } else {
-        Ok(bytes)
-    }
-}
 
-#[cfg(test)]
-pub(crate) fn mode_function_for_file_name(path: &str) -> Option<&'static str> {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".tgz") {
-        return Some("tar-mode");
-    }
-    if lower.ends_with(".gz") {
-        return mode_function_for_file_name(&path[..path.len() - 3]);
-    }
-    if lower.ends_with(".tar") {
-        Some("tar-mode")
-    } else if lower.ends_with(".zip") {
-        Some("archive-mode")
-    } else {
-        None
-    }
-}
 
-pub(crate) fn compressed_payload_path(path: &str) -> Option<String> {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".tgz") {
-        return Some(format!("{}.tar", &path[..path.len() - 4]));
-    }
-    if lower.ends_with(".gz") {
-        return Some(path[..path.len() - 3].to_string());
-    }
-    None
-}
 
-pub(crate) fn auto_compression_enabled(interp: &Interpreter, env: &Env) -> bool {
-    interp
-        .lookup_var("auto-compression-mode", env)
-        .is_some_and(|value| value.is_truthy())
-}
 
-pub(crate) fn should_auto_decompress(interp: &Interpreter, env: &Env, path: &str) -> bool {
-    auto_compression_enabled(interp, env) && path_is_gzip_encoded(path)
-}
 
 pub(crate) fn translate_region_with_table(
     interp: &mut Interpreter,
