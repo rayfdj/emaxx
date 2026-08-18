@@ -26,6 +26,106 @@ parallel-only noise.
 
 ## Current Resume Point
 
+- 2026-08-18 SWEEP TRIAGE IN PROGRESS (after phases 4-6): the
+  compat_runtime module is green 76/76 serial (commit 4093638) — 24
+  facade tests deleted (their honest coverage is the oracle harness),
+  11 C-owned tests rewritten without subr.el helpers, plus two native
+  fixes (raw-text/no-conversion `:for-unibyte t'; native gunzip in
+  insert-file-contents deleted — .gz now flows through real
+  jka-compr.el via the existing file-name-handler dispatch,
+  GNU-identical output).  perf module green 11/11 after
+  compat/interpreter_perf.el switched defun/(lambda to
+  defalias/#'(lambda (verified in GNU).  batch.rs
+  effective_batch_load_path now defaults to the pinned sibling
+  checkout when nothing is configured — GNU --batch always carries its
+  dumped image, so an unconfigured emaxx invocation reconstructs it;
+  this makes bare CLI invocations Lisp-complete (and slow per
+  invocation: the issue-#11 reconstruction cost, now unavoidable
+  everywhere honesty requires the image).  lisp::primitives::tests had
+  139 failures, almost all bare-host tests using Lisp-owned helpers:
+  127 were mechanically converted to
+  initialized_gnu_early_lisp_interpreter (debug-early/byte-run/
+  backquote/subr from GNU sources); ~14 of those need the full batch
+  image instead (help-function-arglist, keymap-set, find-file,
+  substitute-command-keys consumers) and will be switched on the next
+  iteration; 10 full-image tests (emaxx_batch_output/
+  initialize_interactive_interpreter users) should be fixed by the
+  sibling-default load path alone.  Later in the same round: the native pre-seeding of
+  Lisp-owned keymaps (esc-map, ctl-x-4/5-map, tab-prefix-map,
+  ctl-x-map with its hand C-f binding, global-map with hand
+  ESC/C-x/C-]/C-f bindings, the mode maps, Buffer-menu-mode-map,
+  menu-bar-edit-menu, minibuffer-local-completion-map,
+  query-replace-map) was deleted — GNU's C creates none of these
+  (keymap.c staticpros only current_global_map and DEFVARs only
+  minibuffer-local-map, which stays native); the pre-seeded objects
+  made subr.el's defvar keep incomplete native maps, silently
+  dropping dumped bindings like C-x b.  key-binding now decodes key
+  sequences value-aware (key_sequence_keymap_parts) so symbol events
+  like <left> resolve through the real Lisp-built global map; the
+  dumped-bindings test asserts GNU's raw dumped map, with the NS
+  oracle's term/ns-win.el rebinds (<home>/<end> to
+  beginning/end-of-buffer) documented as a deliberate platform
+  divergence (emaxx models a no-window-system build).  Remaining
+  session fixes: CLI load-path composition (user paths first, pinned
+  sibling appended, like GNU's installation lisp at the load-path
+  tail), reconstruction messages silenced via inhibit-message during
+  preload (a dumped GNU starts silently), make-process :name accepts
+  any string type.  The last 30 primitives failures were then
+  cleared: fifteen native call() sites of Lisp-owned names switched to
+  call_via_lisp on the full image (copy-overlay, delete-line,
+  font-lock helpers, indent-rigidly, looking-at-p/back, make-button,
+  coding-system-type, process-lines, run-at-time/run-with-timer,
+  seq-uniq, string-limit, subregexp-context-p); eight tests moved to
+  the full image for simple.el/files.el/help.el owners; the process
+  connection probe runs on the early runtime so its `ignore' sentinel
+  exists; two more C DEFVARs defined natively with GNU defaults
+  (emacs.c noninteractive nil, xdisp.c show-trailing-whitespace nil);
+  treesit's library search skips a non-string user-emacs-directory
+  (subr.el owns that variable) instead of signaling;
+  run-window-configuration-change-hook now consults the Lisp-visible
+  buffer-local value cell in addition to the native hook mirror, so
+  Elisp add-hook LOCAL registrations fire (GNU window.c parity); the
+  keymap-character contract runs on the full image where files.el
+  genuinely binds C-x C-f.  The gate then reported 263/270 for
+  primitives, and those last seven were each traced to a cause rather
+  than adjusted away:
+
+  * minibuf.c DEFVARs missing natively — minibuffer-setup-hook,
+    minibuffer-exit-hook, minibuffer-follows-selected-frame,
+    read-buffer-completion-ignore-case, read-hide-char.  The two hooks
+    matter beyond their values: without a C declaration, a `let' on
+    them under lexical binding binds LEXICALLY, so minibuffer.el's own
+    `minibuffer-with-setup-hook' (which installs the completion
+    session with setq-local) silently never ran.  Reproduced outside
+    the test suite: with a lexical-binding cookie Emaxx returned nil
+    for minibuffer-completion-table where GNU returns ("a").
+  * minibuf.c ordering: `minibuffer-setup-hook' now runs with the
+    minibuffer already current, as read_minibuf does (the statement
+    after it there is bset_undo_list (current_buffer, Qnil)).
+  * syntax.c parity: internal-describe-syntax-value called
+    substitute-command-keys through the native dispatch, which
+    fail-closes because help.el owns it; GNU uses call1, i.e. a funcall
+    through the symbol cell.
+  * noninteractive is now a real DEFVAR (nil), so code that had been
+    reading "unbound means batch" needed the batch session stated
+    explicitly, as a real batch startup does.
+  * Three test expectations were corrected to GNU probes rather than
+    kept: (make-button nil 3 ...) signals wrong-type-argument (it does
+    not silently ignore the range), (font-lock-mode) returns nil and
+    enables nothing in a batch session, and mule.el's coding-system
+    accessors must be reached through the function cell.
+  * read-command/read-variable: GNU's minibuffer reads real stdin in
+    batch, which an in-process interpreter cannot prime, so that half
+    moved to tests/cli.rs where Emaxx runs as a process with the same
+    piped answers as the oracle; Emaxx and GNU print byte-identical
+    output there.
+
+  Native gap found and NOT papered over: `(let ((executing-kbd-macro
+  t)) (read-command "C: " 'foo))' HANGS in Emaxx where GNU returns
+  immediately (empty-macro end condition in the native read loop).
+  completing-read on the same path is fine; only the read-command
+  family hangs.  Track it before the interactive/minibuffer work.
+
 - 2026-08-18 DE-CHEAT PHASES 4-5 CHECKPOINT (phase 6 pending): the
   oracle manifest was regenerated on this machine with the identical
   command and 20-second per-file timeout: 7595 tests across 515 files

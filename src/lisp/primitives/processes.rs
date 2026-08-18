@@ -1145,9 +1145,9 @@ pub(crate) fn make_network_process(
         let value = &pair[1];
         match key {
             ":name" => {
-                name = Some(match value {
-                    Value::String(name) => name.to_string(),
-                    _ => return Err(LispError::Signal(":name value not a string".into())),
+                name = Some(match string_like(value) {
+                    Some(text) => text.text,
+                    None => return Err(LispError::Signal(":name value not a string".into())),
                 });
             }
             ":buffer" => buffer_id = process_buffer_target(interp, value)?,

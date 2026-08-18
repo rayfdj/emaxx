@@ -2675,9 +2675,20 @@ define_dispatch!(
                     else {
                         continue;
                     };
-                    let Some(local_hooks) =
-                        interp.buffer_local_hook(buffer_id, "window-configuration-change-hook")
-                    else {
+                    // GNU Elisp's `add-hook' LOCAL registration lives in
+                    // the buffer-local value cell; the native depth mirror
+                    // only sees hooks installed through the Rust bootstrap.
+                    let local_hooks = interp
+                        .buffer_local_hook(buffer_id, "window-configuration-change-hook")
+                        .or_else(|| {
+                            interp
+                                .buffer_local_value(
+                                    buffer_id,
+                                    "window-configuration-change-hook",
+                                )
+                                .map(|value| value.to_vec().unwrap_or_else(|_| vec![value]))
+                        });
+                    let Some(local_hooks) = local_hooks else {
                         continue;
                     };
                     interp.set_selected_window_id(window_id);

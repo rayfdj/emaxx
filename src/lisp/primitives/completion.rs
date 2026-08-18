@@ -950,6 +950,13 @@ pub(crate) fn run_active_minibuffer<T>(
     body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
 ) -> Result<T, LispError> {
     let result = (|| {
+        // GNU minibuf.c:read_minibuf runs `minibuffer-setup-hook' with the
+        // minibuffer already current (the next statement there is
+        // `bset_undo_list (current_buffer, Qnil)').  Hooks therefore see the
+        // minibuffer's buffer-local state, including the completion table.
+        if interp.has_buffer_id(minibuffer.buffer_id) {
+            interp.set_current_buffer_id(minibuffer.buffer_id)?;
+        }
         run_named_hooks(
             interp,
             "minibuffer-setup-hook",
