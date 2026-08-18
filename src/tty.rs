@@ -1167,9 +1167,11 @@ mod tests {
         let mut interpreter = Interpreter::new();
         let mut env: Env = Vec::new();
         for form in [
-            "(define-key global-map \"\\C-x\" (make-sparse-keymap))",
-            "(define-key global-map \"h\" 'self-insert-command)",
-            "(define-key global-map \"\\C-x\\C-s\" 'save-buffer)",
+            "(defvar tty-test-global-map (make-sparse-keymap))",
+            "(use-global-map tty-test-global-map)",
+            "(define-key tty-test-global-map \"\\C-x\" (make-sparse-keymap))",
+            "(define-key tty-test-global-map \"h\" 'self-insert-command)",
+            "(define-key tty-test-global-map \"\\C-x\\C-s\" 'save-buffer)",
         ] {
             let parsed = crate::lisp::reader::Reader::new(form)
                 .read()

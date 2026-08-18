@@ -2483,62 +2483,6 @@ struct LambdaSourceBodyCacheEntry {
     body: Weak<Vec<Value>>,
 }
 
-fn make_query_replace_map(interp: &mut Interpreter) -> Value {
-    let map = primitives::make_runtime_keymap(interp, Some("query-replace-map"));
-    // replace.el is part of GNU's dumped image.  map-y-or-n-p and other
-    // preloaded prompt helpers therefore see this complete response map
-    // before `replace' is explicitly loaded.
-    for (key, answer) in [
-        ("SPC", "act"),
-        ("DEL", "skip"),
-        ("delete", "skip"),
-        ("backspace", "skip"),
-        ("y", "act"),
-        ("n", "skip"),
-        ("Y", "act"),
-        ("N", "skip"),
-        ("e", "edit-replacement"),
-        ("E", "edit-replacement-exact-case"),
-        (",", "act-and-show"),
-        ("q", "exit"),
-        ("RET", "exit"),
-        ("return", "exit"),
-        (".", "act-and-exit"),
-        ("C-r", "edit"),
-        ("C-w", "delete-and-edit"),
-        ("C-l", "recenter"),
-        ("!", "automatic"),
-        ("^", "backup"),
-        ("u", "undo"),
-        ("U", "undo-all"),
-        ("C-h", "help"),
-        ("f1", "help"),
-        ("help", "help"),
-        ("?", "help"),
-        ("C-g", "quit"),
-        ("C-]", "quit"),
-        ("C-v", "scroll-up"),
-        ("M-v", "scroll-down"),
-        ("next", "scroll-up"),
-        ("prior", "scroll-down"),
-        ("C-M-v", "scroll-other-window"),
-        ("M-next", "scroll-other-window"),
-        ("C-M-S-v", "scroll-other-window-down"),
-        ("M-prior", "scroll-other-window-down"),
-        ("escape", "exit-prefix"),
-    ] {
-        primitives::keymap_define_binding_with_placement(
-            interp,
-            &map,
-            key,
-            Some(vec![key.into()]),
-            Value::Symbol(answer.into()),
-            true,
-        )
-        .expect("static query-replace-map binding");
-    }
-    map
-}
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
     let map = primitives::make_runtime_keymap(interp, Some("visual-line-mode-map"));
@@ -3226,6 +3170,23 @@ impl Interpreter {
         // `function-put'/`define-symbol-prop' handler pushes entries here and
         // `get' consults it before the symbol's own plist.
         interp.define_special_variable("overriding-plist-environment", Value::Nil);
+        // The remaining minibuf.c DEFVARs.  `minibuffer-setup-hook' and
+        // `minibuffer-exit-hook' matter beyond their values: without the C
+        // declaration a `let' on them under lexical binding is lexical, so
+        // minibuffer.el's own `minibuffer-with-setup-hook' machinery (which
+        // installs the completion session with `setq-local') silently never
+        // runs.
+        interp.define_special_variable("minibuffer-setup-hook", Value::Nil);
+        interp.define_special_variable("minibuffer-exit-hook", Value::Nil);
+        interp.define_special_variable("minibuffer-follows-selected-frame", Value::T);
+        interp.define_special_variable("read-buffer-completion-ignore-case", Value::Nil);
+        interp.define_special_variable("read-hide-char", Value::Nil);
+        // emacs.c's session-mode flag: nil in the dumped default; batch
+        // startup flips it to t.
+        interp.define_special_variable("noninteractive", Value::Nil);
+        // xdisp.c's trailing-whitespace highlight switch, read by dumped
+        // simple.el commands like `kill-line'.
+        interp.define_special_variable("show-trailing-whitespace", Value::Nil);
         // minibuf.c's history controls, read by subr.el's `add-to-history'.
         interp.define_special_variable("history-length", Value::Integer(100));
         interp.define_special_variable("history-delete-duplicates", Value::Nil);
@@ -3276,96 +3237,16 @@ impl Interpreter {
                 interp.put_symbol_property(feature.name, "subfeatures", subfeatures());
             }
         }
-        let esc_map = primitives::make_runtime_full_keymap(&mut interp, Some("esc-map"));
-        interp.set_global_binding("esc-map", esc_map.clone());
-        let ctl_x_4_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-4-map"));
-        interp.set_global_binding("ctl-x-4-map", ctl_x_4_map.clone());
-        let ctl_x_5_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-5-map"));
-        interp.set_global_binding("ctl-x-5-map", ctl_x_5_map.clone());
-        let tab_prefix_map = primitives::make_runtime_keymap(&mut interp, Some("tab-prefix-map"));
-        interp.set_global_binding("tab-prefix-map", tab_prefix_map.clone());
-        let ctl_x_map = primitives::make_runtime_full_keymap(&mut interp, Some("ctl-x-map"));
-        interp.set_global_binding("ctl-x-map", ctl_x_map.clone());
-        // C-x is bound through the prefix command symbol in GNU; keep the
-        // symbol's definition around so `where-is-internal' can find it.
-        interp.push_function_binding("Control-X-prefix", ctl_x_map.clone());
-        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "4", ctl_x_4_map);
-        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "5", ctl_x_5_map);
-        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "t", tab_prefix_map);
-        let _ = primitives::keymap_define_binding_with_placement(
-            &mut interp,
-            &ctl_x_map,
-            "C-f",
-            Some(vec!["C-f".into()]),
-            Value::Symbol("find-file".into()),
-            true,
-        );
-        let global_map = primitives::make_runtime_full_keymap(&mut interp, Some("global-map"));
-        interp.current_global_map = Some(global_map.clone());
-        interp.set_global_binding("global-map", global_map);
-        // Dumped mode maps are identity-bearing Lisp objects.  A computed
-        // fallback would allocate a fresh `(keymap ...)' facade on every
-        // variable read, breaking `eq', mapatoms, mutation, and aliases.
-        for name in [
-            "text-mode-map",
-            "lisp-mode-shared-map",
-            "lisp-mode-map",
-            "emacs-lisp-mode-map",
-            "special-mode-map",
-        ] {
-            let keymap = primitives::make_runtime_keymap(&mut interp, Some(name));
-            interp.set_global_binding(name, keymap);
-        }
-        let buffer_menu_mode_map =
-            primitives::make_runtime_full_keymap(&mut interp, Some("Buffer-menu-mode-map"));
-        interp.set_global_binding("Buffer-menu-mode-map", buffer_menu_mode_map.clone());
-        let global_map = interp
-            .lookup_var("global-map", &Vec::new())
-            .unwrap_or(Value::Nil);
-        let _ = primitives::keymap_define_binding_with_placement(
-            &mut interp,
-            &buffer_menu_mode_map,
-            "SPC",
-            Some(vec!["SPC".into()]),
-            Value::Symbol("Buffer-menu-select".into()),
-            true,
-        );
-        let esc_map = interp
-            .lookup_var("esc-map", &Vec::new())
-            .unwrap_or(Value::Nil);
-        let _ = primitives::keymap_define_binding(
-            &mut interp,
-            &esc_map,
-            "x",
-            Value::Symbol("execute-extended-command".into()),
-        );
-        let ctl_x_map = interp
-            .lookup_var("ctl-x-map", &Vec::new())
-            .unwrap_or(Value::Nil);
-        let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{1b}", esc_map);
-        let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{18}", ctl_x_map);
-        // subr.el constructs the initial global map before bindings.el is
-        // dumped.  C-] is intentionally defined there (and not repeated by
-        // bindings.el), so the native bootstrap side of that existing
-        // boundary must carry it too.
-        let _ = primitives::keymap_define_binding(
-            &mut interp,
-            &global_map,
-            "C-]",
-            Value::Symbol("abort-recursive-edit".into()),
-        );
-        // bindings.el's dumped global map supplies this canonical motion
-        // binding.  Help's command-key substitution reads the live map, so
-        // omitting it changes every `\[forward-char]' doc reference into the
-        // unbound-command fallback instead of GNU's `C-f'.
-        let _ = primitives::keymap_define_binding(
-            &mut interp,
-            &global_map,
-            "C-f",
-            Value::Symbol("forward-char".into()),
-        );
-        let menu_bar_edit_menu = primitives::make_runtime_keymap(&mut interp, Some("Edit"));
-        interp.set_global_binding("menu-bar-edit-menu", menu_bar_edit_menu);
+        // GNU's C creates no global-map/esc-map/ctl-x-map/menu variables:
+        // subr.el and its preloaded successors own every one of them
+        // (keymap.c staticpros only `current_global_map').  Pre-seeding
+        // native maps here made subr.el's `defvar' keep the incomplete
+        // native objects, silently dropping dumped bindings like
+        // `C-x b' -> `switch-to-buffer' from the reconstructed image.
+        // keymap.c's own DEFVAR_LISP map is the one exception.
+        let minibuffer_local_map =
+            primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
+        interp.define_special_variable("minibuffer-local-map", minibuffer_local_map);
         let input_decode_map =
             primitives::make_runtime_keymap(&mut interp, Some("input-decode-map"));
         interp.set_global_binding("input-decode-map", input_decode_map);
@@ -3381,17 +3262,6 @@ impl Interpreter {
             let keymap = primitives::make_runtime_keymap(&mut interp, Some(name));
             interp.define_special_variable(name, keymap);
         }
-        let minibuffer_local_map =
-            primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
-        interp.set_global_binding("minibuffer-local-map", minibuffer_local_map);
-        let minibuffer_local_completion_map =
-            primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-completion-map"));
-        interp.set_global_binding(
-            "minibuffer-local-completion-map",
-            minibuffer_local_completion_map,
-        );
-        let query_replace_map = make_query_replace_map(&mut interp);
-        interp.set_global_binding("query-replace-map", query_replace_map);
         // `visual-line-mode' deliberately stays native in Emaxx, so its
         // native bootstrap owns the same complete mode contract that GNU's
         // dumped simple.el creates: a stable map, mode variable, hook family,

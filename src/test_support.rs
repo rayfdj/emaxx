@@ -201,6 +201,30 @@ pub(crate) fn replace_with_gnu_batch_runtime(interpreter: &mut Interpreter) {
 /// Initialize the same GNU-owned Lisp environment used by Emaxx batch mode.
 /// Ownership-sensitive tests use this instead of rebuilding partial load
 /// paths or quietly calling a dormant native dispatch arm.
+/// The early-Lisp runtime plus additional GNU-owned libraries loaded from
+/// the pinned checkout (help.el, keymap.el, cl-lib, ...), for tests whose
+/// programs use those owners without paying for the full batch image.
+pub(crate) fn initialized_gnu_early_lisp_interpreter_with(libraries: &[&str]) -> Interpreter {
+    let mut interpreter = initialized_gnu_early_lisp_interpreter();
+    for library in libraries {
+        // loadup.el loads pcase with eager macro-expansion suspended: the
+        // file's own pcase uses cannot expand until the file finishes.
+        if *library == "emacs-lisp/pcase" {
+            eval_lisp(
+                &mut interpreter,
+                &mut Vec::new(),
+                "(let ((macroexp--pending-eager-loads '(skip))) (load \"emacs-lisp/pcase\"))",
+            )
+            .unwrap_or_else(|error| panic!("load GNU library {library}: {error}"));
+            continue;
+        }
+        interpreter
+            .load_target(library)
+            .unwrap_or_else(|error| panic!("load GNU library {library}: {error}"));
+    }
+    interpreter
+}
+
 pub(crate) fn initialized_upstream_batch_interpreter() -> Interpreter {
     let upstream = crate::compat::project_root().join("../emacs");
     let options = crate::batch::BatchRunOptions {

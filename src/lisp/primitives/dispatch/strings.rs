@@ -826,9 +826,12 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let (mut description, prefix) = syntax::describe_syntax_value(&args[0]);
                 if prefix {
-                    let suffix = super::call(
-                        interp,
-                        "substitute-command-keys",
+                    // GNU syntax.c: insert1 (call1 (Qsubstitute_command_keys,
+                    // prefixdoc)) — a funcall through the symbol's cell, which
+                    // reaches help.el's Lisp owner.
+                    let suffix = interp.call_function_value(
+                        Value::symbol("substitute-command-keys"),
+                        Some("substitute-command-keys"),
                         &[Value::String(
                             ",\n\t  is a prefix character for `backward-prefix-chars'".into(),
                         )],

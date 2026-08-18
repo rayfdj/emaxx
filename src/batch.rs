@@ -287,10 +287,16 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     // Both `.el' and `.elc' remain the same GNU Lisp owner; this selects its
     // compiled representation before any loadup library is resolved.
     interpreter.set_prefer_compiled_loads(prefer_compiled_loads);
+    // The reconstruction below is GNU's pre-dump build phase.  Its Loading
+    // chatter and cus-start's "Note, built-in variable" messages belong to
+    // the build log, never to a running session's stderr — a dumped GNU
+    // binary starts silently.
+    interpreter.set_variable("inhibit-message", Value::T, &mut Vec::new());
     preload_batch_compat_libraries(&mut interpreter)?;
     initialize_batch_initial_frame_faces(&mut interpreter)?;
     complete_delayed_custom_initialization(&mut interpreter)?;
     initialize_batch_locale_environment(&mut interpreter)?;
+    interpreter.set_variable("inhibit-message", Value::Nil, &mut Vec::new());
     let after_init_time = lisp::primitives::system_time_list_value(std::time::SystemTime::now())
         .map_err(|error| format!("record batch initialization end: {error}"))?;
     interpreter.set_global_binding("after-init-time", after_init_time);
@@ -426,14 +432,28 @@ fn effective_batch_load_path(options: &BatchRunOptions) -> Result<Vec<PathBuf>, 
         return Ok(options.load_path.clone());
     }
 
-    let Ok(test_directory) = env::var("EMACS_TEST_DIRECTORY") else {
-        return Ok(Vec::new());
-    };
-    let test_directory = PathBuf::from(test_directory);
-    let Some(repo_root) = test_directory.parent() else {
-        return Ok(Vec::new());
-    };
-    compat::repo_local_elisp_load_path(repo_root)
+    // GNU `emacs --batch` always carries its dumped image regardless of
+    // load-path; the installation's own lisp directories sit at the tail of
+    // `load-path' behind any user additions.  Emaxx reconstructs the image
+    // from the pinned sibling checkout, so those directories are appended
+    // here — the same fallback `data-directory' uses for GNU's DOC
+    // database.
+    let mut load_path = Vec::new();
+    if let Ok(test_directory) = env::var("EMACS_TEST_DIRECTORY") {
+        let test_directory = PathBuf::from(test_directory);
+        if let Some(repo_root) = test_directory.parent() {
+            load_path = compat::repo_local_elisp_load_path(repo_root)?;
+        }
+    }
+    let sibling = compat::project_root().join("../emacs");
+    if sibling.join("lisp").is_dir() {
+        for path in compat::emaxx_upstream_load_path(&sibling)? {
+            if !load_path.contains(&path) {
+                load_path.push(path);
+            }
+        }
+    }
+    Ok(load_path)
 }
 
 fn loadup_eval(interpreter: &mut Interpreter, source: &str) -> Result<Value, String> {
@@ -527,9 +547,8 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         ],
     )?;
 
-    // Interpreter::new carries a provisional identity-bearing map for a
-    // bare host.  GNU subr.el owns the initialized `global-map' value.
-    interpreter.remove_global_binding("global-map");
+    // subr.el's own `defvar global-map' and `use-global-map' create and
+    // install the initial map; the host contributes nothing to it.
     loadup_required_sequence(interpreter, &["subr", "keymap"])?;
     loadup_eval(
         interpreter,
@@ -564,7 +583,6 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         Value::symbol("load-with-code-conversion"),
     );
 
-    interpreter.remove_global_binding("auto-mode-alist");
     loadup_required_library(interpreter, "files")?;
 
     // Emaxx reconstructs the dump from source, so follow GNU's interpreted
@@ -698,10 +716,6 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     // Minibuffer is also part of GNU's dumped image.  Keep its definitions on
     // the Lisp side; Help legitimately refers to this map without requiring
     // the feature first.
-    // Interpreter::new keeps identity-bearing fallbacks for file-less
-    // embedding.  During loadup those provisional values must yield to their
-    // real `defvar-keymap' owner.
-    interpreter.remove_global_binding("minibuffer-local-completion-map");
     loadup_required_library(interpreter, "minibuffer")?;
 
     // GNU's bare temacs already has its initial terminal frame while loadup
@@ -796,11 +810,8 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     // missing entry point a client happens to expose.
     // GNU loadup establishes the programming-mode parent before loading the
     // shared Lisp modes.  Loading lisp-mode first leaves its derived-mode
-    // parent pointing at Emaxx's file-less bootstrap fallback, which skips
-    // the Elisp-owned reset/hook lifecycle.  Provisional identity-bearing
-    // maps must yield before each real `defvar-keymap' owner runs.
-    interpreter.remove_global_binding("lisp-mode-shared-map");
-    interpreter.remove_global_binding("lisp-mode-map");
+    // parent pointing at a mode that never ran the Elisp-owned reset/hook
+    // lifecycle.
     loadup_required_sequence(
         interpreter,
         &[
@@ -920,7 +931,6 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         loadup_required_library(interpreter, "mwheel")?;
     }
 
-    interpreter.remove_global_binding("emacs-lisp-mode-map");
     loadup_required_library(interpreter, "progmodes/elisp-mode")?;
     loadup_required_library(interpreter, "emacs-lisp/float-sup")?;
 

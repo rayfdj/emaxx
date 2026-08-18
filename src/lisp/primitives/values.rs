@@ -2283,21 +2283,6 @@ pub(crate) fn keymap_bindings_value(bindings: Vec<RuntimeKeymapBinding>) -> Valu
     }))
 }
 
-pub(crate) fn keymap_define_binding(
-    interp: &mut Interpreter,
-    keymap: &Value,
-    key: &str,
-    binding: Value,
-) -> Result<(), LispError> {
-    keymap_define_binding_with_placement(
-        interp,
-        keymap,
-        key,
-        Some(approximate_key_parts(key)),
-        binding,
-        true,
-    )
-}
 
 pub(crate) fn keymap_define_character_range(
     interp: &mut Interpreter,
@@ -3887,7 +3872,26 @@ pub(crate) fn key_binding(
     no_remap: bool,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let key_parts = approximate_key_parts(key);
+    key_binding_with_parts(
+        interp,
+        &approximate_key_parts(key),
+        accept_default,
+        no_remap,
+        env,
+    )
+}
+
+/// keymap.c:Fkey_binding over an already-decoded event-part sequence; the
+/// value-aware decoding (`key_sequence_keymap_parts') preserves symbol
+/// events like `left' that a textual round-trip loses.
+pub(crate) fn key_binding_with_parts(
+    interp: &Interpreter,
+    key_parts: &[String],
+    accept_default: bool,
+    no_remap: bool,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let key_parts = key_parts.to_vec();
     let maps = active_command_keymaps(interp, env)?;
     let mut raw_binding = Value::Nil;
     for map in &maps {
