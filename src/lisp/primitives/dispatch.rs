@@ -52,9 +52,6 @@ pub(crate) struct NameFacts {
     pub(crate) special_form: bool,
     pub(crate) prefer_override: bool,
     file_name_handler: Option<FileNameHandlerOperation>,
-    /// Whether `builtin_autoload_function' has an entry for this name, so
-    /// function lookup only walks its match tables when one exists.
-    pub(crate) autoloadable: bool,
     module: DispatchModule,
 }
 
@@ -110,6 +107,15 @@ macro_rules! define_dispatch_modules {
                 }
             }
         }
+
+        #[cfg(test)]
+        pub(crate) fn visit_handled_patterns(
+            visitor: &mut impl FnMut(&'static str, &'static str),
+        ) {
+            $($module::visit_handled_patterns(&mut |pattern| {
+                visitor(stringify!($module), pattern)
+            });)+
+        }
     };
 }
 
@@ -129,7 +135,6 @@ define_dispatch_modules! {
     Comp => comp => comp::call(interp, name, args, env),
     Predicates => predicates => predicates::call(interp, name, args, env),
     Lists => lists => lists::call(interp, name, args, env),
-    Modes => modes => modes::call(interp, name),
     Composition => composition => composition::call(interp, name, args, env),
     Strings => strings => strings::call(interp, name, args, env),
     BufferEdit => buffer_edit => buffer_edit::call(interp, name, args, env),
@@ -147,21 +152,22 @@ define_dispatch_modules! {
 
 fn compute_name_facts(name: &str) -> NameFacts {
     let module = DispatchModule::for_name(name);
-    let available_in_oracle =
-        crate::lisp::primitives::generated_gnu_c_primitives::generated_gnu_c_primitive_available(
-            name,
-        )
-        .unwrap_or(true);
+    // The GNU C manifest is the authority for the public native boundary.
+    // Absence from it means Elisp-owned (or not a GNU function), never
+    // "probably native".  There is deliberately no private Lisp-callable
+    // exception: an internal host operation must use a typed Rust path, not
+    // a renamed function cell.
+    let native_owner =
+        crate::lisp::primitives::generated_gnu_c_primitive_available(name).unwrap_or(false);
     NameFacts {
         // A callable native route is the builtin contract.  Keeping a
         // second list of the same names made every new primitive require
         // two coordinated edits and allowed function lookup to drift from
         // dispatch.
-        builtin: module != DispatchModule::None && available_in_oracle,
+        builtin: module != DispatchModule::None && native_owner,
         special_form: crate::lisp::primitives::is_special_form_name(name),
-        prefer_override: module.prefer_builtin(name),
+        prefer_override: native_owner && module.prefer_builtin(name),
         file_name_handler: file_name_handler_operation(name),
-        autoloadable: crate::lisp::eval::builtin_autoload_function(name).is_some(),
         module,
     }
 }
@@ -240,6 +246,9 @@ pub(crate) fn call_with_facts(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if !facts.builtin && !facts.special_form {
+        return Err(LispError::Signal(format!("Unknown function: {name}")));
+    }
     if let Some(specification) = facts.file_name_handler
         && let Some(result) = dispatch_file_name_handler(interp, env, name, specification, args)?
     {

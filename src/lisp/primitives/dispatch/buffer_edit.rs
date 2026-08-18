@@ -333,244 +333,6 @@ fn unibyte_buffer_text(text: &str) -> (String, Vec<usize>) {
     (converted, position_map)
 }
 
-fn column_zero_list_starts(interp: &Interpreter) -> Result<Vec<usize>, LispError> {
-    let start = interp.buffer.point_min();
-    let text = interp
-        .buffer
-        .buffer_substring(start, interp.buffer.point_max())
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let mut starts = Vec::new();
-    let mut at_line_start = true;
-    for (pos, ch) in (start..).zip(text.chars()) {
-        if at_line_start && ch == '(' {
-            starts.push(pos);
-        }
-        at_line_start = ch == '\n';
-    }
-    Ok(starts)
-}
-
-fn beginning_of_defun_raw_fallback(
-    interp: &mut Interpreter,
-    arg: i64,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    if arg == 0 {
-        return Ok(Value::Nil);
-    }
-    let prompt = interp
-        .lookup_var("defun-prompt-regexp", env)
-        .filter(Value::is_truthy)
-        .map(|value| string_text(&value))
-        .transpose()?;
-    let column_zero_open = interp
-        .lookup_var("open-paren-in-column-0-is-defun-start", env)
-        .is_none_or(|value| value.is_truthy());
-    if prompt.is_some() || column_zero_open {
-        if arg < 0 && interp.buffer.point() < interp.buffer.point_max() {
-            interp.buffer.forward_char(1)?;
-        }
-        let pattern = match prompt {
-            Some(prompt) => format!(
-                "{}\\(?:{}\\)\\s(",
-                if column_zero_open { "^\\s(\\|" } else { "" },
-                prompt
-            ),
-            None => "^\\s(".to_string(),
-        };
-        loop {
-            let found = super::call(
-                interp,
-                "re-search-backward",
-                &[
-                    Value::String(pattern.clone().into()),
-                    Value::Nil,
-                    Value::Symbol("move".into()),
-                    Value::Integer(arg),
-                ],
-                env,
-            )?;
-            if found.is_nil() {
-                return Ok(Value::Nil);
-            }
-            let match_data = interp.last_match_data.clone();
-            let match_buffer = interp.last_match_data_buffer_id;
-            let state = super::call(interp, "syntax-ppss", &[], env)?;
-            interp.last_match_data = match_data.clone();
-            interp.last_match_data_buffer_id = match_buffer;
-            if state
-                .to_vec()
-                .ok()
-                .and_then(|items| items.get(8).cloned())
-                .is_some_and(|start| start.is_truthy())
-            {
-                continue;
-            }
-            let match_end = match_data
-                .as_ref()
-                .and_then(|data| data.first())
-                .and_then(|entry| *entry)
-                .map(|(_, end)| end)
-                .unwrap_or_else(|| interp.buffer.point());
-            interp.buffer.goto_char(match_end.saturating_sub(1));
-            return Ok(Value::T);
-        }
-    }
-    let starts = column_zero_list_starts(interp)?;
-
-    let point = interp.buffer.point();
-    let target = if arg > 0 {
-        starts
-            .iter()
-            .rev()
-            .filter(|pos| **pos < point)
-            .nth((arg - 1) as usize)
-            .copied()
-    } else {
-        starts
-            .iter()
-            .filter(|pos| **pos > point)
-            .nth((-arg - 1) as usize)
-            .copied()
-    };
-
-    if let Some(pos) = target {
-        interp.buffer.goto_char(pos);
-        Ok(Value::T)
-    } else {
-        // The search runs with the `move' flag: on failure point lands at
-        // the buffer boundary in the search direction.
-        if arg > 0 {
-            let min = interp.buffer.point_min();
-            interp.buffer.goto_char(min);
-        } else {
-            let max = interp.buffer.point_max();
-            interp.buffer.goto_char(max);
-        }
-        Ok(Value::Nil)
-    }
-}
-
-fn end_of_defun_call_end_function(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    if let Some(function) = interp
-        .lookup_var("end-of-defun-function", env)
-        .filter(Value::is_truthy)
-    {
-        call_function_value(interp, &function, &[], env)?;
-    } else {
-        super::call(interp, "forward-sexp", &[Value::Integer(1)], env)?;
-    }
-    Ok(())
-}
-
-fn end_of_defun_skip_trailing(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
-    // GNU lisp.el treats point right after a close paren as still inside
-    // that defun: skip horizontal space and a trailing comment or newline.
-    if super::call(interp, "bolp", &[], env)?.is_truthy() {
-        return Ok(());
-    }
-    super::call(
-        interp,
-        "skip-chars-forward",
-        &[Value::String(" \t".into())],
-        env,
-    )?;
-    if super::call(
-        interp,
-        "looking-at",
-        &[Value::String("\\s<\\|\n".into())],
-        env,
-    )?
-    .is_truthy()
-    {
-        super::call(interp, "forward-line", &[Value::Integer(1)], env)?;
-    }
-    Ok(())
-}
-
-fn end_of_defun_impl(
-    interp: &mut Interpreter,
-    arg: i64,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let mut arg = if arg == 0 { 1 } else { arg };
-    let pos = interp.buffer.point();
-    let moves_to_eol = interp
-        .lookup_var("end-of-defun-moves-to-eol", env)
-        .map(|value| value.is_truthy())
-        .unwrap_or(true);
-    if moves_to_eol {
-        interp.buffer.end_of_line();
-    }
-    super::call(interp, "beginning-of-defun-raw", &[Value::Integer(1)], env)?;
-    let mut beg = interp.buffer.point();
-    end_of_defun_call_end_function(interp, env)?;
-    if arg <= 1 {
-        end_of_defun_skip_trailing(interp, env)?;
-    }
-    let mut success = false;
-    if arg > 0 {
-        if interp.buffer.point() > pos {
-            arg -= 1;
-        } else {
-            interp.buffer.goto_char(pos);
-        }
-        if arg != 0 {
-            success = super::call(
-                interp,
-                "beginning-of-defun-raw",
-                &[Value::Integer(-arg)],
-                env,
-            )?
-            .is_truthy();
-            if success {
-                end_of_defun_call_end_function(interp, env)?;
-            }
-        }
-    } else {
-        if interp.buffer.point() < pos {
-            arg += 1;
-        } else {
-            interp.buffer.goto_char(beg);
-        }
-        if arg != 0 {
-            success = super::call(
-                interp,
-                "beginning-of-defun-raw",
-                &[Value::Integer(-arg)],
-                env,
-            )?
-            .is_truthy();
-            if success {
-                beg = interp.buffer.point();
-                end_of_defun_call_end_function(interp, env)?;
-            }
-        }
-    }
-    end_of_defun_skip_trailing(interp, env)?;
-    while arg < 0 && interp.buffer.point() >= pos && success {
-        interp.buffer.goto_char(beg);
-        success = super::call(
-            interp,
-            "beginning-of-defun-raw",
-            &[Value::Integer(-arg)],
-            env,
-        )?
-        .is_truthy();
-        if interp.buffer.point() >= beg || !success {
-            arg = 0;
-        } else {
-            beg = interp.buffer.point();
-            end_of_defun_call_end_function(interp, env)?;
-            end_of_defun_skip_trailing(interp, env)?;
-        }
-    }
-    Ok(Value::Nil)
-}
-
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -657,7 +419,7 @@ define_dispatch!(
                     }
                 }
                 let text: String = std::iter::repeat_n(ch, count).collect();
-                insert_text_with_hooks(interp, &text, &[], true, false, env)?;
+                insert_text_with_hooks(interp, &text, &[], &[], true, false, env)?;
 
                 let auto_fill_character = match interp.lookup_var("auto-fill-chars", env) {
                     Some(Value::CharTable(table_id)) => interp
@@ -693,65 +455,6 @@ define_dispatch!(
                 )?;
                 Ok(Value::Nil)
             }
-            "tex-insert-quote" => {
-                need_arg_range(name, args, 0, 1)?;
-                let open = interp
-                    .lookup_var("tex-open-quote", env)
-                    .map(|value| string_text(&value))
-                    .transpose()?
-                    .unwrap_or_else(|| "``".into());
-                let close = interp
-                    .lookup_var("tex-close-quote", env)
-                    .map(|value| string_text(&value))
-                    .transpose()?
-                    .unwrap_or_else(|| "''".into());
-                if interp
-                    .lookup_var("electric-pair-mode", env)
-                    .is_some_and(|value| value.is_truthy())
-                    && interp.buffer.mark_active()
-                    && let Some(mark) = interp.buffer.mark()
-                {
-                    let point = interp.buffer.point();
-                    if point >= mark {
-                        interp.buffer.goto_char(mark);
-                        insert_text_with_hooks(interp, &open, &[], false, false, env)?;
-                        interp.buffer.goto_char(point + open.chars().count());
-                        insert_text_with_hooks(interp, &close, &[], false, false, env)?;
-                    } else {
-                        interp.buffer.goto_char(mark);
-                        insert_text_with_hooks(interp, &close, &[], false, false, env)?;
-                        interp.buffer.goto_char(point);
-                        insert_text_with_hooks(interp, &open, &[], false, false, env)?;
-                    }
-                } else {
-                    insert_text_with_hooks(interp, &open, &[], false, false, env)?;
-                }
-                Ok(Value::Nil)
-            }
-            "newline" => {
-                need_arg_range(name, args, 0, 2)?;
-                let count = match args.first() {
-                    Some(value) if !value.is_nil() => value.as_integer()?.max(0),
-                    _ => 1,
-                };
-                let text = "\n".repeat(count as usize);
-                insert_text_with_hooks(interp, &text, &[], true, false, env)?;
-                if count > 0 {
-                    // GNU's `newline' let-binds `last-command-event' to ?\n; the
-                    // variable is special, so hooks must see it dynamically.
-                    let restore = interp.bind_special_dynamic(
-                        "last-command-event",
-                        Value::Integer('\n' as i64),
-                        env,
-                    )?;
-                    let buffer_id = interp.current_buffer_id();
-                    let hook_result =
-                        run_named_hooks(interp, "post-self-insert-hook", env, Some(buffer_id));
-                    interp.restore_special_dynamic(restore, env)?;
-                    hook_result?;
-                }
-                Ok(Value::Nil)
-            }
             "insert-byte" => {
                 need_args(name, args, 2)?;
                 let byte = args[0].as_integer()?;
@@ -762,16 +465,7 @@ define_dispatch!(
                 let c = char::from_u32(byte as u32)
                     .ok_or_else(|| LispError::Signal(format!("Invalid byte: {}", byte)))?;
                 let text: String = std::iter::repeat_n(c, count).collect();
-                insert_text_with_hooks(interp, &text, &[], false, false, env)?;
-                Ok(Value::Nil)
-            }
-            "skeleton-insert" => {
-                need_arg_range(name, args, 1, 3)?;
-                let mut point = None;
-                skeleton_insert_value(interp, &args[0], env, &mut point)?;
-                if let Some(point) = point {
-                    interp.buffer.goto_char(point);
-                }
+                insert_text_with_hooks(interp, &text, &[], &[], false, false, env)?;
                 Ok(Value::Nil)
             }
             "insert-buffer-substring" => {
@@ -795,58 +489,8 @@ define_dispatch!(
                     .buffer_substring(start, end)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
                 let props = source.substring_property_spans(start, end);
-                insert_text_with_hooks(interp, &text, &props, false, false, env)?;
-                Ok(Value::Nil)
-            }
-            "comment-region" => {
-                need_arg_range(name, args, 2, 3)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                let (start, end) = if start <= end {
-                    (start, end)
-                } else {
-                    (end, start)
-                };
-                ensure_region_modifiable(interp, start, end, env)?;
-                let text = interp
-                    .buffer
-                    .buffer_substring(start, end)
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
-                let comment_start = interp
-                    .lookup_var("comment-start", env)
-                    .and_then(|value| string_text(&value).ok())
-                    .unwrap_or_else(|| "# ".into());
-                let comment_start = if comment_start.chars().count() == 1 {
-                    let comment_add = interp
-                        .lookup_var("comment-add", env)
-                        .and_then(|value| value.as_integer().ok())
-                        .unwrap_or(0)
-                        .max(0) as usize;
-                    if comment_add > 0 {
-                        format!("{} ", comment_start.repeat(comment_add.saturating_add(1)))
-                    } else if interp.lookup_var("major-mode", env).is_some_and(
-                        |value| matches!(value, Value::Symbol(mode) if mode == "emacs-lisp-mode"),
-                    ) && comment_start == ";"
-                    {
-                        ";; ".into()
-                    } else {
-                        comment_start
-                    }
-                } else {
-                    comment_start
-                };
-                let comment_end = interp
-                    .lookup_var("comment-end", env)
-                    .and_then(|value| string_text(&value).ok())
-                    .unwrap_or_default();
-                let commented = if comment_end.is_empty() {
-                    text.split_inclusive('\n')
-                        .map(|line| format!("{comment_start}{line}"))
-                        .collect::<String>()
-                } else {
-                    format!("{comment_start}{text}{comment_end}")
-                };
-                replace_buffer_region_with_text(interp, start, end, &commented)?;
+                let extended_chars = source.substring_extended_chars(start, end);
+                insert_text_with_hooks(interp, &text, &props, &extended_chars, false, false, env)?;
                 Ok(Value::Nil)
             }
             "point" => Ok(Value::Integer(interp.buffer.point() as i64)),
@@ -854,8 +498,8 @@ define_dispatch!(
             "point-max" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
             "minibuffer-prompt-end" => {
                 let prompt_length = interp
-                    .lookup_var("emaxx--minibuffer-prompt", env)
-                    .and_then(|value| string_like(&value).map(|string| string.text.chars().count()))
+                    .minibuffer_prompt_text()
+                    .map(|prompt| prompt.chars().count())
                     .unwrap_or(0);
                 Ok(Value::Integer(
                     interp.buffer.point_min().saturating_add(prompt_length) as i64,
@@ -893,88 +537,6 @@ define_dispatch!(
                     args[0].as_integer()?
                 };
                 forward_word(interp, n, env)
-            }
-            "backward-word" => {
-                need_arg_range(name, args, 0, 1)?;
-                let n = if args.is_empty() || args[0].is_nil() {
-                    1
-                } else {
-                    args[0].as_integer()?
-                };
-                super::call(interp, "forward-word", &[Value::Integer(-n)], env)
-            }
-            "indent-next-tab-stop" => {
-                need_arg_range(name, args, 1, 2)?;
-                let column = args[0].as_integer()?.max(0);
-                let prev = args.get(1).is_some_and(Value::is_truthy);
-                let tab_width = interp
-                    .lookup_var("tab-width", env)
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(8)
-                    .max(1);
-                let tabs = interp
-                    .lookup_var("tab-stop-list", env)
-                    .and_then(|value| value.to_vec().ok())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|value| value.as_integer().ok())
-                    .collect::<Vec<_>>();
-                let next = if let Some(first_after) = tabs.iter().copied().find(|tab| column < *tab)
-                {
-                    if prev {
-                        let previous = tabs
-                            .iter()
-                            .copied()
-                            .take_while(|tab| *tab < first_after)
-                            .last()
-                            .unwrap_or(0);
-                        if column == previous {
-                            tabs.iter()
-                                .copied()
-                                .take_while(|tab| *tab < previous)
-                                .last()
-                                .unwrap_or(0)
-                        } else {
-                            previous
-                        }
-                    } else {
-                        first_after
-                    }
-                } else {
-                    let last = tabs.last().copied().unwrap_or(0);
-                    let step = if tabs.len() >= 2 {
-                        (tabs[tabs.len() - 1] - tabs[tabs.len() - 2]).max(1)
-                    } else {
-                        tab_width
-                    };
-                    if prev {
-                        if column <= last {
-                            last - step
-                        } else {
-                            last + step * (((column - last - 1) / step) - 1).max(0)
-                        }
-                    } else {
-                        last + step * (((column - last) / step) + 1)
-                    }
-                };
-                Ok(Value::Integer(next.max(0)))
-            }
-            "tab-to-tab-stop" => {
-                need_args(name, args, 0)?;
-                let column = super::call(interp, "current-column", &[], env)?.as_integer()?;
-                let next = super::call(
-                    interp,
-                    "indent-next-tab-stop",
-                    &[Value::Integer(column)],
-                    env,
-                )?
-                .as_integer()?;
-                super::call(
-                    interp,
-                    "indent-to",
-                    &[Value::Integer(next), Value::Integer(1)],
-                    env,
-                )
             }
             "skip-chars-forward" => {
                 if args.is_empty() || args.len() > 2 {
@@ -1049,35 +611,6 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
-            "back-to-indentation" => {
-                let old_pos = interp.buffer.point();
-                interp.buffer.beginning_of_line();
-                if buffer_has_field_property(interp) {
-                    let new_pos = interp.buffer.point();
-                    let constrained = super::call(
-                        interp,
-                        "constrain-to-field",
-                        &[
-                            Value::Integer(new_pos as i64),
-                            Value::Integer(old_pos as i64),
-                        ],
-                        env,
-                    )?
-                    .as_integer()? as usize;
-                    interp.buffer.goto_char(constrained);
-                }
-                let bol = interp.buffer.point();
-                let limit = interp.buffer.end_of_line();
-                interp.buffer.goto_char(bol);
-                let _ = syntax::skip_syntax_impl(
-                    interp,
-                    &Value::String(" ".into()),
-                    Some(&Value::Integer(limit as i64)),
-                    true,
-                    env,
-                )?;
-                Ok(Value::Nil)
-            }
             "end-of-line" => {
                 // (end-of-line N): end of the Nth line counting from the
                 // current one (0 = previous line's end).
@@ -1091,122 +624,6 @@ define_dispatch!(
                 interp.buffer.end_of_line();
                 Ok(Value::Nil)
             }
-            "beginning-of-defun" => {
-                let raw = super::call(
-                    interp,
-                    "beginning-of-defun-raw",
-                    &[args.first().cloned().unwrap_or(Value::Nil)],
-                    env,
-                )?;
-                if raw.is_truthy() {
-                    interp.buffer.beginning_of_line();
-                    Ok(Value::T)
-                } else {
-                    Ok(Value::Nil)
-                }
-            }
-            "beginning-of-defun-raw" => {
-                need_arg_range(name, args, 0, 1)?;
-                let arg = args
-                    .first()
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                if let Some(function) = interp
-                    .lookup_var("beginning-of-defun-function", env)
-                    .filter(Value::is_truthy)
-                {
-                    return call_function_value(interp, &function, &[Value::Integer(arg)], env);
-                }
-                beginning_of_defun_raw_fallback(interp, arg, env)
-            }
-            "end-of-defun" => {
-                need_arg_range(name, args, 0, 2)?;
-                let arg = args
-                    .first()
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                end_of_defun_impl(interp, arg, env)
-            }
-            "backward-sentence" => {
-                need_arg_range(name, args, 0, 1)?;
-                let point = interp.buffer.point();
-                let prefix = interp
-                    .buffer
-                    .buffer_substring(interp.buffer.point_min(), point)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let pos = prefix
-                    .rfind("\n\n")
-                    .map(|byte| interp.buffer.point_min() + prefix[..byte].chars().count() + 2)
-                    .unwrap_or_else(|| interp.buffer.point_min());
-                interp.buffer.goto_char(pos);
-                Ok(Value::Nil)
-            }
-            // The blank-line fallback only runs when the paragraphs.el port
-            // is absent (file-less unit-test interpreters).
-            "forward-paragraph" if !interp.has_lisp_function("forward-paragraph") => {
-                need_arg_range(name, args, 0, 1)?;
-                let point = interp.buffer.point();
-                let suffix = interp
-                    .buffer
-                    .buffer_substring(point, interp.buffer.point_max())
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let pos = suffix
-                    .find("\n\n")
-                    .map(|byte| point + suffix[..byte].chars().count())
-                    .unwrap_or_else(|| interp.buffer.point_max());
-                interp.buffer.goto_char(pos);
-                Ok(Value::Nil)
-            }
-            "backward-page" => {
-                need_arg_range(name, args, 0, 1)?;
-                let count = args
-                    .first()
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(1);
-                if count < 0 {
-                    return call(interp, "forward-page", &[Value::Integer(-count)], env);
-                }
-                for _ in 0..count.max(1) {
-                    let point = interp.buffer.point();
-                    let prefix = interp
-                        .buffer
-                        .buffer_substring(interp.buffer.point_min(), point.saturating_sub(1))
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    let pos = prefix
-                        .rfind('\x0c')
-                        .map(|byte| interp.buffer.point_min() + prefix[..byte].chars().count() + 1)
-                        .unwrap_or_else(|| interp.buffer.point_min());
-                    interp.buffer.goto_char(pos);
-                }
-                Ok(Value::Nil)
-            }
-            "forward-page" => {
-                need_arg_range(name, args, 0, 1)?;
-                let count = args
-                    .first()
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(1);
-                if count < 0 {
-                    return call(interp, "backward-page", &[Value::Integer(-count)], env);
-                }
-                for _ in 0..count.max(1) {
-                    let point = interp.buffer.point();
-                    let suffix = interp
-                        .buffer
-                        .buffer_substring(point, interp.buffer.point_max())
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    let pos = suffix
-                        .find('\x0c')
-                        .map(|byte| point + suffix[..byte].chars().count() + 1)
-                        .unwrap_or_else(|| interp.buffer.point_max());
-                    interp.buffer.goto_char(pos);
-                }
-                Ok(Value::Nil)
-            }
             "forward-line" => {
                 let n = if args.is_empty() || args[0].is_nil() {
                     BigInt::from(1u8)
@@ -1217,81 +634,6 @@ define_dispatch!(
                     &mut interp.buffer,
                     n,
                 )))
-            }
-            "next-line" | "previous-line" => {
-                need_arg_range(name, args, 0, 2)?;
-                let mut count = args
-                    .first()
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                if name == "previous-line" {
-                    count = -count;
-                }
-                // GNU line motion keeps the goal column across consecutive
-                // vertical motion commands via temporary-goal-column.
-                let last_command = interp.lookup_var("last-command", env).unwrap_or(Value::Nil);
-                let continuing = matches!(
-                    &last_command,
-                    Value::Symbol(symbol) if symbol == "next-line" || symbol == "previous-line"
-                );
-                let goal = if continuing {
-                    interp
-                        .lookup_var("temporary-goal-column", env)
-                        .and_then(|value| value.as_integer().ok())
-                } else {
-                    None
-                }
-                .unwrap_or_else(|| {
-                    super::call(interp, "current-column", &[], env)
-                        .ok()
-                        .and_then(|value| value.as_integer().ok())
-                        .unwrap_or(0)
-                });
-                interp.set_global_binding("temporary-goal-column", Value::Integer(goal));
-                super::call(interp, "line-move", &[Value::Integer(count), Value::T], env)?;
-                super::call(interp, "move-to-column", &[Value::Integer(goal)], env)?;
-                Ok(Value::Nil)
-            }
-            "move-end-of-line" | "move-beginning-of-line" => {
-                need_arg_range(name, args, 0, 1)?;
-                let count = args
-                    .first()
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                if count != 1 {
-                    super::call(interp, "forward-line", &[Value::Integer(count - 1)], env)?;
-                }
-                let target = if name == "move-end-of-line" {
-                    // The interactive command crosses fields (notably an ERC
-                    // timestamp at BOL); `line-end-position' intentionally does
-                    // not.  GNU's simple.el implementation computes the real
-                    // displayed EOL before moving point, matching `pos-eol' for
-                    // the logical-line subset implemented here.
-                    super::call(interp, "pos-eol", &[], env)?
-                } else {
-                    super::call(interp, "line-beginning-position", &[], env)?
-                };
-                interp.buffer.goto_char(target.as_integer()? as usize);
-                Ok(Value::Nil)
-            }
-            "line-move" => {
-                need_arg_range(name, args, 1, 4)?;
-                let n = integer_like_bigint(interp, &args[0])?;
-                let noerror = args.get(1).is_some_and(Value::is_truthy);
-                let remaining = forward_line_bigint(&mut interp.buffer, n);
-                if remaining == BigInt::from(0u8) {
-                    Ok(Value::T)
-                } else if noerror {
-                    Ok(Value::Nil)
-                } else if remaining > BigInt::from(0u8) {
-                    Err(LispError::Signal("End of buffer".into()))
-                } else {
-                    Err(LispError::Signal("Beginning of buffer".into()))
-                }
             }
             "compute-motion" => {
                 need_args(name, args, 7)?;
@@ -1432,114 +774,10 @@ define_dispatch!(
                     }
                 }
             }
-            "re-search-forward" | "search-forward-regexp" => {
-                regexp::buffer_regex_search(interp, args, env, true, false)
-            }
-            "re-search-backward" | "search-backward-regexp" => {
-                regexp::buffer_regex_search(interp, args, env, false, false)
-            }
+            "re-search-forward" => regexp::buffer_regex_search(interp, args, env, true, false),
+            "re-search-backward" => regexp::buffer_regex_search(interp, args, env, false, false),
             "posix-search-forward" => regexp::buffer_regex_search(interp, args, env, true, true),
             "posix-search-backward" => regexp::buffer_regex_search(interp, args, env, false, true),
-            "forward-list" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let count = args
-                    .first()
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                let step = count.signum();
-                for _ in 0..count.unsigned_abs() {
-                    // GNU's C `Fforward_list' scans with sexpflag=0; when the
-                    // scan can't complete it signals `scan-error' (not nil like
-                    // the `scan-lists' Lisp wrapper).  erc-d-u--read-dialog
-                    // relies on this: it reads dialog hunks with `forward-list'
-                    // and catches the end-of-buffer `scan-error'.
-                    let scanned = syntax::scan_lists_impl(
-                        interp,
-                        &[
-                            Value::Integer(interp.buffer.point() as i64),
-                            Value::Integer(step),
-                            Value::Integer(0),
-                        ],
-                        env,
-                    )?;
-                    let position = match scanned {
-                        Value::Integer(position) => position as usize,
-                        _ => {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::Symbol("scan-error".into()),
-                                Value::String("Unbalanced parentheses".into()),
-                                Value::Integer(interp.buffer.point() as i64),
-                                Value::Integer(interp.buffer.point() as i64),
-                            ])));
-                        }
-                    };
-                    interp.buffer.goto_char(position);
-                }
-                Ok(Value::Nil)
-            }
-            "down-list" => {
-                need_arg_range(name, args, 0, 1)?;
-                syntax::down_list_impl(interp, args.first(), env)
-            }
-            // File-less fallback; GNU lisp.el's port (simple_compat) handles
-            // escape-strings/no-syntax-crossing when loaded.
-            "up-list" if !interp.has_lisp_function("up-list") => {
-                need_arg_range(name, args, 0, 1)?;
-                syntax::up_list_impl(interp, args.first(), env)
-            }
-            "forward-sexp" | "backward-sexp" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let mut count = args
-                    .first()
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                if name == "backward-sexp" {
-                    count = -count;
-                }
-                // GNU forward-sexp funcalls `forward-sexp-function' when set.
-                if let Some(function) = interp
-                    .lookup_var("forward-sexp-function", env)
-                    .filter(|value| value.is_truthy())
-                {
-                    interp.call_function_value(function, None, &[Value::Integer(count)], env)?;
-                    return Ok(Value::Nil);
-                }
-                // GNU forward-sexp-default-function:
-                // (goto-char (or (scan-sexps (point) arg) (buffer-end arg)))
-                // (if (< arg 0) (backward-prefix-chars))
-                let from = interp.buffer.point();
-                let target =
-                    match syntax::scan_sexps_position_for_scan_sexps(interp, env, from, count)? {
-                        Some(position) => position,
-                        None if count < 0 => interp.buffer.point_min(),
-                        None => interp.buffer.point_max(),
-                    };
-                interp.buffer.goto_char(target);
-                if count < 0 {
-                    syntax::backward_prefix_chars(interp)?;
-                }
-                Ok(Value::Nil)
-            }
-            "mark-sexp" => {
-                need_arg_range(name, args, 0, 1)?;
-                let count = args
-                    .first()
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                let point = interp.buffer.point();
-                let Some(position) = syntax::scan_sexps_position(interp, env, point, count) else {
-                    return Err(scan_error());
-                };
-                interp.buffer.set_mark(position);
-                Ok(Value::Nil)
-            }
             "forward-comment" => {
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1556,41 +794,6 @@ define_dispatch!(
                         .map(|position| Value::Integer(position as i64))
                         .unwrap_or(Value::Nil),
                 )
-            }
-            "syntax-ppss" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let to = match args.first() {
-                    Some(value) if !value.is_nil() => position_from_value(interp, value)?,
-                    _ => interp.buffer.point(),
-                };
-                // GNU `syntax-ppss' first asks the mode's syntax propertizer to
-                // cover POS.  CPerl and other modes rely on that lazy step even
-                // when Font Lock has not run.
-                syntax::ensure_syntax_propertized(interp, env);
-                // GNU syntax-ppss is NOT excursion-saving: point ends up at
-                // POS (beginning-of-defun-comments depends on it).
-                let state = syntax::parse_forward(
-                    interp,
-                    interp.buffer.point_min(),
-                    to,
-                    None,
-                    false,
-                    None,
-                    syntax::CommentStop::No,
-                    env,
-                );
-                interp.buffer.goto_char(to);
-                state
-            }
-            "ppss-depth" => {
-                need_args(name, args, 1)?;
-                Ok(args[0].to_vec()?.first().cloned().unwrap_or(Value::Nil))
-            }
-            "syntax-ppss-flush-cache" => {
-                need_arg_range(name, args, 1, usize::MAX)?;
-                Ok(Value::Nil)
             }
             "backward-prefix-chars" => {
                 need_args(name, args, 0)?;
@@ -1620,24 +823,24 @@ define_dispatch!(
                     env,
                 )
             }
-            "buffer-string" => Ok(string_like_value_with_multibyte(
+            "buffer-string" => Ok(string_like_value_with_extended_chars(
                 interp.buffer.buffer_string(),
                 interp
                     .buffer
                     .substring_property_spans(interp.buffer.point_min(), interp.buffer.point_max()),
                 interp.buffer.is_multibyte(),
+                interp
+                    .buffer
+                    .substring_extended_chars(interp.buffer.point_min(), interp.buffer.point_max()),
             )),
             "minibuffer-contents" | "minibuffer-contents-no-properties" => {
                 need_arg_range(name, args, 0, 0)?;
-                let active_minibuffer = interp
-                    .lookup_var("emaxx--active-minibuffer", env)
-                    .and_then(|value| interp.resolve_buffer_id(&value).ok())
-                    == Some(interp.current_buffer_id());
+                let active_minibuffer =
+                    interp.active_minibuffer_buffer_id() == Some(interp.current_buffer_id());
                 let prompt_length = if active_minibuffer {
                     interp
-                        .lookup_var("emaxx--minibuffer-prompt", env)
-                        .and_then(|value| string_like(&value))
-                        .map(|prompt| prompt.text.chars().count())
+                        .minibuffer_prompt_text()
+                        .map(|prompt| prompt.chars().count())
                         .unwrap_or(0)
                 } else {
                     0
@@ -1657,10 +860,11 @@ define_dispatch!(
                 } else {
                     Vec::new()
                 };
-                Ok(string_like_value_with_multibyte(
+                Ok(string_like_value_with_extended_chars(
                     text,
                     props,
                     interp.buffer.is_multibyte(),
+                    interp.buffer.substring_extended_chars(start, end),
                 ))
             }
             "buffer-substring" | "buffer-substring-no-properties" => {
@@ -1671,69 +875,23 @@ define_dispatch!(
                 match interp.buffer.buffer_substring(start, end) {
                     Ok(s) => {
                         if name == "buffer-substring" {
-                            Ok(string_like_value_with_multibyte(
+                            Ok(string_like_value_with_extended_chars(
                                 s,
                                 interp.buffer.substring_property_spans(start, end),
                                 interp.buffer.is_multibyte(),
+                                interp.buffer.substring_extended_chars(start, end),
                             ))
                         } else {
-                            Ok(string_like_value_with_multibyte(
+                            Ok(string_like_value_with_extended_chars(
                                 s,
                                 Vec::new(),
                                 interp.buffer.is_multibyte(),
+                                interp.buffer.substring_extended_chars(start, end),
                             ))
                         }
                     }
                     Err(e) => Err(LispError::Signal(e.to_string())),
                 }
-            }
-            "filter-buffer-substring" => {
-                need_arg_range(name, args, 2, 3)?;
-                let filter = interp
-                    .lookup_var("filter-buffer-substring-function", env)
-                    .unwrap_or_else(|| Value::Symbol("buffer-substring--filter".into()));
-                interp.call_function_value(filter, None, args, env)
-            }
-            "buffer-substring--filter" => {
-                need_arg_range(name, args, 2, 3)?;
-                let text = super::call(
-                    interp,
-                    "buffer-substring",
-                    &[args[0].clone(), args[1].clone()],
-                    env,
-                )?;
-                if args.get(2).is_some_and(Value::is_truthy) {
-                    let _ = super::call(
-                        interp,
-                        "delete-region",
-                        &[args[0].clone(), args[1].clone()],
-                        env,
-                    )?;
-                }
-                Ok(text)
-            }
-            "add-to-invisibility-spec" => {
-                need_args(name, args, 1)?;
-                let current = interp
-                    .lookup_var("buffer-invisibility-spec", env)
-                    .unwrap_or(Value::T);
-                let updated = match current {
-                    Value::Nil => Value::list([args[0].clone()]),
-                    Value::T => Value::list([Value::T, args[0].clone()]),
-                    other => {
-                        let mut items = other.to_vec()?;
-                        if !items.iter().any(|item| item == &args[0]) {
-                            items.push(args[0].clone());
-                        }
-                        Value::list(items)
-                    }
-                };
-                interp.set_buffer_local_value(
-                    interp.current_buffer_id(),
-                    "buffer-invisibility-spec",
-                    updated,
-                );
-                Ok(Value::Nil)
             }
             "invisible-p" => {
                 need_args(name, args, 1)?;
@@ -1743,361 +901,9 @@ define_dispatch!(
                 };
                 Ok(if invisible { Value::T } else { Value::Nil })
             }
-            "derived-mode-p" => {
-                if args.is_empty() {
-                    return Ok(Value::Nil);
-                }
-                let current_mode = interp
-                    .lookup_var("major-mode", env)
-                    .and_then(|value| value.as_symbol().ok().map(str::to_string));
-                let mut candidates = Vec::new();
-                for value in args {
-                    if let Ok(symbol) = value.as_symbol() {
-                        candidates.push(symbol.to_string());
-                        continue;
-                    }
-                    if let Ok(items) = value.to_vec() {
-                        for item in items {
-                            if let Ok(symbol) = item.as_symbol() {
-                                candidates.push(symbol.to_string());
-                            }
-                        }
-                    }
-                }
-                Ok(
-                    if current_mode.is_some_and(|current| {
-                        let parents = derived_mode_parent_chain(interp, &current);
-                        candidates
-                            .iter()
-                            .any(|candidate| parents.iter().any(|parent| parent == candidate))
-                    }) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            "provided-mode-derived-p" => {
-                need_arg_range(name, args, 2, usize::MAX)?;
-                let mode = symbol_name_or_string(&args[0])?;
-                let mut candidates = Vec::new();
-                for value in &args[1..] {
-                    if let Ok(symbol) = symbol_name_or_string(value) {
-                        candidates.push(symbol);
-                        continue;
-                    }
-                    if let Ok(items) = value.to_vec() {
-                        for item in items {
-                            if let Ok(symbol) = symbol_name_or_string(&item) {
-                                candidates.push(symbol);
-                            }
-                        }
-                    }
-                }
-                let parents = derived_mode_parent_chain(interp, &mode);
-                Ok(candidates
-                    .into_iter()
-                    .find(|candidate| parents.iter().any(|parent| parent == candidate))
-                    .map(|value| Value::Symbol(value.into()))
-                    .unwrap_or(Value::Nil))
-            }
-            "derived-mode-all-parents" => {
-                need_arg_range(name, args, 1, 2)?;
-                let mode = symbol_name_or_string(&args[0])?;
-                Ok(Value::list(
-                    derived_mode_parent_chain(interp, &mode)
-                        .into_iter()
-                        .map(|value| Value::Symbol(value.into())),
-                ))
-            }
-            "derived-mode-add-parents" => {
-                need_args(name, args, 2)?;
-                let mode = args[0].as_symbol()?;
-                derived_mode_add_parents(interp, mode, &args[1])?;
-                Ok(args[0].clone())
-            }
-            "c-toggle-electric-state" => {
-                need_arg_range(name, args, 0, 1)?;
-                let enabled = match args.first() {
-                    Some(Value::Nil) | None => !interp
-                        .lookup_var("c-electric-flag", env)
-                        .is_some_and(|value| value.is_truthy()),
-                    Some(value) => value.as_integer()? > 0,
-                };
-                interp.set_variable(
-                    "c-electric-flag",
-                    if enabled { Value::T } else { Value::Nil },
-                    env,
-                );
-                Ok(Value::Nil)
-            }
-            "c-toggle-comment-style" => {
-                need_arg_range(name, args, 0, 1)?;
-                let has_line = interp
-                    .lookup_var("c-line-comment-starter", env)
-                    .is_some_and(|value| value.is_truthy());
-                let has_block = interp
-                    .lookup_var("c-block-comment-starter", env)
-                    .is_some_and(|value| value.is_truthy());
-                if !(has_line || has_block) {
-                    return Ok(Value::Nil);
-                }
-                let use_block = match args.first() {
-                    Some(Value::Nil) | None => !interp
-                        .lookup_var("c-block-comment-flag", env)
-                        .is_some_and(|value| value.is_truthy()),
-                    Some(value) => value.as_integer()? > 0,
-                };
-                let use_block = if has_line && has_block {
-                    use_block
-                } else {
-                    has_block
-                };
-                if use_block {
-                    let starter = interp
-                        .lookup_var("c-block-comment-starter", env)
-                        .and_then(|value| value.as_string().ok().map(str::to_string))
-                        .unwrap_or_else(|| "/*".into());
-                    let ender = interp
-                        .lookup_var("c-block-comment-ender", env)
-                        .and_then(|value| value.as_string().ok().map(str::to_string))
-                        .unwrap_or_else(|| "*/".into());
-                    interp.set_variable("c-block-comment-flag", Value::T, env);
-                    interp.set_variable(
-                        "comment-start",
-                        Value::String(format!("{starter} ").into()),
-                        env,
-                    );
-                    interp.set_variable(
-                        "comment-end",
-                        Value::String(format!(" {ender}").into()),
-                        env,
-                    );
-                } else {
-                    let starter = interp
-                        .lookup_var("c-line-comment-starter", env)
-                        .and_then(|value| value.as_string().ok().map(str::to_string))
-                        .unwrap_or_else(|| "//".into());
-                    interp.set_variable("c-block-comment-flag", Value::Nil, env);
-                    interp.set_variable(
-                        "comment-start",
-                        Value::String(format!("{starter} ").into()),
-                        env,
-                    );
-                    interp.set_variable("comment-end", Value::String(String::new().into()), env);
-                }
-                Ok(Value::Nil)
-            }
-            "c-point-syntax" => {
-                need_arg_range(name, args, 0, 1)?;
-                let syntax = match (interp.buffer.char_after(), interp.buffer.char_before()) {
-                    (Some('{'), _) | (_, Some('{')) => "brace-list-open",
-                    (Some('}'), _) | (_, Some('}')) => "brace-list-close",
-                    _ => "statement",
-                };
-                Ok(Value::Symbol(syntax.into()))
-            }
-            "c-brace-newlines" => {
-                need_arg_range(name, args, 1, 1)?;
-                let syntax = symbol_name_or_string(&args[0]).unwrap_or_default();
-                if matches!(syntax.as_str(), "brace-list-open" | "brace-list-close") {
-                    Ok(Value::list([
-                        Value::Symbol("before".into()),
-                        Value::Symbol("after".into()),
-                    ]))
-                } else {
-                    Ok(Value::Nil)
-                }
-            }
-            "emaxx-struct-make" => {
-                need_arg_range(name, args, 5, 6)?;
-                let struct_name = args[0].as_symbol()?.to_string();
-                let slot_names = args[1]
-                    .to_vec()?
-                    .into_iter()
-                    .map(|value| value.as_symbol().map(str::to_string))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let slot_defaults = args[2].to_vec()?;
-                let constructor_spec = args[3]
-                    .to_vec()?
-                    .into_iter()
-                    .map(|value| value.as_symbol().map(str::to_string))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let call_args = args[4].to_vec()?;
-                let mut slots = vec![Value::Nil; slot_names.len()];
-                let mut provided = vec![false; slot_names.len()];
-                let mut arg_index = 0usize;
-                let mut spec_index = 0usize;
-                while spec_index < constructor_spec.len() && constructor_spec[spec_index] != "&key"
-                {
-                    if constructor_spec[spec_index] == "&optional" {
-                        spec_index += 1;
-                        continue;
-                    }
-                    if constructor_spec[spec_index] == "&rest"
-                        || constructor_spec[spec_index] == "&body"
-                    {
-                        // The rest variable captures the remaining args without
-                        // consuming them positionally; a following &key section
-                        // reads its keywords from this same tail (GNU cl-lib).
-                        if let Some(rest_name) = constructor_spec.get(spec_index + 1)
-                            && let Some(slot_index) = slot_names
-                                .iter()
-                                .position(|slot_name| slot_name == rest_name)
-                        {
-                            slots[slot_index] = Value::list(call_args[arg_index..].to_vec());
-                            provided[slot_index] = true;
-                        }
-                        spec_index += 2;
-                        continue;
-                    }
-                    if arg_index >= call_args.len() {
-                        break;
-                    }
-                    if let Some(slot_index) = slot_names
-                        .iter()
-                        .position(|slot_name| slot_name == &constructor_spec[spec_index])
-                    {
-                        slots[slot_index] = call_args[arg_index].clone();
-                        provided[slot_index] = true;
-                    }
-                    spec_index += 1;
-                    arg_index += 1;
-                }
-                if constructor_spec
-                    .get(spec_index)
-                    .is_some_and(|keyword| keyword == "&key")
-                {
-                    while arg_index + 1 < call_args.len() {
-                        let keyword = call_args[arg_index].as_symbol()?;
-                        let keyword = keyword.strip_prefix(':').unwrap_or(keyword);
-                        if let Some(slot_index) =
-                            slot_names.iter().position(|slot_name| slot_name == keyword)
-                        {
-                            slots[slot_index] = call_args[arg_index + 1].clone();
-                            provided[slot_index] = true;
-                        }
-                        arg_index += 2;
-                    }
-                }
-                for (index, default_form) in slot_defaults.into_iter().enumerate() {
-                    if !provided.get(index).copied().unwrap_or(false) {
-                        slots[index] = interp.eval(&default_form, env)?;
-                    }
-                }
-                // Unnamed `:type vector' structs are stored as plain vectors,
-                // unnamed `:type list' structs as plain lists (GNU).
-                match args.get(5).and_then(|mode| mode.as_symbol().ok()) {
-                    Some("vector") => {
-                        let mut items = vec![Value::symbol("vector-literal")];
-                        items.extend(slots);
-                        Ok(Value::list(items))
-                    }
-                    Some("list") => Ok(Value::list(slots)),
-                    _ => Ok(interp.create_record(&struct_name, slots)),
-                }
-            }
-            "emaxx-struct-p" => {
-                need_args(name, args, 2)?;
-                let struct_name = args[0].as_symbol()?;
-                Ok(match &args[1] {
-                    Value::Record(id)
-                        if interp
-                            .find_record(*id)
-                            .is_some_and(|record| record.type_name == struct_name)
-                            || interp.value_is_instance_of_class(&args[1], struct_name) =>
-                    {
-                        Value::T
-                    }
-                    _ => Value::Nil,
-                })
-            }
-            "emaxx-class-p" => {
-                need_args(name, args, 2)?;
-                let class_name = args[0].as_symbol()?;
-                Ok(if interp.value_is_instance_of_class(&args[1], class_name) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "emaxx-struct-ref" => {
-                need_arg_range(name, args, 3, 4)?;
-                let struct_name = args[0].as_symbol()?;
-                let slot_index = args[1].as_integer()?.max(0) as usize;
-                if args.get(3).and_then(|mode| mode.as_symbol().ok()) == Some("vector") {
-                    // Unnamed vector struct: plain positional access, no tag.
-                    return Ok(crate::lisp::primitives::vector_items(&args[2])
-                        .map_err(|_| {
-                            LispError::TypeError(format!("{struct_name}-p"), args[2].type_name())
-                        })?
-                        .get(slot_index)
-                        .cloned()
-                        .unwrap_or(Value::Nil));
-                }
-                let list_backed = args.get(3).is_some_and(|value| !value.is_nil());
-                if list_backed {
-                    return match &args[2] {
-                        Value::Nil => Ok(Value::Nil),
-                        Value::Cons(_) => Ok(args[2]
-                            .to_vec()?
-                            .get(slot_index)
-                            .cloned()
-                            .unwrap_or(Value::Nil)),
-                        Value::Record(_) => {
-                            // Some locally generated list-backed constructors still
-                            // produce records; keep those working while runtime-read
-                            // forms use plain list values.
-                            let Value::Record(id) = &args[2] else {
-                                unreachable!();
-                            };
-                            let record = interp.find_record(*id).ok_or_else(|| {
-                                LispError::TypeError("record".into(), format!("record<{id}>"))
-                            })?;
-                            if record.type_name != struct_name
-                                && !interp.value_is_instance_of_class(&args[2], struct_name)
-                            {
-                                return Err(LispError::TypeError(
-                                    format!("{struct_name}-p"),
-                                    args[2].type_name(),
-                                ));
-                            }
-                            Ok(record.slots.get(slot_index).cloned().unwrap_or(Value::Nil))
-                        }
-                        other => Err(LispError::TypeError(
-                            format!("{struct_name}-p"),
-                            other.type_name(),
-                        )),
-                    };
-                }
-                match &args[2] {
-                    Value::Record(id) => {
-                        let record = interp.find_record(*id).ok_or_else(|| {
-                            LispError::TypeError("record".into(), format!("record<{id}>"))
-                        })?;
-                        if record.type_name != struct_name
-                            && !interp.value_is_instance_of_class(&args[2], struct_name)
-                        {
-                            return Err(LispError::TypeError(
-                                format!("{struct_name}-p"),
-                                args[2].type_name(),
-                            ));
-                        }
-                        Ok(record.slots.get(slot_index).cloned().unwrap_or(Value::Nil))
-                    }
-                    other => Err(LispError::TypeError(
-                        format!("{struct_name}-p"),
-                        other.type_name(),
-                    )),
-                }
-            }
             "buffer-size" => Ok(Value::Integer(interp.buffer.size_total() as i64)),
             "buffer-enable-undo" => {
                 interp.buffer.enable_undo();
-                Ok(Value::Nil)
-            }
-            "buffer-disable-undo" => {
-                interp.buffer.disable_undo();
                 Ok(Value::Nil)
             }
             "gap-position" => Ok(Value::Integer(interp.buffer.point() as i64)),
@@ -2141,7 +947,7 @@ define_dispatch!(
                     .map(|pos| Value::Integer(pos as i64))
                     .unwrap_or(Value::Nil))
             }
-            "treesit-ready-p" => Ok(Value::Nil),
+
             "buffer-name" => {
                 if !args.is_empty()
                     && let Value::Buffer(buffer) = &args[0]
@@ -2203,15 +1009,6 @@ define_dispatch!(
                         ])));
                 }
                 Ok(args[0].clone())
-            }
-            "toggle-enable-multibyte-characters" => {
-                let enabled = !interp.buffer.is_multibyte();
-                super::call(
-                    interp,
-                    "set-buffer-multibyte",
-                    &[if enabled { Value::T } else { Value::Nil }],
-                    env,
-                )
             }
             "char-after" => {
                 let pos = match args.first() {
@@ -2366,59 +1163,6 @@ define_dispatch!(
                     multibyte,
                 ))
             }
-            "kill-region" => {
-                let result = super::call(interp, "delete-region", args, env)?;
-                // GNU kill-region records itself for kill-append chaining.
-                interp.set_variable("this-command", Value::Symbol("kill-region".into()), env);
-                Ok(result)
-            }
-            "delete-line" | "kill-whole-line" => {
-                need_arg_range(name, args, 0, 0)?;
-                let start = interp.buffer.beginning_of_line();
-                let end = move_lines_from(interp, start, 1).0;
-                ensure_region_modifiable(interp, start, end, env)?;
-                delete_region_with_hooks(interp, start, end, env)?;
-                if name == "kill-whole-line" {
-                    // GNU kill-whole-line primes `last-command' so consecutive
-                    // kills append, and kills through `kill-region' which sets
-                    // `this-command'.
-                    interp.set_variable("last-command", Value::Symbol("kill-region".into()), env);
-                    interp.set_variable("this-command", Value::Symbol("kill-region".into()), env);
-                }
-                Ok(Value::Nil)
-            }
-            "delete-horizontal-space" => {
-                need_arg_range(name, args, 0, 1)?;
-                let backward_only = args.first().is_some_and(Value::is_truthy);
-                let origin = interp.buffer.point();
-                let start = {
-                    let _ = super::call(
-                        interp,
-                        "skip-chars-backward",
-                        &[Value::String(" \t".into())],
-                        env,
-                    )?;
-                    interp.buffer.point()
-                };
-                interp.buffer.goto_char(origin);
-                let end = if backward_only {
-                    origin
-                } else {
-                    let _ = super::call(
-                        interp,
-                        "skip-chars-forward",
-                        &[Value::String(" \t".into())],
-                        env,
-                    )?;
-                    interp.buffer.point()
-                };
-                interp.buffer.goto_char(origin);
-                if start != end {
-                    ensure_region_modifiable(interp, start, end, env)?;
-                    delete_region_with_hooks(interp, start, end, env)?;
-                }
-                Ok(Value::Nil)
-            }
             "delete-char" => {
                 let n = if args.is_empty() {
                     1
@@ -2444,55 +1188,6 @@ define_dispatch!(
                     }
                 }
             }
-            "backward-delete-char-untabify" => {
-                need_arg_range(name, args, 0, 2)?;
-                let count = args
-                    .first()
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                super::call(interp, "delete-char", &[Value::Integer(-count)], env)
-            }
-            "delete-forward-char" => {
-                if interp.buffer.mark_active()
-                    && interp
-                        .lookup_var("transient-mark-mode", env)
-                        .is_some_and(|value| value.is_truthy())
-                    && let Some((start, end)) = interp.buffer.region()
-                {
-                    interp.buffer.deactivate_mark();
-                    return super::call(
-                        interp,
-                        "delete-region",
-                        &[Value::Integer(start as i64), Value::Integer(end as i64)],
-                        env,
-                    );
-                }
-                let n = if args.is_empty() {
-                    1
-                } else {
-                    args[0].as_integer()?
-                };
-                super::call(interp, "delete-char", &[Value::Integer(n)], env)
-            }
-            "kill-word" => {
-                let count = if args.is_empty() {
-                    1
-                } else {
-                    args[0].as_integer()?
-                };
-                let start = interp.buffer.point();
-                super::call(interp, "forward-word", &[Value::Integer(count)], env)?;
-                let end = interp.buffer.point();
-                interp.buffer.goto_char(start);
-                super::call(
-                    interp,
-                    "delete-region",
-                    &[Value::Integer(start as i64), Value::Integer(end as i64)],
-                    env,
-                )
-            }
             "erase-buffer" => {
                 let size = interp.buffer.buffer_size();
                 if size > 0 {
@@ -2500,16 +1195,6 @@ define_dispatch!(
                     let max = interp.buffer.point_max();
                     delete_region_with_hooks(interp, min, max, env)?;
                 }
-                Ok(Value::Nil)
-            }
-            "delete-minibuffer-contents" => {
-                need_arg_range(name, args, 0, 0)?;
-                delete_region_with_hooks(
-                    interp,
-                    interp.buffer.point_min(),
-                    interp.buffer.point_max(),
-                    env,
-                )?;
                 Ok(Value::Nil)
             }
             "upcase-region"
@@ -2575,41 +1260,6 @@ define_dispatch!(
                 };
                 Ok(Value::Integer(column_at(interp, env, bol, pt) as i64))
             }
-            "indent-according-to-mode" => {
-                need_arg_range(name, args, 0, 1)?;
-                if simple_c_family_indent_line(interp, env)? {
-                    return Ok(Value::Nil);
-                }
-                // GNU funcalls the buffer's `indent-line-function' (tabbing-only
-                // functions excepted; newcomment relies on this for comment-only
-                // lines).
-                let indent_function = interp
-                    .lookup_var("indent-line-function", env)
-                    .unwrap_or(Value::Nil);
-                let function_name = indent_function.as_symbol().ok().map(str::to_string);
-                if !matches!(
-                    function_name.as_deref(),
-                    None | Some(
-                        "indent-relative"
-                            | "indent-relative-maybe"
-                            | "indent-relative-first-indent-point"
-                            | "indent-according-to-mode"
-                    )
-                ) {
-                    interp.call_function_value(
-                        indent_function.clone(),
-                        function_name.as_deref(),
-                        &[],
-                        env,
-                    )?;
-                }
-                Ok(Value::Nil)
-            }
-            "c-indent-line" => {
-                need_arg_range(name, args, 0, 3)?;
-                let _ = simple_c_family_indent_line(interp, env)?;
-                Ok(Value::Nil)
-            }
             "current-indentation" => {
                 let saved = interp.buffer.point();
                 interp.buffer.beginning_of_line();
@@ -2630,125 +1280,6 @@ define_dispatch!(
                 let indentation = column_at(interp, env, bol, pt) as i64;
                 interp.buffer.goto_char(saved);
                 Ok(Value::Integer(indentation))
-            }
-            "indent-to-left-margin" => {
-                need_args(name, args, 0)?;
-                let left_margin = interp
-                    .lookup_var("left-margin", env)
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(0)
-                    .max(0);
-                super::call(interp, "indent-to", &[Value::Integer(left_margin)], env)?;
-                Ok(Value::Nil)
-            }
-            "indent-line-to" => {
-                need_args(name, args, 1)?;
-                let column = args[0].as_integer()?.max(0);
-                let saved = interp.buffer.point();
-                interp.buffer.beginning_of_line();
-                // GNU's backward-to-indentation constrains to the current
-                // field: a read-only prompt prefix is not indentation.
-                if buffer_has_field_property(interp) {
-                    let new_pos = interp.buffer.point();
-                    let constrained = super::call(
-                        interp,
-                        "constrain-to-field",
-                        &[Value::Integer(new_pos as i64), Value::Integer(saved as i64)],
-                        env,
-                    )?
-                    .as_integer()? as usize;
-                    interp.buffer.goto_char(constrained);
-                }
-                let bol = interp.buffer.point();
-                while matches!(
-                    interp.buffer.char_at(interp.buffer.point()),
-                    Some(' ' | '\t')
-                ) {
-                    let _ = interp.buffer.forward_char(1);
-                }
-                let indentation_end = interp.buffer.point();
-                // GNU indent-line-to leaves the existing whitespace untouched
-                // when the indentation is already at the requested column.
-                let current = super::call(interp, "current-column", &[], env)?.as_integer()?;
-                if current == column {
-                    interp.buffer.goto_char(indentation_end);
-                    return Ok(Value::Nil);
-                }
-                if indentation_end > bol {
-                    ensure_region_modifiable(interp, bol, indentation_end, env)?;
-                    delete_region_with_hooks(interp, bol, indentation_end, env)?;
-                }
-                interp.buffer.goto_char(bol);
-                super::call(interp, "indent-to", &[Value::Integer(column)], env)?;
-                // GNU's Lisp owner deliberately leaves point at the end of
-                // indentation, regardless of its incoming position.  Its
-                // return value is `indent-to's column only when indentation
-                // grows; unchanged or reduced indentation returns nil.
-                Ok(if current < column {
-                    Value::Integer(column)
-                } else {
-                    Value::Nil
-                })
-            }
-            "indent-relative" => {
-                need_arg_range(name, args, 0, 2)?;
-                let unindented_ok = args.get(1).is_some_and(Value::is_truthy);
-                let start_column = super::call(interp, "current-column", &[], env)?.as_integer()?;
-                let saved = interp.buffer.point();
-                interp.buffer.beginning_of_line();
-                let current_line_start = interp.buffer.point();
-                let mut scan = current_line_start.saturating_sub(1);
-                let mut indent = None;
-                while scan >= interp.buffer.point_min() {
-                    let line_start = beginning_of_line_at(interp, scan);
-                    let line_end = {
-                        let original = interp.buffer.point();
-                        interp.buffer.goto_char(line_start);
-                        let end = interp.buffer.end_of_line();
-                        interp.buffer.goto_char(original);
-                        end
-                    };
-                    let line_text = interp
-                        .buffer
-                        .buffer_substring(line_start, line_end)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    if line_text.chars().any(|ch| ch != ' ' && ch != '\t') {
-                        let tab_width = interp
-                            .lookup_var("tab-width", env)
-                            .and_then(|value| value.as_integer().ok())
-                            .unwrap_or(8)
-                            .max(1);
-                        let mut column = 0i64;
-                        let mut after_whitespace = true;
-                        for ch in line_text.chars() {
-                            if ch != ' ' && ch != '\t' && after_whitespace && column > start_column
-                            {
-                                indent = Some(column);
-                                break;
-                            }
-                            after_whitespace = ch == ' ' || ch == '\t';
-                            column = if ch == '\t' {
-                                ((column / tab_width) + 1) * tab_width
-                            } else {
-                                column + 1
-                            };
-                        }
-                        break;
-                    }
-                    if line_start <= interp.buffer.point_min() {
-                        break;
-                    }
-                    scan = line_start.saturating_sub(1);
-                }
-                interp.buffer.goto_char(saved);
-                match indent {
-                    Some(column) => {
-                        super::call(interp, "indent-to", &[Value::Integer(column)], env)?;
-                        Ok(Value::Nil)
-                    }
-                    None if unindented_ok => Ok(Value::Nil),
-                    None => super::call(interp, "tab-to-tab-stop", &[], env).map(|_| Value::Nil),
-                }
             }
             "indent-to" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -2789,7 +1320,7 @@ define_dispatch!(
                 if space_count > 0 {
                     text.push_str(&" ".repeat(space_count));
                 }
-                insert_text_with_hooks(interp, &text, &[], true, false, env)?;
+                insert_text_with_hooks(interp, &text, &[], &[], true, false, env)?;
                 Ok(Value::Integer(min_col))
             }
             "move-to-column" => {
@@ -2831,84 +1362,6 @@ define_dispatch!(
                 }
                 interp.buffer.goto_char(pos);
                 Ok(Value::Integer(current_col as i64))
-            }
-            "indent-rigidly" => {
-                need_arg_range(name, args, 3, 4)?;
-                let start = position_from_value(interp, &args[0])?;
-                let mut end = position_from_value(interp, &args[1])?;
-                let count = args[2].as_integer()?;
-                let saved_point = interp.buffer.point();
-                let saved_buffer_id = interp.current_buffer_id();
-                let Value::Marker(saved_point_marker) = interp.make_marker() else {
-                    unreachable!("make_marker always returns a marker")
-                };
-                interp.set_marker(saved_point_marker, Some(saved_point), Some(saved_buffer_id))?;
-                // GNU only touches lines that BEGIN inside the region: a
-                // partial first line keeps its indentation.  Each line's
-                // leading whitespace is replaced in place (indent-to plus a
-                // delete of the old run), so the rest of the line keeps its
-                // text properties and markers.  The Lisp implementation wraps
-                // this work in `save-excursion', so saved point must likewise be
-                // a live marker rather than a stale absolute offset.
-                let result = (|| -> Result<(), LispError> {
-                    interp.buffer.goto_char(start);
-                    interp.buffer.beginning_of_line();
-                    if interp.buffer.point() < start {
-                        let mut pos = interp.buffer.point();
-                        while let Some(ch) = interp.buffer.char_at(pos) {
-                            pos += 1;
-                            if ch == '\n' {
-                                break;
-                            }
-                        }
-                        interp.buffer.goto_char(pos);
-                    }
-                    while interp.buffer.point() < end {
-                        let bol = interp.buffer.point();
-                        let mut ws_end = bol;
-                        while matches!(interp.buffer.char_at(ws_end), Some(' ' | '\t')) {
-                            ws_end += 1;
-                        }
-                        let old_ws_len = ws_end - bol;
-                        let eol_flag = matches!(interp.buffer.char_at(ws_end), None | Some('\n'));
-                        if !eol_flag {
-                            let indent = column_at(interp, env, bol, ws_end) as i64;
-                            let target = (indent + count).max(0);
-                            super::call(interp, "indent-to", &[Value::Integer(target)], env)?;
-                        }
-                        // GNU deletes the old whitespace run unconditionally, so
-                        // whitespace-only lines end up empty.
-                        let after_insert = interp.buffer.point();
-                        if old_ws_len > 0 {
-                            interp
-                                .delete_region_current_buffer(
-                                    after_insert,
-                                    after_insert + old_ws_len,
-                                )
-                                .map_err(|error| LispError::Signal(error.to_string()))?;
-                        }
-                        let inserted = after_insert - bol;
-                        end = (end + inserted).saturating_sub(old_ws_len);
-                        // Move to the next line start.
-                        let mut pos = interp.buffer.point();
-                        while let Some(ch) = interp.buffer.char_at(pos) {
-                            pos += 1;
-                            if ch == '\n' {
-                                break;
-                            }
-                        }
-                        interp.buffer.goto_char(pos);
-                    }
-                    Ok(())
-                })();
-                let restored_point = interp
-                    .marker_position(saved_point_marker)
-                    .unwrap_or(saved_point)
-                    .clamp(interp.buffer.point_min(), interp.buffer.point_max());
-                interp.buffer.goto_char(restored_point);
-                let _ = interp.set_marker(saved_point_marker, None, None);
-                result?;
-                Ok(Value::Nil)
             }
             "line-number-at-pos" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -3018,16 +1471,6 @@ define_dispatch!(
                 }
                 Ok(Value::Integer(result as i64))
             }
-            "count-lines" => {
-                need_args(name, args, 2)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                Ok(Value::Integer(count_lines_in_buffer(
-                    &interp.buffer,
-                    start,
-                    end,
-                )?))
-            }
             "line-end-position" | "pos-eol" => {
                 // GNU treats an explicit nil N as 1.
                 let n = match args.first() {
@@ -3067,21 +1510,6 @@ define_dispatch!(
                 if let Some((clamp_start, clamp_end)) =
                     interp.effective_labeled_restriction(interp.current_buffer_id(), None)
                 {
-                    start = start.max(clamp_start);
-                    end = end.min(clamp_end);
-                } else if let Some(active) =
-                    interp.lookup_var("__emaxx-active-labeled-restriction", env)
-                {
-                    let values = active.to_vec()?;
-                    let clamp_start = values
-                        .first()
-                        .and_then(|v| v.as_integer().ok())
-                        .unwrap_or(1) as usize;
-                    let clamp_end = values
-                        .get(1)
-                        .and_then(|v| v.as_integer().ok())
-                        .unwrap_or((interp.buffer.size_total() + 1) as i64)
-                        as usize;
                     start = start.max(clamp_start);
                     end = end.min(clamp_end);
                 }
@@ -3859,86 +2287,6 @@ define_dispatch!(
                 }
                 Ok(Value::T)
             }
-            "dired-move-to-filename" => {
-                need_arg_range(name, args, 0, 2)?;
-                let raise_error = args.first().is_some_and(Value::is_truthy);
-                let saved = interp.buffer.point();
-                interp.buffer.beginning_of_line();
-                let start = interp.buffer.point();
-                let end = args
-                    .get(1)
-                    .filter(|value| !value.is_nil())
-                    .map(|value| position_from_value(interp, value))
-                    .transpose()?
-                    .unwrap_or_else(|| {
-                        interp.buffer.goto_char(saved);
-                        interp.buffer.end_of_line();
-                        interp.buffer.point()
-                    });
-                interp.buffer.goto_char(start);
-                for pos in start..end {
-                    if interp
-                        .buffer
-                        .text_property_at(pos, "dired-filename")
-                        .is_some_and(|value| value.is_truthy())
-                    {
-                        interp.buffer.goto_char(pos);
-                        return Ok(Value::Integer(pos as i64));
-                    }
-                }
-                let line = interp
-                    .buffer
-                    .buffer_substring(start, end)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let leading = line.chars().take_while(|ch| ch.is_whitespace()).count();
-                let listing = line.trim_start();
-                if matches!(listing.chars().next(), Some('d' | '-' | 'l')) {
-                    let offset = listing
-                        .find(" 00:00 ")
-                        .map(|index| index + " 00:00 ".len())
-                        .or_else(|| listing.rfind(' ').map(|index| index + 1));
-                    if let Some(offset) = offset {
-                        let target = start + leading + listing[..offset].chars().count();
-                        if target < end {
-                            interp.buffer.goto_char(target);
-                            return Ok(Value::Integer(target as i64));
-                        }
-                    }
-                }
-                interp.buffer.goto_char(start);
-                if raise_error {
-                    Err(LispError::Signal("No file on this line".into()))
-                } else {
-                    Ok(Value::Nil)
-                }
-            }
-            #[dispatch(builtin_override)]
-            "dired-restore-positions" => {
-                need_args(name, args, 1)?;
-                let positions = args[0].to_vec()?;
-                let buffer_position = positions
-                    .first()
-                    .map(Value::to_vec)
-                    .transpose()?
-                    .unwrap_or_default();
-                let saved_file = buffer_position.get(1).cloned().unwrap_or(Value::Nil);
-                let saved_line = buffer_position
-                    .get(2)
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(1)
-                    .max(1) as isize;
-                let moved_to_file = if saved_file.is_truthy() {
-                    call_named_function(interp, "dired-goto-file", &[saved_file], env)?.is_truthy()
-                } else {
-                    false
-                };
-                if !moved_to_file {
-                    interp.buffer.goto_char(interp.buffer.point_min());
-                    interp.buffer.forward_line(saved_line - 1);
-                    let _ = call_named_function(interp, "dired-move-to-filename", &[], env)?;
-                }
-                Ok(Value::Nil)
-            }
             "remove-list-of-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -4009,51 +2357,11 @@ define_dispatch!(
                 Ok(Value::T)
             }
             "add-face-text-property" => add_face_text_property(interp, name, args),
-            "font-lock-append-text-property" => {
-                font_lock_add_text_property(interp, name, args, true)
-            }
-            "font-lock-prepend-text-property" => {
-                font_lock_add_text_property(interp, name, args, false)
-            }
-            "font-lock--remove-face-from-text-property" => {
-                need_arg_range(name, args, 4, 5)?;
-                let prop = args[2].as_symbol()?.to_string();
-                let face = args[3].clone();
-                if let Some(object) = args.get(4)
-                    && string_like(object).is_some()
-                {
-                    let start = args[0].as_integer()?.max(0) as usize;
-                    let end = args[1].as_integer()?.max(0) as usize;
-                    modify_shared_string_properties(object, start, end, |mut current| {
-                        if let Some(index) = current.iter().position(|(key, _)| key == &prop) {
-                            let updated = remove_face_value(current[index].1.clone(), &face);
-                            if updated.is_nil() {
-                                current.remove(index);
-                            } else {
-                                current[index].1 = updated;
-                            }
-                        }
-                        current
-                    })?;
-                    return Ok(Value::Nil);
-                }
-
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                let buffer_id = font_lock_target_buffer_id(interp, args.get(4))?;
-                let mut cursor = start;
-                while cursor < end {
-                    let (previous, next) =
-                        font_lock_buffer_segment(interp, buffer_id, cursor, end, &prop)?;
-                    let updated = remove_face_value(previous, &face);
-                    font_lock_put_buffer_property(interp, buffer_id, cursor, next, &prop, updated)?;
-                    cursor = next;
-                }
-                Ok(Value::Nil)
-            }
-            "put" | "define-symbol-prop" | "function-put" => {
+            "put" => {
                 need_args(name, args, 3)?;
-                let symbol = args[0].as_symbol()?;
+                // GNU 30.2 fns.c:Fput shares `get's CHECK_SYMBOL/XSYMBOL
+                // treatment of source-positioned symbols.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
                 let property = args[1].as_symbol()?;
                 // GNU Elisp owns `ert-set-test' and `define-symbol-prop',
                 // including duplicate-definition policy and load-history
@@ -4061,97 +2369,14 @@ define_dispatch!(
                 // Emaxx's native runner index only when it is an actual ERT
                 // record; ordinary user properties remain ordinary `put'.
                 if property == "ert--test" && matches!(&args[2], Value::Record(_)) {
-                    return interp.ert_set_test(symbol, &args[2]);
+                    return interp.ert_set_test(&symbol, &args[2]);
                 }
-                // Loaded cl-preloaded.el expands
-                // `(setf (cl--find-class NAME) RECORD)' to this public plist
-                // write.  Register the class identity at that producer boundary
-                // so native generic dispatch can enumerate Lisp-created classes;
-                // ancestry itself still comes from the subsequently completed
-                // Lisp record.
-                if name == "put" && property == "cl--class" && matches!(args[2], Value::Record(_)) {
-                    interp.set_class_record(symbol, args[2].clone())?;
-                } else {
-                    interp.put_symbol_property(symbol, property, args[2].clone());
-                }
+                interp.put_symbol_property(&symbol, property, args[2].clone());
                 Ok(args[2].clone())
             }
         }
     }
 );
-
-fn symbol_name_or_string(value: &Value) -> Result<String, LispError> {
-    if let Ok(symbol) = value.as_symbol() {
-        Ok(symbol.to_string())
-    } else {
-        string_text(value)
-    }
-}
-
-fn simple_c_family_indent_line(interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
-    let major_mode = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
-    let mode = major_mode.as_symbol().unwrap_or("");
-    if !matches!(mode, "c-mode" | "c++-mode" | "java-mode" | "plainer-c-mode") {
-        return Ok(false);
-    }
-
-    let saved = interp.buffer.point();
-    interp.buffer.beginning_of_line();
-    let line_start = interp.buffer.point();
-    let mut content_start = line_start;
-    while matches!(interp.buffer.char_at(content_start), Some(' ' | '\t')) {
-        content_start += 1;
-    }
-    interp.buffer.goto_char(line_start);
-    let line_end = interp.buffer.end_of_line();
-    interp.buffer.goto_char(saved);
-
-    let prefix = interp
-        .buffer
-        .buffer_substring(interp.buffer.point_min(), line_start)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let line = interp
-        .buffer
-        .buffer_substring(content_start.min(line_end), line_end)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let offset = interp
-        .lookup_var("c-basic-offset", env)
-        .and_then(|value| value.as_integer().ok())
-        .unwrap_or(2)
-        .max(0) as usize;
-    let mut depth = 0usize;
-    for ch in prefix.chars() {
-        match ch {
-            '{' => depth += 1,
-            '}' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    let target_depth = if line.trim_start().starts_with('}') {
-        depth.saturating_sub(1)
-    } else {
-        depth
-    };
-    let indent = " ".repeat(target_depth * offset);
-    // Adjust the leading whitespace through the ordinary edit primitives so
-    // markers around the line stay valid (srecode's inserters keep point
-    // markers across `indent-according-to-mode').
-    if content_start > line_start {
-        ensure_region_modifiable(interp, line_start, content_start, env)?;
-        delete_region_with_hooks(interp, line_start, content_start, env)?;
-    }
-    interp.buffer.goto_char(line_start);
-    insert_text_with_hooks(interp, &indent, &[], false, false, env)?;
-    let restored = if saved <= content_start {
-        line_start + indent.len()
-    } else {
-        saved + indent.len().saturating_sub(content_start - line_start)
-    };
-    interp
-        .buffer
-        .goto_char(restored.clamp(interp.buffer.point_min(), interp.buffer.point_max()));
-    Ok(true)
-}
 
 fn buffer_has_field_property(interp: &Interpreter) -> bool {
     interp.buffer.has_text_property_named("field")

@@ -319,11 +319,8 @@ impl Interpreter {
                 [Value::Integer(grammar.abi_version() as i64)],
             )
         })?;
-        let value = self.create_pseudovector(
-            RecordKind::TreeSitterParser,
-            "tree-sitter-parser",
-            Vec::new(),
-        );
+        let value =
+            self.create_pseudovector(RecordKind::TreeSitterParser, "treesit-parser", Vec::new());
         let Value::Record(record_id) = value else {
             unreachable!("Tree-sitter parsers use opaque record identities");
         };
@@ -459,8 +456,7 @@ impl Interpreter {
     }
 
     fn create_treesit_node(&mut self, parser_id: u64, node_id: usize, generation: u64) -> Value {
-        let node =
-            self.create_pseudovector(RecordKind::TreeSitterNode, "tree-sitter-node", Vec::new());
+        let node = self.create_pseudovector(RecordKind::TreeSitterNode, "treesit-node", Vec::new());
         let Value::Record(record_id) = node else {
             unreachable!("Tree-sitter nodes use opaque record identities");
         };

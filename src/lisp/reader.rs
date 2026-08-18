@@ -1,90 +1,38 @@
 use super::types::{
-    LispError, SharedStringState, StringPropertySpan, Value, make_uninterned_symbol_name,
+    LispError, ReaderClosureKind, ReaderForm, SharedStringState, StringPropertySpan, Value,
+    make_uninterned_symbol_name,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::{
     cell::RefCell,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     rc::Rc,
 };
 use unicode_names2::character as unicode_character;
 
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
-const CIRCULAR_READ_SYNTAX_SYMBOL: &str = "emaxx--circular-read-syntax";
-const HASH_TABLE_LITERAL_SYMBOL: &str = "emaxx--hash-table-literal";
-pub(crate) const CHAR_TABLE_LITERAL_SYMBOL: &str = "emaxx--char-table-literal";
-pub(crate) const SUB_CHAR_TABLE_LITERAL_SYMBOL: &str = "emaxx--sub-char-table-literal";
-pub(crate) const RECORD_LITERAL_SYMBOL: &str = "emaxx--record-literal";
-pub(crate) const CLOSURE_LITERAL_SYMBOL: &str = "emaxx--closure-literal";
 const BOOL_VECTOR_LITERAL_SYMBOL: &str = "bool-vector-literal";
 static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-fn structure_slot_eval_form(value: Value) -> Value {
-    match value {
-        Value::Nil
-        | Value::T
-        | Value::Integer(_)
-        | Value::BigInteger(_)
-        | Value::Float(_)
-        | Value::String(_)
-        | Value::StringObject(_)
-        | Value::Buffer(_)
-        | Value::Marker(_)
-        | Value::Overlay(_)
-        | Value::CharTable(_)
-        | Value::Frame(_)
-        | Value::Terminal(_)
-        | Value::Record(_)
-        | Value::Finalizer(_)
-        | Value::BuiltinFunc(_)
-        | Value::Lambda(_)
-        | Value::Unbound => value,
-        Value::Symbol(symbol) => Value::list([Value::symbol("quote"), Value::Symbol(symbol)]),
-        Value::Cons(_) => {
-            if let Ok(items) = value.to_vec()
-                && matches!(
-                    items.first(),
-                    Some(Value::Symbol(symbol))
-                        if symbol == "vector-literal"
-                            || symbol == BOOL_VECTOR_LITERAL_SYMBOL
-                            || symbol == CHAR_TABLE_LITERAL_SYMBOL
-                            || symbol == SUB_CHAR_TABLE_LITERAL_SYMBOL
-                            || symbol == RECORD_LITERAL_SYMBOL
-                            || symbol == CLOSURE_LITERAL_SYMBOL
-                            || symbol == "quote"
-                )
-            {
-                value
-            } else {
-                Value::list([Value::symbol("quote"), value])
-            }
-        }
-    }
-}
-
 fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
-    let items = value.to_vec().ok()?;
-    match items.as_slice() {
-        [Value::Symbol(symbol), Value::Integer(id), payload]
-            if symbol == CIRCULAR_READ_SYNTAX_SYMBOL && *id >= 0 =>
-        {
-            Some((*id as u32, payload.clone()))
-        }
+    match value {
+        Value::ReaderForm(form) => match form.as_ref() {
+            ReaderForm::CircularLabel { id, payload } => Some((*id, payload.clone())),
+            _ => None,
+        },
         _ => None,
     }
 }
 
 fn circular_read_ref_form(value: &Value) -> Option<u32> {
-    let items = value.to_vec().ok()?;
-    match items.as_slice() {
-        [Value::Symbol(symbol), Value::Integer(id)]
-            if symbol == CIRCULAR_READ_SYNTAX_SYMBOL && *id >= 0 =>
-        {
-            Some(*id as u32)
-        }
+    match value {
+        Value::ReaderForm(form) => match form.as_ref() {
+            ReaderForm::CircularReference(id) => Some(*id),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -111,27 +59,53 @@ fn nonsensical_circular_self_reference() -> LispError {
 }
 
 pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
-    if circular_read_ref_form(value).is_some() || circular_read_label_form(value).is_some() {
-        return true;
+    let mut pending = vec![value.clone()];
+    let mut seen_cons = HashSet::new();
+    while let Some(value) = pending.pop() {
+        if circular_read_ref_form(&value).is_some() || circular_read_label_form(&value).is_some() {
+            return true;
+        }
+        match value {
+            Value::Cons(_) => {
+                let Some((car, cdr)) = value.cons_cells() else {
+                    continue;
+                };
+                if seen_cons.insert(car.cell_id()) {
+                    pending.push(cdr.borrow().clone());
+                    pending.push(car.borrow().clone());
+                }
+            }
+            Value::ReaderForm(form) => match form.as_ref() {
+                ReaderForm::HashTable { fields }
+                | ReaderForm::CharTable { fields }
+                | ReaderForm::SubCharTable { fields } => {
+                    pending.extend(fields.iter().cloned());
+                }
+                ReaderForm::Record { slots } | ReaderForm::Closure { slots, .. } => {
+                    pending.extend(slots.iter().cloned());
+                }
+                ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
+                    return true;
+                }
+            },
+            _ => {}
+        }
     }
-    match value {
-        Value::Cons(_) => value.cons_values().is_some_and(|(car, cdr)| {
-            contains_circular_read_syntax(&car) || contains_circular_read_syntax(&cdr)
-        }),
-        _ => false,
-    }
+    false
 }
 
 fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
     let items = value.to_vec().ok()?;
     match items.as_slice() {
-        [Value::Symbol(symbol), literal] if symbol == "quote" => {
-            let literal_items = literal.to_vec().ok()?;
-            matches!(
-                literal_items.first(),
-                Some(Value::Symbol(symbol)) if symbol == HASH_TABLE_LITERAL_SYMBOL
-            )
-            .then_some(literal.clone())
+        [Value::Symbol(symbol), literal]
+            if symbol == "quote"
+                && matches!(
+                    literal,
+                    Value::ReaderForm(form)
+                        if matches!(form.as_ref(), ReaderForm::HashTable { .. })
+                ) =>
+        {
+            Some(literal.clone())
         }
         _ => None,
     }
@@ -196,25 +170,26 @@ fn resolve_circular_read_syntax_inner(
     }
 
     if let Some((id, template)) = circular_read_label_form(value) {
-        if labels.contains_key(&id) {
-            return Err(invalid_circular_read_syntax());
-        }
         if circular_read_ref_form(&template) == Some(id) {
             return Err(nonsensical_circular_self_reference());
         }
 
-        let placeholder = if let Ok(items) = template.to_vec() {
-            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal") {
-                circular_vector_skeleton(items.len().saturating_sub(1))
-            } else {
-                Value::cons(Value::Nil, Value::Nil)
-            }
+        let placeholder = if let Ok(items) = template.to_vec()
+            && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
+        {
+            circular_vector_skeleton(items.len().saturating_sub(1))
+        } else if matches!(template, Value::Cons(_)) {
+            Value::cons(Value::Nil, Value::Nil)
         } else {
             let resolved = resolve_circular_read_syntax_inner(&template, labels)?;
             labels.insert(id, resolved.clone());
             return Ok(resolved);
         };
 
+        // GNU lread.c deliberately replaces an existing #N= mapping.  Label
+        // numbers can therefore be reused for separate circular subobjects
+        // inside one top-level form; later #N# references bind to the newest
+        // definition without changing already materialized cycles.
         labels.insert(id, placeholder.clone());
         fill_circular_label_value(&template, &placeholder, labels)?;
         return Ok(placeholder);
@@ -265,6 +240,36 @@ fn resolve_circular_read_syntax_inner(
             state.borrow_mut().props = resolved_spans;
             Ok(value.clone())
         }
+        Value::ReaderForm(form) => {
+            let resolve_fields = |fields: &[Value], labels: &mut HashMap<u32, Value>| {
+                fields
+                    .iter()
+                    .map(|field| resolve_circular_read_syntax_inner(field, labels))
+                    .collect::<Result<Vec<_>, _>>()
+            };
+            let resolved = match form.as_ref() {
+                ReaderForm::HashTable { fields } => ReaderForm::HashTable {
+                    fields: resolve_fields(fields, labels)?,
+                },
+                ReaderForm::CharTable { fields } => ReaderForm::CharTable {
+                    fields: resolve_fields(fields, labels)?,
+                },
+                ReaderForm::SubCharTable { fields } => ReaderForm::SubCharTable {
+                    fields: resolve_fields(fields, labels)?,
+                },
+                ReaderForm::Record { slots } => ReaderForm::Record {
+                    slots: resolve_fields(slots, labels)?,
+                },
+                ReaderForm::Closure { kind, slots } => ReaderForm::Closure {
+                    kind: *kind,
+                    slots: resolve_fields(slots, labels)?,
+                },
+                ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
+                    unreachable!("circular reader forms are handled before structural descent")
+                }
+            };
+            Ok(Value::ReaderForm(Rc::new(resolved)))
+        }
         _ => Ok(value.clone()),
     }
 }
@@ -282,24 +287,13 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
     let mut stack = vec![value.clone()];
     while let Some(current) = stack.pop() {
         match &current {
+            Value::ReaderForm(_) => return true,
             Value::Cons(cons_cell) => {
                 let car_cell = &cons_cell.car;
                 let cdr_cell = &cons_cell.cdr;
                 let ptr = crate::lisp::types::ConsCell::identity(cons_cell);
                 if !seen.insert(ptr) {
                     continue;
-                }
-                {
-                    let car = car_cell.borrow();
-                    if let Value::Symbol(symbol) = &*car
-                        && (symbol == CIRCULAR_READ_SYNTAX_SYMBOL
-                            || symbol == HASH_TABLE_LITERAL_SYMBOL
-                            || symbol == CHAR_TABLE_LITERAL_SYMBOL
-                            || symbol == RECORD_LITERAL_SYMBOL
-                            || symbol == CLOSURE_LITERAL_SYMBOL)
-                    {
-                        return true;
-                    }
                 }
                 stack.push(car_cell.borrow().clone());
                 stack.push(cdr_cell.borrow().clone());
@@ -329,6 +323,30 @@ fn raw_byte_from_source_char(ch: char) -> Option<u8> {
     } else {
         None
     }
+}
+
+pub(crate) fn apply_symbol_shorthands_to_token(
+    token: String,
+    symbol_shorthands: &[(String, String)],
+) -> String {
+    // GNU deliberately preserves the traditional punctuation-only core
+    // symbols even when one of their characters is configured as a
+    // shorthand prefix.  For example, a `-` shorthand may expand `-foo`,
+    // but must not rename `/=` or `---`.
+    if token.bytes().all(|byte| {
+        matches!(
+            byte,
+            b'^' | b'*' | b'+' | b'-' | b'/' | b'<' | b'=' | b'>' | b'_' | b'|'
+        )
+    }) {
+        return token;
+    }
+    for (short, long) in symbol_shorthands {
+        if let Some(rest) = token.strip_prefix(short) {
+            return format!("{long}{rest}");
+        }
+    }
+    token
 }
 
 /// A simple s-expression reader. Handles the subset of Elisp syntax
@@ -477,24 +495,7 @@ impl<'a> Reader<'a> {
     }
 
     fn apply_symbol_shorthands(&self, token: String) -> String {
-        // GNU deliberately preserves the traditional punctuation-only core
-        // symbols even when one of their characters is configured as a
-        // shorthand prefix.  For example, a `-` shorthand may expand
-        // `-foo`, but must not rename `/=` or `---`.
-        if token.bytes().all(|byte| {
-            matches!(
-                byte,
-                b'^' | b'*' | b'+' | b'-' | b'/' | b'<' | b'=' | b'>' | b'_' | b'|'
-            )
-        }) {
-            return token;
-        }
-        for (short, long) in &self.symbol_shorthands {
-            if let Some(rest) = token.strip_prefix(short) {
-                return format!("{long}{rest}");
-            }
-        }
-        token
+        apply_symbol_shorthands_to_token(token, &self.symbol_shorthands)
     }
 
     fn read_list(&mut self) -> Result<Option<Value>, LispError> {
@@ -587,6 +588,7 @@ impl<'a> Reader<'a> {
     fn read_string(&mut self) -> Result<Option<Value>, LispError> {
         self.advance(); // consume opening '"'
         let mut s = String::new();
+        let mut extended_chars = Vec::new();
         let mut has_explicit_multibyte = false;
         let mut has_raw_bytes = false;
         let mut has_invalid_unicode = false;
@@ -606,6 +608,7 @@ impl<'a> Reader<'a> {
                             text: s,
                             props: Vec::new(),
                             multibyte: has_explicit_multibyte || has_invalid_unicode,
+                            extended_chars,
                         },
                     )))));
                 }
@@ -624,6 +627,7 @@ impl<'a> Reader<'a> {
                             &mut has_explicit_multibyte,
                             &mut has_raw_bytes,
                             &mut has_invalid_unicode,
+                            &mut extended_chars,
                         );
                         continue;
                     }
@@ -665,6 +669,7 @@ impl<'a> Reader<'a> {
                                 s.push(c);
                             } else {
                                 has_invalid_unicode = true;
+                                extended_chars.push((s.chars().count(), code));
                                 s.push(INVALID_UNICODE_SENTINEL);
                             }
                         }
@@ -688,6 +693,7 @@ impl<'a> Reader<'a> {
                                 s.push(c);
                             } else {
                                 has_invalid_unicode = true;
+                                extended_chars.push((s.chars().count(), hex));
                                 s.push(INVALID_UNICODE_SENTINEL);
                             }
                         }
@@ -702,6 +708,7 @@ impl<'a> Reader<'a> {
                                 s.push(c);
                             } else {
                                 has_invalid_unicode = true;
+                                extended_chars.push((s.chars().count(), hex));
                                 s.push(INVALID_UNICODE_SENTINEL);
                             }
                         }
@@ -716,6 +723,7 @@ impl<'a> Reader<'a> {
                                 s.push(c);
                             } else {
                                 has_invalid_unicode = true;
+                                extended_chars.push((s.chars().count(), hex));
                                 s.push(INVALID_UNICODE_SENTINEL);
                             }
                         }
@@ -730,6 +738,7 @@ impl<'a> Reader<'a> {
                                     s.push(c);
                                 } else {
                                     has_invalid_unicode = true;
+                                    extended_chars.push((s.chars().count(), code));
                                     s.push(INVALID_UNICODE_SENTINEL);
                                 }
                             } else {
@@ -805,6 +814,7 @@ impl<'a> Reader<'a> {
         has_explicit_multibyte: &mut bool,
         has_raw_bytes: &mut bool,
         has_invalid_unicode: &mut bool,
+        extended_chars: &mut Vec<(usize, u32)>,
     ) {
         if code <= 0x7F {
             s.push(char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER));
@@ -817,6 +827,7 @@ impl<'a> Reader<'a> {
             s.push(c);
         } else {
             *has_invalid_unicode = true;
+            extended_chars.push((s.chars().count(), code));
             s.push(INVALID_UNICODE_SENTINEL);
         }
     }
@@ -1273,17 +1284,17 @@ impl<'a> Reader<'a> {
             }
             Some(b'^') => {
                 self.advance();
-                let marker = if self.peek() == Some(b'^') {
+                let sub_table = if self.peek() == Some(b'^') {
                     self.advance();
-                    SUB_CHAR_TABLE_LITERAL_SYMBOL
+                    true
                 } else {
-                    CHAR_TABLE_LITERAL_SYMBOL
+                    false
                 };
                 if self.peek() != Some(b'[') {
                     return Err(LispError::ReadError("invalid-read-syntax".into()));
                 }
                 let fields = self.read_bracketed_fields()?;
-                if marker == CHAR_TABLE_LITERAL_SYMBOL {
+                if !sub_table {
                     if fields.len() < 68 {
                         return Err(LispError::ReadError("invalid size char-table".into()));
                     }
@@ -1305,9 +1316,11 @@ impl<'a> Reader<'a> {
                         ));
                     }
                 }
-                Ok(Some(Value::list(
-                    std::iter::once(Value::symbol(marker)).chain(fields),
-                )))
+                Ok(Some(Value::ReaderForm(Rc::new(if sub_table {
+                    ReaderForm::SubCharTable { fields }
+                } else {
+                    ReaderForm::CharTable { fields }
+                }))))
             }
             Some(b'[') => {
                 self.advance();
@@ -1345,17 +1358,14 @@ impl<'a> Reader<'a> {
                         "invalid byte-code object syntax".into(),
                     ));
                 }
-                Ok(Some(Value::list(
-                    std::iter::once(Value::symbol(CLOSURE_LITERAL_SYMBOL))
-                        .chain(std::iter::once(structure_slot_eval_form(Value::symbol(
-                            if interpreted {
-                                "interpreted-function"
-                            } else {
-                                "byte-code-function"
-                            },
-                        ))))
-                        .chain(fields.into_iter().map(structure_slot_eval_form)),
-                )))
+                Ok(Some(Value::ReaderForm(Rc::new(ReaderForm::Closure {
+                    kind: if interpreted {
+                        ReaderClosureKind::Interpreted
+                    } else {
+                        ReaderClosureKind::ByteCode
+                    },
+                    slots: fields,
+                }))))
             }
             Some(b'&') => {
                 self.advance();
@@ -1452,18 +1462,18 @@ impl<'a> Reader<'a> {
                     Some(b'=') => {
                         self.advance();
                         let value = self.read()?.ok_or(LispError::EndOfInput)?;
-                        return Ok(Some(Value::list([
-                            Value::symbol(CIRCULAR_READ_SYNTAX_SYMBOL),
-                            Value::Integer(base as i64),
-                            value,
-                        ])));
+                        return Ok(Some(Value::ReaderForm(Rc::new(
+                            ReaderForm::CircularLabel {
+                                id: base,
+                                payload: value,
+                            },
+                        ))));
                     }
                     Some(b'#') => {
                         self.advance();
-                        return Ok(Some(Value::list([
-                            Value::symbol(CIRCULAR_READ_SYNTAX_SYMBOL),
-                            Value::Integer(base as i64),
-                        ])));
+                        return Ok(Some(Value::ReaderForm(Rc::new(
+                            ReaderForm::CircularReference(base),
+                        ))));
                     }
                     _ => {
                         return Err(LispError::ReadError(
@@ -1584,16 +1594,14 @@ impl<'a> Reader<'a> {
                     }
                 }
                 if matches!(&kind, Value::Symbol(kind_name) if kind_name == "hash-table") {
-                    let literal = Value::list(
-                        std::iter::once(Value::symbol(HASH_TABLE_LITERAL_SYMBOL)).chain(fields),
-                    );
-                    Ok(Some(Value::list([Value::symbol("quote"), literal])))
+                    Ok(Some(Value::ReaderForm(Rc::new(ReaderForm::HashTable {
+                        fields,
+                    }))))
                 } else {
-                    Ok(Some(Value::list(
-                        std::iter::once(Value::symbol(RECORD_LITERAL_SYMBOL))
-                            .chain(std::iter::once(structure_slot_eval_form(kind)))
-                            .chain(fields.into_iter().map(structure_slot_eval_form)),
-                    )))
+                    let slots = std::iter::once(kind).chain(fields).collect();
+                    Ok(Some(Value::ReaderForm(Rc::new(ReaderForm::Record {
+                        slots,
+                    }))))
                 }
             }
             _ => {
@@ -1628,11 +1636,16 @@ impl<'a> Reader<'a> {
         let Some(first) = items.first() else {
             return Ok(None);
         };
-        let (text, mut props, multibyte) = match first {
-            Value::String(text) => (text.to_string(), Vec::new(), false),
+        let (text, mut props, multibyte, extended_chars) = match first {
+            Value::String(text) => (text.to_string(), Vec::new(), false, Vec::new()),
             Value::StringObject(state) => {
                 let state = state.borrow();
-                (state.text.clone(), state.props.clone(), state.multibyte)
+                (
+                    state.text.clone(),
+                    state.props.clone(),
+                    state.multibyte,
+                    state.extended_chars.clone(),
+                )
             }
             _ => return Ok(None),
         };
@@ -1665,6 +1678,7 @@ impl<'a> Reader<'a> {
                 text,
                 props,
                 multibyte,
+                extended_chars,
             },
         )))))
     }
@@ -2054,17 +2068,18 @@ mod tests {
     #[test]
     fn reads_three_field_interpreted_closure_syntax() {
         let value = read_one("#[(_tag &rest _) ('(t)) (dynamic-name t)]");
-        let items = value.to_vec().expect("closure reader form");
-        assert!(matches!(
-            items.as_slice(),
-            [Value::Symbol(marker), kind, ..]
-                if marker == CLOSURE_LITERAL_SYMBOL
-                    && kind.to_vec().ok().is_some_and(|quoted| matches!(
-                        quoted.as_slice(),
-                        [Value::Symbol(quote), Value::Symbol(name)]
-                            if quote == "quote" && name == "interpreted-function"
-                    ))
-        ));
+        let Value::ReaderForm(form) = value else {
+            panic!("closure syntax must remain typed until materialization");
+        };
+        let ReaderForm::Closure { kind, slots } = form.as_ref() else {
+            panic!("expected a closure reader form");
+        };
+        assert_eq!(*kind, ReaderClosureKind::Interpreted);
+        assert!(slots.first().is_some_and(|params| {
+            params.to_vec().ok().is_some_and(
+                |params| matches!(params.first(), Some(Value::Symbol(name)) if name == "_tag"),
+            )
+        }));
     }
 
     #[test]
@@ -2312,16 +2327,21 @@ mod tests {
         let literal = read_one(&format!(
             "#^[fallback nil purpose #^^[3 0 {ascii}] {roots}]"
         ));
-        let fields = literal.to_vec().expect("character-table marker");
-        assert_eq!(
-            fields.first(),
-            Some(&Value::Symbol(CHAR_TABLE_LITERAL_SYMBOL.into()))
-        );
-        assert_eq!(fields.len(), 1 + 68);
+        let Value::ReaderForm(form) = literal else {
+            panic!("character-table syntax must remain typed until materialization");
+        };
+        let ReaderForm::CharTable { fields } = form.as_ref() else {
+            panic!("expected a character-table reader form");
+        };
+        assert_eq!(fields.len(), 68);
         assert!(matches!(
-            fields[4].to_vec().ok().as_deref(),
-            Some([Value::Symbol(marker), Value::Integer(3), Value::Integer(0), ..])
-                if marker == SUB_CHAR_TABLE_LITERAL_SYMBOL
+            &fields[3],
+            Value::ReaderForm(form)
+                if matches!(
+                    form.as_ref(),
+                    ReaderForm::SubCharTable { fields }
+                        if matches!(fields.as_slice(), [Value::Integer(3), Value::Integer(0), ..])
+                )
         ));
 
         assert!(matches!(
@@ -2346,41 +2366,87 @@ mod tests {
     }
 
     #[test]
+    fn circular_label_numbers_can_be_reused_within_one_top_level_form() {
+        let parsed = read_one("(#1=(a #1#) #1=(b #1#))");
+        let resolved = resolve_circular_read_syntax(parsed).expect("resolve reused labels");
+        let objects = resolved.to_vec().expect("outer list");
+        assert_eq!(objects.len(), 2);
+
+        let object_ids = objects
+            .iter()
+            .map(|object| object.cons_cells().expect("circular list").0.cell_id())
+            .collect::<Vec<_>>();
+        assert_ne!(object_ids[0], object_ids[1]);
+
+        for (object, expected_head) in objects.iter().zip(["a", "b"]) {
+            let (head, tail) = object.cons_values().expect("circular list head");
+            assert!(matches!(head, Value::Symbol(symbol) if symbol == expected_head));
+            let (recursive, end) = tail.cons_values().expect("circular list tail");
+            assert_eq!(end, Value::Nil);
+            assert_eq!(
+                recursive
+                    .cons_cells()
+                    .expect("recursive reference")
+                    .0
+                    .cell_id(),
+                object.cons_cells().expect("circular list").0.cell_id()
+            );
+        }
+    }
+
+    #[test]
+    fn circular_syntax_scan_handles_already_materialized_cycles() {
+        let cycle = Value::list([Value::Integer(1)]);
+        let (_, cdr) = cycle.cons_cells().expect("one-element list");
+        *cdr.borrow_mut() = cycle.clone();
+
+        assert!(!contains_circular_read_syntax(&cycle));
+
+        let reference = Value::ReaderForm(Rc::new(ReaderForm::CircularReference(7)));
+        let containing_cycle = Value::list([cycle, reference]);
+        assert!(contains_circular_read_syntax(&containing_cycle));
+    }
+
+    #[test]
     fn reads_hash_table_structure_syntax_as_self_evaluating_literal() {
+        let Value::ReaderForm(form) = read_one("#s(hash-table test equal data (\"bla\" \"ble\"))")
+        else {
+            panic!("hash-table syntax must remain typed until materialization");
+        };
+        let ReaderForm::HashTable { fields } = form.as_ref() else {
+            panic!("expected a hash-table reader form");
+        };
         assert_eq!(
-            read_one("#s(hash-table test equal data (\"bla\" \"ble\"))"),
-            Value::list([
-                Value::Symbol("quote".into()),
-                Value::list([
-                    Value::Symbol(HASH_TABLE_LITERAL_SYMBOL.into()),
-                    Value::Symbol("test".into()),
-                    Value::Symbol("equal".into()),
-                    Value::Symbol("data".into()),
-                    Value::list([Value::String("bla".into()), Value::String("ble".into())]),
-                ]),
-            ])
+            fields,
+            &vec![
+                Value::Symbol("test".into()),
+                Value::Symbol("equal".into()),
+                Value::Symbol("data".into()),
+                Value::list([Value::String("bla".into()), Value::String("ble".into())]),
+            ]
         );
     }
 
     #[test]
     fn reads_record_structure_syntax_as_record_literal_form() {
-        assert_eq!(
-            read_one("#s(a b #s(c d) [e])"),
-            Value::list([
-                Value::Symbol(RECORD_LITERAL_SYMBOL.into()),
-                Value::list([Value::Symbol("quote".into()), Value::Symbol("a".into())]),
-                Value::list([Value::Symbol("quote".into()), Value::Symbol("b".into())]),
-                Value::list([
-                    Value::Symbol(RECORD_LITERAL_SYMBOL.into()),
-                    Value::list([Value::Symbol("quote".into()), Value::Symbol("c".into())]),
-                    Value::list([Value::Symbol("quote".into()), Value::Symbol("d".into())]),
-                ]),
-                Value::list([
-                    Value::Symbol("vector-literal".into()),
-                    Value::Symbol("e".into()),
-                ]),
-            ])
-        );
+        let Value::ReaderForm(form) = read_one("#s(a b #s(c d) [e])") else {
+            panic!("record syntax must remain typed until materialization");
+        };
+        let ReaderForm::Record { slots } = form.as_ref() else {
+            panic!("expected a record reader form");
+        };
+        assert!(matches!(
+            slots.as_slice(),
+            [Value::Symbol(kind), Value::Symbol(field), Value::ReaderForm(nested), vector]
+                if kind == "a"
+                    && field == "b"
+                    && matches!(nested.as_ref(), ReaderForm::Record { .. })
+                    && vector.to_vec().ok().is_some_and(|items| matches!(
+                        items.as_slice(),
+                        [Value::Symbol(name), Value::Symbol(item)]
+                            if name == "vector-literal" && item == "e"
+                    ))
+        ));
     }
 
     #[test]

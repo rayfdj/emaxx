@@ -17,77 +17,9 @@ define_dispatch!(
                     Value::Nil
                 })
             }
-            "not" => {
-                need_args(name, args, 1)?;
-                Ok(if args[0].is_nil() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "xor" => {
-                need_args(name, args, 2)?;
-                Ok(if args[0].is_truthy() ^ args[1].is_truthy() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
             "integerp" => {
                 need_args(name, args, 1)?;
                 Ok(if args[0].is_integer() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "cl-evenp" | "cl-oddp" => {
-                need_args(name, args, 1)?;
-                let value = integer_like_bigint(interp, &args[0])?;
-                let is_odd = !(&value % BigInt::from(2)).is_zero();
-                Ok(
-                    if (name == "cl-oddp" && is_odd) || (name == "cl-evenp" && !is_odd) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            "fixnump" => {
-                need_args(name, args, 1)?;
-                let (min_fixnum, max_fixnum) = fixnum_bounds(interp)?;
-                Ok(
-                    if integer_like_bigint(interp, &args[0])
-                        .ok()
-                        .is_some_and(|value| {
-                            value >= BigInt::from(min_fixnum) && value <= BigInt::from(max_fixnum)
-                        })
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            "bignump" => {
-                need_args(name, args, 1)?;
-                let (min_fixnum, max_fixnum) = fixnum_bounds(interp)?;
-                Ok(
-                    if integer_like_bigint(interp, &args[0])
-                        .ok()
-                        .is_some_and(|value| {
-                            value < BigInt::from(min_fixnum) || value > BigInt::from(max_fixnum)
-                        })
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            "booleanp" => {
-                need_args(name, args, 1)?;
-                Ok(if matches!(args[0], Value::Nil | Value::T) {
                     Value::T
                 } else {
                     Value::Nil
@@ -125,21 +57,6 @@ define_dispatch!(
                         Value::Nil
                     },
                 )
-            }
-            "eventp" => {
-                need_args(name, args, 1)?;
-                let truthy = match &args[0] {
-                    Value::Integer(_) => true,
-                    Value::Symbol(symbol_name) => {
-                        symbol_name != "nil" && !symbol_name.starts_with(':')
-                    }
-                    Value::T => true,
-                    Value::Cons(cell) => {
-                        matches!(&*cell.car.borrow(), Value::Symbol(_) | Value::T)
-                    }
-                    _ => false,
-                };
-                Ok(if truthy { Value::T } else { Value::Nil })
             }
             "arrayp" => {
                 need_args(name, args, 1)?;
@@ -296,28 +213,13 @@ define_dispatch!(
                     resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
                 let autoloaded_function = symbol.is_some()
                     && autoload_parts(&value).is_some_and(|(_, _, kind)| kind.is_nil());
-                Ok(
-                    if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
-                        || is_lambda_expression(&value)
-                        || record_type_name(interp, &value) == Some("byte-code-function")
-                        || autoloaded_function
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if callable_value_p(interp, &value) || autoloaded_function {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
-            "cl-struct-p" => {
-                need_args(name, args, 1)?;
-                super::call(
-                    interp,
-                    "cl-typep",
-                    &[args[0].clone(), Value::Symbol("cl-structure-object".into())],
-                    env,
-                )
-            }
-            "compiled-function-p" | "byte-code-function-p" => {
+            "byte-code-function-p" => {
                 need_args(name, args, 1)?;
                 Ok(
                     if record_type_name(interp, &args[0]) == Some("byte-code-function")
@@ -440,6 +342,7 @@ define_dispatch!(
                     | Value::Terminal(_)
                     | Value::Record(_)
                     | Value::Finalizer(_)
+                    | Value::ReaderForm(_)
                     | Value::Unbound => false,
                 };
                 Ok(if is_user_ptr { Value::T } else { Value::Nil })
@@ -477,55 +380,6 @@ define_dispatch!(
                     }
                     _ => Value::Nil,
                 })
-            }
-            "special-form-p" => {
-                need_args(name, args, 1)?;
-                // GNU's fixed C set (enumerated from the oracle).  emaxx's
-                // native-form list is far broader (native macros and commands)
-                // and must not leak here: nadvice refuses to advise special
-                // forms, and GNU's `when'/`call-interactively' are not ones.
-                let gnu_special = |name: &str| {
-                    matches!(
-                        name,
-                        "and"
-                            | "catch"
-                            | "cond"
-                            | "condition-case"
-                            | "defconst"
-                            | "defvar"
-                            | "function"
-                            | "if"
-                            | "inline"
-                            | "interactive"
-                            | "let"
-                            | "let*"
-                            | "or"
-                            | "prog1"
-                            | "progn"
-                            | "quote"
-                            | "save-current-buffer"
-                            | "save-excursion"
-                            | "save-restriction"
-                            | "setq"
-                            | "unwind-protect"
-                            | "while"
-                    )
-                };
-                Ok(match &args[0] {
-                    Value::BuiltinFunc(name) if gnu_special(name) => Value::T,
-                    Value::Symbol(name) if gnu_special(name) => Value::T,
-                    _ => Value::Nil,
-                })
-            }
-            "oddp" => {
-                need_args(name, args, 1)?;
-                Ok(
-                    if (&integer_like_bigint(interp, &args[0])? & BigInt::from(1u8)).is_zero() {
-                        Value::Nil
-                    } else {
-                        Value::T
-                    },
-                )
             }
             "keymapp" => {
                 need_args(name, args, 1)?;
@@ -579,11 +433,12 @@ define_dispatch!(
             }
             "boundp" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
+                // GNU 30.2 data.c:Fboundp uses CHECK_SYMBOL/XSYMBOL.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
                 Ok(
-                    if interp.symbol_value_cell(symbol).is_ok()
+                    if interp.symbol_value_cell(&symbol).is_ok()
                         || matches!(
-                            symbol,
+                            symbol.as_str(),
                             "nil" | "t" | "most-positive-fixnum" | "most-negative-fixnum"
                         )
                         || symbol == "buffer-undo-list"
@@ -610,8 +465,10 @@ define_dispatch!(
             }
             "default-boundp" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
-                Ok(if interp.is_default_bound(symbol) {
+                // GNU 30.2 data.c:Fdefault_boundp delegates to
+                // default_value, whose first operation is CHECK_SYMBOL.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                Ok(if interp.is_default_bound(&symbol) {
                     Value::T
                 } else {
                     Value::Nil
@@ -619,14 +476,16 @@ define_dispatch!(
             }
             "special-variable-p" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
+                // GNU 30.2 eval.c:Fspecial_variable_p uses
+                // CHECK_SYMBOL/XSYMBOL.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
                 // GNU: the self-evaluating constants t/nil/keywords are declared
                 // special (erc-button-setup's alist FORM check relies on
                 // (special-variable-p t) being non-nil).
                 Ok(
-                    if matches!(symbol, "t" | "nil")
+                    if matches!(symbol.as_str(), "t" | "nil")
                         || symbol.starts_with(':')
-                        || interp.is_special_variable(symbol)
+                        || interp.is_special_variable(&symbol)
                     {
                         Value::T
                     } else {
@@ -704,11 +563,14 @@ define_dispatch!(
             }
             "fboundp" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
+                // GNU 30.2 data.c:Ffboundp uses CHECK_SYMBOL/XSYMBOL, so a
+                // positioned symbol denotes its bare symbol exactly while
+                // the dynamic reader switch is enabled.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
                 Ok(
-                    if is_builtin(symbol)
-                        || interp.lookup_function(symbol, env).is_ok()
-                        || is_special_form_name(symbol)
+                    if is_builtin(&symbol)
+                        || interp.lookup_function(&symbol, env).is_ok()
+                        || is_special_form_name(&symbol)
                     {
                         Value::T
                     } else {
@@ -716,95 +578,11 @@ define_dispatch!(
                     },
                 )
             }
-            "facep" => {
-                need_args(name, args, 1)?;
-                let face = match &args[0] {
-                    Value::Symbol(symbol) => symbol.to_string(),
-                    Value::String(_) | Value::StringObject(_) => string_text(&args[0])?,
-                    _ => return Ok(Value::Nil),
-                };
-                Ok(if face_exists(interp, &face) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "face-equal" => {
-                if args.len() < 2 || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let left = match &args[0] {
-                    Value::Symbol(symbol) => symbol.to_string(),
-                    Value::String(_) | Value::StringObject(_) => string_text(&args[0])?,
-                    _ => return Ok(Value::Nil),
-                };
-                let right = match &args[1] {
-                    Value::Symbol(symbol) => symbol.to_string(),
-                    Value::String(_) | Value::StringObject(_) => string_text(&args[1])?,
-                    _ => return Ok(Value::Nil),
-                };
-                Ok(if left == right { Value::T } else { Value::Nil })
-            }
-            "face-differs-from-default-p" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let face = match &args[0] {
-                    Value::Symbol(symbol) => symbol.to_string(),
-                    Value::String(_) | Value::StringObject(_) => string_text(&args[0])?,
-                    _ => return Ok(Value::Nil),
-                };
-                Ok(if face != "default" && face_exists(interp, &face) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "face-list" => {
-                need_args(name, args, 0)?;
-                let mut faces = interp
-                    .lisp_face_names()
-                    .map(Value::symbol)
-                    .collect::<Vec<_>>();
-                faces.sort_by_key(|value| value.to_string());
-                Ok(Value::list(faces))
-            }
-            "face-valid-attribute-values" => {
-                need_arg_range(name, args, 1, 2)?;
-                Ok(face_valid_attribute_values(&args[0]))
-            }
-            "seq-some" => {
-                need_args(name, args, 2)?;
-                let predicate = args[0].clone();
-                for element in args[1].to_vec()? {
-                    let result = call_function_value(interp, &predicate, &[element], env)?;
-                    if result.is_truthy() {
-                        return Ok(result);
-                    }
-                }
-                Ok(Value::Nil)
-            }
-            "any" => {
-                need_args(name, args, 2)?;
-                let predicate = args[0].clone();
-                let items = args[1].to_vec()?;
-                for (index, element) in items.iter().enumerate() {
-                    let result = call_function_value(
-                        interp,
-                        &predicate,
-                        std::slice::from_ref(element),
-                        env,
-                    )?;
-                    if result.is_truthy() {
-                        return Ok(Value::list(items[index..].to_vec()));
-                    }
-                }
-                Ok(Value::Nil)
-            }
             "featurep" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
-                if !interp.has_feature(symbol) {
+                // GNU 30.2 fns.c:Ffeaturep uses CHECK_SYMBOL/XSYMBOL.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                if !interp.has_feature(&symbol) {
                     return Ok(Value::Nil);
                 }
                 // GNU: with SUBFEATURE, check (memq SUBFEATURE (get FEATURE
@@ -812,7 +590,7 @@ define_dispatch!(
                 // (:family local).
                 if let Some(subfeature) = args.get(1).filter(|value| value.is_truthy()) {
                     let subfeatures = interp
-                        .get_symbol_property(symbol, "subfeatures")
+                        .get_symbol_property(&symbol, "subfeatures")
                         .unwrap_or(Value::Nil);
                     let found = subfeatures.to_vec().unwrap_or_default().iter().any(|item| {
                         crate::lisp::primitives::values_equal(interp, item, subfeature)
@@ -825,41 +603,19 @@ define_dispatch!(
             "libxml-available-p" => Ok(Value::T),
             "consp" => {
                 need_args(name, args, 1)?;
-                // Vector and bool-vector literals ride on conses internally but
-                // are not conses to Lisp.
-                Ok(
-                    if (args[0].is_cons() && !is_vector_like_value(interp, &args[0]))
-                        || keymap_list_items(interp, &args[0])?.is_some()
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if is_cons_value(interp, &args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "listp" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if (args[0].is_list() && !is_vector_like_value(interp, &args[0]))
-                        || keymap_list_items(interp, &args[0])?.is_some()
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            #[dispatch(builtin_override)]
-            "cl-endp" => {
-                need_args(name, args, 1)?;
-                if is_vector_like_value(interp, &args[0]) {
-                    return Err(wrong_type_argument("listp", args[0].clone()));
-                }
-                match &args[0] {
-                    Value::Nil => Ok(Value::T),
-                    Value::Cons(_) => Ok(Value::Nil),
-                    other => Err(wrong_type_argument("listp", other.clone())),
-                }
+                Ok(if args[0].is_nil() || is_cons_value(interp, &args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "proper-list-p" => {
                 need_args(name, args, 1)?;
@@ -936,26 +692,20 @@ define_dispatch!(
                     .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))
                     .map(|buffer| buffer.name.starts_with(" *Minibuf"))
                     .unwrap_or(false);
-                let is_live = buffer_id.is_some_and(|buffer_id| {
-                    interp
-                        .lookup_var("emaxx--active-minibuffer", env)
-                        .and_then(|value| interp.resolve_buffer_id(&value).ok())
-                        == Some(buffer_id)
-                });
+                let is_live = buffer_id == interp.active_minibuffer_buffer_id();
                 let matches =
                     is_minibuffer && (!args.get(1).is_some_and(Value::is_truthy) || is_live);
                 Ok(if matches { Value::T } else { Value::Nil })
             }
             "minibuffer-depth" => {
                 need_args(name, args, 0)?;
-                Ok(interp
-                    .lookup_var("emaxx--minibuffer-depth", env)
-                    .unwrap_or(Value::Integer(0)))
+                Ok(Value::Integer(interp.minibuffer_depth() as i64))
             }
             "minibuffer-prompt" => {
                 need_args(name, args, 0)?;
                 Ok(interp
-                    .lookup_var("emaxx--minibuffer-prompt", env)
+                    .minibuffer_prompt_text()
+                    .map(|prompt| Value::String(prompt.into()))
                     .unwrap_or(Value::Nil))
             }
             "innermost-minibuffer-p" | "minibuffer-innermost-command-loop-p" => {
@@ -967,7 +717,8 @@ define_dispatch!(
                     Some(value) => value.clone(),
                 };
                 let active = interp
-                    .lookup_var("emaxx--active-minibuffer", env)
+                    .active_minibuffer_buffer_id()
+                    .and_then(|buffer_id| interp.buffer_identity_value(buffer_id))
                     .unwrap_or(Value::Nil);
                 let matches = if name == "minibuffer-innermost-command-loop-p" {
                     !active.is_nil() && values_equal(interp, &target, &active)
@@ -983,31 +734,12 @@ define_dispatch!(
             }
             "abort-minibuffers" => {
                 need_args(name, args, 0)?;
-                if interp
-                    .lookup_var("emaxx--active-minibuffer", env)
-                    .is_none_or(|value| value.is_nil())
-                {
+                if interp.active_minibuffer_buffer_id().is_none() {
                     return Err(LispError::Signal("Not in a minibuffer".into()));
                 }
                 Err(LispError::SignalValue(Value::list([Value::symbol(
                     "minibuffer-quit",
                 )])))
-            }
-
-            "zerop" => {
-                need_args(name, args, 1)?;
-                let is_zero = match &args[0] {
-                    Value::Integer(value) => *value == 0,
-                    Value::BigInteger(value) => value.is_zero(),
-                    Value::Float(value) => *value == 0.0,
-                    Value::Marker(id) => {
-                        interp.marker_position(*id).ok_or_else(|| {
-                            LispError::Signal("Marker does not point anywhere".into())
-                        })? == 0
-                    }
-                    other => return Err(wrong_type_argument("number-or-marker-p", other.clone())),
-                };
-                Ok(if is_zero { Value::T } else { Value::Nil })
             }
 
             "natnump" => {
@@ -1083,34 +815,3 @@ define_dispatch!(
         }
     }
 );
-
-fn face_valid_attribute_values(attribute: &Value) -> Value {
-    let Ok(attribute) = attribute.as_symbol() else {
-        return Value::Nil;
-    };
-    match attribute {
-        ":height" => Value::Symbol("integerp".into()),
-        ":inherit" => Value::cons(
-            Value::cons(Value::String("none".into()), Value::Nil),
-            Value::Nil,
-        ),
-        ":family" => Value::list([Value::cons(
-            Value::String("default".into()),
-            Value::String("default".into()),
-        )]),
-        ":foundry" => Value::list([Value::Nil]),
-        ":width" | ":weight" | ":slant" | ":inverse-video" | ":extend" | ":underline"
-        | ":overline" | ":strike-through" | ":box" | ":foreground" | ":background" => {
-            Value::list([
-                Value::cons(
-                    Value::String("unspecified".into()),
-                    Value::Symbol("unspecified".into()),
-                ),
-                Value::cons(Value::String("nil".into()), Value::Nil),
-                Value::cons(Value::String("t".into()), Value::T),
-            ])
-        }
-        ":stipple" => Value::Nil,
-        _ => Value::Nil,
-    }
-}

@@ -238,11 +238,22 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
         ));
     }
 
-    // Publish the terminal's color capability before the first redraw:
-    // defface specs re-realize against it (GNU's terminal-init path), and
-    // libraries loaded later define their faces under the same display.
+    // Publish the terminal's color capability before the first redraw, then
+    // recompute every face from its spec exactly as GNU's set_tty_color_mode
+    // does after tty_setup_colors: safe_calln (Qtty_set_up_initial_frame_faces)
+    // hands the work to faces.el against the new display.
     interpreter.set_tty_display_colors(terminal_color_cells());
-    let _ = interpreter.rerealize_defface_faces();
+    interpreter.set_tty_terminal_type(std::env::var("TERM").ok());
+    if let Ok(forms) = crate::lisp::reader::Reader::new(
+        // startup.el registers the standard tty palette before faces
+        // realize (command-line's tty-register-default-colors call).
+        "(progn (tty-register-default-colors) (tty-set-up-initial-frame-faces))",
+    )
+    .read_all()
+        && let Some(form) = forms.first()
+    {
+        let _ = interpreter.eval(form, &mut env);
+    }
 
     let guard = TerminalGuard::enter().map_err(|error| error.to_string())?;
     let queue = SharedEventQueue::default();
@@ -261,8 +272,8 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
             draw_echo_row(&state);
             match queue.try_next_event() {
                 Err(()) => None,
-                Ok(Some(event)) if is_raw_mouse_token(&event) => Some(None),
-                Ok(Some(event)) => Some(Some(event)),
+                Ok(Some(QueuedInput::Mouse(_))) => Some(None),
+                Ok(Some(QueuedInput::Lisp(event))) => Some(Some(event)),
                 Ok(None) => {
                     let _ = event::poll(std::time::Duration::from_millis(50));
                     Some(None)
@@ -330,8 +341,28 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
 /// command code that pulls events itself (`y-or-n-p', `read-event').  One
 /// queue means an event decoded for either consumer is never lost to the
 /// other, matching GNU's single keyboard buffer.
+/// keyboard.c's struct input_event analog: terminal input the command loop
+/// has not yet turned into a Lisp event.  Mouse input stays typed until the
+/// frame state needed to build GNU's click event is in reach — exactly the
+/// role of MOUSE_CLICK_EVENT entries in GNU's kbd_buffer — while key input
+/// is already the Lisp event GNU's tty reader would produce.
+#[derive(Clone)]
+enum QueuedInput {
+    Lisp(Value),
+    Mouse(RawMouseInput),
+}
+
+#[derive(Clone, Copy)]
+struct RawMouseInput {
+    button: i64,
+    modifiers: i64,
+    column: u16,
+    row: u16,
+    press: bool,
+}
+
 #[derive(Clone, Default)]
-struct SharedEventQueue(std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<Value>>>);
+struct SharedEventQueue(std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<QueuedInput>>>);
 
 impl SharedEventQueue {
     /// Whether an event can be delivered without blocking.  Redisplay is
@@ -345,7 +376,7 @@ impl SharedEventQueue {
 
     /// Pop an event without blocking: a queued one, or whatever the
     /// terminal has ready.  `Err' means the terminal is gone.
-    fn try_next_event(&self) -> Result<Option<Value>, ()> {
+    fn try_next_event(&self) -> Result<Option<QueuedInput>, ()> {
         if let Some(event) = self.0.borrow_mut().pop_front() {
             return Ok(Some(event));
         }
@@ -360,12 +391,14 @@ impl SharedEventQueue {
                         continue;
                     }
                     let first = events.remove(0);
-                    self.0.borrow_mut().extend(events);
-                    return Ok(Some(first));
+                    self.0
+                        .borrow_mut()
+                        .extend(events.into_iter().map(QueuedInput::Lisp));
+                    return Ok(Some(QueuedInput::Lisp(first)));
                 }
                 Event::Mouse(mouse) => {
-                    if let Some(event) = encode_mouse(mouse) {
-                        return Ok(Some(event));
+                    if let Some(raw) = encode_mouse(mouse) {
+                        return Ok(Some(QueuedInput::Mouse(raw)));
                     }
                 }
                 _ => {}
@@ -376,7 +409,7 @@ impl SharedEventQueue {
 
     /// Pop the next event, blocking on the terminal when empty.  Returns
     /// `None' only on terminal loss.
-    fn next_event(&self) -> Option<Value> {
+    fn next_event(&self) -> Option<QueuedInput> {
         if let Some(event) = self.0.borrow_mut().pop_front() {
             return Some(event);
         }
@@ -391,12 +424,14 @@ impl SharedEventQueue {
                         continue;
                     }
                     let first = events.remove(0);
-                    self.0.borrow_mut().extend(events);
-                    return Some(first);
+                    self.0
+                        .borrow_mut()
+                        .extend(events.into_iter().map(QueuedInput::Lisp));
+                    return Some(QueuedInput::Lisp(first));
                 }
                 Event::Mouse(mouse) => {
-                    if let Some(event) = encode_mouse(mouse) {
-                        return Some(event);
+                    if let Some(raw) = encode_mouse(mouse) {
+                        return Some(QueuedInput::Mouse(raw));
                     }
                 }
                 _ => {}
@@ -417,10 +452,9 @@ fn make_event_reader(
     Box::new(move || {
         draw_echo_row(&state);
         let event = loop {
-            let event = queue.next_event()?;
-            // Raw mouse tokens are command-loop currency; a blocking
-            // Lisp reader never sees them.
-            if !is_raw_mouse_token(&event) {
+            // Typed mouse input is command-loop currency; a blocking
+            // Lisp reader never sees it.
+            if let QueuedInput::Lisp(event) = queue.next_event()? {
                 break event;
             }
         };
@@ -548,7 +582,7 @@ fn command_loop(
             if let Some(event) =
                 crate::lisp::primitives::take_unread_command_event(interpreter, env)
             {
-                break event;
+                break QueuedInput::Lisp(event);
             }
             match queue.try_next_event() {
                 Err(()) => return Ok(0),
@@ -564,15 +598,14 @@ fn command_loop(
             }
             let _ = event::poll(std::time::Duration::from_millis(50));
         };
-        // A raw mouse token becomes GNU's click event now that the frame
+        // Typed mouse input becomes GNU's click event now that the frame
         // state is in reach; motion and wheel produce nothing.
-        let event = if is_raw_mouse_token(&event) {
-            match synthesize_mouse_event(interpreter, env, &event) {
+        let event = match event {
+            QueuedInput::Mouse(raw) => match synthesize_mouse_event(interpreter, env, raw) {
                 Some(event) => event,
                 None => continue,
-            }
-        } else {
-            event
+            },
+            QueuedInput::Lisp(event) => event,
         };
         // read_char wipes a lingering message the moment any input event
         // arrives — sequences and silently-discarded button-downs
@@ -727,7 +760,7 @@ fn command_error_text(interpreter: &mut Interpreter, env: &mut Env, error: &Lisp
 /// command loop turns it into GNU's click event shape once it can see
 /// the frame (term.c's GPM path builds tty mouse events at the same
 /// C layer).  The token never reaches Lisp.
-fn encode_mouse(mouse: event::MouseEvent) -> Option<Value> {
+fn encode_mouse(mouse: event::MouseEvent) -> Option<RawMouseInput> {
     use event::{MouseButton, MouseEventKind};
     let (press, button) = match mouse.kind {
         MouseEventKind::Down(button) => (true, button),
@@ -749,22 +782,16 @@ fn encode_mouse(mouse: event::MouseEvent) -> Option<Value> {
     if mouse.modifiers.contains(KeyModifiers::SHIFT) {
         modifier_bits |= 4;
     }
-    Some(Value::list([
-        Value::Symbol("emaxx--raw-mouse".into()),
-        Value::Integer(number),
-        Value::Integer(modifier_bits),
-        Value::Integer(mouse.column as i64),
-        Value::Integer(mouse.row as i64),
-        Value::Symbol(if press { "press" } else { "release" }.into()),
-    ]))
+    Some(RawMouseInput {
+        button: number,
+        modifiers: modifier_bits,
+        column: mouse.column,
+        row: mouse.row,
+        press,
+    })
 }
 
-/// Whether VALUE is the internal raw-mouse token.
-fn is_raw_mouse_token(value: &Value) -> bool {
-    matches!(value.car(), Ok(Value::Symbol(head)) if head == "emaxx--raw-mouse")
-}
-
-/// Build GNU's click event from a raw mouse token: (EVENT-SYMBOL POSN),
+/// Build GNU's click event from typed mouse input: (EVENT-SYMBOL POSN),
 /// posn being (FRAME menu-bar (X . Y) TIME) on the menu-bar row and
 /// (WINDOW POS (X . Y) TIME) with window-relative coordinates in a text
 /// area — the shapes xt-mouse.el and term.c's GPM support hand to the
@@ -775,14 +802,13 @@ fn is_raw_mouse_token(value: &Value) -> bool {
 fn synthesize_mouse_event(
     interpreter: &mut Interpreter,
     env: &mut Env,
-    raw: &Value,
+    raw: RawMouseInput,
 ) -> Option<Value> {
-    let fields = raw.to_vec().ok()?;
-    let button = fields.get(1)?.as_integer().ok()?;
-    let modifier_bits = fields.get(2)?.as_integer().ok()?;
-    let col = fields.get(3)?.as_integer().ok()?;
-    let row = fields.get(4)?.as_integer().ok()?;
-    let press = matches!(fields.get(5), Some(Value::Symbol(phase)) if phase == "press");
+    let button = raw.button;
+    let modifier_bits = raw.modifiers;
+    let col = raw.column as i64;
+    let row = raw.row as i64;
+    let press = raw.press;
     let mut name = String::new();
     if modifier_bits & 2 != 0 {
         name.push_str("M-");
@@ -1660,11 +1686,7 @@ fn compose_echo_row(
     let mut row = PaintRow::blank(cols);
     let minibuffer_id = if frontend_echo.is_empty() {
         interpreter
-            .lookup_var("emaxx--active-minibuffer", env)
-            .and_then(|value| match value {
-                Value::Buffer(buffer) => Some(buffer.id),
-                _ => None,
-            })
+            .active_minibuffer_buffer_id()
             .filter(|id| interpreter.has_buffer_id(*id))
     } else {
         None
@@ -2787,9 +2809,9 @@ fn make_menu_executor(
                     let Some(event) = event else {
                         break Value::T;
                     };
-                    if is_raw_mouse_token(&event) {
+                    let QueuedInput::Lisp(event) = event else {
                         continue;
-                    }
+                    };
                     if event == Value::Integer(7) {
                         break Value::T;
                     }

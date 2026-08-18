@@ -71,10 +71,11 @@ pub(crate) fn function_documentation(
     let Value::Lambda(lambda) = value else {
         return None;
     };
-    lambda.body.iter().find_map(|form| match form {
-        Value::String(text) => Some(Value::String(text.clone())),
-        Value::StringObject(state) => Some(Value::String(state.borrow().text.clone().into())),
-        _ => None,
+    lambda.documentation.clone().filter(|documentation| {
+        matches!(
+            documentation,
+            Value::String(_) | Value::StringObject(_) | Value::Integer(_) | Value::Cons(_)
+        )
     })
 }
 
@@ -90,6 +91,15 @@ pub(crate) fn is_vector_value(value: &Value) -> bool {
         Value::Cons(cell)
             if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal")
     )
+}
+
+/// Whether VALUE has GNU cons identity despite Emaxx's internal facade
+/// representations.  Vector literals use cons storage but are not Lisp
+/// conses; runtime keymaps use records but project the list identity GNU
+/// exposes.  Keep this decision shared by native predicates and VM opcodes.
+pub(crate) fn is_cons_value(interp: &Interpreter, value: &Value) -> bool {
+    (matches!(value, Value::Cons(_)) && !is_vector_value(value))
+        || keymap_record_id(interp, value).is_some()
 }
 
 pub(crate) fn fixnum_bounds(interp: &Interpreter) -> Result<(i64, i64), LispError> {
@@ -127,6 +137,28 @@ pub(crate) fn symbols_with_pos_enabled(interp: &Interpreter, env: &Env) -> bool 
     interp
         .lookup_var("symbols-with-pos-enabled", env)
         .is_some_and(|value| value.is_truthy())
+}
+
+/// GNU's `CHECK_SYMBOL' accepts a symbol-with-position while
+/// `symbols-with-pos-enabled' is dynamically non-nil, and `XSYMBOL' then
+/// addresses the underlying bare symbol (`src/lisp.h').  Keep that contract
+/// in one place so C-owned symbol primitives do not each invent a subtly
+/// different positioned-symbol policy.
+pub(crate) fn checked_symbol_name(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<String, LispError> {
+    if let Ok(symbol) = value.as_symbol() {
+        return Ok(symbol.to_string());
+    }
+    if symbols_with_pos_enabled(interp, env)
+        && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)
+        && let Ok(symbol) = symbol.as_symbol()
+    {
+        return Ok(symbol.to_string());
+    }
+    Err(LispError::TypeError("symbol".into(), value.type_name()))
 }
 
 #[cfg(test)]
@@ -213,70 +245,6 @@ pub(crate) fn is_lambda_value(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(
         |items| matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "lambda"),
     )
-}
-
-pub(crate) fn validate_lambda_params(params: &Value) -> Result<(), LispError> {
-    let items = params.to_vec()?;
-    validate_lambda_list_items(params, &items)
-}
-
-pub(crate) fn validate_lambda_form(form: &Value) -> Result<(), LispError> {
-    let items = form.to_vec()?;
-    let Some(params) = items.get(1) else {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("invalid-function".into()),
-            form.clone(),
-        ])));
-    };
-    validate_lambda_params(params)
-}
-
-pub(crate) fn validate_lambda_list_items(spec: &Value, items: &[Value]) -> Result<(), LispError> {
-    let invalid = || {
-        LispError::SignalValue(Value::list([
-            Value::Symbol("invalid-function".into()),
-            spec.clone(),
-        ]))
-    };
-    let mut seen_optional = false;
-    let mut seen_rest = false;
-    let mut needs_rest_arg = false;
-    let mut rest_arg_seen = false;
-
-    for item in items {
-        let Value::Symbol(symbol) = item else {
-            return Err(invalid());
-        };
-        match symbol.as_str() {
-            "&optional" => {
-                if seen_optional || seen_rest {
-                    return Err(invalid());
-                }
-                seen_optional = true;
-            }
-            "&rest" => {
-                if seen_rest {
-                    return Err(invalid());
-                }
-                seen_rest = true;
-                needs_rest_arg = true;
-            }
-            _ => {
-                if needs_rest_arg {
-                    needs_rest_arg = false;
-                    rest_arg_seen = true;
-                } else if rest_arg_seen {
-                    return Err(invalid());
-                }
-            }
-        }
-    }
-
-    if needs_rest_arg {
-        return Err(invalid());
-    }
-
-    Ok(())
 }
 
 pub(crate) fn eval_callable_metadata_form(
@@ -997,8 +965,18 @@ pub(crate) fn execute_command_binding(
         .is_some_and(|value| value.is_truthy())
         || (interp.current_buffer_id() == modified_before.0
             && interp.buffer.chars_modified_tick() != modified_before.1);
-    if deactivate && interp.buffer.mark_active() {
-        let _ = super::call(interp, "deactivate-mark", &[], env);
+    let mark_active = interp
+        .lookup_var("mark-active", env)
+        .is_some_and(|value| value.is_truthy());
+    if deactivate && mark_active {
+        // `deactivate-mark' is GNU simple.el's; keyboard.c reaches it as
+        // an ordinary Lisp call (call0), never through native dispatch.
+        let _ = interp.call_function_value(
+            Value::Symbol("deactivate-mark".into()),
+            Some("deactivate-mark"),
+            &[],
+            env,
+        );
     }
     // GNU takes last-command from this-command AFTER the command ran: a
     // prefix command (universal-argument) restores the previous value
@@ -1588,209 +1566,6 @@ pub(crate) fn need_arg_range(
         Err(LispError::WrongNumberOfArgs(name.into(), args.len()))
     } else {
         Ok(())
-    }
-}
-
-pub(crate) fn parse_edmacro_key_sequence(source: &str) -> Result<Value, LispError> {
-    let mut parser = EdmacroKeyParser::new(source);
-    let items = parser.parse()?;
-    let mut vector = vec![Value::symbol("vector-literal")];
-    vector.extend(items);
-    Ok(Value::list(vector))
-}
-
-pub(crate) struct EdmacroKeyParser<'a> {
-    source: &'a str,
-    pos: usize,
-}
-
-impl<'a> EdmacroKeyParser<'a> {
-    fn new(source: &'a str) -> Self {
-        Self { source, pos: 0 }
-    }
-
-    fn parse(&mut self) -> Result<Vec<Value>, LispError> {
-        let mut items = Vec::new();
-        while self.pos < self.source.len() {
-            self.skip_whitespace();
-            if self.pos >= self.source.len() {
-                break;
-            }
-            if self.starts_comment() {
-                self.skip_comment();
-                continue;
-            }
-            let repeat = self.parse_repeat_prefix()?;
-            if self.starts_comment() {
-                self.skip_comment();
-                continue;
-            }
-            let token = self.read_token();
-            if token.is_empty() {
-                break;
-            }
-            let parsed = parse_edmacro_token(token)?;
-            for _ in 0..repeat {
-                items.extend(parsed.iter().cloned());
-            }
-        }
-        Ok(items)
-    }
-
-    fn skip_whitespace(&mut self) {
-        while let Some(ch) = self.peek_char() {
-            if !ch.is_whitespace() {
-                break;
-            }
-            self.pos += ch.len_utf8();
-        }
-    }
-
-    fn starts_comment(&self) -> bool {
-        let rest = &self.source[self.pos..];
-        if rest.starts_with(";;") {
-            return true;
-        }
-        if !rest.starts_with("REM") {
-            return false;
-        }
-        match rest.get(3..).and_then(|tail| tail.chars().next()) {
-            None => true,
-            Some(ch) => ch.is_whitespace(),
-        }
-    }
-
-    fn skip_comment(&mut self) {
-        while let Some(ch) = self.peek_char() {
-            self.pos += ch.len_utf8();
-            if ch == '\n' {
-                break;
-            }
-        }
-    }
-
-    fn parse_repeat_prefix(&mut self) -> Result<usize, LispError> {
-        let start = self.pos;
-        while let Some(ch) = self.peek_char() {
-            if !ch.is_ascii_digit() {
-                break;
-            }
-            self.pos += ch.len_utf8();
-        }
-        if self.pos == start || self.peek_char() != Some('*') {
-            self.pos = start;
-            return Ok(1);
-        }
-        let count = self.source[start..self.pos]
-            .parse::<usize>()
-            .map_err(|error| LispError::Signal(format!("Invalid repetition count: {error}")))?;
-        self.pos += 1;
-        Ok(count)
-    }
-
-    fn read_token(&mut self) -> &'a str {
-        let start = self.pos;
-        while let Some(ch) = self.peek_char() {
-            if ch.is_whitespace() {
-                break;
-            }
-            self.pos += ch.len_utf8();
-        }
-        &self.source[start..self.pos]
-    }
-
-    fn peek_char(&self) -> Option<char> {
-        self.source[self.pos..].chars().next()
-    }
-}
-
-pub(crate) fn parse_edmacro_token(token: &str) -> Result<Vec<Value>, LispError> {
-    if token.starts_with("<<") && token.ends_with(">>") && token.len() >= 4 {
-        let command = &token[2..token.len() - 2];
-        let mut items = vec![Value::Integer(apply_edmacro_modifiers(
-            'x' as i64, false, true,
-        ))];
-        items.extend(command.chars().map(|ch| Value::Integer(ch as i64)));
-        items.push(Value::Integer('\r' as i64));
-        return Ok(items);
-    }
-
-    if let Some(key) = parse_modified_edmacro_key(token)? {
-        return Ok(vec![Value::Integer(key)]);
-    }
-
-    if let Some(key) = parse_named_edmacro_key(token) {
-        return Ok(vec![Value::Integer(key)]);
-    }
-
-    Ok(token.chars().map(|ch| Value::Integer(ch as i64)).collect())
-}
-
-pub(crate) fn parse_modified_edmacro_key(token: &str) -> Result<Option<i64>, LispError> {
-    let mut ctrl = false;
-    let mut meta = false;
-    let mut shift = false;
-    let mut super_key = false;
-    let mut rest = token;
-
-    while let Some((prefix, tail)) = rest.split_once('-') {
-        match prefix {
-            "C" => ctrl = true,
-            "M" => meta = true,
-            "S" => shift = true,
-            "s" => super_key = true,
-            _ => return Ok(None),
-        }
-        rest = tail;
-    }
-
-    if !(ctrl || meta || shift || super_key) {
-        return Ok(None);
-    }
-
-    let base = if let Some(key) = parse_named_edmacro_key(rest) {
-        key
-    } else if rest.chars().count() == 1 {
-        rest.chars().next().expect("count checked") as i64
-    } else {
-        return Ok(None);
-    };
-
-    let mut key = apply_edmacro_modifiers(base, ctrl, meta);
-    if shift {
-        key |= 1 << 25;
-    }
-    if super_key {
-        key |= 1 << 23;
-    }
-    Ok(Some(key))
-}
-
-pub(crate) fn apply_edmacro_modifiers(mut value: i64, ctrl: bool, meta: bool) -> i64 {
-    if ctrl && value != 0 {
-        value = match value {
-            0x3f => 0x7f,
-            n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
-            n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
-            n => n & 0x1f,
-        };
-    }
-    if meta {
-        value |= 1 << 27;
-    }
-    value
-}
-
-pub(crate) fn parse_named_edmacro_key(token: &str) -> Option<i64> {
-    match token {
-        "NUL" => Some(0),
-        "TAB" => Some('\t' as i64),
-        "LFD" => Some('\n' as i64),
-        "RET" => Some('\r' as i64),
-        "ESC" => Some(0x1b),
-        "SPC" => Some(' ' as i64),
-        "DEL" => Some(0x7f),
-        _ => None,
     }
 }
 

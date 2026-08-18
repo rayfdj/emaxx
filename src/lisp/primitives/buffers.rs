@@ -1,11 +1,5 @@
 use super::*;
 
-pub(crate) fn get_or_create_buffer(interp: &mut Interpreter, name: &str) -> (u64, String) {
-    interp
-        .find_buffer(name)
-        .unwrap_or_else(|| interp.create_buffer(name))
-}
-
 pub(crate) fn clamp_overlay_range(
     buffer: &crate::buffer::Buffer,
     beg: i64,
@@ -138,77 +132,6 @@ pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result
     }
 }
 
-pub(crate) fn count_lines_in_buffer(
-    buffer: &crate::buffer::Buffer,
-    start: usize,
-    end: usize,
-) -> Result<i64, LispError> {
-    let (from, to) = if start <= end {
-        (start, end)
-    } else {
-        (end, start)
-    };
-    if from == to {
-        return Ok(0);
-    }
-
-    let text = buffer
-        .buffer_substring(from, to)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let mut lines = text.chars().filter(|ch| *ch == '\n').count() as i64;
-    if to > buffer.point_min() && buffer.char_at(to - 1) != Some('\n') {
-        lines += 1;
-    }
-    Ok(lines)
-}
-
-pub(crate) fn file_modes_number_to_symbolic(mode: i64, filetype: Option<char>) -> String {
-    fn mode_bit(mode: i64, bit: i64) -> bool {
-        mode & bit != 0
-    }
-
-    let leading = filetype.unwrap_or(match (mode >> 12) & 0o17 {
-        0o14 => 's',
-        0o12 => 'l',
-        0o06 => 'b',
-        0o04 => 'd',
-        0o02 => 'c',
-        0o01 => 'p',
-        _ => '-',
-    });
-
-    let mut result = String::with_capacity(10);
-    result.push(leading);
-    result.push(if mode_bit(mode, 0o400) { 'r' } else { '-' });
-    result.push(if mode_bit(mode, 0o200) { 'w' } else { '-' });
-    result.push(if mode_bit(mode, 0o100) {
-        if mode_bit(mode, 0o4000) { 's' } else { 'x' }
-    } else if mode_bit(mode, 0o4000) {
-        'S'
-    } else {
-        '-'
-    });
-    result.push(if mode_bit(mode, 0o040) { 'r' } else { '-' });
-    result.push(if mode_bit(mode, 0o020) { 'w' } else { '-' });
-    result.push(if mode_bit(mode, 0o010) {
-        if mode_bit(mode, 0o2000) { 's' } else { 'x' }
-    } else if mode_bit(mode, 0o2000) {
-        'S'
-    } else {
-        '-'
-    });
-    result.push(if mode_bit(mode, 0o004) { 'r' } else { '-' });
-    result.push(if mode_bit(mode, 0o002) { 'w' } else { '-' });
-    result.push(if mode_bit(mode, 0o1000) {
-        if mode_bit(mode, 0o001) { 't' } else { 'T' }
-    } else if mode_bit(mode, 0o001) {
-        'x'
-    } else {
-        '-'
-    });
-    result
-}
-
 pub(crate) fn path_is_gzip_encoded(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with(".gz") || lower.ends_with(".tgz")
@@ -273,45 +196,11 @@ pub(crate) fn should_auto_decompress(interp: &Interpreter, env: &Env, path: &str
     auto_compression_enabled(interp, env) && path_is_gzip_encoded(path)
 }
 
-pub(crate) fn auto_mode_candidates(interp: &Interpreter, env: &Env, path: &str) -> Vec<String> {
-    let mut candidates = vec![path.to_string()];
-    if should_auto_decompress(interp, env, path)
-        && let Some(payload) = compressed_payload_path(path)
-        && !candidates.iter().any(|candidate| candidate == &payload)
-    {
-        candidates.push(payload);
-    }
-    candidates
-}
-
-pub(crate) enum TranslationTable {
-    CharTable(u64),
-    String(String),
-}
-
-pub(crate) fn translation_table_from_value(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<TranslationTable, LispError> {
-    match value {
-        Value::CharTable(id) => Ok(TranslationTable::CharTable(*id)),
-        Value::Symbol(symbol) => match interp.get_symbol_property(symbol, "translation-table") {
-            Some(Value::CharTable(id)) => Ok(TranslationTable::CharTable(id)),
-            _ => Err(LispError::Signal(format!(
-                "Invalid translation table name: {symbol}"
-            ))),
-        },
-        _ => string_like(value)
-            .map(|string| TranslationTable::String(string.text))
-            .ok_or_else(|| LispError::TypeError("string-or-char-table".into(), value.type_name())),
-    }
-}
-
 pub(crate) fn translate_region_with_table(
     interp: &mut Interpreter,
     from: usize,
     to: usize,
-    table: &TranslationTable,
+    table_id: u64,
 ) -> Result<Value, LispError> {
     let source = (from..to)
         .map(|position| {
@@ -320,24 +209,14 @@ pub(crate) fn translate_region_with_table(
                 .unwrap_or_default()
         })
         .collect::<Vec<_>>();
-    let string_table = match table {
-        TranslationTable::String(text) => Some(text.chars().map(u32::from).collect::<Vec<_>>()),
-        TranslationTable::CharTable(_) => None,
-    };
     let mut translated = String::new();
     let mut translated_props = Vec::new();
+    let mut translated_extended_chars = Vec::new();
     let mut changed = 0i64;
     let mut index = 0usize;
     while index < source.len() {
         let source_char = source[index];
-        let mapping = match table {
-            TranslationTable::CharTable(id) => interp.char_table_get(*id, source_char),
-            TranslationTable::String(_) => string_table
-                .as_ref()
-                .and_then(|chars| chars.get(source_char as usize))
-                .copied()
-                .map(|character| Value::Integer(i64::from(character))),
-        };
+        let mapping = interp.char_table_get(table_id, source_char);
         let mut consumed = 1usize;
         let replacement = mapping.as_ref().and_then(|value| {
             if let Ok(character) = value.as_integer() {
@@ -360,12 +239,18 @@ pub(crate) fn translate_region_with_table(
                     append_public_buffer_character(
                         &mut translated,
                         &mut translated_props,
+                        &mut translated_extended_chars,
                         character,
                     );
                 }
             }
             None => {
-                append_public_buffer_character(&mut translated, &mut translated_props, source_char);
+                append_public_buffer_character(
+                    &mut translated,
+                    &mut translated_props,
+                    &mut translated_extended_chars,
+                    source_char,
+                );
             }
         }
         index += consumed;
@@ -375,6 +260,7 @@ pub(crate) fn translate_region_with_table(
         .map_err(|e| LispError::Signal(e.to_string()))?;
     interp.buffer.goto_char(from);
     interp.insert_current_buffer(&translated);
+    interp.set_inserted_extended_chars(from, &translated_extended_chars);
     for span in translated_props {
         interp
             .buffer
@@ -385,7 +271,8 @@ pub(crate) fn translate_region_with_table(
 
 fn append_public_buffer_character(
     text: &mut String,
-    props: &mut Vec<TextPropertySpan>,
+    _props: &mut Vec<TextPropertySpan>,
+    extended_chars: &mut Vec<(usize, u32)>,
     character: u32,
 ) {
     if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&character) {
@@ -395,14 +282,7 @@ fn append_public_buffer_character(
     } else if character <= 0x3f_ffff {
         let offset = text.chars().count();
         text.push(RAW_CHAR_SENTINEL);
-        props.push(TextPropertySpan {
-            start: offset,
-            end: offset + 1,
-            props: vec![(
-                "emaxx-raw-char".into(),
-                Value::Integer(i64::from(character)),
-            )],
-        });
+        extended_chars.push((offset, character));
     }
 }
 
@@ -498,7 +378,7 @@ pub(crate) fn record_type_name<'a>(interp: &'a Interpreter, value: &Value) -> Op
     };
     interp
         .find_record(*id)
-        .map(|record| record.type_name.as_str())
+        .and_then(|record| record.symbol_type_name())
 }
 
 pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool {
@@ -661,8 +541,6 @@ pub(crate) fn make_bool_vector_value(
 }
 
 pub(crate) const ABBREV_TABLE_RECORD_TYPE: &str = "abbrev-table";
-pub(crate) const ABBREV_TABLE_NAME_SLOT: usize = 0;
-pub(crate) const ABBREV_TABLE_PROPS_SLOT: usize = 1;
 pub(crate) const ABBREV_TABLE_ENTRIES_SLOT: usize = 2;
 
 pub(crate) fn set_bool_vector_bit(
@@ -699,7 +577,7 @@ pub(crate) fn abbrev_table_record_id(interp: &Interpreter, value: &Value) -> Opt
     };
     interp
         .find_record(*id)
-        .filter(|record| record.type_name == ABBREV_TABLE_RECORD_TYPE)
+        .filter(|record| record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE))
         .map(|_| *id)
 }
 
@@ -755,112 +633,6 @@ pub(crate) fn abbrev_table_props_with_modiff(props: Value) -> Value {
         pairs.push((":abbrev-table-modiff".into(), Value::Integer(0)));
     }
     plist_value(&pairs)
-}
-
-pub(crate) fn abbrev_table_name_value(interp: &Interpreter, table: &Value) -> Option<Value> {
-    let id = abbrev_table_record_id(interp, table)?;
-    let record = interp.find_record(id)?;
-    match record.slots.get(ABBREV_TABLE_NAME_SLOT) {
-        Some(Value::Nil) | None => None,
-        Some(value) => Some(value.clone()),
-    }
-}
-
-pub(crate) fn abbrev_table_props_value(
-    interp: &Interpreter,
-    table: &Value,
-) -> Result<Value, LispError> {
-    let Some(id) = abbrev_table_record_id(interp, table) else {
-        return Err(LispError::TypeError(
-            "abbrev-table".into(),
-            table.type_name(),
-        ));
-    };
-    let Some(record) = interp.find_record(id) else {
-        return Err(LispError::TypeError(
-            "abbrev-table".into(),
-            table.type_name(),
-        ));
-    };
-    Ok(record
-        .slots
-        .get(ABBREV_TABLE_PROPS_SLOT)
-        .cloned()
-        .unwrap_or(Value::Nil))
-}
-
-pub(crate) fn set_abbrev_table_props_value(
-    interp: &mut Interpreter,
-    table: &Value,
-    props: Value,
-) -> Result<(), LispError> {
-    let Some(id) = abbrev_table_record_id(interp, table) else {
-        return Err(LispError::TypeError(
-            "abbrev-table".into(),
-            table.type_name(),
-        ));
-    };
-    let Some(record) = interp.find_record_mut(id) else {
-        return Err(LispError::TypeError(
-            "abbrev-table".into(),
-            table.type_name(),
-        ));
-    };
-    if record.slots.len() <= ABBREV_TABLE_PROPS_SLOT {
-        record.slots.resize(ABBREV_TABLE_PROPS_SLOT + 1, Value::Nil);
-    }
-    record.slots[ABBREV_TABLE_PROPS_SLOT] = props;
-    let symbol = abbrev_symbol_name(id, "");
-    interp.set_global_binding(&symbol, Value::Nil);
-    interp.set_symbol_plist(&symbol, abbrev_table_props_value(interp, table)?)?;
-    Ok(())
-}
-
-pub(crate) fn abbrev_table_property(
-    interp: &Interpreter,
-    table: &Value,
-    property: &Value,
-) -> Option<Value> {
-    let key = property.as_symbol().ok()?;
-    let items = abbrev_table_props_value(interp, table)
-        .ok()?
-        .to_vec()
-        .ok()?;
-    let mut index = 0usize;
-    while index + 1 < items.len() {
-        if items[index].as_symbol().ok() == Some(key) {
-            return Some(items[index + 1].clone());
-        }
-        index += 2;
-    }
-    None
-}
-
-pub(crate) fn set_abbrev_table_property(
-    interp: &mut Interpreter,
-    table: &Value,
-    property: &Value,
-    value: Value,
-) -> Result<(), LispError> {
-    let key = property.as_symbol()?.to_string();
-    let mut items = abbrev_table_props_value(interp, table)?
-        .to_vec()
-        .unwrap_or_default();
-    let mut index = 0usize;
-    let mut updated = false;
-    while index + 1 < items.len() {
-        if items[index].as_symbol().ok() == Some(key.as_str()) {
-            items[index + 1] = value.clone();
-            updated = true;
-            break;
-        }
-        index += 2;
-    }
-    if !updated {
-        items.push(Value::Symbol(key.into()));
-        items.push(value);
-    }
-    set_abbrev_table_props_value(interp, table, Value::list(items))
 }
 
 pub(crate) fn abbrev_table_entries(
@@ -953,79 +725,11 @@ pub(crate) fn set_abbrev_symbol_state(
     Ok(())
 }
 
-pub(crate) fn abbrev_props_from_parts(
-    hook: Option<Value>,
-    props: &[Value],
-) -> Result<Value, LispError> {
-    let mut prop_items = props.to_vec();
-    if !prop_items.is_empty()
-        && !matches!(prop_items.first(), Some(Value::Symbol(symbol)) if symbol.starts_with(':'))
-    {
-        let count = prop_items.first().cloned().unwrap_or(Value::Nil);
-        let system = prop_items.get(1).cloned().unwrap_or(Value::Nil);
-        prop_items = vec![Value::symbol(":count"), count];
-        if !system.is_nil() {
-            prop_items.push(Value::symbol(":system"));
-            prop_items.push(system);
-        }
-    }
-    if !prop_items.len().is_multiple_of(2) {
-        return Err(LispError::Signal("Invalid abbrev property list".into()));
-    }
-    let mut props = plist_pairs(&Value::list(prop_items))?;
-    if let Some(hook) = hook.filter(|value| !value.is_nil()) {
-        if let Some((_, existing)) = props.iter_mut().find(|(key, _)| key == ":hook") {
-            *existing = hook;
-        } else {
-            props.push((":hook".into(), hook));
-        }
-    }
-    if !props.iter().any(|(key, _)| key == ":count") {
-        props.push((":count".into(), Value::Integer(0)));
-    }
-    Ok(plist_value(&props))
-}
-
 pub(crate) fn abbrev_prop(props: &Value, key: &str) -> Option<Value> {
     plist_pairs(props)
         .ok()?
         .into_iter()
         .find_map(|(existing, value)| (existing == key).then_some(value))
-}
-
-pub(crate) fn abbrev_matches_name(
-    interp: &Interpreter,
-    table: &Value,
-    existing: &str,
-    props: &Value,
-    name: &str,
-) -> bool {
-    if existing == name {
-        return true;
-    }
-    let table_case_fixed = abbrev_table_property(interp, table, &Value::symbol(":case-fixed"))
-        .is_some_and(|value| value.is_truthy());
-    if table_case_fixed || abbrev_prop(props, ":case-fixed").is_some_and(|value| value.is_truthy())
-    {
-        return false;
-    }
-    existing == name.to_lowercase()
-}
-
-pub(crate) fn abbrev_parent_tables(
-    interp: &Interpreter,
-    table: &Value,
-) -> Result<Vec<Value>, LispError> {
-    let Some(value) = abbrev_table_property(interp, table, &Value::symbol(":parents")) else {
-        return Ok(Vec::new());
-    };
-    if value.is_nil() {
-        return Ok(Vec::new());
-    }
-    if is_abbrev_table_value(interp, &value) {
-        return Ok(vec![value]);
-    }
-    value.to_vec()
 }
 
 pub(crate) fn define_abbrev_entry(
@@ -1038,83 +742,6 @@ pub(crate) fn define_abbrev_entry(
     let mut entries = abbrev_table_entries(interp, table)?;
     entries.retain(|(existing, _, _)| existing != name);
     entries.insert(0, (name.to_string(), expansion, props));
-    set_abbrev_table_entries(interp, table, entries)
-}
-
-pub(crate) fn abbrev_expansion(
-    interp: &Interpreter,
-    table: &Value,
-    name: &str,
-) -> Result<Option<Value>, LispError> {
-    fn lookup(
-        interp: &Interpreter,
-        table: &Value,
-        name: &str,
-        seen: &mut HashSet<u64>,
-    ) -> Result<Option<Value>, LispError> {
-        let Some(id) = abbrev_table_record_id(interp, table) else {
-            return Err(LispError::TypeError(
-                "abbrev-table".into(),
-                table.type_name(),
-            ));
-        };
-        if !seen.insert(id) {
-            return Ok(None);
-        }
-        for (existing, expansion, props) in abbrev_table_entries(interp, table)? {
-            if abbrev_matches_name(interp, table, &existing, &props, name) {
-                return Ok(Some(expansion));
-            }
-        }
-        for parent in abbrev_parent_tables(interp, table)? {
-            if let Some(expansion) = lookup(interp, &parent, name, seen)? {
-                return Ok(Some(expansion));
-            }
-        }
-        Ok(None)
-    }
-
-    lookup(interp, table, name, &mut HashSet::new())
-}
-
-pub(crate) fn copy_abbrev_table(
-    interp: &mut Interpreter,
-    table: &Value,
-) -> Result<Value, LispError> {
-    let Some(id) = abbrev_table_record_id(interp, table) else {
-        return Err(LispError::TypeError(
-            "abbrev-table".into(),
-            table.type_name(),
-        ));
-    };
-    interp.copy_record(id)
-}
-
-pub(crate) fn parse_abbrev_definition(entry: &Value) -> Result<(String, Value, Value), LispError> {
-    let parts = entry.to_vec()?;
-    if parts.len() < 2 {
-        return Err(LispError::Signal("Invalid abbrev definition".into()));
-    }
-    let name = string_text(&parts[0])?;
-    let expansion = parts[1].clone();
-    let hook = parts.get(2).cloned().unwrap_or(Value::Nil);
-    let props = if parts.len() > 3 {
-        abbrev_props_from_parts(Some(hook), &parts[3..])?
-    } else {
-        abbrev_props_from_parts(Some(hook), &[])?
-    };
-    Ok((name, expansion, props))
-}
-
-pub(crate) fn set_abbrev_table_entries_from_definitions(
-    interp: &mut Interpreter,
-    table: &Value,
-    definitions: &Value,
-) -> Result<(), LispError> {
-    let mut entries = Vec::new();
-    for entry in definitions.to_vec()? {
-        entries.push(parse_abbrev_definition(&entry)?);
-    }
     set_abbrev_table_entries(interp, table, entries)
 }
 
@@ -1155,309 +782,7 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
     }
 }
 
-pub(crate) fn register_abbrev_table_symbol(interp: &mut Interpreter, symbol: &str) {
-    let existing = interp
-        .lookup_var("abbrev-table-name-list", &Vec::new())
-        .unwrap_or(Value::Nil);
-    let mut items = existing.to_vec().unwrap_or_default();
-    if !items
-        .iter()
-        .any(|value| value.as_symbol().ok() == Some(symbol))
-    {
-        items.insert(0, Value::Symbol(symbol.to_string().into()));
-        interp.set_global_binding("abbrev-table-name-list", Value::list(items));
-    }
-}
-
-pub(crate) fn derived_mode_set_parent(interp: &mut Interpreter, mode: &str, parent: Option<&str>) {
-    match parent {
-        Some(parent) => {
-            interp.put_symbol_property(mode, "derived-mode-parent", Value::Symbol(parent.into()))
-        }
-        None => interp.remove_symbol_property(mode, "derived-mode-parent"),
-    }
-    derived_mode_flush(interp, mode);
-}
-
-pub(crate) fn derived_mode_add_parents(
-    interp: &mut Interpreter,
-    mode: &str,
-    extra_parents: &Value,
-) -> Result<(), LispError> {
-    let extras = extra_parents.to_vec()?;
-    interp.put_symbol_property(mode, "derived-mode-extra-parents", Value::list(extras));
-    derived_mode_flush(interp, mode);
-    Ok(())
-}
-
-pub(crate) fn derived_mode_flush(interp: &mut Interpreter, mode: &str) {
-    interp.remove_symbol_property(mode, "derived-mode--all-parents");
-    let followers = interp
-        .get_symbol_property(mode, "derived-mode--followers")
-        .and_then(|value| value.to_vec().ok())
-        .unwrap_or_default();
-    interp.remove_symbol_property(mode, "derived-mode--followers");
-    for follower in followers {
-        if let Ok(symbol) = follower.as_symbol() {
-            derived_mode_flush(interp, symbol);
-        }
-    }
-}
-
-pub(crate) fn derived_mode_parent_chain(interp: &Interpreter, mode: &str) -> Vec<String> {
-    fn visit(
-        interp: &Interpreter,
-        mode: &str,
-        seen: &mut std::collections::HashSet<String>,
-        out: &mut Vec<String>,
-    ) {
-        if !seen.insert(mode.to_string()) {
-            return;
-        }
-        out.push(mode.to_string());
-        if let Some(Value::Symbol(parent)) = interp.get_symbol_property(mode, "derived-mode-parent")
-        {
-            visit(interp, &parent, seen, out);
-        }
-        if let Some(extra) = interp.get_symbol_property(mode, "derived-mode-extra-parents")
-            && let Ok(items) = extra.to_vec()
-        {
-            for parent in items {
-                if let Ok(parent) = parent.as_symbol() {
-                    visit(interp, parent, seen, out);
-                }
-            }
-        }
-        if let Ok(alias) = interp.lookup_function(mode, &Vec::new())
-            && let Value::Symbol(alias_name) = alias
-        {
-            visit(interp, &alias_name, seen, out);
-        }
-    }
-
-    let mut seen = std::collections::HashSet::new();
-    let mut result = Vec::new();
-    visit(interp, mode, &mut seen, &mut result);
-    result
-}
-
-pub(crate) fn is_builtin_class_name(name: &str) -> bool {
-    builtin_class(name).is_some()
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct BuiltinClass {
-    pub(crate) name: &'static str,
-    parents: &'static [&'static str],
-    pub(crate) predicate: Option<&'static str>,
-}
-
-impl BuiltinClass {
-    const fn new(
-        name: &'static str,
-        parents: &'static [&'static str],
-        predicate: Option<&'static str>,
-    ) -> Self {
-        Self {
-            name,
-            parents,
-            predicate,
-        }
-    }
-}
-
-const BUILTIN_CLASSES: &[BuiltinClass] = &[
-    BuiltinClass::new("t", &[], None),
-    BuiltinClass::new("array", &["sequence", "atom"], Some("arrayp")),
-    BuiltinClass::new("atom", &["t"], Some("atom")),
-    BuiltinClass::new("bignum", &["integer"], Some("bignump")),
-    BuiltinClass::new("bool-vector", &["array"], Some("bool-vector-p")),
-    BuiltinClass::new("boolean", &["symbol"], Some("booleanp")),
-    BuiltinClass::new("buffer", &["atom"], Some("bufferp")),
-    BuiltinClass::new(
-        "byte-code-function",
-        &["compiled-function", "closure"],
-        Some("byte-code-function-p"),
-    ),
-    BuiltinClass::new("char-table", &["array"], Some("char-table-p")),
-    BuiltinClass::new("closure", &["function"], Some("closurep")),
-    BuiltinClass::new(
-        "compiled-function",
-        &["function"],
-        Some("compiled-function-p"),
-    ),
-    BuiltinClass::new("condvar", &["atom"], None),
-    BuiltinClass::new("cons", &["list"], Some("consp")),
-    BuiltinClass::new("finalizer", &["atom"], None),
-    BuiltinClass::new("fixnum", &["integer"], Some("fixnump")),
-    BuiltinClass::new("float", &["number"], Some("floatp")),
-    BuiltinClass::new("font-entity", &["atom"], None),
-    BuiltinClass::new("font-object", &["atom"], None),
-    BuiltinClass::new("font-spec", &["atom"], None),
-    BuiltinClass::new("frame", &["atom"], Some("framep")),
-    BuiltinClass::new("function", &["atom"], Some("functionp")),
-    BuiltinClass::new("hash-table", &["atom"], Some("hash-table-p")),
-    BuiltinClass::new(
-        "integer",
-        &["number", "integer-or-marker"],
-        Some("integerp"),
-    ),
-    BuiltinClass::new(
-        "integer-or-marker",
-        &["number-or-marker"],
-        Some("integer-or-marker-p"),
-    ),
-    BuiltinClass::new(
-        "interpreted-function",
-        &["closure"],
-        Some("interpreted-function-p"),
-    ),
-    BuiltinClass::new("list", &["sequence"], Some("listp")),
-    BuiltinClass::new("marker", &["integer-or-marker"], Some("markerp")),
-    BuiltinClass::new("module-function", &["function"], Some("module-function-p")),
-    BuiltinClass::new("mutex", &["atom"], Some("mutexp")),
-    BuiltinClass::new(
-        "native-comp-function",
-        &["subr", "compiled-function"],
-        Some("native-comp-function-p"),
-    ),
-    BuiltinClass::new("native-comp-unit", &["atom"], None),
-    BuiltinClass::new("null", &["boolean", "list"], Some("null")),
-    BuiltinClass::new("number", &["number-or-marker"], Some("numberp")),
-    BuiltinClass::new("number-or-marker", &["atom"], Some("number-or-marker-p")),
-    BuiltinClass::new("obarray", &["atom"], Some("obarrayp")),
-    BuiltinClass::new("overlay", &["atom"], Some("overlayp")),
-    BuiltinClass::new(
-        "primitive-function",
-        &["subr", "compiled-function"],
-        Some("primitive-function-p"),
-    ),
-    BuiltinClass::new("process", &["atom"], Some("processp")),
-    BuiltinClass::new("record", &["atom"], Some("recordp")),
-    BuiltinClass::new("sequence", &["t"], Some("sequencep")),
-    BuiltinClass::new("special-form", &["subr"], Some("special-form-p")),
-    BuiltinClass::new("string", &["array"], Some("stringp")),
-    BuiltinClass::new("subr", &["atom"], Some("subrp")),
-    BuiltinClass::new("symbol", &["atom"], Some("symbolp")),
-    BuiltinClass::new("symbol-with-pos", &["symbol"], Some("symbol-with-pos-p")),
-    BuiltinClass::new("terminal", &["atom"], None),
-    BuiltinClass::new("thread", &["atom"], Some("threadp")),
-    BuiltinClass::new("tree-sitter-compiled-query", &["atom"], None),
-    BuiltinClass::new("tree-sitter-node", &["atom"], None),
-    BuiltinClass::new("tree-sitter-parser", &["atom"], None),
-    BuiltinClass::new("user-ptr", &["atom"], Some("user-ptrp")),
-    BuiltinClass::new("vector", &["array"], Some("vectorp")),
-    BuiltinClass::new("window", &["atom"], Some("windowp")),
-    BuiltinClass::new(
-        "window-configuration",
-        &["atom"],
-        Some("window-configuration-p"),
-    ),
-];
-
-fn builtin_class(name: &str) -> Option<&'static BuiltinClass> {
-    BUILTIN_CLASSES.iter().find(|class| class.name == name)
-}
-
-pub(crate) fn builtin_classes() -> &'static [BuiltinClass] {
-    BUILTIN_CLASSES
-}
-
-pub(crate) fn builtin_class_parents(name: &str) -> &'static [&'static str] {
-    builtin_class(name).map_or(&[], |class| class.parents)
-}
-
-fn merge_class_precedence(mut lists: Vec<Vec<&'static str>>) -> Vec<&'static str> {
-    lists.retain(|list| !list.is_empty());
-    let mut merged = Vec::new();
-    while lists.len() > 1 {
-        let candidate = lists.iter().find_map(|list| {
-            let head = *list.first()?;
-            lists
-                .iter()
-                .all(|other| !other.iter().skip(1).any(|item| item == &head))
-                .then_some(head)
-        });
-        let candidate = candidate.unwrap_or(lists[0][0]);
-        merged.push(candidate);
-        for list in &mut lists {
-            if list.first() == Some(&candidate) {
-                list.remove(0);
-            }
-        }
-        lists.retain(|list| !list.is_empty());
-    }
-    if let Some(last) = lists.pop() {
-        merged.extend(last);
-    }
-    merged
-}
-
-fn compute_builtin_class_precedence(
-    name: &'static str,
-    active: &mut std::collections::HashSet<&'static str>,
-) -> Vec<&'static str> {
-    let Some(class) = builtin_class(name) else {
-        return Vec::new();
-    };
-    if !active.insert(name) {
-        return vec![name];
-    }
-    let mut result = vec![name];
-    if class.parents.is_empty() {
-        if name != "t" {
-            result.extend(compute_builtin_class_precedence("t", active));
-        }
-    } else {
-        result.extend(merge_class_precedence(
-            class
-                .parents
-                .iter()
-                .map(|parent| compute_builtin_class_precedence(parent, active))
-                .collect(),
-        ));
-    }
-    active.remove(name);
-    result
-}
-
-pub(crate) fn builtin_class_allparents(name: &str) -> Option<&'static [&'static str]> {
-    static PRECEDENCE: std::sync::OnceLock<
-        std::collections::HashMap<&'static str, Vec<&'static str>>,
-    > = std::sync::OnceLock::new();
-    PRECEDENCE
-        .get_or_init(|| {
-            BUILTIN_CLASSES
-                .iter()
-                .map(|class| {
-                    (
-                        class.name,
-                        compute_builtin_class_precedence(
-                            class.name,
-                            &mut std::collections::HashSet::new(),
-                        ),
-                    )
-                })
-                .collect()
-        })
-        .get(name)
-        .map(Vec::as_slice)
-}
-
-/// CL types that GNU defines directly through `cl-deftype-satisfies' rather
-/// than through the built-in class hierarchy.
-pub(crate) fn builtin_cl_satisfies_types() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("base-char", "characterp"),
-        ("character", "natnump"),
-        ("command", "commandp"),
-        ("keyword", "keywordp"),
-        ("natnum", "natnump"),
-        ("real", "numberp"),
-    ]
-}
-
-pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'static str, LispError> {
+pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
     let (min_fixnum, max_fixnum) = fixnum_bounds(interp)?;
     let name = match value {
         Value::Nil => "null",
@@ -1492,15 +817,28 @@ pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'stat
         Value::Terminal(_) => "terminal",
         Value::Record(id) => {
             let Some(record) = interp.find_record(*id) else {
-                return Ok("record");
+                return Ok(Value::symbol("record"));
             };
-            match record.kind {
-                crate::lisp::eval::RecordKind::Record => "record",
+            let type_name = match record.kind {
+                // GNU data.c's PVEC_RECORD branch returns the exact type tag.
+                // When that tag is itself a record with at least one public
+                // slot, it is a type descriptor and slot one names the type.
+                crate::lisp::eval::RecordKind::Record => {
+                    let type_tag = record.type_tag.clone();
+                    if let Value::Record(type_id) = type_tag
+                        && let Some(type_record) = interp.find_record(type_id)
+                        && type_record.kind == crate::lisp::eval::RecordKind::Record
+                        && let Some(type_name) = type_record.slots.first()
+                    {
+                        return Ok(type_name.clone());
+                    }
+                    return Ok(type_tag);
+                }
                 crate::lisp::eval::RecordKind::BoolVector => "bool-vector",
                 crate::lisp::eval::RecordKind::Closure => "byte-code-function",
-                crate::lisp::eval::RecordKind::Font => match record.type_name.as_str() {
-                    "font-entity" => "font-entity",
-                    "font-object" => "font-object",
+                crate::lisp::eval::RecordKind::Font => match record.symbol_type_name() {
+                    Some("font-entity") => "font-entity",
+                    Some("font-object") => "font-object",
                     _ => "font-spec",
                 },
                 crate::lisp::eval::RecordKind::SymbolWithPos => "symbol-with-pos",
@@ -1511,21 +849,25 @@ pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'stat
                 crate::lisp::eval::RecordKind::WindowConfiguration => "window-configuration",
                 crate::lisp::eval::RecordKind::Thread => "thread",
                 crate::lisp::eval::RecordKind::Mutex => "mutex",
-                crate::lisp::eval::RecordKind::ConditionVariable => "condvar",
+                crate::lisp::eval::RecordKind::ConditionVariable => "condition-variable",
                 crate::lisp::eval::RecordKind::NativeCompUnit => "native-comp-unit",
-                crate::lisp::eval::RecordKind::TreeSitterParser => "tree-sitter-parser",
-                crate::lisp::eval::RecordKind::TreeSitterNode => "tree-sitter-node",
-                crate::lisp::eval::RecordKind::TreeSitterCompiledQuery => {
-                    "tree-sitter-compiled-query"
-                }
+                crate::lisp::eval::RecordKind::TreeSitterParser => "treesit-parser",
+                crate::lisp::eval::RecordKind::TreeSitterNode => "treesit-node",
+                crate::lisp::eval::RecordKind::TreeSitterCompiledQuery => "treesit-compiled-query",
                 crate::lisp::eval::RecordKind::Sqlite => "sqlite",
                 crate::lisp::eval::RecordKind::Keymap => "cons",
-            }
+            };
+            return Ok(Value::symbol(type_name));
         }
         Value::Finalizer(_) => "finalizer",
+        Value::ReaderForm(_) => {
+            return Err(LispError::Signal(
+                "reader form escaped object materialization".into(),
+            ));
+        }
         Value::Unbound => "unbound",
     };
-    Ok(name)
+    Ok(Value::symbol(name))
 }
 
 pub(crate) fn buffer_position_to_byte(buffer: &crate::buffer::Buffer, pos: usize) -> Option<usize> {

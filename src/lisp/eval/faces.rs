@@ -7,18 +7,29 @@ impl Interpreter {
     /// but compiled libraries must never depend on source-loading order for
     /// the underlying C-owned value cells to exist.
     pub(crate) fn initialize_native_face_variables(&mut self) {
-        let entries = self
+        let initial_faces = self
             .lisp_face_states
             .iter()
-            .filter_map(|face| {
-                Some((
-                    Value::symbol(&face.name),
-                    Value::cons(Value::Integer(face.id?), face.global.clone()?),
-                ))
+            .filter_map(|face| Some((face.name.clone(), face.id?, face.global.clone()?)))
+            .collect::<Vec<_>>();
+        let entries = initial_faces
+            .iter()
+            .map(|(name, id, vector)| {
+                (
+                    Value::symbol(name),
+                    Value::cons(Value::Integer(*id), vector.clone()),
+                )
             })
             .collect();
         let defaults = crate::lisp::json::make_hash_table(self, "eq", entries);
         self.define_special_variable("face--new-frame-defaults", defaults);
+        for (name, id, _) in initial_faces {
+            // GNU Finternal_make_lisp_face owns both directions of the
+            // Lisp-face-ID mapping: the native hash entry above and the
+            // symbol's `face' property.  The precreated default face must
+            // enter through the same lifecycle as later faces.
+            self.put_symbol_property(&name, "face", Value::Integer(id));
+        }
         self.define_special_variable("face-filters-always-match", Value::Nil);
         self.define_special_variable("face-default-stipple", Value::String("gray3".into()));
         self.define_special_variable("scalable-fonts-allowed", Value::Nil);
@@ -33,16 +44,6 @@ impl Interpreter {
         self.lisp_face_states
             .iter()
             .position(|state| state.name == name)
-    }
-
-    pub(crate) fn lisp_face_exists(&self, name: &str) -> bool {
-        self.lisp_face_state_index(name).is_some()
-    }
-
-    pub(crate) fn lisp_face_names(&self) -> impl Iterator<Item = &str> {
-        self.lisp_face_states
-            .iter()
-            .map(|state| state.name.as_str())
     }
 
     pub(crate) fn lisp_face_vector(&self, name: &str, global: bool) -> Option<Value> {
@@ -103,36 +104,6 @@ impl Interpreter {
             self.sync_selected_frame_face_hash_entry(name, vector.clone())?;
         }
         Ok(vector)
-    }
-
-    /// GNU's tty color-mode switch clears the face cache so every face
-    /// re-realizes from its stored specs against the new display
-    /// (term.c tty_set_color_mode → clear_face_cache).  emaxx realizes
-    /// eagerly, so walk the registry now: reset each defface'd face and
-    /// re-apply its spec layers in face-spec-recalc's order.
-    pub(crate) fn rerealize_defface_faces(&mut self) -> Result<(), LispError> {
-        let faces: Vec<String> = self.lisp_face_names().map(str::to_string).collect();
-        for face in faces {
-            let Some(spec) = self
-                .get_symbol_property(&face, "face-defface-spec")
-                .filter(|spec| !spec.is_nil())
-            else {
-                continue;
-            };
-            self.ensure_lisp_face(&face, false, true)?;
-            self.ensure_lisp_face(&face, true, true)?;
-            self.record_defface_runtime_attributes(&face, &spec)?;
-            for layer in ["saved-face", "customized-face", "face-override-spec"] {
-                if let Some(extra) = self
-                    .get_symbol_property(&face, layer)
-                    .filter(|extra| !extra.is_nil())
-                {
-                    self.record_defface_runtime_attributes(&face, &extra)?;
-                }
-            }
-        }
-        self.face_change_count += 1;
-        Ok(())
     }
 
     fn sync_selected_frame_face_hash_entry(

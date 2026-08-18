@@ -1,5 +1,22 @@
 use super::*;
 
+pub(crate) fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
+    let seconds = args
+        .first()
+        .map(Value::as_float)
+        .transpose()?
+        .unwrap_or(0.0);
+    let millis = match args.get(1) {
+        None | Some(Value::Nil) => 0.0,
+        Some(value) => value.as_float()?,
+    };
+    let total = seconds + millis / 1000.0;
+    if !total.is_finite() || total <= 0.0 {
+        return Ok(Duration::ZERO);
+    }
+    Ok(Duration::from_secs_f64(total))
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum RoundingKind {
     Ceiling,
@@ -13,27 +30,6 @@ pub(crate) fn normalize_bigint_value(value: BigInt) -> Value {
         .to_i64()
         .map(Value::Integer)
         .unwrap_or(Value::BigInteger(value.into()))
-}
-
-pub(crate) fn version_leq(left: &str, right: &str) -> Result<bool, LispError> {
-    let left = parse_version_components(left)?;
-    let right = parse_version_components(right)?;
-    let mut index = 0;
-    while let (Some(a), Some(b)) = (left.get(index), right.get(index)) {
-        if a < b {
-            return Ok(true);
-        }
-        if a > b {
-            return Ok(false);
-        }
-        index += 1;
-    }
-    Ok(match (left.get(index), right.get(index)) {
-        (None, None) => true,
-        (Some(_), None) => version_list_not_zero(&left[index..]) <= 0,
-        (None, Some(_)) => 0 <= version_list_not_zero(&right[index..]),
-        (Some(_), Some(_)) => unreachable!("equal prefixes are consumed before this match"),
-    })
 }
 
 pub(crate) fn parse_version_components(version: &str) -> Result<Vec<i64>, LispError> {
@@ -124,14 +120,6 @@ pub(crate) fn trailing_letter_priority(separator: &str) -> Option<i64> {
     Some((ch as i64) - ('a' as i64) + 1)
 }
 
-pub(crate) fn version_list_not_zero(values: &[i64]) -> i64 {
-    values
-        .iter()
-        .copied()
-        .find(|value| *value != 0)
-        .unwrap_or(0)
-}
-
 pub(crate) fn string_version_compare(left: &str, right: &str) -> Ordering {
     let left_bytes = left.as_bytes();
     let right_bytes = right.as_bytes();
@@ -213,7 +201,10 @@ pub(crate) fn builtin_arity_value(name: &str) -> Option<Value> {
 }
 
 pub(crate) fn special_form_arity_value(name: &str) -> Option<Value> {
-    native_form_fallback_arity(name).map(arity_value)
+    is_special_form_name(name)
+        .then(|| generated_builtin_arities::generated_builtin_arity(name))
+        .flatten()
+        .map(arity_value)
 }
 
 pub(crate) fn fallback_subr_arity_value(name: &str) -> Value {
@@ -252,6 +243,74 @@ pub(crate) fn lambda_arity_value(params: &[String]) -> Value {
     )
 }
 
+fn invalid_function_arity(function: &Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("invalid-function".into()),
+        function.clone(),
+    ]))
+}
+
+/// Decode GNU's CLOSURE_ARGLIST using eval.c:lambda_arity and
+/// bytecode.c:get_byte_code_arity.
+fn closure_arity_value(argument_spec: &Value, function: &Value) -> Result<Value, LispError> {
+    if let Value::Integer(packed) = argument_spec {
+        if *packed < 0 {
+            return Err(invalid_function_arity(function));
+        }
+        let mandatory = packed & 127;
+        let nonrest = packed >> 8;
+        return Ok(Value::cons(
+            Value::Integer(mandatory),
+            if packed & 128 != 0 {
+                Value::Symbol("many".into())
+            } else {
+                Value::Integer(nonrest)
+            },
+        ));
+    }
+
+    let mut required = 0i64;
+    let mut maximum = 0i64;
+    let mut optional = false;
+    let mut cursor = argument_spec.clone();
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    loop {
+        let Value::Cons(cell) = cursor else {
+            return if cursor.is_nil() {
+                Ok(Value::cons(
+                    Value::Integer(required),
+                    Value::Integer(maximum),
+                ))
+            } else {
+                Err(invalid_function_arity(function))
+            };
+        };
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return Err(invalid_function_arity(function));
+        }
+        let parameter = cell.car.borrow().clone();
+        cursor = cell.cdr.borrow().clone();
+        let Value::Symbol(parameter) = parameter else {
+            return Err(invalid_function_arity(function));
+        };
+        match parameter.as_ref() {
+            "&rest" => {
+                return Ok(Value::cons(
+                    Value::Integer(required),
+                    Value::Symbol("many".into()),
+                ));
+            }
+            "&optional" => optional = true,
+            _ => {
+                if !optional {
+                    required += 1;
+                }
+                maximum += 1;
+            }
+        }
+    }
+}
+
 pub(crate) fn function_arity_value(
     interp: &Interpreter,
     function: &Value,
@@ -279,32 +338,16 @@ pub(crate) fn function_arity_value(
                 .find_record(*id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure) =>
         {
-            let (callable, doc) = interp
+            let argument_spec = interp
                 .find_record(*id)
-                .map(|record| (record.slots.first().cloned(), record.slots.get(4).cloned()))
-                .ok_or_else(|| LispError::TypeError("function".into(), function.type_name()))?;
-            callable
-                .as_ref()
-                .ok_or_else(|| LispError::TypeError("function".into(), function.type_name()))
-                .and_then(|callable| function_arity_value(interp, callable, env))
-                .or_else(|_| {
-                    doc.as_ref().and_then(docstring_arity_value).ok_or_else(|| {
-                        LispError::TypeError("function".into(), function.type_name())
-                    })
-                })
+                .and_then(|record| record.slots.first())
+                .ok_or_else(|| invalid_function_arity(function))?;
+            closure_arity_value(argument_spec, function)
         }
         _ => Err(LispError::TypeError(
             "function".into(),
             function.type_name(),
         )),
-    }
-}
-
-fn docstring_arity_value(doc: &Value) -> Option<Value> {
-    match doc {
-        Value::String(text) => docstring_arity_text(text),
-        Value::StringObject(state) => docstring_arity_text(&state.borrow().text),
-        _ => None,
     }
 }
 
@@ -1880,16 +1923,6 @@ pub(crate) fn decode_time_value(
     ]))
 }
 
-pub(crate) fn decoded_time_field(
-    args: &[Value],
-    index: usize,
-    name: &str,
-) -> Result<Value, LispError> {
-    need_args(name, args, 1)?;
-    let fields = args[0].to_vec()?;
-    Ok(fields.get(index).cloned().unwrap_or(Value::Nil))
-}
-
 pub(crate) fn decoded_seconds_value(
     interp: &Interpreter,
     value: &Value,
@@ -1981,23 +2014,6 @@ define_dispatch!(
                     datetime.format("%a %b %e %H:%M:%S %Y").to_string().into(),
                 ))
             }
-            "time-since" => {
-                need_args(name, args, 1)?;
-                if matches!(args[0], Value::Float(_)) {
-                    let elapsed_ms = ((exact_time_to_f64(&now) - numeric_to_f64(interp, &args[0])?)
-                        .max(0.0)
-                        * 1000.0)
-                        .floor() as i64;
-                    return Ok(Value::cons(
-                        Value::Integer(elapsed_ms),
-                        Value::Integer(1000),
-                    ));
-                }
-                let then = exact_time_from_value(interp, &args[0], &now)?;
-                let ticks = now.ticks.clone() * &then.hz - then.ticks.clone() * &now.hz;
-                let hz = now.hz.clone() * then.hz.clone();
-                Ok(exact_time_to_value(&exact_time_value(ticks, hz)?))
-            }
             "time-add" | "time-subtract" => {
                 need_args(name, args, 2)?;
                 let left = exact_time_from_value(interp, &args[0], &now)?;
@@ -2059,7 +2075,7 @@ define_dispatch!(
                     Value::Nil
                 })
             }
-            "float-time" | "time-to-seconds" => {
+            "float-time" => {
                 need_arg_range(name, args, 0, 1)?;
                 let value = args.first().unwrap_or(&Value::Nil);
                 Ok(Value::Float(exact_time_to_f64(&exact_time_from_value(
@@ -2081,15 +2097,6 @@ define_dispatch!(
                 let form = args.get(2).unwrap_or(&Value::Nil);
                 decode_time_value(&time, &zone, form)
             }
-            "decoded-time-second" => decoded_time_field(args, 0, name),
-            "decoded-time-minute" => decoded_time_field(args, 1, name),
-            "decoded-time-hour" => decoded_time_field(args, 2, name),
-            "decoded-time-day" => decoded_time_field(args, 3, name),
-            "decoded-time-month" => decoded_time_field(args, 4, name),
-            "decoded-time-year" => decoded_time_field(args, 5, name),
-            "decoded-time-weekday" => decoded_time_field(args, 6, name),
-            "decoded-time-dst" => decoded_time_field(args, 7, name),
-            "decoded-time-zone" => decoded_time_field(args, 8, name),
             "encode-time" => {
                 need_arg_range(name, args, 1, 9)?;
                 let list_form = args.len() == 1;
@@ -2373,127 +2380,6 @@ pub(crate) fn parse_string_to_number_value(
         base if (2..=16).contains(&base) => Ok(parse_integer_string_with_base(text, base as u32)),
         _ => Err(LispError::Signal("Args out of range".into())),
     }
-}
-
-pub(crate) fn parse_cl_integer(args: &[Value]) -> Result<Value, LispError> {
-    if args.is_empty() {
-        return Err(LispError::WrongNumberOfArgs("cl-parse-integer".into(), 0));
-    }
-    let text = string_text(&args[0])?;
-    let mut start = 0usize;
-    let mut end = text.chars().count();
-    let mut radix = 10u32;
-    let mut junk_allowed = false;
-
-    let mut index = 1usize;
-    while index < args.len() {
-        let Some(keyword) = args[index].as_symbol().ok() else {
-            return Err(LispError::Signal(
-                "Unsupported cl-parse-integer syntax".into(),
-            ));
-        };
-        let Some(value) = args.get(index + 1) else {
-            return Err(LispError::Signal(
-                "Unsupported cl-parse-integer syntax".into(),
-            ));
-        };
-        match keyword {
-            ":start" => {
-                if !value.is_nil() {
-                    let parsed = value.as_integer()?;
-                    if parsed < 0 {
-                        return Err(LispError::Signal(format!(
-                            "Bad interval: [{parsed}, {end})"
-                        )));
-                    }
-                    start = parsed as usize;
-                }
-            }
-            ":end" => {
-                if !value.is_nil() {
-                    let parsed = value.as_integer()?;
-                    if parsed < 0 {
-                        return Err(LispError::Signal(format!(
-                            "Bad interval: [{start}, {parsed})"
-                        )));
-                    }
-                    end = parsed as usize;
-                }
-            }
-            ":radix" => {
-                if value.is_nil() {
-                    radix = 10;
-                    index += 2;
-                    continue;
-                }
-                let parsed = value.as_integer()?;
-                if !(2..=36).contains(&parsed) {
-                    return Err(LispError::Signal("Args out of range".into()));
-                }
-                radix = parsed as u32;
-            }
-            ":junk-allowed" => junk_allowed = value.is_truthy(),
-            _ => {
-                return Err(LispError::Signal(
-                    "Unsupported cl-parse-integer syntax".into(),
-                ));
-            }
-        }
-        index += 2;
-    }
-
-    if start > end || end > text.chars().count() {
-        return Err(LispError::Signal(format!("Bad interval: [{start}, {end})")));
-    }
-
-    let chars: Vec<char> = text.chars().collect();
-    let mut cursor = start;
-    while cursor < end && chars[cursor].is_whitespace() {
-        cursor += 1;
-    }
-    let negative = match chars.get(cursor) {
-        Some('+') => {
-            cursor += 1;
-            false
-        }
-        Some('-') => {
-            cursor += 1;
-            true
-        }
-        _ => false,
-    };
-
-    let mut value = BigInt::zero();
-    let mut saw_digit = false;
-    while cursor < end {
-        let Some(digit) = digit_value_for_base(chars[cursor], radix) else {
-            break;
-        };
-        saw_digit = true;
-        value = value * radix + BigInt::from(digit);
-        cursor += 1;
-    }
-    while cursor < end && chars[cursor].is_whitespace() {
-        cursor += 1;
-    }
-
-    if !saw_digit {
-        if junk_allowed {
-            return Ok(Value::Nil);
-        }
-        return Err(LispError::Signal(format!(
-            "Not an integer string: `{text}'"
-        )));
-    }
-    if cursor != end && !junk_allowed {
-        return Err(LispError::Signal(format!(
-            "Not an integer string: `{text}'"
-        )));
-    }
-    if negative {
-        value = -value;
-    }
-    Ok(normalize_bigint_value(value))
 }
 
 pub(crate) fn parse_decimal_string_to_number(text: &str) -> Value {

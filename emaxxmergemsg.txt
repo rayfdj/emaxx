@@ -1,0 +1,41 @@
+Merge main's GNU-runtime ownership cleanup into the tty frontend
+
+Adopt main at 8d10c36: the reconstructed GNU batch image (loadup-ordered
+subr/keymap/faces/simple and the rest), the typed reader forms that
+replaced the project literal markers, record type tags, the anti-cheat
+publication gates, and the deletion of simple_compat.el and
+faces_compat.el.  Every conflict resolved toward main's ownership model;
+the tty machinery now runs on top of it.
+
+The frontend follows GNU startup instead of fabricating state: the
+interactive session loads compiled GNU Lisp the way a dumped image
+would, recomputes user-emacs-directory through startup.el's
+XDG-or-homedot walk, registers the standard tty palette
+(tty-register-default-colors) and realizes every face through
+tty-set-up-initial-frame-faces, exactly term.c's set_tty_color_mode
+protocol.  tty-type answers the terminal's real type so frame.el
+derives the light background mode itself, and tty-display-color-p/
+tty-display-color-cells report the live terminal.
+
+Fabricated Lisp-owned bindings are gone: mode-line-modes and
+mode-line-buffer-identification come from bindings.el's own defvars
+now.  Render paths reach Lisp-owned functions (face-attribute,
+coding-system-mnemonic, coding-system-eol-type-mnemonic, file-remote-p,
+deactivate-mark) through the ordinary function cell, never the native
+dispatcher, and the post-command loop honors the deactivate-mark
+variable protocol like keyboard.c.  The mouse pipeline's private
+raw-event token became a typed QueuedInput in the event queue —
+keyboard.c's struct input_event analog — so no project-private symbol
+rides the Lisp event stream.  Sixty-seven genuine C DEFVARs
+(scroll-conservatively, undo-limit, mouse-highlight, ...) now carry
+their window.c/xdisp.c/keyboard.c defaults natively, and byte-code
+commandp keys on the interactive slot's presence as GNU does.
+
+Bare-runtime test fixtures use loadup-legal forms (defalias with
+function, define-key, set-default, the window.c geometry primitives)
+since defun, global-set-key, and friends rightly live in GNU Lisp.
+
+Gates: tty battery 81/81 attribute-strict; smoke PASS; anti-cheat gates
+green; suite failures are a strict subset of main's (209 vs 194, the
+delta fixed here); typing bench at parity with GNU.
+

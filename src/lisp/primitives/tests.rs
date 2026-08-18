@@ -76,6 +76,74 @@ fn record_literal_detection_does_not_traverse_vector_storage() {
 }
 
 #[test]
+fn character_table_literal_materializes_nested_bytecode_decoder() {
+    let decoder = Value::ReaderForm(std::rc::Rc::new(crate::lisp::types::ReaderForm::Closure {
+        kind: crate::lisp::types::ReaderClosureKind::ByteCode,
+        slots: vec![
+            Value::Integer(0),
+            Value::String(String::new().into()),
+            Value::list([Value::symbol("vector-literal")]),
+            Value::Integer(0),
+        ],
+    }));
+    let mut fields = vec![Value::Nil; 70];
+    fields[2] = Value::symbol("char-code-property-table");
+    fields[68] = Value::symbol("name");
+    fields[69] = decoder;
+    let literal = Value::ReaderForm(std::rc::Rc::new(
+        crate::lisp::types::ReaderForm::CharTable { fields },
+    ));
+
+    let mut interp = Interpreter::new();
+    let Value::CharTable(table_id) = materialize_read_char_table_literals(&mut interp, &literal)
+        .expect("materialize a character table with a bytecode decoder")
+    else {
+        panic!("character-table syntax must produce a typed table");
+    };
+    let Some(Value::Record(decoder_id)) = interp.char_table_extra_slot(table_id, 1) else {
+        panic!("the nested decoder must be a typed byte-code-function object");
+    };
+    assert_eq!(
+        interp.find_record(decoder_id).map(|record| record.kind),
+        Some(crate::lisp::eval::RecordKind::Closure)
+    );
+}
+
+#[test]
+fn bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors() {
+    // GNU 30.2 data.c:Faref returns CLOSURE_ARGLIST verbatim, while
+    // eval.c:lambda_arity delegates integer descriptors to
+    // bytecode.c:get_byte_code_arity.  Cover packed fixed/rest descriptors
+    // and the legacy dynamic-binding arglist independently.
+    let contract = r#"
+        (let ((zero (make-byte-code 0 "" [] 0))
+              (fixed (make-byte-code 513 "" [] 0))
+              (rest (make-byte-code 128 "" [] 0))
+              (legacy
+               (make-byte-code '(a &optional b &rest c) "" [] 0)))
+          (list (aref zero 0) (func-arity zero)
+                (aref fixed 0) (func-arity fixed)
+                (aref rest 0) (func-arity rest)
+                (aref legacy 0) (func-arity legacy)))
+    "#;
+    let expected = "(0 (0 . 0) 513 (1 . 2) 128 (0 . many) (a &optional b &rest c) (1 . many))";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("bytecode argument descriptor contract should parse")
+        .expect("bytecode argument descriptor contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("bytecode argument descriptor contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
 fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -178,7 +246,7 @@ fn subr_frontier_reader_decodes_the_complete_classic_string_escape_table() {
     let expected = "((7 8 127 27 12 10 13 9 11) (\"vd\" \"jc\"))";
     assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
 
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let form = Reader::new(contract)
         .read()
         .expect("classic reader escape contract should parse")
@@ -1042,7 +1110,7 @@ fn native_comp_mutating_entry_points_report_the_unavailable_backend_honestly() {
     );
     assert_upstream_primitive_contract(&format!("(prin1 {upstream_program})"), &upstream_expected);
 
-    let source = fs::canonicalize("src/lisp/simple_compat.el")
+    let source = fs::canonicalize("../emacs/lisp/subr.el")
         .expect("canonicalize existing non-ELN fixture")
         .display()
         .to_string();
@@ -1499,6 +1567,90 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
 }
 
 #[test]
+fn every_literal_native_dispatch_arm_is_owned_by_gnu_c() {
+    let quoted_name =
+        regex::Regex::new(r#"\"([^\"]+)\""#).expect("compile native-dispatch pattern extractor");
+    let mut patterns = Vec::new();
+    super::dispatch::visit_handled_patterns(&mut |module, pattern| {
+        patterns.push((module, pattern))
+    });
+
+    let mut names = std::collections::BTreeMap::new();
+    let mut nonliteral_patterns = Vec::new();
+    for (module, pattern) in patterns {
+        let extracted = quoted_name
+            .captures_iter(pattern)
+            .map(|capture| capture[1].to_string())
+            .collect::<Vec<_>>();
+        if extracted.is_empty() {
+            nonliteral_patterns.push(format!("{module}: {pattern}"));
+        } else {
+            for name in extracted {
+                names.insert(name, module);
+            }
+        }
+    }
+    assert!(
+        nonliteral_patterns.is_empty(),
+        "native dispatch contains patterns that the ownership audit cannot enumerate: {}",
+        nonliteral_patterns.join(", ")
+    );
+
+    let non_gnu = names
+        .iter()
+        .filter(|(name, _)| generated_gnu_c_primitive_available(name) != Some(true))
+        .map(|(name, module)| format!("{module}: {name}"))
+        .collect::<Vec<_>>();
+    assert!(
+        non_gnu.is_empty(),
+        "{} native dispatch arms are not owned by GNU C:\n{}",
+        non_gnu.len(),
+        non_gnu.join("\n")
+    );
+}
+
+#[test]
+fn native_dispatch_fails_closed_at_the_gnu_c_boundary() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+
+    for name in [
+        "semantic-go-to-tag",
+        "srecode-template-get-table",
+        "bounds-of-thing-at-point",
+        "advice-add",
+        "advice-remove",
+        "advice-member-p",
+        "add-function",
+        "remove-function",
+        "define-advice",
+        concat!("emaxx", "--apply-around-advice"),
+        concat!("emaxx", "--apply-after-advice"),
+        concat!("emaxx", "--cl-generic-remove-loadhist-method"),
+        concat!("emaxx", "--oclosure-slot"),
+    ] {
+        assert!(
+            !is_builtin(name),
+            "{name} is not a GNU C primitive and must not be Lisp-callable Rust"
+        );
+        assert!(
+            !matches!(
+                interp.raw_function_binding(name, &env),
+                Some(Value::BuiltinFunc(_))
+            ),
+            "{name} acquired a native function cell outside GNU's C manifest"
+        );
+        assert!(
+            matches!(
+                call(&mut interp, name, &[], &mut env),
+                Err(LispError::Signal(message)) if message == format!("Unknown function: {name}")
+            ),
+            "direct dispatch bypassed the GNU C ownership boundary for {name}"
+        );
+    }
+}
+
+#[test]
 fn generated_rust_manifests_never_contain_trailing_whitespace() {
     for (name, source) in [
         (
@@ -1561,32 +1713,19 @@ fn builtin_metadata_covers_the_whole_c_manifest_without_lisp_string_leakage() {
 }
 
 #[test]
-fn gnu_c_primitive_boundary_is_not_reimplemented_in_simple_compat_lisp() {
-    use super::generated_gnu_c_primitives::GNU_C_PRIMITIVES;
-
-    let available = GNU_C_PRIMITIVES
-        .iter()
-        .filter(|contract| contract.arity.is_some())
-        .map(|contract| contract.name)
-        .collect::<std::collections::HashSet<_>>();
-    let mut violations = include_str!("../simple_compat.el")
-        .lines()
-        .filter_map(|line| {
-            let form = line
-                .strip_prefix("(defun ")
-                .or_else(|| line.strip_prefix("(defmacro "))?;
-            let name = form
-                .split(|ch: char| ch.is_ascii_whitespace() || ch == '(' || ch == ')')
-                .next()?;
-            available.contains(name).then_some(name)
-        })
+fn project_does_not_ship_lisp_compatibility_facades() {
+    let source_dir = crate::compat::project_root().join("src/lisp");
+    let mut facades = walkdir::WalkDir::new(&source_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "el"))
         .collect::<Vec<_>>();
-    violations.sort_unstable();
-
+    facades.sort();
     assert!(
-        violations.is_empty(),
-        "GNU C primitives must stay on Emaxx's Rust side of the host/Lisp boundary:\n{}",
-        violations.join("\n")
+        facades.is_empty(),
+        "project-owned Lisp compatibility facades can mask missing GNU owners: {facades:?}"
     );
 }
 
@@ -3601,50 +3740,6 @@ fn file_name_path_helpers_match_core_unix_cases() {
 }
 
 #[test]
-fn ert_resource_directory_prefers_sibling_resources_dir() {
-    assert_eq!(
-        ert_resource_directory_for("/tmp/example-tests.el"),
-        "/tmp/example-resources/"
-    );
-    assert_eq!(
-        ert_resource_directory_for("/Users/example/projects/emacs/test/src/syntax-tests.el"),
-        "/Users/example/projects/emacs/test/src/syntax-resources/"
-    );
-}
-
-#[test]
-fn ert_resource_directory_trims_test_suffixes_like_emacs() {
-    assert_eq!(
-        ert_resource_directory_for("/tmp/foo-test.el"),
-        "/tmp/foo-resources/"
-    );
-    assert_eq!(
-        ert_resource_directory_for("/tmp/foo-tests.el"),
-        "/tmp/foo-resources/"
-    );
-    assert_eq!(
-        ert_resource_directory_for("/tmp/bookmark.el"),
-        "/tmp/bookmark-resources/"
-    );
-}
-
-#[test]
-fn ert_gcc_is_clang_matches_upstream_apple_markers() {
-    assert_eq!(
-        apple_gcc_version_match("Apple LLVM version 10.0.0 (clang-1000.10.44.4)"),
-        Some(0)
-    );
-    assert!(
-        apple_gcc_version_match("gcc wrapper\nInstalledDir: /Applications/Xcode.app/Contents")
-            .is_some()
-    );
-    assert_eq!(
-        apple_gcc_version_match("gcc (Homebrew GCC 15.2.0) 15.2.0"),
-        None
-    );
-}
-
-#[test]
 fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3782,6 +3877,12 @@ fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
 
 #[test]
 fn unicode_char_property_helpers_cover_names_and_general_categories() {
+    crate::test_support::run_with_large_stack(
+        unicode_char_property_helpers_cover_names_and_general_categories_inner,
+    );
+}
+
+fn unicode_char_property_helpers_cover_names_and_general_categories_inner() {
     assert_upstream_primitive_contract(
         "(prin1 (mapcar (lambda (u)
                           (list u
@@ -3792,38 +3893,38 @@ fn unicode_char_property_helpers_cover_names_and_general_categories() {
         "((90368 nil Cn) (117760 nil Cn) (83526 \"ANATOLIAN HIEROGLYPH A530\" Lo) (12284 \"IDEOGRAPHIC DESCRIPTION CHARACTER SURROUND FROM RIGHT\" So) (19968 \"CJK IDEOGRAPH-4E00\" Lo) (55296 \"HIGH SURROGATE-D800\" Cs) (57344 nil Co) (1114111 nil Cn))",
     );
 
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
 
-    let name = call(
+    let name = crate::test_support::call_lisp_function(
         &mut interp,
+        &mut env,
         "get-char-code-property",
         &[
             Value::Integer('\u{2026}' as i64),
             Value::Symbol("name".into()),
         ],
-        &mut env,
     )
     .expect("get-char-code-property should return Unicode names");
     assert_eq!(name, Value::String("HORIZONTAL ELLIPSIS".into()));
 
-    let category = call(
+    let category = crate::test_support::call_lisp_function(
         &mut interp,
+        &mut env,
         "get-char-code-property",
         &[
             Value::Integer('\u{2026}' as i64),
             Value::Symbol("general-category".into()),
         ],
-        &mut env,
     )
     .expect("get-char-code-property should return Unicode general categories");
     assert_eq!(category, Value::Symbol("Po".into()));
 
-    let description = call(
+    let description = crate::test_support::call_lisp_function(
         &mut interp,
+        &mut env,
         "char-code-property-description",
         &[Value::Symbol("general-category".into()), category],
-        &mut env,
     )
     .expect("char-code-property-description should describe general categories");
     assert_eq!(description, Value::String("Punctuation, Other".into()));
@@ -3843,24 +3944,24 @@ fn unicode_char_property_helpers_cover_names_and_general_categories() {
         (0x10FFFF, None, "Cn"),
     ] {
         assert_eq!(
-            call(
+            crate::test_support::call_lisp_function(
                 &mut interp,
+                &mut env,
                 "get-char-code-property",
                 &[Value::Integer(code), Value::Symbol("name".into())],
-                &mut env,
             )
             .expect("read the Unicode 15.1 name property"),
             expected_name.map_or(Value::Nil, |name| Value::String(name.into()))
         );
         assert_eq!(
-            call(
+            crate::test_support::call_lisp_function(
                 &mut interp,
+                &mut env,
                 "get-char-code-property",
                 &[
                     Value::Integer(code),
                     Value::Symbol("general-category".into()),
                 ],
-                &mut env,
             )
             .expect("read the Unicode 15.1 category property"),
             Value::Symbol(expected_category.into())
@@ -3899,16 +4000,33 @@ fn max_char_distinguishes_the_internal_and_unicode_character_spaces() {
 
 #[test]
 fn unicode_property_tables_are_stable_and_preserve_overrides() {
-    let mut interp = Interpreter::new();
+    crate::test_support::run_with_large_stack(
+        unicode_property_tables_are_stable_and_preserve_overrides_inner,
+    );
+}
+
+fn unicode_property_tables_are_stable_and_preserve_overrides_inner() {
+    assert_upstream_primitive_contract(
+        "(let* ((property 'general-category)
+                 (first (unicode-property-table-internal property))
+                 (second (unicode-property-table-internal property)))
+            (put-unicode-property-internal first ?A 'Po)
+            (prin1 (list (eq first second)
+                         (get-unicode-property-internal first ?A)
+                         (get-char-code-property ?A property))))",
+        "(t Po Po)",
+    );
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
-    let property = Value::Symbol("name".into());
+    let property = Value::Symbol("general-category".into());
     let table = call(
         &mut interp,
         "unicode-property-table-internal",
         std::slice::from_ref(&property),
         &mut env,
     )
-    .expect("create the lazy Unicode name table");
+    .expect("create the lazy Unicode category table");
 
     // This is a hot primitive in Unicode-wide scans.  Stable identity both
     // matches GNU's char-code-property-alist cache and prevents per-character
@@ -3932,7 +4050,7 @@ fn unicode_property_tables_are_stable_and_preserve_overrides() {
         &[
             table.clone(),
             Value::Integer('A' as i64),
-            Value::String("EMAXX TEST OVERRIDE".into()),
+            Value::Symbol("Po".into()),
         ],
         &mut env,
     )
@@ -3941,12 +4059,82 @@ fn unicode_property_tables_are_stable_and_preserve_overrides() {
         call(
             &mut interp,
             "get-unicode-property-internal",
-            &[table, Value::Integer('A' as i64)],
+            &[table.clone(), Value::Integer('A' as i64)],
             &mut env,
         )
         .expect("read the Unicode table override"),
-        Value::String("EMAXX TEST OVERRIDE".into())
+        Value::Symbol("Po".into())
     );
+    assert_eq!(
+        crate::test_support::call_lisp_function(
+            &mut interp,
+            &mut env,
+            "get-char-code-property",
+            &[Value::Integer('A' as i64), property],
+        )
+        .expect("read the override through the GNU Elisp owner"),
+        Value::Symbol("Po".into())
+    );
+}
+
+#[test]
+fn unicode_property_internal_encoders_follow_gnu_decision_table() {
+    let program = r#"
+        (let ((character (make-char-table 'char-code-property-table))
+              (run (make-char-table 'char-code-property-table))
+              (numeric (make-char-table 'char-code-property-table))
+              (plain (make-char-table 'char-code-property-table)))
+          (set-char-table-extra-slot character 2 0)
+          (put-unicode-property-internal character ?A ?B)
+          (set-char-table-extra-slot run 1 0)
+          (set-char-table-extra-slot run 2 1)
+          (set-char-table-extra-slot run 4 [nil Lu Po])
+          (put-unicode-property-internal run ?A 'Po)
+          (set-char-table-extra-slot numeric 1 0)
+          (set-char-table-extra-slot numeric 2 2)
+          (set-char-table-extra-slot numeric 4 [10 20])
+          (put-unicode-property-internal numeric ?A 99)
+          (put-unicode-property-internal plain ?A 'raw)
+          (list
+           (get-unicode-property-internal character ?A)
+           (condition-case error
+               (put-unicode-property-internal character ?A 'bad)
+             (error error))
+           (aref run ?A)
+           (get-unicode-property-internal run ?A)
+           (condition-case error
+               (put-unicode-property-internal run ?A 'Cc)
+             (error error))
+           (aref numeric ?A)
+           (char-table-extra-slot numeric 4)
+           (get-unicode-property-internal numeric ?A)
+           (condition-case error
+               (put-unicode-property-internal numeric ?A 1.5)
+             (error error))
+           (get-unicode-property-internal plain ?A)))"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "(66 (wrong-type-argument integerp bad) 2 Po (wrong-type-argument \"Unicode property value\" Cc) 2 [10 20 2] 2 (wrong-type-argument fixnump 1.5) raw)",
+    );
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("Unicode encoder contract should parse")
+        .expect("Unicode encoder contract should contain a form");
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("Unicode encoders should follow the GNU decision table");
+    let expected = Reader::new(
+        "(66 (wrong-type-argument integerp bad) 2 Po
+             (wrong-type-argument \"Unicode property value\" Cc)
+             2 [10 20 2] 2 (wrong-type-argument fixnump 1.5) raw)",
+    )
+    .read()
+    .expect("expected Unicode encoder result should parse")
+    .expect("expected Unicode encoder result should contain a form");
+    assert_eq!(result, expected);
 }
 
 #[test]
@@ -3961,7 +4149,7 @@ fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
         assert_eq!(
             call(
                 &mut interp,
-                "string-match-p",
+                "string-match",
                 &[pattern.clone(), haystack.clone()],
                 &mut env,
             )
@@ -3985,7 +4173,7 @@ fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
     for pattern in ["\\w", "\\W", "[[:word:]]", "\\sw"] {
         call(
             &mut interp,
-            "string-match-p",
+            "string-match",
             &[Value::String(pattern.into()), Value::String("word!".into())],
             &mut env,
         )
@@ -4007,7 +4195,7 @@ fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
     assert_eq!(
         call(
             &mut interp,
-            "string-match-p",
+            "string-match",
             &[Value::String("\\w".into()), Value::String("!".into())],
             &mut env,
         )
@@ -4289,11 +4477,7 @@ fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
         .expect("read preloaded undo expectation")
         .expect("preloaded undo expectation");
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load the Emaxx preload compatibility layer");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let result = interp
         .eval(&form, &mut Vec::new())
         .expect("evaluate preloaded undo contract");
@@ -4326,11 +4510,7 @@ fn dynamic_buffer_undo_list_binding_restores_native_history() {
         .expect("read dynamic undo binding expectation")
         .expect("dynamic undo binding expectation");
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load the Emaxx preload compatibility layer");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let result = interp
         .eval(&form, &mut Vec::new())
         .expect("evaluate dynamic undo binding contract");
@@ -4381,11 +4561,7 @@ fn primitive_undo_consumes_marker_adjustments_with_their_deletion() {
         .expect("read marker-adjustment undo contract")
         .expect("marker-adjustment undo form");
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load the Emaxx preload compatibility layer");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let result = interp
         .eval(&form, &mut Vec::new())
         .expect("evaluate marker-adjustment undo contract");
@@ -5370,6 +5546,44 @@ fn accept_process_output_ignores_distractor_output_until_target_delivers() {
 }
 
 #[test]
+fn make_network_process_requires_the_gnu_name_contract() {
+    let program = "(prin1 (list (make-network-process)\
+                   (condition-case err (make-network-process :server t) (error err))\
+                   (condition-case err (make-network-process :name nil) (error err))))";
+    let expected =
+        "(nil (error \"Missing :name keyword parameter\") (error \":name value not a string\"))";
+    assert_upstream_primitive_contract(program, expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    assert_eq!(
+        call(&mut interp, "make-network-process", &[], &mut env)
+            .expect("zero arguments follow GNU's nil fast path"),
+        Value::Nil
+    );
+
+    let Err(LispError::Signal(missing)) = call(
+        &mut interp,
+        "make-network-process",
+        &[Value::Symbol(":server".into()), Value::T],
+        &mut env,
+    ) else {
+        panic!("a nonempty argument list without :name must fail");
+    };
+    assert_eq!(missing, "Missing :name keyword parameter");
+
+    let Err(LispError::Signal(not_string)) = call(
+        &mut interp,
+        "make-network-process",
+        &[Value::Symbol(":name".into()), Value::Nil],
+        &mut env,
+    ) else {
+        panic!("a non-string :name must fail");
+    };
+    assert_eq!(not_string, ":name value not a string");
+}
+
+#[test]
 fn make_network_process_ipv4_family_prefers_an_ipv4_listener() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -6121,7 +6335,7 @@ fn native_sqlite_errors_publish_the_gnu_condition_hierarchy() {
 
 #[test]
 fn native_file_lock_primitives_share_the_buffer_lock_state_machine() {
-    let program = r#"
+    let oracle_program = r#"
         (let ((path (make-temp-file "emaxx-lock-primitive-")))
           (unwind-protect
               (let ((locked (lock-file path))
@@ -6134,25 +6348,96 @@ fn native_file_lock_primitives_share_the_buffer_lock_state_machine() {
                   (setq disabled (file-locked-p path)))
                 (list locked owner unlocked after disabled
                       (subrp (symbol-function 'lock-file))
-                      (subrp (symbol-function 'unlock-file))
-                      (help-function-arglist 'lock-file)))
+                      (subrp (symbol-function 'unlock-file))))
             (ignore-errors (unlock-file path))
             (delete-file path)))"#;
     assert_upstream_primitive_contract(
-        &format!("(prin1 {program})"),
-        "(nil t nil nil nil t t (arg1))",
+        &format!("(prin1 {oracle_program})"),
+        "(nil t nil nil nil t t)",
     );
 
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    let form = Reader::new(program)
-        .read()
-        .expect("file lock primitive contract should parse")
-        .expect("file lock primitive contract should contain a form");
+    let path = std::env::temp_dir().join(format!(
+        "lock-primitive-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(&path, []).expect("create file-lock fixture");
+    let path_value = Value::String(path.display().to_string().into());
+
+    let locked = call(
+        &mut interp,
+        "lock-file",
+        std::slice::from_ref(&path_value),
+        &mut env,
+    )
+    .expect("lock fixture");
+    let owner = call(
+        &mut interp,
+        "file-locked-p",
+        std::slice::from_ref(&path_value),
+        &mut env,
+    )
+    .expect("inspect owned fixture lock");
+    let unlocked = call(
+        &mut interp,
+        "unlock-file",
+        std::slice::from_ref(&path_value),
+        &mut env,
+    )
+    .expect("unlock fixture");
+    let after = call(
+        &mut interp,
+        "file-locked-p",
+        std::slice::from_ref(&path_value),
+        &mut env,
+    )
+    .expect("inspect unlocked fixture");
+    interp.set_global_binding("create-lockfiles", Value::Nil);
+    call(
+        &mut interp,
+        "lock-file",
+        std::slice::from_ref(&path_value),
+        &mut env,
+    )
+    .expect("disabled locking is a no-op");
+    let disabled = call(
+        &mut interp,
+        "file-locked-p",
+        std::slice::from_ref(&path_value),
+        &mut env,
+    )
+    .expect("disabled locking leaves no lock");
+
+    let lock_function = call(
+        &mut interp,
+        "symbol-function",
+        &[Value::Symbol("lock-file".into())],
+        &mut env,
+    )
+    .expect("read lock-file definition");
+    let unlock_function = call(
+        &mut interp,
+        "symbol-function",
+        &[Value::Symbol("unlock-file".into())],
+        &mut env,
+    )
+    .expect("read unlock-file definition");
     assert_eq!(
-        interp
-            .eval(&form, &mut env)
-            .expect("file lock primitives should use the shared lock implementation"),
+        Value::list([
+            locked,
+            owner,
+            unlocked,
+            after,
+            disabled,
+            call(&mut interp, "subrp", &[lock_function], &mut env).expect("lock-file is a subr"),
+            call(&mut interp, "subrp", &[unlock_function], &mut env)
+                .expect("unlock-file is a subr"),
+        ]),
         Value::list([
             Value::Nil,
             Value::T,
@@ -6161,9 +6446,9 @@ fn native_file_lock_primitives_share_the_buffer_lock_state_machine() {
             Value::Nil,
             Value::T,
             Value::T,
-            Value::list([Value::Symbol("arg1".into())]),
         ])
     );
+    fs::remove_file(path).expect("remove file-lock fixture");
 }
 
 #[test]
@@ -6985,6 +7270,76 @@ fn native_xfaces_lisp_face_registry_family_matches_gnu() {
     );
     let _ = std::fs::remove_file(
         serde_json::from_str::<String>(&color_file).expect("deserialize color filename"),
+    );
+}
+
+#[test]
+fn native_xfaces_set_attribute_frame_and_creation_contract_matches_gnu() {
+    let program = r#"
+        (let ((existing 'sample-existing-face)
+              (global-missing 'sample-global-missing-face)
+              (zero-missing 'sample-zero-missing-face)
+              (local 'sample-local-face)
+              (frame (selected-frame)))
+          (internal-make-lisp-face existing nil)
+          (list
+           (condition-case error-data
+               (internal-set-lisp-face-attribute
+                "default" :foreground "blue" t)
+             (error error-data))
+           (condition-case error-data
+               (internal-set-lisp-face-attribute
+                global-missing :bogus 1 t)
+             (error error-data))
+           (condition-case error-data
+               (internal-set-lisp-face-attribute
+                zero-missing :foreground "blue" 0)
+             (error error-data))
+           (condition-case error-data
+               (internal-set-lisp-face-attribute
+                existing :foreground "blue" 17)
+             (error error-data))
+           (condition-case error-data
+               (internal-set-lisp-face-attribute
+                local :bogus 1 nil)
+             (error error-data))
+           (and (internal-lisp-face-p local frame) t)
+           (internal-set-lisp-face-attribute
+            existing :foreground 'unspecified t)
+           (internal-get-lisp-face-attribute
+            existing :foreground t)
+           (internal-set-lisp-face-attribute
+            existing :foreground 'unspecified frame)
+           (internal-get-lisp-face-attribute
+            existing :foreground frame)))"#;
+    let expected = r#"((wrong-type-argument symbolp "default")
+                       (error "Invalid face" sample-global-missing-face)
+                       (error "Invalid face" sample-zero-missing-face)
+                       (wrong-type-argument frame-live-p 17)
+                       (error "Invalid face attribute name" :bogus)
+                       t
+                       sample-existing-face unspecified
+                       sample-existing-face unspecified)"#;
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        "((wrong-type-argument symbolp \"default\") (error \"Invalid face\" sample-global-missing-face) (error \"Invalid face\" sample-zero-missing-face) (wrong-type-argument frame-live-p 17) (error \"Invalid face attribute name\" :bogus) t sample-existing-face unspecified sample-existing-face unspecified)",
+    );
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("xfaces set-attribute contract should parse")
+        .expect("xfaces set-attribute contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut Vec::new())
+        .expect("xfaces set-attribute contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("xfaces set-attribute expectation should parse")
+        .expect("xfaces set-attribute expectation should contain a value");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "xfaces set-attribute result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
 }
 
@@ -8143,18 +8498,24 @@ fn native_syntax_description_decodes_the_shared_descriptor_bits() {
 
 #[test]
 fn canonical_combining_classes_come_from_complete_unicode_data() {
-    let mut interp = Interpreter::new();
+    crate::test_support::run_with_large_stack(
+        canonical_combining_classes_come_from_complete_unicode_data_inner,
+    );
+}
+
+fn canonical_combining_classes_come_from_complete_unicode_data_inner() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     for (character, expected) in [(0x0307, 230), (0x0323, 220)] {
         assert_eq!(
-            call(
+            crate::test_support::call_lisp_function(
                 &mut interp,
+                &mut env,
                 "get-char-code-property",
                 &[
                     Value::Integer(character),
                     Value::Symbol("canonical-combining-class".into()),
                 ],
-                &mut env,
             )
             .expect("read canonical combining class"),
             Value::Integer(expected)
@@ -8177,7 +8538,7 @@ fn text_quoting_policy_is_shared_by_the_query_and_substitution_primitives() {
         "((nil curve \"‘foo’\") (grave grave \"`foo'\") (straight straight \"'foo'\") (curve curve \"‘foo’\"))",
     );
 
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -8549,8 +8910,8 @@ fn set_minibuffer_window_validates_and_updates_the_shared_window_state() {
                     (set-minibuffer-window 7)
                   (error (car err)))
                 (subrp (symbol-function 'set-minibuffer-window))
-                (help-function-arglist 'set-minibuffer-window)))"#;
-    let expected = "(t t error wrong-type-argument t (arg1))";
+                (func-arity (symbol-function 'set-minibuffer-window))))"#;
+    let expected = "(t t error wrong-type-argument t (1 . 1))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = Interpreter::new();
@@ -9044,22 +9405,23 @@ fn copy_overlay_clones_region_and_properties_with_new_identity() {
 
 #[test]
 fn substitute_command_keys_uses_explicit_keymaps() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let keymap = make_runtime_keymap(&mut interp, Some("button-tests--map"));
     interp.set_global_binding("button-tests--map", keymap.clone());
     keymap_define_binding(&mut interp, &keymap, "x", Value::Symbol("ignore".into()))
         .expect("keymap bindings should accept runtime keymaps");
 
     let mut env = Vec::new();
-    let substituted = call(
-        &mut interp,
-        "substitute-command-keys",
-        &[Value::String(
-            "text: \\<button-tests--map>\\[ignore]".into(),
-        )],
-        &mut env,
-    )
-    .expect("substitute-command-keys should expand explicit keymaps");
+    let substituted = interp
+        .call_function_value(
+            Value::symbol("substitute-command-keys"),
+            Some("substitute-command-keys"),
+            &[Value::String(
+                "text: \\<button-tests--map>\\[ignore]".into(),
+            )],
+            &mut env,
+        )
+        .expect("GNU help.el substitute-command-keys should expand explicit keymaps");
 
     assert_eq!(substituted, Value::String("text: x".into()));
 }
@@ -9101,6 +9463,31 @@ fn add_face_text_property_preserves_other_string_properties() {
     assert_eq!(
         string_property_at(&string, 0, "face"),
         Some(Value::Symbol("button".into()))
+    );
+}
+
+#[test]
+fn mapconcat_result_preserves_gnu_mutable_string_identity() {
+    let contract = r#"(let* ((string (mapconcat #'identity '("a" "b") ""))
+                             (alias string))
+                        (aset string 1 ?x)
+                        (add-face-text-property 0 1 'bold nil string)
+                        (list (equal alias "ax") (eq string alias)
+                              (get-text-property 0 'face alias)))"#;
+    let expected = "(t t bold)";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("mutable mapconcat contract should parse")
+        .expect("mutable mapconcat contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("mutable mapconcat contract should evaluate")
+            .to_string(),
+        expected
     );
 }
 
@@ -10107,58 +10494,6 @@ fn completion_predicates_preserve_string_list_membership() {
 }
 
 #[test]
-fn shell_quote_argument_matches_upstream_batch_cases() {
-    assert_eq!(shell_quote_argument("*.pl"), r"\*.pl");
-    assert_eq!(shell_quote_argument("nfs"), "nfs");
-    assert_eq!(
-        shell_quote_argument("/Users/example/projects/emaxx/"),
-        "/Users/example/projects/emaxx/"
-    );
-    assert_eq!(shell_quote_argument("foo bar"), r"foo\ bar");
-    assert_eq!(shell_quote_argument(""), "''");
-}
-
-#[test]
-fn split_string_supports_regexp_separators() {
-    let interp = Interpreter::new();
-    let env = Vec::new();
-    assert_eq!(
-        regexp::split_string_impl(
-            &interp,
-            &Value::String("-k basename".into()),
-            Some(&Value::String("\\s-+".into())),
-            None,
-            &env,
-        )
-        .expect("split-string should accept regexp separators"),
-        Value::list([Value::String("-k".into()), Value::String("basename".into()),])
-    );
-}
-
-#[test]
-fn split_string_supports_multibyte_regexp_separators() {
-    let interp = Interpreter::new();
-    let env = Vec::new();
-    assert_eq!(
-        regexp::split_string_impl(
-            &interp,
-            &Value::String("2¦4¦bb*¦abbbc¦".into()),
-            Some(&Value::String("¦".into())),
-            None,
-            &env,
-        )
-        .expect("split-string should accept multibyte regexp separators"),
-        Value::list([
-            Value::String("2".into()),
-            Value::String("4".into()),
-            Value::String("bb*".into()),
-            Value::String("abbbc".into()),
-            Value::String("".into()),
-        ])
-    );
-}
-
-#[test]
 fn completion_results_accept_text_properties() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -10714,6 +11049,118 @@ fn native_minibuffer_stack_queries_match_gnu_minibuf_c() {
             expected
         );
     }
+}
+
+#[test]
+fn native_read_expression_history_matches_gnu_minibuf_c_value_cell() {
+    let contract = r#"(progn
+             (defalias 'sample-native-history-reader
+               (function (lambda () read-expression-history)))
+             (list
+              (boundp 'read-expression-history)
+              read-expression-history
+              (let ((read-expression-history '(one)))
+                (sample-native-history-reader))
+              (default-boundp 'read-expression-history)
+              (default-value 'read-expression-history)
+              (special-variable-p 'read-expression-history)))"#;
+    let expected = "(t nil (one) t nil t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("read-expression-history contract should parse")
+        .expect("read-expression-history contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("read-expression-history contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("read-expression-history result should parse")
+            .expect("read-expression-history result should exist")
+    );
+}
+
+#[test]
+fn native_record_and_pseudovector_type_names_match_gnu_data_c() {
+    let public_program = r#"(let* ((plain (record 'sample-record-type 1))
+                                    (mutex (make-mutex "m"))
+                                    (condition
+                                     (make-condition-variable mutex "c")))
+                               (list (type-of plain)
+                                     (cl-type-of plain)
+                                     (type-of condition)
+                                     (cl-type-of condition)))"#;
+    let public_expected =
+        "(sample-record-type sample-record-type condition-variable condition-variable)";
+    assert_upstream_primitive_contract(&format!("(prin1 {public_program})"), public_expected);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(public_program)
+        .read()
+        .expect("type-name contract should parse")
+        .expect("type-name contract should contain a form");
+    let expected = Reader::new(public_expected)
+        .read()
+        .expect("type-name result should parse")
+        .expect("type-name result should exist");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("type-name contract should evaluate"),
+        expected
+    );
+
+    // These GNU PVEC_TS_* objects need a loaded grammar to construct through
+    // Lisp, so cover the C decision-table names at Emaxx's typed host boundary.
+    // GNU data.c returns exactly these `treesit-*` symbols for both `type-of`
+    // and `cl-type-of`.
+    for (variable, kind, type_name) in [
+        (
+            "parser-under-test",
+            crate::lisp::eval::RecordKind::TreeSitterParser,
+            "treesit-parser",
+        ),
+        (
+            "node-under-test",
+            crate::lisp::eval::RecordKind::TreeSitterNode,
+            "treesit-node",
+        ),
+        (
+            "query-under-test",
+            crate::lisp::eval::RecordKind::TreeSitterCompiledQuery,
+            "treesit-compiled-query",
+        ),
+    ] {
+        let value = interp.create_pseudovector(kind, type_name, Vec::new());
+        interp.set_global_binding(variable, value);
+    }
+    let form = Reader::new(
+        "(list
+           (type-of parser-under-test) (cl-type-of parser-under-test)
+           (type-of node-under-test) (cl-type-of node-under-test)
+           (type-of query-under-test) (cl-type-of query-under-test))",
+    )
+    .read()
+    .expect("Tree-sitter type-name contract should parse")
+    .expect("Tree-sitter type-name contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("Tree-sitter type-name contract should evaluate"),
+        Value::list([
+            Value::symbol("treesit-parser"),
+            Value::symbol("treesit-parser"),
+            Value::symbol("treesit-node"),
+            Value::symbol("treesit-node"),
+            Value::symbol("treesit-compiled-query"),
+            Value::symbol("treesit-compiled-query"),
+        ])
+    );
 }
 
 #[test]
@@ -13381,9 +13828,10 @@ fn minibuffer_prompt_carries_its_face_through_the_read() {
     let observed: std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&observed);
-    set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+    set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
         let active = interp
-            .lookup_var("emaxx--active-minibuffer", env)
+            .active_minibuffer_buffer_id()
+            .and_then(|id| interp.buffer_identity_value(id))
             .unwrap_or(Value::Nil);
         let face = interp
             .buffer
@@ -13405,7 +13853,7 @@ fn minibuffer_prompt_carries_its_face_through_the_read() {
     let (active, face) = &observed[0];
     assert!(
         matches!(active, Value::Buffer(_)),
-        "emaxx--active-minibuffer holds the live buffer, got {active:?}"
+        "the native minibuffer runtime holds the live buffer, got {active:?}"
     );
     assert_eq!(
         face,
@@ -13502,19 +13950,16 @@ fn window_resize_apply_commits_staged_pixel_sizes() {
     }
     call(&mut interp, "window-resize-apply", &[], &mut env).expect("apply succeeds");
     let edges = |interp: &mut Interpreter, env: &mut Env, window: &Value| {
-        call(interp, "window-edges", std::slice::from_ref(window), env)
-            .expect("edges")
-            .to_vec()
-            .expect("edge list")
+        window_edges_from_natives(interp, env, std::slice::from_ref(window))
     };
     assert_eq!(
         edges(&mut interp, &mut env, &upper),
-        [0, 0, 80, 16].map(Value::Integer),
+        vec![0, 0, 80, 16],
         "the upper window takes its staged 16 lines"
     );
     assert_eq!(
         edges(&mut interp, &mut env, &lower),
-        [0, 16, 80, 24].map(Value::Integer),
+        vec![0, 16, 80, 24],
         "the lower window is laid out below the applied upper size"
     );
 }
@@ -13555,13 +14000,16 @@ fn window_text_pixel_size_measures_the_window_buffer_with_mode_lines() {
 fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    call(
+    // `switch-to-buffer' is GNU window.el's; the undo protocol under
+    // test only needs the buffer to become current.
+    let undo_buffer = call(
         &mut interp,
-        "switch-to-buffer",
+        "get-buffer-create",
         &[Value::String("undo-markers".into())],
         &mut env,
     )
-    .expect("buffer switches");
+    .expect("buffer creates");
+    call(&mut interp, "set-buffer", &[undo_buffer], &mut env).expect("buffer switches");
     call(&mut interp, "buffer-enable-undo", &[], &mut env).expect("undo enables");
     call(
         &mut interp,
@@ -14159,21 +14607,41 @@ fn error_message_strings_match_the_oracle() {
     assert_eq!(emaxx_batch_output(program), answer);
 }
 
+fn window_edges_from_natives(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window: &[Value],
+) -> Vec<i64> {
+    // GNU's `window-edges' is window.el Lisp over these window.c
+    // primitives; compose the same (LEFT TOP RIGHT BOTTOM) answer here.
+    let field = |interp: &mut Interpreter, env: &mut Env, name: &str| {
+        call(interp, name, window, env)
+            .expect(name)
+            .as_integer()
+            .expect("integer geometry")
+    };
+    let left = field(interp, env, "window-left-column");
+    let top = field(interp, env, "window-top-line");
+    let width = field(interp, env, "window-total-width");
+    let height = field(interp, env, "window-total-height");
+    vec![left, top, left + width, top + height]
+}
+
 #[test]
 fn tty_frame_size_shapes_the_root_and_minibuffer_windows() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     interp.set_tty_frame_size(80, 24);
-    let root_edges = call(&mut interp, "window-edges", &[], &mut env).expect("window-edges");
+    let root_edges = window_edges_from_natives(&mut interp, &mut env, &[]);
     assert_eq!(
-        format!("{root_edges}"),
-        "(0 1 80 23)",
+        root_edges,
+        vec![0, 1, 80, 23],
         "a 24-row tty reserves the menu-bar line above 22 root lines"
     );
     let minibuffer = call(&mut interp, "minibuffer-window", &[], &mut env).expect("window");
-    let minibuffer_edges = call(&mut interp, "window-edges", &[minibuffer], &mut env)
-        .expect("minibuffer window-edges");
-    assert_eq!(format!("{minibuffer_edges}"), "(0 23 80 24)");
+    let minibuffer_edges =
+        window_edges_from_natives(&mut interp, &mut env, std::slice::from_ref(&minibuffer));
+    assert_eq!(minibuffer_edges, vec![0, 23, 80, 24]);
 }
 
 #[test]
@@ -14339,7 +14807,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     // line number, and the dedication mark.  mode-line-format is
     // buffer-local when set, so shape the default every buffer inherits.
     let spec = Reader::new(
-        "(setq-default mode-line-format
+        "(set-default 'mode-line-format
            (list \"%b L%l\"
                  '(:eval (cond ((eq (window-dedicated-p) t) \"D\")
                                ((window-dedicated-p) \"d\")
@@ -14428,7 +14896,7 @@ fn interactive_spec_i_passes_nil_without_reading_anything() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let form = Reader::new(
-        "(defun emaxx-test-spec-i (a b) (interactive \"i\\np\") (setq emaxx-test-spec-args (list a b)))",
+        "(defalias 'emaxx-test-spec-i (function (lambda (a b) (interactive \"i\\np\") (setq emaxx-test-spec-args (list a b)))))",
     )
     .read()
     .expect("defun parses")
@@ -14631,5 +15099,36 @@ fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() 
         interp.buffer.point(),
         7,
         "the entry buffer's point survives"
+    );
+}
+
+#[test]
+fn eager_load_expansion_invokes_the_lisp_owner_for_both_phases() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    for form in Reader::new(
+        "(setq eager-owner-calls nil)\n\
+         (defalias 'internal-macroexpand-for-load\n\
+           (function\n\
+             (lambda (form full)\n\
+               (setq eager-owner-calls (cons full eager-owner-calls))\n\
+               (if full '(quote expanded-by-owner) form))))",
+    )
+    .read_all()
+    .expect("owner fixture parses")
+    {
+        interp.eval(&form, &mut env).expect("install Lisp owner");
+    }
+
+    let form = Reader::new("(quote original)")
+        .read_all()
+        .expect("load form parses")
+        .remove(0);
+    let result = eager_expand_eval(&mut interp, &form, &mut env).expect("eager expansion");
+
+    assert_eq!(result, Value::Symbol("expanded-by-owner".into()));
+    assert_eq!(
+        interp.lookup_var("eager-owner-calls", &env),
+        Some(Value::list([Value::T, Value::Nil]))
     );
 }

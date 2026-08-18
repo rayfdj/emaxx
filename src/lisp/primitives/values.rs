@@ -19,47 +19,6 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
     values_equal_recursive(interp, left, right, &mut HashSet::new())
 }
 
-pub(crate) fn values_equal_checked(
-    interp: &Interpreter,
-    left: &Value,
-    right: &Value,
-) -> Result<bool, LispError> {
-    ensure_acyclic_cons_graph(left)?;
-    ensure_acyclic_cons_graph(right)?;
-    Ok(values_equal(interp, left, right))
-}
-
-fn ensure_acyclic_cons_graph(value: &Value) -> Result<(), LispError> {
-    fn visit(
-        value: &Value,
-        visiting: &mut HashSet<usize>,
-        visited: &mut HashSet<usize>,
-    ) -> Result<(), LispError> {
-        let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
-            return Ok(());
-        };
-        let ptr = car_cell.cell_id();
-        if visited.contains(&ptr) {
-            return Ok(());
-        }
-        if !visiting.insert(ptr) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("circular-list".into()),
-                Value::String("Circular list".into()),
-            ])));
-        }
-
-        visit(&car_cell.borrow(), visiting, visited)?;
-        visit(&cdr_cell.borrow(), visiting, visited)?;
-
-        visiting.remove(&ptr);
-        visited.insert(ptr);
-        Ok(())
-    }
-
-    visit(value, &mut HashSet::new(), &mut HashSet::new())
-}
-
 pub(crate) fn keymap_records_equal(
     interp: &Interpreter,
     left_id: u64,
@@ -191,13 +150,9 @@ pub(crate) fn record_equals_record_literal_form(
         }
     }
 
-    let expected_fields = if record.type_name == "literal-record" {
-        record.slots.clone()
-    } else {
-        std::iter::once(Value::Symbol(record.type_name.clone().into()))
-            .chain(record.slots.iter().cloned())
-            .collect()
-    };
+    let expected_fields = std::iter::once(record.type_tag.clone())
+        .chain(record.slots.iter().cloned())
+        .collect::<Vec<_>>();
     let actual_fields = &items[1..];
 
     expected_fields.len() == actual_fields.len()
@@ -217,7 +172,8 @@ pub(crate) fn values_equal_recursive(
     seen: &mut HashSet<(usize, usize)>,
 ) -> bool {
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
-        return left_string.text == right_string.text;
+        return left_string.text == right_string.text
+            && left_string.extended_chars == right_string.extended_chars;
     }
     if is_bool_vector_value(interp, left) && is_bool_vector_value(interp, right) {
         return bool_vector_values(interp, left).ok() == bool_vector_values(interp, right).ok();
@@ -253,9 +209,19 @@ pub(crate) fn values_equal_recursive(
         }
         (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
         (Value::String(a), Value::String(b)) => a == b,
-        (Value::StringObject(a), Value::StringObject(b)) => a.borrow().text == b.borrow().text,
-        (Value::String(a), Value::StringObject(b)) => a.as_str() == b.borrow().text,
-        (Value::StringObject(a), Value::String(b)) => a.borrow().text == b.as_str(),
+        (Value::StringObject(a), Value::StringObject(b)) => {
+            let a = a.borrow();
+            let b = b.borrow();
+            a.text == b.text && a.extended_chars == b.extended_chars
+        }
+        (Value::String(a), Value::StringObject(b)) => {
+            let b = b.borrow();
+            b.extended_chars.is_empty() && a.as_str() == b.text
+        }
+        (Value::StringObject(a), Value::String(b)) => {
+            let a = a.borrow();
+            a.extended_chars.is_empty() && a.text == b.as_str()
+        }
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Buffer(a), Value::Buffer(b)) => a.id == b.id,
@@ -336,7 +302,7 @@ pub(crate) fn values_equal_recursive(
             if !seen.insert(pair) {
                 return true;
             }
-            left_record.type_name == right_record.type_name
+            values_equal_recursive(interp, &left_record.type_tag, &right_record.type_tag, seen)
                 && left_record.slots.len() == right_record.slots.len()
                 && left_record
                     .slots
@@ -370,66 +336,23 @@ pub(crate) fn values_equal_recursive(
             values_equal_recursive(interp, &a_car, &b_car, seen)
                 && values_equal_recursive(interp, &a_cdr, &b_cdr, seen)
         }
-        // GNU compares closures structurally: two closures are `equal' when
-        // their code matches AND their captured environments match.  GNU's
-        // lexical closures capture only the variables the body references;
-        // emaxx lambdas over-capture whole frames, so compare just the
-        // bindings the body actually mentions (two textually identical
-        // lambdas evaluated separately still compare equal — nadvice's
-        // advice--member-p relies on it — while closures over differing
-        // captured values do not — testcover's 1value detection relies on
-        // THAT).
         (Value::Lambda(left), Value::Lambda(right)) => {
-            if left.params != right.params || left.body != right.body {
-                return false;
-            }
-            let left_ptr = Rc::as_ptr(&left.env) as usize;
-            let right_ptr = Rc::as_ptr(&right.env) as usize;
+            let left_ptr = Rc::as_ptr(left) as usize;
+            let right_ptr = Rc::as_ptr(right) as usize;
             if left_ptr == right_ptr || !seen.insert((left_ptr, right_ptr)) {
                 return true;
             }
-            let mut symbols = HashSet::new();
-            for form in right.body.iter() {
-                collect_free_symbol_candidates(form, &mut symbols);
+            let left_slots = interp.interpreted_closure_slots(left);
+            let right_slots = interp.interpreted_closure_slots(right);
+            if left_slots.len() != right_slots.len() {
+                return false;
             }
-            for param in right.params.iter() {
-                symbols.remove(param.as_str());
-            }
-            symbols.iter().all(|symbol| {
-                match (
-                    interp.effective_captured_binding(&left.env, symbol),
-                    interp.effective_captured_binding(&right.env, symbol),
-                ) {
-                    (None, None) => true,
-                    (Some(left_value), Some(right_value)) => {
-                        values_equal_recursive(interp, &left_value, &right_value, seen)
-                    }
-                    _ => false,
-                }
-            })
+            left_slots
+                .iter()
+                .zip(right_slots.iter())
+                .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
         }
         _ => left == right,
-    }
-}
-
-/// Collect symbols occurring in FORM that could be free-variable references.
-/// Quoted data is skipped (a quoted symbol is not a variable reference);
-/// everything else is walked conservatively.
-fn collect_free_symbol_candidates(form: &Value, symbols: &mut HashSet<String>) {
-    match form {
-        Value::Symbol(name) => {
-            symbols.insert(name.to_string());
-        }
-        Value::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            if matches!(&*car.borrow(), Value::Symbol(head) if head == "quote") {
-                return;
-            }
-            collect_free_symbol_candidates(&car.borrow(), symbols);
-            collect_free_symbol_candidates(&cdr.borrow(), symbols);
-        }
-        _ => {}
     }
 }
 
@@ -444,11 +367,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
-        (Value::Lambda(left), Value::Lambda(right)) => {
-            left.params == right.params
-                && left.body == right.body
-                && Rc::ptr_eq(&left.env, &right.env)
-        }
+        (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
@@ -488,11 +407,7 @@ pub(crate) fn values_eq_in_env(
             false
         }
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
-        (Value::Lambda(left), Value::Lambda(right)) => {
-            left.params == right.params
-                && left.body == right.body
-                && Rc::ptr_eq(&left.env, &right.env)
-        }
+        (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
         | (Value::Overlay(left_id), Value::Overlay(right_id))
@@ -581,6 +496,12 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
 }
 
 pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
+    if let Some(items) = keymap_list_items(interp, value)? {
+        return Ok(items.len() as i64);
+    }
+    if let Some(items) = record_literal_items(value) {
+        return Ok(items.len().saturating_sub(1) as i64);
+    }
     match value {
         item if string_like(item).is_some() => Ok(string_text(item)?.chars().count() as i64),
         Value::Nil => Ok(0),
@@ -589,12 +510,25 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         item if is_bool_vector_value(interp, item) => {
             Ok(bool_vector_values(interp, item)?.len() as i64)
         }
+        Value::Lambda(lambda) => Ok(lambda.public_len() as i64),
         Value::Cons(_) => Ok(value.to_vec()?.len() as i64),
         Value::Record(id) => {
             let record = interp
                 .find_record(*id)
                 .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-            Ok((record.slots.len() + 1) as i64)
+            match record.kind {
+                // GNU records carry their type tag in public slot zero;
+                // Emaxx stores that tag separately from `slots'.
+                crate::lisp::eval::RecordKind::Record => Ok((record.slots.len() + 1) as i64),
+                // GNU Lisp_Closure slots already start at CLOSURE_ARGLIST and
+                // have no public type-tag slot (lisp.h, enum Lisp_Closure).
+                crate::lisp::eval::RecordKind::Closure => Ok(record.slots.len() as i64),
+                // Other RecordKind variants are host storage for distinct GNU
+                // pseudovectors.  Flength accepts none of them here; bool
+                // vectors and keymaps were projected through their GNU public
+                // sequence representations above.
+                _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
+            }
         }
         _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
     }
@@ -627,7 +561,9 @@ pub(crate) fn values_equal_including_properties_recursive(
         // GNU's compare_string_intervals walks POSITIONS, so interval
         // segmentation is not significant, and plists within a span
         // compare as sets (intervals_equal in intervals.c).
-        if left_string.text != right_string.text {
+        if left_string.text != right_string.text
+            || left_string.extended_chars != right_string.extended_chars
+        {
             return false;
         }
         let len = left_string.text.chars().count();
@@ -920,10 +856,16 @@ pub(crate) fn compare_record_values(
             },
         )),
         crate::lisp::eval::RecordKind::Record | crate::lisp::eval::RecordKind::Keymap => {
-            let type_order =
-                compare_plain_symbol_names(&left_record.type_name, &right_record.type_name);
-            if type_order != ValueOrder::Equal {
-                return Ok(Some(type_order));
+            match value_ordering(
+                interp,
+                &left_record.type_tag,
+                &right_record.type_tag,
+                env,
+                seen_lists,
+            )? {
+                ValueOrder::Less => return Ok(Some(ValueOrder::Less)),
+                ValueOrder::Greater => return Ok(Some(ValueOrder::Greater)),
+                ValueOrder::Equal | ValueOrder::Unordered => {}
             }
             Ok(Some(compare_sequence_values(
                 interp,
@@ -1062,7 +1004,9 @@ pub(crate) fn value_ordering(
 
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
         return Ok(order_from_ordering(
-            left_string.text.cmp(&right_string.text),
+            left_string
+                .character_codes()
+                .cmp(&right_string.character_codes()),
         ));
     }
     if string_like(left).is_some() || string_like(right).is_some() {
@@ -1151,105 +1095,6 @@ pub(crate) fn remove_equal(
     }
 }
 
-pub(crate) fn rassq_delete_all(key: &Value, alist: &Value) -> Result<Value, LispError> {
-    let filtered = alist
-        .to_vec()?
-        .into_iter()
-        .filter(|entry| match entry {
-            Value::Cons(_) => entry.cdr().is_ok_and(|value| value != *key),
-            _ => true,
-        })
-        .collect::<Vec<_>>();
-    Ok(Value::list(filtered))
-}
-
-pub(crate) fn assq_delete_all(key: &Value, alist: &Value) -> Result<Value, LispError> {
-    let filtered = alist
-        .to_vec()?
-        .into_iter()
-        .filter(|entry| match entry {
-            Value::Cons(_) => entry.car().is_ok_and(|value| value != *key),
-            _ => true,
-        })
-        .collect::<Vec<_>>();
-    Ok(Value::list(filtered))
-}
-
-pub(crate) fn assoc_delete_all(
-    interp: &Interpreter,
-    key: &Value,
-    alist: &Value,
-) -> Result<Value, LispError> {
-    let filtered = alist
-        .to_vec()?
-        .into_iter()
-        .filter(|entry| match entry {
-            Value::Cons(_) => entry
-                .car()
-                .is_ok_and(|value| !values_equal(interp, &value, key)),
-            _ => true,
-        })
-        .collect::<Vec<_>>();
-    Ok(Value::list(filtered))
-}
-
-pub(crate) fn format_prompt(
-    interp: &mut Interpreter,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    if args.len() < 2 {
-        return Err(LispError::WrongNumberOfArgs(
-            "format-prompt".into(),
-            args.len(),
-        ));
-    }
-
-    let prompt = if args.len() == 2 {
-        call(interp, "substitute-command-keys", &[args[0].clone()], env)?
-    } else {
-        let mut format_args = Vec::with_capacity(args.len() - 1);
-        format_args.push(call(
-            interp,
-            "substitute-command-keys",
-            &[args[0].clone()],
-            env,
-        )?);
-        format_args.extend_from_slice(&args[2..]);
-        call(interp, "format", &format_args, env)?
-    };
-
-    let default = match &args[1] {
-        Value::Nil => None,
-        Value::Cons(_) => args[1].car().ok(),
-        other => Some(other.clone()),
-    }
-    .filter(|value| {
-        string_like(value)
-            .map(|string| !string.text.is_empty())
-            .unwrap_or(true)
-    });
-
-    let mut result = string_text(&prompt)?.to_string();
-    if let Some(default) = default {
-        let default_format = interp
-            .lookup_var("minibuffer-default-prompt-format", env)
-            .and_then(|value| string_like(&value).map(|string| string.text))
-            .unwrap_or_else(|| " (default %s)".into());
-        let default_string = match string_like(&default) {
-            Some(string) => string.text,
-            None => default.to_string(),
-        };
-        let format_args = [
-            Value::String(default_format.into()),
-            Value::String(default_string.into()),
-        ];
-        result.push_str(&string_text(&call(interp, "format", &format_args, env)?)?);
-    }
-    result.push_str(": ");
-    Ok(Value::String(result.into()))
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HashMode {
     Eq,
@@ -1292,68 +1137,6 @@ pub(crate) fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
     Ok(head.unwrap_or(Value::Nil))
 }
 
-pub(crate) fn copy_tree_value(
-    interp: &mut Interpreter,
-    value: &Value,
-    vectors_and_records: bool,
-) -> Result<Value, LispError> {
-    if is_vector_value(value) {
-        if !vectors_and_records {
-            return Ok(value.clone());
-        }
-        let items = value.to_vec()?;
-        let mut copied = Vec::with_capacity(items.len());
-        if let Some(tag) = items.first() {
-            copied.push(tag.clone());
-        }
-        for item in items.into_iter().skip(1) {
-            copied.push(copy_tree_value(interp, &item, true)?);
-        }
-        return Ok(Value::list(copied));
-    }
-
-    match value {
-        Value::Cons(_) => {
-            let Some((car, cdr)) = value.cons_values() else {
-                return Ok(value.clone());
-            };
-            Ok(Value::cons(
-                copy_tree_value(interp, &car, vectors_and_records)?,
-                copy_tree_value(interp, &cdr, vectors_and_records)?,
-            ))
-        }
-        Value::Record(id) if vectors_and_records => {
-            let record = interp
-                .find_record(*id)
-                .cloned()
-                .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-            let mut slots = Vec::with_capacity(record.slots.len());
-            for slot in &record.slots {
-                slots.push(copy_tree_value(interp, slot, true)?);
-            }
-            if record.kind == crate::lisp::eval::RecordKind::Record {
-                Ok(interp.create_record(&record.type_name, slots))
-            } else {
-                Ok(value.clone())
-            }
-        }
-        _ => Ok(value.clone()),
-    }
-}
-
-pub(crate) fn flatten_tree_value(value: &Value, leaves: &mut Vec<Value>) {
-    match value {
-        Value::Nil => {}
-        Value::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            flatten_tree_value(&car.borrow(), leaves);
-            flatten_tree_value(&cdr.borrow(), leaves);
-        }
-        leaf => leaves.push(leaf.clone()),
-    }
-}
-
 pub(crate) fn copy_alist_value(value: &Value) -> Result<Value, LispError> {
     if string_like(value).is_some() || is_vector_value(value) {
         return Err(LispError::TypeError("list".into(), value.type_name()));
@@ -1373,8 +1156,6 @@ pub(crate) fn copy_alist_value(value: &Value) -> Result<Value, LispError> {
 pub(crate) struct RemoteFileNameParts {
     pub(crate) prefix: String,
     pub(crate) method: String,
-    pub(crate) user: Option<String>,
-    pub(crate) host: String,
     pub(crate) localname: String,
 }
 
@@ -1392,134 +1173,17 @@ pub(crate) fn parse_remote_file_name(path: &str) -> Option<RemoteFileNameParts> 
     let host_end = after_method.find(':')?;
     let authority = &after_method[..host_end];
     let localname = after_method[host_end + 1..].to_string();
-    let (user, host) = match authority.rsplit_once('@') {
-        Some((user, host)) if !host.is_empty() => (Some(user.to_string()), host.to_string()),
-        _ if authority.is_empty() && method == "mock" => (None, String::new()),
+    match authority.rsplit_once('@') {
+        Some((_, host)) if !host.is_empty() => {}
+        _ if authority.is_empty() && method == "mock" => {}
         _ if authority.is_empty() => return None,
-        _ => (None, authority.to_string()),
-    };
+        _ => {}
+    }
     Some(RemoteFileNameParts {
         prefix: path[..1 + method_end + 1 + host_end + 1].to_string(),
         method,
-        user,
-        host,
         localname,
     })
-}
-
-#[derive(Default)]
-pub(crate) struct ClDeleteIfOptions {
-    start: usize,
-    end: Option<usize>,
-    from_end: bool,
-}
-
-pub(crate) fn collect_list_cells(value: &Value) -> Result<(Vec<Value>, Value), LispError> {
-    let mut cells = Vec::new();
-    let mut current = value.clone();
-    let mut seen = crate::lisp::types::CycleGuard::new();
-    loop {
-        match current.clone() {
-            Value::Nil => return Ok((cells, Value::Nil)),
-            Value::Cons(cons_cell) => {
-                let cdr = &cons_cell.cdr;
-                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                if seen.step(cell_id) {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("circular-list"),
-                        Value::string("Circular list"),
-                    ])));
-                }
-                cells.push(current.clone());
-                current = cdr.borrow().clone();
-            }
-            other => {
-                return Err(LispError::TypeError("list".into(), other.type_name()));
-            }
-        }
-    }
-}
-
-pub(crate) fn parse_cl_delete_if_options(args: &[Value]) -> Result<ClDeleteIfOptions, LispError> {
-    let mut options = ClDeleteIfOptions::default();
-    let mut index = 2usize;
-    while index < args.len() {
-        let Some(keyword) = args[index].as_symbol().ok() else {
-            return Err(LispError::Signal("Unsupported cl-delete-if syntax".into()));
-        };
-        let Some(value) = args.get(index + 1) else {
-            return Err(LispError::Signal("Unsupported cl-delete-if syntax".into()));
-        };
-        match keyword {
-            ":start" => {
-                options.start = value.as_integer()?.max(0) as usize;
-            }
-            ":end" => {
-                options.end = Some(value.as_integer()?.max(0) as usize);
-            }
-            ":from-end" => {
-                options.from_end = value.is_truthy();
-            }
-            _ => return Err(LispError::Signal("Unsupported cl-delete-if syntax".into())),
-        }
-        index += 2;
-    }
-    Ok(options)
-}
-
-pub(crate) fn cl_delete_if_values(
-    interp: &mut Interpreter,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    if args.len() < 2 {
-        return Err(LispError::WrongNumberOfArgs(
-            "cl-delete-if".into(),
-            args.len(),
-        ));
-    }
-
-    let options = parse_cl_delete_if_options(args)?;
-    let _ = options.from_end;
-    let (cells, tail) = collect_list_cells(&args[1])?;
-    let len = cells.len();
-    let start = options.start.min(len);
-    let end = options.end.unwrap_or(len).min(len);
-    let mut keep = vec![true; len];
-    let predicate = resolve_callable(interp, &args[0], env)?;
-    let predicate_name = args[0].as_symbol().ok();
-
-    for index in start..end {
-        let item = cells[index].car()?;
-        if interp
-            .call_function_value(
-                predicate.clone(),
-                predicate_name,
-                std::slice::from_ref(&item),
-                env,
-            )?
-            .is_truthy()
-        {
-            keep[index] = false;
-        }
-    }
-    let kept_cells = cells
-        .iter()
-        .zip(keep.iter())
-        .filter_map(|(cell, keep_cell)| keep_cell.then_some(cell.clone()))
-        .collect::<Vec<_>>();
-
-    if kept_cells.is_empty() {
-        return Ok(tail);
-    }
-
-    for window in kept_cells.windows(2) {
-        window[0].set_cdr(window[1].clone())?;
-    }
-    if let Some(last) = kept_cells.last() {
-        last.set_cdr(tail)?;
-    }
-    Ok(kept_cells[0].clone())
 }
 
 pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
@@ -1568,7 +1232,8 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
             | Value::Marker(_)
             | Value::Overlay(_)
             | Value::CharTable(_)
-            | Value::Lambda(_) => false,
+            | Value::Lambda(_)
+            | Value::ReaderForm(_) => false,
             Value::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
@@ -1582,10 +1247,7 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
                 let car_value = car.borrow();
                 if matches!(
                     &*car_value,
-                    Value::Symbol(symbol)
-                        if symbol == "keymap"
-                            || symbol == crate::lisp::reader::RECORD_LITERAL_SYMBOL
-                            || symbol == crate::lisp::reader::CLOSURE_LITERAL_SYMBOL
+                    Value::Symbol(symbol) if symbol == "keymap"
                 ) {
                     visiting.remove(&identity);
                     return false;
@@ -1764,6 +1426,10 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 13);
             hash_mix(state, *id);
         }
+        Value::ReaderForm(form) => {
+            hash_mix(state, 20);
+            hash_mix(state, Rc::as_ptr(form) as usize as u64);
+        }
         Value::Unbound => {
             hash_mix(state, 17);
         }
@@ -1836,6 +1502,10 @@ pub(crate) fn hash_value_equal(
             hash_mix(state, 35);
             let shared = shared.borrow();
             hash_str(state, &shared.text);
+            for (index, code) in &shared.extended_chars {
+                hash_mix(state, *index as u64);
+                hash_mix(state, u64::from(*code));
+            }
             if include_properties {
                 hash_props(interp, state, &shared.props);
             }
@@ -1857,15 +1527,9 @@ pub(crate) fn hash_value_equal(
             hash_str(state, name);
         }
         Value::Lambda(lambda_value) => {
-            let params = &lambda_value.params;
-            let body = &lambda_value.body;
-            let _ = &lambda_value.env;
             hash_mix(state, 40);
-            for param in params.iter() {
-                hash_str(state, param);
-            }
-            for form in body.iter() {
-                hash_value_equal(interp, state, form, include_properties);
+            for slot in interp.interpreted_closure_slots(lambda_value) {
+                hash_value_equal(interp, state, &slot, include_properties);
             }
         }
         Value::Buffer(buffer_value) => {
@@ -1899,6 +1563,10 @@ pub(crate) fn hash_value_equal(
         Value::Finalizer(id) => {
             hash_mix(state, 46);
             hash_mix(state, *id);
+        }
+        Value::ReaderForm(form) => {
+            hash_mix(state, 50);
+            hash_mix(state, Rc::as_ptr(form) as usize as u64);
         }
         Value::Unbound => {
             hash_mix(state, 47);
@@ -1993,99 +1661,20 @@ pub(crate) fn hash_record_equal(
         | crate::lisp::eval::RecordKind::TreeSitterNode
         | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
         | crate::lisp::eval::RecordKind::Sqlite => {
-            hash_str(state, &record.type_name);
+            hash_value_equal(interp, state, &record.type_tag, include_properties);
             hash_mix(state, id);
         }
         crate::lisp::eval::RecordKind::Record
         | crate::lisp::eval::RecordKind::Closure
         | crate::lisp::eval::RecordKind::Font
         | crate::lisp::eval::RecordKind::Keymap => {
-            hash_str(state, &record.type_name);
+            hash_value_equal(interp, state, &record.type_tag, include_properties);
             hash_mix(state, record.slots.len() as u64);
             for slot in &record.slots {
                 hash_value_equal(interp, state, slot, include_properties);
             }
         }
     }
-}
-
-pub(crate) fn custom_current_group_file(interp: &Interpreter) -> Option<String> {
-    interp.current_load_file().map(str::to_string)
-}
-
-pub(crate) fn custom_group_assoc_cdr(list: &Value, key: &str) -> Option<Value> {
-    let entries = list.to_vec().ok()?;
-    for entry in entries {
-        if let Some((car, cdr)) = entry.cons_values()
-            && string_text(&car).ok().as_deref() == Some(key)
-        {
-            return Some(cdr);
-        }
-    }
-    None
-}
-
-pub(crate) fn custom_current_group(interp: &Interpreter) -> Option<Value> {
-    let file = custom_current_group_file(interp)?;
-    let alist = interp
-        .symbol_value_cell("custom-current-group-alist")
-        .ok()?;
-    custom_group_assoc_cdr(&alist, &file)
-}
-
-pub(crate) fn custom_set_current_group(interp: &mut Interpreter, group: &str) {
-    let Some(file) = custom_current_group_file(interp) else {
-        return;
-    };
-    let entry = Value::cons(
-        Value::String(file.clone().into()),
-        Value::Symbol(group.into()),
-    );
-    let existing = interp
-        .symbol_value_cell("custom-current-group-alist")
-        .unwrap_or(Value::Nil);
-    let mut entries = existing.to_vec().unwrap_or_default();
-    if let Some(index) = entries.iter().position(|value| match value {
-        Value::Cons(_) => {
-            value
-                .cons_values()
-                .and_then(|(car, _)| string_text(&car).ok())
-                .as_deref()
-                == Some(file.as_str())
-        }
-        _ => false,
-    }) {
-        entries[index] = entry;
-    } else {
-        entries.insert(0, entry);
-    }
-    interp.set_global_binding("custom-current-group-alist", Value::list(entries));
-}
-
-pub(crate) fn custom_add_to_group(
-    interp: &mut Interpreter,
-    group: &str,
-    option: Value,
-    widget: Value,
-) {
-    let entry = Value::list([option, widget]);
-    let members = interp
-        .get_symbol_property(group, "custom-group")
-        .unwrap_or(Value::Nil);
-    let existing = members.to_vec().unwrap_or_default();
-    if existing
-        .iter()
-        .any(|value| values_equal(interp, value, &entry))
-    {
-        return;
-    }
-    let updated = if members.is_nil() {
-        Value::list([entry])
-    } else {
-        nconc_values(&[members, Value::list([entry.clone()])])
-            .unwrap_or_else(|_| Value::list([entry]))
-    };
-    interp.put_symbol_property(group, "custom-group", updated);
 }
 
 pub(crate) fn markers_equal(interp: &Interpreter, left_id: u64, right_id: u64) -> bool {
@@ -2134,13 +1723,16 @@ pub(crate) fn is_lambda_expression(value: &Value) -> bool {
     })
 }
 
-pub(crate) fn literal_form(value: &Value) -> Value {
-    match value {
-        Value::Cons(_) | Value::Symbol(_) => {
-            Value::list([Value::Symbol("quote".into()), value.clone()])
-        }
-        other => other.clone(),
-    }
+pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value) -> bool {
+    matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
+        || is_lambda_expression(value)
+        || matches!(
+            value,
+            Value::Record(id)
+                if interp
+                    .find_record(*id)
+                    .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure)
+        )
 }
 
 pub(crate) fn value_matches_with_test(
@@ -2174,30 +1766,6 @@ pub(crate) fn value_matches_with_test(
     }
 }
 
-pub(crate) fn seq_uniq(
-    interp: &mut Interpreter,
-    sequence: &Value,
-    testfn: Option<&Value>,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let mut unique = Vec::new();
-    let default_test = Value::Symbol("equal".into());
-    let testfn = testfn.or(Some(&default_test));
-    for item in sequence.to_vec()? {
-        let mut seen = false;
-        for existing in &unique {
-            if value_matches_with_test(interp, &item, existing, testfn, env)? {
-                seen = true;
-                break;
-            }
-        }
-        if !seen {
-            unique.push(item);
-        }
-    }
-    Ok(Value::list(unique))
-}
-
 pub(crate) fn invoke_function_value(
     interp: &mut Interpreter,
     func: &Value,
@@ -2215,14 +1783,6 @@ pub(crate) fn callable_name(original: &Value, resolved: &Value) -> Option<String
             _ => None,
         },
     }
-}
-
-pub(crate) fn keymap_placeholder(name: Option<&str>) -> Value {
-    let mut items = vec![Value::Symbol("keymap".into())];
-    if let Some(name) = name {
-        items.push(Value::String(name.into()));
-    }
-    Value::list(items)
 }
 
 pub(crate) const KEYMAP_RECORD_TYPE: &str = "keymap";
@@ -2894,57 +2454,6 @@ pub(crate) fn keymap_define_binding_with_placement(
         after_prompt,
     };
     bindings.insert(insert_at, binding);
-    if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
-        record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
-    }
-    record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
-    refresh_runtime_keymap_public_view(interp, id)?;
-    Ok(())
-}
-
-pub(crate) fn keymap_define_binding_after(
-    interp: &mut Interpreter,
-    keymap: &Value,
-    key: &str,
-    key_parts: Option<Vec<String>>,
-    binding: Value,
-    after_parts: Option<&[String]>,
-) -> Result<(), LispError> {
-    let Some(id) = keymap_record_id(interp, keymap) else {
-        return Ok(());
-    };
-    let Some(record) = interp.find_record_mut(id) else {
-        return Ok(());
-    };
-    let mut bindings = keymap_bindings(record)?;
-    if let Some(index) = bindings.iter().position(|existing| existing.key == key) {
-        bindings.remove(index);
-    }
-
-    let insert_at = after_parts
-        .and_then(|after| {
-            bindings
-                .iter()
-                .position(|existing| key_parts_match(&binding_key_parts(existing), after))
-                .map(|index| index + 1)
-        })
-        .or_else(|| {
-            bindings
-                .iter()
-                .rposition(|existing| existing.after_prompt)
-                .map(|index| index + 1)
-        })
-        .unwrap_or(bindings.len());
-
-    bindings.insert(
-        insert_at,
-        RuntimeKeymapBinding {
-            key: key.to_string(),
-            parts: key_parts,
-            value: binding,
-            after_prompt: true,
-        },
-    );
     if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
         record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
@@ -4656,81 +4165,9 @@ pub(crate) fn key_sequence_is_prefix(
     Ok(false)
 }
 
-pub(crate) fn keymap_binding_matches_command(binding: &Value, command: &str) -> bool {
-    match binding {
-        Value::Symbol(name) | Value::BuiltinFunc(name) => name == command,
-        Value::Cons(_) => binding
-            .to_vec()
-            .ok()
-            .is_some_and(|items| match items.as_slice() {
-                [Value::Symbol(symbol), inner] if symbol == "function" || symbol == "quote" => {
-                    keymap_binding_matches_command(inner, command)
-                }
-                [Value::Symbol(symbol), _, inner, ..] if symbol == "menu-item" => {
-                    keymap_binding_matches_command(inner, command)
-                }
-                _ => false,
-            }),
-        _ => false,
-    }
-}
-
-pub(crate) fn keymap_binding_text_for_command(
-    interp: &Interpreter,
-    keymap: &Value,
-    command: &str,
-) -> Option<String> {
-    let id = keymap_record_id(interp, keymap)?;
-    let record = interp.find_record(id)?;
-    let mut best = None::<((bool, usize), String)>;
-    for binding in keymap_bindings(record).ok()?.into_iter().rev() {
-        if !keymap_binding_matches_command(&binding.value, command) {
-            continue;
-        }
-        let parts = binding_key_parts(&binding);
-        let rank = where_is_binding_rank(&parts);
-        if best.as_ref().is_none_or(|(current, _)| rank < *current) {
-            best = Some((rank, binding.key));
-        }
-    }
-    if let Some((_, key)) = best {
-        return Some(key);
-    }
-    match record.slots.get(KEYMAP_PARENT_SLOT) {
-        Some(Value::Nil) | None => None,
-        Some(parent) => keymap_binding_text_for_command(interp, parent, command),
-    }
-}
-
-fn keymap_description_for_substitution(interp: &Interpreter, keymap: &Value) -> Option<String> {
-    let mut current = keymap.clone();
-    let mut visited = HashSet::new();
-    let mut seen_keys = HashSet::new();
-    let mut bindings = Vec::new();
-    while let Some(id) = keymap_record_id(interp, &current) {
-        if !visited.insert(id) {
-            break;
-        }
-        let record = interp.find_record(id)?;
-        for binding in keymap_bindings(record).ok()? {
-            if binding.value.is_nil() || !seen_keys.insert(binding.key.clone()) {
-                continue;
-            }
-            bindings.push((binding.key, keymap_binding_display_name(&binding.value)));
-        }
-        match record.slots.get(KEYMAP_PARENT_SLOT) {
-            Some(parent) if parent.is_truthy() => current = parent.clone(),
-            _ => break,
-        }
-    }
-    bindings.sort_by(|left, right| left.0.cmp(&right.0));
-    let mut output = String::from("\nKey             Binding\n---             -------\n\n");
-    for (key, binding) in bindings {
-        output.push_str(&format!("{key:<16}{binding}\n"));
-    }
-    Some(output)
-}
-
+/// GNU `doc.c:Ftext_quoting_style' collapses the Lisp variable to one of
+/// three effective styles.  Emaxx currently has no terminal display-table
+/// override, so nil follows GNU's display-capable default and means `curve'.
 pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &'static str {
     match interp.lookup_var("text-quoting-style", env) {
         Some(Value::Symbol(style)) if style == "grave" => "grave",
@@ -4738,124 +4175,4 @@ pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &
         Some(Value::Symbol(style)) if style == "curve" => "curve",
         _ => "curve",
     }
-}
-
-pub(crate) fn substitute_command_keys(interp: &Interpreter, text: &str, env: &Env) -> Value {
-    let chars: Vec<char> = text.chars().collect();
-    let mut output = String::new();
-    let mut properties = Vec::new();
-    // A `\<MAPVAR>' directive pins subsequent `\[...]' lookups to that map;
-    // without one, GNU consults the currently ACTIVE maps (minor-mode and
-    // local maps first, then the global map) like `where-is-internal'.
-    let mut explicit_map: Option<Value> = None;
-    let mut index = 0usize;
-
-    while index < chars.len() {
-        if chars[index] == '\\' && index + 1 < chars.len() {
-            match chars[index + 1] {
-                '<' => {
-                    if let Some(end) = chars[index + 2..]
-                        .iter()
-                        .position(|ch| *ch == '>')
-                        .map(|offset| index + 2 + offset)
-                    {
-                        let map_name: String = chars[index + 2..end].iter().collect();
-                        explicit_map = interp.lookup_var(&map_name, env);
-                        index = end + 1;
-                        continue;
-                    }
-                }
-                '[' => {
-                    if let Some(end) = chars[index + 2..]
-                        .iter()
-                        .position(|ch| *ch == ']')
-                        .map(|offset| index + 2 + offset)
-                    {
-                        let command: String = chars[index + 2..end].iter().collect();
-                        let command = command.trim();
-                        let replacement = if let Some(keymap) = &explicit_map {
-                            keymap_binding_text_for_command(interp, keymap, command).or_else(|| {
-                                // GNU treats `\<MAP>\[COMMAND]' as a
-                                // preferred map, not an isolated one: if
-                                // MAP has no binding, the global binding
-                                // is still advertised.
-                                keymap_binding_text_for_command(
-                                    interp,
-                                    &interp.current_global_map_value(),
-                                    command,
-                                )
-                            })
-                        } else {
-                            active_command_keymaps(interp, env)
-                                .ok()
-                                .and_then(|maps| {
-                                    maps.iter().find_map(|map| {
-                                        keymap_binding_text_for_command(interp, map, command)
-                                    })
-                                })
-                                .or_else(|| {
-                                    keymap_binding_text_for_command(
-                                        interp,
-                                        &interp.current_global_map_value(),
-                                        command,
-                                    )
-                                })
-                        }
-                        .unwrap_or_else(|| format!("M-x {command}"));
-                        let start = output.chars().count();
-                        output.push_str(&replacement);
-                        let property_end = output.chars().count();
-                        properties.push(TextPropertySpan {
-                            start,
-                            end: property_end,
-                            props: vec![
-                                ("font-lock-face".into(), Value::symbol("help-key-binding")),
-                                ("face".into(), Value::symbol("help-key-binding")),
-                            ],
-                        });
-                        index = end + 1;
-                        continue;
-                    }
-                }
-                '{' => {
-                    if let Some(end) = chars[index + 2..]
-                        .iter()
-                        .position(|ch| *ch == '}')
-                        .map(|offset| index + 2 + offset)
-                    {
-                        let map_name: String = chars[index + 2..end].iter().collect();
-                        if let Some(keymap) = interp.lookup_var(&map_name, env)
-                            && let Some(description) =
-                                keymap_description_for_substitution(interp, &keymap)
-                        {
-                            output.push_str(&description);
-                            index = end + 1;
-                            continue;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        output.push(chars[index]);
-        index += 1;
-    }
-
-    let output = match effective_text_quoting_style(interp, env) {
-        "straight" => output
-            .chars()
-            .map(|ch| if matches!(ch, '`' | '\'') { '\'' } else { ch })
-            .collect(),
-        "curve" => output
-            .chars()
-            .map(|ch| match ch {
-                '`' => '‘',
-                '\'' => '’',
-                _ => ch,
-            })
-            .collect(),
-        _ => output,
-    };
-    string_like_value(output, properties)
 }

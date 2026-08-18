@@ -382,7 +382,7 @@ pub(crate) fn gnu_system_type() -> &'static str {
     gnu_system_type_for_target(std::env::consts::OS)
 }
 
-/// `files.el' selects BSD Make syntax only for Darwin and Berkeley Unix.
+#[cfg(test)]
 pub(crate) fn gnu_default_makefile_mode_for_system_type(system_type: &str) -> &'static str {
     match system_type {
         "darwin" | "berkeley-unix" => "makefile-bsdmake-mode",
@@ -390,6 +390,7 @@ pub(crate) fn gnu_default_makefile_mode_for_system_type(system_type: &str) -> &'
     }
 }
 
+#[cfg(test)]
 pub(crate) fn gnu_default_makefile_mode() -> &'static str {
     gnu_default_makefile_mode_for_system_type(gnu_system_type())
 }
@@ -868,14 +869,6 @@ pub(crate) fn unquote_local_file_name(path: &str) -> Option<String> {
         .map(|rest| if rest.is_empty() { "/" } else { rest }.to_string())
 }
 
-pub(crate) fn quote_local_file_name_if_needed(path: String) -> String {
-    if unquote_local_file_name(&path).is_none() && parse_remote_file_name(&path).is_some() {
-        format!("/:{path}")
-    } else {
-        path
-    }
-}
-
 pub(crate) fn expand_file_name_in_env(
     interp: &Interpreter,
     env: &Env,
@@ -898,22 +891,6 @@ pub(crate) fn resolved_remote_localname_in_env(
         expand_home_prefix_with_home(&localname, home.as_deref())
     } else {
         remote.localname.clone()
-    }
-}
-
-/// Return the localname exposed to Lisp while keeping host quoting distinct
-/// from the unquoted path used for filesystem access.
-pub(crate) fn logical_remote_localname_in_env(
-    interp: &Interpreter,
-    env: &Env,
-    remote: &RemoteFileNameParts,
-) -> String {
-    let quoted = unquote_local_file_name(&remote.localname).is_some();
-    let localname = resolved_remote_localname_in_env(interp, env, remote);
-    if quoted {
-        format!("/:{localname}")
-    } else {
-        localname
     }
 }
 
@@ -1004,11 +981,6 @@ pub(crate) fn substitute_in_file_name_in_env(
     path: &str,
 ) -> String {
     substitute_in_file_name_with(path, |name| lisp_environment_string(interp, env, name))
-}
-
-pub(crate) fn expand_home_prefix(path: &str) -> String {
-    let home = std::env::var("HOME").ok();
-    expand_home_prefix_with_home(path, home.as_deref())
 }
 
 pub(crate) fn expand_home_prefix_with_home(path: &str, home: Option<&str>) -> String {
@@ -1130,14 +1102,6 @@ pub(crate) fn system_configuration() -> String {
         .clone()
 }
 
-pub(crate) fn emacs_version_description() -> String {
-    format!(
-        "GNU Emacs {} ({})",
-        emacs_version_value(),
-        system_configuration()
-    )
-}
-
 pub(crate) fn user_exists(name: &str) -> bool {
     #[cfg(unix)]
     {
@@ -1163,63 +1127,8 @@ pub(crate) fn file_name_directory(path: &str) -> Option<String> {
     path.rfind('/').map(|index| path[..=index].to_string())
 }
 
-pub(crate) fn file_relative_name(file: &str, directory: &str) -> String {
-    let file_path = normalize_path(Path::new(file));
-    let directory_path = normalize_path(Path::new(directory));
-    let file_components = file_path.components().collect::<Vec<_>>();
-    let directory_components = directory_path.components().collect::<Vec<_>>();
-    if file_components.first() != directory_components.first() {
-        return file_path.display().to_string();
-    }
-
-    let mut shared = 0usize;
-    while shared < file_components.len()
-        && shared < directory_components.len()
-        && file_components[shared] == directory_components[shared]
-    {
-        shared += 1;
-    }
-
-    let mut relative = PathBuf::new();
-    for _ in shared..directory_components.len() {
-        relative.push("..");
-    }
-    for component in &file_components[shared..] {
-        relative.push(component.as_os_str());
-    }
-    if relative.as_os_str().is_empty() {
-        ".".into()
-    } else {
-        relative.display().to_string()
-    }
-}
-
 pub(crate) fn file_name_nondirectory(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
-}
-
-pub(crate) fn file_name_sans_extension(path: &str) -> String {
-    let directory = file_name_directory(path).unwrap_or_default();
-    let name = file_name_nondirectory(path);
-    if let Some(index) = name.rfind('.')
-        && index > 0
-    {
-        return format!("{directory}{}", &name[..index]);
-    }
-    path.to_string()
-}
-
-pub(crate) fn file_name_extension(path: &str, with_period: bool) -> Option<String> {
-    let name = file_name_nondirectory(path);
-    let index = name.rfind('.')?;
-    if index == 0 {
-        return None;
-    }
-    Some(if with_period {
-        name[index..].to_string()
-    } else {
-        name[index + 1..].to_string()
-    })
 }
 
 pub(crate) fn file_name_as_directory(path: &str) -> String {
@@ -1244,277 +1153,6 @@ pub(crate) fn directory_file_name(path: &str) -> String {
         };
     }
     path.trim_end_matches('/').to_string()
-}
-
-pub(crate) fn dired_buffer_name(directory: &str) -> String {
-    if directory.contains('*') {
-        Path::new(directory)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(directory)
-            .to_string()
-    } else {
-        format!("{}{}", directory_file_name(directory), "/")
-    }
-}
-
-pub(crate) fn dired_listing_for_directory(directory: &str) -> Result<String, LispError> {
-    if directory.contains('*') {
-        return dired_listing_for_wildcard(directory);
-    }
-
-    let mut entries = fs::read_dir(directory)
-        .map_err(|error| {
-            LispError::SignalValue(file_error_with_detail_value(
-                "Opening directory",
-                &error.to_string(),
-                directory,
-            ))
-        })?
-        .map(|entry| {
-            entry
-                .map_err(|error| {
-                    LispError::SignalValue(file_error_with_detail_value(
-                        "Reading directory",
-                        &error.to_string(),
-                        directory,
-                    ))
-                })
-                .map(|entry| {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    let metadata = entry.metadata().ok();
-                    (name, metadata)
-                })
-        })
-        .collect::<Result<Vec<_>, LispError>>()?;
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let mut listing = String::new();
-    listing.push_str(&file_name_as_directory(directory));
-    listing.push_str(":\n");
-    listing.push_str(&dired_listing_line(
-        ".",
-        fs::metadata(directory).ok().as_ref(),
-    ));
-    let parent_metadata = Path::new(directory)
-        .parent()
-        .and_then(|parent| parent.metadata().ok());
-    listing.push_str(&dired_listing_line("..", parent_metadata.as_ref()));
-    for (entry, metadata) in entries {
-        listing.push_str(&dired_listing_line(&entry, metadata.as_ref()));
-    }
-    Ok(listing)
-}
-
-pub(crate) fn dired_base_directory(directory: &str) -> String {
-    if !directory.contains('*') {
-        return directory.to_string();
-    }
-
-    let path = Path::new(directory);
-    let mut base = if path.is_absolute() {
-        PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
-    } else {
-        PathBuf::from(".")
-    };
-    for component in path.components() {
-        match component {
-            Component::RootDir | Component::Prefix(_) | Component::CurDir => {}
-            Component::ParentDir => base.push(".."),
-            Component::Normal(segment) => {
-                if segment.to_string_lossy().contains('*') {
-                    break;
-                }
-                base.push(segment);
-            }
-        }
-    }
-    base.to_string_lossy().into_owned()
-}
-
-fn dired_listing_for_wildcard(directory: &str) -> Result<String, LispError> {
-    let base_directory = dired_base_directory(directory);
-    let matches = expand_simple_wildcard_paths(directory)?;
-    let base_path = Path::new(&base_directory);
-    let wildcard = Path::new(directory)
-        .strip_prefix(base_path)
-        .ok()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| directory.to_string());
-
-    let mut listing = String::new();
-    listing.push_str("  ");
-    listing.push_str(&file_name_as_directory(&base_directory));
-    listing.push_str(":\n");
-    listing.push_str("  wildcard ");
-    listing.push_str(&wildcard);
-    listing.push('\n');
-    for path in matches {
-        let metadata = fs::metadata(&path).ok();
-        let display_name = Path::new(&path)
-            .strip_prefix(base_path)
-            .ok()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or(path);
-        listing.push_str(&dired_listing_line(&display_name, metadata.as_ref()));
-    }
-    Ok(listing)
-}
-
-fn dired_listing_line(name: &str, metadata: Option<&fs::Metadata>) -> String {
-    let file_type = if metadata.is_some_and(|metadata| metadata.is_dir()) {
-        'd'
-    } else {
-        '-'
-    };
-    let size = metadata.map(fs::Metadata::len).unwrap_or(0);
-    format!("{file_type}rw-r--r-- 1 user group {size:>8} 2026-01-01 00:00 {name}\n")
-}
-
-pub(crate) fn expand_simple_wildcard_paths(pattern: &str) -> Result<Vec<String>, LispError> {
-    if !pattern.contains(['*', '?', '[']) {
-        return Ok(vec![pattern.to_string()]);
-    }
-    let paths = glob::glob(pattern)
-        .map_err(|error| LispError::Signal(error.to_string()))?
-        .map(|entry| {
-            entry
-                .map(|path| path.to_string_lossy().into_owned())
-                .map_err(|error| LispError::Signal(error.to_string()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if paths.is_empty() {
-        return Err(LispError::Signal(format!("No match: {pattern}")));
-    }
-    Ok(paths)
-}
-
-pub(crate) fn initialize_dired_buffer(
-    interp: &mut Interpreter,
-    buffer_name: &str,
-    directory: &str,
-) -> Result<(), LispError> {
-    let listing = dired_listing_for_directory(directory)?;
-    let base_directory = dired_base_directory(directory);
-    interp.buffer = crate::buffer::Buffer::from_text(buffer_name, &listing);
-    interp.buffer.goto_char(interp.buffer.point_max());
-    interp.buffer.set_unmodified();
-    interp
-        .buffer
-        .set_visited_file_modtime(file_modtime(&base_directory)?);
-    let buffer_id = interp.current_buffer_id();
-    interp.set_buffer_local_value(buffer_id, "major-mode", Value::Symbol("dired-mode".into()));
-    interp.set_buffer_local_value(buffer_id, "mode-name", Value::String("Dired".into()));
-    interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::T);
-    interp.set_buffer_local_value(
-        buffer_id,
-        "dired-directory",
-        Value::String(
-            (if directory.contains('*') {
-                directory.to_string()
-            } else {
-                file_name_as_directory(directory)
-            })
-            .into(),
-        ),
-    );
-    let expanded_directory = file_name_as_directory(&expand_file_name(&base_directory, None));
-    interp.set_buffer_local_value(
-        buffer_id,
-        "dired-subdir-alist",
-        Value::list([Value::cons(
-            Value::String(expanded_directory.clone().into()),
-            Value::Integer(1),
-        )]),
-    );
-    interp.set_buffer_local_value(
-        buffer_id,
-        "default-directory",
-        Value::String(file_name_as_directory(&base_directory).into()),
-    );
-    interp.set_buffer_local_value(
-        buffer_id,
-        "revert-buffer-function",
-        Value::Symbol("emaxx-dired-revert".into()),
-    );
-    interp.set_buffer_local_value(
-        buffer_id,
-        "buffer-stale-function",
-        Value::Symbol("dired-buffer-stale-p".into()),
-    );
-    interp.set_buffer_local_value(buffer_id, "buffer-auto-revert-by-notification", Value::Nil);
-    let buffer_value = Value::buffer(buffer_id, buffer_name.to_string());
-    let existing = interp
-        .lookup_var("dired-buffers", &Vec::new())
-        .and_then(|value| value.to_vec().ok())
-        .unwrap_or_default();
-    let mut entries = Vec::new();
-    entries.push(Value::cons(
-        Value::String(expanded_directory.clone().into()),
-        buffer_value.clone(),
-    ));
-    for entry in existing {
-        let Some((dir, buffer)) = entry.cons_values() else {
-            continue;
-        };
-        if matches!(&dir, Value::String(existing_dir) if existing_dir == &expanded_directory)
-            || matches!(&buffer, Value::Buffer(existing) if existing.id == buffer_id)
-        {
-            continue;
-        }
-        entries.push(Value::cons(dir, buffer));
-    }
-    interp.set_symbol_value_cell("dired-buffers", Value::list(entries));
-    Ok(())
-}
-
-pub(crate) fn goto_dired_listing_entry(interp: &mut Interpreter, name: &str) -> bool {
-    let mut pos = 1;
-    for line in interp.buffer.full_buffer_string().split_inclusive('\n') {
-        let line_without_newline = line.trim_end_matches('\n');
-        if let Some(prefix) = line_without_newline.strip_suffix(name)
-            && prefix.ends_with(' ')
-        {
-            let target = pos + line_without_newline.chars().count() - name.chars().count();
-            interp.buffer.goto_char(target);
-            return true;
-        }
-        pos += line.chars().count();
-    }
-    false
-}
-
-pub(crate) fn refresh_current_dired_buffer_for_path(
-    interp: &mut Interpreter,
-    changed_path: &str,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let buffer_id = interp.current_buffer_id();
-    let Some(directory) = interp
-        .buffer_local_value(buffer_id, "dired-directory")
-        .and_then(|value| string_like(&value).map(|string| string.text))
-    else {
-        return Ok(());
-    };
-    let directory_path = Path::new(&directory);
-    let changed = Path::new(changed_path);
-    // A directory listing changes when the directory itself or one of its
-    // immediate entries changes.  Descendant mutations belong to a child
-    // directory's listing; refreshing an ancestor here makes Dired react to
-    // events that GNU's file-notification backend never delivers to it.
-    if changed != directory_path && changed.parent() != Some(directory_path) {
-        return Ok(());
-    }
-    let buffer_name = interp.buffer.name.clone();
-    initialize_dired_buffer(interp, &buffer_name, &directory)?;
-    let target_text = changed.to_string_lossy().into_owned();
-    let _ = call_named_function(
-        interp,
-        "dired-goto-file",
-        &[Value::String(target_text.into())],
-        env,
-    )?;
-    Ok(())
 }
 
 pub(crate) fn directory_name_p(path: &str) -> bool {
@@ -1562,170 +1200,12 @@ pub(crate) fn validate_file_name(path: &str) -> Result<(), LispError> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MockFileNameHandlerOperation {
-    AccessFile,
-    AddNameToFile,
-    AbbreviateFileName,
-    CopyDirectory,
-    CopyFile,
-    DirectoryFileName,
-    DirectoryFiles,
-    DirectoryFilesAndAttributes,
-    ExecPath,
-    ExpandFileName,
-    FileAttributes,
-    FileExpandWildcards,
-    FindBackupFileName,
-    FileGroupGid,
-    FileLocalCopy,
-    FileNameCompletion,
-    FileNameAsDirectory,
-    FileNameDirectory,
-    FileNameNondirectory,
-    FileRemoteP,
-    FileSymlinkP,
-    FileTruename,
-    FileUserUid,
-    InsertDirectory,
-    InsertFileContents,
-    MakeSymbolicLink,
-    MakeProcess,
-    ProcessFile,
-    ShellCommand,
-    StartFileProcess,
-    UnhandledFileNameDirectory,
-    WriteRegion,
-    LocalPathArguments {
-        indices: &'static [usize],
-        inhibit_remote_trash: bool,
-    },
-}
-
-/// Classify the operations implemented by Emaxx's in-process transport for
-/// ERT's `/mock:' Tramp method.  Keep handler advertisement and handler
-/// execution on this single table: if an operation is absent, real Tramp may
-/// legitimately handle it; if it is present, it must never leak into a shell
-/// connection merely because `tramp.el' has populated
-/// `file-name-handler-alist'.
-pub(crate) fn mock_file_name_handler_operation(
-    operation: &str,
-) -> Option<MockFileNameHandlerOperation> {
-    use MockFileNameHandlerOperation::*;
-
-    match operation {
-        "access-file" => Some(AccessFile),
-        "add-name-to-file" => Some(AddNameToFile),
-        "abbreviate-file-name" => Some(AbbreviateFileName),
-        "copy-directory" => Some(CopyDirectory),
-        "copy-file" => Some(CopyFile),
-        "directory-file-name" => Some(DirectoryFileName),
-        "directory-files" => Some(DirectoryFiles),
-        "directory-files-and-attributes" => Some(DirectoryFilesAndAttributes),
-        "exec-path" => Some(ExecPath),
-        "expand-file-name" => Some(ExpandFileName),
-        "file-attributes" => Some(FileAttributes),
-        "file-expand-wildcards" => Some(FileExpandWildcards),
-        "find-backup-file-name" => Some(FindBackupFileName),
-        "file-group-gid" => Some(FileGroupGid),
-        "file-local-copy" => Some(FileLocalCopy),
-        "file-name-as-directory" => Some(FileNameAsDirectory),
-        "file-name-directory" => Some(FileNameDirectory),
-        "file-name-nondirectory" => Some(FileNameNondirectory),
-        "file-remote-p" => Some(FileRemoteP),
-        "file-symlink-p" => Some(FileSymlinkP),
-        "file-truename" => Some(FileTruename),
-        "file-user-uid" => Some(FileUserUid),
-        "insert-directory" => Some(InsertDirectory),
-        "insert-file-contents" => Some(InsertFileContents),
-        "make-symbolic-link" => Some(MakeSymbolicLink),
-        "make-process" => Some(MakeProcess),
-        "process-file" => Some(ProcessFile),
-        "shell-command" => Some(ShellCommand),
-        "start-file-process" => Some(StartFileProcess),
-        "unhandled-file-name-directory" => Some(UnhandledFileNameDirectory),
-        "delete-directory" | "delete-file" => Some(LocalPathArguments {
-            indices: &[0],
-            inhibit_remote_trash: true,
-        }),
-        "file-accessible-directory-p"
-        | "file-directory-p"
-        | "file-executable-p"
-        | "file-exists-p"
-        | "file-modes"
-        | "file-ownership-preserved-p"
-        | "file-readable-p"
-        | "file-regular-p"
-        | "file-system-info"
-        | "file-writable-p" => Some(LocalPathArguments {
-            indices: &[0],
-            inhibit_remote_trash: false,
-        }),
-        "make-directory" | "set-file-modes" | "set-file-times" => Some(LocalPathArguments {
-            indices: &[0],
-            inhibit_remote_trash: false,
-        }),
-        "rename-file" => Some(LocalPathArguments {
-            indices: &[0, 1],
-            inhibit_remote_trash: false,
-        }),
-        "file-name-all-completions" | "file-name-completion" => Some(FileNameCompletion),
-        "write-region" => Some(WriteRegion),
-        _ => None,
-    }
-}
-
 pub(crate) fn find_file_name_handler(
     interp: &mut Interpreter,
     env: &Env,
     file: &str,
     operation: &str,
 ) -> Result<Option<Value>, LispError> {
-    let mock_handler = Value::Symbol("emaxx-mock-file-name-handler".into());
-    let mock_handler_inhibited = interp
-        .lookup_var("inhibit-file-name-operation", env)
-        .as_ref()
-        == Some(&Value::Symbol(operation.into()))
-        && interp
-            .lookup_var("inhibit-file-name-handlers", env)
-            .unwrap_or(Value::Nil)
-            .to_vec()?
-            .contains(&mock_handler);
-    let mock_operation_internally_inhibited = interp
-        .lookup_var("emaxx--inhibit-mock-file-name-operation", env)
-        .as_ref()
-        == Some(&Value::Symbol(operation.into()));
-    // A mock operation may deliberately delegate its outer call to the real
-    // implementation.  Suppress every handler for that one operation so a
-    // later Tramp handler cannot reclaim it and recurse; nested operations
-    // have different names and still route through the normal handler chain.
-    if mock_operation_internally_inhibited {
-        return Ok(None);
-    }
-    if interp
-        .lookup_var("tramp-mode", env)
-        .is_some_and(|value| value.is_truthy())
-        && let Some(mock_operation) = mock_file_name_handler_operation(operation)
-        && let Some(remote) = parse_remote_file_name(file)
-        && remote.method == "mock"
-        && !remote.host.contains('|')
-    {
-        // An empty localname during non-essential completion denotes a
-        // partially entered Tramp hop/method, not a directory listing on the
-        // mock transport.  Let tramp.el's completion handler parse that
-        // syntax; the typed operation variant keeps this exception attached
-        // to the same registry that advertises the operation.
-        let partial_tramp_completion = matches!(
-            mock_operation,
-            MockFileNameHandlerOperation::FileNameCompletion
-        ) && remote.localname.is_empty()
-            && interp
-                .lookup_var("non-essential", env)
-                .is_some_and(|value| value.is_truthy());
-        if !partial_tramp_completion && !mock_handler_inhibited {
-            return Ok(Some(mock_handler));
-        }
-    }
     let handlers = interp
         .lookup_var("file-name-handler-alist", env)
         .unwrap_or(Value::Nil);
@@ -1976,12 +1456,6 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
         "verify-visited-file-modtime" => FileNameHandlerOperation::new(&[], Always)
             .with_buffer_file(BufferFileSource::ArgumentOrCurrent),
         "make-process" => FileNameHandlerOperation::new(&[], Always).with_process_command(),
-        // Mock operations are executable handler contracts too.  Derive a
-        // safe default here so adding one transport operation cannot silently
-        // omit the generic file-name-handler dispatch registry.
-        _ if mock_file_name_handler_operation(operation).is_some() => {
-            FileNameHandlerOperation::new(&[0], RelativeArgument)
-        }
         _ => return None,
     };
     Some(specification)
@@ -2045,25 +1519,6 @@ pub(crate) fn dispatch_file_name_handler(
         }
     }
 
-    // A transport that owns one operand owns the whole multi-file
-    // operation.  In particular, a quoted local source is handled by
-    // `file-name-non-special', but a `/mock:' destination still requires the
-    // mock transport to perform the cross-boundary copy/rename.  Put the
-    // typed transport candidate first instead of letting argument order pick
-    // a generic quote handler and suppress every later handler.
-    if mock_file_name_handler_operation(operation).is_some()
-        && interp
-            .lookup_var("tramp-mode", env)
-            .is_some_and(|value| value.is_truthy())
-        && let Some(index) = candidates.iter().position(|file| {
-            parse_remote_file_name(file)
-                .is_some_and(|remote| remote.method == "mock" && !remote.host.contains('|'))
-        })
-    {
-        let candidate = candidates.remove(index);
-        candidates.insert(0, candidate);
-    }
-
     for file in candidates {
         let Some(handler) = find_file_name_handler(interp, env, &file, operation)? else {
             continue;
@@ -2122,43 +1577,6 @@ pub(crate) fn dispatch_file_name_handler(
         return Ok(Some(result));
     }
     Ok(None)
-}
-
-pub(crate) fn ert_resource_directory(interp: &Interpreter) -> Option<String> {
-    let testfile = interp
-        .current_load_file()
-        .or(interp.ert_test_source_file.as_deref())
-        .or(interp.buffer.file.as_deref())?;
-    Some(ert_resource_directory_for(testfile))
-}
-
-pub(crate) fn ert_resource_directory_for(testfile: &str) -> String {
-    let expanded = PathBuf::from(expand_file_name(testfile, None));
-    let sibling_resources = expanded
-        .parent()
-        .map(|parent| parent.join("resources"))
-        .filter(|path| path.is_dir());
-    let resource_dir = sibling_resources.unwrap_or_else(|| {
-        let rendered = expanded.display().to_string();
-        let trimmed = rendered
-            .strip_suffix(".el")
-            .map(|path| {
-                path.strip_suffix("-tests")
-                    .or_else(|| path.strip_suffix("-test"))
-                    .unwrap_or(path)
-            })
-            .unwrap_or(rendered.as_str());
-        PathBuf::from(format!("{trimmed}-resources"))
-    });
-    path_to_directory_string(&resource_dir)
-}
-
-pub(crate) fn apple_gcc_version_match(output: &str) -> Option<usize> {
-    output
-        .find("Apple LLVM")
-        .or_else(|| output.find("Apple Clang"))
-        .or_else(|| output.find("Apple clang"))
-        .or_else(|| output.find("Xcode.app"))
 }
 
 pub(crate) fn directory_files(
@@ -2372,7 +1790,7 @@ fn directory_allows_create(directory: &Path) -> bool {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
-        let probe = directory.join(format!(".emaxx-writable-probe-{pid}-{stamp:x}-{attempt:x}"));
+        let probe = directory.join(format!(".writable-probe-{pid}-{stamp:x}-{attempt:x}"));
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)

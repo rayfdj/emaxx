@@ -281,18 +281,6 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(Value::Float(numeric_to_f64(interp, &args[0])?.tan()))
             }
-            "degrees-to-radians" => {
-                need_args(name, args, 1)?;
-                Ok(Value::Float(
-                    numeric_to_f64(interp, &args[0])? * std::f64::consts::PI / 180.0,
-                ))
-            }
-            "radians-to-degrees" => {
-                need_args(name, args, 1)?;
-                Ok(Value::Float(
-                    numeric_to_f64(interp, &args[0])? * 180.0 / std::f64::consts::PI,
-                ))
-            }
             "asin" => {
                 need_args(name, args, 1)?;
                 Ok(Value::Float(numeric_to_f64(interp, &args[0])?.asin()))
@@ -364,8 +352,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(Value::Float(numeric_to_f64(interp, &args[0])?))
             }
-            #[dispatch(builtin_override)]
-            "cl-parse-integer" => parse_cl_integer(args),
+
             "frexp" => {
                 need_args(name, args, 1)?;
                 let (sig, exp) = frexp_parts(numeric_to_f64(interp, &args[0])?);
@@ -440,31 +427,6 @@ define_dispatch!(
                 };
                 Ok(normalize_bigint_value(shifted))
             }
-            "lsh" => {
-                need_args(name, args, 2)?;
-                let value = integer_like_bigint(interp, &args[0])?;
-                let shift = integer_like_i64(interp, &args[1])?;
-                if shift >= 0 {
-                    return Ok(normalize_bigint_value(value << shift as usize));
-                }
-                if value.sign() != Sign::Minus {
-                    return Ok(normalize_bigint_value(value >> (-shift) as usize));
-                }
-                let (min_fixnum, max_fixnum) = fixnum_bounds(interp)?;
-                let min_fixnum = BigInt::from(min_fixnum);
-                let max_fixnum = BigInt::from(max_fixnum);
-                if value < min_fixnum || value > max_fixnum {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("args-out-of-range".into()),
-                        args[0].clone(),
-                        args[1].clone(),
-                    ])));
-                }
-                let width = max_fixnum.bits() + 1;
-                let modulus = BigInt::from(1u8) << width;
-                let unsigned = modulus + value;
-                Ok(normalize_bigint_value(unsigned >> (-shift) as usize))
-            }
             "logcount" => {
                 need_args(name, args, 1)?;
                 let mut value = integer_like_bigint(interp, &args[0])?;
@@ -505,11 +467,6 @@ define_dispatch!(
                     interp, &args[0],
                 )?))
             }
-            "cl-signum" => {
-                need_args(name, args, 1)?;
-                let value = args[0].as_float()?;
-                Ok(Value::Integer(value.signum() as i64))
-            }
             "prefix-numeric-value" => {
                 need_args(name, args, 1)?;
                 prefix_numeric_value(&args[0])
@@ -526,28 +483,6 @@ define_dispatch!(
                     }
                 }
                 Ok(Value::T)
-            }
-            "version<=" => {
-                need_args(name, args, 2)?;
-                Ok(
-                    if version_leq(&string_text(&args[0])?, &string_text(&args[1])?)? {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            "version-to-list" => {
-                need_args(name, args, 1)?;
-                Ok(Value::list(
-                    parse_version_components(&string_text(&args[0])?)?
-                        .into_iter()
-                        .map(Value::Integer),
-                ))
-            }
-            "emacs-version" => {
-                need_args(name, args, 0)?;
-                Ok(Value::String(emacs_version_description().into()))
             }
             "<" => {
                 if args.is_empty() {
@@ -631,7 +566,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let equal = match symbol_with_pos_equal_in_env(interp, &args[0], &args[1], env) {
                     Some(equal) => equal,
-                    None => values_equal_checked(interp, &args[0], &args[1])?,
+                    None => values_equal(interp, &args[0], &args[1]),
                 };
                 Ok(if equal { Value::T } else { Value::Nil })
             }
@@ -643,7 +578,7 @@ define_dispatch!(
                     Value::Nil
                 })
             }
-            "sxhash" | "sxhash-equal" => {
+            "sxhash-equal" => {
                 need_args(name, args, 1)?;
                 Ok(Value::Integer(sxhash_value(
                     interp,
@@ -671,23 +606,13 @@ define_dispatch!(
                     HashMode::EqualIncludingProperties,
                 )))
             }
-            "string=" | "string-equal" => {
+            "string-equal" => {
                 need_args(name, args, 2)?;
                 let a = string_comparison_text(&args[0])?;
                 let b = string_comparison_text(&args[1])?;
                 Ok(if a == b { Value::T } else { Value::Nil })
             }
-            "string-equal-ignore-case" => {
-                need_args(name, args, 2)?;
-                let a = string_text(&args[0])?;
-                let b = string_text(&args[1])?;
-                Ok(if a.to_lowercase() == b.to_lowercase() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "string-lessp" | "string<" | "string>" => {
+            "string-lessp" => {
                 need_args(name, args, 2)?;
                 let a = string_comparison_text(&args[0])?;
                 let b = string_comparison_text(&args[1])?;
@@ -723,18 +648,6 @@ define_dispatch!(
                     &args[1],
                     args.get(2).is_some_and(Value::is_truthy),
                 )
-            }
-            "bidi-string-mark-left-to-right" => {
-                need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::TypeError("stringp".into(), args[0].type_name()))?;
-                if string.text.chars().any(is_rtl_char) {
-                    let mut text = string.text.clone();
-                    text.push('\u{200e}');
-                    Ok(Value::String(text.into()))
-                } else {
-                    Ok(args[0].clone())
-                }
             }
             "string-collate-equalp" => {
                 need_arg_range(name, args, 2, 4)?;

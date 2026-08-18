@@ -1,21 +1,6 @@
 use super::*;
 use crate::lisp::primitives::processes::wait_pumping_processes;
 
-fn apply_cl_key(
-    interp: &mut Interpreter,
-    keyfn: Option<&Value>,
-    item: &Value,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    match keyfn.filter(|value| !value.is_nil()) {
-        Some(keyfn) => {
-            let function = resolve_callable(interp, keyfn, env)?;
-            invoke_function_value(interp, &function, std::slice::from_ref(item), env)
-        }
-        None => Ok(item.clone()),
-    }
-}
-
 fn event_vector(events: impl IntoIterator<Item = Value>) -> Value {
     Value::list(std::iter::once(Value::symbol("vector-literal")).chain(events))
 }
@@ -529,7 +514,7 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
                 if let Some(ch) = unread_event_char(&event)
                     && (!ch.is_control() || ch == '\t')
                 {
-                    insert_text_with_hooks(interp, &ch.to_string(), &[], false, false, env)?;
+                    insert_text_with_hooks(interp, &ch.to_string(), &[], &[], false, false, env)?;
                 }
             }
             _ => {
@@ -756,7 +741,7 @@ fn read_minibuffer_text_from_unread_events_inner(
                     .and_then(|value| value.as_integer().ok())
                     .unwrap_or(1)
                     .max(0) as usize;
-                insert_text_with_hooks(interp, &text.repeat(repeat), &[], false, false, env)?;
+                insert_text_with_hooks(interp, &text.repeat(repeat), &[], &[], false, false, env)?;
             } else {
                 execute_kbd_command_body(interp, &dispatched_command, env)?;
             }
@@ -1277,7 +1262,7 @@ fn execute_kbd_macro_self_insert(
             .and_then(|value| value.as_integer().ok())
             .unwrap_or(1)
             .max(0) as usize;
-        insert_text_with_hooks(interp, &text.repeat(repeat), &[], false, false, env)?;
+        insert_text_with_hooks(interp, &text.repeat(repeat), &[], &[], false, false, env)?;
     } else {
         execute_kbd_command_body(interp, &dispatched_command, env)?;
     }
@@ -1362,27 +1347,6 @@ define_dispatch!(
                         .map_err(|_| wrong_type_argument("listp", args[0].clone()))
                 }
             }
-            "cl-first" | "cl-second" | "cl-third" | "cl-fourth" | "cl-fifth" | "cl-sixth"
-            | "cl-seventh" | "cl-eighth" | "cl-ninth" | "cl-tenth" => {
-                need_args(name, args, 1)?;
-                let index = match name {
-                    "cl-first" => 0,
-                    "cl-second" => 1,
-                    "cl-third" => 2,
-                    "cl-fourth" => 3,
-                    "cl-fifth" => 4,
-                    "cl-sixth" => 5,
-                    "cl-seventh" => 6,
-                    "cl-eighth" => 7,
-                    "cl-ninth" => 8,
-                    _ => 9,
-                };
-                let mut tail = args[0].clone();
-                for _ in 0..index {
-                    tail = tail.cdr()?;
-                }
-                tail.car()
-            }
             "cdr" => {
                 need_args(name, args, 1)?;
                 if let Some(view) = runtime_keymap_public_view(interp, &args[0]) {
@@ -1415,7 +1379,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(args[0].clone())
             }
-            "list" | "cl-values" => Ok(Value::list(args.iter().cloned())),
+            "list" => Ok(Value::list(args.iter().cloned())),
             "nconc" => {
                 let projected = args
                     .iter()
@@ -1459,7 +1423,7 @@ define_dispatch!(
                 }
                 Ok(Value::list(items))
             }
-            "nth" | "cl-nth-value" => {
+            "nth" => {
                 need_args(name, args, 2)?;
                 if let Some(items) = keymap_list_items(interp, &args[1])? {
                     nth_list_element(&Value::list(items), &args[0])
@@ -1497,117 +1461,9 @@ define_dispatch!(
                 }
                 nthcdr_value(&args[0], &args[1])
             }
-            "last" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                if let Some(items) = keymap_list_items(interp, &args[0])? {
-                    let projected = Value::list(items);
-                    return super::call(
-                        interp,
-                        "last",
-                        &[projected, args.get(1).cloned().unwrap_or(Value::Integer(1))],
-                        env,
-                    );
-                }
-                let n = args
-                    .get(1)
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                if n < 0 {
-                    return Ok(Value::Nil);
-                }
-                let n = n as usize;
-                let mut tails = Vec::new();
-                let mut current = args[0].clone();
-                loop {
-                    match current.clone() {
-                        Value::Cons(cons_cell) => {
-                            let _ = &cons_cell.car;
-                            let cdr = &cons_cell.cdr;
-                            tails.push(current.clone());
-                            current = cdr.borrow().clone();
-                        }
-                        Value::Nil => {
-                            return if n == 0 {
-                                Ok(Value::Nil)
-                            } else if let Some(index) = tails.len().checked_sub(n.max(1)) {
-                                Ok(tails[index].clone())
-                            } else {
-                                Ok(args[0].clone())
-                            };
-                        }
-                        other => {
-                            return if n == 0 {
-                                Ok(other)
-                            } else if let Some(index) = tails.len().checked_sub(n.max(1)) {
-                                Ok(tails[index].clone())
-                            } else {
-                                Ok(args[0].clone())
-                            };
-                        }
-                    }
-                }
-            }
-            "butlast" | "nbutlast" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let n = args
-                    .get(1)
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                if n <= 0 {
-                    return Ok(args[0].clone());
-                }
-                let items = list_sequence_items(interp, &args[0])?;
-                let keep = items.len().saturating_sub(n as usize);
-                if name == "butlast" {
-                    return Ok(Value::list(items.into_iter().take(keep)));
-                }
-                if keep == 0 {
-                    return Ok(Value::Nil);
-                }
-                let mut tail = args[0].clone();
-                for _ in 1..keep {
-                    tail = tail.cdr()?;
-                }
-                tail.set_cdr(Value::Nil)?;
-                Ok(args[0].clone())
-            }
             "length" => {
                 need_args(name, args, 1)?;
-                if let Some(items) = keymap_list_items(interp, &args[0])? {
-                    return Ok(Value::Integer(items.len() as i64));
-                }
-                if let Some(items) = record_literal_items(&args[0]) {
-                    return Ok(Value::Integer((items.len().saturating_sub(1)) as i64));
-                }
-                match &args[0] {
-                    value if string_like(value).is_some() => {
-                        Ok(Value::Integer(string_text(value)?.chars().count() as i64))
-                    }
-                    Value::Nil => Ok(Value::Integer(0)),
-                    Value::Cons(_) if is_vector_value(&args[0]) => {
-                        Ok(Value::Integer(vector_items(&args[0])?.len() as i64))
-                    }
-                    Value::CharTable(_) => Ok(Value::Integer(0x40_0000)),
-                    value if is_bool_vector_value(interp, value) => Ok(Value::Integer(
-                        bool_vector_values(interp, value)?.len() as i64,
-                    )),
-                    Value::Cons(_) => Ok(Value::Integer(args[0].to_vec()?.len() as i64)),
-                    Value::Record(id) => {
-                        let record = interp.find_record(*id).ok_or_else(|| {
-                            LispError::TypeError("record".into(), format!("record<{id}>"))
-                        })?;
-                        Ok(Value::Integer((record.slots.len() + 1) as i64))
-                    }
-                    _ => Err(LispError::TypeError("sequence".into(), args[0].type_name())),
-                }
+                Ok(Value::Integer(sequence_length_value(interp, &args[0])?))
             }
             "safe-length" => {
                 need_args(name, args, 1)?;
@@ -1632,37 +1488,9 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 reverse_sequence_value(interp, &args[0])
             }
-            "copy-tree" => {
-                need_arg_range(name, args, 1, 2)?;
-                let vectors_and_records = args.get(1).is_some_and(Value::is_truthy);
-                copy_tree_value(interp, &args[0], vectors_and_records)
-            }
-            "flatten-tree" | "flatten-list" => {
-                need_args(name, args, 1)?;
-                let mut leaves = Vec::new();
-                flatten_tree_value(&args[0], &mut leaves);
-                Ok(Value::list(leaves))
-            }
             "copy-alist" => {
                 need_args(name, args, 1)?;
                 copy_alist_value(&args[0])
-            }
-            "delete-dups" => {
-                need_args(name, args, 1)?;
-                let mut deduped = Vec::new();
-                for item in args[0].to_vec()? {
-                    if !deduped
-                        .iter()
-                        .any(|existing| values_equal(interp, existing, &item))
-                    {
-                        deduped.push(item);
-                    }
-                }
-                Ok(Value::list(deduped))
-            }
-            "remove" => {
-                need_args(name, args, 2)?;
-                remove_equal(interp, &args[0], &args[1])
             }
             "memq" | "memql" | "member" => {
                 need_args(name, args, 2)?;
@@ -1723,92 +1551,6 @@ define_dispatch!(
                     current = next;
                 }
             }
-            "cl-member" => {
-                if args.len() < 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let mut testfn = None;
-                let mut test_not = None;
-                let mut keyfn = None;
-                let mut index = 2usize;
-                while index < args.len() {
-                    let keyword = args[index].as_symbol()?;
-                    let Some(value) = args.get(index + 1) else {
-                        return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                    };
-                    match keyword {
-                        ":test" => testfn = Some(value.clone()),
-                        ":test-not" => test_not = Some(value.clone()),
-                        ":key" => keyfn = Some(value.clone()),
-                        _ => return Err(LispError::Signal("Unsupported cl-member keyword".into())),
-                    }
-                    index += 2;
-                }
-                let needle = args[0].clone();
-                let mut current = args[1].clone();
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                loop {
-                    match current.clone() {
-                        Value::Cons(cons_cell) => {
-                            let car = &cons_cell.car;
-                            let cdr = &cons_cell.cdr;
-                            let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                            if seen.step(cell_id) {
-                                return Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("circular-list".into()),
-                                    Value::String("Circular list".into()),
-                                ])));
-                            }
-                            let item = car.borrow().clone();
-                            let keyed_item = apply_cl_key(interp, keyfn.as_ref(), &item, env)?;
-                            let matches = if let Some(predicate) = test_not.as_ref() {
-                                !value_matches_with_test(
-                                    interp,
-                                    &needle,
-                                    &keyed_item,
-                                    Some(predicate),
-                                    env,
-                                )?
-                            } else if let Some(predicate) = testfn.as_ref() {
-                                value_matches_with_test(
-                                    interp,
-                                    &needle,
-                                    &keyed_item,
-                                    Some(predicate),
-                                    env,
-                                )?
-                            } else {
-                                values_eql(&needle, &keyed_item)
-                            };
-                            if matches {
-                                return Ok(current);
-                            }
-                            current = cdr.borrow().clone();
-                        }
-                        Value::Nil => return Ok(Value::Nil),
-                        other => {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::Symbol("wrong-type-argument".into()),
-                                Value::Symbol("listp".into()),
-                                other,
-                            ])));
-                        }
-                    }
-                }
-            }
-            "member-ignore-case" => {
-                need_args(name, args, 2)?;
-                let needle = string_text(&args[0])?.to_ascii_lowercase();
-                let items = args[1].to_vec()?;
-                for (index, item) in items.iter().enumerate() {
-                    if string_like(item)
-                        .is_some_and(|candidate| candidate.text.to_ascii_lowercase() == needle)
-                    {
-                        return Ok(Value::list(items[index..].iter().cloned()));
-                    }
-                }
-                Ok(Value::Nil)
-            }
             "assq" | "rassq" => {
                 need_args(name, args, 2)?;
                 let want_car = name == "assq";
@@ -1857,6 +1599,14 @@ define_dispatch!(
                                     | (_, Value::Nil | Value::T)
                                     | (Value::Integer(_), Value::Symbol(_))
                                     | (Value::Symbol(_), Value::Integer(_)) => false,
+                                    // GNU 30.2 fns.c implements assq/rassq
+                                    // with EQ, whose lisp.h contract unwraps
+                                    // symbol-with-position objects while the
+                                    // dynamic mode is enabled.  Keep ordinary
+                                    // scalar keys on the fast path above.
+                                    (a @ Value::Record(_), b) | (a, b @ Value::Record(_)) => {
+                                        values_eq_in_env(interp, a, b, env)
+                                    }
                                     (a, b) => *a == *b,
                                 }
                             }
@@ -1916,18 +1666,6 @@ define_dispatch!(
                         }
                     }
                 }
-            }
-            "rassq-delete-all" => {
-                need_args(name, args, 2)?;
-                rassq_delete_all(&args[0], &args[1])
-            }
-            "assq-delete-all" => {
-                need_args(name, args, 2)?;
-                assq_delete_all(&args[0], &args[1])
-            }
-            "assoc-delete-all" => {
-                need_args(name, args, 2)?;
-                assoc_delete_all(interp, &args[0], &args[1])
             }
             "assoc" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -2006,275 +1744,12 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
-            "alist-get" => {
-                if args.len() < 2 || args.len() > 5 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let default = args.get(2).cloned().unwrap_or(Value::Nil);
-                let testfn = args.get(4);
-                let items = args[1].to_vec()?;
-                for item in items {
-                    let Some((car, cdr)) = item.cons_values() else {
-                        continue;
-                    };
-                    if value_matches_with_test(interp, &args[0], &car, testfn, env)? {
-                        return Ok(cdr);
-                    }
-                }
-                Ok(default)
-            }
-            "cl-set-exclusive-or" => {
-                if args.len() < 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let left = args[0].to_vec()?;
-                let right = args[1].to_vec()?;
-                let mut test = Value::BuiltinFunc("equal".into());
-                let mut index = 2usize;
-                while index + 1 < args.len() {
-                    if matches!(&args[index], Value::Symbol(keyword) if keyword == ":test") {
-                        test = resolve_callable(interp, &args[index + 1], env)?;
-                    }
-                    index += 2;
-                }
-                let mut result = Vec::new();
-                for item in &left {
-                    if !list_contains_with(interp, &right, item, &test, env)? {
-                        result.push(item.clone());
-                    }
-                }
-                for item in &right {
-                    if !list_contains_with(interp, &left, item, &test, env)? {
-                        result.push(item.clone());
-                    }
-                }
-                Ok(Value::list(result))
-            }
-            "cl-remove-if-not" => {
-                need_args(name, args, 2)?;
-                let mut kept = Vec::new();
-                for item in args[1].to_vec()? {
-                    if call_function_value(interp, &args[0], std::slice::from_ref(&item), env)?
-                        .is_truthy()
-                    {
-                        kept.push(item);
-                    }
-                }
-                Ok(Value::list(kept))
-            }
-            "cl-delete-if" => cl_delete_if_values(interp, args, env),
+
             // Fast native ports of the GNU cl-seq.el sequence functions.  The
             // interpreted Lisp definitions are semantically fine but far too
             // slow for the multi-million-element sequences in
             // cl-seq-test-bug24264, so these arms carry the native-override
             // metadata consumed by function definition.
-            #[dispatch(builtin_override)]
-            "cl-position" => {
-                need_args(name, args, 2)?;
-                let keys = parse_cl_seq_keys(
-                    &args[2..],
-                    &[
-                        ":test",
-                        ":test-not",
-                        ":key",
-                        ":if",
-                        ":if-not",
-                        ":start",
-                        ":end",
-                        ":from-end",
-                    ],
-                )?;
-                let items = cl_seq_elements(interp, &args[1])?;
-                let end = keys.end.unwrap_or(items.len()).min(items.len());
-                let mut result = Value::Nil;
-                for (index, item) in items.iter().enumerate().take(end).skip(keys.start) {
-                    if cl_seq_match(interp, &keys, &args[0], item, env)? {
-                        result = Value::Integer(index as i64);
-                        if !keys.from_end {
-                            break;
-                        }
-                    }
-                }
-                Ok(result)
-            }
-            #[dispatch(builtin_override)]
-            "cl-remove" => {
-                need_args(name, args, 2)?;
-                let keys = parse_cl_seq_keys(
-                    &args[2..],
-                    &[
-                        ":test",
-                        ":test-not",
-                        ":key",
-                        ":if",
-                        ":if-not",
-                        ":count",
-                        ":from-end",
-                        ":start",
-                        ":end",
-                    ],
-                )?;
-                let items = cl_seq_elements(interp, &args[1])?;
-                let count = keys.count.unwrap_or(items.len() as i64);
-                if count <= 0 {
-                    return Ok(args[1].clone());
-                }
-                let end = keys.end.unwrap_or(items.len()).min(items.len());
-                let mut matched = Vec::new();
-                for (index, item) in items.iter().enumerate().take(end).skip(keys.start) {
-                    if cl_seq_match(interp, &keys, &args[0], item, env)? {
-                        matched.push(index);
-                    }
-                }
-                if matched.is_empty() {
-                    return Ok(args[1].clone());
-                }
-                let count = count as usize;
-                if matched.len() > count {
-                    if keys.from_end {
-                        matched.drain(..matched.len() - count);
-                    } else {
-                        matched.truncate(count);
-                    }
-                }
-                let mut kept = Vec::with_capacity(items.len() - matched.len());
-                let mut drop = matched.iter().copied().peekable();
-                for (index, item) in items.into_iter().enumerate() {
-                    if drop.peek() == Some(&index) {
-                        drop.next();
-                    } else {
-                        kept.push(item);
-                    }
-                }
-                cl_seq_rebuild(&args[1], kept)
-            }
-            #[dispatch(builtin_override)]
-            "cl-substitute" => {
-                need_args(name, args, 3)?;
-                let keys = parse_cl_seq_keys(
-                    &args[3..],
-                    &[
-                        ":test",
-                        ":test-not",
-                        ":key",
-                        ":if",
-                        ":if-not",
-                        ":count",
-                        ":start",
-                        ":end",
-                        ":from-end",
-                    ],
-                )?;
-                let mut items = cl_seq_elements(interp, &args[2])?;
-                let count = keys.count.unwrap_or(items.len() as i64);
-                if count <= 0 || values_eq_in_env(interp, &args[0], &args[1], env) {
-                    return Ok(args[2].clone());
-                }
-                let end = keys.end.unwrap_or(items.len()).min(items.len());
-                let mut matched = Vec::new();
-                for (index, item) in items.iter().enumerate().take(end).skip(keys.start) {
-                    if cl_seq_match(interp, &keys, &args[1], item, env)? {
-                        matched.push(index);
-                    }
-                }
-                if matched.is_empty() {
-                    return Ok(args[2].clone());
-                }
-                let count = count as usize;
-                if matched.len() > count {
-                    if keys.from_end {
-                        matched.drain(..matched.len() - count);
-                    } else {
-                        matched.truncate(count);
-                    }
-                }
-                for index in matched {
-                    items[index] = args[0].clone();
-                }
-                cl_seq_rebuild(&args[2], items)
-            }
-            #[dispatch(builtin_override)]
-            "cl-replace" => {
-                need_args(name, args, 2)?;
-                let keys =
-                    parse_cl_seq_keys(&args[2..], &[":start1", ":end1", ":start2", ":end2"])?;
-                let source = cl_seq_elements(interp, &args[1])?;
-                let source_end = keys.end2.unwrap_or(source.len()).min(source.len());
-                let source: Vec<Value> = source
-                    .into_iter()
-                    .take(source_end)
-                    .skip(keys.start2)
-                    .collect();
-                let mut budget = match keys.end1 {
-                    Some(end1) => end1.saturating_sub(keys.start1).min(source.len()),
-                    None => source.len(),
-                };
-                if matches!(&args[0], Value::Cons(_) | Value::Nil) && !is_vector_value(&args[0]) {
-                    let mut tail = args[0].clone();
-                    for _ in 0..keys.start1 {
-                        let Some((_, cdr)) = (tail).cons_cells() else {
-                            break;
-                        };
-                        let next = cdr.borrow().clone();
-                        tail = next;
-                    }
-                    let mut src = source.into_iter();
-                    while budget > 0
-                        && matches!(&tail, Value::Cons(_))
-                        && let Some(item) = src.next()
-                    {
-                        tail.set_car(item)?;
-                        let Some((_, cdr)) = (tail).cons_cells() else {
-                            break;
-                        };
-                        let next = cdr.borrow().clone();
-                        tail = next;
-                        budget -= 1;
-                    }
-                } else {
-                    let len = cl_seq_elements(interp, &args[0])?.len();
-                    for (offset, item) in source.into_iter().take(budget).enumerate() {
-                        let index = keys.start1 + offset;
-                        if index >= len {
-                            break;
-                        }
-                        cl_seq_set_element(&args[0], index, item)?;
-                    }
-                }
-                Ok(args[0].clone())
-            }
-            #[dispatch(builtin_override)]
-            "cl-fill" => {
-                need_args(name, args, 2)?;
-                let keys = parse_cl_seq_keys(&args[2..], &[":start", ":end"])?;
-                if matches!(&args[0], Value::Cons(_) | Value::Nil) && !is_vector_value(&args[0]) {
-                    let mut tail = args[0].clone();
-                    for _ in 0..keys.start {
-                        let Some((_, cdr)) = (tail).cons_cells() else {
-                            break;
-                        };
-                        let next = cdr.borrow().clone();
-                        tail = next;
-                    }
-                    let mut budget = keys.end.map(|end| end.saturating_sub(keys.start));
-                    while budget != Some(0) && matches!(&tail, Value::Cons(_)) {
-                        tail.set_car(args[1].clone())?;
-                        let Some((_, cdr)) = (tail).cons_cells() else {
-                            break;
-                        };
-                        let next = cdr.borrow().clone();
-                        tail = next;
-                        budget = budget.map(|n| n - 1);
-                    }
-                } else {
-                    let len = cl_seq_elements(interp, &args[0])?.len();
-                    let end = keys.end.unwrap_or(len).min(len);
-                    for index in keys.start..end {
-                        cl_seq_set_element(&args[0], index, args[1].clone())?;
-                    }
-                }
-                Ok(args[0].clone())
-            }
             "mapcar" => {
                 need_args(name, args, 2)?;
                 let list = sequence_values(interp, &args[1])?;
@@ -2293,75 +1768,6 @@ define_dispatch!(
                 }
                 nconc_values(&mapped)
             }
-            "cl-mapcar" => {
-                need_args(name, args, 2)?;
-                let lists = args[1..]
-                    .iter()
-                    .map(|value| sequence_values(interp, value))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let len = lists.iter().map(Vec::len).min().unwrap_or(0);
-                let mut results = Vec::with_capacity(len);
-                for index in 0..len {
-                    let call_args = lists
-                        .iter()
-                        .map(|list| list[index].clone())
-                        .collect::<Vec<_>>();
-                    results.push(call_function_value(interp, &args[0], &call_args, env)?);
-                }
-                Ok(Value::list(results))
-            }
-            "cl-mapcan" => {
-                need_args(name, args, 2)?;
-                let mapped = super::call(interp, "cl-mapcar", args, env)?.to_vec()?;
-                let mut flattened = Vec::new();
-                for item in mapped {
-                    flattened.extend(item.to_vec()?);
-                }
-                Ok(Value::list(flattened))
-            }
-            "cl-some" => {
-                need_args(name, args, 2)?;
-                let sequences = args[1..]
-                    .iter()
-                    .map(|value| sequence_values(interp, value))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let len = sequences.iter().map(Vec::len).min().unwrap_or(0);
-                for index in 0..len {
-                    let call_args = sequences
-                        .iter()
-                        .map(|sequence| sequence[index].clone())
-                        .collect::<Vec<_>>();
-                    let result = call_function_value(interp, &args[0], &call_args, env)?;
-                    if result.is_truthy() {
-                        return Ok(result);
-                    }
-                }
-                Ok(Value::Nil)
-            }
-            "seq-mapcat" => {
-                need_arg_range(name, args, 2, 3)?;
-                let sequence = sequence_values(interp, &args[1])?;
-                let mut flattened = Vec::new();
-                for item in sequence {
-                    let mapped = call_function_value(interp, &args[0], &[item], env)?;
-                    flattened.extend(sequence_values(interp, &mapped)?);
-                }
-
-                match args
-                    .get(2)
-                    .and_then(|value| value.as_symbol().ok())
-                    .unwrap_or("list")
-                {
-                    "list" => Ok(Value::list(flattened)),
-                    "vector" => Ok(Value::list(
-                        std::iter::once(Value::Symbol("vector-literal".into())).chain(flattened),
-                    )),
-                    "string" => super::call(interp, "concat", &flattened, env),
-                    other => Err(LispError::Signal(format!(
-                        "Unsupported seq-mapcat result type: {other}"
-                    ))),
-                }
-            }
             "mapc" => {
                 need_args(name, args, 2)?;
                 let list = sequence_values(interp, &args[1])?;
@@ -2370,26 +1776,10 @@ define_dispatch!(
                 }
                 Ok(args[1].clone())
             }
-            "cl-reduce" => {
-                need_args(name, args, 2)?;
-                let items = args[1].to_vec()?;
-                let Some((first, rest)) = items.split_first() else {
-                    return Ok(Value::Nil);
-                };
-                let mut acc = first.clone();
-                for item in rest {
-                    acc = call_function_value(interp, &args[0], &[acc.clone(), item.clone()], env)?;
-                }
-                Ok(acc)
-            }
             "eval" => eval_impl(interp, args, env),
             "eval-buffer" => eval_buffer_impl(interp, args, env),
             "eval-region" => eval_region_impl(interp, args, env),
-            "unload-feature" => unload_feature_impl(interp, args, env),
-            "emaxx--cl-generic-remove-loadhist-method" => {
-                need_args(name, args, 1)?;
-                interp.remove_native_cl_defmethod_loadhist_entry(&args[0])
-            }
+
             "mapconcat" => {
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -2404,12 +1794,14 @@ define_dispatch!(
                         text,
                         props: Vec::new(),
                         multibyte,
+                        extended_chars: Vec::new(),
                     })
                 } else {
                     StringLike {
                         text: String::new(),
                         props: Vec::new(),
                         multibyte: false,
+                        extended_chars: Vec::new(),
                     }
                 };
                 let mut result = String::new();
@@ -2435,27 +1827,6 @@ define_dispatch!(
                 }
                 Ok(string_like_value(result, merge_string_props(props)))
             }
-            "string-join" => {
-                need_arg_range(name, args, 1, 2)?;
-                let separator = args
-                    .get(1)
-                    .cloned()
-                    .unwrap_or_else(|| Value::String(String::new().into()));
-                super::call(
-                    interp,
-                    "mapconcat",
-                    &[Value::Symbol("identity".into()), args[0].clone(), separator],
-                    env,
-                )
-            }
-            "ensure-list" => {
-                need_args(name, args, 1)?;
-                Ok(if args[0].is_nil() || matches!(args[0], Value::Cons(_)) {
-                    args[0].clone()
-                } else {
-                    Value::list([args[0].clone()])
-                })
-            }
             "position-symbol" => {
                 need_args(name, args, 2)?;
                 let position = args[1].as_integer()?;
@@ -2477,203 +1848,6 @@ define_dispatch!(
                 Ok(symbol_with_pos_parts(interp, &args[0])
                     .map(|(symbol, _)| symbol)
                     .unwrap_or_else(|| args[0].clone()))
-            }
-            "seq-find" => {
-                if args.len() < 2 || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let predicate = resolve_callable(interp, &args[0], env)?;
-                if let Ok(items) = vector_items(&args[1]) {
-                    for item in items {
-                        if interp
-                            .call_function_value(
-                                predicate.clone(),
-                                args[0].as_symbol().ok(),
-                                std::slice::from_ref(&item),
-                                env,
-                            )?
-                            .is_truthy()
-                        {
-                            return Ok(item);
-                        }
-                    }
-                    Ok(Value::Nil)
-                } else if let Some(string) = sequence_string_like(&args[1]) {
-                    for ch in string.text.chars() {
-                        let item = string_sequence_value(&string, ch);
-                        if interp
-                            .call_function_value(
-                                predicate.clone(),
-                                args[0].as_symbol().ok(),
-                                std::slice::from_ref(&item),
-                                env,
-                            )?
-                            .is_truthy()
-                        {
-                            return Ok(item);
-                        }
-                    }
-                    Ok(Value::Nil)
-                } else {
-                    Err(LispError::TypeError("sequence".into(), args[1].type_name()))
-                }
-            }
-            "seq-contains-p" => {
-                if args.len() < 2 || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                if let Ok(items) = vector_items(&args[0]) {
-                    for item in items {
-                        let matches =
-                            if let Some(testfn) = args.get(2).filter(|value| !value.is_nil()) {
-                                value_matches_with_test(interp, &item, &args[1], Some(testfn), env)?
-                            } else {
-                                values_equal(interp, &item, &args[1])
-                            };
-                        if matches {
-                            return Ok(Value::T);
-                        }
-                    }
-                    Ok(Value::Nil)
-                } else if let Some(string) = sequence_string_like(&args[0]) {
-                    for ch in string.text.chars() {
-                        let candidate = string_sequence_value(&string, ch);
-                        let matches =
-                            if let Some(testfn) = args.get(2).filter(|value| !value.is_nil()) {
-                                value_matches_with_test(
-                                    interp,
-                                    &candidate,
-                                    &args[1],
-                                    Some(testfn),
-                                    env,
-                                )?
-                            } else {
-                                values_equal(interp, &candidate, &args[1])
-                            };
-                        if matches {
-                            return Ok(Value::T);
-                        }
-                    }
-                    Ok(Value::Nil)
-                } else {
-                    Err(LispError::TypeError("sequence".into(), args[0].type_name()))
-                }
-            }
-            "seq-take" => {
-                need_args(name, args, 2)?;
-                let count = args[1].as_integer()?.max(0) as usize;
-                if let Ok(items) = args[0].to_vec() {
-                    Ok(Value::list(items.into_iter().take(count)))
-                } else if let Some(string) = string_like(&args[0]) {
-                    let text: String = string.text.chars().take(count).collect();
-                    let props = slice_string_props(&string.props, 0, text.chars().count());
-                    Ok(string_like_value(text, props))
-                } else {
-                    Err(LispError::TypeError("sequence".into(), args[0].type_name()))
-                }
-            }
-            "seq-position" => {
-                if args.len() < 2 || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                if let Ok(items) = args[0].to_vec() {
-                    for (index, item) in items.into_iter().enumerate() {
-                        let matches =
-                            if let Some(testfn) = args.get(2).filter(|value| !value.is_nil()) {
-                                value_matches_with_test(interp, &item, &args[1], Some(testfn), env)?
-                            } else {
-                                values_equal(interp, &item, &args[1])
-                            };
-                        if matches {
-                            return Ok(Value::Integer(index as i64));
-                        }
-                    }
-                    Ok(Value::Nil)
-                } else if let Some(string) = string_like(&args[0]) {
-                    for (index, ch) in string.text.chars().enumerate() {
-                        let candidate = string_sequence_value(&string, ch);
-                        let matches =
-                            if let Some(testfn) = args.get(2).filter(|value| !value.is_nil()) {
-                                value_matches_with_test(
-                                    interp,
-                                    &candidate,
-                                    &args[1],
-                                    Some(testfn),
-                                    env,
-                                )?
-                            } else {
-                                values_equal(interp, &candidate, &args[1])
-                            };
-                        if matches {
-                            return Ok(Value::Integer(index as i64));
-                        }
-                    }
-                    Ok(Value::Nil)
-                } else {
-                    Err(LispError::TypeError("sequence".into(), args[0].type_name()))
-                }
-            }
-            "cl-coerce" => {
-                need_args(name, args, 2)?;
-                let items = if is_bool_vector_value(interp, &args[0]) {
-                    bool_vector_values(interp, &args[0])?
-                } else {
-                    sequence_values(interp, &args[0])?
-                };
-                match args[1].as_symbol()? {
-                    "list" => Ok(Value::list(items)),
-                    "vector" => {
-                        let mut vector = vec![Value::symbol("vector-literal")];
-                        vector.extend(items);
-                        Ok(Value::list(vector))
-                    }
-                    "string" => {
-                        let mut text = String::new();
-                        for item in items {
-                            let code = item.as_integer()?;
-                            let ch = char::from_u32(code as u32).ok_or_else(|| {
-                                LispError::Signal(format!("Invalid character: {code}"))
-                            })?;
-                            text.push(ch);
-                        }
-                        Ok(Value::String(text.into()))
-                    }
-                    kind => Err(LispError::Signal(format!(
-                        "cl-coerce unsupported type: {kind}"
-                    ))),
-                }
-            }
-            "treesit--linecol-cache" => {
-                need_args(name, args, 0)?;
-                Ok(interp
-                    .buffer_local_value(interp.current_buffer_id(), TREESIT_LINECOL_CACHE_VAR)
-                    .unwrap_or_else(treesit_default_linecol_cache))
-            }
-            "treesit--linecol-cache-set" => {
-                need_args(name, args, 3)?;
-                let cache = treesit_linecol_cache_value(
-                    args[0].as_integer()?,
-                    args[1].as_integer()?,
-                    args[2].as_integer()?,
-                );
-                interp.set_buffer_local_value(
-                    interp.current_buffer_id(),
-                    TREESIT_LINECOL_CACHE_VAR,
-                    cache,
-                );
-                Ok(Value::Nil)
-            }
-            "treesit--linecol-at" => {
-                if args.is_empty() || args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let pos = args
-                    .first()
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .map(|value| value.max(1) as usize)
-                    .unwrap_or_else(|| interp.current_buffer().point());
-                treesit_linecol_at(interp, pos)
             }
             "apply" => {
                 if args.is_empty() {
@@ -2704,20 +1878,6 @@ define_dispatch!(
                 let original_name = func.as_symbol().ok();
                 interp.call_function_value(resolved, original_name, &all_args, env)
             }
-            "apply-partially" => {
-                if args.is_empty() {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
-                }
-                let rest_name = "__emaxx-apply-partially-rest".to_string();
-                let mut body = vec![Value::Symbol("apply".into()), literal_form(&args[0])];
-                body.extend(args[1..].iter().map(literal_form));
-                body.push(Value::Symbol(rest_name.clone().into()));
-                Ok(Value::lambda(
-                    vec!["&rest".into(), rest_name].into(),
-                    vec![Value::list(body)].into(),
-                    shared_env(env.clone()),
-                ))
-            }
             "funcall" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs("funcall".into(), 0));
@@ -2728,41 +1888,26 @@ define_dispatch!(
             }
             "fset" => {
                 need_args(name, args, 2)?;
-                let symbol = args[0].as_symbol()?;
+                // GNU 30.2 data.c:Ffset uses CHECK_SYMBOL/XSYMBOL.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
                 if args[1].is_nil() {
-                    interp.shadow_macro_binding(symbol);
-                    interp.set_function_binding(symbol, None);
+                    interp.set_function_binding(&symbol, None);
                     Ok(Value::Nil)
                 } else {
-                    interp.validate_function_binding(symbol, &args[1])?;
-                    // GNU macro-ness lives in the function cell: only a
-                    // (macro . EXPANDER) cell or a symbol alias keeps it; any
-                    // other definition erases the macro.
-                    let keeps_macro = matches!(&args[1], Value::Symbol(_))
-                        || args[1].cons_values().is_some_and(
-                            |(car, _)| matches!(&car, Value::Symbol(s) if s == "macro"),
-                        );
-                    if !keeps_macro {
-                        interp.shadow_macro_binding(symbol);
-                    }
-                    interp.set_function_binding(symbol, Some(args[1].clone()));
+                    interp.validate_function_binding(&symbol, &args[1])?;
+                    interp.set_function_binding(&symbol, Some(args[1].clone()));
                     Ok(args[1].clone())
                 }
             }
             "fmakunbound" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
+                // GNU 30.2 data.c:Ffmakunbound uses CHECK_SYMBOL/XSYMBOL and
+                // returns its original symbol argument.
+                let symbol = checked_symbol_name(interp, &args[0], env)?;
                 // GNU voids the function cell outright; shadowed stale entries
                 // (repeated defuns push duplicates) must not resurface.
-                interp.remove_all_function_bindings(symbol);
-                interp.shadow_macro_binding(symbol);
-                // The dispatch-chain metadata describes the (now removed)
-                // function binding; a fresh generic must not rank its methods
-                // against specializers of the destroyed chain.
-                interp.put_symbol_property(symbol, "emaxx-cl-defmethod-specializers", Value::Nil);
-                interp.put_symbol_property(symbol, "emaxx-cl-defmethod-introspection", Value::Nil);
-                interp.remove_symbol_property(symbol, "emaxx-cl-defgeneric-implicit");
-                Ok(Value::Symbol(symbol.to_string().into()))
+                interp.remove_all_function_bindings(&symbol);
+                Ok(args[0].clone())
             }
             "funcall-interactively" => {
                 if args.is_empty() {
@@ -2772,10 +1917,7 @@ define_dispatch!(
                 invoke_function_value(interp, &func, &args[1..], env)
             }
             "call-interactively" => call_interactively_impl(interp, args, env),
-            "keyboard-quit" => Err(LispError::SignalValue(Value::list([
-                Value::Symbol("quit".into()),
-                Value::Nil,
-            ]))),
+
             "start-kbd-macro" => {
                 need_arg_range(name, args, 1, 2)?;
                 if interp
@@ -3096,73 +2238,7 @@ define_dispatch!(
                         .cloned(),
                 ))
             }
-            "define-keymap" => Ok(keymap_placeholder(None)),
-            "define-abbrev-table" => {
-                if args.len() < 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let symbol = args[0].as_symbol()?.to_string();
-                let table = match interp.lookup_var(&symbol, &Vec::new()) {
-                    Some(existing) if is_abbrev_table_value(interp, &existing) => existing,
-                    _ => {
-                        let created = make_runtime_abbrev_table(interp, Some(&symbol), Value::Nil);
-                        interp.set_global_binding(&symbol, created.clone());
-                        register_abbrev_table_symbol(interp, &symbol);
-                        created
-                    }
-                };
-                if let Some(docstring) = args.get(2)
-                    && matches!(docstring, Value::String(_) | Value::StringObject(_))
-                {
-                    interp.put_symbol_property(
-                        &symbol,
-                        "variable-documentation",
-                        docstring.clone(),
-                    );
-                }
-                let mut prop_index = 2usize;
-                if matches!(args.get(2), Some(Value::String(_) | Value::StringObject(_))) {
-                    prop_index = 3;
-                }
-                if !(args.len() - prop_index).is_multiple_of(2) {
-                    return Err(LispError::Signal(
-                        "Invalid abbrev table property list".into(),
-                    ));
-                }
-                while prop_index + 1 < args.len() {
-                    set_abbrev_table_property(
-                        interp,
-                        &table,
-                        &args[prop_index],
-                        args[prop_index + 1].clone(),
-                    )?;
-                    prop_index += 2;
-                }
-                set_abbrev_table_entries_from_definitions(interp, &table, &args[1])?;
-                Ok(table)
-            }
-            // GNU owns `read-key' in subr.el.  This native route is the
-            // file-less bootstrap fallback, not an execution pin: a loaded
-            // Elisp definition and temporary `fset'/`cl-letf' replacements
-            // must remain authoritative.
-            "read-key" => {
-                need_arg_range(name, args, 0, 2)?;
-                ensure_interaction_allowed(interp, env)?;
-                let disable_fallbacks = args.get(1).is_some_and(Value::is_truthy);
-                let event = if disable_fallbacks {
-                    if let Some(decoded) = read_decoded_input_event(interp, env)? {
-                        decoded
-                    } else {
-                        normalize_key_event_value(pop_unread_command_event_value(interp, env)?)?
-                    }
-                } else {
-                    read_key_sequence_event(interp, env)?
-                };
-                if disable_fallbacks {
-                    interp.set_variable("last-input-event", event.clone(), env);
-                }
-                Ok(event)
-            }
+
             "read-key-sequence" | "read-key-sequence-vector" => {
                 need_arg_range(name, args, 1, 6)?;
                 ensure_interaction_allowed(interp, env)?;
@@ -3220,56 +2296,7 @@ define_dispatch!(
                     Ok(Value::Integer(unread_command_event_char(&event)? as i64))
                 }
             }
-            "mouse-double-click-time" => {
-                need_arg_range(name, args, 0, 0)?;
-                let value = interp
-                    .lookup_var("double-click-time", env)
-                    .unwrap_or(Value::Nil);
-                match value {
-                    Value::T => Ok(Value::Integer(10_000)),
-                    Value::Integer(value) if value > 0 => Ok(Value::Integer(value)),
-                    Value::Float(value) if value > 0.0 => Ok(Value::Float(value)),
-                    _ => Ok(Value::Integer(0)),
-                }
-            }
-            "context-menu-map" => {
-                need_arg_range(name, args, 0, 1)?;
-                let click = args
-                    .first()
-                    .cloned()
-                    .or_else(|| interp.lookup_var("last-input-event", env))
-                    .unwrap_or(Value::Nil);
-                let mut menu = make_runtime_keymap(interp, Some("Context Menu"));
-
-                for function in interp
-                    .lookup_var("context-menu-functions", env)
-                    .unwrap_or(Value::Nil)
-                    .to_vec()?
-                {
-                    let result = call_function_value(
-                        interp,
-                        &function,
-                        &[menu.clone(), click.clone()],
-                        env,
-                    )?;
-                    if is_keymap_value(interp, &result) {
-                        menu = result;
-                    }
-                }
-
-                if let Some(filter) = interp.lookup_var("context-menu-filter-function", env)
-                    && !filter.is_nil()
-                {
-                    let result =
-                        call_function_value(interp, &filter, &[menu.clone(), click.clone()], env)?;
-                    if is_keymap_value(interp, &result) {
-                        menu = result;
-                    }
-                }
-
-                context_menu_keymap_items(interp, &menu)
-            }
-            "read-string" | "read-from-minibuffer" | "read-no-blanks-input" => {
+            "read-string" | "read-from-minibuffer" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), 0));
                 }
@@ -3405,204 +2432,9 @@ define_dispatch!(
                     let symbol = string_text(&value)?;
                     intern_in_obarray(interp, &obarray, &symbol)
                 }
-            }
-            // GNU byte-run.el defines this as an ordinary &rest function.
-            // Keeping it on the callable dispatch route makes interpreted
-            // and byte-compiled calls share one function-cell contract.
-            "with-no-warnings" => Ok(args.last().cloned().unwrap_or(Value::Nil)),
-            "read-file-name" => {
-                need_arg_range(name, args, 1, 6)?;
-                if let Some(function) = interp.lookup_var("read-file-name-function", env)
-                    && function.is_truthy()
-                {
-                    return interp.call_function_value(function, None, args, env);
-                }
-                let prompt = args[0].clone();
-                let dir = args.get(1).cloned().unwrap_or(Value::Nil);
-                let default = args.get(2).cloned().unwrap_or(Value::Nil);
-                let mustmatch = args.get(3).cloned().unwrap_or(Value::Nil);
-                let initial = args.get(4).cloned().unwrap_or(Value::Nil);
-                let completion = interp.call_function_value(
-                    Value::Symbol("completing-read".into()),
-                    Some("completing-read"),
-                    &[
-                        prompt,
-                        // File-name completion is a programmed table.  A
-                        // nil collection only echoes simulated input and
-                        // silently disables Tramp method/host completion.
-                        Value::Symbol("completion-file-name-table".into()),
-                        Value::Nil,
-                        mustmatch,
-                        initial,
-                        Value::Nil,
-                        default.clone(),
-                    ],
-                    env,
-                )?;
-                if let Some(text) = string_like(&completion)
-                    && !text.text.is_empty()
-                {
-                    return Ok(Value::String(text.text.into()));
-                }
-                if let Some(text) = string_like(&default)
-                    && !text.text.is_empty()
-                {
-                    return Ok(Value::String(text.text.into()));
-                }
-                if let Some(text) = string_like(&dir) {
-                    return Ok(Value::String(text.text.into()));
-                }
-                Ok(Value::String(String::new().into()))
-            }
-            "format-prompt" => format_prompt(interp, args, env),
+            } // GNU byte-run.el defines this as an ordinary &rest function.
+              // Keeping it on the callable dispatch route makes interpreted
+              // and byte-compiled calls share one function-cell contract.
         }
     }
 );
-
-/// Parsed keyword arguments for the native cl-seq functions, mirroring the
-/// bindings established by GNU cl-seq.el's `cl--parsing-keywords'.
-struct ClSeqKeys {
-    test: Option<Value>,
-    test_not: bool,
-    if_fn: Option<Value>,
-    if_not: bool,
-    key: Option<Value>,
-    count: Option<i64>,
-    start: usize,
-    end: Option<usize>,
-    from_end: bool,
-    start1: usize,
-    end1: Option<usize>,
-    start2: usize,
-    end2: Option<usize>,
-}
-
-fn cl_seq_plist_value(keys: &[Value], keyword: &str) -> Option<Value> {
-    let mut index = 0;
-    while index < keys.len() {
-        if matches!(&keys[index], Value::Symbol(name) if name == keyword) {
-            return Some(keys.get(index + 1).cloned().unwrap_or(Value::Nil));
-        }
-        index += 2;
-    }
-    None
-}
-
-fn parse_cl_seq_keys(keys: &[Value], allowed: &[&str]) -> Result<ClSeqKeys, LispError> {
-    let allow_other = cl_seq_plist_value(keys, ":allow-other-keys")
-        .map(|value| value.is_truthy())
-        .unwrap_or(false);
-    if !allow_other {
-        let mut index = 0;
-        while index < keys.len() {
-            let known = matches!(&keys[index], Value::Symbol(name)
-                if allowed.iter().any(|kw| kw == name));
-            if !known {
-                return Err(LispError::Signal(format!(
-                    "Bad keyword argument {}",
-                    keys[index]
-                )));
-            }
-            index += 2;
-        }
-    }
-    let truthy = |keyword: &str| cl_seq_plist_value(keys, keyword).filter(Value::is_truthy);
-    let index_arg = |keyword: &str| -> Result<Option<usize>, LispError> {
-        truthy(keyword)
-            .map(|value| value.as_integer().map(|n| n.max(0) as usize))
-            .transpose()
-    };
-    let mut test = truthy(":test");
-    let mut test_not = false;
-    if let Some(value) = truthy(":test-not") {
-        test = Some(value);
-        test_not = true;
-    }
-    let mut if_fn = truthy(":if");
-    let mut if_not = false;
-    if let Some(value) = truthy(":if-not") {
-        if_fn = Some(value);
-        if_not = true;
-    }
-    Ok(ClSeqKeys {
-        test,
-        test_not,
-        if_fn,
-        if_not,
-        key: truthy(":key"),
-        count: truthy(":count")
-            .map(|value| value.as_integer())
-            .transpose()?,
-        start: index_arg(":start")?.unwrap_or(0),
-        end: index_arg(":end")?,
-        from_end: truthy(":from-end").is_some(),
-        start1: index_arg(":start1")?.unwrap_or(0),
-        end1: index_arg(":end1")?,
-        start2: index_arg(":start2")?.unwrap_or(0),
-        end2: index_arg(":end2")?,
-    })
-}
-
-/// GNU cl-seq.el's `cl--check-test': apply :key, then match via :test /
-/// :test-not / :if / :if-not, defaulting to `eql'.
-fn cl_seq_match(
-    interp: &mut Interpreter,
-    keys: &ClSeqKeys,
-    item: &Value,
-    element: &Value,
-    env: &mut crate::lisp::types::Env,
-) -> Result<bool, LispError> {
-    let keyed = match &keys.key {
-        Some(key) => call_function_value(interp, key, std::slice::from_ref(element), env)?,
-        None => element.clone(),
-    };
-    if let Some(test) = &keys.test {
-        let result = call_function_value(interp, test, &[item.clone(), keyed], env)?;
-        Ok(result.is_truthy() != keys.test_not)
-    } else if let Some(predicate) = &keys.if_fn {
-        let result = call_function_value(interp, predicate, &[keyed], env)?;
-        Ok(result.is_truthy() != keys.if_not)
-    } else {
-        Ok(values_eql(item, &keyed))
-    }
-}
-
-fn cl_seq_elements(interp: &Interpreter, sequence: &Value) -> Result<Vec<Value>, LispError> {
-    sequence_values(interp, sequence)
-}
-
-/// Rebuild a fresh sequence of the same kind as ORIGINAL, mirroring the
-/// list / `concat' / `vconcat' result types of GNU cl-remove.
-fn cl_seq_rebuild(original: &Value, items: Vec<Value>) -> Result<Value, LispError> {
-    match original {
-        Value::String(_) | Value::StringObject(_) => {
-            let mut text = String::new();
-            for item in &items {
-                let (ch, _multibyte) = concat_character_value(item)?;
-                text.push(ch);
-            }
-            Ok(Value::String(text.into()))
-        }
-        value if is_vector_value(value) => {
-            let mut vector = vec![Value::symbol("vector-literal")];
-            vector.extend(items);
-            Ok(Value::list(vector))
-        }
-        Value::Cons(_) | Value::Nil => Ok(Value::list(items)),
-        _ => {
-            let mut vector = vec![Value::symbol("vector-literal")];
-            vector.extend(items);
-            Ok(Value::list(vector))
-        }
-    }
-}
-
-fn cl_seq_set_element(target: &Value, index: usize, value: Value) -> Result<(), LispError> {
-    match target {
-        Value::String(_) | Value::StringObject(_) => {
-            aset_string_value(target, index, &value)?;
-            Ok(())
-        }
-        _ => aset_vector_value(target, index, value),
-    }
-}

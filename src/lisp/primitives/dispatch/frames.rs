@@ -70,25 +70,6 @@ fn default_frame_parameters(interp: &Interpreter, id: u64) -> Vec<(String, Value
         ("cursor-color".into(), Value::string("white")),
         ("scroll-bar-background".into(), Value::Nil),
         ("scroll-bar-foreground".into(), Value::Nil),
-        // A live color terminal classifies as a light-background color
-        // display (GNU's xterm terminal-init default); batch keeps the
-        // dumb-terminal dark/mono answers.
-        (
-            "background-mode".into(),
-            Value::symbol(if interp.tty_display_color_cells() > 0 {
-                "light"
-            } else {
-                "dark"
-            }),
-        ),
-        (
-            "display-type".into(),
-            Value::symbol(if interp.tty_display_color_cells() > 0 {
-                "color"
-            } else {
-                "mono"
-            }),
-        ),
         ("minibuffer".into(), Value::T),
     ]
 }
@@ -119,16 +100,21 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
     }
     if parameter == "tty-color-mode" {
         // GNU's channel for changing a tty frame's color support
-        // (term.c's tty_set_color_mode): the count feeds defface spec
-        // selection, and every realized face re-derives from its spec
-        // under the new display.
+        // (term.c's set_tty_color_mode): tty_setup_colors publishes the
+        // count, then safe_calln (Qtty_set_up_initial_frame_faces) has
+        // faces.el recompute every face against the new display.
         let cells = match &value {
             Value::Integer(mode) if *mode > 1 => *mode,
             Value::Integer(_) | Value::Nil => 0,
             _ => 8,
         };
         interp.set_tty_display_colors(cells);
-        let _ = interp.rerealize_defface_faces();
+        if let Ok(forms) =
+            crate::lisp::reader::Reader::new("(tty-set-up-initial-frame-faces)").read_all()
+            && let Some(form) = forms.first()
+        {
+            let _ = interp.eval(form, &mut Vec::new());
+        }
     }
     let menu_bar_lines_changed = parameter == "menu-bar-lines";
     let Some(frame) = interp.frame_state_mut(id) else {
@@ -318,16 +304,6 @@ define_dispatch!(
                         .to_string();
                     store_frame_parameter(interp, id, parameter, value);
                 }
-                Ok(Value::Nil)
-            }
-            "set-frame-parameter" => {
-                need_args(name, args, 3)?;
-                let id = decode_live_frame(interp, args.first(), true)?;
-                let parameter = args[1]
-                    .as_symbol()
-                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?
-                    .to_string();
-                store_frame_parameter(interp, id, parameter, args[2].clone());
                 Ok(Value::Nil)
             }
             "frame-char-width" | "frame-char-height" => {
