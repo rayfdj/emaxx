@@ -200,7 +200,8 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
     StartupFeature::new("lcms2"),
     StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     StartupFeature::new("md5"),
-    StartupFeature::new("native-compile"),
+    // No "native-compile": Emaxx models a no-native-comp GNU build, where
+    // comp.c registers nothing and `native-comp-available-p' is nil.
     StartupFeature::new("overlay").with_subfeatures(overlay_subfeatures),
     StartupFeature::new("sha1"),
     StartupFeature::new("text-properties").with_subfeatures(text_properties_subfeatures),
@@ -3225,6 +3226,10 @@ impl Interpreter {
         // `function-put'/`define-symbol-prop' handler pushes entries here and
         // `get' consults it before the symbol's own plist.
         interp.define_special_variable("overriding-plist-environment", Value::Nil);
+        // minibuf.c's history controls, read by subr.el's `add-to-history'.
+        interp.define_special_variable("history-length", Value::Integer(100));
+        interp.define_special_variable("history-delete-duplicates", Value::Nil);
+        interp.define_special_variable("history-add-new-input", Value::T);
         for variable in GNU_XDISP_GLOBAL_VARIABLES {
             interp.define_special_variable(variable.name, variable.default.value());
         }

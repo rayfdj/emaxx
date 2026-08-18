@@ -57,7 +57,7 @@ enum Commands {
     Selectors,
     List(ListArgs),
     Run(RunArgs),
-    /// Replay exactly the pinned 7,080-outcome compatibility manifest.
+    /// Replay exactly the pinned 7,595-outcome compatibility manifest.
     Frozen(FrozenArgs),
     Landed(LandedArgs),
     Regressions(RegressionArgs),
@@ -2374,6 +2374,7 @@ fn run_oracle(
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
     command.env("EMAXX_COMPAT_RELATIVE_FILE", relative_file);
     command.env("EMAXX_COMPAT_SELECTOR", format!("(quote {selector})"));
+    command.env("EMAXX_COMPAT_RUNNER", "oracle");
     command.arg("--no-init-file");
     command.arg("--no-site-file");
     command.arg("--no-site-lisp");
@@ -2432,6 +2433,12 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     // host-side trace preserves the nested file/form that produced opaque
     // conditions such as `(args-out-of-range [] 0)' in the immutable log.
     command.env("EMAXX_TRACE_LOAD_ERRORS", "1");
+    command.env("EMAXX_COMPAT_RELATIVE_FILE", request.relative_file);
+    command.env(
+        "EMAXX_COMPAT_SELECTOR",
+        format!("(quote {})", request.selector),
+    );
+    command.env("EMAXX_COMPAT_RUNNER", "emaxx");
     command.arg("--no-init-file");
     command.arg("--no-site-file");
     command.arg("--no-site-lisp");
@@ -2444,14 +2451,13 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     command.arg("-l");
     command.arg("ert");
     command.arg("-l");
+    command.arg(compat::oracle_helper_path());
+    command.arg("-l");
     command.arg(request.file);
     let loaded_marker = request.artifact_dir.join("emaxx.loaded");
     configure_loaded_marker(&mut command, &loaded_marker)?;
     command.arg("--eval");
-    command.arg(format!(
-        "(ert-run-tests-batch-and-exit (quote {}))",
-        request.selector
-    ));
+    command.arg(format!("(emaxx-compat-run (quote {}))", request.selector));
 
     let process = run_command(command, request.timeout, &loaded_marker, Some(&result_path))?;
     let report = load_or_synthesize_report(

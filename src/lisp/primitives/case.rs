@@ -142,9 +142,26 @@ pub(crate) fn simple_downcase_char(code: u32, final_sigma: bool) -> u32 {
 
 pub(crate) fn simple_titlecase_char(code: u32) -> u32 {
     let code = normalize_case_key(code);
+    // GNU's `titlecase' uniprop table: the only characters whose titlecase
+    // differs from their uppercase are the Latin digraphs.
     match code {
         0x01C4..=0x01C6 => 0x01C5,
+        0x01C7..=0x01C9 => 0x01C8,
+        0x01CA..=0x01CC => 0x01CB,
+        0x01F1..=0x01F3 => 0x01F2,
         _ => simple_upcase_char(code),
+    }
+}
+
+/// Whether the `titlecase' uniprop maps CODE (casefiddle.c consults that
+/// table before the case-table's upcase mapping).
+fn titlecase_prop_char(code: u32) -> Option<u32> {
+    match code {
+        0x01C4..=0x01C6 => Some(0x01C5),
+        0x01C7..=0x01C9 => Some(0x01C8),
+        0x01CA..=0x01CC => Some(0x01CB),
+        0x01F1..=0x01F3 => Some(0x01F2),
+        _ => None,
     }
 }
 
@@ -229,6 +246,12 @@ pub(crate) fn full_downcase_string(
     final_sigma: bool,
 ) -> String {
     let code = ch as u32;
+    // casefiddle.c:case_character post-processes a down-cased capital sigma
+    // at end of word into final sigma, overriding whatever the case table
+    // produced for the character itself.
+    if code == 0x03A3 && final_sigma {
+        return '\u{03C2}'.to_string();
+    }
     if let Some(mapped) = unicode_special_case_mapping(code, "special-lowercase") {
         return mapped.to_string();
     }
@@ -251,13 +274,17 @@ pub(crate) fn full_titlecase_string(interp: &Interpreter, up_table: u64, ch: cha
     if let Some(mapped) = unicode_special_case_mapping(code, "special-titlecase") {
         return mapped.to_string();
     }
+    // casefiddle.c consults the `titlecase' uniprop before the case-table
+    // upcase mapping.
+    if let Some(mapped) = titlecase_prop_char(code) {
+        return char::from_u32(mapped).unwrap_or(ch).to_string();
+    }
     if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
         return char::from_u32(denormalize_case_key(code, mapped))
             .unwrap_or(ch)
             .to_string();
     }
     match code {
-        0x01C4..=0x01C6 => '\u{01C5}'.to_string(),
         _ if is_raw_like_byte_char(code) => ch.to_string(),
         _ => char::from_u32(denormalize_case_key(code, simple_titlecase_char(code)))
             .unwrap_or(ch)
@@ -277,10 +304,11 @@ pub(crate) fn simple_case_char_for_action(
             .unwrap_or_else(|| simple_upcase_char(code)),
         CaseAction::Down => explicit_case_table_mapping(interp, down_table, code)
             .unwrap_or_else(|| simple_downcase_char(code, false)),
-        CaseAction::Capitalize | CaseAction::UpcaseInitials => {
-            explicit_case_table_mapping(interp, up_table, code)
-                .unwrap_or_else(|| simple_titlecase_char(code))
-        }
+        // casefiddle.c:case_character_impl checks the `titlecase' uniprop
+        // before falling back to the case-table upcase mapping.
+        CaseAction::Capitalize | CaseAction::UpcaseInitials => titlecase_prop_char(code)
+            .or_else(|| explicit_case_table_mapping(interp, up_table, code))
+            .unwrap_or_else(|| simple_titlecase_char(code)),
     };
     denormalize_case_key(code, mapped)
 }

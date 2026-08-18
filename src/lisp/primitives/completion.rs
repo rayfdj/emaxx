@@ -1163,12 +1163,9 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
                 .next()?;
             return parsed.to_vec().ok();
         }
-        return builtin_interactive_string(name).map(|spec| {
-            vec![
-                Value::Symbol("interactive".into()),
-                Value::String(spec.into()),
-            ]
-        });
+        // The GNU-generated interactive-form table is the only native
+        // source; a miss means the builtin is not a command.
+        return None;
     }
     // A raw `(lambda ARGS . BODY)' LIST also has an interactive form (GNU
     // interactive_form handles unevaluated lambda expressions; advice.el's
@@ -1230,25 +1227,6 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
     None
 }
 
-// Interactive specs of the built-in commands keyboard macros dispatch to;
-// motion commands take the numeric prefix argument like their GNU C
-// counterparts.
-fn builtin_interactive_string(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "next-line" | "previous-line" => "^p\np",
-        "forward-char"
-        | "backward-char"
-        | "forward-line"
-        | "move-beginning-of-line"
-        | "move-end-of-line" => "^p",
-        // GNU lisp/emacs-lisp/lisp.el: (interactive "^p\nd") — the second
-        // letter is consumed and discarded by the &optional ARG lambda list.
-        "forward-sexp" | "backward-sexp" => "^p\nd",
-        "delete-char" => "p\nP",
-        "kill-line" | "eval-defun" => "P",
-        _ => return None,
-    })
-}
 
 pub(crate) fn interactive_spec_form(interp: &Interpreter, func: &Value) -> Option<Value> {
     callable_interactive_form_items(interp, func)
