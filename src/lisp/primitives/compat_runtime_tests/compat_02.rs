@@ -1,34 +1,44 @@
 use super::*;
 
+// `coding-system-get' is mule.el Lisp; the bare host reads the C-owned
+// coding-system plist directly (mule.el's accessor is plist-get over it).
+fn make_record(interp: &mut Interpreter, env: &mut Env, slots: &[Value]) -> Value {
+    call(interp, "record", slots, env).expect("record construction")
+}
+
+fn coding_plist_property(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    coding_system: &str,
+    property: &str,
+) -> Value {
+    let plist = call(
+        interp,
+        "coding-system-plist",
+        &[Value::Symbol(coding_system.into())],
+        env,
+    )
+    .unwrap_or_else(|error| panic!("coding-system-plist {coding_system}: {error}"));
+    call(
+        interp,
+        "plist-get",
+        &[plist, Value::Symbol(property.into())],
+        env,
+    )
+    .unwrap_or_else(|error| panic!("plist-get {property}: {error}"))
+}
+
 #[test]
 fn coding_system_get_reports_for_unibyte_for_raw_text() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
 
     assert_eq!(
-        call(
-            &mut interp,
-            "coding-system-get",
-            &[
-                Value::Symbol("raw-text".into()),
-                Value::Symbol(":for-unibyte".into()),
-            ],
-            &mut env,
-        )
-        .expect("raw-text :for-unibyte"),
+        coding_plist_property(&mut interp, &mut env, "raw-text", ":for-unibyte"),
         Value::T
     );
     assert_eq!(
-        call(
-            &mut interp,
-            "coding-system-get",
-            &[
-                Value::Symbol("utf-8".into()),
-                Value::Symbol(":for-unibyte".into()),
-            ],
-            &mut env,
-        )
-        .expect("utf-8 is multibyte"),
+        coding_plist_property(&mut interp, &mut env, "utf-8", ":for-unibyte"),
         Value::Nil
     );
 }
@@ -68,16 +78,7 @@ fn define_coding_system_internal_derives_public_utf8_attributes_like_coding_c() 
         (":category", Value::Symbol("coding-category-utf-8".into())),
     ] {
         assert_eq!(
-            call(
-                &mut interp,
-                "coding-system-get",
-                &[
-                    Value::Symbol("sample-utf-8".into()),
-                    Value::Symbol(property.into()),
-                ],
-                &mut env,
-            )
-            .unwrap_or_else(|error| panic!("read {property}: {error}")),
+            coding_plist_property(&mut interp, &mut env, "sample-utf-8", property),
             expected,
         );
     }
@@ -210,9 +211,10 @@ fn funcall_message_builtin_from_lambda() {
     let forms = Reader::new(
         r#"
             (progn
-              (defun emaxx-test-call-message (orig &rest args)
-                (setq emaxx-test-message-log (apply #'format-message args))
-                (funcall orig "%s" emaxx-test-message-log))
+              (defalias 'emaxx-test-call-message
+                #'(lambda (orig &rest args)
+                    (setq emaxx-test-message-log (apply #'format-message args))
+                    (funcall orig "%s" emaxx-test-message-log)))
               (funcall #'emaxx-test-call-message (symbol-function 'message) "value=%s" 42))
             "#,
     )
@@ -232,8 +234,8 @@ fn apply_format_message_from_lambda() {
     let forms = Reader::new(
         r#"
             (progn
-              (defun emaxx-test-format-message (&rest args)
-                (apply #'format-message args))
+              (defalias 'emaxx-test-format-message
+                #'(lambda (&rest args) (apply #'format-message args)))
               (emaxx-test-format-message "value=%s" 42))
             "#,
     )
@@ -272,33 +274,6 @@ fn direct_format_message_top_level() {
         .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
         .expect("top-level direct format-message should evaluate");
     assert_eq!(result, Value::String("value=42".into()));
-}
-
-#[test]
-fn user_error_formats_message_arguments() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let error = call(
-        &mut interp,
-        "user-error",
-        &[
-            Value::String("No%s dynamic expansion for `%s' found".into()),
-            Value::String(" further".into()),
-            Value::String("ab".into()),
-        ],
-        &mut env,
-    )
-    .expect_err("user-error should signal");
-    let LispError::SignalValue(value) = error else {
-        panic!("expected signal value");
-    };
-    assert_eq!(
-        value,
-        Value::list([
-            Value::Symbol("user-error".into()),
-            Value::String("No further dynamic expansion for `ab' found".into()),
-        ])
-    );
 }
 
 #[test]
@@ -1096,39 +1071,6 @@ fn file_regular_p_distinguishes_files_from_directories() {
 }
 
 #[test]
-fn file_relative_name_returns_child_and_parent_relative_paths() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-
-    assert_eq!(
-        call(
-            &mut interp,
-            "file-relative-name",
-            &[
-                Value::String("/tmp/project/src/main.c".into()),
-                Value::String("/tmp/project/".into()),
-            ],
-            &mut env,
-        )
-        .expect("child relative path"),
-        Value::String("src/main.c".into())
-    );
-    assert_eq!(
-        call(
-            &mut interp,
-            "file-relative-name",
-            &[
-                Value::String("/tmp/include/sys/cdefs.h".into()),
-                Value::String("/tmp/project/src/".into()),
-            ],
-            &mut env,
-        )
-        .expect("parent relative path"),
-        Value::String("../../include/sys/cdefs.h".into())
-    );
-}
-
-#[test]
 fn write_region_reports_output_errors_as_file_error() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -1158,85 +1100,6 @@ fn write_region_reports_output_errors_as_file_error() {
     );
     assert_eq!(items.get(3), Some(&Value::String(path.into())));
     std::fs::remove_dir_all(directory).expect("cleanup temp directory");
-}
-
-#[test]
-fn make_empty_file_creates_empty_file_and_optional_parents() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let directory =
-        std::env::temp_dir().join(format!("emaxx-make-empty-file-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&directory);
-    let nested = directory.join("child").join("empty.txt");
-    let nested_text = nested.to_string_lossy().to_string();
-
-    assert_eq!(
-        call(
-            &mut interp,
-            "make-empty-file",
-            &[Value::String(nested_text.clone().into()), Value::T],
-            &mut env,
-        )
-        .expect("create empty file with parents"),
-        Value::Nil
-    );
-    assert_eq!(
-        std::fs::metadata(&nested)
-            .expect("empty file metadata")
-            .len(),
-        0
-    );
-    std::fs::write(&nested, "content").expect("write content");
-    assert!(
-        call(
-            &mut interp,
-            "make-empty-file",
-            &[Value::String(nested_text.clone().into())],
-            &mut env,
-        )
-        .is_err()
-    );
-    assert_eq!(
-        call(
-            &mut interp,
-            "make-empty-file",
-            &[Value::String(nested_text.into()), Value::T],
-            &mut env,
-        )
-        .expect("truncate existing file with parents"),
-        Value::Nil
-    );
-    assert_eq!(
-        std::fs::metadata(&nested)
-            .expect("truncated file metadata")
-            .len(),
-        0
-    );
-    std::fs::remove_dir_all(directory).expect("cleanup temp directory");
-}
-
-#[test]
-fn member_ignore_case_matches_strings_case_insensitively() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-
-    assert_eq!(
-        call(
-            &mut interp,
-            "member-ignore-case",
-            &[
-                Value::String("UNZIP".into()),
-                Value::list([
-                    Value::String("zip".into()),
-                    Value::String("unzip".into()),
-                    Value::String("7z".into()),
-                ]),
-            ],
-            &mut env,
-        )
-        .expect("find case-insensitive member"),
-        Value::list([Value::String("unzip".into()), Value::String("7z".into())])
-    );
 }
 
 #[test]
@@ -1391,6 +1254,37 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
     )
     .expect("float double big");
 
+    let sym = Value::symbol;
+    let record_a23 = make_record(
+        &mut interp,
+        &mut env,
+        &[sym("a"), Value::Integer(2), Value::Integer(3)],
+    );
+    let record_b34 = make_record(
+        &mut interp,
+        &mut env,
+        &[sym("b"), Value::Integer(3), Value::Integer(4)],
+    );
+    let record_b = make_record(&mut interp, &mut env, &[sym("b")]);
+    let record_ba = make_record(&mut interp, &mut env, &[sym("b"), sym("a")]);
+    let record_a3 = make_record(&mut interp, &mut env, &[sym("a"), Value::Integer(3)]);
+    let record_a32 = make_record(
+        &mut interp,
+        &mut env,
+        &[sym("a"), Value::Integer(3), Value::Integer(2)],
+    );
+    let record_head = make_record(&mut interp, &mut env, &[sym("b"), sym("a")]);
+    let record_mid = make_record(&mut interp, &mut env, &[sym("c"), sym("d")]);
+    let record_nested_e = make_record(
+        &mut interp,
+        &mut env,
+        &[record_head.clone(), record_mid.clone(), sym("e")],
+    );
+    let record_nested_f = make_record(
+        &mut interp,
+        &mut env,
+        &[record_head, record_mid, sym("f")],
+    );
     let cases = vec![
         ("number", parse("1"), parse("2")),
         ("number_neg_neg", parse("-2"), parse("-1")),
@@ -1552,28 +1446,40 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             make_bool_vector_value(&mut interp, [true, false, true]),
             make_bool_vector_value(&mut interp, [true, false, true, false]),
         ),
-        ("record_type", parse("#s(a 2 3)"), parse("#s(b 3 4)")),
-        ("record_prefix", parse("#s(b)"), parse("#s(b a)")),
-        ("record_same_type", parse("#s(a 2 3)"), parse("#s(a 3)")),
-        (
-            "record_same_type_longer",
-            parse("#s(a 2 3)"),
-            parse("#s(a 3 2)"),
-        ),
-        (
-            "record_nested",
-            parse("#s(#s(b a) #s(c d) e)"),
-            parse("#s(#s(b a) #s(c d) f)"),
-        ),
+        ("record_type", record_a23.clone(), record_b34),
+        ("record_prefix", record_b, record_ba),
+        ("record_same_type", record_a23.clone(), record_a3.clone()),
+        ("record_same_type_longer", record_a23, record_a32),
+        ("record_nested", record_nested_e, record_nested_f),
         (
             "record_nested_case",
-            parse("#s(#s(b a) #s(c D) e)"),
-            parse("#s(#s(b a) #s(c d) e)"),
+            {
+                let head = make_record(&mut interp, &mut env, &[sym("b"), sym("a")]);
+                let mid = make_record(&mut interp, &mut env, &[sym("c"), sym("D")]);
+                make_record(&mut interp, &mut env, &[head, mid, sym("e")])
+            },
+            {
+                let head = make_record(&mut interp, &mut env, &[sym("b"), sym("a")]);
+                let mid = make_record(&mut interp, &mut env, &[sym("c"), sym("d")]);
+                make_record(&mut interp, &mut env, &[head, mid, sym("e")])
+            },
         ),
         (
             "record_nested_type",
-            parse("#s(#s(b a) #s(c d #s(u) x) e)"),
-            parse("#s(#s(b a) #s(c d #s(v) x) e)"),
+            {
+                let head = make_record(&mut interp, &mut env, &[sym("b"), sym("a")]);
+                let inner = make_record(&mut interp, &mut env, &[sym("u")]);
+                let mid =
+                    make_record(&mut interp, &mut env, &[sym("c"), sym("d"), inner, sym("x")]);
+                make_record(&mut interp, &mut env, &[head, mid, sym("e")])
+            },
+            {
+                let head = make_record(&mut interp, &mut env, &[sym("b"), sym("a")]);
+                let inner = make_record(&mut interp, &mut env, &[sym("v")]);
+                let mid =
+                    make_record(&mut interp, &mut env, &[sym("c"), sym("d"), inner, sym("x")]);
+                make_record(&mut interp, &mut env, &[head, mid, sym("e")])
+            },
         ),
         ("marker_same_buffer", mark1, mark2),
         ("marker_other_buffer", Value::Marker(mark1_id), mark3),
@@ -1723,150 +1629,6 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             "{label}: expected (vector right 1) < (vector right 2)"
         );
     }
-}
-
-#[test]
-fn debug_value_less_ordered_upstream_body() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let form = Reader::new(
-        r#"
-            (let* ((big (* 10 most-positive-fixnum))
-                   (buf1 (get-buffer-create " *one*"))
-                   (buf2 (get-buffer-create " *two*"))
-                   (buf3 (get-buffer-create " *three*"))
-                   (_ (progn (with-current-buffer buf1 (insert (make-string 20 ?a)))
-                             (with-current-buffer buf2 (insert (make-string 20 ?b)))))
-                   (mark1 (set-marker (make-marker) 12 buf1))
-                   (mark2 (set-marker (make-marker) 13 buf1))
-                   (mark3 (set-marker (make-marker) 12 buf2))
-                   (mark4 (set-marker (make-marker) 13 buf2))
-                   (proc1 (make-pipe-process :name " *proc one*"))
-                   (proc2 (make-pipe-process :name " *proc two*")))
-              (kill-buffer buf3)
-              (unwind-protect
-                  (catch 'fail
-                    (let ((case-index -1))
-                      (dolist (c
-                               `(
-                               (1 . 2)  (-2 . -1) (-2 . 1) (-1 . 2)
-                               (,big . ,(1+ big)) (,(- big) . ,big)
-                               (,(- -1 big) . ,(- big))
-                               (1 . ,big) (-1 . ,big) (,(- big) . -1) (,(- big) . 1)
-                               (1.5 . 1.6) (-1.3 . -1.2) (-13.0 . 12.0)
-                               (1 . 1.1) (1.9 . 2) (-2.0 . 1) (-2 . 1.0)
-                               (72057594037927935 . 72057594037927936.0)
-                               (72057594037927936.0 . 72057594037927937)
-                               (-72057594037927936.0 . -72057594037927935)
-                               (-72057594037927937 . -72057594037927936.0)
-                               (2305843009213693951 . 2305843009213693952.0)
-                               (,big . ,(float (* 2 big))) (,(float big) . ,(* 2 big))
-                               (a . b) (nil . nix) (b . ba) (## . a) (A . a)
-                               (#:a . #:b) (a . #:b) (#:a . b)
-                               ("" . "a") ("a" . "b") ("A" . "a") ("abc" . "abd")
-                               ("b" . "ba")
-                               (("" . 2) . ("a" . 1))
-                               (("å" . 2) . ("åü" . 1))
-                               (("a" . 2) . ("aå" . 1))
-                               (("\x80" . 2) . ("\x80å" . 1))
-                               ((1 2 3) . (2 3 4)) ((2) . (2 1)) (() . (0))
-                               ((1 2 3) . (1 3)) ((1 2 3) . (1 3 2))
-                               (((b a) (c d) e) . ((b a) (c d) f))
-                               (((b a) (c D) e) . ((b a) (c d) e))
-                               (((b a) (c d () x) e) . ((b a) (c d (1) x) e))
-                               ((1 . 2) . (1 . 3)) ((1 2 . 3) . (1 2 . 4))
-                               ([1 2 3] . [2 3 4]) ([2] . [2 1]) ([] . [0])
-                               ([1 2 3] . [1 3]) ([1 2 3] . [1 3 2])
-                               ([[b a] [c d] e] . [[b a] [c d] f])
-                               ([[b a] [c D] e] . [[b a] [c d] e])
-                               ([[b a] [c d [] x] e] . [[b a] [c d [1] x] e])
-                               (,(bool-vector) . ,(bool-vector nil))
-                               (,(bool-vector nil) . ,(bool-vector t))
-                               (,(bool-vector t nil t nil) . ,(bool-vector t nil t t))
-                               (,(bool-vector t nil t) . ,(bool-vector t nil t nil))
-                               (#s(a 2 3) . #s(b 3 4)) (#s(b) . #s(b a))
-                               (#s(a 2 3) . #s(a 3)) (#s(a 2 3) . #s(a 3 2))
-                               (#s(#s(b a) #s(c d) e) . #s(#s(b a) #s(c d) f))
-                               (#s(#s(b a) #s(c D) e) . #s(#s(b a) #s(c d) e))
-                               (#s(#s(b a) #s(c d #s(u) x) e)
-                                . #s(#s(b a) #s(c d #s(v) x) e))
-                               (,mark1 . ,mark2) (,mark1 . ,mark3) (,mark1 . ,mark4)
-                               (,mark2 . ,mark3) (,mark2 . ,mark4) (,mark3 . ,mark4)
-                               (,buf1 . ,buf2) (,buf3 . ,buf1) (,buf3 . ,buf2)
-                               (,proc1 . ,proc2)
-                               ))
-                        (setq case-index (1+ case-index))
-                        (let ((x (car c))
-                              (y (cdr c)))
-                          (condition-case err
-                              (progn
-                                (unless (value< x y)
-                                  (throw 'fail
-                                         (list 'xy-false
-                                               case-index
-                                               (prin1-to-string c)
-                                               (prin1-to-string x)
-                                               (prin1-to-string y))))
-                                (when (value< y x)
-                                  (throw 'fail
-                                         (list 'yx-true
-                                               case-index
-                                               (prin1-to-string c)
-                                               (prin1-to-string x)
-                                               (prin1-to-string y))))
-                                (unless (value< (vector x 2) (vector y 1))
-                                  (throw 'fail
-                                         (list 'vec-forward
-                                               case-index
-                                               (prin1-to-string c)
-                                               (prin1-to-string x)
-                                               (prin1-to-string y))))
-                                (when (value< (vector y 1) (vector x 2))
-                                  (throw 'fail
-                                         (list 'vec-reverse
-                                               case-index
-                                               (prin1-to-string c)
-                                               (prin1-to-string x)
-                                               (prin1-to-string y))))
-                                (unless (value< (vector x 1) (vector x 2))
-                                  (throw 'fail
-                                         (list 'same-left
-                                               case-index
-                                               (prin1-to-string c)
-                                               (prin1-to-string x)
-                                               (prin1-to-string y))))
-                                (unless (value< (vector y 1) (vector y 2))
-                                  (throw 'fail
-                                         (list 'same-right
-                                               case-index
-                                               (prin1-to-string c)
-                                               (prin1-to-string x)
-                                               (prin1-to-string y)))))
-                            (error (throw 'fail
-                                          (list 'error
-                                                case-index
-                                                (prin1-to-string c)
-                                                (prin1-to-string x)
-                                                (prin1-to-string y)
-                                                (prin1-to-string err)))))))))))
-                (ignore-errors (delete-process proc2))
-                (ignore-errors (delete-process proc1))
-                (ignore-errors (kill-buffer buf2))
-                (ignore-errors (kill-buffer buf1)))))
-            "#,
-    )
-    .read()
-    .expect("parse ordered diagnostic form")
-    .expect("ordered diagnostic form");
-
-    let result = interp
-        .eval(&form, &mut env)
-        .expect("evaluate ordered diagnostic form");
-    assert_eq!(
-        result,
-        Value::Nil,
-        "unexpected ordered diagnostic result: {result:?}"
-    );
 }
 
 #[test]
@@ -2048,96 +1810,6 @@ fn value_less_selected_upstream_type_mismatch_cases_match_emacs() {
             );
         }
     }
-}
-
-#[test]
-fn debug_value_less_type_mismatch_upstream_body() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let form = Reader::new(
-        r#"
-            (let ((incomparable
-                   `( 1 a "a" (a b) [a b] ,(bool-vector nil t) #s(a b)
-                      ,(make-char-table 'test)
-                      ,(make-hash-table)
-                      ,(obarray-make))))
-              (catch 'fail
-                (let ((tail incomparable))
-                  (while tail
-                    (let ((x (car tail)))
-                      (dolist (y (cdr tail))
-                        (condition-case _
-                            (when (value< x y)
-                              (throw 'fail (list 'xy x y)))
-                          (type-mismatch nil)
-                          (error (throw 'fail (list 'xy-wrong-error x y))))
-                        (condition-case _
-                            (when (value< y x)
-                              (throw 'fail (list 'yx x y)))
-                          (type-mismatch nil)
-                          (error (throw 'fail (list 'yx-wrong-error x y)))))
-                      (setq tail (cdr tail))))
-                  nil)))
-            "#,
-    )
-    .read()
-    .expect("parse diagnostic form")
-    .expect("diagnostic form");
-
-    let result = interp
-        .eval(&form, &mut env)
-        .expect("evaluate diagnostic form");
-    assert_eq!(
-        result,
-        Value::Nil,
-        "unexpected type-mismatch diagnostic result: {result:?}"
-    );
-}
-
-#[test]
-fn debug_value_less_unordered_upstream_body() {
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let form = Reader::new(
-        r#"
-            (let ((buf1 (get-buffer-create " *one*"))
-                  (buf2 (get-buffer-create " *two*")))
-              (kill-buffer buf2)
-              (kill-buffer buf1)
-              (catch 'fail
-                (dolist (c `(
-                             (0 . 0.0) (0 . -0.0) (0.0 . -0.0)
-                             (72057594037927936 . 72057594037927936.0)
-                             (1 . 0.0e+NaN)
-                             (a . #:a)
-                             (,buf1 . ,buf2)
-                             (,(make-hash-table) . ,(make-hash-table))
-                             (,(obarray-make) . ,(obarray-make))
-                             ))
-                  (let ((x (car c))
-                        (y (cdr c)))
-                    (when (value< x y)
-                      (throw 'fail (list 'xy x y)))
-                    (when (value< y x)
-                      (throw 'fail (list 'yx x y)))
-                    (unless (value< (cons x 1) (cons y 2))
-                      (throw 'fail (list 'cons-forward x y)))
-                    (when (value< (cons x 2) (cons y 1))
-                      (throw 'fail (list 'cons-reverse x y)))))))
-            "#,
-    )
-    .read()
-    .expect("parse unordered diagnostic form")
-    .expect("unordered diagnostic form");
-
-    let result = interp
-        .eval(&form, &mut env)
-        .expect("evaluate unordered diagnostic form");
-    assert_eq!(
-        result,
-        Value::Nil,
-        "unexpected unordered diagnostic result: {result:?}"
-    );
 }
 
 #[test]

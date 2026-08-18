@@ -269,7 +269,12 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             base: "no-conversion".into(),
             kind: "raw-text".into(),
             eol_type: None,
-            plist: coding_plist('=', std::iter::empty()),
+            // coding.c's C bootstrap and mule-conf.el both mark the raw
+            // families `:for-unibyte t'.
+            plist: coding_plist('=', std::iter::once((
+                ":for-unibyte".to_string(),
+                Value::T,
+            ))),
         },
         CodingSystemState {
             name: "unix".into(),
@@ -513,28 +518,40 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             base: "raw-text".into(),
             kind: "raw-text".into(),
             eol_type: None,
-            plist: coding_plist('r', std::iter::empty()),
+            plist: coding_plist('r', std::iter::once((
+                ":for-unibyte".to_string(),
+                Value::T,
+            ))),
         },
         CodingSystemState {
             name: "raw-text-unix".into(),
             base: "raw-text".into(),
             kind: "raw-text".into(),
             eol_type: Some(0),
-            plist: coding_plist('r', std::iter::empty()),
+            plist: coding_plist('r', std::iter::once((
+                ":for-unibyte".to_string(),
+                Value::T,
+            ))),
         },
         CodingSystemState {
             name: "raw-text-dos".into(),
             base: "raw-text".into(),
             kind: "raw-text".into(),
             eol_type: Some(1),
-            plist: coding_plist('r', std::iter::empty()),
+            plist: coding_plist('r', std::iter::once((
+                ":for-unibyte".to_string(),
+                Value::T,
+            ))),
         },
         CodingSystemState {
             name: "raw-text-mac".into(),
             base: "raw-text".into(),
             kind: "raw-text".into(),
             eol_type: Some(2),
-            plist: coding_plist('r', std::iter::empty()),
+            plist: coding_plist('r', std::iter::once((
+                ":for-unibyte".to_string(),
+                Value::T,
+            ))),
         },
         CodingSystemState {
             name: "mac-roman".into(),
