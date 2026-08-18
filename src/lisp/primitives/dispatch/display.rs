@@ -668,9 +668,7 @@ fn set_window_geometry(
 }
 
 fn frame_root_window_value(interp: &Interpreter) -> Value {
-    interp
-        .global_binding_value("emaxx-root-window")
-        .unwrap_or_else(|| interp.selected_window_value())
+    interp.root_window_value()
 }
 
 fn is_live_ordinary_window(interp: &Interpreter, id: u64) -> bool {
@@ -837,21 +835,24 @@ pub(crate) fn resolve_tty_face_attrs(
     env: &mut Env,
     face: &Value,
 ) -> TtyFaceAttrs {
+    // `face-attribute' is GNU faces.el's; reach it through the ordinary
+    // function cell, never the native dispatcher.
     let attribute = |interp: &mut Interpreter, env: &mut Env, name: &str| {
-        super::call(
-            interp,
-            "face-attribute",
-            &[
-                face.clone(),
-                Value::Symbol(name.into()),
-                Value::Nil,
-                Value::T,
-            ],
-            env,
-        )
-        .ok()
-        .filter(|value| !matches!(value, Value::Symbol(s) if s == "unspecified"))
-        .filter(|value| !value.is_nil())
+        interp
+            .call_function_value(
+                Value::Symbol("face-attribute".into()),
+                Some("face-attribute"),
+                &[
+                    face.clone(),
+                    Value::Symbol(name.into()),
+                    Value::Nil,
+                    Value::T,
+                ],
+                env,
+            )
+            .ok()
+            .filter(|value| !matches!(value, Value::Symbol(s) if s == "unspecified"))
+            .filter(|value| !value.is_nil())
     };
     let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
         let name = value?;
@@ -974,11 +975,12 @@ pub(crate) fn window_face_spans(
         && interp
             .lookup_var("mark-active", env)
             .is_some_and(|active| active.is_truthy())
-        && let Ok(mark) = super::call(interp, "mark", &[Value::T], env)
-        && let Ok(mark) = mark.as_integer()
+        // The buffer's mark marker is native buffer.c state; `mark' itself
+        // is GNU simple.el's and must not enter the native dispatcher.
+        && let Some(mark) = interp.buffer.mark()
     {
         let point = interp.buffer.point();
-        let mark = (mark.max(1)) as usize;
+        let mark = mark.max(1);
         let (beg, end) = if mark <= point {
             (mark, point)
         } else {
@@ -1310,7 +1312,7 @@ fn split_window_tree(
     }
     set_window_geometry(interp, old_id, old_geometry)?;
     if old_parent.is_none() {
-        interp.set_global_binding("emaxx-root-window", Value::Record(parent_id));
+        interp.set_root_window_id(parent_id);
     }
     Ok(Value::Record(new_id))
 }
@@ -1385,7 +1387,7 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
         set_window_slot_value(interp, deleted_id, WINDOW_FIRST_CHILD_SLOT, Value::Nil)?;
     }
     if grandparent.is_none() {
-        interp.set_global_binding("emaxx-root-window", Value::Record(sibling_id));
+        interp.set_root_window_id(sibling_id);
     }
     if interp.selected_window_id() == window_id {
         interp.set_selected_window_id(sibling_id);
@@ -1422,7 +1424,7 @@ fn delete_other_windows_from_tree(
     set_window_slot_value(interp, window_id, WINDOW_PREV_SIBLING_SLOT, Value::Nil)?;
     set_window_slot_value(interp, window_id, WINDOW_NEXT_SIBLING_SLOT, Value::Nil)?;
     set_window_geometry(interp, window_id, root_geometry)?;
-    interp.set_global_binding("emaxx-root-window", Value::Record(window_id));
+    interp.set_root_window_id(window_id);
     Ok(())
 }
 
@@ -1464,9 +1466,21 @@ fn window_non_body_height(interp: &Interpreter, buffer_id: u64, env: &Env) -> i6
 }
 
 fn window_text_width_columns(interp: &Interpreter, window_id: u64) -> i64 {
-    let total = window_geometry(interp, window_id).0;
+    let (total, _, left, _) = window_geometry(interp, window_id);
+    let root_id = match interp.root_window_value() {
+        Value::Record(id) => id,
+        _ => window_id,
+    };
+    let (root_width, _, root_left, _) = window_geometry(interp, root_id);
+    // GNU reserves one terminal column for the vertical separator of every
+    // live window whose right edge is not the root window's right edge.  The
+    // separator is part of WINDOW-TOTAL-WIDTH but not WINDOW-BODY-WIDTH (see
+    // window_body_width in window.c).  Emaxx currently exposes terminal
+    // frames, so there are no GUI fringes or scroll-bar pixels to subtract.
+    let vertical_separator =
+        i64::from(left.saturating_add(total) < root_left.saturating_add(root_width));
     let (left, right) = interp.window_margins(window_id);
-    (total - left.unwrap_or(0) - right.unwrap_or(0)).max(0)
+    (total - vertical_separator - left.unwrap_or(0) - right.unwrap_or(0)).max(0)
 }
 
 fn set_window_hscroll_value(
@@ -1510,7 +1524,6 @@ fn valid_window_cursor_type(value: &Value) -> bool {
 
 fn window_list_value(
     interp: &Interpreter,
-    env: &Env,
     minibuf: Option<&Value>,
     start: Option<&Value>,
 ) -> Value {
@@ -1529,9 +1542,7 @@ fn window_list_value(
     if !include_minibuffer {
         return Value::list(windows);
     }
-    let minibuffer = interp
-        .lookup_var("emaxx-minibuffer-window", env)
-        .unwrap_or_else(|| interp.selected_window_value());
+    let minibuffer = interp.minibuffer_window_value();
     if !windows
         .iter()
         .any(|window| values_equal(interp, window, &minibuffer))
@@ -1539,188 +1550,6 @@ fn window_list_value(
         windows.push(minibuffer);
     }
     Value::list(windows)
-}
-
-fn display_action_parts(
-    interp: &Interpreter,
-    action: &Value,
-    env: &Env,
-) -> (Vec<Value>, Vec<Value>) {
-    if action.is_nil() {
-        return (Vec::new(), Vec::new());
-    }
-    if callable_display_action_function(interp, action, env).is_some() {
-        return (vec![action.clone()], Vec::new());
-    }
-    let Ok(functions) = action.car() else {
-        return (Vec::new(), Vec::new());
-    };
-    let functions = if callable_display_action_function(interp, &functions, env).is_some() {
-        vec![functions]
-    } else {
-        functions
-            .to_vec()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|function| callable_display_action_function(interp, function, env).is_some())
-            .collect()
-    };
-    if functions.is_empty()
-        && let Ok(entries) = action.to_vec()
-        && entries.first().is_some_and(|entry| {
-            entry
-                .car()
-                .is_ok_and(|key| callable_display_action_function(interp, &key, env).is_none())
-        })
-    {
-        // A bare action alist such as `((inhibit-same-window . t))' has no
-        // function head.  Its first entry is part of the alist, not a failed
-        // attempt at naming an action function.
-        return (Vec::new(), entries);
-    }
-    let alist = action
-        .cdr()
-        .ok()
-        .and_then(|value| value.to_vec().ok())
-        .unwrap_or_default();
-    (functions, alist)
-}
-
-fn display_alist_value(interp: &Interpreter, alist: &[Value], key: &str) -> Value {
-    alist
-        .iter()
-        .find_map(|entry| {
-            let entry_key = entry.car().ok()?;
-            if values_equal(interp, &entry_key, &Value::Symbol(key.into())) {
-                entry.cdr().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(Value::Nil)
-}
-
-fn buffer_match_condition(
-    interp: &mut Interpreter,
-    condition: &Value,
-    buffer: &Value,
-    extra_args: &[Value],
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    if condition.is_nil() {
-        return Ok(false);
-    }
-    if matches!(condition, Value::T) {
-        return Ok(true);
-    }
-    if string_like(condition).is_some() {
-        let buffer_id = interp.resolve_buffer_id(buffer)?;
-        let buffer_name = interp
-            .get_buffer_by_id(buffer_id)
-            .map(|buffer| buffer.name.clone())
-            .unwrap_or_default();
-        return Ok(super::call(
-            interp,
-            "string-match-p",
-            &[condition.clone(), Value::String(buffer_name.into())],
-            env,
-        )?
-        .is_truthy());
-    }
-    if let Some((operator, operands)) = condition.cons_values()
-        && let Ok(operator) = operator.as_symbol()
-    {
-        let conditions = || operands.to_vec().unwrap_or_default();
-        match operator {
-            "major-mode" | "derived-mode" => {
-                let buffer_id = interp.resolve_buffer_id(buffer)?;
-                let mode = interp
-                    .buffer_local_value(buffer_id, "major-mode")
-                    .or_else(|| interp.lookup_var("major-mode", env))
-                    .unwrap_or(Value::Nil);
-                return if operator == "major-mode" {
-                    Ok(values_equal(interp, &mode, &operands))
-                } else {
-                    Ok(
-                        super::call(interp, "provided-mode-derived-p", &[mode, operands], env)?
-                            .is_truthy(),
-                    )
-                };
-            }
-            "category" => {
-                let action_alist = extra_args
-                    .first()
-                    .map(|action| display_action_parts(interp, action, env).1)
-                    .unwrap_or_default();
-                return Ok(values_equal(
-                    interp,
-                    &display_alist_value(interp, &action_alist, "category"),
-                    &operands,
-                ));
-            }
-            "not" => {
-                for nested in conditions() {
-                    if buffer_match_condition(interp, &nested, buffer, extra_args, env)? {
-                        return Ok(false);
-                    }
-                }
-                return Ok(true);
-            }
-            "or" => {
-                for nested in conditions() {
-                    if buffer_match_condition(interp, &nested, buffer, extra_args, env)? {
-                        return Ok(true);
-                    }
-                }
-                return Ok(false);
-            }
-            "and" => {
-                for nested in conditions() {
-                    if !buffer_match_condition(interp, &nested, buffer, extra_args, env)? {
-                        return Ok(false);
-                    }
-                }
-                return Ok(true);
-            }
-            _ => {}
-        }
-    }
-    let Some(function) = callable_display_action_function(interp, condition, env) else {
-        return Ok(false);
-    };
-    let mut args = Vec::with_capacity(extra_args.len() + 1);
-    args.push(buffer.clone());
-    args.extend_from_slice(extra_args);
-    Ok(interp
-        .call_function_value(function, condition.as_symbol().ok(), &args, env)?
-        .is_truthy())
-}
-
-fn matching_display_buffer_action(
-    interp: &mut Interpreter,
-    buffer: &Value,
-    action: &Value,
-    env: &mut Env,
-) -> Result<Option<Value>, LispError> {
-    let entries = interp
-        .lookup_var("display-buffer-alist", env)
-        .and_then(|value| value.to_vec().ok())
-        .unwrap_or_default();
-    for entry in entries {
-        let Ok(condition) = entry.car() else {
-            continue;
-        };
-        if buffer_match_condition(
-            interp,
-            &condition,
-            buffer,
-            std::slice::from_ref(action),
-            env,
-        )? {
-            return Ok(entry.cdr().ok());
-        }
-    }
-    Ok(None)
 }
 
 define_dispatch!(
@@ -1751,14 +1580,6 @@ define_dispatch!(
                 Ok(Value::String(text.into()))
             }
             // ── Output ──
-            "substitute-command-keys" => {
-                need_arg_range(name, args, 1, 3)?;
-                Ok(substitute_command_keys(
-                    interp,
-                    &string_text(&args[0])?,
-                    env,
-                ))
-            }
             "message" => {
                 let (text, text_spans, formatted) =
                     if args.is_empty() || args.first().is_some_and(Value::is_nil) {
@@ -1902,68 +1723,6 @@ define_dispatch!(
                 // dialog fallback is the ordinary echo-area message path.
                 super::call(interp, "message", args, env)
             }
-            "warn" => {
-                let text = if args.is_empty() {
-                    String::new()
-                } else {
-                    string_text(&super::call(interp, "format", args, env)?)?
-                };
-                let warning = if text.is_empty() {
-                    "Warning".to_string()
-                } else {
-                    format!("Warning: {text}")
-                };
-                let _ = super::call(
-                    interp,
-                    "message",
-                    &[Value::String(warning.clone().into())],
-                    env,
-                )?;
-                append_to_warnings_buffer(interp, &warning);
-                Ok(Value::Nil)
-            }
-            "display-warning" => {
-                need_arg_range(name, args, 2, 4)?;
-                let warning_type = args[0].to_string();
-                let message = string_text(&args[1])?;
-                let warning = if warning_type == "nil" {
-                    format!("Warning: {message}")
-                } else {
-                    format!("Warning ({warning_type}): {message}")
-                };
-                let _ = super::call(
-                    interp,
-                    "message",
-                    &[Value::String(warning.clone().into())],
-                    env,
-                )?;
-                let buffer_name = args
-                    .get(3)
-                    .and_then(string_like)
-                    .map(|string| string.text)
-                    .unwrap_or_else(|| "*Warnings*".into());
-                let warning = if let Some(prefix_function) =
-                    interp.lookup_var("warning-prefix-function", env)
-                    && prefix_function.is_truthy()
-                {
-                    let prefix = interp.call_function_value(
-                        prefix_function,
-                        None,
-                        &[
-                            args[2].clone(),
-                            Value::list([args[0].clone(), args[1].clone()]),
-                        ],
-                        env,
-                    )?;
-                    string_like(&prefix)
-                        .map(|prefix| format!("{}{}", prefix.text, warning))
-                        .unwrap_or(warning)
-                } else {
-                    warning
-                };
-                append_to_named_warnings_buffer(interp, &buffer_name, &warning);
-                Ok(Value::Nil)
-            }
             "current-message" => {
                 need_args(name, args, 0)?;
                 // GNU batch mode has no echo area; `current-message' is nil.
@@ -2052,21 +1811,6 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "ding" => Ok(Value::Nil),
-            "make-progress-reporter" => {
-                need_arg_range(name, args, 1, 6)?;
-                Ok(Value::list([
-                    Value::Symbol("progress-reporter".into()),
-                    args[0].clone(),
-                ]))
-            }
-            "progress-reporter-update" | "progress-reporter-done" => {
-                need_arg_range(name, args, 1, 3)?;
-                Ok(Value::Nil)
-            }
-            "vc-refresh-state" => {
-                need_arg_range(name, args, 0, 1)?;
-                Ok(Value::Nil)
-            }
             "sleep-for" => {
                 need_arg_range(name, args, 1, 2)?;
                 // GNU processes subprocess output whenever it waits; epg relies
@@ -2074,24 +1818,6 @@ define_dispatch!(
                 // flush gpg's final status lines through the process filter.
                 wait_pumping_processes(interp, env, Some(wait_duration(args)?), false, None)?;
                 Ok(Value::Nil)
-            }
-            "sit-for" => {
-                need_arg_range(name, args, 0, 3)?;
-                // GNU: (sit-for SECONDS &optional NODISP), with the obsolete
-                // (sit-for SECONDS MILLISEC NODISP) form still accepted when
-                // MILLISEC is a number — a non-numeric second arg is NODISP.
-                let duration_args = match args.get(1) {
-                    Some(Value::Integer(_) | Value::Float(_)) => args.get(0..2).unwrap_or(args),
-                    _ => args.get(0..1).unwrap_or(args),
-                };
-                wait_pumping_processes(
-                    interp,
-                    env,
-                    Some(wait_duration(duration_args)?),
-                    false,
-                    None,
-                )?;
-                Ok(Value::T)
             }
             "accept-process-output" => {
                 need_arg_range(name, args, 0, 4)?;
@@ -2178,23 +1904,6 @@ define_dispatch!(
                 }
                 Ok(args[0].clone())
             }
-            #[dispatch(builtin_override)]
-            "cl-prin1" => {
-                need_arg_range(name, args, 1, 3)?;
-                let rendered = if matches!(args.get(2), None | Some(Value::Nil)) {
-                    render_cl_prin1(interp, &args[0], env)?
-                } else {
-                    let mut print_env = printer_env_with_overrides(env, args.get(2))?;
-                    let rendered = render_cl_prin1(interp, &args[0], &mut print_env)?;
-                    sync_print_number_table(env, args.get(2), &print_env);
-                    let stream = printer_stream_value(interp, &print_env, args.get(1));
-                    write_printer_output(interp, &rendered, stream.as_ref(), env)?;
-                    return Ok(args[0].clone());
-                };
-                let stream = printer_stream_value(interp, env, args.get(1));
-                write_printer_output(interp, &rendered, stream.as_ref(), env)?;
-                Ok(args[0].clone())
-            }
             "princ" => {
                 if args.is_empty() {
                     return Ok(Value::Nil);
@@ -2268,38 +1977,6 @@ define_dispatch!(
                 sync_print_number_table(env, args.get(2), &print_env);
                 Ok(Value::String(rendered.into()))
             }
-            #[dispatch(builtin_override)]
-            "cl-prin1-to-string" => {
-                need_arg_range(name, args, 1, 3)?;
-                if matches!(args.get(2), None | Some(Value::Nil)) {
-                    return render_cl_prin1_value(interp, &args[0], env);
-                }
-                let mut print_env = printer_env_with_overrides(env, args.get(2))?;
-                let rendered = render_cl_prin1_value(interp, &args[0], &mut print_env)?;
-                sync_print_number_table(env, args.get(2), &print_env);
-                Ok(rendered)
-            }
-            #[dispatch(builtin_override)]
-            "cl-print--expand-ellipsis" => {
-                need_args(name, args, 2)?;
-                let parts = args[0].to_vec()?;
-                let [Value::Symbol(tag), expansion] = parts.as_slice() else {
-                    return Err(LispError::TypeError(
-                        "cl-print-ellipsis".into(),
-                        args[0].type_name(),
-                    ));
-                };
-                if tag != "emaxx-cl-print-ellipsis" {
-                    return Err(LispError::TypeError(
-                        "cl-print-ellipsis".into(),
-                        args[0].type_name(),
-                    ));
-                }
-                let expansion = string_text(expansion)?;
-                let stream = printer_stream_value(interp, env, args.get(1));
-                write_printer_output(interp, &expansion, stream.as_ref(), env)?;
-                Ok(Value::Nil)
-            }
             "write-char" => {
                 need_arg_range(name, args, 1, 2)?;
                 let rendered = format_char_conversion(&args[0])?;
@@ -2316,7 +1993,10 @@ define_dispatch!(
                     None | Some(Value::Nil) => Value::Nil,
                     Some(value) => Value::String(string_text(value)?.into()),
                 };
-                interp.set_global_binding("emaxx-external-debugging-output-target", target.clone());
+                interp.external_debugging_output_target = match &target {
+                    Value::String(path) => Some(path.to_string()),
+                    _ => None,
+                };
                 Ok(target)
             }
             "external-debugging-output" => {
@@ -2331,24 +2011,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 print_preprocess(interp, &args[0], env)
             }
-            "read-char-choice" => {
-                need_arg_range(name, args, 2, 3)?;
-                ensure_interaction_allowed(interp, env)?;
-                if interp
-                    .lookup_var("read-char-choice-use-read-key", env)
-                    .is_none_or(|value| value.is_nil())
-                    && let Ok(function) = interp.lookup_function("read-char-from-minibuffer", env)
-                {
-                    return interp.call_function_value(
-                        function,
-                        Some("read-char-from-minibuffer"),
-                        &args[..2],
-                        env,
-                    );
-                }
-                Ok(first_choice_value(&args[1]).unwrap_or(Value::Integer('y' as i64)))
-            }
-            "y-or-n-p" | "yes-or-no-p" => {
+            "yes-or-no-p" => {
                 need_args(name, args, 1)?;
                 ensure_interaction_allowed(interp, env)?;
                 let _ = super::call(interp, "message", args, env)?;
@@ -2378,97 +2041,6 @@ define_dispatch!(
                     a == b
                 };
                 Ok(if eq { Value::T } else { Value::Nil })
-            }
-            "number-sequence" => {
-                if args.is_empty() || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(
-                        "number-sequence".into(),
-                        args.len(),
-                    ));
-                }
-                let integer_sequence = args.iter().all(Value::is_integer);
-                if integer_sequence {
-                    let from = integer_like_bigint(interp, &args[0])?;
-                    let to = if args.len() > 1 {
-                        integer_like_bigint(interp, &args[1])?
-                    } else {
-                        from.clone()
-                    };
-                    let step = if args.len() > 2 {
-                        integer_like_bigint(interp, &args[2])?
-                    } else {
-                        BigInt::from(1)
-                    };
-                    if step.is_zero() {
-                        return Err(LispError::Signal(
-                            "number-sequence: step must not be 0".into(),
-                        ));
-                    }
-                    let mut result = Vec::new();
-                    let mut i = from;
-                    if step.sign() != Sign::Minus {
-                        while i <= to {
-                            result.push(normalize_bigint_value(i.clone()));
-                            i += &step;
-                        }
-                    } else {
-                        while i >= to {
-                            result.push(normalize_bigint_value(i.clone()));
-                            i += &step;
-                        }
-                    }
-                    return Ok(Value::list(result));
-                }
-
-                let from = numeric_to_f64(interp, &args[0])?;
-                let to = if args.len() > 1 {
-                    numeric_to_f64(interp, &args[1])?
-                } else {
-                    from
-                };
-                let step_value = args.get(2).cloned().unwrap_or(Value::Integer(1));
-                let step = numeric_to_f64(interp, &step_value)?;
-                if step == 0.0 {
-                    return Err(LispError::Signal(
-                        "number-sequence: step must not be 0".into(),
-                    ));
-                }
-                let mut result = Vec::new();
-                let mut current_float = from;
-                let mut current_value = args[0].clone();
-                let integer_step = step_value.is_integer();
-                if step > 0.0 {
-                    while current_float <= to {
-                        result.push(current_value.clone());
-                        current_float += step;
-                        current_value = if current_value.is_integer() && integer_step {
-                            normalize_bigint_value(
-                                integer_like_bigint(interp, &current_value)?
-                                    + integer_like_bigint(interp, &step_value)?,
-                            )
-                        } else {
-                            Value::Float(current_float)
-                        };
-                    }
-                } else {
-                    while current_float >= to {
-                        result.push(current_value.clone());
-                        current_float += step;
-                        current_value = if current_value.is_integer() && integer_step {
-                            normalize_bigint_value(
-                                integer_like_bigint(interp, &current_value)?
-                                    + integer_like_bigint(interp, &step_value)?,
-                            )
-                        } else {
-                            Value::Float(current_float)
-                        };
-                    }
-                }
-                Ok(Value::list(result))
-            }
-            "kbd" => {
-                need_args(name, args, 1)?;
-                parse_kbd_sequence(&string_text(&args[0])?)
             }
             "key-description" => {
                 if args.is_empty() || args.len() > 2 {
@@ -2538,14 +2110,31 @@ define_dispatch!(
             )),
 
             // ── Display stubs ──
-            "display-graphic-p" | "display-images-p" | "window-system" => {
+            "window-system" => {
                 need_arg_range(name, args, 0, 1)?;
                 Ok(Value::Nil)
             }
-            "tty-type" | "tty-display-color-p" | "controlling-tty-p" | "tty-top-frame" => {
+            "tty-type" => {
+                need_arg_range(name, args, 0, 1)?;
+                require_live_terminal(interp, args.first())?;
+                Ok(interp
+                    .tty_terminal_type()
+                    .map(|terminal_type| Value::String(terminal_type.to_string().into()))
+                    .unwrap_or(Value::Nil))
+            }
+            "controlling-tty-p" | "tty-top-frame" => {
                 need_arg_range(name, args, 0, 1)?;
                 require_live_terminal(interp, args.first())?;
                 Ok(Value::Nil)
+            }
+            "tty-display-color-p" => {
+                need_arg_range(name, args, 0, 1)?;
+                require_live_terminal(interp, args.first())?;
+                Ok(if interp.tty_display_color_cells() > 0 {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "tty-display-color-cells" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -2584,33 +2173,13 @@ define_dispatch!(
                     "Attempt to suspend a non-text terminal device".into(),
                 ))
             }
-            // A live terminal publishes its color capability at startup;
-            // batch sessions keep GNU's dumb-terminal answers (nil / 0).
-            "display-color-p" => Ok(if interp.tty_display_color_cells() > 0 {
-                Value::T
-            } else {
-                Value::Nil
-            }),
-            "display-grayscale-p" => Ok(Value::Nil),
-            "display-color-cells" => Ok(Value::Integer(interp.tty_display_color_cells())),
+            // Batch sessions have no color support (GNU: nil / 0).
+
             // emaxx is a batch/TTY display: no face-attribute display support
             // (rmc.el underlines the shortcut key only on graphical terminals).
             "display-supports-face-attributes-p" => {
                 need_arg_range(name, args, 1, 2)?;
                 Ok(Value::Nil)
-            }
-            "char-displayable-p" => {
-                need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::Integer(codepoint) if char::from_u32(*codepoint as u32).is_some() => {
-                        Ok(Value::T)
-                    }
-                    Value::String(text) if text.chars().count() == 1 => Ok(Value::T),
-                    Value::StringObject(state) if state.borrow().text.chars().count() == 1 => {
-                        Ok(Value::T)
-                    }
-                    _ => Ok(Value::Nil),
-                }
             }
             "internal-char-font" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -2690,27 +2259,7 @@ define_dispatch!(
                 // validating or changing its tty-local quit character.
                 Ok(Value::Nil)
             }
-            "frame-width" => {
-                need_arg_range(name, args, 0, 1)?;
-                decode_live_frame(interp, args.first(), true)?;
-                Ok(Value::Integer(interp.frame_parameter_width()))
-            }
-            "frame-height" => {
-                need_arg_range(name, args, 0, 1)?;
-                decode_live_frame(interp, args.first(), true)?;
-                Ok(Value::Integer(interp.frame_parameter_height()))
-            }
-            "frame-pixel-width" => {
-                need_arg_range(name, args, 0, 1)?;
-                decode_live_frame(interp, args.first(), true)?;
-                Ok(Value::Integer(interp.frame_width()))
-            }
-            "frame-pixel-height" => {
-                need_arg_range(name, args, 0, 1)?;
-                decode_live_frame(interp, args.first(), true)?;
-                Ok(Value::Integer(interp.frame_height()))
-            }
-            "display-popup-menus-p" => Ok(Value::Nil),
+
             "menu-or-popup-active-p" => {
                 need_args(name, args, 0)?;
                 // A headless Emaxx process cannot have an active native menu.
@@ -2762,354 +2311,10 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 Ok(Value::Nil)
             }
-            "transient-mark-mode" => {
-                need_arg_range(name, args, 0, 1)?;
-                let current = interp
-                    .lookup_var("transient-mark-mode", env)
-                    .is_some_and(|value| value.is_truthy());
-                let enabled = match args.first() {
-                    None | Some(Value::Nil) => true,
-                    Some(Value::Symbol(toggle)) if toggle == "toggle" => !current,
-                    Some(Value::Integer(value)) => *value > 0,
-                    Some(_) => true,
-                };
-                interp.set_variable(
-                    "transient-mark-mode",
-                    if enabled { Value::T } else { Value::Nil },
-                    env,
-                );
-                Ok(if enabled { Value::T } else { Value::Nil })
-            }
-            "font-lock-mode" => {
-                let enabled = args
-                    .first()
-                    .map(|arg| {
-                        !arg.is_nil() && !matches!(arg, Value::Integer(number) if *number <= 0)
-                    })
-                    .unwrap_or(true);
-                let buffer_id = interp.current_buffer_id();
-                if enabled {
-                    interp.set_buffer_local_value(buffer_id, "font-lock-mode", Value::T);
-                    interp.set_buffer_local_value(buffer_id, "jit-lock-mode", Value::T);
-                    if interp
-                        .buffer_local_value(buffer_id, "jit-lock-functions")
-                        .is_none()
-                    {
-                        interp.set_buffer_local_value(
-                            buffer_id,
-                            "jit-lock-functions",
-                            Value::list([Value::Symbol("ignore".into())]),
-                        );
-                    }
-                    // JIT registration enables future fontification; it does
-                    // not make the current buffer contents fontified.
-                    interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::Nil);
-                    font_lock_mode_run_mode_function(interp, buffer_id, Value::T, env)?;
-                    Ok(Value::T)
-                } else {
-                    interp.set_buffer_local_value(buffer_id, "font-lock-mode", Value::Nil);
-                    interp.set_buffer_local_value(buffer_id, "jit-lock-mode", Value::Nil);
-                    interp.set_buffer_local_value(buffer_id, "jit-lock-functions", Value::Nil);
-                    interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::Nil);
-                    font_lock_mode_run_mode_function(interp, buffer_id, Value::Nil, env)?;
-                    Ok(Value::Nil)
-                }
-            }
-            "visual-line-mode" => {
-                let enabled = args
-                    .first()
-                    .map(|arg| {
-                        !arg.is_nil() && !matches!(arg, Value::Integer(number) if *number <= 0)
-                    })
-                    .unwrap_or(true);
-                let buffer_id = interp.current_buffer_id();
-                interp.set_buffer_local_value(
-                    buffer_id,
-                    "visual-line-mode",
-                    if enabled { Value::T } else { Value::Nil },
-                );
-                let mut local_modes = interp
-                    .buffer_local_value(buffer_id, "local-minor-modes")
-                    .and_then(|value| value.to_vec().ok())
-                    .unwrap_or_default();
-                let mode = Value::Symbol("visual-line-mode".into());
-                if enabled {
-                    if !local_modes.iter().any(|entry| entry == &mode) {
-                        local_modes.insert(0, mode);
-                    }
-                } else {
-                    local_modes.retain(|entry| entry != &mode);
-                }
-                interp.set_buffer_local_value(
-                    buffer_id,
-                    "local-minor-modes",
-                    Value::list(local_modes),
-                );
-                crate::lisp::primitives::call_function_value(
-                    interp,
-                    &Value::Symbol("run-hooks".into()),
-                    &[
-                        Value::Symbol("visual-line-mode-hook".into()),
-                        Value::Symbol(
-                            if enabled {
-                                "visual-line-mode-on-hook"
-                            } else {
-                                "visual-line-mode-off-hook"
-                            }
-                            .into(),
-                        ),
-                    ],
-                    env,
-                )?;
-                Ok(if enabled { Value::T } else { Value::Nil })
-            }
-            #[dispatch(builtin_override)]
-            "header-line-indent-mode" => {
-                let enabled = args
-                    .first()
-                    .map(|arg| {
-                        !arg.is_nil() && !matches!(arg, Value::Integer(number) if *number <= 0)
-                    })
-                    .unwrap_or(true);
-                let buffer_id = interp.current_buffer_id();
-                interp.set_buffer_local_value(
-                    buffer_id,
-                    "header-line-indent-mode",
-                    if enabled { Value::T } else { Value::Nil },
-                );
-                interp.set_buffer_local_value(
-                    buffer_id,
-                    "header-line-indent",
-                    Value::String(String::new().into()),
-                );
-                interp.set_buffer_local_value(
-                    buffer_id,
-                    "header-line-indent-width",
-                    Value::Integer(0),
-                );
-                Ok(if enabled { Value::T } else { Value::Nil })
-            }
-            "font-lock-specified-p" => {
-                need_arg_range(name, args, 0, 1)?;
-                let mode = args.first().is_some_and(Value::is_truthy);
-                let defaults = interp
-                    .lookup_var("font-lock-defaults", env)
-                    .unwrap_or(Value::Nil);
-                let keywords = interp
-                    .lookup_var("font-lock-keywords", env)
-                    .unwrap_or(Value::Nil);
-                let major_mode = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
-                let font_lock_major_mode = interp
-                    .lookup_var("font-lock-major-mode", env)
-                    .unwrap_or(Value::Nil);
-                let set_defaults = interp
-                    .lookup_var("font-lock-set-defaults", env)
-                    .unwrap_or(Value::Nil);
-                Ok(
-                    if defaults.is_truthy()
-                        || keywords.is_truthy()
-                        || (mode
-                            && set_defaults.is_truthy()
-                            && font_lock_major_mode.is_truthy()
-                            && font_lock_major_mode != major_mode)
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            "font-lock-add-keywords" => {
-                need_arg_range(name, args, 2, 3)?;
-                let buffer_id = interp.current_buffer_id();
-                let mut current = font_lock_raw_keyword_specs(
-                    interp.buffer_local_value(buffer_id, "font-lock-keywords"),
-                );
-                let additions = args[1].to_vec()?;
-                if args.get(2).is_some_and(|value| !value.is_nil()) {
-                    current.extend(additions);
-                } else {
-                    let mut updated = additions;
-                    updated.extend(current);
-                    current = updated;
-                }
-                interp.set_buffer_local_value(
-                    buffer_id,
-                    "font-lock-keywords",
-                    font_lock_keywords_value(&current),
-                );
-                Ok(Value::Nil)
-            }
-            "font-lock-remove-keywords" => {
-                need_args(name, args, 2)?;
-                let buffer_id = interp.current_buffer_id();
-                let mut current = interp
-                    .buffer_local_value(buffer_id, "font-lock-keywords")
-                    .unwrap_or(Value::Nil)
-                    .to_vec()
-                    .unwrap_or_default();
-                let removals = args[1].to_vec()?;
-                current.retain(|existing| {
-                    !removals
-                        .iter()
-                        .any(|keyword| values_equal(interp, existing, keyword))
-                });
-                interp.set_buffer_local_value(
-                    buffer_id,
-                    "font-lock-keywords",
-                    Value::list(current),
-                );
-                Ok(Value::Nil)
-            }
-            "font-lock-flush" => {
-                need_arg_range(name, args, 0, 2)?;
-                if !interp
-                    .lookup_var("font-lock-mode", env)
-                    .unwrap_or(Value::Nil)
-                    .is_truthy()
-                    || !interp
-                        .lookup_var("font-lock-fontified", env)
-                        .unwrap_or(Value::Nil)
-                        .is_truthy()
-                {
-                    return Ok(Value::Nil);
-                }
-                let start = match args.first() {
-                    Some(value) if !value.is_nil() => position_from_value(interp, value)?,
-                    Some(_) | None => interp.buffer.point_min(),
-                };
-                let end = match args.get(1) {
-                    Some(value) if !value.is_nil() => position_from_value(interp, value)?,
-                    Some(_) | None => interp.buffer.point_max(),
-                };
-                font_lock_ensure_region(interp, start, end, env)?;
-                Ok(Value::Nil)
-            }
-            "font-lock-ensure" | "font-lock-fontify-region" => {
-                // font-lock-fontify-region also takes GNU's optional LOUDLY.
-                if name == "font-lock-ensure" {
-                    need_arg_range(name, args, 0, 2)?;
-                } else {
-                    need_arg_range(name, args, 2, 3)?;
-                }
-                // GNU fontifies whenever fontification is specified for the
-                // buffer (font-lock-specified-p), even with font-lock-mode off
-                // in batch.
-                if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
-                    eprintln!(
-                        "FONTLOCK ensure called buffer={}",
-                        interp.current_buffer_id()
-                    );
-                }
-                font_lock_install_mode_defaults(interp, env)?;
-                let specified = interp
-                    .lookup_var("font-lock-defaults", env)
-                    .is_some_and(|value| value.is_truthy());
-                if !specified
-                    && !interp
-                        .lookup_var("font-lock-mode", env)
-                        .unwrap_or(Value::Nil)
-                        .is_truthy()
-                {
-                    return Ok(Value::Nil);
-                }
-                let start = match args.first() {
-                    Some(value) if name == "font-lock-ensure" && value.is_nil() => {
-                        interp.buffer.point_min()
-                    }
-                    Some(value) => position_from_value(interp, value)?,
-                    None => interp.buffer.point_min(),
-                };
-                let end = match args.get(1) {
-                    Some(value) if name == "font-lock-ensure" && value.is_nil() => {
-                        interp.buffer.point_max()
-                    }
-                    Some(value) => position_from_value(interp, value)?,
-                    None => interp.buffer.point_max(),
-                };
-                let region_function = interp
-                    .lookup_var("font-lock-fontify-region-function", env)
-                    .filter(|function| {
-                        !function.is_nil()
-                            && !matches!(
-                                function,
-                                Value::Symbol(symbol)
-                                    if symbol == "font-lock-default-fontify-region"
-                            )
-                    });
-                if let Some(region_function) = region_function {
-                    // Modes such as CPerl own a specialized region extender and
-                    // syntaxification pass.  Let the established GNU Font Lock
-                    // owner initialize its keyword state and invoke that public
-                    // hook instead of approximating the mode in the native
-                    // default engine.
-                    let saved_buffer = interp.current_buffer_id();
-                    let saved_point = interp.buffer.point();
-                    let result = interp.call_function_value(
-                        Value::Symbol("font-lock-set-defaults".into()),
-                        Some("font-lock-set-defaults"),
-                        &[],
-                        env,
-                    );
-                    let result = result.and_then(|_| {
-                        let function_name = region_function.as_symbol().ok().map(str::to_owned);
-                        interp.call_function_value(
-                            region_function,
-                            function_name.as_deref(),
-                            &[
-                                Value::Integer(start as i64),
-                                Value::Integer(end as i64),
-                                Value::Nil,
-                            ],
-                            env,
-                        )
-                    });
-                    if interp.current_buffer_id() != saved_buffer {
-                        let _ = interp.switch_to_buffer_id(saved_buffer);
-                    }
-                    interp.buffer.goto_char(saved_point);
-                    result?;
-                    interp.set_buffer_local_value(
-                        interp.current_buffer_id(),
-                        "font-lock-fontified",
-                        Value::T,
-                    );
-                } else {
-                    font_lock_ensure_region(interp, start, end, env)?;
-                }
-                if name == "font-lock-fontify-region"
-                    && super::call(
-                        interp,
-                        "fboundp",
-                        &[Value::Symbol(
-                            "emaxx--font-lock-fontify-region-extras".into(),
-                        )],
-                        env,
-                    )?
-                    .is_truthy()
-                {
-                    interp.call_function_value(
-                        Value::Symbol("emaxx--font-lock-fontify-region-extras".into()),
-                        Some("emaxx--font-lock-fontify-region-extras"),
-                        &[Value::Integer(start as i64), Value::Integer(end as i64)],
-                        env,
-                    )?;
-                }
-                Ok(Value::Nil)
-            }
-            "find-image" => {
-                need_args(name, args, 1)?;
-                let specs = args[0].to_vec()?;
-                Ok(specs.into_iter().next().unwrap_or(Value::Nil))
-            }
             "image-size" | "image-mask-p" | "image-metadata" => Err(LispError::Signal(
                 "Images are unavailable on a nongraphical display".into(),
             )),
-            "imagemagick-types" => Ok(Value::list([
-                Value::Symbol("png".into()),
-                Value::Symbol("jpeg".into()),
-                Value::Symbol("gif".into()),
-            ])),
+
             "init-image-library" => {
                 need_args(name, args, 1)?;
                 let image_type = args[0].as_symbol()?;
@@ -3405,13 +2610,13 @@ define_dispatch!(
                 }
                 Ok(Value::T)
             }
-            "window-width" | "window-total-width" => {
+            "window-total-width" => {
                 need_arg_range(name, args, 0, 2)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let window_id = window_id_or_selected(interp, &window)?;
                 Ok(Value::Integer(window_geometry(interp, window_id).0))
             }
-            "window-height" | "window-total-height" => {
+            "window-total-height" => {
                 need_arg_range(name, args, 0, 2)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let window_id = window_id_or_selected(interp, &window)?;
@@ -3967,129 +3172,6 @@ define_dispatch!(
                 // watcher contract is the arity and nil return value.
                 Ok(Value::Nil)
             }
-            "face-attribute" => {
-                if args.len() < 2 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let face = args[0].as_symbol()?;
-                let attribute = args[1].as_symbol()?;
-                Ok(face_attribute_value_on(
-                    interp,
-                    face,
-                    attribute,
-                    matches!(args.get(2), Some(Value::T)),
-                    args.get(3),
-                ))
-            }
-            "face-name" => {
-                need_args(name, args, 1)?;
-                let face = args[0].as_symbol()?;
-                if !face_exists(interp, face) {
-                    return Err(LispError::Signal(format!("Not a face: {face}")));
-                }
-                Ok(Value::String(face.to_string().into()))
-            }
-            "face-foreground" | "face-background" => {
-                if args.is_empty() || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let face = args[0].as_symbol()?;
-                let attribute = if name == "face-foreground" {
-                    ":foreground"
-                } else {
-                    ":background"
-                };
-                let value = face_attribute_value_on(
-                    interp,
-                    face,
-                    attribute,
-                    matches!(args.get(1), Some(Value::T)),
-                    args.get(2),
-                );
-                Ok(if is_unspecified_face_attribute(&value) {
-                    Value::Nil
-                } else {
-                    value
-                })
-            }
-            "face-spec-set" => {
-                // GNU faces.el: store SPEC under the requested spec property,
-                // define FACE, and apply the spec's default-display attributes
-                // (emaxx's face model realizes attributes as symbol properties).
-                need_arg_range(name, args, 2, 3)?;
-                let mut face = args[0].as_symbol()?.to_string();
-                while let Some(alias) = interp
-                    .get_symbol_property(&face, "face-alias")
-                    .and_then(|value| value.as_symbol().ok().map(str::to_string))
-                {
-                    face = alias;
-                }
-                let spec = args[1].clone();
-                let spec_type = args
-                    .get(2)
-                    .and_then(|value| value.as_symbol().ok())
-                    .filter(|symbol| !symbol.is_empty())
-                    .unwrap_or("face-override-spec")
-                    .to_string();
-                if matches!(
-                    spec_type.as_str(),
-                    "face-defface-spec" | "face-override-spec" | "customized-face" | "saved-face"
-                ) {
-                    interp.put_symbol_property(&face, &spec_type, spec.clone());
-                }
-                if matches!(spec_type.as_str(), "reset" | "saved-face") {
-                    interp.put_symbol_property(&face, "customized-face", Value::Nil);
-                }
-                if matches!(
-                    spec_type.as_str(),
-                    "customized-face" | "saved-face" | "reset"
-                ) {
-                    interp.put_symbol_property(&face, "face-override-spec", Value::Nil);
-                }
-                interp.put_symbol_property(&face, "face-modified", Value::Nil);
-                if spec_type != "reset" {
-                    interp.record_defface_runtime_attributes(&face, &spec)?;
-                }
-                Ok(Value::Nil)
-            }
-            "set-face-attribute" => {
-                if args.len() < 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let face = args[0].as_symbol()?.to_string();
-                if !face_exists(interp, &face) {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("error".into()),
-                        Value::String("Invalid face".into()),
-                        Value::Symbol(face.into()),
-                    ])));
-                }
-                let set_global = matches!(args.get(1), Some(Value::T | Value::Nil));
-                let set_local = !matches!(args.get(1), Some(Value::T));
-                let mut index = 2;
-                while index + 1 < args.len() {
-                    let attribute = args[index].as_symbol()?;
-                    let value = &args[index + 1];
-                    if attribute == ":inherit" && set_local {
-                        let inherit = match value {
-                            Value::Nil => None,
-                            Value::Symbol(symbol) => Some(symbol.to_string()),
-                            _ => None,
-                        };
-                        if value.is_nil() || matches!(value, Value::Symbol(_)) {
-                            interp.set_face_inherit_target(&face, inherit)?;
-                        }
-                    }
-                    if set_global {
-                        super::faces::set_face_attribute(interp, &face, attribute, value, true)?;
-                    }
-                    if set_local {
-                        super::faces::set_face_attribute(interp, &face, attribute, value, false)?;
-                    }
-                    index += 2;
-                }
-                Ok(Value::Nil)
-            }
             "color-distance" => {
                 need_args(name, args, 2)?;
                 let left = parse_color_spec(&string_text(&args[0])?)
@@ -4108,23 +3190,6 @@ define_dispatch!(
             }
             "color-values-from-color-spec" => {
                 need_args(name, args, 1)?;
-                Ok(parse_color_spec(&string_text(&args[0])?)
-                    .map(|[r, g, b]| {
-                        Value::list([
-                            Value::Integer(i64::from(r)),
-                            Value::Integer(i64::from(g)),
-                            Value::Integer(i64::from(b)),
-                        ])
-                    })
-                    .unwrap_or(Value::Nil))
-            }
-            "color-values" => {
-                need_arg_range(name, args, 1, 2)?;
-                if matches!(&args[0], Value::Symbol(symbol) if symbol == "unspecified")
-                    || matches!(&args[0], Value::String(text) if matches!(text.as_str(), "unspecified-fg" | "unspecified-bg"))
-                {
-                    return Ok(Value::Nil);
-                }
                 Ok(parse_color_spec(&string_text(&args[0])?)
                     .map(|[r, g, b]| {
                         Value::list([
@@ -4292,10 +3357,7 @@ define_dispatch!(
             "resize-mini-window-internal" => {
                 need_args(name, args, 1)?;
                 let window_id = live_window_id_or_selected(interp, Some(&args[0]))?;
-                let minibuffer_id = interp
-                    .lookup_var("emaxx-minibuffer-window", env)
-                    .and_then(|window| window_record_id_from_value(interp, &window));
-                if minibuffer_id != Some(window_id) {
+                if interp.minibuffer_window_id() != window_id {
                     return Err(LispError::Signal("Not a valid minibuffer window".into()));
                 }
                 let root_id = window_record_id_from_value(interp, &frame_root_window_value(interp))
@@ -4462,7 +3524,7 @@ define_dispatch!(
                 } else {
                     args.first()
                 };
-                Ok(window_list_value(interp, env, args.get(1), start))
+                Ok(window_list_value(interp, args.get(1), start))
             }
             "next-window" | "previous-window" => {
                 need_arg_range(name, args, 0, 3)?;
@@ -4474,11 +3536,8 @@ define_dispatch!(
                 let current_id = window_id_or_selected(interp, &current)?;
                 let mut ids = live_ordinary_window_ids(interp);
                 let include_minibuffer = matches!(args.get(1), Some(Value::T));
-                if include_minibuffer
-                    && let Some(Value::Record(minibuffer_id)) =
-                        interp.lookup_var("emaxx-minibuffer-window", env)
-                {
-                    ids.push(minibuffer_id);
+                if include_minibuffer {
+                    ids.push(interp.minibuffer_window_id());
                 }
                 if ids.is_empty() {
                     return Ok(interp.selected_window_value());
@@ -4490,16 +3549,6 @@ define_dispatch!(
                     (index + ids.len() - 1) % ids.len()
                 };
                 Ok(Value::Record(ids[next]))
-            }
-            "delete-other-windows" => {
-                need_arg_range(name, args, 0, 2)?;
-                let window = args
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
-                let window_id = window_id_or_selected(interp, &window)?;
-                delete_other_windows_from_tree(interp, window_id)?;
-                Ok(Value::Nil)
             }
             "frame-root-window" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -4569,21 +3618,10 @@ define_dispatch!(
                     .cloned()
                     .unwrap_or(Value::Nil))
             }
-            "walk-windows" => {
-                need_arg_range(name, args, 1, 3)?;
-                for window_id in live_ordinary_window_ids(interp) {
-                    call_function_value(interp, &args[0], &[Value::Record(window_id)], env)?;
-                }
-                Ok(Value::Nil)
-            }
             "window-frame" => {
                 // emaxx has a single frame; any live window belongs to it.
                 need_arg_range(name, args, 0, 1)?;
                 Ok(interp.selected_frame_value())
-            }
-            "face-set-after-frame-default" => {
-                need_arg_range(name, args, 1, 2)?;
-                Ok(Value::Nil)
             }
             "windowp" | "window-live-p" | "window-valid-p" => {
                 need_args(name, args, 1)?;
@@ -4741,40 +3779,6 @@ define_dispatch!(
                 interp.set_current_buffer_id(original_buffer)?;
                 result
             }
-            "split-window"
-            | "split-window-below"
-            | "split-window-vertically"
-            | "split-window-right"
-            | "split-window-horizontally" => {
-                need_arg_range(name, args, 0, 4)?;
-                Ok(interp.selected_window_value())
-            }
-            "window-combined-p" => {
-                need_arg_range(name, args, 0, 2)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
-                let Some(parent_id) = window_link(interp, window_id, WINDOW_PARENT_SLOT) else {
-                    return Ok(Value::Nil);
-                };
-                let parent_kind = window_slot_value(interp, parent_id, WINDOW_KIND_SLOT);
-                let horizontal = args.get(1).is_some_and(Value::is_truthy);
-                Ok(
-                    if matches!(
-                        (horizontal, parent_kind),
-                        (true, Value::Symbol(kind)) if kind == INTERNAL_HORIZONTAL_WINDOW_KIND
-                    ) || matches!(
-                        (
-                            horizontal,
-                            window_slot_value(interp, parent_id, WINDOW_KIND_SLOT)
-                        ),
-                        (false, Value::Symbol(kind)) if kind == INTERNAL_VERTICAL_WINDOW_KIND
-                    ) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
             "window-dedicated-p" => {
                 need_arg_range(name, args, 0, 1)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
@@ -4785,39 +3789,6 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let window_id = window_id_or_selected(interp, &args[0])?;
                 set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, args[1].clone())
-            }
-            "window-splittable-p" => {
-                need_arg_range(name, args, 0, 2)?;
-                Ok(Value::Nil)
-            }
-            "window-edges" | "window-pixel-edges" => {
-                need_arg_range(name, args, 0, 4)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
-                let (width, height, left, top) = window_geometry(interp, window_id);
-                Ok(Value::list([
-                    Value::Integer(left),
-                    Value::Integer(top),
-                    Value::Integer(left + width),
-                    Value::Integer(top + height),
-                ]))
-            }
-            "window-body-edges"
-            | "window-inside-edges"
-            | "window-body-pixel-edges"
-            | "window-inside-pixel-edges" => {
-                need_arg_range(name, args, 0, 4)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
-                let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
-                let (width, height, left, top) = window_geometry(interp, window_id);
-                let body_height = height - window_non_body_height(interp, buffer_id, env);
-                Ok(Value::list([
-                    Value::Integer(left),
-                    Value::Integer(top),
-                    Value::Integer(left + width),
-                    Value::Integer(top + body_height),
-                ]))
             }
             "posn-at-x-y" => {
                 need_arg_range(name, args, 2, 4)?;
@@ -5011,14 +3982,9 @@ define_dispatch!(
                                 if !matches!(args.get(1), Some(Value::T)) {
                                     return None;
                                 }
-                                if !interp
-                                    .lookup_var("emaxx--active-minibuffer", env)
-                                    .is_some_and(|value| value.is_truthy())
-                                {
-                                    return None;
-                                }
-                                match interp.lookup_var("emaxx-minibuffer-window", env) {
-                                    Some(Value::Record(id))
+                                interp.active_minibuffer_buffer_id()?;
+                                match interp.minibuffer_window_value() {
+                                    Value::Record(id)
                                         if window_buffer_id(interp, &Value::Record(id))
                                             == Some(buffer_id) =>
                                     {
@@ -5031,9 +3997,7 @@ define_dispatch!(
                     .map(Value::Record)
                     .unwrap_or(Value::Nil))
             }
-            "minibuffer-window" => Ok(interp
-                .lookup_var("emaxx-minibuffer-window", env)
-                .unwrap_or_else(|| interp.selected_window_value())),
+            "minibuffer-window" => Ok(interp.minibuffer_window_value()),
             "set-minibuffer-window" => {
                 need_args(name, args, 1)?;
                 let Some(window_id) = window_record_id_from_value(interp, &args[0]) else {
@@ -5050,169 +4014,19 @@ define_dispatch!(
                         "Window is not a minibuffer window".into(),
                     ));
                 }
-                interp.set_global_binding("emaxx-minibuffer-window", args[0].clone());
+                interp.set_minibuffer_window_id(window_id);
                 Ok(args[0].clone())
             }
-            "minibuffer-selected-window" | "get-mru-window" => Ok(interp
-                .lookup_var("emaxx-minibuffer-selected-window", env)
-                .filter(|value| !value.is_nil())
+            "minibuffer-selected-window" => Ok(interp
+                .minibuffer_selected_window_id()
+                .map(Value::Record)
                 .unwrap_or_else(|| interp.selected_window_value())),
-            "minibuffer-window-active-p" => {
-                need_arg_range(name, args, 0, 1)?;
-                let window = args
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
-                let is_minibuffer = window_record_id_from_value(interp, &window)
-                .and_then(|id| interp.find_record(id))
-                .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
-                .is_some_and(
-                    |slot| matches!(slot, Value::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
-                );
-                Ok(if is_minibuffer { Value::T } else { Value::Nil })
-            }
-            "get-buffer-window-list" => {
-                need_arg_range(name, args, 0, 4)?;
-                let buffer_id = if let Some(buffer) = args.first() {
-                    if buffer.is_nil() {
-                        interp.current_buffer_id()
-                    } else {
-                        interp.resolve_buffer_id(buffer)?
-                    }
-                } else {
-                    interp.current_buffer_id()
-                };
-                Ok(Value::list(
-                    live_ordinary_window_ids(interp)
-                        .into_iter()
-                        .filter(|id| {
-                            window_buffer_id(interp, &Value::Record(*id)) == Some(buffer_id)
-                        })
-                        .map(Value::Record),
-                ))
-            }
-            "buffer-match-p" => {
-                need_args(name, args, 2)?;
-                Ok(
-                    if buffer_match_condition(interp, &args[0], &args[1], &args[2..], env)? {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            "display-buffer" => {
-                need_arg_range(name, args, 1, 2)?;
-                let buffer_id = if let Some(name) = string_like(&args[0]).map(|string| string.text)
-                {
-                    interp
-                        .find_buffer(&name)
-                        .map(|(id, _)| id)
-                        .unwrap_or_else(|| interp.create_buffer(&name).0)
-                } else {
-                    interp.resolve_buffer_id(&args[0])?
-                };
-                let buffer_name = if buffer_id == interp.current_buffer_id() {
-                    interp.buffer.name.clone()
-                } else {
-                    interp
-                        .buffer_list
-                        .iter()
-                        .find(|(id, _)| *id == buffer_id)
-                        .map(|(_, name)| name.clone())
-                        .unwrap_or_else(|| interp.buffer.name.clone())
-                };
-                let buffer = Value::buffer(buffer_id, buffer_name);
-                let action = args.get(1).cloned().unwrap_or(Value::Nil);
-                let mut actions = Vec::new();
-                if let Some(user_action) =
-                    matching_display_buffer_action(interp, &buffer, &action, env)?
-                {
-                    actions.push(user_action);
-                }
-                actions.push(action);
-                let mut functions = Vec::new();
-                let mut alist = Vec::new();
-                for action in actions {
-                    let (action_functions, action_alist) =
-                        display_action_parts(interp, &action, env);
-                    functions.extend(action_functions);
-                    alist.extend(action_alist);
-                }
-                let action_alist = Value::list(alist);
-                for function in functions {
-                    let result = interp.call_function_value(
-                        function.clone(),
-                        function.as_symbol().ok(),
-                        &[buffer.clone(), action_alist.clone()],
-                        env,
-                    )?;
-                    if is_window_value(interp, &result) {
-                        return Ok(result);
-                    }
-                }
-                if display_action_inhibits_same_window(&action_alist) {
-                    return Ok(Value::Nil);
-                }
-                interp.set_selected_window_buffer_id(buffer_id);
-                Ok(interp.selected_window_value())
-            }
-            "quit-window" => {
-                // GNU owns quit-window policy in preloaded window.el.  Keep this
-                // compact fallback only for file-less bootstrap interpreters.
-                if interp.has_lisp_function(name)
-                    && let Some(function) = interp.logical_function_binding(name, env)
-                    && !matches!(&function, Value::BuiltinFunc(builtin) if builtin == name)
-                {
-                    return interp.call_function_value(function, Some(name), args, env);
-                }
-                need_arg_range(name, args, 0, 2)?;
-                let kill = args.first().is_some_and(Value::is_truthy);
-                let window = args
-                    .get(1)
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
-                let buffer_id = window_buffer_id(interp, &window)
-                    .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))?;
-                run_named_hooks(interp, "quit-window-hook", env, Some(buffer_id))?;
-                if kill {
-                    interp.kill_buffer_id(buffer_id);
-                    return Ok(Value::Nil);
-                }
-                if buffer_id == interp.current_buffer_id() {
-                    if let Some(index) = interp
-                        .buffer_list
-                        .iter()
-                        .position(|(id, _)| *id == buffer_id)
-                    {
-                        let entry = interp.buffer_list.remove(index);
-                        interp.buffer_list.push(entry);
-                    }
-                    let next = interp
-                        .selected_window_previous_buffer_id()
-                        .filter(|id| *id != buffer_id)
-                        .or_else(|| {
-                            interp
-                                .buffer_list
-                                .iter()
-                                .find(|(id, _)| *id != buffer_id)
-                                .map(|(id, _)| *id)
-                        });
-                    if let Some(next_id) = next {
-                        interp.switch_to_buffer_id_preserving_window_history(next_id)?;
-                    }
-                }
-                Ok(Value::Nil)
-            }
             "active-minibuffer-window" => {
                 // Non-nil while a minibuffer-with-setup-hook hook runs (the
                 // approximation of GNU's activated minibuffer).
-                if interp
-                    .lookup_var("emaxx--active-minibuffer", env)
-                    .is_some_and(|value| value.is_truthy())
-                {
+                if interp.active_minibuffer_buffer_id().is_some() {
                     Ok(interp
-                        .lookup_var("emaxx--active-minibuffer-window", env)
+                        .active_minibuffer_window_value()
                         .unwrap_or_else(|| interp.selected_window_value()))
                 } else {
                     Ok(Value::Nil)
@@ -5252,82 +4066,9 @@ define_dispatch!(
                 let _ = args[1].as_integer()?;
                 Ok(Value::Integer(0))
             }
-            "facemenu-add-face" => {
-                need_args(name, args, 3)?;
-                let face = args[0].clone();
-                let start = position_from_value(interp, &args[1])?;
-                let end = position_from_value(interp, &args[2])?;
-                interp.buffer.put_text_property(start, end, "face", face);
-                Ok(Value::Nil)
-            }
         }
     }
 );
-
-fn font_lock_raw_keyword_specs(current: Option<Value>) -> Vec<Value> {
-    let items = current.unwrap_or(Value::Nil).to_vec().unwrap_or_default();
-    if items.first() != Some(&Value::T) {
-        return items;
-    }
-    items
-        .get(1)
-        .and_then(|specs| specs.to_vec().ok())
-        .unwrap_or_default()
-}
-
-fn font_lock_keywords_value(raw_specs: &[Value]) -> Value {
-    let mut items = vec![Value::T, Value::list(raw_specs.iter().cloned())];
-    items.extend(raw_specs.iter().filter_map(font_lock_compiled_keyword_spec));
-    Value::list(items)
-}
-
-fn font_lock_compiled_keyword_spec(spec: &Value) -> Option<Value> {
-    let parts = spec.to_vec().ok()?;
-    if parts.len() < 3 {
-        return None;
-    }
-    Some(Value::list([
-        parts[0].clone(),
-        Value::list([parts[1].clone(), parts[2].clone()]),
-    ]))
-}
-
-fn append_to_warnings_buffer(interp: &mut Interpreter, warning: &str) {
-    append_to_named_warnings_buffer(interp, "*Warnings*", warning);
-}
-
-fn append_to_named_warnings_buffer(interp: &mut Interpreter, buffer_name: &str, warning: &str) {
-    let buffer_id = interp
-        .find_buffer(buffer_name)
-        .map(|(id, _)| id)
-        .unwrap_or_else(|| interp.create_buffer(buffer_name).0);
-    if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-        let end = buffer.point_max();
-        buffer.goto_char(end);
-        buffer.insert(&(warning.to_string() + "\n"));
-    }
-}
-
-// GNU font-core's `font-lock-mode' body runs the buffer's
-// `font-lock-function' with the new mode value; modes like ERT's results
-// buffer install a redraw hook there.
-fn font_lock_mode_run_mode_function(
-    interp: &mut Interpreter,
-    buffer_id: u64,
-    mode: Value,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let Some(function) = interp.buffer_local_value(buffer_id, "font-lock-function") else {
-        return Ok(());
-    };
-    if matches!(&function, Value::Symbol(name) if name == "font-lock-default-function")
-        || function.is_nil()
-    {
-        return Ok(());
-    }
-    crate::lisp::primitives::call_function_value(interp, &function, &[mode], env)?;
-    Ok(())
-}
 
 // ── Mode-line rendering (xdisp.c's display_mode_element) ───────────────
 //
@@ -5714,14 +4455,17 @@ fn decode_mode_line_spec(
             }
         }
         '@' => {
-            let remote = super::call(
-                interp,
-                "file-remote-p",
-                &[var(interp, "default-directory")],
-                env,
-            )
-            .map(|value| value.is_truthy())
-            .unwrap_or(false);
+            // `file-remote-p' is GNU files.el's; reach it through the
+            // ordinary function cell, never the native dispatcher.
+            let remote = interp
+                .call_function_value(
+                    Value::Symbol("file-remote-p".into()),
+                    Some("file-remote-p"),
+                    &[var(interp, "default-directory")],
+                    env,
+                )
+                .map(|value| value.is_truthy())
+                .unwrap_or(false);
             if remote { "@" } else { "-" }.to_string()
         }
         'z' | 'Z' => {
@@ -5736,9 +4480,9 @@ fn decode_mode_line_spec(
             let buffer_coding = var(interp, "buffer-file-coding-system");
             text.push(coding_mnemonic_char(interp, env, &buffer_coding));
             if spec == 'Z'
-                && let Ok(eol) = super::call(
-                    interp,
-                    "coding-system-eol-type-mnemonic",
+                && let Ok(eol) = interp.call_function_value(
+                    Value::Symbol("coding-system-eol-type-mnemonic".into()),
+                    Some("coding-system-eol-type-mnemonic"),
                     &[buffer_coding],
                     env,
                 )
@@ -5764,10 +4508,12 @@ fn decode_mode_line_spec(
     })
 }
 
+// `coding-system-mnemonic' is GNU mule.el's; reach it through the
+// ordinary function cell, never the native dispatcher.
 fn coding_mnemonic_char(interp: &mut Interpreter, env: &mut Env, coding: &Value) -> char {
-    match super::call(
-        interp,
-        "coding-system-mnemonic",
+    match interp.call_function_value(
+        Value::Symbol("coding-system-mnemonic".into()),
+        Some("coding-system-mnemonic"),
         std::slice::from_ref(coding),
         env,
     ) {

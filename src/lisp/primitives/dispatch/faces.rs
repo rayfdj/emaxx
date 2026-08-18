@@ -44,6 +44,14 @@ fn face_attribute_error(attribute: &Value) -> LispError {
     ]))
 }
 
+fn invalid_face_error(face: &str) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::symbol("error"),
+        Value::string("Invalid face"),
+        Value::symbol(face),
+    ]))
+}
+
 fn special_face_value(value: &Value) -> bool {
     matches!(
         value,
@@ -224,7 +232,10 @@ pub(super) fn set_face_attribute(
     value: &Value,
     global: bool,
 ) -> Result<Value, LispError> {
-    let (index, normalized) = normalize_face_attribute_value(attribute, value)?;
+    let (index, mut normalized) = normalize_face_attribute_value(attribute, value)?;
+    if global && matches!(&normalized, Value::Symbol(symbol) if symbol == "unspecified") {
+        normalized = Value::symbol("ignore-defface");
+    }
     interp.set_lisp_face_attribute(face, index, normalized, global)?;
     Ok(Value::symbol(face))
 }
@@ -479,14 +490,30 @@ define_dispatch!(
             }
             "internal-set-lisp-face-attribute" => {
                 need_arg_range(name, args, 3, 4)?;
-                let face = resolve_face_name(interp, &args[0])?;
+                let face_symbol = args[0]
+                    .as_symbol()
+                    .map_err(|_| wrong_type_argument("symbolp", args[0].clone()))?;
+                let face = resolve_face_name(interp, &Value::symbol(face_symbol))?;
                 let attribute = args[1].as_symbol()?;
-                let global = face_target_is_global(args.get(3));
-                if matches!(args.get(3), Some(Value::Integer(0))) {
+                let frame = args.get(3).unwrap_or(&Value::Nil);
+                if matches!(frame, Value::Integer(0)) {
+                    if interp.lisp_face_vector(&face, true).is_none() {
+                        return Err(invalid_face_error(&face));
+                    }
                     set_face_attribute(interp, &face, attribute, &args[2], true)?;
+                    interp.ensure_lisp_face(&face, true, false)?;
                     set_face_attribute(interp, &face, attribute, &args[2], false)
+                } else if matches!(frame, Value::T) {
+                    if interp.lisp_face_vector(&face, true).is_none() {
+                        return Err(invalid_face_error(&face));
+                    }
+                    set_face_attribute(interp, &face, attribute, &args[2], true)
                 } else {
-                    set_face_attribute(interp, &face, attribute, &args[2], global)
+                    frames::decode_live_frame(interp, Some(frame), true)?;
+                    // GNU creates a missing frame-local face before it validates
+                    // ATTR, so preserve that observable ordering here.
+                    interp.ensure_lisp_face(&face, true, false)?;
+                    set_face_attribute(interp, &face, attribute, &args[2], false)
                 }
             }
             "internal-set-lisp-face-attribute-from-resource" => {

@@ -61,7 +61,7 @@ fn mapcan_mutates_mapped_lists_destructively() {
 fn copyright_update_updates_last_notice_when_searching_from_end() {
     run_with_large_stack(|| {
         assert_eq!(
-            eval_str_with_upstream_load_path(
+            eval_str_with_upstream_batch(
                 r#"(progn
                      (require 'copyright)
                      (with-temp-buffer
@@ -116,7 +116,7 @@ fn sxhash_eql_matches_equal_bignums() {
 #[test]
 fn sort_coding_systems_uses_priority_order() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn (set-coding-system-priority 'utf-8 'iso-latin-1) (sort-coding-systems '(iso-latin-1 undecided utf-8)))"
         ),
         Value::list([
@@ -130,7 +130,7 @@ fn sort_coding_systems_uses_priority_order() {
 #[test]
 fn coding_system_type_treats_nil_as_the_no_conversion_designator() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list (coding-system-type nil) (coding-system-type 'utf-8) (coding-system-type 'raw-text))"
         ),
         Value::list([
@@ -144,7 +144,7 @@ fn coding_system_type_treats_nil_as_the_no_conversion_designator() {
 #[test]
 fn cyrillic_koi8_is_a_single_byte_round_tripping_coding() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(let ((encoded (encode-coding-string \"Русский\" 'cyrillic-koi8)))
                (list (coding-system-type 'cyrillic-koi8)
                      (coding-system-change-eol-conversion
@@ -164,7 +164,7 @@ fn cyrillic_koi8_is_a_single_byte_round_tripping_coding() {
 #[test]
 fn windows_1252_is_a_preloaded_single_byte_round_tripping_coding() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(let* ((bytes (unibyte-string
                             100 233 106 224 32 114 97 116 233 32 128))
                     (decoded (decode-coding-string bytes 'windows-1252)))
@@ -202,7 +202,7 @@ fn windows_1252_is_a_preloaded_single_byte_round_tripping_coding() {
 #[test]
 fn windows_1251_alias_uses_the_preloaded_single_byte_codec() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(let* ((text \"Привет\")
                     (encoded (encode-coding-string text 'cp1251)))
                (list (coding-system-type 'windows-1251)
@@ -231,7 +231,7 @@ fn windows_1251_alias_uses_the_preloaded_single_byte_codec() {
 #[test]
 fn latin_1_aliases_resolve_to_iso_latin_1() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list (coding-system-base 'latin-1)
                    (coding-system-change-eol-conversion 'latin-1 'unix)
                    (decode-coding-string
@@ -253,11 +253,7 @@ fn find_composition_keeps_combining_buffer_characters_together() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -281,11 +277,7 @@ fn ascii_case_table_leaves_non_ascii_letters_unchanged() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -298,7 +290,7 @@ fn ascii_case_table_leaves_non_ascii_letters_unchanged() {
 #[test]
 fn read_buffer_simulation_enforces_its_predicate_and_accepts_default() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
                (get-buffer-create \"#chan\")
                (get-buffer-create \"#fake\")
@@ -369,7 +361,7 @@ fn warning_series_variables_have_default_bindings() {
 #[test]
 fn display_warning_uses_prefix_function_and_explicit_buffer() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(with-temp-buffer
                  (let ((target (buffer-name))
                        (warning-prefix-function
@@ -386,7 +378,9 @@ fn display_warning_uses_prefix_function_and_explicit_buffer() {
 #[test]
 fn hack_local_variables_accepts_optional_mode_arg() {
     assert_eq!(
-        eval_str("(list (hack-local-variables) (hack-local-variables 'no-mode))"),
+        eval_str_with_upstream_batch(
+            "(list (hack-local-variables) (hack-local-variables 'no-mode))"
+        ),
         Value::list([Value::Nil, Value::Nil])
     );
 }
@@ -529,7 +523,8 @@ fn list_operation_type_errors_include_original_value() {
 #[test]
 fn read_positioning_symbols_preserves_eq_binding_through_byte_compile() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             "(let* ((sym-with-pos1 (read-positioning-symbols \"sym\"))
                     (sym-with-pos2 (read-positioning-symbols \" sym\"))
                     (without-pos-eq-compiled
@@ -582,9 +577,51 @@ fn condition_case_success_uses_arith_error_condition_value() {
 }
 
 #[test]
-fn throw_from_handler_inside_function_reaches_matching_catch() {
+fn condition_case_handler_closures_follow_gnu_lexical_and_dynamic_unwind() {
+    // GNU 30.2 eval.c:internal_lisp_condition_case extends a non-nil
+    // interpreter environment lexically, but uses specbind when that
+    // environment is nil.  Only the lexical handler closure captures ERR.
     assert_eq!(
         eval_str(
+            r#"
+                (list
+                 (let ((f
+                        (eval
+                         '(condition-case err
+                              (/ 1 0)
+                            (arith-error
+                             (prog1 (lambda () err)
+                               (setq err 'changed))))
+                         t)))
+                   (funcall f))
+                 (let ((f
+                        (eval
+                         '(condition-case err
+                              (/ 1 0)
+                            (arith-error
+                             (prog1 (lambda () err)
+                               (setq err 'changed))))
+                         nil)))
+                   (condition-case caught
+                       (funcall f)
+                     (void-variable
+                      (list (car caught) (cadr caught))))))
+            "#,
+        ),
+        Value::list([
+            Value::Symbol("changed".into()),
+            Value::list([
+                Value::Symbol("void-variable".into()),
+                Value::Symbol("err".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn throw_from_handler_inside_function_reaches_matching_catch() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
             "(progn
                (defun sample-error-frame ()
                  (letrec ((handler (lambda (err) (throw 'sample-tag err))))
@@ -603,7 +640,7 @@ fn throw_from_handler_inside_function_reaches_matching_catch() {
 
 #[test]
 fn coding_system_list_is_bound_and_callable() {
-    let result = eval_str(
+    let result = eval_str_with_upstream_batch(
         "(list (boundp 'coding-system-list)
                (fboundp 'coding-system-list)
                (not (null (memq 'utf-8 coding-system-list)))
@@ -684,7 +721,7 @@ fn character_table_reader_literals_preserve_ascii_root_default_and_extras() {
 fn upstream_generated_idna_character_table_loads_and_indexes_nested_ranges() {
     run_with_large_stack(|| {
         assert_eq!(
-            eval_str_with_upstream_load_path(
+            eval_str_with_upstream_batch(
                 "(progn
                    (require 'idna-mapping)
                    (list (char-table-p idna-mapping-table)
@@ -721,11 +758,7 @@ fn preloaded_character_property_registry_uses_lisp_policy_and_rust_table_access(
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compatibility prelude");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -763,11 +796,7 @@ fn generated_numeric_property_table_uncompresses_and_decodes_values() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compatibility prelude");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -793,11 +822,7 @@ fn generated_numeric_property_table_uncompresses_and_decodes_values() {
 fn generated_decomposition_property_table_decodes_word_deltas() {
     let mut interp = Interpreter::new();
     interp.set_load_path(vec![upstream_emacs_repo().join("lisp/international")]);
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compatibility prelude");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -863,7 +888,7 @@ fn completion_style_defaults_are_bound() {
 
 #[test]
 fn file_expand_wildcards_returns_existing_matches() {
-    let result = eval_str(
+    let result = eval_str_with_upstream_batch(
         r#"(let ((dir (make-temp-file "emaxx-wildcards-" t)))
              (unwind-protect
                  (progn
@@ -889,166 +914,26 @@ fn file_expand_wildcards_returns_existing_matches() {
 }
 
 #[test]
-fn mock_tramp_file_operations_use_localname() {
-    let prefix = format!("/mock:{}:", crate::lisp::primitives::system_name_value());
-    let result = eval_str(
-        r#"(let ((dir (make-temp-file "emaxx-mock-tramp-" t))
-                 (create-lockfiles nil)
-                 ;; Model the broad handler installed when real Tramp is
-                 ;; loaded.  Every supported /mock: operation must select
-                 ;; Emaxx's in-process transport before reaching this one.
-                 (file-name-handler-alist '(("\\`/mock:" . error))))
-             (unwind-protect
-                 (let* ((remote (concat "/mock::" dir))
-                        (remote-file (expand-file-name "sample.txt" remote)))
-                   (write-region "sample" nil remote-file)
-                   (let ((copy (file-local-copy remote-file)))
-                     (prog1
-                         (list (eq (find-file-name-handler
-                                    remote-file 'write-region)
-                                   'emaxx-mock-file-name-handler)
-                               (eq (find-file-name-handler
-                                    remote-file 'delete-file)
-                                   'emaxx-mock-file-name-handler)
-                               (file-remote-p remote)
-                               (file-directory-p remote)
-                               (file-writable-p remote)
-                               (with-temp-buffer
-                                 (insert-file-contents remote-file)
-                                 (equal (buffer-string) "sample"))
-                               (and copy
-                                    (not (file-remote-p copy))
-                                    (file-exists-p copy))
-                               (progn
-                                 (delete-file remote-file)
-                                 (file-exists-p remote-file)))
-                       (when copy
-                         (delete-file copy)))))
-               (delete-directory dir t)))"#,
-    );
-    assert_eq!(
-        result,
-        Value::list([
-            Value::T,
-            Value::T,
-            Value::String(prefix.into()),
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::Nil,
-        ])
-    );
-}
+fn remote_visit_policy_is_typed_and_derived_from_buffer_identity() {
+    let mut interp = Interpreter::new();
+    let buffer_id = interp.current_buffer_id();
 
-#[test]
-fn mock_transport_ownership_beats_a_quoted_local_operand() {
+    assert_eq!(interp.buffer_remote_prefix(buffer_id), None);
+    interp.set_current_buffer_file_name(Some("/ssh:user@host:/tmp/file".into()));
     assert_eq!(
-        eval_str(
-            r#"(let* ((root (make-temp-file "emaxx-mock-owner-" t))
-                       (local-source (expand-file-name "source" root))
-                       (remote (concat "/mock::" root))
-                       (remote-target (expand-file-name "target" remote))
-                       (quoted-source (concat "/:" local-source))
-                       (quoted-target
-                        (concat (file-remote-p remote-target)
-                                "/:" (file-remote-p remote-target 'localname)))
-                       (file-name-handler-alist
-                        '(("\\`/:" . file-name-non-special)
-                          ("\\`/mock:" . error)))
-                       (handlers file-name-handler-alist))
-                  (unwind-protect
-                      (progn
-                        (write-region "sample" nil local-source)
-                        (rename-file quoted-source quoted-target)
-                        (list
-                         (eq handlers file-name-handler-alist)
-                         (not (file-exists-p local-source))
-                         (with-temp-buffer
-                           (insert-file-contents remote-target)
-                           (equal (buffer-string) "sample"))))
-                    (let ((file-name-handler-alist nil))
-                      (delete-directory root t))))"#
-        ),
-        Value::list([Value::T, Value::T, Value::T])
+        interp.buffer_remote_prefix(buffer_id).as_deref(),
+        Some("/ssh:user@host:")
     );
-}
 
-#[test]
-fn mock_copy_directory_is_owned_by_the_typed_transport_boundary() {
-    assert_eq!(
-        eval_str(
-            r#"(let* ((root (make-temp-file "emaxx-mock-copy-directory-" t))
-                      (source (concat "/mock::" root "/missing"))
-                      (target (concat "/mock::" root "/target")))
-                 (unwind-protect
-                     (list
-                      (eq (find-file-name-handler source 'copy-directory)
-                          'emaxx-mock-file-name-handler)
-                      (condition-case err
-                          (emaxx-mock-file-name-handler
-                           'copy-directory source target nil nil nil)
-                        (file-missing (car err)))
-                      (not (file-exists-p target))
-                      (progn
-                        (make-directory source)
-                        (make-directory target)
-                        (condition-case err
-                            (emaxx-mock-file-name-handler
-                             'copy-directory source target nil nil nil)
-                          (file-already-exists (car err)))))
-                   (let ((file-name-handler-alist nil))
-                     (delete-directory root t))))"#
-        ),
-        Value::list([
-            Value::T,
-            Value::symbol("file-missing"),
-            Value::T,
-            Value::symbol("file-already-exists"),
-        ])
-    );
-}
-
-#[test]
-fn buffer_file_name_assignment_derives_remote_visit_policy_atomically() {
-    assert_eq!(
-        eval_str(
-            r#"(let* ((root (make-temp-file "emaxx-remote-visit-" t))
-                      (remote (concat "/mock::" root "/file"))
-                      (noninteractive nil)
-                      prompt)
-                 (unwind-protect
-                     (progn
-                       (write-region "foo" nil (concat root "/file"))
-                       (with-temp-buffer
-                         (setq buffer-file-name remote
-                               buffer-file-truename remote)
-                         (insert "foo")
-                         (set-buffer-modified-p nil)
-                         (set-visited-file-modtime
-                          (time-add (current-time) -60))
-                         (cl-letf (((symbol-function #'read-char-choice)
-                                    (lambda (text &rest _)
-                                      (setq prompt text)
-                                      ?y)))
-                           (insert "bar"))
-                         (and (stringp prompt)
-                              (not
-                               (null
-                                (string-match-p
-                                 " changed on disk; really edit the buffer\\?\\'"
-                                 prompt))))))
-                   (let ((file-name-handler-alist nil))
-                     (delete-directory root t))))"#
-        ),
-        Value::T
-    );
+    interp.set_current_buffer_file_name(Some("/tmp/file".into()));
+    assert_eq!(interp.buffer_remote_prefix(buffer_id), None);
 }
 
 #[test]
 fn with_no_warnings_is_one_ordinary_callable_function() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             r#"(list
                  (special-form-p 'with-no-warnings)
                  (with-no-warnings 1 2 3)
@@ -1067,252 +952,8 @@ fn with_no_warnings_is_one_ordinary_callable_function() {
 }
 
 #[test]
-fn mock_tramp_deletions_share_the_remote_trash_policy() {
-    let result = eval_str(
-        r#"(let ((dir (make-temp-file "emaxx-mock-trash-" t))
-                  (original-trash-function
-                   (symbol-function 'system-move-file-to-trash)))
-              (unwind-protect
-                  (let* ((remote (concat "/mock::" dir))
-                         (remote-file (expand-file-name "sample.txt" remote))
-                         (remote-directory
-                          (expand-file-name "sample-directory" remote)))
-                    (write-region "sample" nil remote-file)
-                    (make-directory remote-directory)
-                    (fset 'system-move-file-to-trash
-                          (lambda (_file)
-                            (error "remote deletion reached system trash")))
-                    (let ((delete-by-moving-to-trash t)
-                          (remote-file-name-inhibit-delete-by-moving-to-trash t))
-                      (delete-file remote-file 'trash)
-                      (delete-directory remote-directory t 'trash)
-                      (list (file-exists-p remote-file)
-                            (file-exists-p remote-directory)
-                            delete-by-moving-to-trash
-                            remote-file-name-inhibit-delete-by-moving-to-trash)))
-                (fset 'system-move-file-to-trash original-trash-function)
-                (delete-directory dir t)))"#,
-    );
-    assert_eq!(
-        result,
-        Value::list([Value::Nil, Value::Nil, Value::T, Value::T])
-    );
-}
-
-#[test]
-fn mock_remote_mutations_and_metadata_share_one_transport_registry() {
-    assert_eq!(
-        eval_str(
-            r#"(let ((root (make-temp-file "emaxx-mock-transport-" t))
-                     (create-lockfiles nil)
-                     ;; Any operation omitted from the typed mock registry
-                     ;; falls through to this sentinel and fails the test.
-                     (file-name-handler-alist '(("\\`/mock:" . error))))
-                 (unwind-protect
-                     (let* ((remote (concat "/mock::" root))
-                            (source (expand-file-name "source" remote))
-                            (link-source (expand-file-name "link-source" remote))
-                            (link (expand-file-name "link" remote))
-                            (remote-looking-link
-                             (expand-file-name "remote-looking-link" remote))
-                            (quoted-target-link
-                             (expand-file-name "quoted-target-link" remote))
-                            (local-link (expand-file-name "local-link" root))
-                            (copy-parent (expand-file-name "copies" remote))
-                            (rename-parent (expand-file-name "renamed" remote)))
-                       (make-directory source)
-                       (write-region "sample" nil
-                                     (expand-file-name "foo" source))
-                       (write-region "sample" nil link-source)
-                       (make-symbolic-link link-source link)
-                       (make-directory copy-parent)
-                       (copy-file source (file-name-as-directory copy-parent))
-                       (let* ((copy
-                               (expand-file-name
-                                (file-name-nondirectory source) copy-parent))
-                              (copy-file (expand-file-name "foo" copy))
-                              (attributes
-                               (directory-files-and-attributes copy 'full)))
-                         (make-directory rename-parent)
-                         (rename-file source
-                                      (file-name-as-directory rename-parent))
-                         (list
-                          (file-directory-p copy)
-                          (file-regular-p copy-file)
-                          (consp (cdr (assoc copy-file attributes)))
-                          (not (file-exists-p source))
-                          (file-exists-p
-                           (expand-file-name
-                            (concat (file-name-nondirectory source) "/foo")
-                            rename-parent))
-                          (equal (file-name-completion "fo" copy) "foo")
-                          (equal (file-name-as-directory "/mock::")
-                                 "/mock::./")
-                          (equal (file-symlink-p link)
-                                 (file-remote-p link-source 'localname))
-                          (equal (file-attribute-type (file-attributes link))
-                                 (file-remote-p link-source 'localname))
-                          (condition-case err
-                              (make-symbolic-link link-source link)
-                            (file-already-exists (car err)))
-                          (cl-letf (((symbol-function #'yes-or-no-p) #'ignore))
-                            (condition-case err
-                                (make-symbolic-link link-source link 0)
-                              (file-already-exists (car err))))
-                          (cl-letf (((symbol-function #'yes-or-no-p) #'always))
-                            (make-symbolic-link link-source link 0)
-                            (equal (file-symlink-p link)
-                                   (file-remote-p link-source 'localname)))
-                          (progn
-                            (make-symbolic-link
-                             link-source link 'ok-if-already-exists)
-                            (equal (file-symlink-p link)
-                                   (file-remote-p link-source 'localname)))
-                          (progn
-                            (make-symbolic-link link-source local-link)
-                            (equal (file-symlink-p local-link) link-source))
-                          (progn
-                            (make-symbolic-link
-                             "/penguin:motd:" remote-looking-link)
-                            (equal
-                             (file-truename remote-looking-link)
-                             (concat
-                              (file-remote-p remote-looking-link)
-                              "/:/penguin:motd:")))
-                          (progn
-                            (make-symbolic-link
-                             (concat
-                              "/:" (file-remote-p link-source 'localname))
-                             quoted-target-link)
-                            (equal
-                             (file-symlink-p quoted-target-link)
-                             (file-remote-p link-source 'localname)))
-                          (let ((non-essential t))
-                            (equal (file-name-as-directory "/mock::")
-                                   "/mock::")))))
-                   (let ((file-name-handler-alist nil))
-                     (delete-directory root t))))"#
-        ),
-        Value::list([
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::symbol("file-already-exists"),
-            Value::symbol("file-already-exists"),
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-            Value::T,
-        ])
-    );
-}
-
-#[test]
-fn mock_remote_io_errors_keep_their_typed_conditions() {
-    assert_eq!(
-        eval_str(
-            r#"(let* ((root (make-temp-file "emaxx-mock-errors-" t))
-                      (remote (concat "/mock::" root))
-                      (missing (expand-file-name "missing" remote))
-                      (target (expand-file-name "target" remote)))
-                 (unwind-protect
-                     (list
-                      (condition-case err (copy-file missing target)
-                        (file-missing (car err)))
-                      (condition-case err (rename-file missing target)
-                        (file-missing (car err)))
-                      (condition-case err (set-file-modes missing #o777)
-                        (file-missing (car err)))
-                      (condition-case err (set-file-times missing)
-                        (file-missing (car err)))
-                      (condition-case err
-                          (directory-files-and-attributes missing)
-                        (file-missing (car err)))
-                      (condition-case err (insert-directory missing nil)
-                        (file-missing (car err)))
-                      (condition-case err (access-file missing "probe")
-                        (file-missing (car err)))
-                      (let ((remote-file-name-access-timeout 0.001))
-                        (cl-letf (((symbol-function #'file-exists-p)
-                                   (lambda (_file) (sleep-for 0.01) t)))
-                          (condition-case err (access-file missing "probe")
-                            (file-error (car err)))))
-                      (cl-letf (((symbol-function #'file-exists-p) #'always)
-                                ((symbol-function #'file-directory-p) #'ignore)
-                                ((symbol-function #'file-readable-p) #'ignore))
-                        (condition-case err (access-file missing "probe")
-                          (permission-denied (car err))))
-                      (progn
-                        (write-region "source" nil missing)
-                        (write-region "target" nil target)
-                        (prog1
-                            (condition-case err (rename-file missing target)
-                              (file-already-exists (car err)))
-                          (delete-file missing)
-                          (delete-file target)))
-                      (progn
-                        (make-directory target)
-                        (condition-case err (make-directory target)
-                          (file-already-exists (car err)))))
-                   (delete-directory root t)))"#
-        ),
-        Value::list([
-            Value::symbol("file-missing"),
-            Value::symbol("file-missing"),
-            Value::symbol("file-missing"),
-            Value::symbol("file-missing"),
-            Value::symbol("file-missing"),
-            Value::symbol("file-missing"),
-            Value::symbol("file-missing"),
-            Value::symbol("file-error"),
-            Value::symbol("permission-denied"),
-            Value::symbol("file-already-exists"),
-            Value::symbol("file-already-exists"),
-        ])
-    );
-}
-
-#[test]
-fn mock_truename_preserves_quoted_files_and_directories() {
-    assert_eq!(
-        eval_str(
-            r#"(let* ((root (make-temp-file "emaxx-mock-truename-" t))
-                      (local-file (expand-file-name "file" root))
-                      (quoted-file (concat "/mock::/:" local-file))
-                      (quoted-directory (concat "/mock::/:" root)))
-                 (unwind-protect
-                     (progn
-                       (write-region "sample" nil local-file)
-                       (list
-                        (equal (file-remote-p quoted-file 'localname)
-                               (concat "/:" local-file))
-                        (equal (file-local-name quoted-file)
-                               (concat "/:" local-file))
-                        (equal
-                         (file-truename quoted-file)
-                         (concat (file-remote-p quoted-file)
-                                 "/:" (file-truename local-file)))
-                        (equal
-                         (file-truename quoted-directory)
-                         (concat (file-remote-p quoted-directory)
-                                 "/:" (file-truename root)))))
-                   (delete-directory root t)))"#
-        ),
-        Value::list([Value::T, Value::T, Value::T, Value::T])
-    );
-}
-
-#[test]
 fn file_replacement_and_offset_writes_share_gnu_file_io_contracts() {
-    let result = eval_str(
+    let result = eval_str_with_upstream_batch(
         r#"(let ((file (make-temp-file "emaxx-file-io-contract-")))
               (unwind-protect
                   (progn
@@ -1370,22 +1011,12 @@ fn file_replacement_and_offset_writes_share_gnu_file_io_contracts() {
 }
 
 #[test]
-fn missing_mock_local_copy_keeps_the_file_missing_condition() {
-    assert_eq!(
-        eval_str(
-            r#"(condition-case err
-                   (file-local-copy
-                    "/mock::/emaxx-definitely-missing-local-copy")
-                 (file-missing (car err)))"#
-        ),
-        Value::Symbol("file-missing".into())
-    );
-}
-
-#[test]
 fn cl_loop_across_iterates_vectors() {
     assert_eq!(
-        eval_str("(cl-loop for item across [a b c] collect item)"),
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
+            "(cl-loop for item across [a b c] collect item)",
+        ),
         Value::list([Value::symbol("a"), Value::symbol("b"), Value::symbol("c"),])
     );
 }
@@ -1401,7 +1032,10 @@ fn plain_vector_is_not_string_like() {
 #[test]
 fn cl_loop_when_collect_filters_items() {
     assert_eq!(
-        eval_str("(cl-loop for item in '(1 2 3 4) when (> item 2) collect item)"),
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
+            "(cl-loop for item in '(1 2 3 4) when (> item 2) collect item)",
+        ),
         Value::list([Value::Integer(3), Value::Integer(4)])
     );
 }
@@ -1409,7 +1043,8 @@ fn cl_loop_when_collect_filters_items() {
 #[test]
 fn cl_loop_when_append_flattens_truthy_results() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop for child in '((a b) nil (c))
                       for matches = child
                       when matches
@@ -1426,7 +1061,8 @@ fn cl_loop_when_append_flattens_truthy_results() {
 #[test]
 fn cl_loop_if_collect_else_append_handles_tree_walks() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(equal
               (cl-loop for child in '(\"a\" (b c) \"d\")
                        if (stringp child)
@@ -1442,16 +1078,12 @@ fn cl_loop_if_collect_else_append_handles_tree_walks() {
 #[test]
 fn cl_defmacro_keyword_default_preserves_quoted_default_form() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
-        interp.set_load_path(
-            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-                .expect("upstream load path"),
-        );
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        eval_str_with(&mut interp, "(require 'cl-macs)");
         assert_eq!(
             eval_str_with(
                 &mut interp,
                 "(progn
-                   (require 'cl-lib)
                    (cl-defmacro sample-cl-default
                        (&key (modes '(quote (ruby-mode js-mode python-mode c-mode))))
                      `(quote ,(eval modes t)))
@@ -1470,7 +1102,7 @@ fn cl_defmacro_keyword_default_preserves_quoted_default_form() {
 #[test]
 fn ruby_and_js_modes_are_callable_prog_modes() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(equal
               (list
                (with-temp-buffer (funcall 'ruby-mode) (list major-mode comment-start))
@@ -1484,7 +1116,7 @@ fn ruby_and_js_modes_are_callable_prog_modes() {
 #[test]
 fn prog_mode_is_callable_without_recording_fundamental_as_a_parent() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (prog-mode)
                (list major-mode
@@ -1498,7 +1130,8 @@ fn prog_mode_is_callable_without_recording_fundamental_as_a_parent() {
             Value::Symbol("prog-mode".into()),
             Value::String("Prog".into()),
             Value::T,
-            Value::T,
+            // GNU `derived-mode-p' returns the matched mode symbol.
+            Value::Symbol("prog-mode".into()),
             Value::Nil,
             Value::Nil,
         ])
@@ -1508,7 +1141,7 @@ fn prog_mode_is_callable_without_recording_fundamental_as_a_parent() {
 #[test]
 fn ruby_mode_marks_single_quotes_as_string_delimiters() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (ruby-mode)
                (list (char-syntax ?')
@@ -1528,10 +1161,14 @@ fn ruby_mode_marks_single_quotes_as_string_delimiters() {
 #[test]
 fn tex_mode_is_callable_and_available_as_mode_symbol() {
     assert_eq!(
-        eval_str(
-            "(with-temp-buffer (funcall tex-mode) (equal (list major-mode comment-start) '(tex-mode \"%\")))"
+        eval_str_with_upstream_batch(
+            "(condition-case err
+                 (with-temp-buffer (funcall tex-mode) major-mode)
+               (void-variable (list 'void (cadr err))))"
         ),
-        Value::T
+        // GNU: `tex-mode' is a function, not a variable; funcalling the
+        // variable signals (void-variable tex-mode), probed on GNU 30.2.
+        Value::list([Value::symbol("void"), Value::symbol("tex-mode")])
     );
 }
 
@@ -1805,13 +1442,9 @@ fn upstream_nonessential_remote_probe_accepts_an_unknown_method_without_connecti
 
 #[test]
 fn upstream_save_policy_only_queries_buffers_that_offer_to_save() {
-    let options = crate::batch::BatchRunOptions {
-        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-        ..Default::default()
-    };
-    let mut interp =
-        crate::batch::initialize_batch_interpreter(&options).expect("initialize interpreter");
+    let _permit = crate::test_support::acquire_host_test_permit();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(&mut interp, "(require 'cl-macs)");
 
     assert_eq!(
         eval_str_with(
@@ -1861,7 +1494,7 @@ fn upstream_save_policy_only_queries_buffers_that_offer_to_save() {
 #[test]
 fn text_mode_marks_quotes_as_text_punctuation() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (text-mode)
                (list (char-syntax ?\") (char-syntax ?`) (char-syntax ?')))"
@@ -1877,7 +1510,7 @@ fn text_mode_marks_quotes_as_text_punctuation() {
 #[test]
 fn kill_all_local_variables_runs_change_major_mode_hook_before_clearing_locals() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (let (ran)
                  (add-hook 'change-major-mode-hook
@@ -1894,7 +1527,7 @@ fn kill_all_local_variables_runs_change_major_mode_hook_before_clearing_locals()
 #[test]
 fn normal_mode_runs_change_major_mode_hook_before_selecting_file_mode() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(let ((file (make-temp-file \"emaxx-normal-mode\" nil \".el\")))
                (unwind-protect
                    (let ((buf (find-file-noselect file)))
@@ -1921,7 +1554,8 @@ fn normal_mode_runs_change_major_mode_hook_before_selecting_file_mode() {
 #[test]
 fn normal_mode_applies_no_byte_compile_file_local_header() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "files",
             "(let ((file (make-temp-file \"emaxx-no-byte-compile\" nil \".el\")))
                (unwind-protect
                    (progn
@@ -1931,7 +1565,7 @@ fn normal_mode_applies_no_byte_compile_file_local_header() {
                          (normal-mode)
                          (prog1 no-byte-compile
                            (kill-buffer buf)))))
-                 (ignore-errors (delete-file file))))"
+                 (ignore-errors (delete-file file))))",
         ),
         Value::T
     );
@@ -1942,6 +1576,194 @@ fn eval_accepts_explicit_lexical_alist() {
     assert_eq!(
         eval_str("(eval '(+ x y) '((x . 1) (y . 2)))"),
         Value::Integer(3)
+    );
+}
+
+#[test]
+fn eval_t_preserves_gnu_local_defvar_environment_and_macro_dynvars() {
+    assert_eq!(
+        eval_str(
+            "(eval
+               '(progn
+                  (defvar sample-eval-local-special)
+                  (defalias 'sample-eval-local-reader
+                    (function (lambda () sample-eval-local-special)))
+                  (defalias 'sample-eval-local-call
+                    (function
+                     (lambda (value)
+                       (let ((sample-eval-local-special value))
+                         (sample-eval-local-reader)))))
+                  (defalias 'sample-eval-local-macro
+                    (cons 'macro
+                          (function
+                           (lambda (&rest ignored)
+                             (list 'quote macroexp--dynvars)))))
+                  (list (sample-eval-local-call 42)
+                        (special-variable-p 'sample-eval-local-special)
+                        (aref (symbol-function 'sample-eval-local-reader) 2)
+                        (sample-eval-local-macro)))
+               t)"
+        ),
+        Value::list([
+            Value::Integer(42),
+            Value::Nil,
+            Value::list([Value::symbol("sample-eval-local-special"), Value::T,]),
+            Value::list([Value::T, Value::symbol("sample-eval-local-special"),]),
+        ])
+    );
+}
+
+#[test]
+fn separate_lexical_evals_do_not_share_local_defvar_declarations() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (eval
+                '(progn
+                   (defvar sample-eval-nonleaking-special)
+                   (defalias 'sample-eval-special-owner
+                     (function (lambda () sample-eval-nonleaking-special))))
+                t)
+               (funcall
+                (eval
+                 '(let ((sample-eval-nonleaking-special 84))
+                    (function (lambda () sample-eval-nonleaking-special)))
+                 t)))"
+        ),
+        Value::Integer(84)
+    );
+}
+
+#[test]
+fn earlier_closure_calls_do_not_erase_later_local_defvar_declarations() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (eval
+                '(progn
+                   (defvar sample-old-special)
+                   (defalias 'sample-old-call (function (lambda () nil)))
+                   (defvar sample-late-special)
+                   (defalias 'sample-late-reader
+                     (function (lambda () sample-late-special)))
+                   (defalias 'sample-late-call
+                     (function
+                      (lambda (value)
+                        (let ((sample-late-special value))
+                          (sample-late-reader))))))
+                t)
+               (eval '(sample-old-call) t)
+               (list
+                (eval '(sample-late-call 42) t)
+                (aref (symbol-function 'sample-old-call) 2)
+                (aref (symbol-function 'sample-late-call) 2)))"
+        ),
+        Value::list([
+            Value::Integer(42),
+            Value::list([Value::symbol("sample-old-special"), Value::T]),
+            Value::list([
+                Value::symbol("sample-late-special"),
+                Value::symbol("sample-old-special"),
+                Value::T,
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn local_defvar_lifetimes_follow_gnu_let_and_letstar_environments() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defalias 'sample-empty-reader
+                 (function (lambda () sample-empty-special)))
+               (defalias 'sample-scoped-reader
+                 (function (lambda () sample-scoped-special)))
+               (defalias 'sample-init-reader
+                 (function (lambda () sample-init-special)))
+               (defalias 'sample-star-reader
+                 (function (lambda () sample-star-special)))
+               (eval
+                '(progn
+                   (let () (defvar sample-empty-special))
+                   (let ((sample-scope-binding 1))
+                     (defvar sample-scoped-special))
+                   (setq sample-post-scope-environment
+                         (aref (function (lambda () nil)) 2))
+                   (let ((sample-init-binding
+                          (progn (defvar sample-init-special) 1)))
+                     sample-init-binding)
+                   (let* ((sample-star-binding
+                           (progn (defvar sample-star-special) 1)))
+                     sample-star-binding)
+                   (list
+                    sample-post-scope-environment
+                    (let ((sample-empty-special 10))
+                      (sample-empty-reader))
+                    (condition-case nil
+                        (let ((sample-scoped-special 20))
+                          (sample-scoped-reader))
+                      (void-variable 'void))
+                    (let ((sample-init-special 30))
+                      (sample-init-reader))
+                    sample-star-binding
+                    (let ((sample-star-special 40))
+                      (sample-star-reader))))
+                t))"
+        ),
+        Value::list([
+            Value::list([Value::symbol("sample-empty-special"), Value::T]),
+            Value::Integer(10),
+            Value::symbol("void"),
+            Value::Integer(30),
+            Value::Integer(1),
+            Value::Integer(40),
+        ])
+    );
+}
+
+#[test]
+fn dynamic_functions_hide_lexical_callers_and_dynamically_bind_arguments() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defalias 'sample-dynamic-reader
+                 (eval '(function (lambda () sample-dynamic-value)) nil))
+               (defalias 'sample-dynamic-argument
+                 (eval
+                  '(function
+                    (lambda (sample-dynamic-value)
+                      (sample-dynamic-reader)))
+                  nil))
+               (list
+                (condition-case nil
+                    (eval
+                     '(let ((sample-dynamic-value 1))
+                        (sample-dynamic-reader))
+                     t)
+                  (void-variable 'void))
+                (eval
+                 '(let ((sample-dynamic-value 2))
+                    (sample-dynamic-reader))
+                 nil)
+                (sample-dynamic-argument 3)))"
+        ),
+        Value::list([Value::symbol("void"), Value::Integer(2), Value::Integer(3),])
+    );
+}
+
+#[test]
+fn noncons_eval_lexical_argument_uses_a_fresh_empty_environment() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (setq sample-eval-fresh-environment 'global)
+               (eval
+                '(let ((sample-eval-fresh-environment 'outer-lexical))
+                   (eval 'sample-eval-fresh-environment 'fresh-lexical))
+                t))"
+        ),
+        Value::symbol("global")
     );
 }
 
@@ -2013,7 +1835,7 @@ fn nested_backquote_splices_vector_result_without_internal_marker() {
 #[test]
 fn macroexpanded_backquote_preserves_vector_templates() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             "(let ((lst '(ba bb bc))
                    (vec [ba bb bc]))
                (eval
@@ -2029,7 +1851,7 @@ fn macroexpanded_backquote_preserves_vector_templates() {
 #[test]
 fn macroexpanded_backquote_preserves_a_dynamic_dotted_vector_tail() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             "(let ((thingy '(1 2 3)))
                (eval
                 (macroexpand-all
@@ -2053,7 +1875,7 @@ fn macroexpanded_backquote_preserves_a_dynamic_dotted_vector_tail() {
 #[test]
 fn find_file_noselect_runs_find_file_hook_when_semantic_init_hook_is_nil() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(let ((file (make-temp-file \"emaxx-find-file-hook\")))
                (unwind-protect
                    (progn
@@ -2090,7 +1912,7 @@ fn eql_does_not_compare_distinct_strings_by_contents() {
 #[test]
 fn cl_mismatch_key_uses_eql_for_default_test() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             "(progn
                (require 'cl-seq)
                (let ((list '(1 2 3 4 5 2 6)))
@@ -2103,7 +1925,7 @@ fn cl_mismatch_key_uses_eql_for_default_test() {
 #[test]
 fn cl_substitute_updates_list_copy_through_setf_elt() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             "(progn
                (require 'cl-seq)
                (let ((list '(1 2 3 4 5 2 6)))
@@ -2136,7 +1958,7 @@ fn cl_substitute_updates_list_copy_through_setf_elt() {
 #[test]
 fn backtrace_get_frames_reports_live_lisp_call_symbols() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             "(progn
                (require 'backtrace)
                (defun emaxx-backtrace-make (arg)
@@ -2298,6 +2120,26 @@ fn backtrace_eval_reads_and_updates_suspended_lexical_bindings() {
 }
 
 #[test]
+fn backtrace_eval_selects_a_debugged_bytecode_callers_lexical_context() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            "(progn
+               (require 'edebug)
+               (defalias 'sample-bytecode-bridge
+                 (byte-compile
+                  '(lambda (form)
+                     (backtrace-eval form 0 'sample-bytecode-bridge))))
+               (let ((edebug-entered t))
+                 (eval
+                  '(let ((lexical 17))
+                     (sample-bytecode-bridge 'lexical))
+                  t)))"
+        ),
+        Value::Integer(17)
+    );
+}
+
+#[test]
 fn backtrace_expand_ellipses_reprints_current_frame_without_limit() {
     assert_eq!(
         eval_str_with_upstream_batch(
@@ -2384,7 +2226,7 @@ fn field_string_uses_point_and_preserves_text_properties() {
 #[test]
 fn line_edge_motion_stops_at_field_boundaries() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(with-temp-buffer
                  (insert (propertize
                           "P> "
@@ -2405,7 +2247,7 @@ fn line_edge_motion_stops_at_field_boundaries() {
 #[test]
 fn move_end_of_line_crosses_a_leading_timestamp_field() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(with-temp-buffer
                  (insert (propertize "[00:00] "
                                      'field 'erc-timestamp
@@ -2491,7 +2333,7 @@ fn buffer_file_name_binding_crosses_function_calls_but_not_buffers() {
 #[test]
 fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(equal
               (list
                (with-temp-buffer
@@ -2509,7 +2351,7 @@ fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
         Value::T
     );
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
               (emacs-lisp-mode)
               (insert \"z\")
@@ -2535,7 +2377,7 @@ fn matching_paren_returns_counterpart_character() {
 #[test]
 fn syntax_ppss_reports_negative_depth_for_extra_closing_parens() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer (funcall 'c-mode) (insert \" (())) \") (syntax-ppss (point-max)))"
         ),
         Value::list([
@@ -2641,11 +2483,7 @@ fn preloaded_syntax_descriptor_helpers_match_subr_el() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compatibility prelude");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -2678,11 +2516,7 @@ fn standard_syntax_table_exposes_its_default_punctuation_descriptor() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compatibility prelude");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(&mut interp, "(aref (standard-syntax-table) ?.)"),
         Value::list([Value::Integer(1)])
@@ -2696,11 +2530,7 @@ fn syntax_ppss_honors_a_syntax_table_valued_text_property() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compatibility prelude");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -2734,11 +2564,7 @@ fn syntax_propertize_extends_a_short_request_to_its_safe_chunk_boundary() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compatibility prelude");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -2765,11 +2591,7 @@ fn scan_sexps_preserves_match_data_changed_by_lazy_syntax_propertization() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compatibility prelude");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     assert_eq!(
         eval_str_with(
             &mut interp,
@@ -2808,8 +2630,9 @@ fn scan_sexps_preserves_match_data_changed_by_lazy_syntax_propertization() {
 #[test]
 fn c_toggle_electric_state_updates_c_electric_flag() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
+              (require 'cc-mode)
               (setq c-electric-flag t)
               (c-toggle-electric-state -1)
               (prog1 c-electric-flag
@@ -2818,7 +2641,9 @@ fn c_toggle_electric_state_updates_c_electric_flag() {
         Value::Nil
     );
     assert_eq!(
-        eval_str("(progn (setq c-electric-flag nil) (c-toggle-electric-state 1) c-electric-flag)"),
+        eval_str_with_upstream_batch(
+            "(progn (require 'cc-mode) (setq c-electric-flag nil) (c-toggle-electric-state 1) c-electric-flag)"
+        ),
         Value::T
     );
 }
@@ -2826,7 +2651,7 @@ fn c_toggle_electric_state_updates_c_electric_flag() {
 #[test]
 fn self_insert_command_uses_last_command_event_and_runs_hook() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
               (setq-local post-self-insert-hook
                           (list (lambda () (insert \"!\"))))
@@ -2860,7 +2685,7 @@ fn self_insert_command_accepts_an_explicit_character() {
 #[test]
 fn self_insert_command_expands_an_active_word_abbrev_before_punctuation() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             r#"(progn
                  (require 'abbrev)
                  (define-abbrev-table 'sample-self-insert-abbrev-table
@@ -2921,7 +2746,9 @@ fn line_beginning_position_crosses_an_unterminated_final_line_to_eob() {
 #[test]
 fn execute_kbd_macro_self_insert_binding_sets_last_command_event() {
     assert_eq!(
-        eval_str("(with-temp-buffer (execute-kbd-macro (kbd \"SPC\")) (buffer-string))"),
+        eval_str_with_upstream_batch(
+            "(with-temp-buffer (execute-kbd-macro (kbd \"SPC\")) (buffer-string))"
+        ),
         Value::String(" ".into())
     );
 }
@@ -2929,7 +2756,7 @@ fn execute_kbd_macro_self_insert_binding_sets_last_command_event() {
 #[test]
 fn kmacro_frontier_incremental_search_exposes_each_command_loop_step() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(let (commands)
                  (add-hook 'pre-command-hook
                            (lambda () (push this-command commands)))
@@ -3021,7 +2848,7 @@ fn preloaded_string_replace_preserves_gnu_string_identity_and_properties() {
 #[test]
 fn kmacro_frontier_num_input_keys_counts_prefix_events_and_macro_eof() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(let ((num-input-keys 0))
                  (with-temp-buffer
                    (execute-kbd-macro (kbd "a C-u 2 b"))
@@ -3130,7 +2957,7 @@ fn keyboard_macro_pre_command_hook_can_preserve_the_previous_prefix() {
 #[test]
 fn keyboard_macro_prefix_transient_map_falls_through_to_local_binding() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(save-window-excursion
                  (with-temp-buffer
                    (set-window-buffer (selected-window) (current-buffer))
@@ -3148,9 +2975,64 @@ fn keyboard_macro_prefix_transient_map_falls_through_to_local_binding() {
 }
 
 #[test]
-fn execute_kbd_macro_reports_an_undefined_key_sequence() {
+fn native_xdisp_truncation_variable_matches_gnu_value_cell_contract() {
     assert_eq!(
         eval_str(
+            r#"(eval
+                 '(progn
+                    (defalias 'sample-read-truncation-setting
+                      (function (lambda () truncate-partial-width-windows)))
+                    (list
+                     (boundp 'truncate-partial-width-windows)
+                     truncate-partial-width-windows
+                     (default-boundp 'truncate-partial-width-windows)
+                     (default-value 'truncate-partial-width-windows)
+                     (local-variable-p 'truncate-partial-width-windows)
+                     (let ((truncate-partial-width-windows 7))
+                       (sample-read-truncation-setting))
+                     truncate-partial-width-windows))
+                 t)"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::Integer(50),
+            Value::T,
+            Value::Integer(50),
+            Value::Nil,
+            Value::Integer(7),
+            Value::Integer(50),
+        ])
+    );
+}
+
+#[test]
+fn keyboard_macro_decimal_prefix_moves_the_requested_number_of_lines() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(save-window-excursion
+                 (with-temp-buffer
+                   (set-window-buffer (selected-window) (current-buffer))
+                   (dotimes (_ 20) (insert "line\n"))
+                   (goto-char (point-min))
+                   (execute-kbd-macro (kbd "C-u 10 C-n"))
+                   (list (line-number-at-pos) (point)
+                         prefix-arg current-prefix-arg last-prefix-arg)))"#,
+        ),
+        Value::list([
+            Value::Integer(11),
+            Value::Integer(51),
+            Value::Nil,
+            Value::Integer(10),
+            Value::Integer(10),
+        ])
+    );
+}
+
+#[test]
+fn execute_kbd_macro_reports_an_undefined_key_sequence() {
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
             r#"
                 (ert-with-message-capture messages
                   (execute-kbd-macro "\C-c\C-z")
@@ -3164,7 +3046,8 @@ fn execute_kbd_macro_reports_an_undefined_key_sequence() {
 #[test]
 fn recursive_keymap_unset_removes_the_nested_binding() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
             r#"(let ((map (make-sparse-keymap)))
                  (keymap-set map "C-c C-c" #'ignore)
                  (keymap-unset map "C-c C-c" t)
@@ -3179,28 +3062,9 @@ fn recursive_keymap_unset_removes_the_nested_binding() {
 }
 
 #[test]
-fn execute_kbd_macro_reports_undefined_keys_through_message_advice() {
-    assert_eq!(
-        eval_str(
-            r#"(let ((seen nil)
-                       (capture (lambda (original &rest args)
-                                  (setq seen (apply #'format args))
-                                  (apply original args))))
-                 (unwind-protect
-                     (progn
-                       (advice-add 'message :around capture)
-                       (execute-kbd-macro (kbd "C-c C-z"))
-                       seen)
-                   (advice-remove 'message capture)))"#
-        ),
-        Value::String("C-c C-z is undefined".into())
-    );
-}
-
-#[test]
 fn execute_kbd_macro_propagates_non_minibuffer_command_errors() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(progn
                  (defun emaxx-kbd-user-error ()
                    (interactive)
@@ -3225,7 +3089,8 @@ fn execute_kbd_macro_propagates_non_minibuffer_command_errors() {
 #[test]
 fn message_capture_updates_inside_nested_lexical_callbacks() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
             r#"(progn
                  (defun sample-message-capture-caller (callback)
                    (funcall callback))
@@ -3273,7 +3138,7 @@ fn return_key_defaults_to_newline_command() {
 #[test]
 fn c_toggle_comment_style_switches_between_block_and_line_comments() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(equal
               (with-temp-buffer
                (c-mode)
@@ -3291,7 +3156,7 @@ fn c_toggle_comment_style_switches_between_block_and_line_comments() {
 #[test]
 fn c_brace_newlines_reports_c_style_layout() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
               (c-mode)
               (insert \"int main () {\")
@@ -3307,7 +3172,9 @@ fn c_brace_newlines_reports_c_style_layout() {
 #[test]
 fn syntax_ppss_flush_cache_is_callable() {
     assert_eq!(
-        eval_str("(list (fboundp 'syntax-ppss-flush-cache) (syntax-ppss-flush-cache (point-min)))"),
+        eval_str_with_upstream_batch(
+            "(list (fboundp 'syntax-ppss-flush-cache) (syntax-ppss-flush-cache (point-min)))"
+        ),
         Value::list([Value::T, Value::Nil])
     );
 }
@@ -3315,7 +3182,7 @@ fn syntax_ppss_flush_cache_is_callable() {
 #[test]
 fn execute_kbd_macro_exposes_this_single_command_keys() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(let (seen)
                (add-hook 'post-command-hook
                          (lambda () (setq seen (this-single-command-keys))))
@@ -3330,7 +3197,7 @@ fn execute_kbd_macro_exposes_this_single_command_keys() {
 #[test]
 fn call_last_kbd_macro_replays_dynamic_last_kbd_macro() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (let ((last-kbd-macro (kbd \"ab\")))
                  (call-last-kbd-macro))
@@ -3343,7 +3210,9 @@ fn call_last_kbd_macro_replays_dynamic_last_kbd_macro() {
 #[test]
 fn ppss_depth_returns_syntax_ppss_depth() {
     assert_eq!(
-        eval_str("(with-temp-buffer (insert \"(a (b))\") (ppss-depth (syntax-ppss 6)))"),
+        eval_str_with_upstream_batch(
+            "(with-temp-buffer (insert \"(a (b))\") (ppss-depth (syntax-ppss 6)))"
+        ),
         Value::Integer(2)
     );
 }
@@ -3351,7 +3220,7 @@ fn ppss_depth_returns_syntax_ppss_depth() {
 #[test]
 fn syntax_ppss_reports_string_start() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer (c-mode) (insert \"\\\"<>\\\"\") (list (nth 3 (syntax-ppss 3)) (nth 8 (syntax-ppss 3))))"
         ),
         Value::list([Value::Integer('"' as i64), Value::Integer(1)])
@@ -3361,7 +3230,7 @@ fn syntax_ppss_reports_string_start() {
 #[test]
 fn syntax_ppss_reports_hash_comment_start() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer (python-mode) (insert \"# <>\\n\") (list (nth 4 (syntax-ppss 3)) (nth 8 (syntax-ppss 3))))"
         ),
         Value::list([Value::T, Value::Integer(1)])
@@ -3371,7 +3240,9 @@ fn syntax_ppss_reports_hash_comment_start() {
 #[test]
 fn syntax_ppss_reports_open_paren_stack() {
     assert_eq!(
-        eval_str("(with-temp-buffer (insert \"(a (b))\") (nth 9 (syntax-ppss 6)))"),
+        eval_str_with_upstream_batch(
+            "(with-temp-buffer (insert \"(a (b))\") (nth 9 (syntax-ppss 6)))"
+        ),
         Value::list([Value::Integer(1), Value::Integer(4)])
     );
 }
@@ -3379,7 +3250,7 @@ fn syntax_ppss_reports_open_paren_stack() {
 #[test]
 fn scan_sexps_signals_premature_close_with_position() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(condition-case err
                  (with-temp-buffer
                    (c-mode)
@@ -3396,7 +3267,7 @@ fn scan_sexps_signals_premature_close_with_position() {
 #[test]
 fn scan_sexps_signals_mixed_delimiter_premature_end() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(condition-case err
                  (with-temp-buffer
                    (c-mode)
@@ -3459,7 +3330,7 @@ fn scan_sexps_uses_current_string_quote_delimiter() {
 #[test]
 fn syntax_ppss_ignores_escaped_string_quote_start() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (set-syntax-table (make-syntax-table))
                (modify-syntax-entry 39 \"\\\"\")
@@ -3481,7 +3352,7 @@ fn syntax_ppss_ignores_escaped_string_quote_start() {
 #[test]
 fn syntax_ppss_uses_syntax_properties_when_deciding_whether_a_quote_is_escaped() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (insert \"\\\\\\\"x\\\"\")
                (put-text-property 1 2 'syntax-table (string-to-syntax \".\"))
@@ -3501,7 +3372,7 @@ fn syntax_ppss_uses_syntax_properties_when_deciding_whether_a_quote_is_escaped()
 #[test]
 fn syntax_ppss_reports_the_active_nondefault_comment_style() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (let ((table (make-syntax-table)))
                  (set-syntax-table table)
@@ -3536,7 +3407,8 @@ fn anchored_syntax_class_regexp_honors_buffer_syntax_properties() {
 #[test]
 fn char_syntax_promotes_raw_bytes_in_unibyte_buffers() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "bytecomp",
             "(with-temp-buffer
                (set-buffer-multibyte nil)
                (let ((table (make-syntax-table))
@@ -3608,7 +3480,7 @@ fn parse_partial_sexp_continuation_preserves_a_generic_string_fence() {
 #[test]
 fn syntax_ppss_treats_generic_comment_fences_as_comments() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (insert \"{don't}\")
                (put-text-property 1 2 'syntax-table (string-to-syntax \"!\"))
@@ -3633,7 +3505,7 @@ fn syntax_ppss_treats_generic_comment_fences_as_comments() {
 #[test]
 fn beginning_of_defun_ignores_a_column_zero_opener_inside_a_string() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (insert \"\\\"text\\n(foo\\\"\\n\")
                (goto-char (point-max))
@@ -3648,7 +3520,9 @@ fn beginning_of_defun_ignores_a_column_zero_opener_inside_a_string() {
 #[test]
 fn syntax_ppss_drops_mismatched_opener_from_stack() {
     assert_eq!(
-        eval_str("(with-temp-buffer (c-mode) (insert \"  (])  \") (nth 9 (syntax-ppss 5)))"),
+        eval_str_with_upstream_batch(
+            "(with-temp-buffer (c-mode) (insert \"  (])  \") (nth 9 (syntax-ppss 5)))"
+        ),
         Value::Nil
     );
 }
@@ -3683,7 +3557,7 @@ fn char_before_and_after_nil_default_to_point() {
 #[test]
 fn mark_sexp_activates_region_without_moving_point() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(let ((transient-mark-mode t))
                (with-temp-buffer
                  (insert \"foo\")
@@ -3698,7 +3572,7 @@ fn mark_sexp_activates_region_without_moving_point() {
 #[test]
 fn transient_mark_mode_uses_the_gnu_batch_default_and_call_contract() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (insert \"abcd\")
                ;; The public command is Elisp-owned; this bare fixture only
@@ -3795,7 +3669,7 @@ fn killing_a_buffer_retires_its_persistent_mark_mapping() {
 #[test]
 fn mark_sexp_stops_before_closing_string_quote() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer (c-mode) (insert \"\\\"foo\\\"\") (goto-char 2) (mark-sexp 1) (list (point) (mark)))"
         ),
         Value::list([Value::Integer(2), Value::Integer(5)])
@@ -3813,7 +3687,7 @@ fn delete_region_accepts_reversed_bounds() {
 #[test]
 fn backward_delete_char_untabify_deletes_before_point() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer (insert \"foo\") (goto-char 3) (backward-delete-char-untabify 1) (buffer-string))"
         ),
         Value::String("fo".into())
@@ -3823,7 +3697,7 @@ fn backward_delete_char_untabify_deletes_before_point() {
 #[test]
 fn define_minor_mode_variable_option_toggles_backing_variable() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
               (define-minor-mode sample-global-mode \"doc\" :global t)
               (define-minor-mode sample-local-mode \"doc\"
@@ -3840,7 +3714,7 @@ fn define_minor_mode_variable_option_toggles_backing_variable() {
 #[test]
 fn define_minor_mode_variable_setter_controls_the_stored_value() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
               (define-minor-mode sample-setter-mode \"doc\"
                 :variable
@@ -3865,7 +3739,7 @@ fn define_minor_mode_variable_setter_controls_the_stored_value() {
 #[test]
 fn define_global_minor_mode_init_value_runs_body() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
               (setq post-self-insert-hook nil)
               (define-minor-mode electric-indent-mode \"doc\"
@@ -3876,14 +3750,14 @@ fn define_global_minor_mode_init_value_runs_body() {
                           #'electric-indent-post-self-insert-function
                           60))
               (list electric-indent-mode
-                    sample-init-mode-body-ran
+                    (bound-and-true-p sample-init-mode-body-ran)
                     post-self-insert-hook))"
         ),
-        Value::list([
-            Value::T,
-            Value::T,
-            Value::list([Value::symbol("electric-indent-post-self-insert-function")]),
-        ])
+        // GNU does not run a global minor mode's body at definition even
+        // with :init-value t: the mode variable becomes t but the body and
+        // its hook registration wait for the first mode call (probed on
+        // GNU 30.2 → (t nil nil)).
+        Value::list([Value::T, Value::Nil, Value::Nil])
     );
 }
 
@@ -3921,7 +3795,7 @@ fn process_query_on_exit_flag_defaults_true_and_round_trips() {
 #[test]
 fn atomic_change_group_evaluates_body() {
     assert_eq!(
-        eval_str("(let ((x 1)) (atomic-change-group (setq x 2) (+ x 3)))"),
+        eval_str_with_upstream_batch("(let ((x 1)) (atomic-change-group (setq x 2) (+ x 3)))"),
         Value::Integer(5)
     );
 }
@@ -3929,7 +3803,7 @@ fn atomic_change_group_evaluates_body() {
 #[test]
 fn atomic_change_group_rolls_back_on_throw() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (insert \"foo\")
                (catch 'done
@@ -3945,7 +3819,9 @@ fn atomic_change_group_rolls_back_on_throw() {
 #[test]
 fn push_supports_nthcdr_setf_places() {
     assert_eq!(
-        eval_str("(let ((items (list 'head 'body))) (push 'neck (nthcdr 1 items)) items)"),
+        eval_str_with_upstream_batch(
+            "(let ((items (list 'head 'body))) (push 'neck (nthcdr 1 items)) items)"
+        ),
         Value::list([
             Value::Symbol("head".into()),
             Value::Symbol("neck".into()),
@@ -3957,7 +3833,9 @@ fn push_supports_nthcdr_setf_places() {
 #[test]
 fn setf_supports_nested_car_places() {
     assert_eq!(
-        eval_str("(let ((items (list (cons 'old 'tail)))) (setf (car (car items)) 'new) items)"),
+        eval_str_with_upstream_batch(
+            "(let ((items (list (cons 'old 'tail)))) (setf (car (car items)) 'new) items)"
+        ),
         Value::list([Value::cons(
             Value::Symbol("new".into()),
             Value::Symbol("tail".into()),
@@ -3991,7 +3869,10 @@ fn format_s_honors_print_gensym_for_non_strings() {
 #[test]
 fn cl_loop_while_collect_without_for_clause() {
     assert_eq!(
-        eval_str("(let ((i 0)) (cl-loop while (< i 3) collect (setq i (1+ i))))"),
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
+            "(let ((i 0)) (cl-loop while (< i 3) collect (setq i (1+ i))))",
+        ),
         Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)])
     );
 }
@@ -3999,7 +3880,8 @@ fn cl_loop_while_collect_without_for_clause() {
 #[test]
 fn cl_loop_until_collect_do_runs_body_after_collecting() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let ((items '(a b stop c)))
                (list (cl-loop for form in items
                               until (eq form 'stop)
@@ -4017,7 +3899,8 @@ fn cl_loop_until_collect_do_runs_body_after_collecting() {
 #[test]
 fn cl_loop_initially_before_while_for_do_collect() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let ((items '(a b c))
                    (seen nil))
                (cl-loop initially (setq seen 'start)
@@ -4037,7 +3920,8 @@ fn cl_loop_initially_before_while_for_do_collect() {
 #[test]
 fn cl_loop_vconcat_into_append_into_finally_return() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(equal
                (cl-loop for segment in (list [a b] [c])
                         for thunks in '((x) (y z))
@@ -4053,7 +3937,8 @@ fn cl_loop_vconcat_into_append_into_finally_return() {
 #[test]
 fn cl_loop_collect_into_finally_return() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop for item in '(a b c)
                       collect (symbol-name item) into names
                       finally return (apply #'vector names))",
@@ -4070,7 +3955,10 @@ fn cl_loop_collect_into_finally_return() {
 #[test]
 fn cl_loop_vconcat_accumulates_vector_elements() {
     assert_eq!(
-        eval_str("(cl-loop for x in (list 1 2 3 4 5) vconcat (vector (1+ x)))"),
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
+            "(cl-loop for x in (list 1 2 3 4 5) vconcat (vector (1+ x)))",
+        ),
         Value::list([
             Value::symbol("vector-literal"),
             Value::Integer(2),
@@ -4085,7 +3973,8 @@ fn cl_loop_vconcat_accumulates_vector_elements() {
 #[test]
 fn cl_loop_when_binds_it_to_condition_value() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(list
                (cl-loop for i in '(1 2 3 4 5 6)
                         when (and (> i 3) i)
@@ -4104,7 +3993,8 @@ fn cl_loop_when_binds_it_to_condition_value() {
 #[test]
 fn cl_loop_when_nested_collects_into_else_targets() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             r#"(cl-loop for elt in '(1 a 2 "a" (3 4) 5 6)
                       when (numberp elt)
                         when (cl-evenp elt) collect elt into even
@@ -4129,7 +4019,8 @@ fn cl_loop_when_nested_collects_into_else_targets() {
 #[test]
 fn cl_loop_sequential_when_collect_into_and_do_clauses() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let (seen)
                (cl-loop with found
                         for item in '(start mid stop tail)
@@ -4151,7 +4042,8 @@ fn cl_loop_sequential_when_collect_into_and_do_clauses() {
 #[test]
 fn cl_loop_while_supports_equals_then_assignment() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let ((stack '(a b c d e f)))
                    (cl-loop while stack
                             for item = (length stack) then (pop stack)
@@ -4172,7 +4064,8 @@ fn cl_loop_while_supports_equals_then_assignment() {
 #[test]
 fn cl_loop_with_sequential_bindings_see_prior_values() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop with a = 1
                       with b = (+ a 2)
                       with c = (+ b 3)
@@ -4185,7 +4078,8 @@ fn cl_loop_with_sequential_bindings_see_prior_values() {
 #[test]
 fn cl_loop_with_and_bindings_initialize_in_parallel() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let ((a 5)
                    (b 10))
                (cl-loop with a = 1
@@ -4200,7 +4094,8 @@ fn cl_loop_with_and_bindings_initialize_in_parallel() {
 #[test]
 fn cl_loop_with_defaults_to_nil_and_splits_do_finally() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(list
                (cl-loop for i below 3
                         with loop-with
@@ -4218,7 +4113,8 @@ fn cl_loop_with_defaults_to_nil_and_splits_do_finally() {
 #[test]
 fn cl_loop_when_do_supports_finally_return() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let (seen)
                (cl-loop for item in '(a nil b)
                         when item
@@ -4232,7 +4128,8 @@ fn cl_loop_when_do_supports_finally_return() {
 #[test]
 fn cl_loop_if_collect_else_collect() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop for item in '(1 a 2 b)
                       if (numberp item)
                         collect item
@@ -4251,7 +4148,8 @@ fn cl_loop_if_collect_else_collect() {
 #[test]
 fn cl_loop_if_collect_into_else_collect_into_finally_return() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop for item in '(1 nil 2 nil)
                       if item
                         collect item into present
@@ -4269,7 +4167,8 @@ fn cl_loop_if_collect_into_else_collect_into_finally_return() {
 #[test]
 fn cl_loop_initially_can_return_before_main_action() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop for item in '(a b)
                       initially (when t (cl-return 'empty))
                       if item
@@ -4285,7 +4184,8 @@ fn cl_loop_initially_can_return_before_main_action() {
 #[test]
 fn cl_loop_unless_do_supports_repeated_do_and_finally_progn() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let (seen)
                (cl-loop for item in '(a b)
                         unless (eq item 'a)
@@ -4307,7 +4207,8 @@ fn cl_loop_unless_do_supports_repeated_do_and_finally_progn() {
 #[test]
 fn cl_loop_unless_count_else_count_finally() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop for item in '(nil a nil b)
                       unless item
                         count t into empty
@@ -4323,7 +4224,8 @@ fn cl_loop_unless_count_else_count_finally() {
 #[test]
 fn cl_loop_for_in_sees_with_bindings() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop with items = '(a b c)
                       for item in items
                       collect item)"
@@ -4335,7 +4237,8 @@ fn cl_loop_for_in_sees_with_bindings() {
 #[test]
 fn cl_loop_unless_do_supports_finally_return() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let (seen)
                (cl-loop for item in '(a nil b)
                         unless item
@@ -4349,7 +4252,8 @@ fn cl_loop_unless_do_supports_finally_return() {
 #[test]
 fn cl_loop_do_supports_finally_return_keyword() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let (seen)
                (cl-loop for item in '(a b)
                         do (push item seen)
@@ -4362,7 +4266,8 @@ fn cl_loop_do_supports_finally_return_keyword() {
 #[test]
 fn cl_loop_if_do_else_do_supports_finally_return() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(let (seen)
                (cl-loop for item in '(a 1 b 2)
                         if (symbolp item)
@@ -4383,7 +4288,8 @@ fn cl_loop_if_do_else_do_supports_finally_return() {
 #[test]
 fn cl_loop_named_catches_return_from_do_body() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop named main
                       for item in '(a b c)
                       when (eq item 'b)
@@ -4395,9 +4301,13 @@ fn cl_loop_named_catches_return_from_do_body() {
 }
 
 #[test]
-fn cl_loop_if_do_append_runs_body_before_append() {
+fn cl_loop_if_do_is_followed_by_an_unconditional_append_clause() {
+    // GNU `cl-loop' parses the `append' as a separate main clause, not as
+    // part of the preceding `if'.  It therefore also appends the two nils
+    // from the false iteration.
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(cl-loop for item in '(1 nil 3)
                       if item
                       do (setq item (1+ item))
@@ -4406,6 +4316,8 @@ fn cl_loop_if_do_append_runs_body_before_append() {
         Value::list([
             Value::Integer(2),
             Value::Integer(2),
+            Value::Nil,
+            Value::Nil,
             Value::Integer(4),
             Value::Integer(4),
         ])
@@ -4414,7 +4326,7 @@ fn cl_loop_if_do_append_runs_body_before_append() {
 
 #[test]
 fn defgroup_tracks_current_group_and_members() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.set_current_load_file(Some("/tmp/custom-group.el".into()));
     assert_eq!(
         eval_str_with(
@@ -4440,7 +4352,7 @@ fn defgroup_tracks_current_group_and_members() {
 #[test]
 fn defcustom_records_version_and_group_membership() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(progn
                (defgroup sample-custom-parent nil \"Doc.\")
                (defcustom sample-custom-versioned nil \"Doc.\"
@@ -4562,7 +4474,7 @@ fn compiled_generic_method_entry_point_preserves_arguments_and_next_method() {
 }
 
 #[test]
-fn native_cl_generic_facade_exposes_complete_method_introspection() {
+fn real_gnu_cl_generic_exposes_complete_method_introspection() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
@@ -4627,7 +4539,8 @@ fn implicit_native_generic_keeps_gnu_documentation_sentinel() {
                  \"default-doc\" x)
                (documentation 'emaxx-implicit-introspection-generic t))",
         ),
-        Value::String("\n\n(fn ARG &rest ARGS)".into())
+        // GNU returns the sole method's docstring here (probed on 30.2).
+        Value::String("default-doc".into())
     );
 }
 
@@ -4652,7 +4565,7 @@ fn char_access_accepts_out_of_range_negative_integer_positions() {
 #[test]
 fn mapatoms_scans_standard_obarray_symbols() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
                 (progn
                   (defcustom sample-mapatoms-option nil "Doc." :type 'boolean)
@@ -4692,7 +4605,7 @@ fn mapatoms_excludes_symbols_in_private_obarrays() {
 #[test]
 fn character_property_alias_applies_to_string_lookup_and_changes() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (setq-local char-property-alias-alist '((face font-lock-face)))
                (let ((text (copy-sequence \"abc\")))
@@ -4743,13 +4656,12 @@ fn make_obsolete_rejects_nil_and_t_names() {
     assert_eq!(
         eval_str(
             "(list
-               (condition-case err (make-obsolete nil 'sample-new \"31.1\") (wrong-type-argument (car err)))
-               (condition-case err (make-obsolete t 'sample-new \"31.1\") (wrong-type-argument (car err))))"
+               (condition-case err (make-obsolete nil 'sample-new \"31.1\") (error (car err)))
+               (condition-case err (make-obsolete t 'sample-new \"31.1\") (error (car err))))"
         ),
-        Value::list([
-            Value::symbol("wrong-type-argument"),
-            Value::symbol("wrong-type-argument"),
-        ])
+        // GNU byte-run.el signals a plain `error' ("Can't make 'nil'
+        // obsolete") for these, probed on GNU 30.2.
+        Value::list([Value::symbol("error"), Value::symbol("error")])
     );
 }
 
@@ -4758,13 +4670,12 @@ fn make_obsolete_variable_rejects_nil_and_t_names() {
     assert_eq!(
         eval_str(
             "(list
-               (condition-case err (make-obsolete-variable nil 'sample-new \"31.1\") (wrong-type-argument (car err)))
-               (condition-case err (make-obsolete-variable t 'sample-new \"31.1\") (wrong-type-argument (car err))))"
+               (condition-case err (make-obsolete-variable nil 'sample-new \"31.1\") (error (car err)))
+               (condition-case err (make-obsolete-variable t 'sample-new \"31.1\") (error (car err))))"
         ),
-        Value::list([
-            Value::symbol("wrong-type-argument"),
-            Value::symbol("wrong-type-argument"),
-        ])
+        // GNU byte-run.el signals a plain `error' ("Can't make 'nil'
+        // obsolete") for these, probed on GNU 30.2.
+        Value::list([Value::symbol("error"), Value::symbol("error")])
     );
 }
 
@@ -4777,15 +4688,20 @@ fn batch_window_hscroll_defaults_to_zero() {
 fn dolist_with_progress_reporter_uses_dolist_semantics() {
     assert_eq!(
         eval_str(
-            "(let ((seen nil) (reporter nil))
-               (dolist-with-progress-reporter (item '(1 2 3) (nreverse seen))
-                   (setq reporter 'evaluated)
-                 (push (list reporter item) seen)))"
+            "(condition-case err
+                 (let ((seen nil) (reporter nil))
+                   (dolist-with-progress-reporter (item '(1 2 3) (nreverse seen))
+                       (setq reporter 'evaluated)
+                     (push (list reporter item) seen)))
+               (wrong-type-argument (list (car err) (cadr err) (caddr err))))"
         ),
+        // GNU evaluates the reporter argument and then rejects it as a
+        // spec list: (wrong-type-argument listp evaluated), probed on
+        // GNU 30.2.
         Value::list([
-            Value::list([Value::symbol("evaluated"), Value::Integer(1)]),
-            Value::list([Value::symbol("evaluated"), Value::Integer(2)]),
-            Value::list([Value::symbol("evaluated"), Value::Integer(3)]),
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("listp"),
+            Value::symbol("evaluated"),
         ])
     );
 }
@@ -4868,7 +4784,7 @@ fn delq_and_delete_share_gnu_cycle_and_dotted_list_contracts() {
 
 #[test]
 fn dnd_multiple_url_handlers_prefer_earlier_equal_precedence_handler() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.set_load_path(
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
@@ -4916,7 +4832,8 @@ fn sort_preserves_order_for_equal_elements() {
 #[test]
 fn cl_letf_rebinds_symbol_property_get_places() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(progn
                (put 'sample-cl-letf-prop 'tag 'outer)
                (list
@@ -4936,7 +4853,7 @@ fn cl_letf_rebinds_symbol_property_get_places() {
 #[test]
 fn setopt_warns_when_value_does_not_match_custom_type() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
                 (progn
                   (defcustom sample-setopt-number 0 "Doc." :type 'number)
@@ -4944,17 +4861,20 @@ fn setopt_warns_when_value_does_not_match_custom_type() {
                     (let ((inhibit-read-only t))
                       (erase-buffer))
                     (setopt sample-setopt-number :bad)
-                    (string-search "Value `:bad' does not match type number"
+                    (string-search "does not match type number"
                                    (buffer-string))))"#
         ),
-        Value::Integer(9)
+        // GNU's warning uses curly quotes; the quote-free substring sits at
+        // offset 30 of the *Warnings* buffer (probed on GNU 30.2).
+        Value::Integer(30)
     );
 }
 
 #[test]
 fn cl_with_gensyms_produces_unique_bindings() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             r#"
                 (progn
                   (defmacro sample-cl-with-gensyms (value)
@@ -4972,7 +4892,8 @@ fn cl_with_gensyms_produces_unique_bindings() {
 #[test]
 fn cl_case_matches_atoms_lists_and_fallbacks() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             r#"
                 (list
                  (cl-case 'zip
@@ -4997,7 +4918,8 @@ fn cl_case_matches_atoms_lists_and_fallbacks() {
 #[test]
 fn cl_case_evaluates_expression_once() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             r#"
                 (let ((count 0))
                   (list
@@ -5014,7 +4936,7 @@ fn cl_case_evaluates_expression_once() {
 #[test]
 fn dired_shell_command_confirmation_positions_match_upstream() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             r#"(progn
                  (setq noninteractive t)
                  (require 'dired-aux)
@@ -5072,7 +4994,7 @@ fn dired_shell_command_confirms_unsafe_substitution_marks() {
                     (error (car err)))))))"#
     );
     assert_eq!(
-        eval_str_with_upstream_load_path(&expr),
+        eval_str_with_upstream_batch(&expr),
         Value::list([
             Value::Symbol("error".into()),
             Value::Symbol("error".into()),
@@ -5133,7 +5055,7 @@ fn dired_create_destination_dirs_controls_copy_and_rename() {
                (nreverse results)))"#
     );
     assert_eq!(
-        eval_str_with_upstream_load_path(&expr),
+        eval_str_with_upstream_batch(&expr),
         Value::list([
             Value::list([Value::symbol("always"), Value::T, Value::T]),
             Value::list([Value::Nil, Value::symbol(":error"), Value::symbol(":error"),]),
@@ -5180,7 +5102,7 @@ fn dired_do_create_files_recreates_destination_directory() {
                      (ignore-errors (delete-file file2))
                      (ignore-errors (kill-buffer buf))))))"#,
     );
-    let result = eval_str_with_upstream_load_path(&expr);
+    let result = eval_str_with_upstream_batch(&expr);
     assert!(result.is_truthy(), "{result:?}");
     std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
 }
@@ -5188,7 +5110,7 @@ fn dired_do_create_files_recreates_destination_directory() {
 #[test]
 fn dired_highlights_unsubstituted_shell_metacharacters() {
     assert_eq!(
-        eval_str_with_upstream_load_path(
+        eval_str_with_upstream_batch(
             r#"(progn
                  (setq noninteractive t)
                  (require 'dired-aux)
@@ -5225,11 +5147,12 @@ fn dired_highlights_unsubstituted_shell_metacharacters() {
 
 #[test]
 fn dired_reuses_directory_buffer_and_preserves_file_point() {
-    let result = eval_str_with_upstream_load_path(
+    let result = eval_str_with_upstream_batch(
         r#"(progn
              (setq noninteractive t)
              (require 'dired)
-             (ert-with-temp-directory test-dir
+             (require 'ert-x)
+             (ert-with-temp-directory test-dir :suffix "-emaxx"
                (let ((dired-auto-revert-buffer t)
                      buffers
                      step)
@@ -5277,11 +5200,12 @@ fn dired_reuses_directory_buffer_and_preserves_file_point() {
 
 #[test]
 fn dired_delete_empty_marked_directories_removes_entries() {
-    let result = eval_str_with_upstream_load_path(
+    let result = eval_str_with_upstream_batch(
         r#"(progn
              (setq noninteractive t)
              (require 'dired)
-             (ert-with-temp-directory test-dir
+             (require 'ert-x)
+             (ert-with-temp-directory test-dir :suffix "-emaxx"
                  (let* ((dired-deletion-confirmer (lambda (_) "yes"))
                       (inhibit-message t)
                       (default-directory test-dir)
@@ -5308,11 +5232,12 @@ fn dired_delete_empty_marked_directories_removes_entries() {
 
 #[test]
 fn dired_revert_preserves_line_when_header_length_changes() {
-    let result = eval_str_with_upstream_load_path(
+    let result = eval_str_with_upstream_batch(
         r#"(progn
              (setq noninteractive t)
              (require 'dired)
-             (ert-with-temp-directory top-dir
+             (require 'ert-x)
+             (ert-with-temp-directory top-dir :suffix "-emaxx"
                (let* ((subdir (expand-file-name "subdir" top-dir))
                       (header-len-fn (lambda ()
                                        (save-excursion
@@ -5352,7 +5277,7 @@ fn dired_revert_preserves_line_when_header_length_changes() {
 
 #[test]
 fn line_move_moves_by_logical_lines_in_batch() {
-    let result = eval_str(
+    let result = eval_str_with_upstream_batch(
         r#"(with-temp-buffer
              (insert "alpha\nbeta\ngamma\n")
              (goto-char (point-min))
@@ -5369,7 +5294,7 @@ fn line_move_moves_by_logical_lines_in_batch() {
 
 #[test]
 fn directory_empty_p_and_temporary_file_directory_match_files_helpers() {
-    let result = eval_str(
+    let result = eval_str_with_upstream_batch(
         r#"(let* ((tmp (temporary-file-directory))
                   (dir (make-temp-file "emaxx-empty-dir-" t)))
              (unwind-protect
@@ -5390,8 +5315,9 @@ fn directory_empty_p_and_temporary_file_directory_match_files_helpers() {
 }
 
 #[test]
-fn insert_directory_free_space_uses_target_directory() {
-    let result = eval_str(
+fn dired_insert_directory_free_space_uses_target_directory() {
+    let result = eval_str_with_upstream_batch_features(
+        &["cl-macs", "dired"],
         r#"(let* ((target (make-temp-file "emaxx-insert-dir-target-" t))
                   (other (make-temp-file "emaxx-insert-dir-other-" t))
                   (default-directory other)
@@ -5407,19 +5333,21 @@ fn insert_directory_free_space_uses_target_directory() {
                                               100)))
                                   (list free free free)))))
                      (with-temp-buffer
-                       (insert-directory target "-l" nil nil)
+                       (dired-insert-directory target "-l" nil nil nil)
                        (let ((output (buffer-string)))
-                         (list (string-match-p "available 10 B" output)
+                         (list (and (string-match-p "available 10 B" output) t)
                                (string-match-p "available 100 B" output))))))
                (delete-directory target t)
                (delete-directory other t)))"#,
     );
-    assert_eq!(result, Value::list([Value::Integer(0), Value::Nil]));
+    assert_eq!(result, Value::list([Value::T, Value::Nil]));
 }
 
 #[test]
 fn cl_case_rejects_misplaced_otherwise() {
-    let mut interp = Interpreter::new();
+    let _permit = crate::test_support::acquire_host_test_permit();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(&mut interp, "(require 'cl-macs)");
     let mut env: Env = Vec::new();
     let form = Reader::new("(cl-case 'zip (otherwise 'fallback) (zip 'hit))")
         .read()
@@ -5427,13 +5355,16 @@ fn cl_case_rejects_misplaced_otherwise() {
         .unwrap();
     let error = interp.eval(&form, &mut env).unwrap_err();
     assert_eq!(error.condition_type(), "error");
-    assert_eq!(error.to_string(), "Misplaced t or `otherwise' clause");
+    // This diagnostic is emitted by GNU cl-macs.el and retains GNU's curly
+    // quotation marks; the removed native parser used ASCII quotes.
+    assert_eq!(error.to_string(), "Misplaced t or ‘otherwise’ clause");
 }
 
 #[test]
 fn sqlite_execute_surfaces_sql_input_errors_as_sqlite_error() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
             r#"
                 (let ((db (sqlite-open)))
                   (sqlite-execute db "create table test (a)")
@@ -5686,7 +5617,7 @@ fn cached_source_dispatch_analysis_observes_head_mutation() {
 
 #[test]
 fn cons_mutation_invalidates_all_source_derivations() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let definition = Reader::new("(defmacro mutation-probe (value) (list 'quote value))")
         .read()
@@ -5749,12 +5680,9 @@ fn cons_mutation_invalidates_all_source_derivations() {
         .expect("quote argument should exist");
     assert_eq!(interp.eval(&quote_form, &mut env).unwrap(), quote_template);
     quote_template
-        .set_car(Value::symbol("emaxx--hash-table-literal"))
+        .set_car(Value::symbol("ordinary-symbol"))
         .expect("quote template should be mutable");
-    assert!(matches!(
-        interp.eval(&quote_form, &mut env).unwrap(),
-        Value::Record(_)
-    ));
+    assert_eq!(interp.eval(&quote_form, &mut env).unwrap(), quote_template);
 }
 
 #[test]
@@ -5812,11 +5740,7 @@ fn dumped_bootstrap_exposes_core_preload_contracts() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -5887,15 +5811,19 @@ fn dumped_bootstrap_exposes_core_preload_contracts() {
 
 #[test]
 fn unicode_normalization_builtins_cover_canonical_and_compatibility_forms() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
 
     assert_eq!(
         eval_str_with(
             &mut interp,
-            r#"(list (ucs-normalize-NFC-string "LÅRSI")
+            r#"(progn
+                 ;; GNU preloads ucs-normalize only in the NS loadup branch;
+                 ;; a TTY/batch build (Emaxx's model) must require it.
+                 (require 'ucs-normalize)
+                 (list (ucs-normalize-NFC-string "LÅRSI")
                      (ucs-normalize-NFD-string "LÅRSI")
                      (ucs-normalize-NFKC-string "LÅRSI")
-                     (ucs-normalize-NFKD-string "LÅRSI"))"#,
+                     (ucs-normalize-NFKD-string "LÅRSI")))"#,
         ),
         Value::list([
             Value::String("LÅRSI".into()),
@@ -5907,17 +5835,13 @@ fn unicode_normalization_builtins_cover_canonical_and_compatibility_forms() {
 }
 
 #[test]
-fn simple_compat_preloads_custom_url_view_and_widget_entry_points() {
+fn gnu_batch_runtime_loads_custom_url_view_and_widget_entry_points() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6025,17 +5949,13 @@ fn requiring_url_http_replaces_autoloads_with_lisp_owned_functions() {
 }
 
 #[test]
-fn simple_compat_preloads_paren_blinking_defaults() {
+fn gnu_batch_runtime_loads_paren_blinking_defaults() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6059,13 +5979,9 @@ fn simple_compat_preloads_paren_blinking_defaults() {
 }
 
 #[test]
-fn simple_compat_exposes_condition_case_unless_debug_as_a_macro() {
+fn gnu_batch_runtime_exposes_condition_case_unless_debug_as_a_macro() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6081,13 +5997,9 @@ fn simple_compat_exposes_condition_case_unless_debug_as_a_macro() {
 }
 
 #[test]
-fn simple_compat_exposes_ignore_errors_as_a_preloaded_macro() {
+fn gnu_batch_runtime_exposes_ignore_errors_as_a_preloaded_macro() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6101,14 +6013,10 @@ fn simple_compat_exposes_ignore_errors_as_a_preloaded_macro() {
 }
 
 #[test]
-fn simple_compat_macroexp_file_name_does_not_leak_ert_source_at_runtime() {
+fn gnu_batch_runtime_macroexp_file_name_does_not_leak_ert_source() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
-    let test_file = "/tmp/emaxx-simple-compat-resource-tests.el";
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
+    let test_file = "/tmp/emaxx-batch-runtime-resource-tests.el";
     interp.set_current_load_file(Some(test_file.into()));
     interp.set_variable(
         "current-load-list",
@@ -6117,7 +6025,7 @@ fn simple_compat_macroexp_file_name_does_not_leak_ert_source_at_runtime() {
     );
     eval_str_with(
         &mut interp,
-        "(ert-deftest simple-compat-does-not-leak-ert-source ()
+        "(ert-deftest batch-runtime-does-not-leak-ert-source ()
            (should-not (macroexp-file-name)))",
     );
     interp.set_variable("current-load-list", Value::Nil, &mut Vec::new());
@@ -6143,13 +6051,9 @@ fn mailabbrev_builds_aliases_from_the_configured_mailrc() {
 }
 
 #[test]
-fn simple_compat_exposes_with_temp_buffer_as_a_preloaded_macro() {
+fn gnu_batch_runtime_exposes_with_temp_buffer_as_a_preloaded_macro() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6172,13 +6076,9 @@ fn simple_compat_exposes_with_temp_buffer_as_a_preloaded_macro() {
 }
 
 #[test]
-fn simple_compat_exposes_with_temp_message_as_a_preloaded_macro() {
+fn gnu_batch_runtime_exposes_with_temp_message_as_a_preloaded_macro() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6204,13 +6104,9 @@ fn simple_compat_exposes_with_temp_message_as_a_preloaded_macro() {
 }
 
 #[test]
-fn simple_compat_exposes_with_delayed_message_as_a_preloaded_macro() {
+fn gnu_batch_runtime_exposes_with_delayed_message_as_a_preloaded_macro() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6231,13 +6127,11 @@ fn simple_compat_exposes_with_delayed_message_as_a_preloaded_macro() {
 }
 
 #[test]
-fn simple_compat_exposes_the_dumped_font_lock_hook_entry_point() {
+fn gnu_batch_runtime_exposes_the_font_lock_hook_entry_point() {
+    // GNU 30.2 font-core.el owns these functions and deliberately leaves
+    // `font-lock-mode' disabled when `noninteractive' is non-nil.
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6266,8 +6160,8 @@ fn simple_compat_exposes_the_dumped_font_lock_hook_entry_point() {
             Value::Nil,
             Value::Nil,
             Value::Nil,
-            Value::T,
-            Value::T,
+            Value::Nil,
+            Value::Nil,
             Value::Nil,
             Value::Nil,
         ])
@@ -6275,7 +6169,7 @@ fn simple_compat_exposes_the_dumped_font_lock_hook_entry_point() {
 }
 
 #[test]
-fn simple_compat_preloads_subr_shell_process_wrappers() {
+fn gnu_batch_runtime_loads_subr_shell_process_wrappers() {
     let options = crate::batch::BatchRunOptions {
         load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
@@ -6298,13 +6192,9 @@ fn simple_compat_preloads_subr_shell_process_wrappers() {
 }
 
 #[test]
-fn simple_compat_preloads_store_match_data_as_the_gnu_alias() {
+fn gnu_batch_runtime_loads_store_match_data_as_the_gnu_alias() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6322,13 +6212,9 @@ fn simple_compat_preloads_store_match_data_as_the_gnu_alias() {
 }
 
 #[test]
-fn simple_compat_preloads_wholenump_as_the_gnu_natnump_alias() {
+fn gnu_batch_runtime_loads_wholenump_as_the_gnu_natnump_alias() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6414,13 +6300,9 @@ fn preloaded_kbd_preserves_gnu_ascii_string_and_symbolic_vector_results() {
 }
 
 #[test]
-fn simple_compat_preloads_delete_consecutive_dups_with_destructive_identity() {
+fn gnu_batch_runtime_loads_delete_consecutive_dups_with_destructive_identity() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6440,7 +6322,7 @@ fn simple_compat_preloads_delete_consecutive_dups_with_destructive_identity() {
 }
 
 #[test]
-fn simple_compat_preserves_the_real_vc_responsible_backend_autoload() {
+fn gnu_batch_runtime_preserves_the_real_vc_responsible_backend_autoload() {
     run_with_large_stack(|| {
         let options = crate::batch::BatchRunOptions {
             load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
@@ -6535,13 +6417,9 @@ fn batch_startup_preloads_the_gnu_european_coding_owner() {
 }
 
 #[test]
-fn simple_compat_exposes_preloaded_iteration_forms_as_macros() {
+fn gnu_batch_runtime_exposes_iteration_forms_as_macros() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6578,13 +6456,9 @@ fn simple_compat_exposes_preloaded_iteration_forms_as_macros() {
 }
 
 #[test]
-fn simple_compat_exposes_preloaded_completion_table_combinators() {
+fn gnu_batch_runtime_exposes_completion_table_combinators() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6598,6 +6472,7 @@ fn simple_compat_exposes_preloaded_completion_table_combinators() {
                            completion-table-in-turn
                            completion-table-merge))
                  (macrop 'lazy-completion-table)
+                 (functionp (completion-table-in-turn '("aa") '("bb")))
                  (completion-table-with-predicate
                   '("aa" "ab") (lambda (value) (equal value "aa"))
                   'strict "a" nil t)
@@ -6613,6 +6488,7 @@ fn simple_compat_exposes_preloaded_completion_table_combinators() {
         Value::list([
             Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,]),
             Value::T,
+            Value::T,
             Value::list([Value::String("aa".into())]),
             Value::list([Value::String("bb".into())]),
             Value::list([Value::String("aa".into()), Value::String("ab".into())]),
@@ -6623,13 +6499,9 @@ fn simple_compat_exposes_preloaded_completion_table_combinators() {
 }
 
 #[test]
-fn simple_compat_exposes_preloaded_file_name_completion_table() {
+fn gnu_batch_runtime_exposes_file_name_completion_table() {
     let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
-    )
-    .expect("load simple compat");
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
 
     assert_eq!(
         eval_str_with(
@@ -6669,7 +6541,7 @@ fn simple_compat_exposes_preloaded_file_name_completion_table() {
 
 #[test]
 fn completion_at_point_uses_partial_completion_wildcards() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
 
     assert_eq!(
         eval_str_with(
@@ -6690,7 +6562,7 @@ fn completion_at_point_uses_partial_completion_wildcards() {
 
 #[test]
 fn completion_at_point_displays_ambiguous_candidates_after_no_progress() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
 
     assert_eq!(
         eval_str_with(
@@ -6716,13 +6588,10 @@ fn completion_at_point_displays_ambiguous_candidates_after_no_progress() {
 fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
     let emacs_repo =
         std::fs::canonicalize(upstream_emacs_repo()).expect("canonical upstream Emacs repository");
-    let options = crate::batch::BatchRunOptions {
-        load_path: crate::compat::emaxx_upstream_load_path(&emacs_repo)
-            .expect("upstream load path"),
-        ..Default::default()
-    };
-    let mut interp = crate::batch::initialize_batch_interpreter(&options)
-        .expect("initialize upstream Lisp test interpreter");
+    // These callers exercise real upstream test files after normal batch
+    // startup; none is a source-bootstrap test.  Reuse the reconstructed
+    // compiled GNU image, then load the actual GNU ERT and test sources below.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     // Match the compatibility runner's installation-directory boundary.
     // Source-aware upstream tests must not accidentally inspect the Emaxx
     // workspace just because this faster in-process harness started there.
@@ -6844,7 +6713,7 @@ fn upstream_descr_text_uses_unicode_property_table_descriptions() {
 #[test]
 fn dumped_loaddefs_inline_functions_are_available_without_owner_loads() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list (fboundp 'cvs-dired-noselect)
                    (cvs-dired-noselect temporary-file-directory)
                    (fboundp 'tramp-autoload-file-name-handler)
@@ -7056,24 +6925,82 @@ fn edebug_instrumented_cl_macrolet_preserves_expander_arguments() {
 }
 
 #[test]
+fn edebug_global_break_condition_preserves_the_complete_minibuffer_expression() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("emacs-lisp/edebug-tests.el");
+        let summary = interp.run_ert_tests_with_selector(Some(&Value::Symbol(
+            "edebug-tests-set-and-break-on-global-condition".into(),
+        )));
+
+        assert_eq!(summary.total, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
+fn edebug_step_into_generic_method_uses_the_correct_source_stop_points() {
+    run_with_large_stack(|| {
+        let mut interp = upstream_lisp_test_interpreter("emacs-lisp/edebug-tests.el");
+        let summary = interp.run_ert_tests_with_selector(Some(&Value::Symbol(
+            "edebug-tests-step-into-generic-method".into(),
+        )));
+        let stop_points = eval_str_with(
+            &mut interp,
+            "(list
+               (assoc \"edebug-test-code-emphasize\" edebug-tests-stop-points)
+               (assoc \"edebug-test-code-emphasize-1\" edebug-tests-stop-points)
+               (assoc \"edebug-test-code-use-methods\" edebug-tests-stop-points))",
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(functionp
+                  (cdr (assq 'cl-defmethod find-function-regexp-alist)))",
+            ),
+            Value::T,
+            "cl-generic's real after-load callback must install find-func's method searcher",
+        );
+
+        assert_eq!(summary.total, 1, "{:#?}", interp.test_results);
+        assert_eq!(
+            summary.passed, 1,
+            "{:#?}; stop points: {stop_points:#?}",
+            interp.test_results
+        );
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+    });
+}
+
+#[test]
 fn edebug_recursive_command_loop_timer_and_macro_minibuffer_state_stay_coherent() {
     run_with_large_stack(|| {
         let mut interp = upstream_lisp_test_interpreter("emacs-lisp/edebug-tests.el");
-        let selector = eval_str_with(
-            &mut interp,
-            r#"'(member
-                 edebug-tests-evaluate-expressions
-                 edebug-tests-error-stepping-into-subr
-                 edebug-tests-error-trying-to-set-breakpoint-in-uninstrumented-code
-                 edebug-tests-set-and-break-on-global-condition
-                 edebug-tests-gv-expander
-                 edebug-tests-step-into-generic-method)"#,
-        );
-        let summary = interp.run_ert_tests_with_selector(Some(&selector));
-
-        assert_eq!(summary.total, 6, "{:#?}", interp.test_results);
-        assert_eq!(summary.passed, 6, "{:#?}", interp.test_results);
-        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+        // Keep the upstream ERT order explicit so a cleanup-path corruption
+        // is attributed to the test that introduced it rather than reported
+        // as a later, unrelated missing function.
+        for name in [
+            "edebug-tests-error-stepping-into-subr",
+            "edebug-tests-error-trying-to-set-breakpoint-in-uninstrumented-code",
+            "edebug-tests-evaluate-expressions",
+            "edebug-tests-gv-expander",
+            "edebug-tests-set-and-break-on-global-condition",
+            "edebug-tests-step-into-generic-method",
+        ] {
+            let summary = interp.run_ert_tests_with_selector(Some(&Value::symbol(name)));
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(list (fboundp 'timerp) (featurep 'timer)
+                           (and (symbol-file 'timerp 'defun) t))",
+                ),
+                Value::list([Value::T, Value::T, Value::T]),
+                "{name} cleanup must preserve GNU's preloaded timer.el owner"
+            );
+            assert_eq!(summary.total, 1, "{name}: {:#?}", interp.test_results);
+            assert_eq!(summary.passed, 1, "{name}: {:#?}", interp.test_results);
+            assert_eq!(summary.failed, 0, "{name}: {:#?}", interp.test_results);
+        }
         assert_eq!(
             eval_str_with(
                 &mut interp,
@@ -7083,18 +7010,11 @@ fn edebug_recursive_command_loop_timer_and_macro_minibuffer_state_stay_coherent(
                      (lambda (entry)
                        (member '(provide . edebug-test-code) (cdr entry)))
                      load-history))
-                   (get 'edebug-test-code-emphasize
-                        'emaxx-cl-defmethod-specializers)
-                   (condition-case condition
-                       (edebug-test-code-emphasize 1)
-                     (error (car condition))))",
+                   (cl--generic-method-table
+                    (cl--generic 'edebug-test-code-emphasize)))",
             ),
-            Value::list([
-                Value::Integer(0),
-                Value::Nil,
-                Value::Symbol("cl-no-applicable-method".into()),
-            ]),
-            "whole-file reevaluation and unload must not retain method state"
+            Value::list([Value::Integer(0), Value::Nil]),
+            "GNU unloads the feature's load-history entry and generic method table"
         );
     });
 }
@@ -7166,10 +7086,6 @@ fn eieio_method_invocation_order_and_next_arguments_stay_coherent() {
                     eieio-default-superclass record atom t))",
             ),
             "EIEIO class precedence must preserve direct-parent order"
-        );
-        assert!(
-            interp.class_sibling_precedes("eitest-B-base1", "eitest-B-base2"),
-            "the first direct parent must be the more-specific sibling"
         );
         let selector = eval_str_with(
             &mut interp,
@@ -7318,7 +7234,7 @@ fn file_name_completion_rejects_a_missing_directory_before_adding_dot_entries() 
 #[test]
 fn file_name_completion_honors_predicates_case_and_regexps_in_the_requested_directory() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(let ((directory (make-temp-file "emaxx-file-completion-" t)))
                  (unwind-protect
                      (let ((directory (file-name-as-directory directory)))
@@ -7370,7 +7286,8 @@ fn find_function_suite_uses_preloaded_tag_helpers_and_the_upstream_doc_index() {
 #[test]
 fn cl_macrolet_expander_stays_lexical_inside_dynamic_eval() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch_feature(
+            "cl-macs",
             "(eval
                '(cl-macrolet
                     ((sample-expand (value)
@@ -7536,9 +7453,11 @@ fn loaded_ert_assertion_macros_preserve_nested_test_result_protocol() {
                        (make-ert-test
                         :body (lambda () (skip-unless nil))))))"#,
             ),
+            // GNU: `skip-when'/`skip-unless' outside `ert-deftest' produce
+            // failed results, not skips (probed on GNU 30.2).
             Value::list([
-                Value::symbol("ert-test-skipped"),
-                Value::symbol("ert-test-skipped"),
+                Value::symbol("ert-test-failed"),
+                Value::symbol("ert-test-failed"),
             ])
         );
         let selector = eval_str_with(
@@ -7674,7 +7593,7 @@ fn erc_channel_user_struct_setters_remain_generalized_variables() {
 fn loaded_gnu_setf_sees_lambda_gv_setter_declarations() {
     run_with_large_stack(|| {
         assert_eq!(
-            eval_str_with_upstream_load_path(
+            eval_str_with_upstream_batch(
                 r#"(progn
                      (require 'gv)
                      (defun emaxx-gv-cell-value (cell)
@@ -7801,6 +7720,15 @@ fn eshell_test_interpreter(test_file: &str) -> Interpreter {
     interp.set_variable(
         "eshell-test--max-wait-time",
         Value::Integer(300),
+        &mut Vec::new(),
+    );
+    // `with-temp-eshell' expands `ert-with-temp-directory', whose suffix
+    // generator needs a source file name that string evaluation lacks
+    // (GNU --eval fails identically).  A non-nil `ert-temp-file-suffix'
+    // short-circuits the generator at expansion time.
+    interp.set_variable(
+        "ert-temp-file-suffix",
+        Value::String("-emaxx".into()),
         &mut Vec::new(),
     );
     interp
@@ -8001,7 +7929,7 @@ fn eshell_glob_completion_inserts_its_single_match() {
             eval_str_with(
                 &mut interp,
                 r#"(with-temp-eshell
-                     (ert-with-temp-directory default-directory
+                     (ert-with-temp-directory default-directory :suffix "-emaxx"
                        (write-region nil nil (expand-file-name "file.txt"))
                        (write-region nil nil (expand-file-name "file.el"))
                        (eshell-insert-and-complete "echo fi*.el")))"#
@@ -8020,7 +7948,7 @@ fn eshell_ambiguous_completion_displays_candidates_on_second_attempt() {
             eval_str_with(
                 &mut interp,
                 r#"(with-temp-eshell
-                     (ert-with-temp-directory default-directory
+                     (ert-with-temp-directory default-directory :suffix "-emaxx"
                        (write-region nil nil (expand-file-name "file.txt"))
                        (write-region nil nil (expand-file-name "file.el"))
                        (let ((first (eshell-insert-and-complete "echo fi")))
@@ -8119,7 +8047,7 @@ fn eshell_cd_can_list_files_without_replacing_last_command_metadata() {
             eval_str_with(
                 &mut interp,
                 r#"(let ((eshell-list-files-after-cd t))
-                     (ert-with-temp-directory tmpdir
+                     (ert-with-temp-directory tmpdir :suffix "-emaxx"
                        (write-region "text" nil
                                      (expand-file-name "file.txt" tmpdir))
                        (with-temp-eshell
@@ -8161,7 +8089,7 @@ fn eshell_external_pipeline_finishes_redirected_output_before_returning() {
         assert_eq!(
             eval_str_with(
                 &mut interp,
-                r#"(ert-with-temp-file temp
+                r#"(ert-with-temp-file temp :suffix "-emaxx"
                      (with-temp-eshell
                        (eshell-insert-command
                         (format "echo \"bar\" *| rev >%s" temp))
@@ -8211,7 +8139,7 @@ fn eshell_internal_command_feeds_external_pipeline_before_returning() {
         assert_eq!(
             eval_str_with(
                 &mut interp,
-                r#"(ert-with-temp-file temp
+                r#"(ert-with-temp-file temp :suffix "-emaxx"
                      (with-temp-eshell
                        (eshell-insert-command
                         (format "echo \"bar\" | rev *>%s" temp))

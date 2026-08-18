@@ -102,29 +102,6 @@ define_dispatch!(
                 })
             }
 
-            "copy-overlay" => {
-                need_args(name, args, 1)?;
-                let ov_id = match &args[0] {
-                    Value::Overlay(id) => *id,
-                    _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
-                };
-                let mut copy = interp
-                    .find_overlay(ov_id)
-                    .cloned()
-                    .ok_or_else(|| LispError::Signal("No such overlay".into()))?;
-                copy.id = interp.alloc_overlay_id();
-                let copy_id = copy.id;
-                let target_buffer_id = copy.buffer_id.unwrap_or_else(|| interp.current_buffer_id());
-                interp
-                    .get_buffer_by_id_mut(target_buffer_id)
-                    .ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", target_buffer_id))
-                    })?
-                    .overlays
-                    .push(copy);
-                Ok(Value::Overlay(copy_id))
-            }
-
             "overlay-buffer" => {
                 need_args(name, args, 1)?;
                 let ov_id = match &args[0] {
@@ -428,67 +405,6 @@ define_dispatch!(
 
             "overlay-recenter" => {
                 // In real Emacs this recenters the overlay cache. We're a no-op.
-                Ok(Value::Nil)
-            }
-
-            // GNU subr.el owns this high-level splitting policy.  Retain a
-            // file-less bootstrap route, but never pin initialized batch
-            // execution to this fallback (a loaded defun wins function-cell
-            // resolution).
-            "remove-overlays" => {
-                // (remove-overlays &optional BEG END NAME VAL)
-                let beg = if args.is_empty() || args[0].is_nil() {
-                    interp.buffer.point_min()
-                } else {
-                    args[0].as_integer()? as usize
-                };
-                let end = if args.len() < 2 || args[1].is_nil() {
-                    interp.buffer.point_max()
-                } else {
-                    args[1].as_integer()? as usize
-                };
-                let filter_name = args.get(2).cloned();
-                let filter_val = args.get(3).cloned();
-                let zv = interp.buffer.point_max();
-
-                // Collect IDs to delete (fully contained or matching)
-                let ids_to_delete: Vec<u64> = interp
-                    .buffer
-                    .overlays
-                    .iter()
-                    .filter(|ov| {
-                        if ov.is_dead() {
-                            return false;
-                        }
-                        // Check property filter
-                        if let Some(ref fname) = filter_name {
-                            let val = ov.get_prop(fname).cloned().unwrap_or(Value::Nil);
-                            if let Some(ref fval) = filter_val
-                                && !values_eql(&val, fval)
-                            {
-                                return false;
-                            }
-                        }
-                        // Check containment
-                        if ov.beg == ov.end {
-                            // Zero-length: include if within range
-                            ov.beg >= beg && (ov.beg < end || (ov.beg == end && end == zv))
-                        } else {
-                            ov.beg >= beg && ov.end <= end
-                        }
-                    })
-                    .map(|ov| ov.id)
-                    .collect();
-
-                for id in &ids_to_delete {
-                    if let Some(ov) = interp.find_overlay_mut(*id) {
-                        ov.buffer_id = None;
-                    }
-                }
-                interp
-                    .buffer
-                    .overlays
-                    .retain(|ov| !ids_to_delete.contains(&ov.id));
                 Ok(Value::Nil)
             }
         }

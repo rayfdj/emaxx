@@ -57,7 +57,8 @@ fn font_spec_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
     interp
         .find_record(*id)
         .filter(|record| {
-            record.kind == crate::lisp::eval::RecordKind::Font && record.type_name == "font-spec"
+            record.kind == crate::lisp::eval::RecordKind::Font
+                && record.has_symbol_type("font-spec")
         })
         .map(|_| *id)
         .ok_or_else(|| wrong_type_argument("font-spec-p", value.clone()))
@@ -69,7 +70,7 @@ fn require_font_type(
     record_type: &str,
     predicate: &str,
 ) -> Result<(), LispError> {
-    if font_record(interp, value).is_ok_and(|font| font.type_name == record_type) {
+    if font_record(interp, value).is_ok_and(|font| font.has_symbol_type(record_type)) {
         Ok(())
     } else {
         Err(wrong_type_argument(predicate, value.clone()))
@@ -134,7 +135,7 @@ fn composition_gstring_parts(interp: &Interpreter, gstring: &Value) -> Option<(V
     let font = header[0].clone();
     if !font.is_nil()
         && !matches!(&font, Value::Symbol(name) if interp.has_coding_system(name))
-        && !font_record(interp, &font).is_ok_and(|record| record.type_name == "font-object")
+        && !font_record(interp, &font).is_ok_and(|record| record.has_symbol_type("font-object"))
     {
         return None;
     }
@@ -874,7 +875,8 @@ define_dispatch!(
                 let font_type = match &args[0] {
                     Value::Record(id) => interp.find_record(*id).and_then(|record| {
                         (record.kind == crate::lisp::eval::RecordKind::Font)
-                            .then(|| record.type_name.clone())
+                            .then(|| record.symbol_type_name().map(str::to_owned))
+                            .flatten()
                     }),
                     _ => None,
                 };

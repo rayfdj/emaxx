@@ -296,11 +296,6 @@ define_dispatch!(
                 }
             }
 
-            "seq-uniq" => {
-                need_arg_range(name, args, 1, 2)?;
-                seq_uniq(interp, &args[0], args.get(1), env)
-            }
-
             // ── Sort ──
             "sort" => {
                 if args.is_empty() {
@@ -356,49 +351,6 @@ define_dispatch!(
                     Ok(build_sorted_sequence(&kind, sorted))
                 }
             }
-            "cl-sort" => {
-                if args.len() < 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let mut key_fn: Option<Value> = None;
-                let mut index = 2usize;
-                while index + 1 < args.len() {
-                    if args[index].as_symbol()? == ":key" {
-                        key_fn = if args[index + 1].is_nil() {
-                            None
-                        } else {
-                            Some(args[index + 1].clone())
-                        };
-                    }
-                    index += 2;
-                }
-                let mut items = args[0].to_vec()?;
-                let len = items.len();
-                for i in 1..len {
-                    let mut j = i;
-                    while j > 0 {
-                        let left = if let Some(function) = &key_fn {
-                            call_function_value(interp, function, &[items[j - 1].clone()], env)?
-                        } else {
-                            items[j - 1].clone()
-                        };
-                        let right = if let Some(function) = &key_fn {
-                            call_function_value(interp, function, &[items[j].clone()], env)?
-                        } else {
-                            items[j].clone()
-                        };
-                        let result = call_function_value(interp, &args[1], &[left, right], env)?;
-                        if result.is_nil() {
-                            items.swap(j - 1, j);
-                            j -= 1;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                Ok(Value::list(items))
-            }
-
             "random" => {
                 if args.is_empty() || args[0].is_nil() {
                     Ok(Value::Integer(rand_simple()))
@@ -519,39 +471,16 @@ define_dispatch!(
                 }
                 match &args[0] {
                     Value::String(_) | Value::StringObject(_) => {
-                        match string_like(&args[0])
-                            .and_then(|string| string.text.chars().nth(idx).map(|ch| (string, ch)))
-                        {
-                            Some((string, ch)) => Ok(string_sequence_value(&string, ch)),
+                        match string_like(&args[0]).and_then(|string| string.char_code_at(idx)) {
+                            Some(code) => Ok(Value::Integer(code)),
                             None => Err(args_out_of_range(&args[0], &args[1])),
                         }
                     }
-                    // Interpreted functions expose arglist, body, and captured
-                    // environment through aref like GNU's closure objects.
-                    Value::Lambda(lambda) => Ok(match idx {
-                        0 => Value::list(
-                            lambda
-                                .params
-                                .iter()
-                                .map(|param| Value::Symbol(param.clone().into()))
-                                .collect::<Vec<_>>(),
-                        ),
-                        1 => Value::list(lambda.body.as_ref().clone()),
-                        2 => {
-                            let mut entries = Vec::new();
-                            for frame in lambda.env.borrow().iter().rev() {
-                                for (name, value) in frame.iter().rev() {
-                                    entries.push(Value::cons(
-                                        Value::Symbol(name.clone().into()),
-                                        value.clone(),
-                                    ));
-                                }
-                            }
-                            entries.push(Value::T);
-                            Value::list(entries)
-                        }
-                        _ => Value::Nil,
-                    }),
+                    Value::Lambda(lambda) => interp
+                        .interpreted_closure_slots(lambda)
+                        .get(idx)
+                        .cloned()
+                        .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
                     Value::CharTable(id) => {
                         let key = raw_idx as u32;
                         Ok(syntax::char_table_public_value(
@@ -572,24 +501,10 @@ define_dispatch!(
                                 .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                         }
                         if record.kind == crate::lisp::eval::RecordKind::Closure {
-                            if idx == 0 {
-                                let arity = function_arity_value(interp, &args[0], env)?;
-                                let minimum = arity.car()?.as_integer()?;
-                                let maximum = arity.cdr()?;
-                                let descriptor = match maximum {
-                                    Value::Integer(maximum) => minimum + (maximum << 8),
-                                    Value::Symbol(kind) if kind == "many" => {
-                                        minimum + (minimum << 8) + 128
-                                    }
-                                    _ => {
-                                        return Err(LispError::TypeError(
-                                            "function".into(),
-                                            args[0].type_name(),
-                                        ));
-                                    }
-                                };
-                                return Ok(Value::Integer(descriptor));
-                            }
+                            // GNU data.c:Faref exposes every Lisp_Closure slot
+                            // verbatim.  In particular, CLOSURE_ARGLIST is
+                            // already either the packed bytecode descriptor or
+                            // the legacy dynamic-binding argument list.
                             return record
                                 .slots
                                 .get(idx)
@@ -597,7 +512,7 @@ define_dispatch!(
                                 .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                         }
                         if idx == 0 {
-                            Ok(Value::Symbol(record.type_name.clone().into()))
+                            Ok(record.type_tag.clone())
                         } else {
                             record
                                 .slots
@@ -651,27 +566,7 @@ define_dispatch!(
                         // (eieio's `make-instance' downgrades the class-object
                         // tag to the class symbol this way).
                         if idx == 0 {
-                            let (type_name, tagged) = match &args[2] {
-                                Value::Symbol(symbol) => (symbol.to_string(), false),
-                                Value::Record(class_id) => {
-                                    let Some(class_name) =
-                                        interp.find_class_state_name_by_record_id(*class_id)
-                                    else {
-                                        return Err(LispError::TypeError(
-                                            "symbol".into(),
-                                            args[2].type_name(),
-                                        ));
-                                    };
-                                    (class_name, true)
-                                }
-                                _ => {
-                                    return Err(LispError::TypeError(
-                                        "symbol".into(),
-                                        args[2].type_name(),
-                                    ));
-                                }
-                            };
-                            interp.retag_record(*id, &type_name, tagged)?;
+                            interp.retag_record(*id, args[2].clone())?;
                             return Ok(args[2].clone());
                         }
                         let record = interp
@@ -687,60 +582,12 @@ define_dispatch!(
                 }
             }
 
-            "seq-every-p" => {
-                need_args(name, args, 2)?;
-                let pred = args[0].clone();
-                let seq = args[1].to_vec()?;
-                for item in &seq {
-                    let result = match &pred {
-                        Value::BuiltinFunc(fname) => {
-                            super::call(interp, fname, std::slice::from_ref(item), env)?
-                        }
-                        Value::Lambda(_) => {
-                            call_function_value(interp, &pred, std::slice::from_ref(item), env)?
-                        }
-                        _ => return Err(LispError::TypeError("function".into(), pred.type_name())),
-                    };
-                    if result.is_nil() {
-                        return Ok(Value::Nil);
-                    }
-                }
-                Ok(Value::T)
-            }
-
-            "seq-into" => {
-                need_args(name, args, 2)?;
-                let items = sequence_values(interp, &args[0])?;
-                match args[1].as_symbol()? {
-                    "list" => Ok(Value::list(items)),
-                    "vector" => {
-                        let mut vector = vec![Value::symbol("vector-literal")];
-                        vector.extend(items);
-                        Ok(Value::list(vector))
-                    }
-                    "string" => {
-                        let mut text = String::new();
-                        for item in items {
-                            let code = item.as_integer()?;
-                            let ch = char::from_u32(code as u32).ok_or_else(|| {
-                                LispError::Signal(format!("Invalid character: {code}"))
-                            })?;
-                            text.push(ch);
-                        }
-                        Ok(Value::String(text.into()))
-                    }
-                    kind => Err(LispError::Signal(format!(
-                        "seq-into unsupported target type: {kind}"
-                    ))),
-                }
-            }
-
             "nreverse" => {
                 need_args(name, args, 1)?;
                 nreverse_sequence_value(interp, &args[0])
             }
 
-            "copy-sequence" | "cl-copy-seq" => {
+            "copy-sequence" => {
                 need_args(name, args, 1)?;
                 copy_sequence_value(interp, &args[0])
             }
@@ -864,11 +711,6 @@ define_dispatch!(
                     current
                 })?;
                 Ok(value)
-            }
-
-            "make-display-table" => {
-                need_arg_range(name, args, 0, 0)?;
-                Ok(interp.make_char_table(Some("display-table".into()), Value::Nil))
             }
 
             "make-char-table" => {
@@ -1072,7 +914,12 @@ define_dispatch!(
                             Value::Integer(entry.end as i64),
                         )
                     };
-                    let value = syntax::char_table_public_value(interp, id, entry.value);
+                    let value = if interp.char_table_purpose(id) == Some("char-code-property-table")
+                    {
+                        super::strings::decode_unicode_property_value(interp, id, entry.value)?
+                    } else {
+                        syntax::char_table_public_value(interp, id, entry.value)
+                    };
                     call_function_value(interp, &args[0], &[key, value], env)?;
                 }
                 Ok(Value::Nil)
@@ -1106,32 +953,13 @@ define_dispatch!(
                 Ok(args[0].clone())
             }
 
-            "make-syntax-table" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let parent = match args.first() {
-                    Some(Value::CharTable(id)) => Some(*id),
-                    Some(Value::Nil) | None => Some(interp.standard_syntax_table_id()),
-                    Some(other) => {
-                        return Err(LispError::TypeError("char-table".into(), other.type_name()));
-                    }
-                };
-                let table = interp.make_char_table(Some("syntax-table".into()), Value::Nil);
-                let Value::CharTable(id) = table else {
-                    unreachable!("make_char_table returns a char-table");
-                };
-                interp.set_char_table_parent(id, parent)?;
-                Ok(Value::CharTable(id))
-            }
-
             "copy-syntax-table" => {
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let source = match args.first() {
                     Some(Value::CharTable(id)) => *id,
-                    Some(Value::Nil) | None => interp.current_syntax_table_id(),
+                    Some(Value::Nil) | None => interp.standard_syntax_table_id(),
                     Some(other) => {
                         return Err(LispError::TypeError("char-table".into(), other.type_name()));
                     }
@@ -1250,29 +1078,6 @@ define_dispatch!(
                 Ok(args[1].clone())
             }
 
-            "emaxx-default-region-extract-function" => {
-                need_args(name, args, 1)?;
-                let (start, end) = interp.buffer.region().ok_or_else(|| {
-                    LispError::Signal("The mark is not set now, so there is no region".into())
-                })?;
-                let start = Value::Integer(start as i64);
-                let end = Value::Integer(end as i64);
-                match &args[0] {
-                    Value::Symbol(method) if method == "bounds" => {
-                        Ok(Value::list([Value::cons(start, end)]))
-                    }
-                    Value::Symbol(method) if method == "delete-only" => {
-                        super::call(interp, "delete-region", &[start, end], env)
-                    }
-                    method => super::call(
-                        interp,
-                        "filter-buffer-substring",
-                        &[start, end, method.clone()],
-                        env,
-                    ),
-                }
-            }
-
             "make-category-table" => Ok(interp.make_char_table(
                 Some("category-table".into()),
                 Value::String(String::new().into()),
@@ -1348,6 +1153,22 @@ define_dispatch!(
 
             "category-set-mnemonics" => {
                 need_args(name, args, 1)?;
+                // GNU's CHECK_CATEGORY_SET accepts the 128-slot bool-vector
+                // that `char-category-set' returns; the internal string form
+                // remains accepted for entries stored as mnemonic strings.
+                if let Value::Record(id) = &args[0]
+                    && let Some(record) = interp.find_record(*id)
+                    && record.kind == crate::lisp::eval::RecordKind::BoolVector
+                {
+                    let text: String = record
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, slot)| slot.is_truthy())
+                        .filter_map(|(index, _)| char::from_u32(index as u32))
+                        .collect();
+                    return Ok(Value::String(normalize_category_set(&text).into()));
+                }
                 let text = string_text(&args[0])?;
                 Ok(Value::String(normalize_category_set(&text).into()))
             }
@@ -1426,14 +1247,6 @@ define_dispatch!(
                 interp.clone_char_table(id)
             }
 
-            "translate-region" => {
-                need_args(name, args, 3)?;
-                let from = position_from_value(interp, &args[0])?;
-                let to = position_from_value(interp, &args[1])?;
-                let table = translation_table_from_value(interp, &args[2])?;
-                translate_region_with_table(interp, from, to, &table)
-            }
-
             "translate-region-internal" => {
                 need_args(name, args, 3)?;
                 let from = position_from_value(interp, &args[0])?;
@@ -1450,8 +1263,7 @@ define_dispatch!(
                 if interp.char_table_purpose(table_id) != Some("translation-table") {
                     return Err(LispError::Signal("Not a translation table".into()));
                 }
-                let table = TranslationTable::CharTable(table_id);
-                translate_region_with_table(interp, from, to, &table)
+                translate_region_with_table(interp, from, to, table_id)
             }
 
             "undo-boundary" => {
@@ -1557,17 +1369,6 @@ define_dispatch!(
                 // delete-dups relies on; rebuilding a filtered list silently
                 // changes both APIs' contracts.
                 delete_from_list(interp, elt, &args[1], env, DeleteListComparison::Equal)
-            }
-
-            "remq" => {
-                need_args(name, args, 2)?;
-                let elt = &args[0];
-                let items = args[1].to_vec()?;
-                let filtered: Vec<Value> = items
-                    .into_iter()
-                    .filter(|item| !values_eq_in_env(interp, item, elt, env))
-                    .collect();
-                Ok(Value::list(filtered))
             }
 
             "make-list" => {

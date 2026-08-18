@@ -16,7 +16,930 @@ The canonical ordered manifest is:
 The denominator is 7080 selected tests. Do not use source-tree `ert-deftest`
 counts as the progress denominator.
 
+The authoritative Rust publication/correctness gate runs serially with
+`--test-threads=1`.  Parallel execution may be used only as a non-authoritative
+discovery pass; every result used for publication or compatibility claims must
+come from the serial gate.  The compatibility harness already executes its
+files serially.  Do not spend compatibility time diagnosing aggregate
+parallel-only noise.
+
 ## Current Resume Point
+
+- 2026-08-17 EVAL_05 NEAR-CLEAN CHECKPOINT (commit 52a0cdf): 341 of 347
+  `eval_05` tests pass serially, with one test quarantined and six red.
+  Fixed this round: all stale-runtime conversions; GNU-probed
+  expectation corrections (derived-mode-p mode-symbol returns,
+  cl-generic method docstrings, skip-when/skip-unless failing outside
+  ert-deftest, make-obsolete's plain error, setopt's curly-quoted
+  warning at offset 30, tex-mode void-variable, dolist-with-progress-
+  reporter misuse, global define-minor-mode not running its body at
+  define time); explicit ert temp-file suffixes (string evaluation has
+  no source name for the generated-suffix path; GNU --eval fails the
+  same way, and `ert-temp-file-suffix' short-circuits it for eshell's
+  with-temp-eshell); the invented tex-mode variable fallback removed
+  from bindings.rs; process filters now hand Lisp mutable shared
+  strings (GNU filters propertize output in place — this fixed the
+  eshell pipeline/unix suites); and string-property writers now drop
+  writes to immutable interned strings instead of signaling, mirroring
+  the pre-existing set-text-properties policy (fixed $PWD-family
+  eshell cases).
+
+  Remaining red (six) and their diagnoses:
+  - upstream_completion_preview (1/11): ARCHITECTURAL — GNU mutates
+    capf-returned string literals in place (set-text-properties on the
+    suffix, concat carries the face); Emaxx's immutable interned
+    Value::String cannot host that write.  Needs the string-identity/
+    mutability design (same caliber as the issue-11 dump work); do not
+    patch cosmetically.
+  - upstream_eshell_external (4/5): esh-ext-test/explicitly-remote-
+    command — probe GNU for skip-vs-fail parity before touching.
+  - find_function_suite (4/6): locate-library returns nil somewhere,
+    and locate-symbols wants C-source knowledge for `goto-char'
+    (find-function-C-source-directory handling).
+  - edebug_instrumented_cl_macrolet (0/1), dumped_bootstrap contracts
+    (one flag in a long boolean list), real_gnu_cl_generic
+    introspection (a generic-function record where a symbol is
+    expected): undiagnosed; probe GNU per item.
+  - QUARANTINED HANG: eshell_matching_input_navigation_crosses_
+    nonsticky_prompts deterministically hangs (killed two full gates at
+    exactly this test); run with --skip until diagnosed solo (sample
+    the stuck process; suspect eshell-insert-command's process wait or
+    prompt-field navigation loop).
+
+  After eval_05: ~500 never-run non-eval tests (primitives 270,
+  compat_runtime 101, reader/json/tty/etc., plus 37 compat-harness bin
+  tests outside --lib), then one uninterrupted full serial gate, then
+  the honest canonical X/7080 harness measurement.
+
+- 2026-08-17 EVAL_04 MODULE-CLEAN CHECKPOINT: the complete `eval_04`
+  module is authoritatively clean: all 240 tests passed in one
+  `--test-threads=1` process in 1864.56 seconds.  The 103 gate failures
+  resolved into: (a) wholesale stale-runtime conversions — every
+  `eval_str_with_upstream_load_path` user (a bare host plus load path
+  that cannot require any GNU file) moved to the reconstructed batch
+  image, and the helper was deleted; failing `eval_str` (early-lisp)
+  tests whose subjects are GNU-preloaded owners moved to batch likewise;
+  (b) stale expectations corrected against direct GNU 30.2 probes —
+  regexp-opt prefix factoring, custom-add-option push order,
+  custom-add-choice full-member dedup, select-safe-coding-system's
+  `-unix' variant, bound-and-true-p under GNU's lexical --eval, eleven
+  rx patterns re-probed against GNU's real rx.el, font-lock/hi-lock
+  headless-batch nil results, when-let routing through a redefined
+  `if-let*' (GNU errors identically), residual reader comma (GNU also
+  signals void-function), the wrapper-hook test's parallel-`let'
+  capture bug (GNU probes confirm `let*' semantics), and the
+  help-surface metadata tests moved to the compiled no-native-comp
+  reality (`.elc' names, byte-code-function types, wrong-type-argument
+  for `aref' on a macro cons); (c) genuine native repairs —
+  `category-set-mnemonics' now accepts the 128-slot bool-vector that
+  `char-category-set' returns (fixing the bidi RTL chain), and
+  `func-arity' strips a `(macro . FN)' wrapper exactly like GNU
+  eval.c:Ffunc_arity.  Tests needing ert-x/cl-lib now require them the
+  way GNU sessions must.  NOTE: the sibling GNU build is
+  native-comp-enabled; emaxx models no-native-comp GNU
+  (native-comp-available-p nil), so type-of probes against the sibling
+  need translation (native subr -> byte-code-function).
+
+  Next: run the complete `eval_05` module serially for its full
+  inventory (the killed gate recorded 38 failures with the tail
+  unmeasured; its 17 stale-helper call sites are already converted),
+  fix by owner group, then the complete module, then the full serial
+  publication gate again, then the honest canonical X/7080 rebuild.
+
+- 2026-08-17 FULL-GATE INVENTORY CHECKPOINT: the complete serial
+  publication gate ran as one `--test-threads=1` process and was killed
+  partway through `eval_05` (mid-eshell cluster) after 678 passed and
+  156 failed.  Everything before `eval_04` is green in that single
+  process: all pre-eval modules (anti-cheat, batch, buffer, compat,
+  bytecode), `eval_01` 313/313, `eval_02` 278/278, and `eval_03`
+  310/310 — the sixty provisional eval_03 failures from 2026-08-15 are
+  fully resolved.  The eval_01/eval_02 ownership-cleanup state is
+  committed and pushed as b2e41f6 ("Own eval_01/eval_02 on GNU
+  runtimes: 313 and 278 serial-clean").
+
+  The authoritative remaining inventory from that run: `eval_04` failed
+  103 of 240, and `eval_05` failed 38 of the ~190 that ran before the
+  kill (its tail from the eshell cluster onward is unmeasured).  These
+  are single-process serial results, not parallel noise.  Failure-name
+  clusters suggest the familiar stale-ownership-setup classes: dired
+  (9), abbrev (8), call-interactively/process (6), overlay modification
+  hooks (5), font-lock (5), simulated minibuffer input (4), setf (4),
+  require (4), file notifications (4), ert helpers, format-spec, timers,
+  rx, letrec/named-let, and assorted singles.  Resume by diagnosing
+  `eval_04` in alphabetic serial partitions exactly as eval_02 was done
+  (probe GNU first; fix stale runtimes or genuine native mismatches by
+  owner group; never re-add Rust substitutes), then `eval_05`, then
+  rerun each complete module serially, then the full gate again.
+
+  The exact 141 recorded failures are:
+
+  eval_04: abbrev_edit_save_to_file_redefines_tables,
+  abbrev_initializes_local_abbrev_table_default,
+  abbrev_possibly_save_honors_simulated_no_response,
+  abbrev_possibly_save_writes_file_and_resets_changed_flag,
+  abbrev_require_preserves_mode_tables_loaded_first,
+  abbrev_require_seeds_standard_table_name_list,
+  abbrev_table_empty_obarray_symbol_preserves_table_properties,
+  abbrev_table_obarray_clear_removes_entries,
+  auto_revert_mode_reloads_changed_file,
+  batch_error_snapshot_keeps_deep_frames_and_signal_site_policy,
+  bidi_string_mark_left_to_right_marks_rtl_strings,
+  bound_and_true_p_checks_binding_before_value,
+  buffer_list_is_mru_ordered_after_switches,
+  call_interactively_autoloads_commands_before_collecting_args,
+  call_interactively_follows_symbol_aliases_for_interactive_specs,
+  call_interactively_records_declared_history_arguments,
+  call_interactively_rejects_invalid_control_letters,
+  call_process_region_can_delete_entire_buffer,
+  completing_read_consumes_keyboard_macro_input_in_the_minibuffer,
+  custom_add_choice_extends_choice_types_without_duplicates,
+  custom_add_option_records_unique_options,
+  describe_char_observes_preloaded_eldoc_multiline_policy,
+  dired_revert_refreshes_directory_listing,
+  ert_with_temp_file_honors_text_keyword,
+  ert_with_test_buffer_keeps_buffer_after_error,
+  ert_with_test_buffer_kills_buffer_after_success,
+  eval_buffer_interns_symbols_read_from_loaded_source,
+  file_notifications_do_not_replay_events_to_later_watches,
+  file_notifications_drive_global_auto_revert_without_polling,
+  file_notifications_keep_callbacks_isolated_and_invalidate_deleted_paths,
+  file_notifications_observe_changes_made_outside_the_interpreter,
+  find_coding_systems_region_internal_accepts_positions_and_exclusions,
+  find_file_sets_buffer_local_default_directory,
+  font_lock_defaults_syntax_alist_is_scoped_to_fontification,
+  font_lock_ensure_and_flush_track_hi_lock_faces,
+  font_lock_flush_reapplies_remaining_hi_lock_faces,
+  font_lock_keyword_matching_uses_and_restores_its_case_fold_setting,
+  font_lock_optional_nil_bounds_and_decoration_levels_match_gnu,
+  format_spec_applies_width_precision_and_flags,
+  format_spec_renders_buffers_with_princ_semantics,
+  format_spec_supports_function_values_and_split,
+  forward_and_backward_sexp_move_over_balanced_lists,
+  global_auto_revert_adopts_files_opened_after_enable,
+  header_line_indent_mode_sets_buffer_local_state,
+  if_let_and_when_let_support_single_binding_compat_syntax,
+  if_let_star_and_when_let_star_short_circuit_on_nil,
+  indent_line_to_replaces_existing_indentation,
+  indent_relative_uses_previous_line_indent_points,
+  inhibited_interaction_is_dynamic_across_separately_defined_prompt_helpers,
+  insert_file_contents_visit_marks_buffer_as_visiting_file,
+  keyboard_quit_signals_quit_condition,
+  letrec_binds_names_before_initializer_evaluation,
+  letrec_preserves_recursive_lambda_bindings,
+  loaded_timer_queue_fires_during_waits,
+  make_indirect_buffer_clone_copies_buffer_local_modes,
+  make_indirect_buffer_does_not_visit_the_base_buffers_file,
+  make_indirect_buffer_runs_local_clone_hooks_in_the_new_buffer,
+  minibuffer_completion_primitives_cover_batch_cases,
+  named_let_expands_to_recursive_binding,
+  named_let_keeps_its_non_tail_recursive_function_binding,
+  native_when_let_does_not_reexpand_transient_if_let_forms_in_loops,
+  no_conversion_file_reads_preserve_crlf_bytes,
+  nonlocal_exit_from_timer_preserves_later_due_timers,
+  overlay_modification_hooks_data_driven_cases,
+  overlay_modification_hooks_record_insert_at_overlay_start,
+  overlay_modification_hooks_record_insert_inside_overlay,
+  overlay_modification_hooks_record_replace_two_chars,
+  overlay_modification_hooks_record_zero_length_insert,
+  recursive_edit_pumps_loaded_elisp_timers_and_propagates_nonlocal_exits,
+  regexp_opt_builds_basic_alternations,
+  regexp_syntax_classes_match_lisp_definition_forms,
+  require_allows_early_provide_cycles_to_finish_defining_their_api,
+  require_and_provide_evaluate_feature_variables,
+  require_ert_uses_builtin_feature_and_skip_alias,
+  require_uses_current_load_path_binding,
+  residual_reader_comma_evaluates_unquote_operand,
+  run_with_timer_returns_a_timer_without_firing_immediately,
+  rx_compiles_common_test_patterns,
+  rx_supports_pcomplete_help_regex_forms,
+  scan_sexps_uses_syntax_properties_for_comment_boundaries,
+  select_safe_coding_system_uses_default_candidates,
+  seq_position_uses_equal_by_default,
+  set_visited_file_name_clears_the_recorded_modtime,
+  setf_alist_get_updates_and_removes_entries,
+  setf_image_property_updates_image_descriptors,
+  setf_plist_get_updates_and_adds_entries,
+  setf_uses_lambda_gv_setter_declarations,
+  simulated_input_translates_symbolic_return_at_gnu_key_boundaries,
+  simulated_minibuffer_keys_do_not_run_prompting_buffer_local_hooks,
+  simulated_minibuffer_keys_preserve_the_callers_prefix_argument,
+  simulated_minibuffer_prefix_commands_repeat_the_following_input,
+  skip_unless_records_skip_in_summary,
+  syntax_ppss_moves_point_to_pos_like_gnu,
+  tab_bar_new_tab_choice_has_preloaded_custom_type,
+  timer_callbacks_finish_with_defsubsts_from_their_unloaded_feature,
+  timerp_recognizes_loaded_timer_records,
+  translation_table_vector_is_bound_vector_not_abbrev_table,
+  upstream_abbrev_edit_save_to_file_case,
+  upstream_abbrev_edit_save_to_file_ert_case_passes,
+  url_insert_entities_in_string_escapes_html_markup_chars,
+  where_is_first_prefers_a_short_character_binding,
+  wrapper_hook_nil_path_runs_body,
+  wrapper_hook_non_nil_wraps_body_through_continuation.
+
+  eval_05 (through the kill point only): atomic_change_group_evaluates_body,
+  atomic_change_group_rolls_back_on_throw,
+  backtrace_get_frames_reports_live_lisp_call_symbols,
+  backward_delete_char_untabify_deletes_before_point,
+  beginning_of_defun_ignores_a_column_zero_opener_inside_a_string,
+  c_brace_newlines_reports_c_style_layout,
+  c_toggle_comment_style_switches_between_block_and_line_comments,
+  c_toggle_electric_state_updates_c_electric_flag,
+  call_last_kbd_macro_replays_dynamic_last_kbd_macro,
+  character_property_alias_applies_to_string_lookup_and_changes,
+  cl_mismatch_key_uses_eql_for_default_test,
+  cl_substitute_updates_list_copy_through_setf_elt,
+  coding_system_list_is_bound_and_callable,
+  coding_system_type_treats_nil_as_the_no_conversion_designator,
+  comment_region_wraps_c_style_and_prefixes_hash_comments,
+  completion_at_point_displays_ambiguous_candidates_after_no_progress,
+  completion_at_point_uses_partial_completion_wildcards,
+  cons_mutation_invalidates_all_source_derivations,
+  copyright_update_updates_last_notice_when_searching_from_end,
+  cyrillic_koi8_is_a_single_byte_round_tripping_coding,
+  defcustom_records_version_and_group_membership,
+  defgroup_tracks_current_group_and_members,
+  define_global_minor_mode_init_value_runs_body,
+  define_minor_mode_variable_option_toggles_backing_variable,
+  define_minor_mode_variable_setter_controls_the_stored_value,
+  directory_empty_p_and_temporary_file_directory_match_files_helpers,
+  dired_create_destination_dirs_controls_copy_and_rename,
+  dired_delete_empty_marked_directories_removes_entries,
+  dired_do_create_files_recreates_destination_directory,
+  dired_highlights_unsubstituted_shell_metacharacters,
+  dired_reuses_directory_buffer_and_preserves_file_point,
+  dired_revert_preserves_line_when_header_length_changes,
+  dired_shell_command_confirmation_positions_match_upstream,
+  dired_shell_command_confirms_unsafe_substitution_marks,
+  display_warning_uses_prefix_function_and_explicit_buffer,
+  dnd_multiple_url_handlers_prefer_earlier_equal_precedence_handler,
+  dolist_with_progress_reporter_uses_dolist_semantics,
+  dumped_loaddefs_inline_functions_are_available_without_owner_loads.
+
+- 2026-08-16 EVAL_02 MODULE-CLEAN CHECKPOINT: the complete `eval_02`
+  module is authoritatively clean: all 278 tests passed in one process
+  with `--test-threads=1` in 3139.62 seconds, after the complete
+  B/C/E/L/M partition rerun passed 141/141 in 2502.50 seconds.  This was
+  a whole-module serial run, not an aggregate of shards.  The three
+  bytecomp repairs recorded in the alphabet-complete checkpoint below
+  (prin1 raw-byte octal escapes, test-harness reader interning, and the
+  native `overriding-plist-environment` + `get' consultation) are all
+  verified inside that complete run.  Next: run format/diff/check/
+  strict-Clippy and the complete Rust publication gate, then rebuild and
+  measure the honest canonical X/7080.  The pre-cleanup 7080 claim
+  remains withdrawn until that measurement.
+
+- 2026-08-16 EVAL_02 ALPHABET-COMPLETE CHECKPOINT: serial partitions Q-Z are
+  now authoritatively clean, completing the A-Z inventory: Q 2/2 (10.87s),
+  R 17/17 (26.38s), S 23/23 (67.20s), and T-Z 16/16 (78.49s), each as one
+  complete serial run of its partition filter.  The repairs were:
+
+  - Stale expectations corrected against direct GNU 30.2 probes plus GNU
+    source: `regexp_syntax_classes_match_standard_delimiters` (GNU
+    syntax.c gives "_-+*/&|<>=" symbol class, so `\s.' rejects `=' and
+    `\s_' matches it), `source_loaded_tex_mode_inherits_its_parent_
+    syntax_table` (compiled tex-mode never loads derived.el at runtime, so
+    `(featurep 'derived)' is nil in GNU batch), and
+    `subr_introspection_supports_if_special_form` (GNU subr.el owns `dlet'
+    as a macro; `subr-arity' signals wrong-type-argument).
+  - Stale ownership setup moved onto honest runtimes: the three
+    source-load/symbol-file tests left bare `Interpreter::new`, and the
+    todo-mode, truncate-string-to-width, translate-region, and
+    word-boundary tests moved to the reconstructed batch image because
+    their subjects (mule.el, mule-util.el, macroexp.el, compiled require
+    chains) are preloaded owners in GNU's dump.
+  - Genuine native mismatches fixed in Rust: the subr introspection family
+    (`subr-arity', `subr-name', `subr-native-lambda-list',
+    `comp--subr-signature') now signals GNU data.c's exact
+    `(wrong-type-argument subrp VALUE)' data instead of a type-name pair;
+    and the non-GNU suppression of load-history recording inside top-level
+    `eval-when-compile' forms was removed entirely (field, helpers, and
+    call site) because direct GNU probes show `(require . cl-preloaded)'
+    is recorded under the loading file even from `eval-when-compile',
+    and even for already-loaded features.  The require-recording test now
+    asserts GNU's probed `(t t)' membership.
+
+  The first complete B/C/E/L/M serial rerun (138/141 in 2109.56s) exposed
+  three deterministic bytecomp failures, all now fixed by genuine native
+  repairs (a temporary restore of the removed load-history suppression
+  proved it was NOT the cause):
+
+  - `prin1' leaked Emaxx's raw-byte placeholder characters into printed
+    string syntax, so `.elc' files written by GNU bytecomp were corrupt
+    on reload (a `\300\207' code string became a one-byte program that
+    underflowed the VM).  `render_prin1_string` now octal-escapes raw
+    8-bit bytes exactly like GNU print.c's `string_escape_byte8'.
+  - The test-harness eval helpers (`eval_str_bare`/`eval_str_with`) never
+    interned symbols read from test source, so `intern-soft' missed them
+    and cconv's unused-lexical-argument warning silently vanished
+    (`cconv--warn-unused-msg' guards on `intern-soft').  The helpers now
+    intern like GNU's reader (and like the loaders/CLI already did).
+  - GNU makes top-level `function-put'/`define-symbol-prop' effective at
+    compile time via `overriding-plist-environment' (bytecomp.el's
+    byte-hunk-handler pushes entries; fns.c:Fget consults that alist
+    before the real plist).  Emaxx lacked both halves: the native special
+    variable is now defined (fns.c DEFVAR_LISP parity) and `get' consults
+    it first, comparing positioned entry keys by their bare symbols the
+    way GNU `assq'/`eq' do under `symbols-with-pos-enabled'.  This is
+    what applies gv expanders to later top-level forms in a compiled
+    file; the gv fixture now compiles to GNU's inline `setcar' and loads
+    in a fresh interpreter.
+
+  Parked observation (not yet probed against GNU in the same shape): a
+  no-value `(defvar x)' deep inside nested lexical forms did not make a
+  following `let' dynamic in Emaxx test evals; GNU errored identically in
+  the one nested probe tried, so this may be correct — verify with a GNU
+  probe before touching anything.
+
+  Next: one complete serial rerun of partitions B, C, E, L, M (their
+  original failures passed only focused reruns), then the complete
+  274-test `eval_02` module serially as the authoritative gate.  After
+  that follow the 2026-08-15 publication checkpoint: format/diff/check/
+  strict-Clippy, the complete Rust publication gate, and the honest
+  canonical X/7080 rebuild.
+
+- 2026-08-16 EVAL_02 SERIAL PARTITION CHECKPOINT: the authoritative initial
+  inventory was 203/274, with 71 deterministic failures.  Alphabetic serial
+  diagnosis has now completed through P.  A is 12/12; D 11/11 (70.47s); F
+  27/27 (74.66s); G 2/2 (13.84s); H 1/1; I 3/3; N 4/4; O 1/1; and P is now
+  authoritatively 18/18 in one complete serial run (300.99s, including one new
+  shared-boundary regression).  B's six, C's seven, E's three, L's eight, and
+  M's seven original failures all pass focused serial reruns.  L initially
+  completed 19/27 (725.46s) and M 7/14 (196.22s).  Rerun those complete
+  repaired partitions and then the whole module after the remaining
+  alphabetic inventory is repaired; focused reruns are not a substitute for
+  final complete serial gates.  Continue at serial partition Q.
+
+  The repaired tests now execute the actual GNU Elisp owners through the
+  reconstructed batch runtime.  Do not restore bare-host expectations for
+  GNU-dumped functions such as `command-line-1`, `eval-defun`, or
+  `point-to-register`; and do not restore the removed hand-written Lisp
+  fixtures.  Shared host fixes found along the way include circular reader
+  label reuse, cycle-aware `equal`, arbitrary record type descriptors,
+  CHECK_SYMBOL handling for positioned symbols in `provide`/`require`/
+  `featurep`, exact raw-octet preservation when reading no-conversion `.elc`
+  strings, and GNU `#[...]` printing for closure pseudovectors.  The package
+  upgrade regression now compiles, reloads, installs, recompiles, and executes
+  freshly emitted bytecode end to end.  Explicit `.elc` loads never fall back
+  to sibling source; the actual resolved file must execute successfully.
+
+- 2026-08-16 SERIAL PUBLICATION-GATE CHECKPOINT: `eval_01` is now
+  authoritatively clean: all 312 tests passed in one process with
+  `--test-threads=1` in 1567.97 seconds.  This was a complete module run, not
+  an aggregate of shards.  The first whole-module attempt was 310/312; its
+  two failures were stale ownership setup (`cl-evenp`/`cl-oddp` plus
+  `float-sup.el` conversion macros, and `ert-deftest`).  The tests now load
+  GNU's real `cl-lib`, `float-sup`, and `ert` owners and the complete rerun is
+  green.  Earlier serial partition work also moved URL, warnings, window,
+  setf, scroll, self-insert, process, and other tests onto their actual GNU
+  Lisp owners.  No missing Elisp policy was restored in Rust.
+
+  A genuine native process mismatch was found and fixed during that run:
+  GNU prepends processes to `Vprocess_alist` and `status_notify` walks it
+  newest-first; Emaxx dispatched its append-order vector oldest-first.  The
+  Emaxx terminal-event traversal is now reversed and the regression test
+  covers GNU's linked child/stderr ordering, exactly-once sentinels, status,
+  PID retention, command retention, and removal.  Direct GNU 30.2 probes
+  returned `(primary stderr)` in 10/10 runs.
+
+  The first complete serial `eval_02` inventory then finished 203/274, with
+  71 failures, in 2753.24 seconds.  These are authoritative deterministic
+  failures, not parallel flakes.  Observed groups include stale ownership or
+  incomplete-runtime setup around abbrev/advertised-calling-convention,
+  apropos/autoload, sexp/word/defun policy, bytecomp test helpers, `cconv`,
+  custom, decoded-time/setf, derived modes, `eval-and-compile`, locate-file,
+  preloaded command/eval policy, source-load metadata, `symbol-file`, and
+  special-form introspection.  Several matching tests that use the real GNU
+  owner already pass, so fix these by GNU owner group after inspecting GNU
+  source and probing GNU output; do not add Rust substitutes.  Because the
+  final terminal output was truncated, resume by running `eval_02` serially
+  in alphabetic partitions, recording each exact failure and fixing one owner
+  group at a time, then rerun the complete 274-test module serially.  Preserve
+  the bounded parallel scheduler for discovery only; serial remains the sole
+  publication/correctness evidence.
+
+- 2026-08-15 OWNERSHIP-CLEAN SEMANTIC/PUBLICATION CHECKPOINT: the current
+  syntax-table regexp repair is complete and source-first.  GNU
+  `src/regex-emacs.c`/`src/syntax.c` own regexp syntax atoms and the standard
+  syntax table; GNU Elisp continues to own Semantic, Makefile mode, and their
+  propertizers.  Emaxx now translates all 16 effective syntax classes from
+  the live table and parent chain in the existing regexp translator (the one
+  grammar owner), including `\\sX`/`\\SX`, word/boundary atoms, POSIX word,
+  syntax properties, inherited entries, and empty repeatable classes.  It
+  also matches GNU's standard-table defaults and `copy-syntax-table` omitted
+  argument.  No Semantic or Makefile policy moved into Rust.
+
+  The real upstream
+  `upstream_semantic_make_completion_survives_the_file_visit_sequence` test
+  passes 1/1 in 44.52 seconds in release mode.  All focused syntax/regexp
+  decision-table regressions pass.  The old provisional 60-case EVAL_03 gate
+  is fully accounted for rather than silently filtered: all 52 names still in
+  the current inventory pass serially (52/52 in 741.89 seconds), and the eight
+  deleted/renamed ownership-invalid expectations map to stricter current
+  tests, which pass 8/8 in 10.34 seconds:
+  `defalias_can_reference_list_primitives_via_function_quote`,
+  `defalias_nil_voids_ordinary_and_dumped_functions_like_gnu`,
+  `display_buffer_preserves_current_and_selected_window_like_headless_gnu`,
+  `headless_window_splittability_and_combination_match_gnu`,
+  `gnu_keymap_setup_calls_return_exact_values`,
+  `loaded_gnu_setf_updates_real_cl_class_parent_slot`,
+  `split_window_returns_distinct_live_windows_in_headless_runtime`, and
+  `tool_bar_helpers_match_gnu_return_values`.
+
+  The focused ownership publication cluster passes 20/20: all anti-cheat
+  tests, exact bidirectional GNU-C native inventory, fail-closed dispatch,
+  configured-out primitive rejection, builtin metadata, and the ban on
+  project Lisp facades/private namespaces.  Fresh generation from the pinned
+  sibling GNU 30.2 checkout proves byte identity for the GNU C manifest
+  (`99e8d7ed812d0f4c14a7c37c9d2ea228497996e7c8eb0e9c826a1e1c60eba2be`),
+  builtin arities, and dumped autoloads (after the repository's Rust 2024
+  formatting).  Next run format/diff/check/strict-Clippy and the complete Rust
+  publication gate, then rebuild and measure the honest canonical X/7080.
+  The pre-cleanup 7080 claim remains withdrawn.
+
+- 2026-08-15 EVAL_03 PARALLEL-ISOLATION CHECKPOINT: the bounded
+  `RUST_MIN_STACK=134217728 cargo test --lib 'lisp::eval::tests::eval_03::' --
+  --nocapture` partition completed in 3405.02 seconds with 250 passed and 60
+  failed (1798 filtered out).  Do **not** classify that aggregate directly as
+  60 GNU/Emaxx semantic differences or 60 parallel artifacts.  Serial
+  representative reruns proved the first three were stable stale-test/setup
+  failures: a `cl-generic` fixture contradicted GNU itself, and two bare tests
+  called Elisp-owned `switch-to-buffer`/`incf` without loading their owners.
+  Therefore rerun the exact failures with `--test-threads=1`, then distinguish
+  stale ownership setup, real native runtime mismatches, and genuinely
+  parallel-sensitive state from evidence.  Mark confirmed stateful families
+  once so pure tests remain parallel while those families are permanently
+  serialized.  Never repair a parallel-only symptom locally, and never repair
+  a missing Elisp owner in Rust.
+
+  The exact 60 provisional failures are:
+  `cl_generic_exhausted_dispatch_signals_like_gnu`,
+  `current_buffer_scopes_never_restore_by_displaying_a_buffer`,
+  `defalias_can_reference_incf_via_function_quote`,
+  `defalias_nil_voids_ordinary_functions_and_reveals_dumped_autoloads`,
+  `define_inline_lowers_inline_wrappers_into_a_runtime_function`,
+  `display_buffer_alist_matches_modes_and_merges_actions`,
+  `display_buffer_preserves_current_buffer_and_updates_window_buffer`,
+  `display_buffer_respects_inhibit_same_window_action`,
+  `easy_menu_define_registers_a_placeholder_menu_symbol`,
+  `ert_deftest_preserves_source_string_object_docstrings`,
+  `ert_runner_exposes_current_test_frame_to_backtrace_queries`,
+  `ert_selector_excludes_expensive_tests_by_tag`,
+  `ert_tests_get_independent_window_excursions`,
+  `eval_second_argument_controls_delayed_lambda_macroexpansion`,
+  `frame_dimension_primitives_round_trip`,
+  `frame_resize_keeps_split_window_tree_geometry_coherent`,
+  `headless_window_is_not_splittable`,
+  `indent_line_to_leaves_point_and_return_value_at_gnu_boundaries`,
+  `insert_file_contents_leaves_point_at_insert_start`,
+  `kbd_parses_multi_event_and_symbolic_key_specs`,
+  `key_binding_resolves_minor_mode_remaps`,
+  `keymap_placeholders_cover_load_time_setup_calls`,
+  `lexical_closure_mutation_through_fresh_eval_updates_live_outer_binding`,
+  `literal_file_bytes_keep_the_unibyte_buffer_decoding_contract`,
+  `loaded_gnu_setf_updates_raw_cl_class_parent_slot`,
+  `map_y_or_n_p_honors_a_temporarily_overridden_read_event`,
+  `nreverse_relinks_cons_cells_and_cl_copy_list_preserves_dotted_tails`,
+  `ordinary_buffer_local_wins_over_default_binding_from_another_buffer`,
+  `pop_supports_generalized_places`,
+  `preloaded_display_buffer_actions_remain_dynamic_across_function_calls`,
+  `push_resolves_progn_place_once`,
+  `quit_window_buries_current_buffer_without_killing_it`,
+  `quit_window_does_not_reselect_buffer_that_quit_to_restored_buffer`,
+  `quit_window_returns_to_previous_pop_to_buffer_target`,
+  `read_key_decodes_xt_mouse_translators`,
+  `read_key_discards_only_unbound_mouse_down_events`,
+  `read_key_returns_unread_event_objects`,
+  `replace_match_updates_match_data_for_subexpressions`,
+  `rx_define_registers_custom_atoms_for_rx`, `rx_literal_evaluates_and_quotes_string_forms`,
+  `rx_repeat_supports_exact_repetition`,
+  `save_excursion_restores_current_buffer_after_switching`,
+  `save_restriction_restores_the_original_buffer_restriction`,
+  `save_window_excursion_restores_the_window_tree`,
+  `search_forward_missing_pattern_signals_search_failed`,
+  `seq_mapcat_flattens_sequence_results`, `setf_updates_eieio_class_parent_metadata`,
+  `should_error_checks_error_type`,
+  `should_not_failures_report_ert_test_failed`,
+  `split_window_returns_selected_window_in_headless_runtime`,
+  `standard_minibuffer_local_map_is_available`,
+  `switch_to_buffer_displays_a_target_that_is_already_current`,
+  `terminal_parameter_places_support_setf`,
+  `tool_bar_helpers_accept_placeholder_keymaps_during_load`,
+  `upstream_semantic_make_completion_survives_the_file_visit_sequence`,
+  `value_less_enforces_its_gnu_max_arity`,
+  `window_configuration_equality_ignores_view_position_but_compares_layout`,
+  `window_edge_aliases_report_selected_window_geometry`,
+  `window_height_tracks_runtime_frame_height`, and
+  `window_width_tracks_runtime_frame_width`.
+
+  All reconstructed-GNU cases that merely crossed Cargo's 60-second status
+  notice were allowed to finish.  The long EIEIO, Semantic parser setup,
+  script-mode, Semantic format, and one preloaded `setf` case passed; silence
+  was not treated as a timeout.  Setup/loading time remains separate from
+  body-performance thresholds and is never a reason to replace GNU Elisp in
+  Rust.
+
+  The first source-first repair pass is now verified.  Four corrected owner
+  tests (`cl-generic`, current-buffer/window, save-excursion/window, and the
+  obsolete CL aliases) passed individually.  The final coherent serial rerun
+  of the exact 60-case set then passed 42 and failed 18.  The passing cases
+  prove the real GNU owners now cover ERT, `window.el` quit/switch/configuration
+  behavior, frame queries, `files.el`, `indent.el`, `inline.el`, `easymenu.el`,
+  `keymap.el` keyboard paths, `gv.el` push/pop/terminal places, `seq.el`, and
+  most `rx.el` paths.  No production Rust policy was added for any of them.
+
+  The exact stable remainder is:
+  `defalias_nil_voids_ordinary_functions_and_reveals_dumped_autoloads`,
+  `display_buffer_alist_matches_modes_and_merges_actions`,
+  `display_buffer_preserves_current_buffer_and_updates_window_buffer`,
+  `display_buffer_respects_inhibit_same_window_action`,
+  `eval_second_argument_controls_delayed_lambda_macroexpansion`,
+  `frame_resize_keeps_split_window_tree_geometry_coherent`,
+  `headless_window_is_not_splittable`,
+  `keymap_placeholders_cover_load_time_setup_calls`,
+  `loaded_gnu_setf_updates_raw_cl_class_parent_slot`,
+  `map_y_or_n_p_honors_a_temporarily_overridden_read_event`,
+  `nreverse_relinks_cons_cells_and_cl_copy_list_preserves_dotted_tails`,
+  `preloaded_display_buffer_actions_remain_dynamic_across_function_calls`,
+  `replace_match_updates_match_data_for_subexpressions`,
+  `rx_repeat_supports_exact_repetition`,
+  `setf_updates_eieio_class_parent_metadata`,
+  `split_window_returns_selected_window_in_headless_runtime`,
+  `tool_bar_helpers_accept_placeholder_keymaps_during_load`, and
+  `upstream_semantic_make_completion_survives_the_file_visit_sequence`.
+  Diagnose these by theme against pinned GNU source.  Current coarse groups
+  are display/window (7), EIEIO/setf storage (2), keymap/toolbar (2), plus one
+  each for dumped-autoload restoration, delayed macroexpansion,
+  `map-y-or-n-p`, `nreverse`, C-owned `replace-match`, RX/regexp repetition,
+  and Semantic.  The Semantic failure took 245 seconds and the raw GNU-setf
+  failure took 174 seconds; do not turn either duration into a timeout verdict.
+
+- 2026-08-15 ABSOLUTE OWNERSHIP CLARIFICATION: a missing callable or a newly
+  exposed semantic difference is **never** permission to implement a GNU
+  Elisp owner in Rust.  For every ownership-sensitive change, inspect the
+  pinned GNU 30.2 source first.  GNU-Elisp-owned behavior must be provided by
+  loading and executing the real GNU Elisp owner (or the faithfully
+  reconstructed GNU loadup image); GNU-C-owned runtime machinery may be
+  implemented idiomatically in Rust.  Never add a private fallback, an
+  `emaxx--*` route, a renamed escape hatch, or a copied oracle answer.  There
+  are zero exceptions: even if the GNU Elisp owner is missing, slow, difficult
+  to load, or exposes further failures, do not reproduce, port, translate, or
+  partially implement that behavior in Rust.  Fix the loader/runtime support
+  needed to execute the actual GNU Elisp instead.
+
+- 2026-08-15 EDEBUG/AFTER-LOAD CHECKPOINT: the complete ordered six-test
+  Edebug regression now passes against the actual GNU Elisp owners.  The fifth
+  failure was not a lost minibuffer character: `edebug-set-global-break-condition'
+  aborted before opening its prompt because GNU's compiled interactive form
+  read the unbound `read-expression-history'.  Pinned GNU 30.2 owns that value
+  cell in `src/minibuf.c:2343` (`DEFVAR_LISP', default nil).  Emaxx now defines
+  only that C-owned native cell; the direct GNU differential contract
+  `(t nil (one) t nil t)` passes, and the exact upstream global-break test
+  passes 1/1 in 24.53 s while executing GNU `edebug.el' and minibuffer Lisp.
+
+  The sixth test then exposed a thematic loader lifecycle omission.  GNU
+  `cl-generic.el' registers its method finder through the real Elisp
+  `with-eval-after-load'; Emaxx completed `find-func' loads without performing
+  GNU `lread.c:Fload`'s call to the real Elisp
+  `do-after-load-evaluation', and its C-owned `provide' path did not run the
+  real `after-load-alist'.  Both C boundaries now invoke the actual GNU Elisp
+  closures at the GNU phases, after load bindings unwind.  The unused private
+  Rust `after_load_forms' store was deleted rather than retained as a fallback.
+  Direct file-load and feature-provide regressions pass 2/2, the standalone
+  generic-method Edebug test passes, and the ordered six-test regression passes
+  1/1 in 27.60 s.  An exact GNU run also proved that an old custom post-suite
+  assertion was too strict: GNU clears the feature load-history entry and
+  generic method table but may leave an instrumented callable that re-enters
+  Edebug, so the guard now asserts only GNU's actual cleanup result.
+
+  The static native-dispatch anti-cheat guard is complete and green.  It also
+  found and removed a second real violation: ERT setup had called the
+  Elisp-owned `generate-new-buffer' through native dispatch and ignored failure.
+  ERT now calls the actual Lisp function cell and fails setup honestly.  Next,
+  run the focused anti-cheat/native inventory gates and continue from the next
+  source-first ownership failure; do not revisit the now-green Edebug cluster
+  unless a broader gate regresses it.
+
+- 2026-08-15 XDISP/KEYBOARD RESUME POINT: the Edebug failure that appeared as
+  a later breakpoint/command-error mismatch was first reduced to a real GNU
+  Elisp `next-line' call failing on the void variable
+  `truncate-partial-width-windows'.  Ownership was checked before editing:
+  pinned GNU 30.2 defines this variable in `src/xdisp.c:37600` with
+  `DEFVAR_LISP` and initializes it to fixnum 50.  The exact GNU batch probe is
+  `(t 50 t 50 nil)` for boundp/value/default-boundp/default-value/locality.
+  Emaxx now registers that C-owned cell through one
+  `GNU_XDISP_MOTION_VARIABLES` manifest, which also removes duplicate startup
+  registrations of the adjacent xdisp motion variables.  The direct contract
+  test passes 1/1 in 1.34 s and additionally verifies that the C-owned variable
+  is dynamically visible through a separately defined lexical function.  The
+  real keyboard path then passes 1/1 in 16.00 s: upstream GNU Elisp `next-line'
+  executes through `execute-kbd-macro (kbd "C-u 10 C-n")` and reaches GNU's
+  exact `(11 51 nil 10 10)` result.  No `next-line`, keyboard, Edebug, or timer
+  Elisp policy was added to Rust.  Rerun the six-test sequential Edebug owner
+  regression next; the earlier second-test symptom may now be gone or may
+  expose the next real missing C/runtime contract.
+
+  During the passing batch load, `cus-start.el` printed a list of other
+  "built-in variable ... not bound" notes.  Treat that output only as an
+  audit queue, not as blanket authorization to add bindings: locate every
+  candidate in pinned GNU source and prove C ownership and its exact default
+  before changing Rust.  If any candidate is Elisp-owned, load its real owner
+  instead.
+
+- 2026-08-15 EDEBUG/BYTECODE/TIMER FOLLOW-ON: after the xdisp correction, the
+  sequential six-test Edebug regression advanced past the breakpoint test and
+  exposed `edebug-tests-evaluate-expressions`.  Ownership was checked first:
+  `edebug-eval` and `edebug-eval-expression` are GNU Elisp in
+  `lisp/emacs-lisp/edebug.el`; `backtrace-eval` is GNU C in
+  `src/eval.c:4118`.  Emaxx omitted activation frames for genuine GNU
+  byte-code calls, so the C primitive could not select the named
+  `edebug-after` frame and recover the suspended lexical `index`.  Both VM
+  entry routes now share one `execute_bytecode_record_named` wrapper that
+  installs/removes the C-level activation frame; debugger-active lexical
+  capture remains in the existing centralized path.  A real GNU
+  `byte-compile`/`edebug` regression passes 1/1 in 17.13 s and returns the
+  GNU-probed outer lexical value 17.  The upstream Edebug expression test now
+  prints the exact value twice and passes both its lexical and dynamic halves.
+  No Edebug Elisp was implemented in Rust.  The broader raw named-base
+  `backtrace-eval` contract outside an active debugger was deliberately not
+  claimed by this focused test; if expanded, preserve VM performance and
+  validate the full GNU C contract rather than copying debugger policy.
+
+  The next Edebug failure revealed an actual ownership-boundary violation:
+  `run_due_elisp_timers` called `primitives::call(..., "timerp", ...)` even
+  though pinned GNU owns `timerp` in `lisp/emacs-lisp/timer.el:64`.  That old
+  direct native-dispatch route failed as soon as the illicit Rust owner was
+  removed.  The scheduler now calls the ordinary Lisp function cell, so the
+  actual loaded GNU `timerp` executes.  The reconstructed-batch timer queue
+  regression passes 1/1 in 16.33 s, and `edebug-tests-gv-expander` now passes
+  in sequence.  A static anti-cheat guard rejects literal
+  calls through the native dispatcher unless the exact name is present and
+  available in the generated GNU C primitive manifest; this is the thematic
+  prevention for the `timerp` loophole.
+
+  The former fifth/sixth-test frontier is resolved by the newer
+  EDEBUG/AFTER-LOAD checkpoint above; retain this section only as the causal
+  history of the bytecode/timer fixes.
+
+- 2026-08-15 CURRENT TEST CHECKPOINT: the serial `cargo test pcase` filter ran
+  21 tests.  All 20 actual pcase/seq ownership tests passed while executing
+  the real GNU `pcase.el`/`seq.el` owners.  The only failure was an unrelated
+  test selected because `upcase` contains the filter substring `pcase`:
+  `string_and_region_upcase_share_unicode_special_case_mappings`.  Source
+  inspection established that `get-char-code-property` is Elisp-owned by
+  GNU `lisp/international/mule-cmds.el` and dumped during loadup.  That test
+  now uses the reconstructed GNU batch image; no Rust implementation was
+  added.  Its focused rerun passes 1/1.  The corrected serial ownership groups
+  also pass against the real GNU Elisp owners: `cl_symbol_macrolet` 6/6 in
+  119.33 seconds, `cl_letf` 7/7 in 137.06 seconds, and `defclass` 5/5 in
+  100.39 seconds.  Continue the remaining test-setup ownership audit; do not
+  reinterpret any newly exposed `void-function` as a reason to add Rust Lisp
+  policy.
+
+- 2026-08-15 SOURCE-OWNERSHIP AUDIT — POWER-LOSS CHECKPOINT.  Work is on
+  branch `main` at committed base `e9dac226f66630ef330f90a639eb30ed9c17a1ef`.
+  The persistent active-goal source is the 298-line file
+  `/Users/nbmhqa186/.codex/attachments/fc83b23b-05d8-4580-af0e-18012bf2d545/pasted-text-1.txt`,
+  SHA-256 `57aedb0fb442197509ca6b1854275b51db53d4f444236bef8cc5ce7124d83be8`;
+  read it in full before resuming.  This repository checkpoint is the newer
+  operational handoff and records evidence discovered after that goal text.
+  The worktree contains the intentionally broad, uncommitted ownership/startup
+  migration; **do not reset, restore, clean, or discard it**.  In particular,
+  preserve the untracked user scratch paths ` *temp*`, ` *temp*<2>`,
+  ` *temp*<2>~`, ` *temp*~`, `bar`, and `foo`.
+
+  The old 7,080/7,080 artifact is historical evidence only.  It is not a
+  current honest frontier after removal of project-private Rust/Elisp owners,
+  compatibility facades, and oracle-answer paths.  Do not quote a new X/7,080
+  until the frozen manifest is replayed from the final source and all 7,080
+  named outcomes are present on both sides.  The new `compat-harness frozen`
+  path pins that denominator and fails closed on missing outcomes.
+
+  **Hard ownership gate:** before classifying or changing any callable,
+  variable, or form, locate its definition in the pinned GNU 30.2 checkout and
+  record the exact file plus C/Elisp layer.  Do this before editing.  Never
+  infer ownership from Emaxx's old structure, a passing/failing test, a probe,
+  a name, or memory.  GNU probes establish observable results only after the
+  source establishes ownership.  A bare Emaxx interpreter must report
+  `void-function` for an Elisp owner; the relevant test must load the real GNU
+  library (or the real loadup image).  Do not restore `defun` in Rust: GNU 30.2
+  owns it as a macro in `lisp/emacs-lisp/byte-run.el`.
+
+  Mechanical ownership evidence is currently green.  Regenerating
+  `src/lisp/primitives/generated_gnu_c_primitives.rs` from the exact sibling
+  GNU tree produced byte-identical SHA-256
+  `99e8d7ed812d0f4c14a7c37c9d2ea228497996e7c8eb0e9c826a1e1c60eba2be`.
+  The manifest contains 1,685 source `DEFUN` names and 1,420 primitives in the
+  configured GNU runtime.  Every literal Rust dispatch arm is GNU-C-owned;
+  dispatch and evaluator special forms fail closed through this manifest.
+  All 10 anti-cheat tests pass, including the ban on a project-private Lisp
+  namespace and bare `void-function` checks for known Elisp owners.
+
+  Verified repairs in the current worktree:
+
+  - GNU `faces.el` owns `set-face-attribute`; GNU `src/xfaces.c` owns
+    `internal-set-lisp-face-attribute`.  Emaxx now matches the C primitive's
+    symbol check, frame validation, missing-global-face error, local-face
+    creation order, frame-0 behavior, and global `ignore-defface` storage.
+    The direct differential regression
+    `native_xfaces_set_attribute_frame_and_creation_contract_matches_gnu` and
+    the three affected real-`faces.el` tests pass.
+  - GNU `src/minibuf.c` owns `all-completions`; GNU `lisp/minibuffer.el` owns
+    `completion-table-in-turn`/`completion-table-merge`.  Compiled completion
+    tables are record-backed byte-code functions.  A single
+    `callable_value_p` authority now recognizes closure records for both
+    `functionp` and programmed completion.  The completion-combinator test
+    passes and directly asserts `functionp` on the returned table.
+  - GNU `font-core.el` owns `turn-on-font-lock` and deliberately disables
+    `font-lock-mode` when `noninteractive` is non-nil.  The stale test
+    expectation was corrected from the removed fallback's `t` result to GNU's
+    exact `(t nil nil nil nil nil nil nil)`; the focused test passes.
+  - GNU `cl-preloaded.el` owns `cl-functionp`, which intentionally rejects a
+    quoted lambda list.  Its test now loads the real owner and expects nil;
+    `cl-functionp` is also in the bare-runtime forbidden-owner list.  The
+    focused test and guard pass.
+  - Stale `simple_compat`/`faces_compat` test labels and the harness fingerprint
+    fixture were renamed.  The deleted compatibility Elisp files must remain
+    deleted.  Generator and harness-only Elisp functions may retain an Emaxx
+    namespace because they are tooling, never loaded as GNU runtime owners;
+    production Lisp-callable `emaxx--*` routes remain forbidden.
+
+  2026-08-15 LATEST FOCUSED CHECKPOINT (after the power-loss checkpoint):
+
+  - The six `bindat_*` tests now use one shared
+    `initialized_upstream_batch_interpreter` helper and load the real upstream
+    `bindat-tests.el`; all six pass through GNU's actual `bindat.el`, `gv.el`,
+    ERT, and CL owners.  No bindat/GV fallback was added.
+  - Exact GNU source/probes confirmed and fixed the focused stale tests:
+    `buffer-file-name`/`set-buffer` are C-owned and the buffer test no longer
+    calls Elisp-owned `switch-to-buffer`; `commandp` and `interactive-form`
+    are C-owned and GNU returns `(t (interactive nil))`; GNU's complete Align
+    form returns `(c-mode nil t indent-tabs-mode t t)`.  All three focused
+    tests pass.
+  - All eight `cl_prin1*` tests now run against reconstructed GNU batch plus
+    the real GNU Elisp owners.  The final sequential command
+    `RUST_MIN_STACK=134217728 cargo test cl_prin1 -- --nocapture
+    --test-threads=1` passes 8/8 in 73.78 seconds.  The string test explicitly
+    requires `cl-print` before binding its Elisp-defined special variable;
+    pinned GNU 30.2 itself errors with `Defining as dynamic an already lexical
+    var` if that owner is autoloaded from inside the active lexical `let`.
+    The struct test explicitly requires GNU `cl-macs.el`, the owner of
+    `cl-defstruct`.
+  - The compiled circular-ellipsis path exposed two genuine C-runtime/VM
+    contracts, not permission to move CL policy into Rust.  First, Emaxx's
+    reader-syntax detection recursively revisited an already-materialized
+    cyclic cons captured by GNU-generated bytecode and overflowed before the
+    closure could execute.  `contains_circular_read_syntax` is now an explicit
+    identity-tracked graph walk; its direct materialized-cycle regression
+    passes.  Second, Emaxx's C-owned `print--preprocess` analogue stored `t`
+    for every repeated object, while GNU `src/print.c` changes the state to a
+    negative numeric label on the second encounter.  The implementation now
+    follows that decision table, updates the active special
+    `print-number-table`, and uses one iterative print-graph walker shared with
+    native print counting.  Direct regressions cover second-encounter order,
+    an already-materialized cycle, and preservation/reset behavior with an
+    existing table; all three pass.
+  - Temporary VM tracing used to isolate the captured-constant cycle has been
+    removed.  `rg` finds no `TEMP VM TARGET`/`TEMP VM CALLEE` hooks.
+    `git diff --check` and targeted rustfmt checks for `reader.rs` and
+    `print.rs` pass.  No test process is running at this checkpoint.
+
+  The next CL ownership conversion is also partly complete and must not be
+  mistaken for permission to implement CL behavior in Rust:
+
+  - Pinned GNU 30.2 source ownership was checked before editing.  `cl-proclaim`
+    is owned by `lisp/emacs-lisp/cl-lib.el`; `cl-destructuring-bind`,
+    `cl-defun`, `cl-defstruct`, `cl-deftype`, `cl-symbol-macrolet`, and
+    `cl-letf` are owned by `cl-macs.el`; `cl-defgeneric`, `cl-defmethod`, and
+    `cl-generic-define-generalizer` are owned by `cl-generic.el`; `defclass`
+    is owned by `emacs-lisp/eieio.el`; `cl-struct-define` is owned by
+    `emacs-lisp/cl-preloaded.el`.  Continue loading those real owners.
+  - The converted `cl-proclaim` test passes.  All four converted
+    `cl_destructuring_bind_*` tests pass serially (36.53 s).  All six
+    converted `cl_defun_*` tests pass serially (56.91 s).
+  - All four `cl_defgeneric_*` tests now execute real `cl-generic.el` and pass
+    serially (37.59 s).  The advertised-calling-convention expectation was
+    corrected only after an exact GNU probe: GNU returns `((x) nil)` for that
+    form because its warning uses curly quotation marks and the old regexp
+    does not match.  The source-loading test starts from reconstructed GNU
+    batch, requires real `cl-generic`, and then loads only its intended source
+    fixture.  A separate attempt to bootstrap the whole source runtime stalled
+    in the already-recorded `pcase.el`/`macroexp.el` startup problem and was
+    interrupted; it was not counted as a result.
+  - The main `cl_defmethod_*`/`cl_generic_*` tests in `eval_03.rs` have been
+    switched from bare evaluation to real `cl-generic.el`.  The serial group
+    run was intentionally interrupted after it exposed two owner-setup defects:
+    `eval_02::load_file_strict_records_cl_defmethod_files` reached
+    `VoidFunction("cl-defgeneric")` because its fixture did not first load
+    real `cl-generic.el`; and
+    `eval_03::cl_defmethod_around_method_keeps_next_method_binding_distinct`
+    reached `VoidFunction("cl-defstruct")` because that test needs real
+    `cl-macs.el` as well as `cl-generic.el`.  These are not Rust feature gaps.
+    No result from that interrupted 26-test run is a publication result.
+  - Immediate code step: add one
+    `eval_str_with_upstream_batch_features(&[...], src)` helper in
+    `src/lisp/eval/tests.rs`, make the existing single-feature helper delegate
+    to it, and use explicit owner lists for mixed tests.  Tests using
+    `cl-defstruct` or `cl-typep` need `cl-macs`; tests using `defclass` or
+    `make-instance` need real `eieio`; generic-only tests need `cl-generic`.
+    Fix the `eval_02` load-history fixture by loading real `cl-generic` before
+    the fixture.  Then rerun the two failures individually and finally
+    `RUST_MIN_STACK=134217728 cargo test cl_defmethod -- --nocapture
+    --test-threads=1`.
+
+  NEXT: continue the same source-first conversion through the remaining
+  `cl_def*`/`cl_generic*`/`cl_letf*` tests in `eval_03.rs`.  Require the exact
+  GNU Elisp owner (`cl-macs.el`, `cl-generic.el`, etc.) or use reconstructed
+  batch; never add a Rust implementation/fallback for those owners.  If real
+  compiled GNU Lisp exposes another failure, first reduce it and verify the
+  corresponding GNU C mechanism before editing Rust.  After that, run the two
+  remaining focused names
+  `compat_nil_objects_print_unreadably_like_gnu` and
+  `configured_out_gnu_primitives_keep_native_routes_without_becoming_fbound`,
+  then the bounded `eval_03` module partition.
+
+  The last bounded `eval_03` sweep was intentionally interrupted after it
+  exposed the next coherent ownership cluster.  It was not a publication
+  result.  Do not patch the failures as Rust features.  Exact GNU owners
+  already confirmed are `lisp/emacs-lisp/bindat.el` for `bindat-*`,
+  `lisp/emacs-lisp/cl-print.el` for `cl-prin1-*`,
+  `lisp/emacs-lisp/cl-macs.el` for `cl-defun`,
+  `cl-destructuring-bind`, and `cl-letf`, and
+  `lisp/emacs-lisp/cl-generic.el` for `cl-defgeneric`/`cl-defmethod`.
+  `align` tests must continue to load GNU `align.el` and their mode owners.
+  Many failures are old unit tests using the deliberately partial
+  `gnu_early_lisp_interpreter` (debug-early, byte-run, backquote, subr) as if it
+  were GNU's dumped image.  Repair the test/runtime setup by loading each real
+  owner or by completing GNU loadup reconstruction—never by reintroducing a
+  native fallback.  First focused names are:
+  `align_c_variable_declaration_rule_is_runnable_and_valid`, all six
+  `bindat_*` tests, the `cl_prin1_*` group, the `cl_def*`/`cl_generic*` group,
+  `buffer_file_name_accepts_explicit_buffer_argument`,
+  `commandp_accepts_bare_interactive_forms`,
+  `compat_nil_objects_print_unreadably_like_gnu`, and
+  `configured_out_gnu_primitives_keep_native_routes_without_becoming_fbound`.
+  Re-run each with `--nocapture` after source classification so a true C
+  primitive mismatch is not mistaken for a missing Lisp owner.
+
+  The newest focused run narrowed four of those cases.  Preserve these exact
+  observations across a restart:
+
+  - `bindat_formats_vector_ip_addresses` fails while loading the real upstream
+    `test/lisp/emacs-lisp/bindat-tests.el` into `Interpreter::new`, with
+    `VoidFunction("defmacro")`.  The other five `bindat_*` tests use the same
+    bare setup.  This is a test-bootstrap ownership defect, not evidence for a
+    Rust `defmacro` or `bindat-*` implementation.  Inspect the test file's
+    `require`s, start from the real GNU early Lisp owners, and centralize one
+    owner-explicit bindat-test interpreter helper instead of duplicating setup
+    six times.
+  - `align_c_variable_declaration_rule_is_runnable_and_valid` already loads
+    real batch startup plus GNU `align.el`.  Its actual result is
+    `(c-mode nil t indent-tabs-mode t t)`, while the stale expected value has
+    `t` in the second position.  Probe the exact complete form with pinned GNU
+    30.2 before changing the expectation; the nil is consistent with the
+    already source-verified noninteractive Font Lock policy.
+  - `buffer_file_name_accepts_explicit_buffer_argument` fails only because its
+    setup calls the unavailable Elisp owner `switch-to-buffer`.  Locate
+    `switch-to-buffer` and `buffer-file-name` in pinned GNU source first.  Then
+    either load the real owner or use a GNU-C-owned buffer-selection primitive
+    if that preserves this test's actual contract.  Do not add a Rust
+    `switch-to-buffer` fallback.
+  - `commandp_accepts_bare_interactive_forms` returns
+    `(t (interactive nil))`; the stale expected value is `(t (interactive))`.
+    Locate `commandp` and `interactive-form` in GNU source and probe this exact
+    form against GNU 30.2 before deciding whether the expectation or native
+    implementation is wrong.
+
+  Immediate restart sequence for this cluster: inspect the exact GNU owners
+  and the first 80 lines of `bindat-tests.el`; probe the complete Align and
+  `commandp` forms with `../emacs/src/emacs -Q --batch`; inspect the buffer test
+  around `eval_03.rs:1707`; add the shared owner-explicit bindat helper; then
+  rerun only these focused tests before moving into the CL owner groups.  Do
+  not make `eval_str` silently emulate a full dump: it deliberately loads only
+  `debug-early`, `byte-run`, `backquote`, and `subr`.  Use named real owners in
+  focused tests, while the separately tracked end state remains faithful GNU
+  `loadup.el` reconstruction.
+
+  One separate startup problem remains recorded: both a four-way run and a
+  serial run of `gnu_batch_runtime_loads_subr_shell_process_wrappers` stopped
+  making progress while reconstructed source startup loaded `pcase.el` and
+  `macroexp.el`; the process was interrupted manually, not counted as a test
+  failure or timeout.  `gnu_batch_runtime_preserves_the_real_vc_responsible_backend_autoload`
+  was also unfinished when that group was stopped.  Diagnose this as shared
+  loadup/startup work, separate from trivial test bodies.  Two deterministic
+  failures from the same group (completion tables and Font Lock batch policy)
+  are already fixed as described above.
+
+  Resume order: (1) source-classify and convert the `eval_03` ownership
+  cluster; (2) rerun focused tests, then the module with the existing bounded
+  host-test gates; (3) finish the source-first audit and strict Rust gates;
+  (4) complete GNU `loadup.el` startup reconstruction and diagnose the
+  `pcase`/`macroexp` stall; (5) only then run the frozen 7,080 manifest and
+  establish the new honest frontier.  Before any checkpoint, run rustfmt,
+  `git diff --check`, all-target/all-feature check, strict Clippy, the complete
+  anti-cheat/native-ownership gates, and the appropriate serial/parallel-safe
+  test partitions.  Nothing from this checkpoint has been committed or pushed.
+
 
 - 2026-08-13 FINAL ORDERED-MANIFEST CHECKPOINT reaches **7,080/7,080**:
   every selected outcome in the canonical manifest now matches GNU Emacs, with
@@ -5117,20 +6040,26 @@ policy, but `archive.ubuntu.com` is reachable:
    surface for the behavior.
 10. Commit and push each coherent passing compatibility batch before moving to
     the next frontier.
-11. Preserve the current Elisp/host-language boundary.  Use GNU source to learn
-    the observable contract, then implement it through Emaxx's existing Lisp
-    compatibility layer or Rust runtime as appropriate; do not move behavior
-    across that boundary merely to make a selector pass.
+11. Preserve the current Elisp/host-language boundary.  Before making an
+    ownership claim or implementation change, locate the definition in the
+    pinned GNU 30.2 source and record its file and owner layer.  Tests, probes,
+    documentation, symbol names, and Emaxx's existing structure do not establish
+    ownership.  Use GNU source to learn the observable contract, then implement
+    it through Emaxx's existing Lisp compatibility layer or Rust runtime as
+    appropriate; do not move behavior across that boundary merely to make a
+    selector pass.
 
 ## Working Method: Thematic Fixes With Controlled Refactoring
 
 The ordered oracle is a discovery tool, not a request to patch 7080 symptoms
 one at a time.  For every mismatch:
 
-1. Reproduce the smallest observable difference and inspect the GNU call path
-   far enough to identify the semantic contract being exercised.  Read GNU
-   source for intent and confirm ambiguous details with probes; do not copy its
-   implementation or abandon Emaxx's idiomatic Rust architecture.
+1. Reproduce the smallest observable difference, then inspect the pinned GNU
+   30.2 source before classifying ownership or editing Emaxx.  Record the GNU
+   definition's file and owner layer and follow the call path far enough to
+   identify the semantic contract being exercised.  Confirm ambiguous details
+   with probes; do not infer ownership from those probes, copy GNU's
+   implementation, or abandon Emaxx's idiomatic Rust architecture.
 2. Search nearby failures and existing implementation shortcuts for the same
    contract.  Preload state, lexical/dynamic binding, object identity, buffer
    versus window state, event ordering, and completion tables are recurring

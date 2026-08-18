@@ -15,11 +15,6 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             // ── Allocation ──
-            "make-abbrev-table" => {
-                need_arg_range(name, args, 0, 1)?;
-                let props = args.first().cloned().unwrap_or(Value::Nil);
-                Ok(make_runtime_abbrev_table(interp, None, props))
-            }
             "make-string" => {
                 if args.is_empty() || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(
@@ -100,10 +95,6 @@ define_dispatch!(
                         .as_deref(),
                 ))
             }
-            "make-mode-line-mouse-map" => {
-                need_args(name, args, 2)?;
-                Ok(keymap_placeholder(Some("mode-line-mouse-map")))
-            }
             "vconcat" => {
                 let mut items = vec![Value::symbol("vector-literal")];
                 for value in args {
@@ -126,35 +117,18 @@ define_dispatch!(
             }
             "record" => {
                 need_args(name, args, 1)?;
-                if let Ok(type_name) = args[0].as_symbol() {
-                    Ok(interp.create_record(type_name, args[1..].to_vec()))
-                } else {
-                    Ok(interp.create_record("literal-record", args.to_vec()))
-                }
+                Ok(interp.create_record_with_type(args[0].clone(), args[1..].to_vec()))
             }
             "make-record" => {
                 need_args(name, args, 3)?;
-                let (type_name, class_object_tagged) = match args[0].as_symbol() {
-                    Ok(type_name) => (type_name.to_string(), false),
-                    Err(_) => (
-                        interp.class_name_from_value(&args[0]).ok_or_else(|| {
-                            LispError::TypeError("symbol".into(), args[0].type_name())
-                        })?,
-                        true,
-                    ),
-                };
                 let length = args[1].as_integer()?;
                 if length < 0 {
                     return Err(LispError::Signal("Wrong type argument: natnump".into()));
                 }
-                let record = interp.create_record(
-                    &type_name,
+                Ok(interp.create_record_with_type(
+                    args[0].clone(),
                     std::iter::repeat_n(args[2].clone(), length as usize).collect(),
-                );
-                if class_object_tagged && let Value::Record(record_id) = &record {
-                    interp.mark_class_object_tagged_record(*record_id);
-                }
-                Ok(record)
+                ))
             }
             "make-finalizer" => {
                 need_args(name, args, 1)?;
@@ -229,162 +203,8 @@ define_dispatch!(
                 ))
             }
             "string-match" => regexp::string_match_impl(interp, args, env, true),
-            "string-match-p" => regexp::string_match_impl(interp, args, env, false),
+
             "posix-string-match" => regexp::posix_string_match_impl(interp, args, env),
-            "subregexp-context-p" => {
-                need_arg_range(name, args, 2, 3)?;
-                let regexp = string_text(&args[0])?;
-                let pos = args[1].as_integer()?;
-                let start = args
-                    .get(2)
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(0);
-                if start < 0 || pos < start {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("args-out-of-range".into()),
-                        Value::Nil,
-                    ])));
-                }
-                let prefix: String = regexp
-                    .chars()
-                    .skip(start as usize)
-                    .take((pos - start) as usize)
-                    .collect();
-                match regexp::validate_elisp_regex(&prefix) {
-                    Ok(()) => Ok(Value::T),
-                    Err(error) if regexp::non_subregexp_context_error(&error) => Ok(Value::Nil),
-                    Err(_) => Ok(Value::T),
-                }
-            }
-            "isearch-no-upper-case-p" => {
-                need_args(name, args, 2)?;
-                Ok(
-                    if regexp::isearch_no_upper_case_p(&string_text(&args[0])?, args[1].is_truthy())
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
-            "string-empty-p" => {
-                need_args(name, args, 1)?;
-                Ok(if string_text(&args[0])?.is_empty() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "string-prefix-p" | "string-suffix-p" => {
-                need_arg_range(name, args, 2, 3)?;
-                let ignore_case = args.get(2).is_some_and(Value::is_truthy);
-                let comparison = if name == "string-prefix-p" {
-                    // This is preloaded Lisp in GNU's subr.el.  Preserve its
-                    // evaluation and short-circuit order instead of imposing
-                    // a stricter native string-only contract: non-string
-                    // sequences can reach the length comparison, and a
-                    // longer prefix returns nil before compare-strings runs.
-                    let affix_length = sequence_length_value(interp, &args[0])?;
-                    let text_length = sequence_length_value(interp, &args[1])?;
-                    if affix_length > text_length {
-                        return Ok(Value::Nil);
-                    }
-                    let zero = Value::Integer(0);
-                    let end = Value::Integer(affix_length);
-                    compare_strings_value(
-                        &args[0],
-                        Some(&zero),
-                        Some(&end),
-                        &args[1],
-                        Some(&zero),
-                        Some(&end),
-                        ignore_case,
-                    )?
-                } else {
-                    // string-suffix-p computes STRING's length first in
-                    // subr.el, then short-circuits when SUFFIX is longer.
-                    let text_length = sequence_length_value(interp, &args[1])?;
-                    let affix_length = sequence_length_value(interp, &args[0])?;
-                    let start = text_length - affix_length;
-                    if start < 0 {
-                        return Ok(Value::Nil);
-                    }
-                    let start = Value::Integer(start);
-                    compare_strings_value(
-                        &args[0],
-                        None,
-                        None,
-                        &args[1],
-                        Some(&start),
-                        None,
-                        ignore_case,
-                    )?
-                };
-                Ok(if matches!(comparison, Value::T) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "string-limit" => {
-                need_arg_range(name, args, 2, 4)?;
-                let text = string_text(&args[0])?;
-                let length = args[1].as_integer()?;
-                if length < 0 {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("wrong-type-argument".into()),
-                        Value::Symbol("natnump".into()),
-                        args[1].clone(),
-                    ])));
-                }
-                let limit = length as usize;
-                let end = args.get(2).is_some_and(Value::is_truthy);
-                let coding_system = args.get(3).is_some_and(Value::is_truthy);
-                if coding_system {
-                    let bytes = text.as_bytes();
-                    if bytes.len() <= limit {
-                        return Ok(Value::String(text.into()));
-                    }
-                    if end {
-                        let mut start = bytes.len().saturating_sub(limit);
-                        while start < bytes.len() && !text.is_char_boundary(start) {
-                            start += 1;
-                        }
-                        return Ok(Value::String(text[start..].to_string().into()));
-                    }
-                    let mut end_byte = limit.min(bytes.len());
-                    while end_byte > 0 && !text.is_char_boundary(end_byte) {
-                        end_byte -= 1;
-                    }
-                    return Ok(Value::String(text[..end_byte].to_string().into()));
-                }
-                let char_len = text.chars().count();
-                if char_len <= limit {
-                    return Ok(Value::String(text.into()));
-                }
-                let limited = if end {
-                    text.chars()
-                        .skip(char_len.saturating_sub(limit))
-                        .collect::<String>()
-                } else {
-                    text.chars().take(limit).collect::<String>()
-                };
-                Ok(Value::String(limited.into()))
-            }
-            "split-string" => {
-                if args.is_empty() || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                regexp::split_string_impl(interp, &args[0], args.get(1), args.get(2), env)
-            }
-            "string-split" => {
-                if args.is_empty() || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                regexp::split_string_impl(interp, &args[0], args.get(1), args.get(2), env)
-            }
             "string-width" => {
                 if args.is_empty() || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(
@@ -431,107 +251,6 @@ define_dispatch!(
                 };
                 Ok(Value::Integer(width as i64))
             }
-            "truncate-string-to-width" => {
-                // GNU takes a sixth ELLIPSIS-TEXT-PROPERTY argument (it only
-                // affects display properties on the ellipsis).
-                need_arg_range(name, args, 2, 6)?;
-                let text = string_text(&args[0])?;
-                let end_column = args[1].as_integer()?.max(0) as usize;
-                let start_column = args
-                    .get(2)
-                    .filter(|value| !matches!(value, Value::Nil))
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(0)
-                    .max(0) as usize;
-                let padding = args
-                    .get(3)
-                    .filter(|value| !matches!(value, Value::Nil))
-                    .map(|value| {
-                        if matches!(value, Value::T) {
-                            Ok(' ')
-                        } else {
-                            let codepoint = value.as_integer()?;
-                            char::from_u32(codepoint as u32).ok_or_else(|| {
-                                LispError::Signal(format!("Invalid character: {codepoint}"))
-                            })
-                        }
-                    })
-                    .transpose()?;
-                let ellipsis = args
-                    .get(4)
-                    .filter(|value| !matches!(value, Value::Nil))
-                    .map(|value| {
-                        // GNU: a non-string ELLIPSIS means "use the default"
-                        // (the `truncate-string-ellipsis' function).
-                        string_text(value).or_else(|_: LispError| {
-                            Ok::<String, LispError>(
-                                interp
-                                    .lookup_var("truncate-string-ellipsis", env)
-                                    .and_then(|value| {
-                                        string_like(&value).map(|text| text.text.clone())
-                                    })
-                                    .unwrap_or_else(|| "\u{2026}".to_string()),
-                            )
-                        })
-                    })
-                    .transpose()?;
-
-                let tab_width = interp
-                    .lookup_var("tab-width", &Vec::new())
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(8)
-                    .max(1) as usize;
-                let display_width = |ch: char| {
-                    if ch == '\t' {
-                        tab_width
-                    } else {
-                        ch.width().unwrap_or(0)
-                    }
-                };
-                let source_end_column = text.chars().map(display_width).sum::<usize>();
-                let target_width = end_column.saturating_sub(start_column);
-                let ellipsis_width = ellipsis
-                    .as_ref()
-                    .map(|text| text.chars().map(display_width).sum::<usize>())
-                    .unwrap_or(0);
-                let truncated = source_end_column > end_column;
-                let content_width =
-                    target_width.saturating_sub(if truncated { ellipsis_width } else { 0 });
-
-                let mut result = String::new();
-                let mut column = 0usize;
-                let mut result_width = 0usize;
-                for ch in text.chars() {
-                    let width = display_width(ch);
-                    let next_column = column + width;
-                    if next_column <= start_column {
-                        column = next_column;
-                        continue;
-                    }
-                    if next_column > end_column || result_width + width > content_width {
-                        break;
-                    }
-                    result.push(ch);
-                    result_width += width;
-                    column = next_column;
-                }
-                if truncated
-                    && let Some(ellipsis) = &ellipsis
-                    && result_width + ellipsis_width <= target_width
-                {
-                    result.push_str(ellipsis);
-                    result_width += ellipsis_width;
-                }
-                if let Some(padding) = padding {
-                    let pad_width = padding.width().unwrap_or(1).max(1);
-                    while result_width + pad_width <= target_width {
-                        result.push(padding);
-                        result_width += pad_width;
-                    }
-                }
-                Ok(Value::String(result.into()))
-            }
             "string" => {
                 let mut result = String::new();
                 let mut multibyte = false;
@@ -545,12 +264,6 @@ define_dispatch!(
                     Vec::new(),
                     multibyte,
                 ))
-            }
-            "string-to-list" => {
-                need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
-                Ok(Value::list(string_sequence_values(&string)))
             }
             "substring" | "substring-no-properties" => {
                 if args.is_empty() || args.len() > 3 {
@@ -716,7 +429,7 @@ define_dispatch!(
                 };
                 parse_string_to_number_value(&s, base)
             }
-            "number-to-string" | "int-to-string" => {
+            "number-to-string" => {
                 need_args(name, args, 1)?;
                 Ok(Value::String(number_to_string(&args[0])?.into()))
             }
@@ -1002,18 +715,6 @@ define_dispatch!(
                 }
                 Ok(Value::String(address.into()))
             }
-            "internal--format-docstring-line" => {
-                if args.is_empty() {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), 0));
-                }
-                let template = string_text(&args[0])?;
-                if template.contains('\n') {
-                    return Err(LispError::Signal(format!(
-                        "Unable to fill string containing newline: {template:?}"
-                    )));
-                }
-                super::call(interp, "format", args, env)
-            }
             "ngettext" => {
                 need_args(name, args, 3)?;
                 let singular = string_text(&args[0])?;
@@ -1022,242 +723,6 @@ define_dispatch!(
                 Ok(Value::String(
                     (if count == 1 { singular } else { plural }).into(),
                 ))
-            }
-            #[dispatch(builtin_override)]
-            "format-spec" => {
-                if args.len() < 2 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let format = string_text(&args[0])?;
-                // GNU builds the result in a buffer seeded with FORMAT, so text
-                // properties survive: literals keep their own props, a
-                // replacement inherits the spec text's props (insert-and-inherit
-                // next to the "%"), and a collapsed "%%" keeps the first "%"'s.
-                // Track, for every output char, the FORMAT char it derives its
-                // properties from.
-                let format_props: Vec<crate::lisp::types::StringPropertySpan> = match &args[0] {
-                    Value::StringObject(state) => state.borrow().props.clone(),
-                    _ => Vec::new(),
-                };
-                let format_multibyte = match &args[0] {
-                    Value::StringObject(state) => state.borrow().multibyte,
-                    _ => false,
-                };
-                let entries = args[1].to_vec()?;
-                let ignore_missing = args.get(2).unwrap_or(&Value::Nil);
-                let split = args.get(3).is_some_and(Value::is_truthy);
-                let chars: Vec<char> = format.chars().collect();
-                let mut result = String::new();
-                // Per output char: (instance, rep_char, src).  Instance 0 =
-                // FORMAT literal at char SRC; instance K>0 = the K'th spec
-                // replacement (own props at REP_CHAR when Some, inheriting the
-                // FORMAT props at SRC = the spec's "%").  Splice boundaries
-                // never merge, matching the interval structure GNU's
-                // buffer-based build leaves behind.
-                let mut provenance: Vec<(usize, Option<usize>, usize)> = Vec::new();
-                let mut rep_props: Vec<Vec<crate::lisp::types::StringPropertySpan>> = Vec::new();
-                let mut split_start = 0usize;
-                let mut split_result = Vec::new();
-                let mut i = 0usize;
-                while i < chars.len() {
-                    let ch = chars[i];
-                    if ch != '%' {
-                        result.push(ch);
-                        provenance.push((0, None, i));
-                        i += 1;
-                        continue;
-                    }
-                    let spec_start = i;
-                    i += 1;
-                    if i >= chars.len() {
-                        result.push('%');
-                        provenance.push((0, None, spec_start));
-                        break;
-                    }
-                    if chars[i] == '%' {
-                        if format_spec_collapses_quoted_percent(ignore_missing) {
-                            result.push('%');
-                            provenance.push((0, None, spec_start));
-                        } else {
-                            result.push('%');
-                            result.push('%');
-                            provenance.push((0, None, spec_start));
-                            provenance.push((0, None, i));
-                        }
-                        i += 1;
-                        continue;
-                    }
-
-                    let Some(parsed) = parse_format_spec(&chars, i) else {
-                        if ignore_missing.is_nil() {
-                            return Err(LispError::Signal("Invalid format string".into()));
-                        }
-                        result.push('%');
-                        provenance.push((0, None, spec_start));
-                        continue;
-                    };
-                    i = parsed.end;
-
-                    if split && result.chars().count() > split_start {
-                        let part = result
-                            .chars()
-                            .skip(split_start)
-                            .take(result.chars().count() - split_start)
-                            .collect::<String>();
-                        split_result.push(Value::String(part.into()));
-                    }
-
-                    let replacement =
-                        format_spec_replacement(interp, env, &entries, parsed.specifier)?;
-                    if let Some((replacement, replacement_props)) = replacement {
-                        let (formatted, sources) =
-                            apply_format_spec_flags_indexed(replacement, &parsed);
-                        rep_props.push(replacement_props);
-                        let instance = rep_props.len();
-                        provenance
-                            .extend(sources.iter().map(|source| (instance, *source, spec_start)));
-                        result.push_str(&formatted);
-                        if split {
-                            split_result.push(Value::String(formatted.into()));
-                            split_start = result.chars().count();
-                        }
-                    } else if matches!(ignore_missing, Value::Symbol(symbol) if symbol == "delete")
-                    {
-                        if split {
-                            split_result.push(Value::String(String::new().into()));
-                            split_start = result.chars().count();
-                        }
-                    } else if ignore_missing.is_nil() {
-                        return Err(LispError::Signal(format!(
-                            "Invalid format character: `%{}'",
-                            parsed.specifier
-                        )));
-                    } else {
-                        let original = chars[spec_start..parsed.end].iter().collect::<String>();
-                        provenance.extend((spec_start..parsed.end).map(|index| (0, None, index)));
-                        result.push_str(&original);
-                        if split {
-                            split_result.push(Value::String(original.into()));
-                            split_start = result.chars().count();
-                        }
-                    }
-                }
-                if split {
-                    let result_len = result.chars().count();
-                    if split_start < result_len {
-                        split_result.push(Value::String(
-                            result
-                                .chars()
-                                .skip(split_start)
-                                .take(result_len - split_start)
-                                .collect(),
-                        ));
-                    }
-                    Ok(Value::list(split_result))
-                } else if format_props.is_empty() && rep_props.iter().all(|props| props.is_empty())
-                {
-                    Ok(Value::String(result.into()))
-                } else {
-                    // Merge runs by SOURCE INTERVAL IDENTITY, not value
-                    // equality: GNU's buffer-based implementation carries the
-                    // template's and each replacement's interval structure into
-                    // the output, so adjacent spans with `equal' but not `eq'
-                    // values stay separate intervals, and splice boundaries
-                    // never coalesce (erc snapshots compare the
-                    // `object-intervals' fragmentation).
-                    let span_ids_at = |spans: &[crate::lisp::types::StringPropertySpan],
-                                       index: usize|
-                     -> Vec<usize> {
-                        spans
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, span)| span.start <= index && index < span.end)
-                            .map(|(id, _)| id)
-                            .collect()
-                    };
-                    // Run key: (instance, own-span ids).  Instance 0 reads ids
-                    // against FORMAT's spans; instance K>0 against replacement
-                    // K's own spans, inheriting FORMAT props at the spec's "%".
-                    let key_for = |&(instance, rep_char, src): &(usize, Option<usize>, usize)| {
-                        let ids = if instance == 0 {
-                            span_ids_at(&format_props, src)
-                        } else {
-                            rep_char
-                                .map(|index| span_ids_at(&rep_props[instance - 1], index))
-                                .unwrap_or_default()
-                        };
-                        (instance, ids)
-                    };
-                    let props_for = |(instance, ids): &(usize, Vec<usize>), src: usize| {
-                        let mut collected: Vec<(String, Value)> = Vec::new();
-                        if *instance == 0 {
-                            for &id in ids {
-                                collected.extend(format_props[id].props.iter().cloned());
-                            }
-                        } else {
-                            for &id in ids {
-                                collected
-                                    .extend(rep_props[*instance - 1][id].props.iter().cloned());
-                            }
-                            // insert-and-inherit: inherited FORMAT props fill in
-                            // keys the replacement's own props don't set.
-                            for inherit_id in span_ids_at(&format_props, src) {
-                                for (key, value) in &format_props[inherit_id].props {
-                                    if !collected.iter().any(|(existing, _)| existing == key) {
-                                        collected.push((key.clone(), value.clone()));
-                                    }
-                                }
-                            }
-                        }
-                        collected
-                    };
-                    let mut spans = Vec::new();
-                    let mut run_start = 0usize;
-                    let mut run_key: Option<(usize, Vec<usize>)> = None;
-                    let mut run_src = 0usize;
-                    for (out_index, source) in provenance.iter().enumerate() {
-                        let key = key_for(source);
-                        match &run_key {
-                            Some(current) if *current == key => {}
-                            _ => {
-                                if let Some(current) = run_key.take() {
-                                    let props = props_for(&current, run_src);
-                                    if !props.is_empty() && run_start < out_index {
-                                        spans.push(crate::lisp::types::StringPropertySpan {
-                                            start: run_start,
-                                            end: out_index,
-                                            props,
-                                        });
-                                    }
-                                }
-                                run_start = out_index;
-                                run_src = source.2;
-                                run_key = Some(key);
-                            }
-                        }
-                    }
-                    if let Some(current) = run_key {
-                        let props = props_for(&current, run_src);
-                        if !props.is_empty() && run_start < provenance.len() {
-                            spans.push(crate::lisp::types::StringPropertySpan {
-                                start: run_start,
-                                end: provenance.len(),
-                                props,
-                            });
-                        }
-                    }
-                    if spans.is_empty() {
-                        Ok(Value::String(result.into()))
-                    } else {
-                        Ok(Value::StringObject(std::rc::Rc::new(
-                            std::cell::RefCell::new(crate::lisp::types::SharedStringState {
-                                text: result,
-                                props: spans,
-                                multibyte: format_multibyte,
-                            }),
-                        )))
-                    }
-                }
             }
             "char-to-string" => {
                 need_args(name, args, 1)?;
@@ -1268,257 +733,6 @@ define_dispatch!(
                     Vec::new(),
                     n > 0x7F,
                 ))
-            }
-            "ucs-normalize-NFC-string" => {
-                need_args(name, args, 1)?;
-                use unicode_normalization::UnicodeNormalization;
-                let input = string_text(&args[0])?;
-                Ok(Value::String(input.nfc().collect()))
-            }
-            "ucs-normalize-NFD-string" => {
-                need_args(name, args, 1)?;
-                use unicode_normalization::UnicodeNormalization;
-                let input = string_text(&args[0])?;
-                Ok(Value::String(input.nfd().collect()))
-            }
-            "ucs-normalize-NFKC-string" => {
-                need_args(name, args, 1)?;
-                use unicode_normalization::UnicodeNormalization;
-                let input = string_text(&args[0])?;
-                Ok(Value::String(input.nfkc().collect()))
-            }
-            "ucs-normalize-NFKD-string" => {
-                need_args(name, args, 1)?;
-                use unicode_normalization::UnicodeNormalization;
-                let input = string_text(&args[0])?;
-                Ok(Value::String(input.nfkd().collect()))
-            }
-            "string-replace" => {
-                need_args(name, args, 3)?;
-                let from = string_text(&args[0])?;
-                let to = string_text(&args[1])?;
-                let input = string_text(&args[2])?;
-                Ok(Value::String(input.replace(&from, &to).into()))
-            }
-            "subst-char-in-string" => {
-                need_arg_range(name, args, 3, 4)?;
-                let from = char_from_integer(args[0].as_integer()?)?;
-                let to = char_from_integer(args[1].as_integer()?)?;
-                let mut string = string_like(&args[2])
-                    .ok_or_else(|| LispError::TypeError("string".into(), args[2].type_name()))?;
-                string.text = string
-                    .text
-                    .chars()
-                    .map(|ch| if ch == from { to } else { ch })
-                    .collect();
-                if args.get(3).is_some_and(Value::is_truthy) {
-                    if let Value::StringObject(state) = &args[2] {
-                        state.borrow_mut().text = string.text.clone();
-                    }
-                    Ok(args[2].clone())
-                } else {
-                    Ok(string_like_value_with_multibyte(
-                        string.text,
-                        string.props,
-                        string.multibyte,
-                    ))
-                }
-            }
-            "replace-regexp-in-string" => {
-                if args.len() < 3 || args.len() > 7 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let pattern = string_like(&args[0])
-                    .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
-                let replacement = string_like(&args[1]);
-                let source = string_like(&args[2])
-                    .ok_or_else(|| LispError::TypeError("string".into(), args[2].type_name()))?;
-                let literal = args.get(4).is_some_and(Value::is_truthy);
-                let subexp = args
-                    .get(5)
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(0)
-                    .max(0) as usize;
-                let source_len = source.text.chars().count() as i64;
-                let start = normalize_string_index(args.get(6), 0, source_len)? as usize;
-                regexp::validate_elisp_regex(&pattern.text)?;
-                let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
-                let saved_match_data = interp.last_match_data.clone();
-                let saved_match_data_buffer_id = interp.last_match_data_buffer_id;
-                let mut result = source.text.chars().take(start).collect::<String>();
-                let mut search_pos = start;
-                let mut search_byte = regexp::byte_index_for_char(&source.text, start);
-
-                while let Some(captures) = regex
-                    .captures_from_pos(&source.text, search_byte)
-                    .map_err(|error| LispError::Signal(error.to_string()))?
-                {
-                    let Some(full_match) = captures.get(0) else {
-                        break;
-                    };
-                    let full_start = source.text[..full_match.start()].chars().count();
-                    let full_end = source.text[..full_match.end()].chars().count();
-                    let match_data = regexp::match_data_from_captures(
-                        0,
-                        &source.text,
-                        &captures,
-                        regex.capture_mapping(),
-                    );
-                    let (replace_start, replace_end) = match_data
-                        .get(subexp)
-                        .and_then(|entry| *entry)
-                        .or_else(|| match_data.first().and_then(|entry| *entry))
-                        .ok_or_else(|| LispError::Signal("No previous search".into()))?;
-
-                    result.push_str(&regexp::slice_string_chars(
-                        &source.text,
-                        search_pos,
-                        replace_start,
-                    ));
-                    if let Some(replacement) = &replacement {
-                        result.push_str(&regexp::expand_replace_match_text(
-                            &replacement.text,
-                            &match_data,
-                            literal,
-                            &source.text,
-                        )?);
-                    } else {
-                        // GNU invokes a functional replacement with match data
-                        // translated to the complete matched substring, not with
-                        // absolute offsets into STRING.  Nested `match-string'
-                        // calls in the callback therefore use the callback's
-                        // string argument directly.
-                        interp.last_match_data = Some(
-                            match_data
-                                .iter()
-                                .map(|entry| {
-                                    entry.map(|(begin, end)| (begin - full_start, end - full_start))
-                                })
-                                .collect(),
-                        );
-                        interp.last_match_data_buffer_id = None;
-                        let matched_text =
-                            regexp::slice_string_chars(&source.text, full_start, full_end);
-                        let value = call_function_value(
-                            interp,
-                            &args[1],
-                            &[Value::String(matched_text.into())],
-                            env,
-                        );
-                        interp.last_match_data = saved_match_data.clone();
-                        interp.last_match_data_buffer_id = saved_match_data_buffer_id;
-                        let value = value?;
-                        result.push_str(&string_text(&value)?);
-                    }
-                    result.push_str(&regexp::slice_string_chars(
-                        &source.text,
-                        replace_end,
-                        full_end,
-                    ));
-
-                    if full_start == full_end {
-                        // An empty match may sit past search_pos (anchors like
-                        // `$'); resume after it, consuming one char to advance.
-                        search_pos = full_end;
-                        if let Some(ch) = source.text.chars().nth(search_pos) {
-                            result.push(ch);
-                            search_pos += 1;
-                            search_byte = regexp::byte_index_for_char(&source.text, search_pos);
-                            continue;
-                        }
-                        break;
-                    }
-
-                    search_pos = full_end;
-                    search_byte = regexp::byte_index_for_char(&source.text, search_pos);
-                }
-
-                result.push_str(&regexp::slice_string_chars(
-                    &source.text,
-                    search_pos,
-                    source.text.chars().count(),
-                ));
-                interp.last_match_data = saved_match_data;
-                interp.last_match_data_buffer_id = saved_match_data_buffer_id;
-                Ok(Value::String(result.into()))
-            }
-            "edmacro-parse-keys" => {
-                need_arg_range(name, args, 1, 2)?;
-                parse_edmacro_key_sequence(&string_text(&args[0])?)
-            }
-            "read-kbd-macro" => {
-                // The Lisp calling convention with a string START returns the
-                // parsed macro instead of installing it.
-                need_arg_range(name, args, 1, 2)?;
-                parse_edmacro_key_sequence(&string_text(&args[0])?)
-            }
-            "string-trim-left" => {
-                need_arg_range(name, args, 1, 2)?;
-                regexp::string_trim_left_value(interp, &args[0], args.get(1), env)
-            }
-            "string-trim-right" => {
-                need_arg_range(name, args, 1, 2)?;
-                regexp::string_trim_right_value(interp, &args[0], args.get(1), env)
-            }
-            "string-trim" => {
-                need_arg_range(name, args, 1, 3)?;
-                let trimmed = regexp::string_trim_left_value(interp, &args[0], args.get(1), env)?;
-                regexp::string_trim_right_value(interp, &trimmed, args.get(2), env)
-            }
-            "string-clean-whitespace" => {
-                need_args(name, args, 1)?;
-                let cleaned = string_text(&args[0])?
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                Ok(Value::String(cleaned.into()))
-            }
-            "url-hexify-string" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let input = string_text(&args[0])?;
-                let allowed = args
-                    .get(1)
-                    .and_then(string_like)
-                    .map(|allowed| allowed.text)
-                    .unwrap_or_default();
-                let mut output = String::new();
-                for ch in input.chars() {
-                    if ch.is_ascii_alphanumeric()
-                        || matches!(ch, '-' | '_' | '.' | '~')
-                        || allowed.contains(ch)
-                    {
-                        output.push(ch);
-                    } else {
-                        for byte in ch.to_string().bytes() {
-                            output.push('%');
-                            output.push_str(&format!("{byte:02X}"));
-                        }
-                    }
-                }
-                Ok(Value::String(output.into()))
-            }
-            "url-encode-url" => {
-                need_args(name, args, 1)?;
-                Ok(Value::String(
-                    url_encode_url(&string_text(&args[0])?).into(),
-                ))
-            }
-            "url-insert-entities-in-string" => {
-                need_args(name, args, 1)?;
-                let input = string_text(&args[0])?;
-                let mut output = String::new();
-                for ch in input.chars() {
-                    match ch {
-                        '"' => output.push_str("&quot;"),
-                        '&' => output.push_str("&amp;"),
-                        '<' => output.push_str("&lt;"),
-                        '>' => output.push_str("&gt;"),
-                        _ => output.push(ch),
-                    }
-                }
-                Ok(Value::String(output.into()))
             }
             "base64-encode-region" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -1557,64 +771,6 @@ define_dispatch!(
                 let base64url = args.get(1).is_some_and(Value::is_truthy);
                 let ignore_invalid = args.get(2).is_some_and(Value::is_truthy);
                 decode_base64_string_value(&args[0], base64url, ignore_invalid)
-            }
-            "abbrev-table-p" => {
-                need_args(name, args, 1)?;
-                Ok(if is_abbrev_table_value(interp, &args[0]) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "abbrev-table-empty-p" => {
-                need_args(name, args, 1)?;
-                Ok(if abbrev_table_entries(interp, &args[0])?.is_empty() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "abbrev-table-get" => {
-                need_args(name, args, 2)?;
-                Ok(abbrev_table_property(interp, &args[0], &args[1]).unwrap_or(Value::Nil))
-            }
-            "abbrev-table-put" => {
-                need_args(name, args, 3)?;
-                set_abbrev_table_property(interp, &args[0], &args[1], args[2].clone())?;
-                Ok(args[2].clone())
-            }
-            "define-abbrev" => {
-                if args.len() < 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let hook = args.get(3).cloned().unwrap_or(Value::Nil);
-                let props = abbrev_props_from_parts(Some(hook), &args[4..])?;
-                define_abbrev_entry(
-                    interp,
-                    &args[0],
-                    &string_text(&args[1])?,
-                    args[2].clone(),
-                    props,
-                )?;
-                Ok(args[2].clone())
-            }
-            "abbrev-expansion" => {
-                need_args(name, args, 2)?;
-                Ok(abbrev_expansion(interp, &args[1], &string_text(&args[0])?)?
-                    .unwrap_or(Value::Nil))
-            }
-            "clear-abbrev-table" => {
-                need_args(name, args, 1)?;
-                set_abbrev_table_entries(interp, &args[0], Vec::new())?;
-                Ok(Value::Nil)
-            }
-            "copy-abbrev-table" => {
-                need_args(name, args, 1)?;
-                copy_abbrev_table(interp, &args[0])
-            }
-            "abbrev-table-name" => {
-                need_args(name, args, 1)?;
-                Ok(abbrev_table_name_value(interp, &args[0]).unwrap_or(Value::Nil))
             }
             "byte-to-string" => {
                 need_args(name, args, 1)?;
@@ -1710,22 +866,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let string = string_like(&args[0])
                     .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
-                let len: usize = if string.multibyte {
-                    string.text.len()
-                } else {
-                    string
-                        .text
-                        .chars()
-                        .map(|ch| {
-                            if raw_byte_from_regex_char(ch).is_some() || (ch as u32) <= 0xFF {
-                                1usize
-                            } else {
-                                ch.len_utf8()
-                            }
-                        })
-                        .sum()
-                };
-                Ok(Value::Integer(len as i64))
+                Ok(Value::Integer(string.byte_len()? as i64))
             }
             "multibyte-string-p" => {
                 need_args(name, args, 1)?;
@@ -1767,16 +908,7 @@ define_dispatch!(
             "unicode-property-table-internal" => {
                 need_args(name, args, 1)?;
                 let property = args[0].as_symbol()?;
-                if let Some(registered) = registered_unicode_property(interp, property, env)?
-                    && !unicode_property_uses_unsupported_bytecode(interp, &registered)
-                {
-                    return Ok(registered);
-                }
-                let (table, created) = interp.unicode_property_table(property);
-                if created && property == "decomposition" {
-                    populate_unicode_decomposition_table(interp, &table)?;
-                }
-                Ok(table)
+                Ok(registered_unicode_property(interp, property, env)?.unwrap_or(Value::Nil))
             }
             "get-unicode-property-internal" => {
                 need_args(name, args, 2)?;
@@ -1789,21 +921,11 @@ define_dispatch!(
                 if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
                 }
-                let property = interp
-                    .char_table_extra_slot(table_id, 0)
-                    .and_then(|property| property.as_symbol().ok().map(str::to_string))
-                    .ok_or_else(|| LispError::Signal("Invalid Unicode property table".into()))?;
-                let character = u32::try_from(args[1].as_integer()?)
-                    .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                if let Some(value) = interp.char_table_get(table_id, character)
-                    && !value.is_nil()
-                {
-                    return decode_unicode_property_value(interp, table_id, value);
-                }
-                if property == "decomposition" {
-                    return Ok(Value::list([Value::Integer(i64::from(character))]));
-                }
-                Ok(native_char_code_property(character, &property))
+                let character = unicode_property_character(&args[1])?;
+                let value = interp
+                    .char_table_get(table_id, character)
+                    .unwrap_or(Value::Nil);
+                decode_unicode_property_value(interp, table_id, value)
             }
             "put-unicode-property-internal" => {
                 need_args(name, args, 3)?;
@@ -1813,30 +935,13 @@ define_dispatch!(
                         args[0].type_name(),
                     ));
                 };
-                let character = u32::try_from(args[1].as_integer()?)
-                    .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                interp.char_table_set(table_id, character, args[2].clone())?;
+                if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
+                    return Err(LispError::Signal("Invalid Unicode property table".into()));
+                }
+                let character = unicode_property_character(&args[1])?;
+                let encoded = encode_unicode_property_value(interp, table_id, &args[2])?;
+                interp.char_table_set(table_id, character, encoded)?;
                 Ok(Value::Nil)
-            }
-            "get-char-code-property" => {
-                need_args(name, args, 2)?;
-                let ch = u32::try_from(args[0].as_integer()?)
-                    .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                let property = args[1].as_symbol()?;
-                Ok(native_char_code_property(ch, property))
-            }
-            "char-code-property-description" => {
-                need_args(name, args, 2)?;
-                let property = args[0].as_symbol()?;
-                Ok(unicode_property_description(property, &args[1])
-                    .map(|description| Value::String(description.into()))
-                    .unwrap_or(Value::Nil))
-            }
-            "emaxx--general-category-description" => {
-                need_args(name, args, 1)?;
-                Ok(unicode_property_description("general-category", &args[0])
-                    .map(|description| Value::String(description.into()))
-                    .unwrap_or(Value::Nil))
             }
             "char-resolve-modifiers" => {
                 need_args(name, args, 1)?;
@@ -1860,9 +965,6 @@ fn registered_unicode_property(
         Value::String(_) | Value::StringObject(_) => string_text(&registered)?,
         _ => return Ok(Some(registered)),
     };
-    if native_unicode_property_file(property) == Some(filename.as_str()) {
-        return Ok(None);
-    }
     let target = format!("international/{filename}");
     let Some(path) = resolve_load_target_in_env(interp, &target, env)
         .or_else(|| resolve_load_target_in_env(interp, &filename, env))
@@ -1895,37 +997,14 @@ fn find_registered_unicode_property(
     }
 }
 
-fn native_unicode_property_file(property: &str) -> Option<&'static str> {
-    match property {
-        "name" => Some("uni-name.el"),
-        "general-category" => Some("uni-category.el"),
-        "canonical-combining-class" => Some("uni-combining.el"),
-        "uppercase" => Some("uni-uppercase.el"),
-        "lowercase" => Some("uni-lowercase.el"),
-        "titlecase" => Some("uni-titlecase.el"),
-        "special-uppercase" => Some("uni-special-uppercase.el"),
-        "special-lowercase" => Some("uni-special-lowercase.el"),
-        "special-titlecase" => Some("uni-special-titlecase.el"),
-        _ => None,
+fn unicode_property_character(value: &Value) -> Result<u32, LispError> {
+    match value {
+        Value::Integer(character) if (0..=0x3f_ffff).contains(character) => Ok(*character as u32),
+        _ => Err(wrong_type_argument("characterp", value.clone())),
     }
 }
 
-fn unicode_property_uses_unsupported_bytecode(interp: &Interpreter, table: &Value) -> bool {
-    let Value::CharTable(id) = table else {
-        return false;
-    };
-    if interp.char_table_extra_slot(*id, 0) == Some(Value::Symbol("decomposition".into())) {
-        return false;
-    }
-    let Some(Value::Record(decoder_id)) = interp.char_table_extra_slot(*id, 1) else {
-        return false;
-    };
-    interp
-        .find_record(decoder_id)
-        .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure)
-}
-
-fn decode_unicode_property_value(
+pub(super) fn decode_unicode_property_value(
     interp: &Interpreter,
     table_id: u64,
     value: Value,
@@ -1950,129 +1029,72 @@ fn decode_unicode_property_value(
     Ok(values.get(index).cloned().unwrap_or(value))
 }
 
-fn native_char_code_property(ch: u32, property: &str) -> Value {
-    if let Some(mapping) = unicode_special_case_mapping(ch, property) {
-        return Value::String(mapping.into());
-    }
-    match property {
-        "name" => unicode_character_name(ch)
-            .map(|value| Value::String(value.into()))
-            .unwrap_or(Value::Nil),
-        "general-category" => unicode_general_category_symbol(ch)
-            .map(|symbol| Value::Symbol(symbol.into()))
-            .unwrap_or(Value::Nil),
-        "canonical-combining-class" => canonical_combining_class(ch)
-            .map(Value::Integer)
-            .unwrap_or(Value::Integer(0)),
-        _ => match (normalize_case_key(ch), property) {
-            (code, "uppercase") => {
-                if code == 0x00DF {
-                    Value::Nil
-                } else {
-                    let mapped = simple_upcase_char(code);
-                    if mapped == code {
-                        Value::Nil
-                    } else {
-                        Value::Integer(mapped as i64)
-                    }
-                }
-            }
-            (code, "lowercase") => {
-                let mapped = simple_downcase_char(code, false);
-                if mapped == code {
-                    Value::Nil
-                } else {
-                    Value::Integer(mapped as i64)
-                }
-            }
-            (code, "titlecase") => {
-                if code == 0x00DF {
-                    Value::Nil
-                } else if code == 0x01C5 {
-                    Value::Integer(code as i64)
-                } else {
-                    let mapped = simple_titlecase_char(code);
-                    if mapped == code {
-                        Value::Nil
-                    } else {
-                        Value::Integer(mapped as i64)
-                    }
-                }
-            }
-            (0x00DF, "special-lowercase") => Value::Nil,
-            (0x00DF, _) => Value::Nil,
-            (0x00CF, _) | (0x00EF, _) | (0x00FF, _) => Value::Nil,
-            (0x0130, _) => Value::Nil,
-            (0xFB01, _) => Value::Nil,
-            _ => Value::Nil,
+fn unicode_property_vector_values(value: &Value) -> Result<Vec<Value>, LispError> {
+    let items = value.to_vec()?;
+    Ok(
+        if matches!(
+            items.first(),
+            Some(Value::Symbol(symbol)) if symbol == "vector-literal"
+        ) {
+            items[1..].to_vec()
+        } else {
+            items
         },
-    }
+    )
 }
 
-fn populate_unicode_decomposition_table(
+fn encode_unicode_property_value(
     interp: &mut Interpreter,
-    table: &Value,
-) -> Result<(), LispError> {
-    let Value::CharTable(id) = table else {
-        unreachable!("make_char_table returns a char-table");
+    table_id: u64,
+    value: &Value,
+) -> Result<Value, LispError> {
+    let Some(Value::Integer(encoder)) = interp.char_table_extra_slot(table_id, 2) else {
+        return Ok(value.clone());
     };
-
-    for range in [b'0'..=b'9', b'A'..=b'Z', b'a'..=b'z'] {
-        for code in range {
-            let code = code as u32;
-            interp.char_table_set(
-                *id,
-                0xff00 + code - 0x20,
-                Value::list([Value::symbol("wide"), Value::Integer(code as i64)]),
-            )?;
+    match encoder {
+        0 => {
+            if value.is_nil()
+                || matches!(value, Value::Integer(character) if (0..=0x3f_ffff).contains(character))
+            {
+                Ok(value.clone())
+            } else {
+                Err(wrong_type_argument("integerp", value.clone()))
+            }
         }
+        1 | 2 => {
+            if encoder == 2 && !matches!(value, Value::Integer(_)) {
+                return Err(wrong_type_argument("fixnump", value.clone()));
+            }
+            let vector = interp
+                .char_table_extra_slot(table_id, 4)
+                .ok_or_else(|| LispError::Signal("Invalid Unicode property table".into()))?;
+            let mut values = unicode_property_vector_values(&vector)?;
+            let index = values
+                .iter()
+                .position(|candidate| values_eql(candidate, value));
+            let index = match index {
+                Some(index) => index,
+                None if encoder == 2 => {
+                    let index = values.len();
+                    // GNU's numeric encoder extends the decoder vector with
+                    // the newly allocated encoded index, not with the input
+                    // number itself (chartab.c:uniprop_encode_value_numeric).
+                    values.push(Value::Integer(index as i64));
+                    let mut public_vector = vec![Value::Symbol("vector-literal".into())];
+                    public_vector.extend(values);
+                    interp.set_char_table_extra_slot(table_id, 4, Value::list(public_vector))?;
+                    index
+                }
+                None => {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("wrong-type-argument".into()),
+                        Value::String("Unicode property value".into()),
+                        value.clone(),
+                    ])));
+                }
+            };
+            Ok(Value::Integer(index as i64))
+        }
+        _ => Ok(value.clone()),
     }
-
-    for (code, decomposition) in unicode_decomposition_entries() {
-        interp.char_table_set(*id, code, Value::list(decomposition))?;
-    }
-    Ok(())
-}
-
-fn unicode_decomposition_entries() -> Vec<(u32, Vec<Value>)> {
-    let compat = |chars: &[u32]| {
-        let mut values = vec![Value::symbol("compat")];
-        values.extend(chars.iter().map(|ch| Value::Integer(*ch as i64)));
-        values
-    };
-    let canonical = |chars: &[u32]| {
-        chars
-            .iter()
-            .map(|ch| Value::Integer(*ch as i64))
-            .collect::<Vec<_>>()
-    };
-
-    vec![
-        (0x00e4, canonical(&[b'a' as u32, 0x0308])),
-        (0x00e5, canonical(&[b'a' as u32, 0x030a])),
-        (0x00eb, canonical(&[b'e' as u32, 0x0308])),
-        (0x00f1, canonical(&[b'n' as u32, 0x0303])),
-        (0x00f6, canonical(&[b'o' as u32, 0x0308])),
-        (0x0113, canonical(&[b'e' as u32, 0x0304])),
-        (0x03af, canonical(&[0x03b9, 0x0301])),
-        (0x03ca, canonical(&[0x03b9, 0x0308])),
-        (0x0439, canonical(&[0x0438, 0x0306])),
-        (0x0451, canonical(&[0x0435, 0x0308])),
-        (0x1e17, canonical(&[0x0113, 0x0301])),
-        (0x1f77, canonical(&[0x03b9, 0x0301])),
-        (0x1fd3, canonical(&[0x03ca, 0x0301])),
-        (0x212f, compat(&[b'e' as u32])),
-        (0xfb00, compat(&[b'f' as u32, b'f' as u32])),
-        (0xfb01, compat(&[b'f' as u32, b'i' as u32])),
-        (0xfb02, compat(&[b'f' as u32, b'l' as u32])),
-        (0xfb03, compat(&[b'f' as u32, b'f' as u32, b'i' as u32])),
-        (0xfb04, compat(&[b'f' as u32, b'f' as u32, b'l' as u32])),
-    ]
-}
-
-fn canonical_combining_class(ch: u32) -> Option<i64> {
-    char::from_u32(ch)
-        .map(unicode_normalization::char::canonical_combining_class)
-        .filter(|class| *class != 0)
-        .map(i64::from)
 }

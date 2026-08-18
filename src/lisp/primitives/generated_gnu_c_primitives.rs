@@ -1706,9 +1706,20 @@ pub(crate) const GNU_C_PRIMITIVE_SOURCE_COUNT: usize = 1685;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const GNU_C_PRIMITIVE_AVAILABLE_COUNT: usize = 1420;
 
-pub(crate) fn generated_gnu_c_primitive_available(name: &str) -> Option<bool> {
+pub(crate) fn generated_gnu_c_primitive_contract(
+    name: &str,
+) -> Option<&'static GnuCPrimitiveContract> {
     let index = GNU_C_PRIMITIVES
         .binary_search_by_key(&name, |contract| contract.name)
         .ok()?;
-    Some(GNU_C_PRIMITIVES[index].arity.is_some())
+    Some(&GNU_C_PRIMITIVES[index])
+}
+
+pub(crate) fn generated_gnu_c_primitive_available(name: &str) -> Option<bool> {
+    Some(generated_gnu_c_primitive_contract(name)?.arity.is_some())
+}
+
+pub(crate) fn generated_gnu_c_primitive_special_form(name: &str) -> bool {
+    generated_gnu_c_primitive_contract(name)
+        .is_some_and(|contract| contract.arity.is_some() && contract.special_form)
 }

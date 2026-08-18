@@ -81,14 +81,14 @@ pub(crate) fn public_buffer_char_code(ch: char, multibyte: bool) -> i64 {
 /// Return the Lisp-visible character at a buffer position.
 ///
 /// Most characters live directly in the rope.  Emacs characters outside
-/// Unicode's scalar range use a placeholder plus an internal property, so
-/// every public character accessor must consult that property through this
+/// Unicode's scalar range use a placeholder plus typed buffer metadata, so
+/// every public character accessor must consult that sidecar through this
 /// one boundary rather than leaking the placeholder value.
 pub(crate) fn public_buffer_char_code_at(interp: &Interpreter, position: usize) -> Option<i64> {
     interp
         .buffer
-        .text_property_at(position, "emaxx-raw-char")
-        .and_then(|value| value.as_integer().ok())
+        .extended_char_at(position)
+        .map(i64::from)
         .or_else(|| {
             interp
                 .buffer
@@ -145,93 +145,6 @@ pub(crate) fn simple_titlecase_char(code: u32) -> u32 {
     match code {
         0x01C4..=0x01C6 => 0x01C5,
         _ => simple_upcase_char(code),
-    }
-}
-
-pub(crate) fn unicode_character_name(code: u32) -> Option<String> {
-    if (0xD800..=0xDBFF).contains(&code) {
-        return Some(format!("HIGH SURROGATE-{code:04X}"));
-    }
-    if (0xDC00..=0xDFFF).contains(&code) {
-        return Some(format!("LOW SURROGATE-{code:04X}"));
-    }
-
-    let name = char::from_u32(code).and_then(unicode_name)?.to_string();
-    // Unicode calls these "CJK UNIFIED IDEOGRAPH-*".  GNU's generated
-    // uni-name table intentionally exposes the shorter historical spelling.
-    Some(
-        name.strip_prefix("CJK UNIFIED IDEOGRAPH-")
-            .map(|suffix| format!("CJK IDEOGRAPH-{suffix}"))
-            .unwrap_or(name),
-    )
-}
-
-pub(crate) fn unicode_general_category_symbol(code: u32) -> Option<&'static str> {
-    if (0xD800..=0xDFFF).contains(&code) {
-        Some("Cs")
-    } else {
-        char::from_u32(code).map(|ch| {
-            let category = get_general_category(ch).abbreviation();
-            // `unicode-general-category' has no Unicode 15.1 release (its
-            // adjacent tables are 15.0 and 16.0), so retain its fast lookup
-            // but do not expose Unicode 16 assignments through GNU 30.2's
-            // Unicode 15.1 API.  Assigned scalar values have a Unicode name
-            // except controls and private-use characters.
-            if matches!(category, "Cc" | "Co") || unicode_name(ch).is_some() {
-                category
-            } else {
-                "Cn"
-            }
-        })
-    }
-}
-
-pub(crate) fn unicode_general_category_description(symbol: &str) -> Option<&'static str> {
-    match symbol {
-        "Lu" => Some("Letter, Uppercase"),
-        "Ll" => Some("Letter, Lowercase"),
-        "Lt" => Some("Letter, Titlecase"),
-        "Lm" => Some("Letter, Modifier"),
-        "Lo" => Some("Letter, Other"),
-        "Mn" => Some("Mark, Nonspacing"),
-        "Mc" => Some("Mark, Spacing Combining"),
-        "Me" => Some("Mark, Enclosing"),
-        "Nd" => Some("Number, Decimal Digit"),
-        "Nl" => Some("Number, Letter"),
-        "No" => Some("Number, Other"),
-        "Pc" => Some("Punctuation, Connector"),
-        "Pd" => Some("Punctuation, Dash"),
-        "Ps" => Some("Punctuation, Open"),
-        "Pe" => Some("Punctuation, Close"),
-        "Pi" => Some("Punctuation, Initial quote"),
-        "Pf" => Some("Punctuation, Final quote"),
-        "Po" => Some("Punctuation, Other"),
-        "Sm" => Some("Symbol, Math"),
-        "Sc" => Some("Symbol, Currency"),
-        "Sk" => Some("Symbol, Modifier"),
-        "So" => Some("Symbol, Other"),
-        "Zs" => Some("Separator, Space"),
-        "Zl" => Some("Separator, Line"),
-        "Zp" => Some("Separator, Paragraph"),
-        "Cc" => Some("Other, Control"),
-        "Cf" => Some("Other, Format"),
-        "Cs" => Some("Other, Surrogate"),
-        "Co" => Some("Other, Private Use"),
-        "Cn" => Some("Other, Not Assigned"),
-        _ => None,
-    }
-}
-
-pub(crate) fn unicode_property_description(property: &str, value: &Value) -> Option<&'static str> {
-    match property {
-        "general-category" => match value {
-            Value::Nil => Some("Unknown"),
-            Value::Symbol(symbol) => unicode_general_category_description(symbol),
-            _ => {
-                string_like(value).and_then(|text| unicode_general_category_description(&text.text))
-            }
-        },
-        _ => None,
     }
 }
 

@@ -2,59 +2,6 @@ use super::*;
 
 const PORTABLE_DUMPER_UNAVAILABLE: &str = "Portable dumper backend is unavailable";
 
-/// Convert a resolved function value into a `help-function-arglist` result: the
-/// parameter list for a lambda, the inner lambda's parameters for a
-/// `(macro . lambda)` cons, and nil otherwise.
-fn help_function_arglist_value(function: &Value) -> Value {
-    match function {
-        Value::Lambda(lambda) => Value::list(
-            lambda
-                .params
-                .iter()
-                .cloned()
-                .map(|value| Value::Symbol(value.into())),
-        ),
-        Value::BuiltinFunc(name) => {
-            let Some(arity) = builtin_arity_value(name).or_else(|| special_form_arity_value(name))
-            else {
-                return Value::T;
-            };
-            let Ok(minimum) = arity.car().and_then(|value| value.as_integer()) else {
-                return Value::T;
-            };
-            let Ok(maximum) = arity.cdr() else {
-                return Value::T;
-            };
-            let mut parameters = (1..=minimum)
-                .map(|index| Value::Symbol(format!("arg{index}").into()))
-                .collect::<Vec<_>>();
-            match maximum {
-                Value::Integer(maximum) if maximum > minimum => {
-                    parameters.push(Value::Symbol("&optional".into()));
-                    parameters.extend(
-                        (minimum + 1..=maximum)
-                            .map(|index| Value::Symbol(format!("arg{index}").into())),
-                    );
-                }
-                Value::Symbol(kind) if kind == "many" => {
-                    parameters.push(Value::Symbol("&rest".into()));
-                    parameters.push(Value::Symbol("rest".into()));
-                }
-                Value::Symbol(kind) if kind == "unevalled" => {
-                    parameters.push(Value::Symbol("&rest".into()));
-                    parameters.push(Value::Symbol("body".into()));
-                }
-                _ => {}
-            }
-            Value::list(parameters)
-        }
-        Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(s) if s == "macro") => {
-            help_function_arglist_value(&cell.cdr.borrow())
-        }
-        _ => Value::Nil,
-    }
-}
-
 fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
     let Ok(items) = plist.to_vec() else {
         return false;
@@ -144,23 +91,6 @@ define_dispatch!(
                     return Err(LispError::Signal("Args out of range".into()));
                 }
                 Ok(Value::Nil)
-            }
-            "set-advertised-calling-convention" => {
-                need_args(name, args, 3)?;
-                let function = advertised_function_name(interp, &args[0])?;
-                interp.put_symbol_property(
-                    &function,
-                    "advertised-calling-convention",
-                    args[1].clone(),
-                );
-                Ok(args[0].clone())
-            }
-            "get-advertised-calling-convention" => {
-                need_args(name, args, 1)?;
-                let function = advertised_function_name(interp, &args[0])?;
-                Ok(interp
-                    .get_symbol_property(&function, "advertised-calling-convention")
-                    .unwrap_or(Value::T))
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
@@ -450,29 +380,6 @@ define_dispatch!(
                 interp.current_buffer_id(),
                 interp.buffer.name.clone(),
             )),
-            "generate-new-buffer" => {
-                need_args(name, args, 1)?;
-                let base = string_text(&args[0])?;
-                let inhibit_hooks = args.get(1).is_some_and(|value| value.is_truthy());
-                let buf_name = if interp.has_buffer(&base) {
-                    let mut n = 2;
-                    loop {
-                        let candidate = format!("{}<{}>", base, n);
-                        if !interp.has_buffer(&candidate) {
-                            break candidate;
-                        }
-                        n += 1;
-                    }
-                } else {
-                    base
-                };
-                let (id, _) = interp.create_buffer(&buf_name);
-                interp.set_buffer_hooks_inhibited(id, inhibit_hooks);
-                if !inhibit_hooks {
-                    run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
-                }
-                Ok(Value::buffer(id, buf_name))
-            }
             "get-buffer" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
@@ -594,25 +501,6 @@ define_dispatch!(
                 }
                 Ok(Value::buffer(new_id, new_name))
             }
-            "clone-indirect-buffer" => {
-                need_arg_range(name, args, 0, 2)?;
-                let base = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
-                let name = args
-                    .first()
-                    .and_then(|value| string_like(value).map(|string| string.text))
-                    .unwrap_or_else(|| format!("{}<clone>", interp.buffer.name));
-                let clone = args.get(1).is_some_and(|value| value.is_truthy());
-                super::call(
-                    interp,
-                    "make-indirect-buffer",
-                    &[
-                        base,
-                        Value::String(name.into()),
-                        if clone { Value::T } else { Value::Nil },
-                    ],
-                    env,
-                )
-            }
             "rename-buffer" => {
                 need_args(name, args, 1)?;
                 let new_name = string_text(&args[0])?;
@@ -712,13 +600,6 @@ define_dispatch!(
                     .or_else(|| interp.symbol_value_cell(&symbol).ok())
                     .ok_or(LispError::Void(symbol))
             }
-            "buffer-local-toplevel-value" => {
-                need_args(name, args, 1)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                interp
-                    .buffer_local_toplevel_value(interp.current_buffer_id(), &symbol)
-                    .ok_or(LispError::Void(symbol))
-            }
             "buffer-local-variables" => {
                 let buffer_id = match args.first().filter(|value| !value.is_nil()) {
                     Some(value) => interp.resolve_buffer_id(value)?,
@@ -754,27 +635,17 @@ define_dispatch!(
             "make-local-variable" => {
                 need_args(name, args, 1)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Nil);
-                interp.set_buffer_local_value(interp.current_buffer_id(), &symbol, value);
+                // A native always-local slot (buffer-file-name, mode-name,
+                // default-directory, ...) is already local by construction.
+                // Adding a second entry to the generic buffer-local table
+                // would shadow the native slot with its old value, so the
+                // immediately following `(set (make-local-variable ...) V)'
+                // could write V while reads still returned that stale entry.
+                if !interp.is_always_buffer_local_special(&symbol) {
+                    let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Nil);
+                    interp.set_buffer_local_value(interp.current_buffer_id(), &symbol, value);
+                }
                 Ok(Value::Symbol(symbol.into()))
-            }
-            "set-buffer-local-toplevel-value" => {
-                need_args(name, args, 2)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
-                interp.notify_variable_watchers(
-                    &symbol,
-                    value.clone(),
-                    "set",
-                    Some(interp.current_buffer_id()),
-                    env,
-                )?;
-                interp.set_buffer_local_toplevel_value(
-                    interp.current_buffer_id(),
-                    &symbol,
-                    value.clone(),
-                );
-                Ok(value)
             }
             "buffer-list" => {
                 let bufs: Vec<Value> = interp
@@ -783,56 +654,6 @@ define_dispatch!(
                     .map(|(id, n)| Value::buffer(*id, n.clone()))
                     .collect();
                 Ok(Value::list(bufs))
-            }
-            "list-buffers" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let files_only = args.first().is_some_and(Value::is_truthy);
-                let _ = refresh_buffer_menu(interp, files_only, None, None, env)?;
-                Ok(Value::Symbol("window".into()))
-            }
-            "list-buffers-noselect" => {
-                if args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let files_only = args.first().is_some_and(Value::is_truthy);
-                refresh_buffer_menu(interp, files_only, args.get(1), args.get(2), env)
-            }
-            "Buffer-menu-buffer" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let error_if_non_existent = args.first().is_some_and(Value::is_truthy);
-                let Some(entries) =
-                    interp.buffer_local_value(interp.current_buffer_id(), BUFFER_MENU_ENTRIES_VAR)
-                else {
-                    return if error_if_non_existent {
-                        Err(LispError::Signal("No buffer on this line".into()))
-                    } else {
-                        Ok(Value::Nil)
-                    };
-                };
-                let entries = entries.to_vec()?;
-                let line_index = interp
-                    .buffer
-                    .line_number_at_pos(interp.buffer.point())
-                    .saturating_sub(1);
-                let Some(entry) = entries.get(line_index).cloned() else {
-                    return if error_if_non_existent {
-                        Err(LispError::Signal("No buffer on this line".into()))
-                    } else {
-                        Ok(Value::Nil)
-                    };
-                };
-                match entry {
-                    Value::Buffer(ref buffer) if interp.has_buffer_id(buffer.id) => Ok(entry),
-                    Value::Buffer(_) if error_if_non_existent => {
-                        Err(LispError::Signal("This buffer has been killed".into()))
-                    }
-                    Value::Buffer(_) => Ok(Value::Nil),
-                    other => Err(LispError::TypeError("buffer".into(), other.type_name())),
-                }
             }
             "add-variable-watcher" => {
                 need_args(name, args, 2)?;
@@ -850,39 +671,28 @@ define_dispatch!(
             }
             "command-modes" => {
                 need_args(name, args, 1)?;
-                Ok(interp
-                    .get_symbol_property(args[0].as_symbol()?, "command-modes")
-                    .unwrap_or(Value::Nil))
-            }
-            "help-function-arglist" => {
-                need_arg_range(name, args, 1, 2)?;
-                // GNU returns t when the arglist is unknown (nil, unbound
-                // symbols, opaque objects) — advice.el's ad-arglist feeds it
-                // nil for autoloaded functions and expects a non-list.
-                if args[0].is_nil() {
-                    return Ok(Value::T);
-                }
-                let function = if let Ok(symbol) = args[0].as_symbol() {
-                    if let Some(arglist) =
-                        interp.get_symbol_property(symbol, "emaxx-function-arglist")
+                let mut function = args[0].clone();
+                while let Value::Symbol(symbol) = &function {
+                    if let Some(modes) = interp.get_symbol_property(symbol, "command-modes")
+                        && !modes.is_nil()
                     {
-                        return Ok(arglist);
+                        return Ok(modes);
                     }
-                    match interp.lookup_function(symbol, env) {
+                    function = match interp.lookup_function(symbol, env) {
                         Ok(function) => function,
-                        // The function cell has no lambda, but the symbol may still
-                        // be a macro (e.g. a GNU macro loaded into the macro table).
-                        // GNU returns the macro's arglist, never a bare `t`, so the
-                        // callers that iterate the arglist (shortdoc) do not fault.
-                        Err(_) => match interp.macro_binding_as_function(symbol) {
-                            Some(macro_fn) => macro_fn,
-                            None => return Ok(Value::T),
-                        },
-                    }
-                } else {
-                    args[0].clone()
-                };
-                Ok(help_function_arglist_value(&function))
+                        Err(_) => return Ok(Value::Nil),
+                    };
+                }
+                Ok(match function {
+                    Value::Lambda(lambda) => lambda.command_modes().unwrap_or(Value::Nil),
+                    Value::Record(id) => interp
+                        .find_record(id)
+                        .filter(|record| record.kind == crate::lisp::eval::RecordKind::Closure)
+                        .and_then(|record| record.slots.get(5))
+                        .and_then(crate::lisp::types::LambdaValue::command_modes_from_slot)
+                        .unwrap_or(Value::Nil),
+                    _ => Value::Nil,
+                })
             }
             "indirect-function" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -936,35 +746,57 @@ define_dispatch!(
                     Value::BuiltinFunc(symbol) => Ok(builtin_arity_value(symbol)
                         .or_else(|| special_form_arity_value(symbol))
                         .unwrap_or_else(|| fallback_subr_arity_value(symbol))),
-                    other => Err(LispError::TypeError("subr".into(), other.type_name())),
+                    // GNU data.c CHECK_SUBR signals the subrp predicate with
+                    // the offending value itself.
+                    other => Err(crate::lisp::primitives::wrong_type_argument(
+                        "subrp",
+                        other.clone(),
+                    )),
                 }
             }
             "func-arity" => {
                 need_args(name, args, 1)?;
+                // GNU eval.c:Ffunc_arity strips a `(macro . FN)' wrapper and
+                // reports the expander's arity.
+                let unwrap_macro = |value: &Value| -> Value {
+                    if let Some((car, cdr)) = value.cons_values()
+                        && matches!(&car, Value::Symbol(head) if head == "macro")
+                    {
+                        cdr
+                    } else {
+                        value.clone()
+                    }
+                };
                 match &args[0] {
                     Value::Symbol(symbol) => {
                         if let Some(arity) = special_form_arity_value(symbol) {
                             Ok(arity)
                         } else {
                             let function = interp.lookup_function(symbol, env)?;
-                            function_arity_value(interp, &function, env)
+                            function_arity_value(interp, &unwrap_macro(&function), env)
                         }
                     }
-                    other => function_arity_value(interp, other, env),
+                    other => function_arity_value(interp, &unwrap_macro(other), env),
                 }
             }
             "subr-name" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
                     Value::BuiltinFunc(symbol) => Ok(Value::String(symbol.clone().into())),
-                    other => Err(LispError::TypeError("subr".into(), other.type_name())),
+                    other => Err(crate::lisp::primitives::wrong_type_argument(
+                        "subrp",
+                        other.clone(),
+                    )),
                 }
             }
             "subr-native-lambda-list" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
                     Value::BuiltinFunc(_) => Ok(Value::T),
-                    other => Err(LispError::TypeError("subr".into(), other.type_name())),
+                    other => Err(crate::lisp::primitives::wrong_type_argument(
+                        "subrp",
+                        other.clone(),
+                    )),
                 }
             }
             "native-comp-available-p" => {
@@ -974,7 +806,10 @@ define_dispatch!(
             "comp--subr-signature" => {
                 need_args(name, args, 1)?;
                 let Value::BuiltinFunc(symbol) = &args[0] else {
-                    return Err(LispError::TypeError("subr".into(), args[0].type_name()));
+                    return Err(crate::lisp::primitives::wrong_type_argument(
+                        "subrp",
+                        args[0].clone(),
+                    ));
                 };
                 let arity = builtin_arity_value(symbol)
                     .or_else(|| special_form_arity_value(symbol))
@@ -1402,29 +1237,6 @@ define_dispatch!(
                     return Ok(Value::Symbol(entered.into()));
                 }
             }
-            "coding-system-list" => {
-                need_arg_range(name, args, 0, 1)?;
-                Ok(Value::list(
-                    interp
-                        .coding_system_list(args.first().is_some_and(Value::is_truthy))
-                        .into_iter()
-                        .map(|value| Value::Symbol(value.into()))
-                        .collect::<Vec<_>>(),
-                ))
-            }
-            "coding-system-type" => {
-                need_args(name, args, 1)?;
-                if args[0].is_nil() {
-                    return Ok(Value::Symbol("raw-text".into()));
-                }
-                Ok(match checked_coding_name(interp, &args[0])? {
-                    Some(coding) => interp
-                        .coding_system_kind_name(&coding)
-                        .map(|value| Value::Symbol(value.into()))
-                        .unwrap_or(Value::Nil),
-                    None => Value::Nil,
-                })
-            }
             "coding-system-priority-list" => {
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1444,18 +1256,6 @@ define_dispatch!(
                             .collect::<Vec<_>>(),
                     ))
                 }
-            }
-            "sort-coding-systems" => {
-                need_args(name, args, 1)?;
-                let mut items = args[0].to_vec()?;
-                items.sort_by_key(|value| {
-                    value
-                        .as_symbol()
-                        .ok()
-                        .map(|name| interp.coding_system_priority_rank(name))
-                        .unwrap_or(usize::MAX)
-                });
-                Ok(Value::list(items))
             }
             "coding-system-aliases" => {
                 need_args(name, args, 1)?;
@@ -1483,64 +1283,12 @@ define_dispatch!(
                     .coding_system_plist_value(&coding)
                     .unwrap_or(Value::Nil))
             }
-            "coding-system-get" => {
-                need_args(name, args, 2)?;
-                let coding = checked_coding_symbol(interp, &args[0])?;
-                let property = args[1].as_symbol()?;
-                if property == ":for-unibyte" {
-                    return Ok(
-                        if interp
-                            .coding_system_kind_name(&coding)
-                            .is_some_and(|kind| kind == "raw-text")
-                        {
-                            Value::T
-                        } else {
-                            Value::Nil
-                        },
-                    );
-                }
-                let plist = interp
-                    .coding_system_plist_value(&coding)
-                    .unwrap_or(Value::Nil)
-                    .to_vec()?;
-                let mut index = 0usize;
-                while index + 1 < plist.len() {
-                    if plist[index] == args[1] {
-                        return Ok(plist[index + 1].clone());
-                    }
-                    index += 2;
-                }
-                Ok(Value::Nil)
-            }
             "coding-system-put" => {
                 need_args(name, args, 3)?;
                 let coding = checked_coding_symbol(interp, &args[0])?;
                 let key = args[1].as_symbol()?;
                 interp.set_coding_system_plist_property(&coding, key, args[2].clone())?;
                 Ok(args[2].clone())
-            }
-            "coding-system-mnemonic" => {
-                need_args(name, args, 1)?;
-                // GNU keeps the mnemonic in the coding attributes vector
-                // (mule-conf.el defines them); the dumped values below are
-                // pinned against the oracle.  nil resolves to
-                // no-conversion, mnemonic `='.
-                if args[0].is_nil() {
-                    return Ok(Value::Integer('=' as i64));
-                }
-                let coding = checked_coding_symbol(interp, &args[0])?;
-                let base = interp
-                    .coding_system_base_name(&coding)
-                    .unwrap_or_else(|| coding.clone());
-                let mnemonic = match base.as_str() {
-                    "utf-8" | "utf-16" | "utf-16le" | "utf-16be" | "utf-7" => 'U',
-                    "no-conversion" | "binary" => '=',
-                    "raw-text" => 't',
-                    "iso-latin-1" | "iso-8859-1" | "latin-1" => '1',
-                    "undecided" | "prefer-utf-8" | "us-ascii" => '-',
-                    _ => '-',
-                };
-                Ok(Value::Integer(mnemonic as i64))
             }
             "coding-system-eol-type" => {
                 need_args(name, args, 1)?;
@@ -1592,101 +1340,9 @@ define_dispatch!(
                     .map(|value| Value::Symbol(value.into()))
                     .unwrap_or(Value::Nil))
             }
-            "coding-system-change-eol-conversion" => {
-                // GNU mule-cmds.el: return CODING-SYSTEM's variant with the
-                // given EOL-TYPE (unix/dos/mac/0/1/2), the base when EOL-TYPE
-                // is nil (auto-detect), or CODING-SYSTEM itself when nothing
-                // changes.  In emaxx's model a base system has eol_type None
-                // (GNU's vector of variants) and variants are "BASE-unix" etc.
-                need_args(name, args, 2)?;
-                // GNU: nil is a valid designator (base no-conversion, eol 0).
-                let (base, original) = if args[0].is_nil() {
-                    ("no-conversion".to_string(), Some(0))
-                } else {
-                    let coding = checked_coding_symbol(interp, &args[0])?;
-                    (
-                        interp
-                            .coding_system_base_name(&coding)
-                            .unwrap_or_else(|| coding.clone()),
-                        interp.coding_system_eol_type_value(&coding),
-                    )
-                };
-                let eol_type = match &args[1] {
-                    Value::Nil => None,
-                    Value::Integer(n) => Some(*n),
-                    Value::Symbol(symbol) => match symbol.as_str() {
-                        "unix" => Some(0),
-                        "dos" => Some(1),
-                        "mac" => Some(2),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                let Some(eol_type) = eol_type else {
-                    // nil EOL-TYPE: an already-undetermined system stays
-                    // as-is, a fixed one falls back to its base.
-                    return Ok(if original.is_none() {
-                        args[0].clone()
-                    } else {
-                        Value::Symbol(base.into())
-                    });
-                };
-                if original == Some(eol_type) {
-                    return Ok(args[0].clone());
-                }
-                let suffix = match eol_type {
-                    0 => "unix",
-                    1 => "dos",
-                    2 => "mac",
-                    _ => return Ok(Value::Nil),
-                };
-                let variant = format!("{base}-{suffix}");
-                Ok(if interp.has_coding_system(&variant) {
-                    Value::Symbol(variant.into())
-                } else {
-                    Value::Nil
-                })
-            }
-            "coding-system-equal" => {
-                need_args(name, args, 2)?;
-                let equal = match (
-                    checked_coding_name(interp, &args[0])?,
-                    checked_coding_name(interp, &args[1])?,
-                ) {
-                    (None, None) => true,
-                    (Some(left), Some(right)) => {
-                        left == right
-                            || (interp.coding_system_plist_value(&left)
-                                == interp.coding_system_plist_value(&right)
-                                && interp.coding_system_eol_type_value(&left)
-                                    == interp.coding_system_eol_type_value(&right))
-                    }
-                    _ => false,
-                };
-                Ok(if equal { Value::T } else { Value::Nil })
-            }
             "check-coding-systems-region" => {
                 need_args(name, args, 3)?;
                 check_coding_systems_region_value(interp, &args[0], args.get(1), &args[2])
-            }
-            "select-safe-coding-system" => {
-                need_arg_range(name, args, 2, 5)?;
-                if let Some(default) = args.get(2)
-                    && let Some(coding) = first_valid_coding_candidate(interp, default)?
-                {
-                    return Ok(Value::Symbol(coding.into()));
-                }
-                if let Some(coding) = interp
-                    .lookup_var("coding-system-for-write", env)
-                    .and_then(|value| checked_coding_name(interp, &value).ok().flatten())
-                {
-                    return Ok(Value::Symbol(coding.into()));
-                }
-                Ok(Value::Symbol(
-                    checked_coding_name(interp, &Value::Symbol("utf-8-emacs".into()))?
-                        .unwrap_or_else(|| "utf-8".into())
-                        .into(),
-                ))
             }
             "detect-coding-string" => {
                 need_args(name, args, 1)?;
@@ -1760,7 +1416,7 @@ define_dispatch!(
                 .keyboard_coding_system()
                 .map(|value| Value::Symbol(value.into()))
                 .unwrap_or(Value::Nil)),
-            "set-keyboard-coding-system" | "set-keyboard-coding-system-internal" => {
+            "set-keyboard-coding-system-internal" => {
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
