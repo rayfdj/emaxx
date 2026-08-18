@@ -3707,61 +3707,6 @@ pub(crate) fn collect_where_is_matches(
     Ok(())
 }
 
-pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> {
-    match key {
-        "C-s" => Some("isearch-forward"),
-        "RET" => Some("newline"),
-        "C-n" => Some("next-line"),
-        "C-p" => Some("previous-line"),
-        "C-e" => Some("move-end-of-line"),
-        "C-a" => Some("move-beginning-of-line"),
-        "C-f" => Some("forward-char"),
-        "C-b" => Some("backward-char"),
-        "C-k" => Some("kill-line"),
-        "C-y" => Some("yank"),
-        "M-y" => Some("yank-pop"),
-        "C-w" => Some("kill-region"),
-        "M-w" => Some("kill-ring-save"),
-        "C-d" => Some("delete-char"),
-        "M-a" => Some("backward-sentence"),
-        "C-SPC" => Some("set-mark-command"),
-        "M-}" => Some("forward-paragraph"),
-        "C-x n n" => Some("narrow-to-region"),
-        "M-/" => Some("dabbrev-expand"),
-        "C-M-/" => Some("dabbrev-completion"),
-        "C-x 4 d" => Some("dired-other-window"),
-        "C-x 5 d" => Some("dired-other-frame"),
-        "C-x 5 C-o" => Some("display-buffer-other-frame"),
-        // bindings.el / simple.el dumped defaults consumed by the terminal
-        // frontend.  Three retarget onto the nearest live command until the
-        // GNU-named owner exists: DEL (GNU `delete-backward-char'),
-        // C-x C-c (GNU `save-buffers-kill-terminal'), and the horizontal
-        // arrows (GNU `right-char'/`left-char').
-        "DEL" => Some("backward-delete-char-untabify"),
-        "C-g" => Some("keyboard-quit"),
-        "C-_" => Some("undo"),
-        "C-x C-s" => Some("save-buffer"),
-        "C-x C-w" => Some("write-file"),
-        "C-x C-c" => Some("save-buffers-kill-emacs"),
-        "C-v" => Some("scroll-up-command"),
-        "M-v" => Some("scroll-down-command"),
-        "C-l" => Some("recenter-top-bottom"),
-        "C-x b" => Some("switch-to-buffer"),
-        "C-x k" => Some("kill-buffer"),
-        "C-x h" => Some("mark-whole-buffer"),
-        "C-x u" => Some("undo"),
-        // Symbol events spell as their bare names in binding-part form.
-        "up" => Some("previous-line"),
-        "down" => Some("next-line"),
-        "left" => Some("backward-char"),
-        "right" => Some("forward-char"),
-        "home" => Some("move-beginning-of-line"),
-        "end" => Some("move-end-of-line"),
-        "deletechar" => Some("delete-forward-char"),
-        key if key.chars().count() == 1 => Some("self-insert-command"),
-        _ => None,
-    }
-}
 
 pub(crate) fn remap_key_binding_text(command: &str) -> String {
     format!("<remap> <{command}>")
@@ -3969,12 +3914,6 @@ pub(crate) fn key_binding(
         if !binding.is_nil() {
             raw_binding = binding;
         }
-    }
-
-    if raw_binding.is_nil()
-        && let Some(command) = default_global_binding_for_key(key)
-    {
-        raw_binding = Value::Symbol(command.into());
     }
 
     if no_remap || raw_binding.is_nil() {

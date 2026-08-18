@@ -78,15 +78,34 @@ parallel-only noise.
   table (gnutls.rs); remaining Lisp-command entries in
   builtin_interactive_string; safe_run_hooks recovery divergence.
 
-  Phase 6 design (next): make the harness invoke the measured side
-  exactly like the oracle — `-l ert -l compat/emacs_compat_runner.el
-  -l FILE --eval (emaxx-compat-run SEL)` with the runner name
-  parameterized by env var — and delete batch.rs's
-  extract_ert_batch_selector interception plus the native Rust ERT
-  batch reporting path, so real ert.el runs the tests and the shared
-  Lisp reporter writes the JSON on both sides.  Review the
-  put/ert--test native-index mirror (buffer_edit.rs) once nothing
-  consumes the native index.
+  Phase 6 DONE: the harness now invokes the measured side exactly like
+  the oracle — `-l ert -l compat/emacs_compat_runner.el -l FILE --eval
+  (emaxx-compat-run SEL)` with EMAXX_COMPAT_RUNNER naming the subject
+  in reports.  batch.rs's extract_ert_batch_selector interception, the
+  native post-action BatchReport emission (which silently OVERWROTE
+  any Lisp-written result JSON), and the native ERT batch runner path
+  are deleted; real ert.el runs the tests and the shared Lisp reporter
+  writes the JSON on both sides.  Load errors still emit a native
+  load-error report (mirroring the oracle helper's
+  command-error-function contract, selector from
+  EMAXX_COMPAT_SELECTOR).  A fabricated "native-compile" startup
+  feature was removed along the way (emaxx models a no-native-comp
+  GNU: featurep and native-comp-available-p are now both nil).
+  End-to-end proof, first honest compat fixes already landed through
+  the new pipeline: abbrev-tests PASSES 22/22 (the mismatch was
+  minibuf.c's history-length/history-delete-duplicates/
+  history-add-new-input DEFVARs missing natively — now defined with
+  GNU defaults); ring-tests and character-tests PASS; casefiddle-tests
+  PASSES after two GNU-verified casing fixes: capitalize consults the
+  `titlecase' uniprop (all four Latin digraph families) BEFORE the
+  case-table upcase mapping (casefiddle.c order), and the Greek
+  final-sigma post-pass overrides the case-table's Σ→σ mapping at end
+  of word (case_character).  The audit's "Unicode special-case subset"
+  item is thereby partially burned down; the multi-char SpecialCasing
+  table (ß→SS, ﬁ→FI, …) remains the small verified subset.  The put/ert--test mirror in buffer_edit.rs stays: it
+  performs the real property write AND updates the native index, which
+  the internal lib-test runner (lisp::run_ert_file, eval tests) still
+  uses; that runner is dev infrastructure, not the measured side.
 
 
 - 2026-08-18 DE-CHEAT PHASES 1-3 CHECKPOINT: a four-way honesty audit

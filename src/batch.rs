@@ -2,9 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::compat::{
-    self, BatchReport, BatchSummary, DiscoveredTest, FileStatus, TestOutcome, TestStatus,
-};
+use crate::compat::{self, BatchReport, FileStatus, TestStatus};
 use crate::lisp;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::reader::Reader;
@@ -72,7 +70,6 @@ pub fn run_batch_with_actions(
         ..options
     };
     let mut interpreter = initialize_batch_interpreter(&options)?;
-    let mut loaded_test_file: Option<PathBuf> = None;
     let eval_expressions = actions
         .iter()
         .filter_map(|action| match action {
@@ -80,9 +77,11 @@ pub fn run_batch_with_actions(
             BatchAction::Load(_) | BatchAction::Funcall(_) => None,
         })
         .collect::<Vec<_>>();
-    let (selector, saw_ert_runner) = parse_selector_requests(&eval_expressions)?;
     let perf_request = parse_perf_request(&eval_expressions)?;
-    let selector_string = selector.to_string();
+    // The compat helper's load-error reports record the harness-provided
+    // selector; mirror GNU's `emaxx-compat--selector' environment contract.
+    let selector_string = env::var("EMAXX_COMPAT_SELECTOR")
+        .unwrap_or_else(|_| "(quote t)".to_string());
     let mut eval_env: Env = Vec::new();
     for action in &actions {
         match action {
@@ -92,9 +91,6 @@ pub fn run_batch_with_actions(
                     &options.load_path,
                     interpreter.prefers_compiled_loads(),
                 )?;
-                if target != "ert" && loaded_test_file.is_none() {
-                    loaded_test_file = Some(resolved.clone());
-                }
                 if let Err(error) = lisp::load_file_strict(&mut interpreter, &resolved) {
                     if let LispError::Terminate(termination) = error {
                         return Ok(termination.into());
@@ -130,9 +126,7 @@ pub fn run_batch_with_actions(
                     .read_all()
                     .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
                 for form in forms {
-                    if extract_ert_batch_selector(&form).is_some()
-                        || extract_perf_request_from_form(&form).is_some()
-                    {
+                    if extract_perf_request_from_form(&form).is_some() {
                         continue;
                     }
                     match interpreter.eval(&form, &mut eval_env) {
@@ -180,59 +174,11 @@ pub fn run_batch_with_actions(
         }));
     }
 
-    let Some(test_file) = loaded_test_file else {
-        if saw_ert_runner {
-            let (_, summary) = run_ert_for_batch_report(&mut interpreter, &selector);
-            if let Some(termination) = interpreter.take_pending_termination() {
-                return Ok(termination.into());
-            }
-            return Ok(BatchRunOutcome::Exit(i32::from(summary.unexpected != 0)));
-        }
-        return Ok(BatchRunOutcome::Exit(0));
-    };
-
-    let relative_file = report_file_name(&test_file);
-    let report = if saw_ert_runner {
-        let (discovered_tests, summary) = run_ert_for_batch_report(&mut interpreter, &selector);
-        if let Some(termination) = interpreter.take_pending_termination() {
-            return Ok(termination.into());
-        }
-        BatchReport {
-            runner: "emaxx".into(),
-            file: relative_file.clone(),
-            selector: selector_string,
-            file_status: FileStatus::Loaded,
-            file_error: None,
-            discovered_tests,
-            selected_tests: interpreter.last_selected_tests.clone(),
-            results: apply_backtrace_limit(interpreter.test_results.clone()),
-            summary,
-        }
-    } else {
-        BatchReport {
-            runner: "emaxx".into(),
-            file: relative_file,
-            selector: selector_string,
-            file_status: FileStatus::Loaded,
-            file_error: None,
-            discovered_tests: interpreter.discovered_tests(),
-            selected_tests: Vec::new(),
-            results: Vec::new(),
-            summary: Default::default(),
-        }
-    };
-
-    emit_artifacts(&report)?;
-    emit_human_log(&report);
-    write_junit_report_if_requested(&report)?;
-
-    if report.file_status == FileStatus::LoadError {
-        Ok(BatchRunOutcome::Exit(2))
-    } else if report.summary.unexpected == 0 {
-        Ok(BatchRunOutcome::Exit(0))
-    } else {
-        Ok(BatchRunOutcome::Exit(1))
-    }
+    // The measured ERT path is Lisp-driven: real ert.el (or the shared
+    // compat reporter) runs the tests, writes any structured artifacts, and
+    // exits through `kill-emacs'.  Reaching this point means every action
+    // evaluated without a termination request.
+    Ok(BatchRunOutcome::Exit(0))
 }
 
 fn emit_unhandled_batch_error(interpreter: &mut Interpreter, error: &LispError) {
@@ -274,18 +220,6 @@ fn emit_unhandled_batch_error(interpreter: &mut Interpreter, error: &LispError) 
     eprintln!("  normal-top-level()");
 }
 
-fn run_ert_for_batch_report(
-    interpreter: &mut Interpreter,
-    selector: &Value,
-) -> (Vec<DiscoveredTest>, BatchSummary) {
-    // GNU's compatibility helper enumerates the loaded file before asking
-    // ERT to run it.  Tests are allowed to define other tests at runtime;
-    // those definitions must not retroactively change this file's discovery
-    // report or the selector universe for the current run.
-    let discovered_tests = interpreter.discovered_tests();
-    let summary = interpreter.run_ert_tests_with_selector(Some(selector));
-    (discovered_tests, summary)
-}
 
 /// Bootstrap the full Lisp runtime for an interactive terminal session.
 ///
@@ -1032,22 +966,6 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     Ok(())
 }
 
-fn parse_selector_requests(expressions: &[String]) -> Result<(Value, bool), String> {
-    let mut selector = Value::T;
-    let mut saw_ert_runner = false;
-    for expression in expressions {
-        let forms = Reader::new(expression)
-            .read_all()
-            .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
-        for form in forms {
-            if let Some(found_selector) = extract_ert_batch_selector(&form) {
-                selector = found_selector;
-                saw_ert_runner = true;
-            }
-        }
-    }
-    Ok((selector, saw_ert_runner))
-}
 
 fn format_backtrace_summary(interpreter: &Interpreter) -> String {
     format_backtrace_frames(interpreter.backtrace_frames_snapshot())
@@ -1134,14 +1052,6 @@ fn resolve_load_target(
     Err(format!("cannot resolve load target `{target}`"))
 }
 
-fn extract_ert_batch_selector(form: &Value) -> Option<Value> {
-    let items = form.to_vec().ok()?;
-    let head = items.first()?.as_symbol().ok()?;
-    if head != "ert-run-tests-batch-and-exit" {
-        return None;
-    }
-    items.get(1).cloned().or(Some(Value::T))
-}
 
 fn extract_perf_request_from_form(form: &Value) -> Option<PerfRequest> {
     let items = form.to_vec().ok()?;
@@ -1266,36 +1176,6 @@ fn verbose_mode() -> bool {
     )
 }
 
-fn apply_backtrace_limit(results: Vec<TestOutcome>) -> Vec<TestOutcome> {
-    let Some(limit) = env::var("TEST_BACKTRACE_LINE_LENGTH")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-    else {
-        return results;
-    };
-    results
-        .into_iter()
-        .map(|mut result| {
-            if let Some(message) = result.message.take() {
-                let trimmed = message
-                    .lines()
-                    .map(|line| {
-                        let mut chars = line.chars();
-                        let collected = chars.by_ref().take(limit).collect::<String>();
-                        if chars.next().is_some() {
-                            format!("{collected}...")
-                        } else {
-                            collected
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                result.message = Some(trimmed);
-            }
-            result
-        })
-        .collect()
-}
 
 fn write_junit_report_if_requested(report: &BatchReport) -> Result<(), String> {
     let Ok(path) = env::var("EMACS_TEST_JUNIT_REPORT") else {
@@ -1410,16 +1290,6 @@ mod tests {
         assert_eq!(request.samples, 5);
     }
 
-    #[test]
-    fn extracts_selector_from_ert_batch_eval() {
-        let form = Reader::new("(ert-run-tests-batch-and-exit (quote (not (tag :unstable))))")
-            .read_all()
-            .expect("read eval")
-            .remove(0);
-        let selector = extract_ert_batch_selector(&form).expect("selector");
-        // The printer renders (quote X) with reader shorthand, like GNU.
-        assert_eq!(selector.to_string(), "'(not (tag :unstable))");
-    }
 
     #[test]
     fn batch_load_resolution_prefers_elc_only_when_requested() {
@@ -1450,49 +1320,6 @@ mod tests {
         fs::remove_dir_all(root).expect("remove load directory");
     }
 
-    #[test]
-    fn batch_report_discovery_is_snapshotted_before_tests_run() {
-        run_with_large_stack(|| {
-            let upstream = compat::project_root().join("../emacs");
-            let options = BatchRunOptions {
-                load_path: compat::emaxx_upstream_load_path(&upstream).expect("upstream load path"),
-                ..Default::default()
-            };
-            let mut interpreter =
-                initialize_batch_interpreter(&options).expect("GNU batch runtime");
-            assert!(!interpreter.has_feature("ert"));
-            let require = Reader::new("(require 'ert)")
-                .read_all()
-                .expect("read ERT require")
-                .remove(0);
-            interpreter
-                .eval(&require, &mut Vec::new())
-                .expect("load GNU ERT owner");
-            let definition = Reader::new(
-                "(ert-deftest batch-report-original ()
-                   (ert-deftest batch-report-created-during-run () t))",
-            )
-            .read_all()
-            .expect("read ERT definition")
-            .remove(0);
-            interpreter
-                .eval(&definition, &mut Vec::new())
-                .expect("define ERT test");
-
-            let (discovered, summary) = run_ert_for_batch_report(&mut interpreter, &Value::T);
-
-            assert_eq!(summary.total, 1);
-            assert_eq!(summary.passed, 1);
-            assert_eq!(
-                discovered
-                    .iter()
-                    .map(|test| test.name.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["batch-report-original"]
-            );
-            assert_eq!(interpreter.discovered_tests().len(), 2);
-        });
-    }
 
     #[test]
     fn batch_runtime_binds_command_line_args_left_to_nil() {

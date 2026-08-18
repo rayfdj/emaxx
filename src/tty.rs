@@ -1160,8 +1160,25 @@ mod tests {
 
     #[test]
     fn key_resolution_distinguishes_prefixes_commands_and_undefined() {
+        // GNU builds the global map entirely in preloaded Lisp; the bare
+        // host starts with no global bindings.  Exercise the resolution
+        // mechanics against a real keymap assembled through C-owned
+        // primitives instead of any transcribed default table.
         let mut interpreter = Interpreter::new();
         let mut env: Env = Vec::new();
+        for form in [
+            "(define-key global-map \"\\C-x\" (make-sparse-keymap))",
+            "(define-key global-map \"h\" 'self-insert-command)",
+            "(define-key global-map \"\\C-x\\C-s\" 'save-buffer)",
+        ] {
+            let parsed = crate::lisp::reader::Reader::new(form)
+                .read()
+                .expect("keymap setup form parses")
+                .expect("keymap setup form exists");
+            interpreter
+                .eval(&parsed, &mut env)
+                .expect("keymap setup form evaluates");
+        }
 
         let prefix = resolve_pending(&mut interpreter, &mut env, &[Value::Integer(24)]);
         assert!(matches!(prefix, Resolution::Prefix), "C-x must be a prefix");
