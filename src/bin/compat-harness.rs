@@ -26,6 +26,11 @@ const FROZEN_COMPAT_MANIFEST_PATH: &str = "compat/oracle_tests_all.txt";
 const FROZEN_COMPAT_FILE_COUNT: usize = 515;
 const FROZEN_COMPAT_LOAD_ERROR_COUNT: usize = 4;
 const FROZEN_COMPAT_OUTCOME_COUNT: usize = 7_595;
+/// sha256 of compat/oracle_tests_all.txt.  The three counts above cannot
+/// detect a same-count substitution of test names, so the manifest's contents
+/// are pinned too; regenerating it is a deliberate constant bump.
+const FROZEN_COMPAT_MANIFEST_SHA256: &str =
+    "bc1070ec0f4256c929ebf7f7254290ee88049fd1b6495252ee7849cecd7f7758";
 const TARGET_OWNER_FILE: &str = ".emaxx-source-root";
 const SUBJECT_LOCK_FILE: &str = ".emaxx-compat.lock";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 180;
@@ -470,6 +475,14 @@ struct AggregateReport {
     total_files: usize,
     matching_files: usize,
     mismatching_files: usize,
+    /// Per-TEST tallies.  A compatibility claim is a count of tests, so it is
+    /// computed here rather than reconstructed by hand from the manifest.
+    #[serde(default)]
+    matching_outcomes: usize,
+    #[serde(default)]
+    mismatching_outcomes: usize,
+    #[serde(default)]
+    total_outcomes: usize,
     files: Vec<String>,
     mismatches: Vec<String>,
     name_filter: Option<String>,
@@ -583,6 +596,13 @@ impl FrozenCompatibilityManifest {
             }
         }
         let outcome_count = entries.values().map(Vec::len).sum::<usize>();
+        if sha256 != FROZEN_COMPAT_MANIFEST_SHA256 {
+            return Err(format!(
+                "frozen compatibility manifest {} has sha256 {sha256}, expected {FROZEN_COMPAT_MANIFEST_SHA256}; \
+                 regenerating the manifest requires bumping FROZEN_COMPAT_MANIFEST_SHA256",
+                path.display()
+            ));
+        }
         if entries.len() != FROZEN_COMPAT_FILE_COUNT
             || historical_load_errors.len() != FROZEN_COMPAT_LOAD_ERROR_COUNT
             || outcome_count != FROZEN_COMPAT_OUTCOME_COUNT
@@ -1555,6 +1575,8 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         frozen_manifest,
     } = plan;
     let mut matching_files = 0usize;
+    let mut matching_outcomes = 0usize;
+    let mut mismatching_outcomes = 0usize;
     let mut mismatches = Vec::new();
     let mut timings = Vec::new();
     let mut performance_regressions = Vec::new();
@@ -1657,6 +1679,8 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         write_raw_log(&per_file_dir.join("oracle.log"), &oracle.process)?;
         write_raw_log(&per_file_dir.join("emaxx.log"), &emaxx.process)?;
 
+        matching_outcomes += comparison.matching_outcomes;
+        mismatching_outcomes += comparison.mismatching_outcomes;
         if comparison.matches {
             matching_files += 1;
             println!("PASS {}", relative);
@@ -1689,6 +1713,9 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         total_files: matching_files + mismatches.len(),
         matching_files,
         mismatching_files: mismatches.len(),
+        matching_outcomes,
+        mismatching_outcomes,
+        total_outcomes: matching_outcomes + mismatching_outcomes,
         files: relative_files,
         mismatches,
         name_filter: name_filter_expression.map(ToOwned::to_owned),
@@ -1702,6 +1729,13 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
             "frozen replay compared {compared_outcomes} outcomes; expected {FROZEN_COMPAT_OUTCOME_COUNT}"
         ));
     }
+    println!(
+        "TESTS {}/{} matching ({} mismatching) across {} files",
+        aggregate.matching_outcomes,
+        aggregate.total_outcomes,
+        aggregate.mismatching_outcomes,
+        aggregate.total_files,
+    );
     verify_run_inputs_unchanged(provenance)?;
     write_json(
         &artifact_root.join("summary.json"),
@@ -2216,9 +2250,39 @@ fn verify_run_inputs_unchanged(provenance: &RunProvenance) -> Result<(), String>
     Ok(())
 }
 
+/// Everything the oracle's answers depend on that git cannot see.
+///
+/// The copied support inputs are `.el' only, but GNU resolves `lisp/**/*.elc'
+/// from its own tree at run time, so those compiled files are what the oracle
+/// actually executes.  They are gitignored, which means `git status' cannot
+/// detect an edit to one -- a weakened `subr.elc' would move every oracle
+/// result invisibly.  Hash them here even though they are not copied.
+fn fingerprint_inputs(repo_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = isolated_test_support_inputs(repo_root)?;
+    let mut stack = vec![repo_root.join("lisp")];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "elc")
+                && let Ok(relative) = path.strip_prefix(repo_root)
+            {
+                files.push(relative.to_path_buf());
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
 fn test_support_fingerprint(repo_root: &Path) -> Result<String, String> {
     let mut hasher = Sha256::new();
-    for relative in isolated_test_support_inputs(repo_root)? {
+    for relative in fingerprint_inputs(repo_root)? {
         let path = relative.to_string_lossy();
         hasher.update((path.len() as u64).to_le_bytes());
         hasher.update(path.as_bytes());
@@ -3149,6 +3213,9 @@ mod tests {
             selector: "t".into(),
             scope: "All".into(),
             total_files: 1,
+            matching_outcomes: 0,
+            mismatching_outcomes: 0,
+            total_outcomes: 0,
             matching_files: 1,
             mismatching_files: 0,
             files: vec!["a.el".into()],
@@ -3209,6 +3276,8 @@ mod tests {
             file: "timeout.el".into(),
             matches: true,
             issues: Vec::new(),
+            matching_outcomes: 0,
+            mismatching_outcomes: 0,
         };
         let oracle = process_result(
             Duration::from_secs(180),

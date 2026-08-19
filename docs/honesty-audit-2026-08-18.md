@@ -248,6 +248,24 @@ set, for the round that removes them:
 Note `this-single-command-keys` is a *function* in GNU (keyboard.c) with no
 variable cell at all.
 
+## Staging for finding 9 (2026-08-19)
+
+Of the 98 arms with no C DEFVAR, only 19 are read anywhere in Emaxx's own
+native code; the other 79 exist solely to answer `boundp'/`symbol-value' on a
+bare host and can be deleted outright.  The 19 needing individual judgement:
+
+    case-replace command-line-args-left command-switch-alist
+    completion-styles completion-styles-alist custom-file
+    delay-mode-hooks delayed-after-hook-functions delayed-mode-hooks
+    desktop-buffer-mode-handlers find-program gensym-counter grep-program
+    null-device require-final-newline shell-command-switch
+    this-single-command-keys tramp-mode window-display-table
+
+For each, the native reader must either tolerate the variable being void (as
+it is in GNU before the owning file loads) or be shown to have a genuine C
+owner this diff missed.  `this-single-command-keys' is the clearest case: GNU
+has no variable of that name at all, only the keyboard.c function.
+
 ## Fix log (2026-08-19)
 
 Applied and verified byte-identical against the pinned oracle:
