@@ -717,15 +717,14 @@ impl Interpreter {
                 Value::Integer(0xFE13),
                 Value::Integer(0x17D6),
             ])),
+            // GNU's `Vsource_directory' is fixed when the binary is built
+            // (epaths.h PATH_DUMPLOADSEARCH), so it names the checkout whose
+            // Lisp this image reconstructs.  It must never be derived from a
+            // harness variable such as EMACS_TEST_DIRECTORY.
             "source-directory" => Some(Value::String(
-                std::env::var("EMACS_TEST_DIRECTORY")
-                    .ok()
-                    .and_then(|path| {
-                        std::path::PathBuf::from(path)
-                            .parent()
-                            .map(|path| path.display().to_string())
-                    })
-                    .unwrap_or_else(primitives::default_directory)
+                crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
+                    .map(|path| primitives::file_name_as_directory(&path.display().to_string()))
+                    .unwrap_or_else(|_| primitives::default_directory())
                     .into(),
             )),
             "data-directory" | "doc-directory" => Some(Value::String(
@@ -832,11 +831,6 @@ impl Interpreter {
                     .map(|value| Value::Symbol(value.into()))
                     .collect::<Vec<_>>(),
             )),
-            "ert-resource-directory-format" => Some(Value::String("%s-resources/".into())),
-            "ert-resource-directory-trim-left-regexp" => Some(Value::String(String::new().into())),
-            "ert-resource-directory-trim-right-regexp" => {
-                Some(Value::String("\\(-tests?\\)?\\.el".into()))
-            }
             "load-file-name" => Some(
                 self.current_load_file
                     .clone()

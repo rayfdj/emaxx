@@ -141,27 +141,72 @@ pub(crate) fn simple_downcase_char(code: u32, final_sigma: bool) -> u32 {
 }
 
 pub(crate) fn simple_titlecase_char(code: u32) -> u32 {
-    let code = normalize_case_key(code);
-    // GNU's `titlecase' uniprop table: the only characters whose titlecase
-    // differs from their uppercase are the Latin digraphs.
-    match code {
-        0x01C4..=0x01C6 => 0x01C5,
-        0x01C7..=0x01C9 => 0x01C8,
-        0x01CA..=0x01CC => 0x01CB,
-        0x01F1..=0x01F3 => 0x01F2,
-        _ => simple_upcase_char(code),
-    }
+    // Without the loaded `titlecase' uniprop table there is nothing to
+    // consult, so this degrades to upcase exactly as casefiddle.c does with a
+    // nil table.  Callers holding a CasingContext go through it instead.
+    simple_upcase_char(normalize_case_key(code))
 }
 
-/// Whether the `titlecase' uniprop maps CODE (casefiddle.c consults that
-/// table before the case-table's upcase mapping).
-fn titlecase_prop_char(code: u32) -> Option<u32> {
-    match code {
-        0x01C4..=0x01C6 => Some(0x01C5),
-        0x01C7..=0x01C9 => Some(0x01C8),
-        0x01CA..=0x01CC => Some(0x01CB),
-        0x01F1..=0x01F3 => Some(0x01F2),
-        _ => None,
+/// casefiddle.c's `struct casing_context': the Unicode property tables the
+/// current casing operation may consult, resolved once up front.  GNU builds
+/// this per operation (`prepare_casing_context'), never per character, and
+/// leaves a table nil when the operation cannot use it.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct CasingContext {
+    titlecase: Option<u64>,
+    special_upcase: Option<u64>,
+    special_downcase: Option<u64>,
+    special_titlecase: Option<u64>,
+}
+
+impl CasingContext {
+    /// Mirror of casefiddle.c:70-85, including which tables each action nils.
+    pub(crate) fn prepare(
+        interp: &mut Interpreter,
+        action: CaseAction,
+        env: &mut Env,
+    ) -> Self {
+        let capitalizing = matches!(
+            action,
+            CaseAction::Capitalize | CaseAction::UpcaseInitials
+        );
+        let table = |interp: &mut Interpreter, property: &str, env: &mut Env| {
+            crate::lisp::primitives::dispatch::strings::uniprop_table_id(interp, property, env)
+        };
+        Self {
+            titlecase: capitalizing
+                .then(|| table(interp, "titlecase", env))
+                .flatten(),
+            special_upcase: (!matches!(action, CaseAction::Down))
+                .then(|| table(interp, "special-uppercase", env))
+                .flatten(),
+            special_downcase: (!matches!(action, CaseAction::Up))
+                .then(|| table(interp, "special-lowercase", env))
+                .flatten(),
+            special_titlecase: capitalizing
+                .then(|| table(interp, "special-titlecase", env))
+                .flatten(),
+        }
+    }
+
+    fn titlecase_char(&self, interp: &Interpreter, code: u32) -> Option<u32> {
+        let value = crate::lisp::primitives::dispatch::strings::uniprop_table_ref(
+            interp,
+            self.titlecase?,
+            code,
+        )?;
+        u32::try_from(value.as_integer().ok()?).ok()
+    }
+
+    fn special_string(&self, interp: &Interpreter, property: &str, code: u32) -> Option<String> {
+        let table_id = match property {
+            "special-uppercase" => self.special_upcase,
+            "special-lowercase" => self.special_downcase,
+            _ => self.special_titlecase,
+        }?;
+        let value =
+            crate::lisp::primitives::dispatch::strings::uniprop_table_ref(interp, table_id, code)?;
+        crate::lisp::primitives::string_like(&value).map(|string| string.text)
     }
 }
 
@@ -209,24 +254,15 @@ pub(crate) fn case_word_char(interp: &Interpreter, ch: char, case_symbols_as_wor
     syntax::current_syntax_word_char(interp, normalize_case_key(ch as u32), case_symbols_as_words)
 }
 
-/// GNU's unconditional Unicode special-casing tables.  Keep the small native
-/// bootstrap fallback in one place so `get-char-code-property' and the
-/// string/region casers cannot disagree about one-to-many mappings.
-pub(crate) fn unicode_special_case_mapping(code: u32, property: &str) -> Option<&'static str> {
-    match (normalize_case_key(code), property) {
-        (0x00DF, "special-uppercase") => Some("SS"),
-        (0x00DF, "special-titlecase") => Some("Ss"),
-        (0x0130, "special-lowercase") => Some("i\u{307}"),
-        (0xFB01, "special-uppercase") => Some("FI"),
-        (0xFB01, "special-titlecase") => Some("Fi"),
-        _ => None,
-    }
-}
-
-pub(crate) fn full_upcase_string(interp: &Interpreter, up_table: u64, ch: char) -> String {
+pub(crate) fn full_upcase_string(
+    interp: &Interpreter,
+    context: &CasingContext,
+    up_table: u64,
+    ch: char,
+) -> String {
     let code = ch as u32;
-    if let Some(mapped) = unicode_special_case_mapping(code, "special-uppercase") {
-        return mapped.to_string();
+    if let Some(mapped) = context.special_string(interp, "special-uppercase", code) {
+        return mapped;
     }
     if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
         return char::from_u32(denormalize_case_key(code, mapped))
@@ -241,6 +277,7 @@ pub(crate) fn full_upcase_string(interp: &Interpreter, up_table: u64, ch: char) 
 
 pub(crate) fn full_downcase_string(
     interp: &Interpreter,
+    context: &CasingContext,
     down_table: u64,
     ch: char,
     final_sigma: bool,
@@ -252,8 +289,8 @@ pub(crate) fn full_downcase_string(
     if code == 0x03A3 && final_sigma {
         return '\u{03C2}'.to_string();
     }
-    if let Some(mapped) = unicode_special_case_mapping(code, "special-lowercase") {
-        return mapped.to_string();
+    if let Some(mapped) = context.special_string(interp, "special-lowercase", code) {
+        return mapped;
     }
     if let Some(mapped) = explicit_case_table_mapping(interp, down_table, code) {
         return char::from_u32(denormalize_case_key(code, mapped))
@@ -269,14 +306,19 @@ pub(crate) fn full_downcase_string(
     }
 }
 
-pub(crate) fn full_titlecase_string(interp: &Interpreter, up_table: u64, ch: char) -> String {
+pub(crate) fn full_titlecase_string(
+    interp: &Interpreter,
+    context: &CasingContext,
+    up_table: u64,
+    ch: char,
+) -> String {
     let code = ch as u32;
-    if let Some(mapped) = unicode_special_case_mapping(code, "special-titlecase") {
-        return mapped.to_string();
+    if let Some(mapped) = context.special_string(interp, "special-titlecase", code) {
+        return mapped;
     }
     // casefiddle.c consults the `titlecase' uniprop before the case-table
     // upcase mapping.
-    if let Some(mapped) = titlecase_prop_char(code) {
+    if let Some(mapped) = context.titlecase_char(interp, code) {
         return char::from_u32(mapped).unwrap_or(ch).to_string();
     }
     if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
@@ -294,6 +336,7 @@ pub(crate) fn full_titlecase_string(interp: &Interpreter, up_table: u64, ch: cha
 
 pub(crate) fn simple_case_char_for_action(
     interp: &Interpreter,
+    context: &CasingContext,
     down_table: u64,
     up_table: u64,
     code: u32,
@@ -306,7 +349,8 @@ pub(crate) fn simple_case_char_for_action(
             .unwrap_or_else(|| simple_downcase_char(code, false)),
         // casefiddle.c:case_character_impl checks the `titlecase' uniprop
         // before falling back to the case-table upcase mapping.
-        CaseAction::Capitalize | CaseAction::UpcaseInitials => titlecase_prop_char(code)
+        CaseAction::Capitalize | CaseAction::UpcaseInitials => context
+            .titlecase_char(interp, code)
             .or_else(|| explicit_case_table_mapping(interp, up_table, code))
             .unwrap_or_else(|| simple_titlecase_char(code)),
     };
@@ -317,8 +361,10 @@ pub(crate) fn casify_string(
     interp: &mut Interpreter,
     input: &str,
     action: CaseAction,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<String, LispError> {
+    // GNU prepares the casing context once per operation, never per character.
+    let context = CasingContext::prepare(interp, action, env);
     let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
     let (down_table, up_table) = current_case_table_ids(interp)?;
     let ascii_only = interp.is_ascii_case_table(down_table);
@@ -341,20 +387,30 @@ pub(crate) fn casify_string(
             ch.to_string()
         } else {
             match action {
-                CaseAction::Up => full_upcase_string(interp, up_table, ch),
-                CaseAction::Down => {
-                    full_downcase_string(interp, down_table, ch, in_word && !next_is_word)
-                }
+                CaseAction::Up => full_upcase_string(interp, &context, up_table, ch),
+                CaseAction::Down => full_downcase_string(
+                    interp,
+                    &context,
+                    down_table,
+                    ch,
+                    in_word && !next_is_word,
+                ),
                 CaseAction::Capitalize => {
                     if is_word && !in_word {
-                        full_titlecase_string(interp, up_table, ch)
+                        full_titlecase_string(interp, &context, up_table, ch)
                     } else {
-                        full_downcase_string(interp, down_table, ch, in_word && !next_is_word)
+                        full_downcase_string(
+                            interp,
+                            &context,
+                            down_table,
+                            ch,
+                            in_word && !next_is_word,
+                        )
                     }
                 }
                 CaseAction::UpcaseInitials => {
                     if is_word && !in_word {
-                        full_titlecase_string(interp, up_table, ch)
+                        full_titlecase_string(interp, &context, up_table, ch)
                     } else {
                         ch.to_string()
                     }
@@ -371,14 +427,15 @@ pub(crate) fn casify_value(
     interp: &mut Interpreter,
     value: &Value,
     action: CaseAction,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     if let Ok(integer) = value.as_integer() {
         let code = u32::try_from(integer)
             .map_err(|_| LispError::Signal(format!("Invalid character: {integer}")))?;
+        let context = CasingContext::prepare(interp, action, env);
         let (down_table, up_table) = current_case_table_ids(interp)?;
         return Ok(Value::Integer(simple_case_char_for_action(
-            interp, down_table, up_table, code, action,
+            interp, &context, down_table, up_table, code, action,
         ) as i64));
     }
     let input = string_text(value)?;
@@ -407,7 +464,7 @@ pub(crate) fn casify_buffer_region(
     start: usize,
     end: usize,
     action: CaseAction,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<usize, LispError> {
     let lo = start.min(end);
     let hi = start.max(end);

@@ -30,7 +30,7 @@ pub(crate) use misc_keymaps::oclosure_type_of;
 mod overlays;
 mod predicates;
 mod search_coding;
-mod strings;
+pub(crate) mod strings;
 mod terminals;
 mod treesit;
 

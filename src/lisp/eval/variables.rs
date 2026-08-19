@@ -1507,21 +1507,27 @@ impl Interpreter {
             .unwrap_or_default()
     }
 
-    /// GNU handler matching: `t' matches anything; otherwise the handler
-    /// symbol must be `memq' in the signaled symbol's `error-conditions',
-    /// falling back to the condition-or-`error' rule when none is defined.
+    /// GNU handler matching (`eval.c:find_handler_clause' ->
+    /// `signal_or_quit''s conditions walk): `t' matches anything; otherwise the
+    /// handler symbol must be `memq' in the signaled symbol's
+    /// `error-conditions' property.  A symbol with NO `error-conditions' — one
+    /// that never went through `define-error' — is caught only by `t'.  GNU
+    /// probe: (condition-case nil (signal 'undefined-cond nil)
+    /// (error 'as-error) (t 'as-t)) => as-t.  Treating an unregistered
+    /// condition as `error' would let `ignore-errors' and `should-error'
+    /// silently absorb conditions Emaxx forgot to register.
     pub(super) fn condition_symbol_matches(
         symbol: &str,
         error_type: &str,
         condition_list: &[String],
     ) -> bool {
         if symbol == "t" {
-            true
-        } else if condition_list.is_empty() {
-            symbol == error_type || symbol == "error"
-        } else {
-            condition_list.iter().any(|entry| entry == symbol)
+            return true;
         }
+        if condition_list.is_empty() {
+            return symbol == error_type;
+        }
+        condition_list.iter().any(|entry| entry == symbol)
     }
 
     pub(crate) fn clause_head_matches(

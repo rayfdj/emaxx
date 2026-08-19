@@ -197,6 +197,60 @@ corpus and answers it.
 35. Latent, adjacent to this session's coding-system edit: emaxx gives
     `raw-text` `:mnemonic ?r`; GNU's is `?t`.
 
+## Fix log (2026-08-19)
+
+Applied and verified byte-identical against the pinned oracle:
+
+- **30 (mine)** — the hardcoded titlecase subset AND the pre-existing 5-entry
+  special-casing table are replaced by lookups into GNU's real uniprop tables
+  through a `CasingContext` prepared once per operation, mirroring
+  `casefiddle.c:70-85` including its nil-table fallback.  All nine hard cases
+  now match GNU: Georgian, U+0131, U+017F, the digraphs, `ß`, `ﬁ`, final sigma.
+- **1, 2, 3** — all three oracle-conditioning sites deleted: the name-keyed
+  thread table and the entire canned-interleaving machinery (nine
+  `ThreadProgram` variants, their driver arms, the fabricated backtrace frame,
+  three dead helpers); the `sti` special case; the fabricated
+  `tetris`/`benchmark-run` autoloads.  Deleting the last of these made Emaxx
+  *more* correct — `(symbol-function 'tetris)` now returns GNU's real autoload,
+  which the fake had been shadowing.
+- **4, 5** — `ert-x.el`'s variables are no longer pre-bound (both report
+  unbound, as GNU does); `source-directory` is derived from the pinned
+  checkout, not `EMACS_TEST_DIRECTORY`, and matches GNU exactly.
+- **6** — `PRELOADED_LISP_INDENT` deleted (209 lines).  All probed properties
+  still match GNU, because they always came from GNU's own `declare` forms,
+  `lisp-mode.el` and `loaddefs.el`.
+- **10** — an unregistered condition is no longer catchable as `error`; only
+  `t` catches it, as GNU does.  This exposed that Emaxx signals conditions it
+  never registers, so `native-lisp-load-failed` (comp.c) and all **ten**
+  treesit conditions are now registered with GNU's exact
+  `error-conditions`/`error-message`, read from the oracle.
+- **15** — `(while)` signals `wrong-number-of-arguments` instead of panicking.
+- **31 (mine)** — the treesit silent skip is reverted to GNU's propagation.
+  That exposed a real startup gap: `user-emacs-directory` was nil because
+  subr.el's `defvar` sets nil deliberately and Emaxx never ran startup.el's
+  `command-line`.  Emaxx now evaluates GNU's own two startup forms and reports
+  `"~/.emacs.d/"` identically.
+- **32, 33, 35 (mine)** — `safe_run_hooks` passes GNU's format string and
+  arguments to `message`; `inhibit-message` is restored even when
+  reconstruction fails; `raw-text`'s mnemonic is `?t`.
+
+Prepared next, with evidence gathered:
+
+- **7** — `default_mode_line_format()` is redundant as well as transcribed:
+  `bindings.el` already sets the value in the reconstructed image (both sides
+  print the same list).  Seed C's `"%-"` and delete the transcription and its
+  `standard-value` put.
+- **8** — the 48-entry coding table is *additive and wrong*: Emaxx lists 277
+  coding systems to GNU's 271, inventing eight (`big5 dos euc-jp mac sjis unix
+  utf8 utf-8-emacs`, which GNU treats as aliases rather than systems) and
+  missing two (`utf-8-hfs`, `utf-8-nfd`).  Deleting it should yield GNU's exact
+  set.
+- **16, 19, 20, 21** — the harness work: tally matched/mismatched *outcomes*
+  into `ComparisonReport`/`AggregateReport` so a numerator exists in
+  `summary.json`; clear all `EMAXX_*` from the subject environment and record
+  what remains; fingerprint the live tree's `lisp/**/*.elc` (the bytes the
+  oracle actually executes); pin the frozen manifest by sha256 constant.
+
 ## What the audits confirmed as sound
 
 - All nine `.el` files in the repo are infrastructure — the ERT reporter is

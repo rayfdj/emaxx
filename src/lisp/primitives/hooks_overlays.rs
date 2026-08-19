@@ -220,17 +220,20 @@ pub(crate) fn safe_run_named_hooks(
                 // renderings, then remove the failing function from the
                 // hook's local value (or, failing that, its default) so a
                 // broken hook cannot wedge every subsequent command.
-                let rendered_fun = crate::lisp::primitives::print::render_prin1(interp, &hook, env)
-                    .unwrap_or_else(|_| "?".to_string());
+                // GNU keyboard.c:1896 does
+                // CALLN (Fmessage, "Error in %s (%S): %S", hook, fun, error),
+                // so the data is formatted BY `message' and a `%' inside a
+                // printed object cannot be reinterpreted as a directive.
                 let condition = crate::lisp::eval::error_condition_value(&error);
-                let rendered_error =
-                    crate::lisp::primitives::print::render_prin1(interp, &condition, env)
-                        .unwrap_or_else(|_| condition.to_string());
-                let message = format!("Error in {hook_name} ({rendered_fun}): {rendered_error}");
                 let _ = crate::lisp::primitives::call(
                     interp,
                     "message",
-                    &[Value::String(message.into())],
+                    &[
+                        Value::String("Error in %s (%S): %S".into()),
+                        Value::symbol(hook_name),
+                        hook.clone(),
+                        condition,
+                    ],
                     env,
                 );
                 remove_hook_function_after_error(interp, hook_name, &hook, env);
