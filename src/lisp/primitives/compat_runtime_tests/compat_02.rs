@@ -30,7 +30,7 @@ fn coding_plist_property(
 
 #[test]
 fn coding_system_get_reports_for_unibyte_for_raw_text() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
 
     assert_eq!(
@@ -146,7 +146,7 @@ fn preloaded_latin_charset_coding_preserves_ascii_and_non_ascii_bytes() {
 
 #[test]
 fn decode_coding_region_inserts_into_destination_buffer() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     interp.buffer = crate::buffer::Buffer::from_text("*source*", "abc");
     let (buffer_id, buffer_name) = interp.create_buffer("*dest*");
@@ -176,7 +176,7 @@ fn decode_coding_region_reports_the_detected_eol_variant() {
         (b"\r\n".as_slice(), "iso-2022-7bit-dos"),
         (b"\r".as_slice(), "iso-2022-7bit-mac"),
     ] {
-        let mut interp = Interpreter::new();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         let mut env = Vec::new();
         let mut bytes = vec![0x1b, b'$', b'B', b'$', b'"', 0x1b, b'(', b'B'];
         bytes.extend_from_slice(line_ending);
@@ -850,7 +850,7 @@ fn get_byte_reads_unibyte_buffer_positions() {
 
 #[test]
 fn extracted_strings_preserve_the_buffer_multibyte_mode() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     interp.buffer = crate::buffer::Buffer::from_text("*text*", "ASCII");
 
@@ -894,7 +894,7 @@ fn set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes() {
 
 #[test]
 fn write_process_output_supports_stdout_buffer_and_stderr_file() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let stderr_path = std::env::temp_dir()
         .join("emaxx-process-stderr-test")
@@ -922,7 +922,7 @@ fn write_process_output_supports_stdout_buffer_and_stderr_file() {
 
 #[test]
 fn write_process_output_accepts_a_shared_string_buffer_name() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let (buffer_id, _) = interp.create_buffer("*shared-name-output*");
     let destination =
@@ -955,7 +955,7 @@ fn write_process_output_accepts_a_shared_string_buffer_name() {
 
 #[test]
 fn write_process_output_merges_stderr_for_t_cons_destination() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let destination = Value::cons(Value::T, Value::T);
 
@@ -974,7 +974,7 @@ fn write_process_output_merges_stderr_for_t_cons_destination() {
 
 #[test]
 fn write_process_output_decodes_with_the_default_process_coding_system() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
 
     write_process_output(
@@ -997,7 +997,7 @@ fn write_process_output_decodes_with_the_default_process_coding_system() {
 
 #[test]
 fn process_coding_alist_overrides_the_default_for_synchronous_output() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = vec![
         vec![(
             "process-coding-system-alist".into(),
@@ -1072,7 +1072,7 @@ fn file_regular_p_distinguishes_files_from_directories() {
 
 #[test]
 fn write_region_reports_output_errors_as_file_error() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let directory =
         std::env::temp_dir().join(format!("emaxx-write-region-dir-{}", std::process::id()));

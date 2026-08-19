@@ -3330,20 +3330,20 @@ impl Interpreter {
         interp.define_per_buffer_special("header-line-indent-mode", Value::Nil);
         interp.set_global_binding("major-mode", Value::Symbol("fundamental-mode".into()));
         interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
-        let mode_line_format = default_mode_line_format();
-        interp.define_per_buffer_special("mode-line-format", mode_line_format.clone());
-        interp.put_symbol_property(
-            "mode-line-format",
-            "standard-value",
-            Value::list([quoted_literal(&mode_line_format)]),
-        );
+        // buffer.c:4794 seeds the C default as the string "%-", with the
+        // comment "real setup is done in bindings.el"; that preloaded file
+        // installs the real spec and its `standard-value'.  Transcribing
+        // bindings.el here made the bare host claim a dumped image it does
+        // not have.
+        interp.define_per_buffer_special("mode-line-format", Value::String("%-".into()));
         for name in ["header-line-format", "tab-line-format"] {
             interp.define_per_buffer_special(name, Value::Nil);
         }
-        interp.set_global_binding(
-            "mode-line-buffer-identification",
-            Value::list([Value::String("%12b".into())]),
-        );
+        // bindings.el owns `mode-line-buffer-identification' via defvar-local,
+        // and its value carries text properties from
+        // `propertized-buffer-identification'.  Pre-seeding a plain ("%12b")
+        // here made that defvar keep the native value, exactly as the
+        // pre-seeded keymaps did.
         let glyphless_char_display =
             interp.make_char_table(Some("glyphless-char-display".into()), Value::Nil);
         interp.set_global_binding("glyphless-char-display", glyphless_char_display);
