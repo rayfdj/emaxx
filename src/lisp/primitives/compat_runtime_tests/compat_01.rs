@@ -1358,7 +1358,7 @@ fn get_buffer_window_only_reports_selected_buffer() {
 
 #[test]
 fn find_operation_coding_system_accepts_file_buffer_cons() {
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     interp.set_variable(
         "file-coding-system-alist",
@@ -1474,7 +1474,7 @@ fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
     ));
     std::fs::write(&path, b"left\rmiddle\nnext\n").expect("write fixture");
 
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     call(
         &mut interp,

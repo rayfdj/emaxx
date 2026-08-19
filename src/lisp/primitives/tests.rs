@@ -2568,7 +2568,7 @@ fn native_font_backend_boundary_and_glyph_validation_match_gnu() {
     );
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -2803,7 +2803,7 @@ fn bootstrap_coding_plists_expose_gnu_display_and_keyboard_metadata() {
         "((utf-8 t (unicode)) (utf-8-unix t (unicode)) (us-ascii t (ascii)) (iso-latin-1 t (iso-8859-1)) (raw-text t nil) (undecided t (ascii)))",
     );
 
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     for (coding, charset) in [
         ("utf-8", Some("unicode")),
@@ -2854,7 +2854,7 @@ fn coding_system_eol_type_exposes_base_variant_vectors() {
         "((utf-8 [utf-8-unix utf-8-dos utf-8-mac]) (utf-8-unix 0) (undecided [undecided-unix undecided-dos undecided-mac]) (no-conversion 0) (raw-text [raw-text-unix raw-text-dos raw-text-mac]))",
     );
 
-    let mut interp = Interpreter::new();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     for (coding, expected) in [
         (
@@ -10219,7 +10219,7 @@ fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
 
 #[test]
 fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.set_load_path(vec![upstream_emacs_repo().join("lisp")]);
     interp.load_target("case-table").expect("load case-table");
     let mut env = Vec::new();

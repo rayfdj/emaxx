@@ -197,6 +197,57 @@ corpus and answers it.
 35. Latent, adjacent to this session's coding-system edit: emaxx gives
     `raw-text` `:mnemonic ?r`; GNU's is `?t`.
 
+## Found during the fix round (2026-08-19)
+
+36. **Keymap representation leaks through printing, while `type-of` denies it.**
+    Emaxx represents keymaps as records that project list identity
+    (`is_cons_value` treats a keymap record as a cons), so `keymapp` and
+    `type-of` both answer as GNU does — but `prin1`/`%S` print the record:
+
+        GNU:   (keymap (97 . ignore))        type-of => cons
+        emaxx: #s(keymap nil nil (("a" ignore nil ("a"))) nil
+                  (keymap (97 . ignore)))    type-of => cons
+
+    So `type-of` reports `cons` for an object that is not one and does not
+    print as one.  Any upstream test that prints a keymap — or a string
+    carrying a `local-map` text property, e.g. bindings.el's
+    `mode-line-buffer-identification` — diverges.  Two honest resolutions:
+    represent keymaps as real cons lists (the correct fix, a deep change), or
+    make the printer emit the list form the record already carries as its last
+    slot, so the projection is at least consistent.  Leaving `type-of` claiming
+    `cons` while printing a record is the one option that is not honest.
+
+## Enumeration for finding 9 (2026-08-19)
+
+`builtin_var_value` has 252 arms.  Diffed against every `DEFVAR_*` in
+`../emacs/src/*.c` and `*.m`: **152 are legitimately C-owned, 98 have no C
+DEFVAR at all** and therefore belong to GNU Elisp files (fill.el, files.el,
+simple.el, font-lock.el, paragraphs.el, float-sup.el, minibuffer.el,
+isearch.el, subr.el, ...).  On a bare host these make `boundp` answer `t` for
+state GNU leaves void, and they mask a silently failed preload.  The exact
+set, for the round that removes them:
+
+    adaptive-fill-first-line-regexp adaptive-fill-mode adaptive-fill-regexp auto-compression-mode buffer-auto-revert-by-notification buffer-stale-function
+    case-replace command-line-args-left command-switch-alist completion-styles completion-styles-alist current-language-environment
+    custom-current-group-alist custom-file custom-versions-load-alist defun-declarations-alist delay-mode-hooks delayed-after-hook-functions
+    delayed-mode-hooks delete-old-versions desktop-buffer-mode-handlers dir-locals-file directory-files-no-dot-files-regexp directory-listing-before-filename-regexp
+    dired-kept-versions early-init-file emacs-build-time emacs-lisp-mode-syntax-table emacs-major-version emacs-minor-version
+    eval-expression-debug-on-error file-local-variables-alist file-name-invalid-regexp filter-buffer-substring-function find-file-visit-truename find-program
+    float-e float-pi font-lock-builtin-face font-lock-comment-delimiter-face font-lock-comment-face font-lock-constant-face
+    font-lock-doc-face font-lock-doc-markup-face font-lock-function-name-face font-lock-keyword-face font-lock-negation-char-face font-lock-preprocessor-face
+    font-lock-string-face font-lock-type-face font-lock-variable-name-face font-lock-warning-face gensym-counter grep-program
+    hack-local-variables-hook ignored-local-variable-values ignored-local-variables image-load-path indent-line-function init-file-user
+    insert-directory-program insert-directory-wildcard-in-dir-p kept-new-versions kept-old-versions line-move-ignore-invisible line-move-visual
+    lisp-mode-syntax-table macroexpand-all-environment mail-host-address menu-bar-separator minor-mode-alist mode-require-final-newline
+    mounted-file-systems non-essential null-device page-delimiter password-colon-equivalents password-word-equivalents
+    prog-mode-syntax-table read-file-name-completion-ignore-case regexp-unmatchable remote-file-name-inhibit-cache require-final-newline revert-buffer-function
+    safe-local-variable-values search-default-mode sentence-end sentence-end-double-space shell-command-switch site-run-file
+    tab-stop-list text-mode-syntax-table this-single-command-keys tramp-mode use-hard-newlines user-mail-address
+    version-control window-display-table
+
+Note `this-single-command-keys` is a *function* in GNU (keyboard.c) with no
+variable cell at all.
+
 ## Fix log (2026-08-19)
 
 Applied and verified byte-identical against the pinned oracle:
