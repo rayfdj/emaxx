@@ -292,11 +292,17 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     // the build log, never to a running session's stderr — a dumped GNU
     // binary starts silently.
     interpreter.set_variable("inhibit-message", Value::T, &mut Vec::new());
-    preload_batch_compat_libraries(&mut interpreter)?;
-    initialize_batch_initial_frame_faces(&mut interpreter)?;
-    complete_delayed_custom_initialization(&mut interpreter)?;
-    initialize_batch_locale_environment(&mut interpreter)?;
+    let reconstruction = (|interpreter: &mut Interpreter| -> Result<(), String> {
+        preload_batch_compat_libraries(interpreter)?;
+        initialize_batch_initial_frame_faces(interpreter)?;
+        complete_delayed_custom_initialization(interpreter)?;
+        initialize_batch_locale_environment(interpreter)?;
+        initialize_batch_user_emacs_directory(interpreter)
+    })(&mut interpreter);
+    // Restore before propagating: a failed reconstruction must not leave the
+    // session muted, or its own diagnostics would be swallowed too.
     interpreter.set_variable("inhibit-message", Value::Nil, &mut Vec::new());
+    reconstruction?;
     let after_init_time = lisp::primitives::system_time_list_value(std::time::SystemTime::now())
         .map_err(|error| format!("record batch initialization end: {error}"))?;
     interpreter.set_global_binding("after-init-time", after_init_time);
@@ -424,6 +430,42 @@ fn initialize_batch_locale_environment(interpreter: &mut Interpreter) -> Result<
     interpreter
         .eval(&form, &mut Vec::new())
         .map_err(|error| format!("initialize batch locale environment: {error}"))?;
+    Ok(())
+}
+
+/// startup.el's `command-line' computes `user-emacs-directory' before any
+/// user Lisp runs; subr.el's `defvar' deliberately leaves it nil ("The value
+/// does not matter since Emacs sets this at startup").  Batch sessions observe
+/// the computed value, so run GNU's own two startup forms rather than
+/// inventing a path here.
+fn initialize_batch_user_emacs_directory(interpreter: &mut Interpreter) -> Result<(), String> {
+    if interpreter
+        .lookup_function("startup--xdg-or-homedot", &Vec::new())
+        .is_err()
+    {
+        return if has_configured_lisp_tree(interpreter) {
+            Err("GNU startup.el did not define startup--xdg-or-homedot".into())
+        } else {
+            Ok(())
+        };
+    }
+    for source in [
+        "(setq startup--xdg-config-home-emacs
+           (let ((xdg-config-home (getenv-internal \"XDG_CONFIG_HOME\")))
+             (if xdg-config-home
+                 (concat xdg-config-home \"/emacs/\")
+               startup--xdg-config-default)))",
+        "(setq user-emacs-directory
+           (startup--xdg-or-homedot startup--xdg-config-home-emacs nil))",
+    ] {
+        let form = Reader::new(source)
+            .read_all()
+            .map_err(|error| format!("read startup user-emacs-directory form: {error}"))?
+            .remove(0);
+        interpreter
+            .eval(&form, &mut Vec::new())
+            .map_err(|error| format!("initialize user-emacs-directory: {error}"))?;
+    }
     Ok(())
 }
 

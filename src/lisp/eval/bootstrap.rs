@@ -518,7 +518,7 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             base: "raw-text".into(),
             kind: "raw-text".into(),
             eol_type: None,
-            plist: coding_plist('r', std::iter::once((
+            plist: coding_plist('t', std::iter::once((
                 ":for-unibyte".to_string(),
                 Value::T,
             ))),
@@ -528,7 +528,7 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             base: "raw-text".into(),
             kind: "raw-text".into(),
             eol_type: Some(0),
-            plist: coding_plist('r', std::iter::once((
+            plist: coding_plist('t', std::iter::once((
                 ":for-unibyte".to_string(),
                 Value::T,
             ))),
@@ -538,7 +538,7 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             base: "raw-text".into(),
             kind: "raw-text".into(),
             eol_type: Some(1),
-            plist: coding_plist('r', std::iter::once((
+            plist: coding_plist('t', std::iter::once((
                 ":for-unibyte".to_string(),
                 Value::T,
             ))),
@@ -548,7 +548,7 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             base: "raw-text".into(),
             kind: "raw-text".into(),
             eol_type: Some(2),
-            plist: coding_plist('r', std::iter::once((
+            plist: coding_plist('t', std::iter::once((
                 ":for-unibyte".to_string(),
                 Value::T,
             ))),

@@ -445,20 +445,6 @@ define_dispatch!(
                     None if is_special_form_name(&symbol) => {
                         Value::BuiltinFunc(symbol.clone().into())
                     }
-                    None if symbol == "benchmark-run" => Value::list([
-                        Value::Symbol("autoload".into()),
-                        Value::String("benchmark.el".into()),
-                        Value::String("Autoloaded benchmark-run.".into()),
-                        Value::Nil,
-                        Value::Nil,
-                    ]),
-                    None if symbol == "tetris" => Value::list([
-                        Value::Symbol("autoload".into()),
-                        Value::String("tetris.el".into()),
-                        Value::String("Autoloaded tetris.".into()),
-                        Value::T,
-                        Value::Nil,
-                    ]),
                     // GNU returns nil for an unbound function cell (nadvice's
                     // pending-advice path reads it).
                     None => Value::Nil,

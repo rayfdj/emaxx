@@ -92,13 +92,14 @@ fn language_candidates(
         ));
     }
 
-    // subr.el owns `user-emacs-directory'; a host without that preload has
-    // no user directory to search rather than a nil path to explode on.
-    if let Some(user_directory) = interp.lookup_var("user-emacs-directory", &Env::new())
-        && let Ok(directory) = value_string(&user_directory)
-    {
+    // GNU treesit.c:668 expands `library_base' against the *value* of
+    // `user-emacs-directory', so a non-string value signals there rather than
+    // being skipped.  Keep that propagation.
+    if let Some(user_directory) = interp.lookup_var("user-emacs-directory", &Env::new()) {
         candidates.extend(library_names(
-            &PathBuf::from(directory).join("tree-sitter").join(library_base),
+            &PathBuf::from(value_string(&user_directory)?)
+                .join("tree-sitter")
+                .join(library_base),
             &suffixes,
         ));
     }

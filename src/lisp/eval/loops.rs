@@ -20,8 +20,14 @@ impl Interpreter {
     }
 
     pub(super) fn sf_while(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        // GNU eval.c's Fwhile takes an unevalled `args' whose car is TEST;
+        // `(while)' therefore signals wrong-number-of-arguments rather than
+        // reading past the form.
+        let Some(test) = items.get(1) else {
+            return Err(LispError::WrongNumberOfArgs("while".into(), 0));
+        };
         loop {
-            let cond = self.eval(&items[1], env)?;
+            let cond = self.eval(test, env)?;
             if cond.is_nil() {
                 break;
             }
@@ -40,16 +46,10 @@ impl Interpreter {
             _ => return false,
         }
         left.len() <= right.len()
-            && left.iter().zip(right.iter()).all(
-                |((left_name, left_value), (right_name, right_value))| {
-                    left_name == right_name
-                        && !(left_name == "sti"
-                            && matches!(
-                            (left_value, right_value),
-                            (Value::Record(left_id), Value::Record(right_id)) if left_id != right_id
-                            ))
-                },
-            )
+            && left
+                .iter()
+                .zip(right.iter())
+                .all(|((left_name, _), (right_name, _))| left_name == right_name)
     }
 
     pub(crate) fn frame_identity(frame: &EnvFrame) -> Option<i64> {

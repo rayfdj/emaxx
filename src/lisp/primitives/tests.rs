@@ -12466,7 +12466,7 @@ fn native_treesit_runtime_capabilities_and_query_predicates_match_gnu() {
     let expected_printed = "(t 15 13 nil nil nil (nil not-found) nil nil nil t t nil nil t t emaxx-definitely-missing t treesit-load-language-error (wrong-type-argument treesit-compiled-query-p) (wrong-type-argument treesit-node-p) (treesit-load-language-error not-found) nil)";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
