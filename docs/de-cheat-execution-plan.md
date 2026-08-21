@@ -106,6 +106,25 @@ Ordered by how much each inflates the score.
 
 Exit: gate green after each sub-step, commit, push.
 
+## Step 5b — `wrong-type-argument` data and messages (finding 57)
+
+GNU signals `(wrong-type-argument PREDICATE VALUE)`; 347 `LispError::TypeError`
+constructions instead pass a type *name* and a predicate-ish word, so `(+ "a" 1)`
+signals `(wrong-type-argument number "string")` where GNU signals
+`(wrong-type-argument number-or-marker-p "a")`.  The rendered message diverges
+again because the value goes through the host `Display` impl -- `builtin<car>`,
+`record<11649>` -- instead of the Lisp printer.
+
+1. Give `TypeError` the offending value, not its type name.
+2. Take the predicate symbol from the GNU C manifest's own contract per call
+   site rather than inventing a word per construction.
+3. Render the value with the printer, and delete the `#<record id:N>` /
+   `#<builtin NAME>` `Display` arms so no host format can reach user text.
+
+Sequenced after step 5 and before step 6 because the corrected assertions in
+step 6 will be written against these messages.  Note this is invisible to the
+score until finding 22 lands in step 4.
+
 ## Step 6 — correct the assertions that contradict the oracle
 
 About thirteen, each already probed: the five `value<` large-int/float cases;
@@ -149,6 +168,9 @@ dump layer is exactly where a subtle, undetected divergence would hide.
 - `(let ((executing-kbd-macro t)) (read-command "C: " 'foo))` hangs where GNU
   returns at once.
 - Issue #14, string identity/mutability.
+- `propertize' property order (finding 61).
+- Issue #14's sharpest known repro is finding 60 (fixed for `try-completion';
+  the environment-binding rewrite remains for other plain-string producers).
 - NS/native-comp build divergence: the pinned oracle is an NS + native-comp
   build, Emaxx models neither.  Costs `ucs-normalize-tests.el` (5 selectors),
   the `<home>`/`<end>` keymap rows, and the subr-identity assertions.

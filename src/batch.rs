@@ -115,7 +115,13 @@ pub fn run_batch_with_actions(
                     emit_artifacts(&report)?;
                     emit_human_log(&report);
                     write_junit_report_if_requested(&report)?;
-                    return Ok(BatchRunOutcome::Exit(2));
+                    // GNU prints an uncaught load error to stderr and exits
+                    // 255; Emaxx used to write only the structured report, so
+                    // `emaxx --batch -l broken.el' failed with no diagnostic
+                    // at all.  The report is for the harness; the message is
+                    // for whoever ran the command.
+                    emit_unhandled_batch_error(&mut interpreter, &error);
+                    return Ok(BatchRunOutcome::Exit(255));
                 }
                 if let Some(termination) = interpreter.take_pending_termination() {
                     return Ok(termination.into());
@@ -260,7 +266,7 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
             .map_err(|error| format!("record batch initialization start: {error}"))?;
     interpreter.define_special_variable("before-init-time", before_init_time);
     interpreter.define_special_variable("after-init-time", Value::Nil);
-    interpreter.set_load_path(effective_batch_load_path(options)?);
+    interpreter.set_load_path(installation_lisp_load_path()?);
     // GNU starts batch evaluation in *scratch*, whose buffer-local
     // `lexical-binding' is t while the default remains nil.  File cookies
     // override and restore this state around loads.
@@ -295,14 +301,24 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     let reconstruction = (|interpreter: &mut Interpreter| -> Result<(), String> {
         preload_batch_compat_libraries(interpreter)?;
         initialize_batch_initial_frame_faces(interpreter)?;
+        // startup.el's `command-line' computes `user-emacs-directory' (line
+        // 597) well before it re-evaluates the custom settings that depend on
+        // it (`custom-reevaluate-setting', line 1327).  Running these in the
+        // other order left `package-user-dir' and `package-quickstart-file'
+        // computed against a nil directory, so they no longer equalled
+        // `(locate-user-emacs-file ...)' as they do in GNU.
+        initialize_batch_user_emacs_directory(interpreter)?;
         complete_delayed_custom_initialization(interpreter)?;
-        initialize_batch_locale_environment(interpreter)?;
-        initialize_batch_user_emacs_directory(interpreter)
+        initialize_batch_scratch_major_mode(interpreter)?;
+        initialize_batch_locale_environment(interpreter)
     })(&mut interpreter);
     // Restore before propagating: a failed reconstruction must not leave the
     // session muted, or its own diagnostics would be swallowed too.
     interpreter.set_variable("inhibit-message", Value::Nil, &mut Vec::new());
     reconstruction?;
+    // The image is built; now the session's own `load-path' applies, with the
+    // user's `-L' entries ahead of the installation directories.
+    interpreter.set_load_path(effective_batch_load_path(options)?);
     let after_init_time = lisp::primitives::system_time_list_value(std::time::SystemTime::now())
         .map_err(|error| format!("record batch initialization end: {error}"))?;
     interpreter.set_global_binding("after-init-time", after_init_time);
@@ -372,6 +388,24 @@ fn complete_delayed_custom_initialization(interpreter: &mut Interpreter) -> Resu
     interpreter
         .eval(&form, &mut Vec::new())
         .map_err(|error| format!("complete delayed Custom initialization: {error}"))?;
+    Ok(())
+}
+
+fn initialize_batch_scratch_major_mode(interpreter: &mut Interpreter) -> Result<(), String> {
+    // startup.el:1572 in `command-line', run for batch sessions too: the
+    // initial `*scratch*' buffer leaves `fundamental-mode' for
+    // `initial-major-mode' before any user code sees it.
+    let source = "(if (get-buffer \"*scratch*\")
+                     (with-current-buffer \"*scratch*\"
+                       (if (eq major-mode 'fundamental-mode)
+                           (funcall initial-major-mode))))";
+    let form = Reader::new(source)
+        .read_all()
+        .map_err(|error| format!("read startup *scratch* mode form: {error}"))?
+        .remove(0);
+    interpreter
+        .eval(&form, &mut Vec::new())
+        .map_err(|error| format!("initialize *scratch* major mode: {error}"))?;
     Ok(())
 }
 
@@ -469,22 +503,49 @@ fn initialize_batch_user_emacs_directory(interpreter: &mut Interpreter) -> Resul
     Ok(())
 }
 
-fn effective_batch_load_path(options: &BatchRunOptions) -> Result<Vec<PathBuf>, String> {
-    if !options.load_path.is_empty() {
-        return Ok(options.load_path.clone());
-    }
-
-    // GNU `emacs --batch` always carries its dumped image regardless of
-    // load-path; the installation's own lisp directories sit at the tail of
-    // `load-path' behind any user additions.  Emaxx reconstructs the image
-    // from the pinned sibling checkout, so those directories are appended
-    // here — the same fallback `data-directory' uses for GNU's DOC
-    // database.
+/// The Lisp tree the dumped image is reconstructed FROM.
+///
+/// GNU builds its dump from the installation's own `lisp/' directory; a user's
+/// `-L' cannot influence what got dumped, so a directory shadowing `button.el'
+/// is harmless there.  Emaxx rebuilds that image at startup, so it must
+/// likewise reconstruct from the installation tree alone and only afterwards
+/// honour `-L' for the session.
+fn installation_lisp_load_path() -> Result<Vec<PathBuf>, String> {
     let mut load_path = Vec::new();
     if let Ok(test_directory) = env::var("EMACS_TEST_DIRECTORY") {
         let test_directory = PathBuf::from(test_directory);
         if let Some(repo_root) = test_directory.parent() {
             load_path = compat::repo_local_elisp_load_path(repo_root)?;
+        }
+    }
+    let sibling = compat::project_root().join("../emacs");
+    if sibling.join("lisp").is_dir() {
+        for path in compat::emaxx_upstream_load_path(&sibling)? {
+            if !load_path.contains(&path) {
+                load_path.push(path);
+            }
+        }
+    }
+    Ok(load_path)
+}
+
+fn effective_batch_load_path(options: &BatchRunOptions) -> Result<Vec<PathBuf>, String> {
+    // GNU's `-L' PREPENDS to the dumped `load-path'; it never replaces it, so
+    // `emacs -L dir --batch' still has its whole standard library.  Emaxx
+    // reconstructs that library from the pinned sibling checkout, so the same
+    // composition applies: explicit `-L' entries first, then the test tree
+    // when EMACS_TEST_DIRECTORY names one, then the installation's own Lisp
+    // directories — the fallback `data-directory' already uses for GNU's DOC
+    // database.
+    let mut load_path = options.load_path.clone();
+    if let Ok(test_directory) = env::var("EMACS_TEST_DIRECTORY") {
+        let test_directory = PathBuf::from(test_directory);
+        if let Some(repo_root) = test_directory.parent() {
+            for path in compat::repo_local_elisp_load_path(repo_root)? {
+                if !load_path.contains(&path) {
+                    load_path.push(path);
+                }
+            }
         }
     }
     let sibling = compat::project_root().join("../emacs");
@@ -1558,7 +1619,15 @@ mod tests {
     }
 
     #[test]
-    fn batch_runtime_rejects_an_incomplete_dump_lisp_tree() {
+    fn batch_runtime_reconstructs_the_image_despite_a_shadowing_load_path() {
+        // GNU's dump is built from the installation's own lisp/ tree, so a
+        // user's `-L' cannot disturb it: `emacs -Q -batch -L <dir-with-a-fake
+        // button.el>' still has a complete image, and the directory merely
+        // sits at the head of `load-path'.  Probed from the pinned oracle:
+        //     (t "/tmp/emaxx-partial")
+        // Emaxx reconstructs that image at startup and must therefore
+        // reconstruct from the installation tree alone, honouring `-L' only
+        // for the session that follows.
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
@@ -1566,29 +1635,41 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("emaxx-batch-button-{}-{stamp}", std::process::id()));
         fs::create_dir_all(&root).expect("create temp root");
-        let button = root.join("button.el");
         fs::write(
-            &button,
+            root.join("button.el"),
             "(defun insert-text-button (&rest _args) 'loaded)\n(provide 'button)\n",
         )
-        .expect("write button preload");
+        .expect("write shadowing button preload");
 
         let options = BatchRunOptions {
             load_path: vec![root.clone()],
             ..Default::default()
         };
-        let error = match initialize_batch_interpreter(&options) {
-            Ok(_) => panic!("a partial Lisp tree must not produce a nominal dumped runtime"),
-            Err(error) => error,
-        };
-
-        assert!(error.contains("preload emacs-lisp/debug-early"), "{error}");
+        let interpreter =
+            initialize_batch_interpreter(&options).expect("a shadowing -L must not break the image");
+        assert!(
+            interpreter
+                .lookup_function("when", &Vec::new())
+                .is_ok(),
+            "the reconstructed image must be complete despite the shadowing -L"
+        );
+        assert_eq!(
+            interpreter.configured_load_path().first(),
+            Some(&root),
+            "GNU puts a -L directory at the head of load-path"
+        );
 
         fs::remove_dir_all(root).expect("remove temp root");
     }
 
     #[test]
     fn batch_runtime_rejects_a_broken_resolvable_preload() {
+        // A broken file in the tree the image is reconstructed FROM must fail
+        // loudly rather than yield a half-built runtime.  Since `-L' no longer
+        // influences reconstruction (GNU's dump is built from the
+        // installation tree alone), the fixture is installed as that tree via
+        // EMACS_TEST_DIRECTORY, which is how the harness points Emaxx at a
+        // checkout.
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
@@ -1597,25 +1678,25 @@ mod tests {
             "emaxx-batch-broken-preload-{}-{stamp}",
             std::process::id()
         ));
-        fs::create_dir_all(&root).expect("create temp root");
-        let seq = root.join("emacs-lisp/seq.el");
+        let seq = root.join("lisp/emacs-lisp/seq.el");
         fs::create_dir_all(seq.parent().expect("seq fixture parent"))
             .expect("create seq fixture directory");
+        fs::create_dir_all(root.join("test")).expect("create fixture test directory");
         fs::write(&seq, "(error \"broken seq preload\")\n").expect("write broken seq preload");
 
-        let emacs_repo = compat::project_root().join("../emacs");
-        let mut load_path = vec![root.clone()];
-        load_path
-            .extend(compat::emaxx_upstream_load_path(&emacs_repo).expect("upstream load path"));
-        let options = BatchRunOptions {
-            load_path,
-            ..Default::default()
-        };
-        let error = match initialize_batch_interpreter(&options) {
+        let previous = env::var("EMACS_TEST_DIRECTORY").ok();
+        // SAFETY: the batch suite runs with --test-threads=1.
+        unsafe { env::set_var("EMACS_TEST_DIRECTORY", root.join("test")) };
+        let result = initialize_batch_interpreter(&BatchRunOptions::default());
+        match previous {
+            Some(value) => unsafe { env::set_var("EMACS_TEST_DIRECTORY", value) },
+            None => unsafe { env::remove_var("EMACS_TEST_DIRECTORY") },
+        }
+
+        let error = match result {
             Ok(_) => panic!("a resolvable dumped-library preload must not fail silently"),
             Err(error) => error,
         };
-
         assert!(error.contains("preload emacs-lisp/seq"), "{error}");
         assert!(error.contains("broken seq preload"), "{error}");
         fs::remove_dir_all(root).expect("remove temp root");

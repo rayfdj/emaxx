@@ -266,6 +266,56 @@ it is in GNU before the owning file loads) or be shown to have a genuine C
 owner this diff missed.  `this-single-command-keys' is the clearest case: GNU
 has no variable of that name at all, only the keyboard.c function.
 
+## Found during step 2 (2026-08-20)
+
+37. **A `builtin_var_value` fallback is indistinguishable from unbound, so
+    preloaded Lisp overwrites GNU's C defaults.**  `indent-tabs-mode` is
+    `DEFVAR_BOOL` in indent.c:2486, initialised to 1.  simple.el's
+    `define-minor-mode indent-tabs-mode' supplies no `:init-value', so in GNU
+    its `defcustom' keeps the existing C value of t.  In Emaxx the C default
+    lived only in the fallback table, `defvar'/`defcustom' saw the variable as
+    unbound, and the minor mode set it to nil — so `align' produced spaces
+    where GNU produces tabs.
+
+    This is finding 9 seen from the other side: that table conflates "the C
+    default" with "not bound at all".  The step-5 work should not merely delete
+    the 98 Elisp-owned arms; the ~152 genuinely C-owned ones must become real
+    bindings, or preloaded Lisp will keep silently overriding them.  Fixed for
+    `indent-tabs-mode' here; the rest need the systematic pass.
+
+## Found by artifact-form parity (2026-08-20)
+
+Executing GNU's compiled Lisp instead of source immediately exposed defects
+that source loads had hidden.  This is the parity change paying for itself.
+
+38. **`handler-bind' never fired for an error raised inside byte-code.**
+    `dispatch_handler_bindings' was called from every native-call boundary in
+    eval/core.rs but from nowhere in the VM, so an error escaping compiled code
+    skipped every enclosing handler-bind.  GNU runs the handlers from `signal'
+    itself, so byte-code and interpreted code behave identically.  Minimal
+    reproduction: a compiled function calling `handler-bind-1' around
+    `(funcall 'no-such-fn)' returned `(handled void-function)' in GNU and in
+    Emaxx's interpreter, but escaped in Emaxx's VM.  Consequence: ert could not
+    turn a failing *compiled* test body into a result — which would have
+    corrupted the compatibility measurement across the whole corpus the moment
+    the subject started executing `.elc'.  Fixed by dispatching at the VM's
+    boundary, after any condition-case in the frame has had its chance.
+
+39. **A "EUC-JP encoder" that knew exactly one character.**
+    `encode_euc_jp_bytes' mapped `あ' to (0xA4 0xA2) and signalled for every
+    other non-ASCII character, and the encodability predicate carried
+    `ch == 'あ'' special cases for both `euc-jp' and `sjis'.  `あ' is the
+    character the tests use.  Same class as the thread-name table: a codec that
+    knows one codepoint is a fabrication, not a partial implementation.
+    Removed; EUC-JP/Shift_JIS encoding now signals honestly and is a tracked
+    gap (GNU encodes `あ' as (164 162)).
+40. Related, still open: Emaxx substitutes SPACE for an unencodable character
+    where GNU substitutes `?'.  Probed: `(encode-coding-string "sæl ö всем"
+    'ascii)' gives GNU (115 63 108 32 63 32 63 63 63 63), Emaxx
+    (115 32 108 32 32 32 32 32 32 32).  The two tests covering 39 and 40 are
+    quarantined with those probed values recorded, rather than rewritten to
+    assert Emaxx's behaviour.
+
 ## Fix log (2026-08-19)
 
 Applied and verified byte-identical against the pinned oracle:
@@ -346,3 +396,244 @@ Prepared next, with evidence gathered:
 - `src/tty.rs:795` is the model of the right pattern: it paints
   `[mode-line render error: ...]` instead of a GNU-shaped fabrication, precisely
   because a fabrication would feed the differential tool.
+
+## Found while unblocking the loaded-ERT stage (2026-08-20)
+
+`eval_05::loaded_ert_self_test_file_stays_green_in_the_native_runner` aborted
+the whole test process with a stack overflow once `handler-bind' started firing
+from the bytecode VM (finding 38), because the handler ran ert's real failure
+reporter for the first time.  Bisecting that abort turned up five printing and
+hashing divergences, all confirmed against the pinned oracle.
+
+- **41** — `sxhash' recursed without bound.  `hash_value_equal'
+  (`src/lisp/primitives/values.rs') walked a value's entire graph, with no
+  depth or length cap and no cycle guard, so hashing a cyclic object recursed
+  until the stack died.  GNU stops at `SXHASH_MAX_DEPTH' 3 and folds in at most
+  `SXHASH_MAX_LEN' 7 elements per list or vector (fns.c:5336, fns.c:5341,
+  `sxhash_obj' fns.c:5505).  This was not academic: `cl-print' labels a
+  compiled function `#<bytecode %#x>' by calling `(sxhash object)'
+  (cl-print.el:230), and a closure's constants routinely point back at the
+  closure -- exactly the graph ert builds while reporting a failed test.  So
+  *any* ERT failure whose backtrace contained a compiled frame aborted the
+  process instead of printing.  Fixed by mirroring GNU's bounds.
+- **42** — the `#N' cycle placeholder was invented.  Printing a self-referential
+  record produced `#11643' (emaxx's internal record id) and every circular list
+  produced `#0'.  GNU prints `#N' where N is the *print depth* the outer
+  occurrence sits at (print.c:2253), and detects list cycles with Brent's
+  algorithm, closing with `. #TORTOISE-INDEX' (print.c:2541, print.c:2705).
+  `(1 2 . self)' therefore prints `(1 2 1 2 . #2)' in GNU, not `(1 2 . #0)'.
+  Fixed; both forms now match byte-for-byte.
+- **43** — hash tables were not cycle candidates.  `print_ref_key' excluded
+  them, so `(let ((h (make-hash-table))) (puthash 1 h h) (prin1 h))' recursed
+  until the stack died; GNU prints `#s(hash-table data (1 #0))', and
+  `#1=#s(hash-table data (1 #1#))' under `print-circle'.  GNU's
+  `PRINT_CIRCLE_CANDIDATE_P' (print.c:1299) includes them.  Fixed, including
+  descending into table contents during `print_preprocess'.
+- **44** — the hash-table print form was pre-30 and verbose.  Emaxx printed
+  `#s(hash-table size 65 test eql rehash-size 1.5 rehash-threshold 0.8125 data
+  ())' where GNU 30.2 prints `#s(hash-table)': the test is emitted only when it
+  is not `eql', weakness only when weak, `purecopy t' only when set, and `data'
+  only when the table is non-empty (print.c:2588).  Any measured test printing
+  a hash table diverged on every field.  Fixed to GNU's rules, `print-length'
+  truncation included.
+- **45** — no `PRINT_CIRCLE' depth cap.  GNU refuses to print deeper than 200
+  levels without `print-circle', signalling `(error "Apparently circular
+  structure being printed")' (print.c:2249); emaxx printed a 300-deep
+  structure happily.  Fixed, error message and 150-level output length
+  verified identical.
+
+Left open, disclosed rather than fixed:
+
+- **46** — an interpreted closure prints as `#<lambda (x)>`.  GNU prints its
+  readable vector form, `#[(x) ((+ x y)) ((y . 5))]`.  This is a real output
+  divergence in every backtrace or `prin1' that reaches an interpreted
+  closure, and it is not a cycle problem: it is emaxx's closure representation
+  surfacing.  Not fixed here because it needs the closure object's slots to be
+  projected the way `record_prin1_fields' projects a record's, which is a
+  representation change rather than a printer change.
+
+## Printer and startup parity, found by probing outward from finding 41
+
+Once the printer was under the microscope, a systematic sweep against the
+oracle turned up more divergences.  Each was probed on both sides before and
+after the fix.
+
+- **47** — `princ` was a separate printer.  GNU has one `print_object' that
+  takes an `escapeflag', and the flag reaches nested elements, so
+  `(princ (list "a"))' prints `(a)' and `(message "%s" (list "a"))' prints
+  `(a)'.  Emaxx had a small `render_princ' that handled a top-level string or
+  buffer and fell back to the host `Display' impl for everything else, so the
+  same forms printed `("a")'.  Every `message "%s"' with a list argument -- the
+  single most common shape in ERT and byte-compiler output -- diverged.  Fixed
+  by giving `PrintOptions' GNU's `escape' flag and routing `princ', `%s' and
+  `prin1-to-string NOESCAPE' through the shared traversal; the two bespoke
+  princ renderers are deleted.
+- **48** — a subr printed as `#<builtin car>'; GNU prints `#<subr car>'
+  (print.c:1793).  This one leaked into every backtrace.
+- **49** — a process printed as `#<record id:11643>', leaking emaxx's internal
+  record id.  GNU prints `#<process NAME>', or the bare name under `princ'
+  (print.c:1782).
+- **50** — an obarray printed as `#<record id:N>'; GNU prints
+  `#<obarray n=COUNT>' (print.c:2087).
+- **51** — a bool vector printed as `#s(bool-vector t nil t)', a readable-looking
+  form GNU never emits and its reader would read back as a record.  GNU packs
+  the bits eight to a byte, low-order first, and writes `#&SIZE"BYTES"' with
+  `octalout' escaping (print.c `print_bool_vector').  Fixed; empty, multi-byte,
+  high-bit, control-character and `print-length'-truncated cases all verified
+  byte-for-byte.
+- **52** — `:purecopy' was parsed and dropped.  GNU still records it and
+  print.c:2609 reports it back, so `(prin1 (make-hash-table :purecopy t))'
+  printed `#s(hash-table)' instead of `#s(hash-table purecopy t)'.
+- **53** — *the initial batch buffer was named `*test*'*.  GNU starts a batch
+  session in `*scratch*', in `lisp-interaction-mode', with `buffer-list'
+  ordered (*scratch* " *Minibuf-0*" *Messages*).  Emaxx started in a buffer
+  literally named `*test*', in `fundamental-mode', with *Messages* ahead of the
+  minibuffer buffer.  A test-shaped name in the shipped startup path is exactly
+  the sort of harness artifact this audit exists to find: any measured test that
+  printed the current buffer, or relied on the initial major mode, was comparing
+  against a fiction.  Fixed by naming the buffer `*scratch*', ordering the list
+  as GNU does, and running startup.el's own mode form (startup.el:1572) during
+  batch initialization.
+
+Still open, disclosed rather than fixed:
+
+- **54** — a char table prints as `#<char-table id:71>'; GNU prints its readable
+  `#^[...]' form.  Faithful output needs GNU's three-level char-table layout
+  (ascii slot, 64-way contents, extra slots), which is a representation change,
+  not a printer change.  Same class as finding 46.
+- **55** — `(read "#&3\"\\5\"")' yields the list `(bool-vector-literal t nil t)'
+  rather than a bool vector; the printer now emits GNU's syntax, but the reader
+  still produces an evaluator literal form instead of the object.
+- **56** — a thread, mutex or condition variable with no name prints as
+  `#<thread 0xID>' using emaxx's own object identity where GNU prints the
+  object's address.  The syntax matches and the identity is real; the number
+  cannot agree with GNU's, and does not agree between two GNU runs either.
+
+## Found by probing error messages (2026-08-20)
+
+- **57** — `wrong-type-argument` carries a type *name* where GNU carries the
+  offending *value*, and names the wrong predicate.  GNU signals
+  `(wrong-type-argument PREDICATE VALUE)`:
+
+      (+ "a" 1)          GNU (wrong-type-argument number-or-marker-p "a")
+                       emaxx (wrong-type-argument number "string")
+      (aref 'sym 0)      GNU (wrong-type-argument arrayp sym)
+                       emaxx (wrong-type-argument list "symbol")
+      (length 3)         GNU (wrong-type-argument sequencep 3)
+                       emaxx (wrong-type-argument sequence "integer")
+
+  Some paths are already right -- `(car 3)` gives `(wrong-type-argument listp
+  3)` on both sides -- so this is per-call-site, not structural: there are 347
+  `LispError::TypeError(EXPECTED, TYPE_NAME)` constructions outside tests, and
+  each needs GNU's predicate symbol plus the value itself.
+
+  The rendered message diverges twice over, because the value is printed with a
+  host debug format rather than the Lisp printer:
+
+      (+ (symbol-function 'car) 1)
+          GNU   Wrong type argument: number-or-marker-p, #<subr car>
+        emaxx   Wrong type argument: number, builtin<car>
+      (+ (make-hash-table) 1)
+          GNU   Wrong type argument: number-or-marker-p, #s(hash-table)
+        emaxx   Wrong type argument: number, record<11649>
+
+  `#<record id:N>` / `#<builtin NAME>` / `record<N>` / `builtin<NAME>` are the
+  host `Display` impl (`src/lisp/types.rs:1689`, `:1697`) leaking into
+  user-visible text; nothing in GNU ever prints those shapes.
+
+  This is why finding 22 matters: the differential harness compares a failing
+  test's condition *type* and not its data or message, so every one of these
+  divergences is invisible to the score today.  Not started here -- it is a
+  work item of its own, recorded in the execution plan.
+
+## Revealed by fixing the eval_05 abort
+
+Finding 41's stack overflow aborted the eval_05 process partway through, so
+every test sorting after `loaded_ert_self_test_file_stays_green_in_the_native_runner`
+had never once executed.  Four were waiting there.  None is a regression from
+this round's work; all four are recorded here with what the oracle says.
+
+- **58** — `standard_minibuffer_completion_map_is_bound` and
+  `return_key_defaults_to_newline_command` asserted, against the *early* Lisp
+  runtime, facts that belong to the dumped image: minibuffer.el's
+  `minibuffer-local-completion-map' and the global map RET resolves through.
+  `emacs -Q -batch' answers `(t t)' and `newline'; Emaxx's batch image answers
+  the same.  The tests now use it.
+- **59** — `preloaded_completing_read_delegates_through_the_gnu_dispatch_variable`
+  used `cl-letf' in a bare batch image.  GNU does not preload cl-lib either:
+  it signals `void-function cl-letf' for the identical program, and returns
+  `("mocked" 8)' once `cl-lib' is required, which is what Emaxx returns too.
+  The test now requires it.
+- **60** — *`completion-preview` did not work* (fixed 2026-08-21).  Running
+  the pinned suite on both binaries:
+
+      GNU:   Ran 11 tests, 11 results as expected, 0 unexpected
+      Emaxx: Ran 11 tests, 1 results as expected, 10 unexpected
+
+  Root cause, found by differential bisection (source-loaded library passed,
+  GNU's `.elc' failed, so the interpreted replica lied): `try-completion'
+  returned a plain immutable `Value::String', and `set-text-properties' on
+  such a string "mutates" it by silently rewriting the caller's environment
+  binding.  Interpreted callers happen to read that rewritten binding;
+  compiled callers read bytecode stack slots, which the rewrite can never
+  reach, so the face `completion-preview.elc' set on the string was gone by
+  the time the preview overlay was built.  The rewrite even breaks identity:
+
+      (let* ((l (list (try-completion "foo" '("foobarbaz")))) (s (car l)))
+        (set-text-properties 0 9 '(face f) s)
+        (list s (car l) (eq s (car l))))
+      GNU:   (#("foobarbaz" 0 9 (face f)) #("foobarbaz" 0 9 (face f)) t)
+      emaxx: (#("foobarbaz" 0 9 (face f)) "foobarbaz" nil)
+
+  Fixed by making `try-completion' return shared mutable strings, as
+  `all-completions' three lines away already did; GNU probes confirm its
+  return is a fresh string (not `eq' to any candidate), so this is the
+  GNU-shaped representation, not a workaround.  The suite now runs 11/11 on
+  both binaries and the identity probe matches byte-for-byte.  The binding
+  rewrite itself remains for other plain-string producers -- that is issue
+  #14, and this finding is its clearest demonstration to date.
+
+Also noticed while probing, not yet fixed:
+
+- **61** — `propertize' appends new properties where GNU prepends them, so the
+  printed plist order differs: GNU prints `#("ab" 0 2 (keymap nil face foo))`,
+  Emaxx `#("ab" 0 2 (face foo keymap nil))`.  Same properties, different
+  `prin1' output, so any test comparing printed propertized strings diverges.
+
+## The job-control failure (finding 62; supersedes an earlier misdiagnosis)
+
+`native_subprocess_job_control_uses_child_groups_and_reaps_signal_states`
+failed in every gate run and passed every foreground run -- 20/20 standalone,
+plus every bisection subset, including one with the identical 176-test
+predecessor sequence.  An earlier draft of this note blamed my own concurrent
+triage processes; that was wrong (the next clean gate failed with nothing else
+running), and the bisection wasted several hours on order-dependence that did
+not exist.  The real discriminator was *how the test process was launched*.
+
+- **62** — children inherited the shell's ignored SIGINT/SIGQUIT.  A
+  background job of a non-interactive shell starts with SIGINT and SIGQUIT
+  set to SIG_IGN, and SIG_IGN survives exec into every child.  Emaxx spawned
+  subprocesses with Rust's `Command', which does not reset those
+  dispositions, so under `nohup ... &' -- exactly how the gates run --
+  `interrupt-process' sent a SIGINT that the child ignored, and the test
+  timed out waiting for a death that could not happen.  Instrumentation
+  showed the kill succeeding and the child alive five seconds later.  GNU
+  guards against precisely this: `emacs_spawn' (callproc.c:1441) is the one
+  choke point both `call-process' and `make-process' children pass through,
+  and it restores SIGINT, SIGQUIT, SIGPROF -- and SIGCHLD on Darwin -- to
+  SIG_DFL (callproc.c:1385) and gives every child a fresh session
+  (POSIX_SPAWN_SETSID; `setsid' in the fork path, callproc.c:1289).  Emaxx
+  had two independent spawn sites, and the first version of this fix patched
+  only the `make-process' one, leaving `call-process' children still
+  inheriting SIG_IGN -- exactly the bug-shape GNU's single-choke-point
+  design makes impossible.  Both paths now share one `configure_emacs_spawn'
+  mirroring GNU's: signal defaults plus `setsid' for every child (pipe
+  children previously got only `setpgid'), TIOCSCTTY for PTY children.
+  Verified by running the test five times as a background job (5/5 failures
+  before, 5/5 passes after), by a `call-process' child self-delivering
+  SIGINT under a background launch (dies on both binaries; before the fix it
+  survived on Emaxx), and by pid/pgid/session probes matching GNU's shape.
+
+The corrected process lesson: a test that fails only in the gate is not
+thereby flaky or externally sabotaged; the gate's own launch context is part
+of the test environment and must be reproduced when bisecting.

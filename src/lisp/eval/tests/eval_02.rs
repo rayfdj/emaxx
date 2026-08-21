@@ -754,7 +754,12 @@ fn emacs_lisp_mode_syntax_table_is_the_elisp_specific_child() {
 
 #[test]
 fn emacs_lisp_mode_map_defaults_to_keymap() {
-    assert_eq!(eval_str("(keymapp emacs-lisp-mode-map)"), Value::T);
+    // lisp-mode.el owns `emacs-lisp-mode-map'; GNU has it because the map is
+    // in the dumped image, not because C creates one.
+    assert_eq!(
+        eval_str_with_upstream_batch("(keymapp emacs-lisp-mode-map)"),
+        Value::T
+    );
 }
 
 #[test]

@@ -773,10 +773,13 @@ impl Interpreter {
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
             "overwrite-mode" => Some(Value::Nil),
+            // GNU's `load-path' entries are plain directory names with no
+            // trailing separator ("/…/lisp", not "/…/lisp/"), so string
+            // comparisons against them behave the same way.
             "load-path" => Some(Value::list(
                 self.load_path
                     .iter()
-                    .map(|path| Value::String(primitives::path_to_directory_string(path).into()))
+                    .map(|path| Value::String(path.display().to_string().into()))
                     .collect::<Vec<_>>(),
             )),
             "image-load-path" => Some(Value::list([

@@ -1330,7 +1330,7 @@ define_dispatch!(
                 if args.is_empty() {
                     return Ok(Value::Nil);
                 }
-                let rendered = render_native_princ(interp, &args[0], env)?;
+                let rendered = crate::lisp::primitives::print::render_princ_object(interp, &args[0], env)?;
                 let stream = printer_stream_value(interp, env, args.get(1));
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
                 if native_print_updates_batch_last_char(interp, &args[0], env, false)
@@ -1388,7 +1388,10 @@ define_dispatch!(
                 // NOESCAPE non-nil prints like `princ' (no quoting).
                 if args.get(1).is_some_and(|value| value.is_truthy()) {
                     return Ok(Value::String(
-                        render_native_princ(interp, &args[0], env)?.into(),
+                        crate::lisp::primitives::print::render_princ_object(
+                            interp, &args[0], env,
+                        )?
+                        .into(),
                     ));
                 }
                 if matches!(args.get(2), None | Some(Value::Nil)) {

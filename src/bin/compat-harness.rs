@@ -2479,11 +2479,14 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
         .map_err(|error| format!("create {}: {error}", request.artifact_dir.display()))?;
     let result_path = request.artifact_dir.join("emaxx.json");
     let test_directory = request.test_repo.join("test");
-    let load_paths = remap_load_paths(
-        compat::emaxx_upstream_load_path(request.load_path_repo)?,
-        request.load_path_repo,
-        request.test_repo,
-    )?;
+    // Artifact-form parity with the oracle.  GNU resolves library Lisp
+    // through its dumped load-path, which points at the pinned checkout, so it
+    // executes the 1621 compiled files under lisp/.  Remapping the subject's
+    // library path into the disposable clone put it on `.el' source instead,
+    // because `git clean -ffdqx' deletes every ignored `.elc' there -- the two
+    // runners were executing different forms of the same GNU Lisp.  Read the
+    // same tree the oracle reads; the test file still comes from the clone.
+    let load_paths = compat::emaxx_upstream_load_path(request.load_path_repo)?;
     let mut command = Command::new(request.binary);
     compat::configure_upstream_like_env(&mut command, &test_directory);
     // GNU's dumped standard-Lisp load path retains the tree that built it,
@@ -2512,6 +2515,10 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
         command.arg("-L");
         command.arg(load_path);
     }
+    // The oracle is given -L <checkout>/test; without it the subject cannot
+    // resolve a test-support helper that GNU resolves.
+    command.arg("-L");
+    command.arg(&test_directory);
     command.arg("-l");
     command.arg("ert");
     command.arg("-l");

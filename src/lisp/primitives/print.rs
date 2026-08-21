@@ -53,6 +53,10 @@ pub(crate) enum PrintRefKey {
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct PrintOptions {
+    /// print.c passes `escapeflag' to every `print_object' call: `prin1'
+    /// sets it, `princ' clears it, and it reaches nested elements too, so
+    /// `(princ (list "a"))' prints `(a)'.
+    escape: bool,
     circle: bool,
     continuous_numbering: bool,
     gensym: bool,
@@ -69,7 +73,7 @@ pub(crate) struct PrintContext {
     counts: HashMap<PrintRefKey, usize>,
     labels: HashMap<PrintRefKey, PrintLabel>,
     next_label: usize,
-    active: HashSet<PrintRefKey>,
+    active: HashMap<PrintRefKey, usize>,
     number_table: Option<Value>,
 }
 
@@ -104,7 +108,7 @@ impl PrintContext {
             counts,
             labels,
             next_label,
-            active: HashSet::new(),
+            active: HashMap::new(),
             number_table,
         })
     }
@@ -112,6 +116,7 @@ impl PrintContext {
 
 pub(crate) fn print_options(interp: &Interpreter, env: &Env) -> PrintOptions {
     PrintOptions {
+        escape: true,
         circle: interp
             .lookup_var("print-circle", env)
             .is_some_and(|value| value.is_truthy()),
@@ -179,20 +184,26 @@ pub(crate) fn print_ref_key(
         {
             Some(PrintRefKey::Symbol(symbol.to_string()))
         }
-        Value::Record(id) if record_prin1_fields(interp, *id).is_some() => {
+        // print.c:1299 `PRINT_CIRCLE_CANDIDATE_P' counts hash tables, so a
+        // table that contains itself is labelled (or truncated) rather than
+        // printed forever.
+        Value::Record(id)
+            if record_prin1_fields(interp, *id).is_some() || json::is_hash_table(interp, value) =>
+        {
             Some(PrintRefKey::Record(*id))
         }
         _ => None,
     }
 }
 
-pub(crate) fn print_ref_placeholder(key: PrintRefKey) -> String {
-    match key {
-        PrintRefKey::Cons(_) => "#0".into(),
-        PrintRefKey::Record(id) => format!("#{id}"),
-        PrintRefKey::StringObject(_) => "#<string>".into(),
-        PrintRefKey::Symbol(_) => "#<symbol>".into(),
-    }
+/// print.c:2253: without `print-circle', an object already being printed is
+/// rendered as `#N', where N is the print depth the outer occurrence sits
+/// at -- not an object identity of any kind.
+/// print.c:63 `PRINT_CIRCLE'.
+const PRINT_CIRCLE_DEPTH_LIMIT: usize = 200;
+
+pub(crate) fn print_ref_placeholder(depth: usize) -> String {
+    format!("#{depth}")
 }
 
 fn parse_print_number_table(
@@ -324,6 +335,11 @@ fn walk_print_graph(
             Value::Record(id) => {
                 if let Some(fields) = record_prin1_fields(interp, *id) {
                     pending.extend(fields.into_iter().rev());
+                } else if let Some((_, entries)) = json::hash_table_entries(interp, &value) {
+                    for (key, entry_value) in entries.into_iter().rev() {
+                        pending.push(entry_value);
+                        pending.push(key);
+                    }
                 }
             }
             _ => {}
@@ -424,12 +440,14 @@ pub(crate) fn render_prin1_list(
         context,
         depth + 1,
     )?];
-    let mut tail_positions = HashMap::new();
-    if !context.options.circle
-        && let Some(key) = print_ref_key(interp, value, context.options)
-    {
-        tail_positions.insert(key, 0usize);
-    }
+    // print.c:2541 seeds Brent's cycle detection with the cons whose car was
+    // just printed; the tortoise teleports on a doubling period, so a
+    // circular list prints its elements until the hare laps it and then
+    // closes with `. #TORTOISE-INDEX'.
+    let mut tortoise = value.clone();
+    let mut tortoise_countdown: i64 = 2;
+    let mut tortoise_period: i64 = 2;
+    let mut tortoise_index: i64 = 0;
     let mut tail = cdr;
     loop {
         if is_vector_value(&tail) {
@@ -447,23 +465,26 @@ pub(crate) fn render_prin1_list(
                     rendered.push("...".into());
                     return Ok(format!("({})", rendered.join(" ")));
                 }
-                if let Some(key) = print_ref_key(interp, &tail, context.options) {
-                    if should_label_value(&tail, &key, context) {
-                        let tail_rendered =
-                            render_prin1_with_context(interp, &tail, env, context, depth + 1)?;
-                        return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
-                    }
-                    if !context.options.circle
-                        && let Some(loopback_index) = tail_positions.get(&key)
-                    {
+                if let Some(key) = print_ref_key(interp, &tail, context.options)
+                    && should_label_value(&tail, &key, context)
+                {
+                    let tail_rendered =
+                        render_prin1_with_context(interp, &tail, env, context, depth + 1)?;
+                    return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
+                }
+                if !context.options.circle {
+                    tortoise_countdown -= 1;
+                    if tortoise_countdown == 0 {
+                        tortoise_index += tortoise_period;
+                        tortoise_period <<= 1;
+                        tortoise_countdown = tortoise_period;
+                        tortoise = tail.clone();
+                    } else if same_cons_cell(&tail, &tortoise) {
                         return Ok(format!(
-                            "({} . {})",
+                            "({} . #{})",
                             rendered.join(" "),
-                            format_args!("#{loopback_index}")
+                            tortoise_index
                         ));
-                    }
-                    if !context.options.circle {
-                        tail_positions.insert(key.clone(), rendered.len());
                     }
                 }
                 let Some((next_car, next_cdr)) = tail.cons_values() else {
@@ -484,6 +505,16 @@ pub(crate) fn render_prin1_list(
                 return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
             }
         }
+    }
+}
+
+fn same_cons_cell(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Cons(left), Value::Cons(right)) => {
+            crate::lisp::types::ConsCell::identity(left)
+                == crate::lisp::types::ConsCell::identity(right)
+        }
+        _ => false,
     }
 }
 
@@ -522,7 +553,7 @@ pub(crate) fn render_prin1_with_context(
                     return Ok(format!("#{number}#"));
                 }
                 label.printed = true;
-                context.active.insert(key.clone());
+                context.active.insert(key.clone(), depth);
                 let rendered = render_prin1_body(interp, value, env, context, depth);
                 context.active.remove(&key);
                 return rendered.map(|body| format!("#{number}={body}"));
@@ -537,14 +568,22 @@ pub(crate) fn render_prin1_with_context(
                     object: value.clone(),
                 },
             );
-            context.active.insert(key.clone());
+            context.active.insert(key.clone(), depth);
             let rendered = render_prin1_body(interp, value, env, context, depth);
             context.active.remove(&key);
             return rendered.map(|body| format!("#{number}={body}"));
         }
-        if !context.active.insert(key.clone()) {
-            return Ok(print_ref_placeholder(key));
+        if let Some(outer_depth) = context.active.get(&key).copied() {
+            return Ok(print_ref_placeholder(outer_depth));
         }
+        // print.c:2249: printing without `print-circle' gives up past
+        // PRINT_CIRCLE levels rather than exhausting the C stack.
+        if depth >= PRINT_CIRCLE_DEPTH_LIMIT {
+            return Err(LispError::Signal(
+                "Apparently circular structure being printed".into(),
+            ));
+        }
+        context.active.insert(key.clone(), depth);
         let rendered = render_prin1_body(interp, value, env, context, depth);
         context.active.remove(&key);
         return rendered;
@@ -646,6 +685,12 @@ pub(crate) fn render_prin1_symbol(symbol: &str, options: PrintOptions) -> String
     if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) {
         rendered.push_str("#:");
     }
+    // print.c quotes a symbol's confusing characters only under
+    // `escapeflag'; `princ' writes the name as it stands.
+    if !options.escape {
+        rendered.push_str(visible);
+        return rendered;
+    }
     for ch in visible.chars() {
         if matches!(
             ch,
@@ -699,60 +744,135 @@ pub(crate) fn render_hash_table_prin1(
     context: &mut PrintContext,
     depth: usize,
 ) -> Result<String, LispError> {
-    let size = hash_table_metadata_slot(interp, value, 2, Value::Integer(65))?;
+    // print.c:2588 prints only what the reader needs: the test when it is
+    // not `eql', the weakness when the table is weak, `purecopy t' when
+    // set, and the data when the table is non-empty.
     let test = hash_table_metadata_slot(interp, value, 0, Value::Symbol("eql".into()))?;
-    let rehash_size = hash_table_metadata_slot(interp, value, 3, Value::Float(1.5))?;
-    let rehash_threshold = hash_table_metadata_slot(interp, value, 4, Value::Float(0.8125))?;
     let weakness = hash_table_metadata_slot(interp, value, 5, Value::Nil)?;
+    let purecopy = hash_table_metadata_slot(interp, value, 6, Value::Nil)?;
     let entries = json::hash_table_entries(interp, value)
         .map(|(_, entries)| entries)
         .unwrap_or_default();
-    let mut data_parts = Vec::new();
-    for (index, (key, entry_value)) in entries.iter().enumerate() {
-        if context.options.length.is_some_and(|limit| index >= limit) {
-            data_parts.push("...".into());
-            break;
+
+    let mut rendered = String::from("#s(hash-table");
+    if !matches!(&test, Value::Symbol(name) if name == "eql") {
+        rendered.push_str(" test ");
+        rendered.push_str(&render_prin1_with_context(
+            interp,
+            &test,
+            env,
+            context,
+            depth + 1,
+        )?);
+    }
+    if weakness.is_truthy() {
+        rendered.push_str(" weakness ");
+        rendered.push_str(&render_prin1_with_context(
+            interp,
+            &weakness,
+            env,
+            context,
+            depth + 1,
+        )?);
+    }
+    if purecopy.is_truthy() {
+        rendered.push_str(" purecopy t");
+    }
+
+    if !entries.is_empty() {
+        let count = entries.len();
+        let printed = context.options.length.unwrap_or(count).min(count);
+        let mut data_parts = Vec::new();
+        for (key, entry_value) in entries.iter().take(printed) {
+            data_parts.push(render_prin1_with_context(
+                interp,
+                key,
+                env,
+                context,
+                depth + 1,
+            )?);
+            data_parts.push(render_prin1_with_context(
+                interp,
+                entry_value,
+                env,
+                context,
+                depth + 1,
+            )?);
         }
-        data_parts.push(render_prin1_with_context(
-            interp,
-            key,
-            env,
-            context,
-            depth + 1,
-        )?);
-        data_parts.push(render_prin1_with_context(
-            interp,
-            entry_value,
-            env,
-            context,
-            depth + 1,
-        )?);
+        if printed < count {
+            data_parts.push("...".into());
+        }
+        rendered.push_str(" data (");
+        rendered.push_str(&data_parts.join(" "));
+        rendered.push(')');
     }
-    let data_rendered = format!("({})", data_parts.join(" "));
+    rendered.push(')');
+    Ok(rendered)
+}
 
-    let mut fields = vec![
-        Value::Symbol("hash-table".into()),
-        Value::Symbol("size".into()),
-        size,
-        Value::Symbol("test".into()),
-        test,
-        Value::Symbol("rehash-size".into()),
-        rehash_size,
-        Value::Symbol("rehash-threshold".into()),
-        rehash_threshold,
-    ];
-    if !weakness.is_nil() {
-        fields.push(Value::Symbol("weakness".into()));
-        fields.push(weakness);
+/// `print_bool_vector' (print.c): the bits are packed eight to a byte,
+/// low-order bit first, and each byte is written with the escape rules
+/// `octalout' applies.
+fn render_bool_vector_prin1(
+    interp: &Interpreter,
+    env: &Env,
+    bits: &[bool],
+    options: PrintOptions,
+) -> String {
+    let escape_newlines = interp
+        .lookup_var("print-escape-newlines", env)
+        .is_some_and(|value| value.is_truthy());
+    let escape_control = interp
+        .lookup_var("print-escape-control-characters", env)
+        .is_some_and(|value| value.is_truthy());
+
+    let size = bits.len();
+    let real_size_in_bytes = size.div_ceil(8);
+    let mut data = vec![0u8; real_size_in_bytes];
+    for (index, bit) in bits.iter().enumerate() {
+        if *bit {
+            data[index / 8] |= 1 << (index % 8);
+        }
     }
-    let mut rendered_fields = fields
-        .iter()
-        .map(|field| render_prin1_with_context(interp, field, env, context, depth + 1))
-        .collect::<Result<Vec<_>, _>>()?;
-    rendered_fields.push("data".into());
-    rendered_fields.push(data_rendered);
+    let size_in_bytes = options
+        .length
+        .map_or(real_size_in_bytes, |limit| limit.min(real_size_in_bytes));
 
-    Ok(format!("#s({})", rendered_fields.join(" ")))
+    let mut rendered = format!("#&{size}\"");
+    for index in 0..size_in_bytes {
+        let byte = data[index];
+        if byte == b'\n' && escape_newlines {
+            rendered.push_str("\\n");
+        } else if byte == 0x0c && escape_newlines {
+            rendered.push_str("\\f");
+        } else if byte > 0o177 || (escape_control && byte.is_ascii_control()) {
+            let digits = if byte > 0o77
+                || data
+                    .get(index + 1)
+                    .is_some_and(|next| index + 1 < size_in_bytes && (b'0'..=b'7').contains(next))
+            {
+                3
+            } else if byte > 0o7 {
+                2
+            } else {
+                1
+            };
+            rendered.push('\\');
+            for shift in (0..digits).rev() {
+                rendered.push(char::from(b'0' + ((byte >> (3 * shift)) & 7)));
+            }
+        } else {
+            if byte == b'"' || byte == b'\\' {
+                rendered.push('\\');
+            }
+            rendered.push(char::from(byte));
+        }
+    }
+    if size_in_bytes < real_size_in_bytes {
+        rendered.push_str(" ...");
+    }
+    rendered.push('"');
+    rendered
 }
 
 pub(crate) fn render_prin1_body(
@@ -817,12 +937,18 @@ pub(crate) fn render_prin1_body(
 
     match value {
         Value::Integer(_) | Value::BigInteger(_) if context.options.integers_as_characters => {
-            if let Some(rendered) = render_prin1_integer_as_character(value) {
-                return Ok(rendered);
-            }
-            Ok(value.to_string())
+            let rendered = if context.options.escape {
+                render_prin1_integer_as_character(value)
+            } else {
+                render_princ_integer_as_character(value)
+            };
+            Ok(rendered.unwrap_or_else(|| value.to_string()))
         }
+        Value::String(text) if !context.options.escape => Ok(text.to_string()),
         Value::String(text) => Ok(render_prin1_string(interp, text, env)),
+        Value::StringObject(state) if !context.options.escape => {
+            Ok(state.borrow().text.clone())
+        }
         Value::StringObject(state) => {
             let (text, props) = {
                 let state = state.borrow();
@@ -872,9 +998,19 @@ pub(crate) fn render_prin1_body(
             }
             Ok(format!("#({})", rendered.join(" ")))
         }
-        Value::Symbol(symbol) if symbol == "backquote" || symbol == "`" => Ok("\\`".into()),
-        Value::Symbol(symbol) if symbol == "comma" || symbol == "," => Ok("\\,".into()),
-        Value::Symbol(symbol) if symbol == "comma-at" || symbol == ",@" => Ok("\\,@".into()),
+        Value::Symbol(symbol)
+            if context.options.escape && (symbol == "backquote" || symbol == "`") =>
+        {
+            Ok("\\`".into())
+        }
+        Value::Symbol(symbol) if context.options.escape && (symbol == "comma" || symbol == ",") => {
+            Ok("\\,".into())
+        }
+        Value::Symbol(symbol)
+            if context.options.escape && (symbol == "comma-at" || symbol == ",@") =>
+        {
+            Ok("\\,@".into())
+        }
         Value::Symbol(symbol) => Ok(render_prin1_symbol(symbol, context.options)),
         Value::Cons(_) if is_vector_value(value) => {
             let items = vector_items(value)?;
@@ -933,6 +1069,8 @@ pub(crate) fn render_prin1_body(
                 return Ok(rendered);
             }
             match value {
+                Value::BuiltinFunc(name) => Ok(format!("#<subr {name}>")),
+                Value::Buffer(buffer) if !context.options.escape => Ok(buffer.name.to_string()),
                 Value::Marker(id) => {
                     if let Some(marker) = interp.find_marker(*id) {
                         return Ok(match marker.buffer_id {
@@ -1000,23 +1138,53 @@ pub(crate) fn render_prin1_body(
                         }
                         format!("#[{}]", rendered_slots.join(" "))
                     }
+                    // print.c:1930 prints a thread, mutex or condition
+                    // variable by name, falling back to the object's
+                    // address.  Emaxx has no addresses to quote, so it
+                    // prints its own object identity in the same syntax.
                     crate::lisp::eval::RecordKind::Thread => interp
                         .thread_name(*id)
                         .map(|name| format!("#<thread {name}>"))
-                        .unwrap_or_else(|| format!("#<thread id:{id}>")),
+                        .unwrap_or_else(|| format!("#<thread 0x{id:x}>")),
                     crate::lisp::eval::RecordKind::Mutex => interp
                         .mutex_name(*id)
                         .map(|name| format!("#<mutex {name}>"))
-                        .unwrap_or_else(|| "#<mutex>".into()),
+                        .unwrap_or_else(|| format!("#<mutex 0x{id:x}>")),
                     crate::lisp::eval::RecordKind::ConditionVariable => interp
                         .condition_variable_name(*id)
                         .map(|name| format!("#<condvar {name}>"))
-                        .unwrap_or_else(|| "#<condvar>".into()),
+                        .unwrap_or_else(|| format!("#<condvar 0x{id:x}>")),
                     crate::lisp::eval::RecordKind::HashTable => {
                         render_hash_table_prin1(interp, value, env, context, depth)?
                     }
-                    crate::lisp::eval::RecordKind::Process
-                    | crate::lisp::eval::RecordKind::Obarray => value.to_string(),
+                    // print.c `print_bool_vector': `#&SIZE"BYTES"', the
+                    // bits packed low-order-first and the bytes written
+                    // with string escaping rules.
+                    crate::lisp::eval::RecordKind::BoolVector => {
+                        let bits = bool_vector_bits(interp, value)?;
+                        render_bool_vector_prin1(interp, env, &bits, context.options)
+                    }
+                    // print.c:1782: a process prints as `#<process NAME>',
+                    // or as its bare name when `princ' clears escapeflag.
+                    crate::lisp::eval::RecordKind::Process => {
+                        let name = interp
+                            .process_name(*id)
+                            .unwrap_or_else(|| format!("0x{id:x}"));
+                        if context.options.escape {
+                            format!("#<process {name}>")
+                        } else {
+                            name
+                        }
+                    }
+                    // print.c:2087.
+                    crate::lisp::eval::RecordKind::Obarray => {
+                        let count = crate::lisp::primitives::completion::obarray_symbols(
+                            interp, value,
+                        )
+                        .map(|symbols| symbols.len())
+                        .unwrap_or(0);
+                        format!("#<obarray n={count}>")
+                    }
                     _ => {
                         let Some(fields) = record_prin1_fields(interp, *id) else {
                             return Ok(value.to_string());
@@ -1082,6 +1250,21 @@ pub(crate) fn render_prin1(
     env: &mut crate::lisp::types::Env,
 ) -> Result<String, LispError> {
     let mut context = PrintContext::new(interp, value, env, print_options(interp, env))?;
+    let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
+    finish_print_number_table(interp, env, &context)?;
+    Ok(rendered)
+}
+
+/// `princ': print.c's `print_object' with `escapeflag' cleared.  This is the
+/// same traversal `prin1' uses, so the flag reaches nested elements.
+pub(crate) fn render_princ_object(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut crate::lisp::types::Env,
+) -> Result<String, LispError> {
+    let mut options = print_options(interp, env);
+    options.escape = false;
+    let mut context = PrintContext::new(interp, value, env, options)?;
     let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
     finish_print_number_table(interp, env, &context)?;
     Ok(rendered)

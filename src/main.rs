@@ -44,6 +44,30 @@ struct Cli {
     file: Vec<PathBuf>,
 }
 
+/// GNU's `-L DIR' prepends `(expand-file-name DIR)': the entry recorded in
+/// `load-path' is absolute, resolved against the working directory, with `.'
+/// and `..' components folded away and no trailing separator.
+fn expand_load_path_entry(directory: PathBuf) -> PathBuf {
+    let absolute = if directory.is_absolute() {
+        directory
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&directory))
+            .unwrap_or(directory)
+    };
+    let mut folded = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other),
+        }
+    }
+    folded
+}
+
 fn main() -> ExitCode {
     match try_main() {
         Ok(code) => ExitCode::from(code),
@@ -62,7 +86,7 @@ fn try_main() -> Result<u8, String> {
     if cli.batch {
         let outcome = run_batch_with_large_stack(
             BatchRunOptions {
-                load_path: cli.load_path,
+                load_path: cli.load_path.into_iter().map(expand_load_path_entry).collect(),
                 load: cli.load,
                 eval: cli.eval,
                 funcall: cli.funcall,
