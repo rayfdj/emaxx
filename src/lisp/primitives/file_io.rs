@@ -533,7 +533,7 @@ pub(crate) fn write_region_value_with_logical_path(
                 interp,
                 "y-or-n-p",
                 &[Value::String(
-                    format!("File {logical_path} exists; overwrite? ").into(),
+                    format!("File {logical_path} already exists; overwrite anyway? ").into(),
                 )],
                 env,
             )?

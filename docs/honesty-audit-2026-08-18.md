@@ -671,3 +671,61 @@ not exist.  The real discriminator was *how the test process was launched*.
 The corrected process lesson: a test that fails only in the gate is not
 thereby flaky or externally sabotaged; the gate's own launch context is part
 of the test environment and must be reproduced when bisecting.
+
+## Round A: the second audit (2026-08-21)
+
+An independent audit (credited throughout as "the second audit") reviewed the
+tree after commit a48b84b.  Most of its findings reproduced entries already
+recorded above and scheduled in the execution plan -- independent convergence
+that the ledger matches the code.  Five items were new or sharper, each
+verified against the oracle before fixing:
+
+- **64** — `call_named_function' answered a *missing function* with
+  `Ok(t)` -- fifteen call sites of fabricated success.  The sharpest
+  consequence: `write-region's MUSTBENEW prompt treated "the asker is
+  missing" as "the user said yes" and overwrote files GNU refuses to touch.
+  GNU in batch prompts and signals `(end-of-file "Error reading from
+  stdin")`, leaving the file alone; Emaxx now does exactly that,
+  byte-identical prompt included (the prompt text was also wrong:
+  "exists; overwrite?" vs fileio.c's "already exists; overwrite anyway?").
+  A missing function now signals void-function, as GNU's call1 would.
+- **65** — reported identity was both wrong and configurable.
+  `emacs-version' answered "30.2.0" (the crate's three-component semver
+  leaking through) where GNU says "30.2", behind a test that only checked
+  non-emptiness; and EMAXX_EMACS_VERSION / EMAXX_SYSTEM_CONFIGURATION*
+  environment knobs let a caller change the runtime's reported identity.
+  The knobs are deleted from the runtime (the harness's EMAXX_* strip
+  remains as defense in depth), the version is the GNU release constant,
+  `system-configuration' uses config.guess's aarch64 spelling, and the
+  test now asserts "30.2|30|2" exactly.
+- **66** — `this-single-command-keys' existed as a *variable*.  In GNU it
+  is only a keyboard.c function; `(boundp 'this-single-command-keys)' is
+  nil.  Emaxx defined a fabricated variable (written by the interactive
+  engine, exposed by the builtin fallback table) that no reader consumed
+  -- the function already reads native keyboard state.  Removed; both
+  binaries now answer `(nil t [])' for boundp/fboundp/call.
+- **67** — the direct-native-dispatch gate only recognized the spelling
+  `primitives::call(`, so the dispatch modules' `super::call(` alias was
+  a blind spot.  Widening the pattern to every `call(interp, "...")`
+  spelling caught four Lisp-owned names natively dispatched in the
+  mode-line renderer: `buffer-narrowed-p' (replaced by xdisp.c:28812's
+  pure accessibility checks, which also fixes ignoring end-narrowing),
+  `file-remote-p' (now through the function cell, as xdisp.c:28909's
+  dsafe_call1 does), `coding-system-eol-type-mnemonic' and
+  `coding-system-mnemonic' (now computed from the C-owned
+  `coding-system-eol-type' / `coding-system-plist' exactly as
+  decode_mode_spec_coding reads the attribute vector).
+- **68** — operational traps: `describe_char...` overflowed libtest's
+  default 8 MiB stack and SIGABRTed the whole binary unless
+  RUST_MIN_STACK was exported (now: the test carries run_with_large_stack
+  AND .cargo/config.toml bakes the gate's stack size in, so a plain
+  `cargo test` cannot abort); and the manifest-regeneration gate was
+  silently oracle-build-specific (now: docs/oracle-build-contract.md
+  states the pinned Darwin NS contract, and the gate detects an
+  out-of-contract oracle and names the document instead of dumping a raw
+  diff).
+
+Also confirmed from the second audit's first list, scheduled rather than
+fixed here: the builtin_var_value table's fabricated-defaults count is 100
+(not 98) of 251; the native isearch/prefix/minibuffer approximations in the
+kbd-macro engine await verification in step 5.

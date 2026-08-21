@@ -4,3 +4,10 @@
 # children past semantic deadlines; the tests do not exercise shared
 # cross-interpreter concurrency.  Match the explicit large-stack test gate.
 RUST_TEST_THREADS = { value = "2", force = false }
+# Deep Lisp interpretation (descr-text's char-code property walks,
+# cl-print's structure descent) recurses past libtest's default 8 MiB
+# thread stack, and one overflow aborts the whole test binary.  Bake the
+# gate's stack size in so a plain `cargo test` cannot SIGABRT on a fresh
+# machine (second audit, B3a).  `force = false': an explicit environment
+# still wins.
+RUST_MIN_STACK = { value = "134217728", force = false }

@@ -764,9 +764,6 @@ impl Interpreter {
             "window-system" => Some(Value::Nil),
             "initial-window-system" => Some(Value::Nil),
             "left-margin" => Some(Value::Integer(0)),
-            "this-single-command-keys" => {
-                Some(Value::list([Value::Symbol("vector-literal".into())]))
-            }
             "unread-command-events" => Some(Value::Nil),
             "deactivate-mark" => Some(Value::Nil),
             "line-spacing" => Some(Value::Nil),
@@ -818,16 +815,13 @@ impl Interpreter {
             "system-configuration" => {
                 Some(Value::String(primitives::system_configuration().into()))
             }
-            "system-configuration-features" => Some(Value::String(
-                std::env::var("EMAXX_SYSTEM_CONFIGURATION_FEATURES")
-                    .unwrap_or_default()
-                    .into(),
-            )),
-            "system-configuration-options" => Some(Value::String(
-                std::env::var("EMAXX_SYSTEM_CONFIGURATION_OPTIONS")
-                    .unwrap_or_default()
-                    .into(),
-            )),
+            // Emaxx is not an autoconf build: it has no configure options
+            // and none of GNU's feature-flag compile gates.  Empty strings
+            // are the honest values; they are a disclosed divergence from
+            // the NS oracle's lists, and no environment variable may dress
+            // them up (finding 65).
+            "system-configuration-features" => Some(Value::String("".into())),
+            "system-configuration-options" => Some(Value::String("".into())),
             "charset-list" => Some(Value::list(
                 self.charset_priority_list()
                     .into_iter()

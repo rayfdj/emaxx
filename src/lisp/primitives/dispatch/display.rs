@@ -3692,10 +3692,14 @@ fn decode_mode_line_spec(
         'I' => human_readable_size(interp.buffer.point_max() - interp.buffer.point_min()),
         'p' | 'P' => window_percent_spec(interp, spec == 'P'),
         'n' => {
+            // xdisp.c:28812 decode_mode_spec case 'n': pure C accessibility
+            // checks (BUF_BEGV > BUF_BEG || BUF_ZV < BUF_Z) -- GNU never
+            // consults the Lisp-owned `buffer-narrowed-p' here, and the old
+            // native dispatch of that name was both a gate escape (it went
+            // through `super::call', which the anti-cheat regex missed) and
+            // half wrong: it ignored narrowing at the buffer's end.
             let narrowed = interp.buffer.point_min() > 1
-                || super::call(interp, "buffer-narrowed-p", &[], env)
-                    .map(|value| value.is_truthy())
-                    .unwrap_or(false);
+                || interp.buffer.point_max() < interp.buffer.size_total() + 1;
             if narrowed {
                 " Narrow".to_string()
             } else {
@@ -3728,7 +3732,11 @@ fn decode_mode_line_spec(
             }
         }
         '@' => {
-            let remote = super::call(
+            // xdisp.c:28909 case '@': `dsafe_call1 (Qfile_remote_p, curdir)'
+            // -- GNU's C reaches the Lisp-owned `file-remote-p' through the
+            // function cell and treats any error as nil; so must Emaxx
+            // (finding 67's second catch).
+            let remote = crate::lisp::primitives::call_named_function(
                 interp,
                 "file-remote-p",
                 &[var(interp, "default-directory")],
@@ -3749,16 +3757,25 @@ fn decode_mode_line_spec(
             }
             let buffer_coding = var(interp, "buffer-file-coding-system");
             text.push(coding_mnemonic_char(interp, env, &buffer_coding));
-            if spec == 'Z'
-                && let Ok(eol) = super::call(
-                    interp,
-                    "coding-system-eol-type-mnemonic",
-                    &[buffer_coding],
-                    env,
-                )
-                && eol.is_string()
-            {
-                text.push_str(&string_text(&eol)?);
+            if spec == 'Z' {
+                // xdisp.c:28455: the eol mnemonic comes from the
+                // `eol-mnemonic-*' variables keyed by the coding system's
+                // eol type -- GNU never calls the Lisp-owned
+                // `coding-system-eol-type-mnemonic' here (finding 67's
+                // third catch; the old dispatch was a gate escape).
+                let eol_type =
+                    super::call(interp, "coding-system-eol-type", &[buffer_coding], env)
+                        .unwrap_or(Value::Nil);
+                let mnemonic_variable = match &eol_type {
+                    Value::Integer(0) => "eol-mnemonic-unix",
+                    Value::Integer(1) => "eol-mnemonic-dos",
+                    Value::Integer(2) => "eol-mnemonic-mac",
+                    _ => "eol-mnemonic-undecided",
+                };
+                let mnemonic = var(interp, mnemonic_variable);
+                if let Some(mnemonic) = string_like(&mnemonic) {
+                    text.push_str(&mnemonic.text);
+                }
             }
             text
         }
@@ -3779,10 +3796,23 @@ fn decode_mode_line_spec(
 }
 
 fn coding_mnemonic_char(interp: &mut Interpreter, env: &mut Env, coding: &Value) -> char {
+    // xdisp.c:28421 `decode_mode_spec_coding' reads CODING_ATTR_MNEMONIC
+    // out of the coding system's attribute vector; the same datum reaches
+    // Lisp as the `:mnemonic' entry of the C-owned `coding-system-plist'.
+    // The Lisp-owned `coding-system-mnemonic' wrapper is exactly that
+    // plist-get, and dispatching it natively was a gate escape
+    // (finding 67).
+    let plist = super::call(
+        interp,
+        "coding-system-plist",
+        std::slice::from_ref(coding),
+        env,
+    )
+    .unwrap_or(Value::Nil);
     match super::call(
         interp,
-        "coding-system-mnemonic",
-        std::slice::from_ref(coding),
+        "plist-get",
+        &[plist, Value::symbol(":mnemonic")],
         env,
     ) {
         Ok(Value::Integer(code)) => char::from_u32(code as u32).unwrap_or('-'),

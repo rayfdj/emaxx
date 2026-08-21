@@ -344,8 +344,15 @@ fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
     // It is therefore valid only for a configured GNU C primitive.  This
     // gate specifically prevents repeats of the old timer scheduler calling
     // GNU-Elisp-owned `timerp` through the native dispatcher.
+    // Match every spelling that reaches the native dispatcher with a literal
+    // name: `primitives::call(`, `super::call(`, bare `call(` under a glob
+    // import, and any future `.call(` method route.  The old pattern only
+    // knew the fully-qualified spelling, so a dispatch module's
+    // `super::call(interp, "buffer-narrowed-p", ...)` -- a Lisp-owned name
+    // natively dispatched in the mode-line path -- sat in its blind spot
+    // (finding 67, reported by the second audit).
     let direct_native_call =
-        regex::Regex::new(r#"(?s)(?:crate::lisp::)?primitives::call\s*\(\s*[^,]+,\s*"([^"]+)""#)
+        regex::Regex::new(r#"(?s)\bcall\s*\(\s*[^,()]+,\s*"([^"]+)""#)
             .expect("compile direct-native-call pattern");
 
     for path in facade_gate_files() {
@@ -559,6 +566,27 @@ fn gnu_c_manifest_matches_fresh_regeneration() {
     assert!(
         oracle.exists(),
         "pinned GNU sibling checkout required for the manifest regeneration gate"
+    );
+    // The manifest is a property of ONE build: the pinned Darwin NS oracle
+    // (see docs/oracle-build-contract.md).  A differently-configured
+    // emacs -- a Linux/X build, a --without-ns build -- exposes a different
+    // subr set, so regeneration legitimately differs and byte identity
+    // MUST fail.  Detect that case up front and say so, instead of dumping
+    // a raw manifest diff at someone whose only mistake is an
+    // out-of-contract oracle (second audit, B3b).
+    let reported_configuration = std::process::Command::new(&oracle)
+        .args(["-Q", "--batch", "--eval", "(princ system-configuration)"])
+        .output()
+        .expect("query oracle system-configuration");
+    let reported_configuration = String::from_utf8_lossy(&reported_configuration.stdout)
+        .trim()
+        .to_string();
+    assert!(
+        reported_configuration.contains("apple-darwin"),
+        "manifest regeneration requires the pinned Darwin NS oracle build; \
+         this oracle reports `{reported_configuration}'.  The committed manifest \
+         cannot match a differently-configured emacs -- see \
+         docs/oracle-build-contract.md"
     );
     let fresh_path =
         std::env::temp_dir().join(format!("emaxx-manifest-regen-{}.rs", std::process::id()));

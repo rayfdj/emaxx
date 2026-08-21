@@ -421,10 +421,12 @@ pub fn configure_upstream_like_env_with_home(
         command.env_remove(key);
     }
     // Every EMAXX_* knob is invisible to GNU but can change what the subject
-    // does -- EMAXX_BYTECODE_VM selects the execution engine, EMAXX_EMACS_VERSION
-    // and EMAXX_SYSTEM_CONFIGURATION change its reported identity.  An operator's
-    // exported variable must not reach a measured run; the harness sets the few
-    // it needs explicitly, after this point.
+    // does -- EMAXX_BYTECODE_VM, for example, selects the execution engine.
+    // (The identity knobs EMAXX_EMACS_VERSION and EMAXX_SYSTEM_CONFIGURATION*
+    // are gone from the runtime entirely; this strip is defense in depth for
+    // whatever knobs exist.)  An operator's exported variable must not reach
+    // a measured run; the harness sets the few it needs explicitly, after
+    // this point.
     for (key, _) in std::env::vars() {
         if key.starts_with("EMAXX_") {
             command.env_remove(key);

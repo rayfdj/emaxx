@@ -3571,12 +3571,14 @@ fn forward_comment_backward_rejects_overlapping_and_escaped_c_end_markers() {
 }
 
 #[test]
-fn emacs_version_variable_defaults_to_non_empty_string() {
-    let value = eval_str("emacs-version");
-    match value {
-        Value::String(version) => assert!(!version.is_empty()),
-        other => panic!("expected string, got {other:?}"),
-    }
+fn emacs_version_variable_matches_the_pinned_gnu_release() {
+    // GNU: (format "%s|%s|%s" emacs-version emacs-major-version
+    // emacs-minor-version) => "30.2|30|2".  A non-empty check here once hid
+    // the crate's three-component semver leaking into `emacs-version'.
+    assert_eq!(
+        eval_str("(format \"%s|%s|%s\" emacs-version emacs-major-version emacs-minor-version)"),
+        Value::String("30.2|30|2".into())
+    );
 }
 
 #[test]
