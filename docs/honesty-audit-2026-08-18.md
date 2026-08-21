@@ -452,6 +452,32 @@ Left open, disclosed rather than fixed:
   projected the way `record_prin1_fields' projects a record's, which is a
   representation change rather than a printer change.
 
+## Found by the step-3 smoke run (2026-08-21)
+
+The first 13-file harness run after the artifact-form parity work scored
+0/145 and earned its keep immediately:
+
+- **63** — the subject rebuilt its image from the wrong tree.
+  `installation_lisp_load_path' consulted `EMACS_TEST_DIRECTORY' first, and
+  under the harness that names the isolated *test* checkout -- a fresh
+  `git clone --shared' + `clean -ffdqx' tree with no compiled Lisp at all.
+  The subject therefore reconstructed its dumped image from source `.el'
+  while the oracle executes the pinned tree's 1,621 `.elc' -- the precise
+  violation the artifact-form work exists to prevent -- and in fact the
+  source-tree reconstruction failed outright (eager macro-expansion failure
+  preloading elisp-mode), so every file scored `load_error'.  Image
+  reconstruction is now anchored to `EMAXX_DUMP_SOURCE_DIRECTORY' (the tree
+  the harness pins, with the oracle's own `.elc'), falling back to the
+  pinned sibling; `EMACS_TEST_DIRECTORY' can never again choose the bytes
+  the image is built from.
+
+With 63 fixed the run scored 141/145 (the four misses being finding 55's
+bool-vector literal in ansi-color.el, fixed above), and then
+
+    TESTS 145/145 matching (0 mismatching) across 13 files
+
+This is a plumbing smoke result, not a baseline: 13 files of 515.
+
 ## Printer and startup parity, found by probing outward from finding 41
 
 Once the printer was under the microscope, a systematic sweep against the
@@ -504,6 +530,14 @@ Still open, disclosed rather than fixed:
 - **55** — `(read "#&3\"\\5\"")' yields the list `(bool-vector-literal t nil t)'
   rather than a bool vector; the printer now emits GNU's syntax, but the reader
   still produces an evaluator literal form instead of the object.
+  *Resolved 2026-08-21*: the step-3 smoke run promoted this disclosure into a
+  measured failure -- ansi-color.el:974 has a literal `#&8"\0"' argument, so
+  all four ansi-color-tests selectors signaled `(wrong-type-argument
+  bool-vector "cons")' where GNU passes.  `#&' now reads as a
+  `ReaderForm::BoolVector' materialized at the same read/evaluation boundary
+  as `#s(...)' records, so quoted structure, bytecode constants and `read'
+  itself all hand Lisp the object; the `bool-vector-literal' evaluator arm is
+  deleted.  All three probes match GNU byte-for-byte.
 - **56** — a thread, mutex or condition variable with no name prints as
   `#<thread 0xID>' using emaxx's own object identity where GNU prints the
   object's address.  The syntax matches and the identity is real; the number

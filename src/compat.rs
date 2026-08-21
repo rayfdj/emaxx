@@ -538,7 +538,10 @@ pub fn repo_local_elisp_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, Str
                     .into_iter()
                     .flat_map(|iter| iter.filter_map(Result::ok))
                     .any(|child| {
-                        child.file_type().is_ok_and(|file_type| file_type.is_file())
+                        // `read_dir' file types do not follow symlinks; a
+                        // shadowed tree of per-file symlinks is still a Lisp
+                        // directory, so judge the target, not the link.
+                        child.path().is_file()
                             && child.path().extension().is_some_and(|ext| ext == "el")
                     })
             {

@@ -229,7 +229,6 @@ pub(super) enum SourceLiteralKind {
     #[default]
     None,
     Vector,
-    BoolVector,
 }
 
 impl Interpreter {
@@ -280,7 +279,6 @@ impl Interpreter {
                 .flatten();
             literal_kind = match name.as_str() {
                 "vector-literal" => SourceLiteralKind::Vector,
-                "bool-vector-literal" => SourceLiteralKind::BoolVector,
                 _ => SourceLiteralKind::None,
             };
         }
@@ -393,13 +391,6 @@ impl Interpreter {
                 match literal_kind {
                     SourceLiteralKind::Vector => {
                         return self.materialize_read_object_literals(expr.clone());
-                    }
-                    SourceLiteralKind::BoolVector => {
-                        return Ok(self.create_pseudovector(
-                            RecordKind::BoolVector,
-                            "bool-vector",
-                            items[1..].to_vec(),
-                        ));
                     }
                     SourceLiteralKind::None => {}
                 }
