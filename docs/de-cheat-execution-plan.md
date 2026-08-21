@@ -55,7 +55,12 @@ different execution path, and that is the point.
 
 Exit: gate green, commit, push.
 
-## Step 3 — plumbing smoke run (not a quotable number)
+## Step 3 — plumbing smoke run (not a quotable number)  [DONE 2026-08-21]
+
+Ran twice to green: the first pass scored 0/145 (finding 63, image rebuilt
+from the elc-less test checkout) and 141/145 (finding 55, `#&' literals);
+both fixed, final result 145/145 matching across 13 files.
+
 
 A ~12-file run to prove the numerator and `.elc` parity hold at scale before
 either is trusted.  Explicitly not a baseline and not an artifact to cite.

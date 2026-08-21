@@ -511,22 +511,21 @@ fn initialize_batch_user_emacs_directory(interpreter: &mut Interpreter) -> Resul
 /// likewise reconstruct from the installation tree alone and only afterwards
 /// honour `-L' for the session.
 fn installation_lisp_load_path() -> Result<Vec<PathBuf>, String> {
-    let mut load_path = Vec::new();
-    if let Ok(test_directory) = env::var("EMACS_TEST_DIRECTORY") {
-        let test_directory = PathBuf::from(test_directory);
-        if let Some(repo_root) = test_directory.parent() {
-            load_path = compat::repo_local_elisp_load_path(repo_root)?;
-        }
+    // The image reconstructs from the tree that built the running dump.  The
+    // compat harness names that tree explicitly: the pinned oracle repo,
+    // whose lisp/**/*.elc are the very bytes the oracle executes.  An
+    // `EMACS_TEST_DIRECTORY' checkout is deliberately not consulted here --
+    // it is the *test* tree, and as a fresh git checkout it has no compiled
+    // Lisp at all, so reconstructing from it would execute different bytes
+    // than the oracle dumped (source `.el' where the oracle runs `.elc').
+    if let Ok(dump_root) = env::var(compat::DUMP_SOURCE_DIRECTORY_ENV) {
+        return compat::emaxx_upstream_load_path(Path::new(&dump_root));
     }
     let sibling = compat::project_root().join("../emacs");
     if sibling.join("lisp").is_dir() {
-        for path in compat::emaxx_upstream_load_path(&sibling)? {
-            if !load_path.contains(&path) {
-                load_path.push(path);
-            }
-        }
+        return compat::emaxx_upstream_load_path(&sibling);
     }
-    Ok(load_path)
+    Ok(Vec::new())
 }
 
 fn effective_batch_load_path(options: &BatchRunOptions) -> Result<Vec<PathBuf>, String> {
@@ -1665,11 +1664,11 @@ mod tests {
     #[test]
     fn batch_runtime_rejects_a_broken_resolvable_preload() {
         // A broken file in the tree the image is reconstructed FROM must fail
-        // loudly rather than yield a half-built runtime.  Since `-L' no longer
-        // influences reconstruction (GNU's dump is built from the
-        // installation tree alone), the fixture is installed as that tree via
-        // EMACS_TEST_DIRECTORY, which is how the harness points Emaxx at a
-        // checkout.
+        // loudly rather than yield a half-built runtime.  Reconstruction is
+        // anchored to EMAXX_DUMP_SOURCE_DIRECTORY -- the tree whose compiled
+        // Lisp the oracle executes; EMACS_TEST_DIRECTORY names only the test
+        // tree and deliberately cannot choose the image's bytes (finding 63)
+        // -- so the fixture is installed as the dump tree.
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
@@ -1678,19 +1677,64 @@ mod tests {
             "emaxx-batch-broken-preload-{}-{stamp}",
             std::process::id()
         ));
-        let seq = root.join("lisp/emacs-lisp/seq.el");
-        fs::create_dir_all(seq.parent().expect("seq fixture parent"))
-            .expect("create seq fixture directory");
+        // The fixture must be a complete dump tree.  Mirror the pinned
+        // sibling's lisp/ with real directories (load-path enumeration does
+        // not traverse directory symlinks) and per-file symlinks, replacing
+        // seq with a broken source and omitting the compiled seq.elc the
+        // loader would otherwise prefer.
+        let sibling = compat::project_root().join("../emacs");
+        let sibling_lisp = sibling
+            .join("lisp")
+            .canonicalize()
+            .expect("canonical sibling lisp tree");
+        let fixture_lisp = root.join("lisp");
+        let mut pending = vec![sibling_lisp.clone()];
+        while let Some(directory) = pending.pop() {
+            let relative = directory
+                .strip_prefix(&sibling_lisp)
+                .expect("fixture mirror stays under lisp/");
+            let target = fixture_lisp.join(relative);
+            fs::create_dir_all(&target).expect("mirror sibling lisp directory");
+            for entry in fs::read_dir(&directory).expect("list sibling lisp directory") {
+                let entry = entry.expect("sibling lisp entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                let name = entry.file_name();
+                if relative == Path::new("emacs-lisp") && (name == "seq.el" || name == "seq.elc") {
+                    continue;
+                }
+                std::os::unix::fs::symlink(&path, target.join(&name))
+                    .expect("shadow sibling lisp file");
+            }
+        }
         fs::create_dir_all(root.join("test")).expect("create fixture test directory");
-        fs::write(&seq, "(error \"broken seq preload\")\n").expect("write broken seq preload");
+        fs::write(
+            fixture_lisp.join("emacs-lisp/seq.el"),
+            "(error \"broken seq preload\")\n",
+        )
+        .expect("write broken seq preload");
 
-        let previous = env::var("EMACS_TEST_DIRECTORY").ok();
+        let previous_dump = env::var(compat::DUMP_SOURCE_DIRECTORY_ENV).ok();
+        let previous_test = env::var("EMACS_TEST_DIRECTORY").ok();
         // SAFETY: the batch suite runs with --test-threads=1.
-        unsafe { env::set_var("EMACS_TEST_DIRECTORY", root.join("test")) };
+        unsafe {
+            env::set_var(compat::DUMP_SOURCE_DIRECTORY_ENV, &root);
+            env::set_var("EMACS_TEST_DIRECTORY", root.join("test"));
+        }
         let result = initialize_batch_interpreter(&BatchRunOptions::default());
-        match previous {
-            Some(value) => unsafe { env::set_var("EMACS_TEST_DIRECTORY", value) },
-            None => unsafe { env::remove_var("EMACS_TEST_DIRECTORY") },
+        // SAFETY: still serialized by --test-threads=1.
+        unsafe {
+            match previous_dump {
+                Some(value) => env::set_var(compat::DUMP_SOURCE_DIRECTORY_ENV, value),
+                None => env::remove_var(compat::DUMP_SOURCE_DIRECTORY_ENV),
+            }
+            match previous_test {
+                Some(value) => env::set_var("EMACS_TEST_DIRECTORY", value),
+                None => env::remove_var("EMACS_TEST_DIRECTORY"),
+            }
         }
 
         let error = match result {

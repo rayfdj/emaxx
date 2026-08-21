@@ -892,6 +892,12 @@ pub enum ReaderForm {
         kind: ReaderClosureKind,
         slots: Vec<Value>,
     },
+    /// `#&N"..."'.  GNU's reader builds the bool vector directly; Emaxx's
+    /// reader has no Interpreter to allocate one in, so the bits wait here
+    /// for the same read/evaluation materialization boundary records use.
+    BoolVector {
+        bits: Vec<bool>,
+    },
 }
 
 /// A Lisp value. This covers the subset we need for ERT tests.
