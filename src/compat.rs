@@ -874,6 +874,21 @@ pub fn filter_report_by_exact_names(report: &BatchReport, names: &BTreeSet<Strin
 }
 
 pub fn compare_reports(expected: &BatchReport, actual: &BatchReport) -> ComparisonReport {
+    compare_reports_normalized(expected, actual, &|text| text.to_string())
+}
+
+/// Compare with a caller-supplied normalizer applied to failure messages
+/// before equality.  The normalizer exists for exactly one purpose:
+/// erasing *environmental* variance the two runners legitimately do not
+/// share -- each side's own temp checkout root, the run's temp directory.
+/// It must never erase semantic content; a normalizer that did would turn
+/// the instrument back into the condition-type-only comparison this
+/// replaces (finding 22).
+pub fn compare_reports_normalized(
+    expected: &BatchReport,
+    actual: &BatchReport,
+    normalize_message: &dyn Fn(&str) -> String,
+) -> ComparisonReport {
     let mut issues = Vec::new();
 
     if expected.file_status != actual.file_status {
@@ -939,12 +954,30 @@ pub fn compare_reports(expected: &BatchReport, actual: &BatchReport) -> Comparis
         match (expected_results.get(&name), actual_results.get(&name)) {
             (Some(left), Some(right)) => {
                 let same_status = left.status == right.status;
-                let same_condition = left.condition_type == right.condition_type
-                    || (left.status == TestStatus::Passed && right.status == TestStatus::Passed);
-                if same_status && same_condition {
+                let both_passed =
+                    left.status == TestStatus::Passed && right.status == TestStatus::Passed;
+                let same_condition = left.condition_type == right.condition_type || both_passed;
+                // GNU's failing outcome is its condition's printed form, and
+                // condition *type* alone scores `(wrong-type-argument foo
+                // ...)' as matching `(wrong-type-argument bar ...)'.  A
+                // failing test matches only when the message matches too
+                // (finding 22).
+                let normalized_left = left.message.as_deref().map(normalize_message);
+                let normalized_right = right.message.as_deref().map(normalize_message);
+                let same_message = both_passed || normalized_left == normalized_right;
+                if same_status && same_condition && same_message {
                     matching_outcomes += 1;
                 } else {
                     mismatching_outcomes += 1;
+                }
+                if same_status && same_condition && !same_message {
+                    issues.push(ComparisonIssue {
+                        kind: "failure_message".into(),
+                        detail: format!(
+                            "test `{name}` failure message differed: {:?} vs {:?}",
+                            normalized_left, normalized_right
+                        ),
+                    });
                 }
                 if left.status != right.status {
                     issues.push(ComparisonIssue {
@@ -1090,6 +1123,59 @@ mod tests {
         assert!(should_enable_nativecomp_tests("darwin", true));
         assert!(!should_enable_nativecomp_tests("darwin", false));
         assert!(!should_enable_nativecomp_tests("cygwin", true));
+    }
+
+    #[test]
+    fn shared_failures_with_different_messages_do_not_match() {
+        // finding 22: condition type alone scored `(wrong-type-argument foo)'
+        // as matching `(wrong-type-argument bar)'.
+        let outcome = |message: &str| TestOutcome {
+            name: "t".into(),
+            status: TestStatus::Failed,
+            condition_type: Some("wrong-type-argument".into()),
+            message: Some(message.into()),
+        };
+        let report = |runner: &str, message: &str| BatchReport {
+            runner: runner.into(),
+            file: "f.el".into(),
+            selector: "t".into(),
+            file_status: FileStatus::Loaded,
+            file_error: None,
+            discovered_tests: vec![DiscoveredTest {
+                name: "t".into(),
+                tags: Vec::new(),
+                expected_result: "passed".into(),
+            }],
+            selected_tests: vec!["t".into()],
+            results: vec![outcome(message)],
+            summary: BatchSummary {
+                total: 1,
+                passed: 0,
+                failed: 1,
+                skipped: 0,
+                unexpected: 1,
+            },
+        };
+        let comparison = compare_reports(
+            &report("oracle", "(number-or-marker-p \"a\")"),
+            &report("emaxx", "(number \"string\")"),
+        );
+        assert_eq!(comparison.matching_outcomes, 0);
+        assert_eq!(comparison.mismatching_outcomes, 1);
+        assert!(
+            comparison
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "failure_message"),
+            "{:?}",
+            comparison.issues
+        );
+        let same = compare_reports(
+            &report("oracle", "(listp 3)"),
+            &report("emaxx", "(listp 3)"),
+        );
+        assert_eq!(same.matching_outcomes, 1);
+        assert_eq!(same.mismatching_outcomes, 0);
     }
 
     #[test]

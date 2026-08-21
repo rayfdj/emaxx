@@ -987,7 +987,20 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// A summary from a tree that has not passed the anti-cheat gates is not
+/// evidence.  Refuse to run rather than annotate (finding 24).
+fn enforce_anti_cheat_gates() -> Result<(), String> {
+    eprintln!("enforcing anti-cheat gates before the run...");
+    emaxx::anti_cheat::enforce_all().map_err(|violations| {
+        format!(
+            "anti-cheat gates failed; no measured run can be produced from this tree:\n  {}",
+            violations.join("\n  ")
+        )
+    })
+}
+
 fn run_compat(args: RunArgs) -> Result<u8, String> {
+    enforce_anti_cheat_gates()?;
     let context = load_context()?;
     let selector = compat::resolve_selector(&context.lock, &args.selector)?;
     let files = selected_files(
@@ -1021,6 +1034,7 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
 }
 
 fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
+    enforce_anti_cheat_gates()?;
     let context = load_context()?;
     let manifest = FrozenCompatibilityManifest::load()?;
     let selector = compat::resolve_selector(&context.lock, "default")?;
@@ -1664,7 +1678,19 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
                 compat::filter_report_by_name(&emaxx.report, name_filter),
             )
         };
-        let mut comparison = compat::compare_reports(&oracle_report, &emaxx_report);
+        // Erase only environmental variance from failure messages before
+        // equality: each runner's isolated checkout root and the shared
+        // temp directory.  Anything else that differs is a real divergence.
+        let oracle_root = oracle_checkout.checkout.display().to_string();
+        let emaxx_root = emaxx_checkout.checkout.display().to_string();
+        let temp_root = std::env::temp_dir().display().to_string();
+        let normalize = move |text: &str| {
+            text.replace(&oracle_root, "<checkout>")
+                .replace(&emaxx_root, "<checkout>")
+                .replace(&temp_root, "<tmp>")
+        };
+        let mut comparison =
+            compat::compare_reports_normalized(&oracle_report, &emaxx_report, &normalize);
         invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &oracle.process);
         invalidate_timed_out_comparison(&mut comparison, "Emaxx", &emaxx.process);
         let timing = compare_runner_timings(&relative, &oracle.process, &emaxx.process);
