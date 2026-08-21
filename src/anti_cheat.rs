@@ -44,8 +44,7 @@ fn facade_gate_files() -> Vec<std::path::PathBuf> {
     files
 }
 
-#[test]
-fn repo_does_not_define_batch_report_delegation() {
+pub(crate) fn repo_does_not_define_batch_report_delegation() {
     let delegation_files = ["src/compat.rs", "src/batch.rs", "src/bin/compat-harness.rs"];
     let banned_tokens = [
         concat!("ORACLE_BATCH_", "REPORT_OVERRIDES"),
@@ -72,8 +71,7 @@ fn repo_does_not_define_batch_report_delegation() {
     }
 }
 
-#[test]
-fn production_batch_driver_can_only_call_audited_compat_helpers() {
+pub(crate) fn production_batch_driver_can_only_call_audited_compat_helpers() {
     let text =
         fs::read_to_string(repo_root().join("src/batch.rs")).expect("read production batch driver");
     let production = text
@@ -109,8 +107,7 @@ fn production_batch_driver_can_only_call_audited_compat_helpers() {
     }
 }
 
-#[test]
-fn runtime_code_does_not_shell_out_to_oracle_emacs() {
+pub(crate) fn runtime_code_does_not_shell_out_to_oracle_emacs() {
     let runtime_files = [
         "src/lisp/eval.rs",
         "src/lisp/primitives.rs",
@@ -140,8 +137,7 @@ fn runtime_code_does_not_shell_out_to_oracle_emacs() {
     }
 }
 
-#[test]
-fn runtime_does_not_publish_generated_or_compat_loaddefs() {
+pub(crate) fn runtime_does_not_publish_generated_or_compat_loaddefs() {
     let runtime_files = [
         "src/lisp/eval.rs",
         "src/lisp/eval/bindings.rs",
@@ -170,8 +166,7 @@ fn runtime_does_not_publish_generated_or_compat_loaddefs() {
     }
 }
 
-#[test]
-fn runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists() {
+pub(crate) fn runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists() {
     let banned_properties = [
         concat!("emaxx-", "struct-slot"),
         concat!("emaxx-", "struct-type"),
@@ -221,8 +216,7 @@ fn runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists() {
     );
 }
 
-#[test]
-fn runtime_does_not_reintroduce_removed_private_lisp_state() {
+pub(crate) fn runtime_does_not_reintroduce_removed_private_lisp_state() {
     let banned_names = [
         concat!("emaxx", "--visited-remote-prefix"),
         concat!("emaxx", "--active-minibuffer"),
@@ -258,8 +252,7 @@ fn runtime_does_not_reintroduce_removed_private_lisp_state() {
     }
 }
 
-#[test]
-fn runtime_contains_no_project_private_lisp_namespace() {
+pub(crate) fn runtime_contains_no_project_private_lisp_namespace() {
     // This spelling gate is deliberately paired with the semantic ownership
     // gates: every native dispatch arm must be GNU C-owned, and the project
     // may ship no replacement Elisp.  A different prefix therefore cannot
@@ -284,8 +277,7 @@ fn runtime_contains_no_project_private_lisp_namespace() {
     }
 }
 
-#[test]
-fn runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch() {
+pub(crate) fn runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch() {
     let banned_arms = [
         concat!("\"list-", "buffers\" =>"),
         concat!("\"list-buffers-", "noselect\" =>"),
@@ -338,8 +330,7 @@ fn runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch() {
     }
 }
 
-#[test]
-fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
+pub(crate) fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
     // Calling `primitives::call` bypasses the ordinary Lisp function cell.
     // It is therefore valid only for a configured GNU C primitive.  This
     // gate specifically prevents repeats of the old timer scheduler calling
@@ -376,8 +367,7 @@ fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
     }
 }
 
-#[test]
-fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() {
+pub(crate) fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() {
     use crate::lisp::eval::Interpreter;
     use crate::lisp::types::{Env, Value};
 
@@ -406,8 +396,7 @@ fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() {
     }
 }
 
-#[test]
-fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
+pub(crate) fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
     use crate::lisp::eval::Interpreter;
     use crate::lisp::reader::Reader;
     use crate::lisp::types::{Env, LispError};
@@ -532,8 +521,7 @@ fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
     }
 }
 
-#[test]
-fn tty_frontend_does_not_reintroduce_silent_fallback_fabrications() {
+pub(crate) fn tty_frontend_does_not_reintroduce_silent_fallback_fabrications() {
     // Removed 2026-08-18: a native file visit that papered over a broken
     // `find-file', and a hand-painted GNU-shaped mode line covering render
     // failures.  Both kept the screen plausible while hiding breakage.
@@ -556,8 +544,7 @@ fn tty_frontend_does_not_reintroduce_silent_fallback_fabrications() {
     }
 }
 
-#[test]
-fn gnu_c_manifest_matches_fresh_regeneration() {
+pub(crate) fn gnu_c_manifest_matches_fresh_regeneration() {
     // A hand edit to the generated manifest could reclassify an Elisp-owned
     // name as C-owned and unlock a native dispatch arm.  Regenerate from the
     // pinned sibling checkout and require byte identity.
@@ -621,4 +608,100 @@ fn gnu_c_manifest_matches_fresh_regeneration() {
         "committed GNU C manifest does not match fresh regeneration from the pinned checkout"
     );
     let _ = fs::remove_file(&fresh_path);
+}
+
+/// Run every anti-cheat gate and collect the violations.  The gates were
+/// once only `#[cfg(test)]' tests, so a measured run could be produced
+/// from a tree that had never passed them; the compat harness now calls
+/// this before it will write a summary (finding 24).  Each gate still has
+/// a thin `#[test]' wrapper below, so `cargo test anti_cheat' behaves as
+/// before.
+pub fn enforce_all() -> Result<(), Vec<String>> {
+    let gates: &[(&str, fn())] = &[
+        ("repo_does_not_define_batch_report_delegation", repo_does_not_define_batch_report_delegation as fn()),
+        ("production_batch_driver_can_only_call_audited_compat_helpers", production_batch_driver_can_only_call_audited_compat_helpers as fn()),
+        ("runtime_code_does_not_shell_out_to_oracle_emacs", runtime_code_does_not_shell_out_to_oracle_emacs as fn()),
+        ("runtime_does_not_publish_generated_or_compat_loaddefs", runtime_does_not_publish_generated_or_compat_loaddefs as fn()),
+        ("runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists", runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists as fn()),
+        ("runtime_does_not_reintroduce_removed_private_lisp_state", runtime_does_not_reintroduce_removed_private_lisp_state as fn()),
+        ("runtime_contains_no_project_private_lisp_namespace", runtime_contains_no_project_private_lisp_namespace as fn()),
+        ("runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch", runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch as fn()),
+        ("runtime_native_dispatch_calls_only_configured_gnu_c_primitives", runtime_native_dispatch_calls_only_configured_gnu_c_primitives as fn()),
+        ("bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values", bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values as fn()),
+        ("bare_runtime_rejects_gnu_elisp_owned_definition_forms", bare_runtime_rejects_gnu_elisp_owned_definition_forms as fn()),
+        ("tty_frontend_does_not_reintroduce_silent_fallback_fabrications", tty_frontend_does_not_reintroduce_silent_fallback_fabrications as fn()),
+        ("gnu_c_manifest_matches_fresh_regeneration", gnu_c_manifest_matches_fresh_regeneration as fn()),
+    ];
+    let mut violations = Vec::new();
+    for (name, gate) in gates {
+        if let Err(panic) = std::panic::catch_unwind(gate) {
+            let message = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
+                .unwrap_or_else(|| "gate panicked without a message".into());
+            violations.push(format!("{name}: {message}"));
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations)
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    #[test]
+    fn repo_does_not_define_batch_report_delegation() {
+        super::repo_does_not_define_batch_report_delegation();
+    }
+    #[test]
+    fn production_batch_driver_can_only_call_audited_compat_helpers() {
+        super::production_batch_driver_can_only_call_audited_compat_helpers();
+    }
+    #[test]
+    fn runtime_code_does_not_shell_out_to_oracle_emacs() {
+        super::runtime_code_does_not_shell_out_to_oracle_emacs();
+    }
+    #[test]
+    fn runtime_does_not_publish_generated_or_compat_loaddefs() {
+        super::runtime_does_not_publish_generated_or_compat_loaddefs();
+    }
+    #[test]
+    fn runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists() {
+        super::runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists();
+    }
+    #[test]
+    fn runtime_does_not_reintroduce_removed_private_lisp_state() {
+        super::runtime_does_not_reintroduce_removed_private_lisp_state();
+    }
+    #[test]
+    fn runtime_contains_no_project_private_lisp_namespace() {
+        super::runtime_contains_no_project_private_lisp_namespace();
+    }
+    #[test]
+    fn runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch() {
+        super::runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch();
+    }
+    #[test]
+    fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
+        super::runtime_native_dispatch_calls_only_configured_gnu_c_primitives();
+    }
+    #[test]
+    fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() {
+        super::bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values();
+    }
+    #[test]
+    fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
+        super::bare_runtime_rejects_gnu_elisp_owned_definition_forms();
+    }
+    #[test]
+    fn tty_frontend_does_not_reintroduce_silent_fallback_fabrications() {
+        super::tty_frontend_does_not_reintroduce_silent_fallback_fabrications();
+    }
+    #[test]
+    fn gnu_c_manifest_matches_fresh_regeneration() {
+        super::gnu_c_manifest_matches_fresh_regeneration();
+    }
 }

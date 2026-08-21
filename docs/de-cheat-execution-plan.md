@@ -77,7 +77,7 @@ the second audit, folded into step 5's scope: the fabricated-defaults count
 is 100 of 251, and the kbd-macro engine's isearch/prefix/minibuffer
 approximations need verification.
 
-## Step 4 — finish the measuring instrument
+## Step 4 — finish the measuring instrument  [DONE 2026-08-22]
 
 These change what any later number *means*, so they precede measurement.
 

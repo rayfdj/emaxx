@@ -10,7 +10,13 @@ Oracle pin:
 
 - Emacs version: 30.2
 - Emacs repo commit: 636f166cfc86aa90d63f592fd99f3fdd9ef95ebd
-- Selector: `all`
+- Scope: `all` (src + lisp + lib-src + misc test trees)
+- Selector: the pinned default, `(not (or (tag :expensive-test) (tag
+  :unstable)))` -- the file's own rows prove it (autorevert-tests.el:
+  `discovered=16 selected=7`; the nine excluded tests carry those tags).
+  An earlier revision of this document said "Selector: `all`", conflating
+  the *scope* flag with the ERT selector; the 7,595 denominator has always
+  been the default selector's selection (finding 23).
 - System type: darwin
 - Native compilation: true
 

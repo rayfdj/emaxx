@@ -729,3 +729,28 @@ Also confirmed from the second audit's first list, scheduled rather than
 fixed here: the builtin_var_value table's fabricated-defaults count is 100
 (not 98) of 251; the native isearch/prefix/minibuffer approximations in the
 kbd-macro engine await verification in step 5.
+
+## Step 4: the measuring instrument (2026-08-22)
+
+- **Finding 22 fixed** — failing outcomes now match only when their
+  *messages* match, not merely their condition types.
+  `compare_reports_normalized' takes a caller-supplied normalizer whose
+  sole legitimate use is erasing environmental variance (each runner's
+  isolated checkout root, the temp directory); the harness passes exactly
+  that and nothing more.  A unit test pins that two `wrong-type-argument'
+  failures with different data no longer count as matching.  The 13-file
+  smoke prefix still scores 145/145 under the stricter instrument -- its
+  tests pass on both sides, and passing outcomes carry no messages -- so
+  the strictness will bite where it should: files with shared failures,
+  starting with finding 57's entire class, which was invisible before.
+- **Finding 24 fixed** — the anti-cheat gates are no longer only
+  `#[cfg(test)]' tests someone remembers to run.  The module is compiled
+  into the library, each gate is a callable check with a thin test
+  wrapper, and `compat-harness run'/`frozen' execute every gate before
+  producing any artifact: a tree that fails a gate cannot produce a
+  summary at all.
+- **Finding 23 fixed** — `compat/oracle_tests_all.md' said
+  "Selector: `all'", conflating the `--scope all' flag with the ERT
+  selector.  The manifest's own rows prove the 7,595 denominator was
+  always the pinned default selector's selection (autorevert:
+  discovered=16 selected=7); the document now says so.
