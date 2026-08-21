@@ -4997,25 +4997,32 @@ fn completion_observes_lexically_scoped_policy_with_real_cl_letf() {
 
 #[test]
 fn describe_char_observes_preloaded_eldoc_multiline_policy() {
-    assert_eq!(
-        eval_str_with_upstream_batch(
-            r#"(progn
-                 (require 'descr-text)
-                 (with-temp-buffer
-                   (insert "…")
-                   (goto-char (point-min))
-                   (list
-                    eldoc-echo-area-use-multiline-p
-                    (special-variable-p 'eldoc-echo-area-use-multiline-p)
-                    (let ((eldoc-echo-area-use-multiline-p t))
-                      (describe-char-eldoc 'ignore)))))"#,
-        ),
-        Value::list([
-            Value::Symbol("truncate-sym-name-if-fit".into()),
-            Value::T,
-            Value::String("U+2026: Horizontal ellipsis (Po: Punctuation, Other)".into()),
-        ])
-    );
+    // descr-text's char-code-property lookups recurse past libtest's
+    // default 8 MiB thread stack, and an overflow aborts the whole test
+    // binary -- every later test silently never runs.  Carry the large
+    // stack explicitly instead of depending on an ambient RUST_MIN_STACK
+    // (second audit, B3a).
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(progn
+                     (require 'descr-text)
+                     (with-temp-buffer
+                       (insert "…")
+                       (goto-char (point-min))
+                       (list
+                        eldoc-echo-area-use-multiline-p
+                        (special-variable-p 'eldoc-echo-area-use-multiline-p)
+                        (let ((eldoc-echo-area-use-multiline-p t))
+                          (describe-char-eldoc 'ignore)))))"#,
+            ),
+            Value::list([
+                Value::Symbol("truncate-sym-name-if-fit".into()),
+                Value::T,
+                Value::String("U+2026: Horizontal ellipsis (Po: Punctuation, Other)".into()),
+            ])
+        );
+    });
 }
 
 #[test]

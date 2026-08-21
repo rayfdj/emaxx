@@ -9,11 +9,9 @@ pub(crate) fn set_command_key_state(
     interp.keyboard_input.command_keys = keys.clone();
     interp.keyboard_input.single_command_start = 0;
     interp.keyboard_input.raw_keys = raw_keys;
-    interp.set_variable(
-        "this-single-command-keys",
-        Value::list(std::iter::once(Value::symbol("vector-literal")).chain(keys)),
-        env,
-    );
+    // GNU has no `this-single-command-keys' *variable* -- only the
+    // keyboard.c function, which reads this native state (finding 66).
+    let _ = (keys, env);
 }
 
 fn dribble_event_bytes(event: &Value) -> Vec<u8> {
