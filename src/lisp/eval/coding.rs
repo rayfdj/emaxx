@@ -266,9 +266,24 @@ impl Interpreter {
             .rev()
             .find(|(existing_alias, _)| existing_alias == alias)
         {
-            *existing = canonical;
+            *existing = canonical.clone();
         } else {
-            self.coding_aliases.push((alias.to_string(), canonical));
+            self.coding_aliases
+                .push((alias.to_string(), canonical.clone()));
+        }
+        // coding.c:Fdefine_coding_system_alias recurses over the target's eol
+        // subsidiaries: when CODING-SYSTEM has a vector eol-type, ALIAS-unix,
+        // ALIAS-dos and ALIAS-mac are defined as aliases of the corresponding
+        // subsidiary.  Without this, `euc-jp' resolves but `euc-jp-unix' does
+        // not, though GNU has both.
+        for suffix in ["unix", "dos", "mac"] {
+            let alias_variant = format!("{alias}-{suffix}");
+            let target_variant = format!("{canonical}-{suffix}");
+            if self.coding_system_canonical_name(&alias_variant).is_none()
+                && self.coding_system_canonical_name(&target_variant).is_some()
+            {
+                self.coding_aliases.push((alias_variant, target_variant));
+            }
         }
         Ok(())
     }

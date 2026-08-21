@@ -388,7 +388,7 @@ fn defalias_replaces_an_existing_function_cell() {
 #[test]
 fn md5_accepts_buffer_sources_and_coding_symbols() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer \
                    (insert \"abc\") \
                    (md5 (current-buffer) nil nil 'utf-8-emacs-unix))"
@@ -1352,7 +1352,7 @@ fn temporary_file_directory_names_a_directory_with_trailing_separator() {
 #[test]
 fn write_region_accepts_string_data_even_with_numeric_end_argument() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(let ((path (make-temp-name temporary-file-directory)))
                      (unwind-protect
                          (progn
@@ -1892,7 +1892,7 @@ fn unibyte_string_sequences_return_byte_values() {
 #[test]
 fn byte_to_string_preserves_octets_as_unibyte_strings() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(list
                  (mapcar (lambda (byte)
                            (let ((string (byte-to-string byte)))
@@ -4416,7 +4416,10 @@ fn native_permanent_buffer_locals_survive_major_mode_reset() {
 
 #[test]
 fn builtin_text_codings_expose_complete_eol_variant_families() {
-    let interp = Interpreter::new();
+    // These coding systems and their eol variants are created by
+    // international/mule-conf.el in GNU's dumped image; coding.c defines only
+    // no-conversion and undecided, so a file-less host has neither.
+    let interp = crate::test_support::initialized_upstream_batch_interpreter();
     for base in [
         "undecided",
         "us-ascii",

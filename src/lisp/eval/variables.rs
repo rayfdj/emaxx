@@ -1561,7 +1561,7 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn dispatch_handler_bindings(
+    pub(crate) fn dispatch_handler_bindings(
         &mut self,
         error: LispError,
         env: &mut Env,

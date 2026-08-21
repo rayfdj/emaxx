@@ -2836,7 +2836,7 @@ impl Interpreter {
             uninterned_standard_symbol_names: HashSet::new(),
             standard_obarray_id,
             variable_watchers: Vec::new(),
-            buffer: crate::buffer::Buffer::new("*test*"),
+            buffer: crate::buffer::Buffer::new("*scratch*"),
             current_global_map: None,
             keymap_public_cons_owners: HashMap::new(),
             keymap_public_cons_ids: HashMap::new(),
@@ -2873,7 +2873,10 @@ impl Interpreter {
             terminal_parameters: Vec::new(),
             terminal_live: true,
             inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
-            buffer_list: vec![(0, "*test*".to_string()), (1, "*Messages*".to_string())],
+            // GNU's batch `buffer-list' is (*scratch* " *Minibuf-0*"
+            // *Messages*); *Messages* joins the list once the minibuffer
+            // buffer exists, below.
+            buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
             next_overlay_id: 1,
             next_marker_id: 1,
@@ -3223,6 +3226,13 @@ impl Interpreter {
         // xdisp.c's trailing-whitespace highlight switch, read by dumped
         // simple.el commands like `kill-line'.
         interp.define_special_variable("show-trailing-whitespace", Value::Nil);
+        // indent.c:2486 DEFVAR_BOOL, initialised to 1.  This must be a real
+        // binding, not a `builtin_var_value' fallback: simple.el's
+        // `define-minor-mode indent-tabs-mode' supplies no :init-value, so its
+        // defcustom keeps whatever the variable already holds — and a fallback
+        // that `defvar' cannot see is indistinguishable from unbound, which
+        // let preloaded Lisp overwrite GNU's C default with nil.
+        interp.define_special_variable("indent-tabs-mode", Value::T);
         // minibuf.c's history controls, read by subr.el's `add-to-history'.
         interp.define_special_variable("history-length", Value::Integer(100));
         interp.define_special_variable("history-delete-duplicates", Value::Nil);
@@ -3869,6 +3879,7 @@ impl Interpreter {
             window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
         }
         let (minibuffer_buffer_id, _) = interp.create_buffer(" *Minibuf-0*");
+        interp.buffer_list.push((1, "*Messages*".to_string()));
         let minibuffer_window = interp.create_pseudovector(
             RecordKind::Window,
             "window",

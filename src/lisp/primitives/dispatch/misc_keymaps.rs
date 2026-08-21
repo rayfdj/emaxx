@@ -660,6 +660,9 @@ define_dispatch!(
                 let mut rehash_size = Value::Float(1.5);
                 let mut rehash_threshold = Value::Float(0.8125);
                 let mut weakness = Value::Nil;
+                // fns.c still accepts `:purecopy'; print.c:2609 reports it
+                // back, so the flag has to be recorded rather than dropped.
+                let mut purecopy = Value::Nil;
                 let mut index = 0usize;
                 while index + 1 < args.len() {
                     let key = args[index].as_symbol()?;
@@ -685,7 +688,7 @@ define_dispatch!(
                                 other => other.clone(),
                             };
                         }
-                        ":purecopy" => {}
+                        ":purecopy" => purecopy = args[index + 1].clone(),
                         _ => {
                             return Err(LispError::Signal(format!(
                                 "Invalid hash table parameter: {key}"
@@ -706,13 +709,14 @@ define_dispatch!(
                 let record = interp
                     .find_record_mut(id)
                     .expect("make_hash_table should create a record");
-                if record.slots.len() < 6 {
-                    record.slots.resize(6, Value::Nil);
+                if record.slots.len() < 7 {
+                    record.slots.resize(7, Value::Nil);
                 }
                 record.slots[2] = size;
                 record.slots[3] = rehash_size;
                 record.slots[4] = rehash_threshold;
                 record.slots[5] = weakness;
+                record.slots[6] = purecopy;
                 Ok(table)
             }
             "hash-table-p" => {

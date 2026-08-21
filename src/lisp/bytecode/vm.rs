@@ -1478,7 +1478,20 @@ fn run_with_stack(
     while let Some(entry) = unwinds.pop() {
         unwind_one(interp, entry, env)?;
     }
-    result
+    // GNU runs `handler-bind' handlers from `signal' itself, so an error
+    // raised inside byte-code reaches them exactly as one raised by the
+    // interpreter does.  Emaxx dispatches at each native-call boundary
+    // (eval/core.rs); without the same dispatch here, an error escaping the VM
+    // skipped every enclosing handler-bind — which meant ert could not turn a
+    // failing compiled test body into a result, and only ever showed up once
+    // the subject started executing GNU's compiled Lisp.  A condition-case
+    // inside this frame has already had its chance above, so anything still
+    // propagating belongs to an outer handler.
+    match result {
+        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
+        Err(error) => interp.dispatch_handler_bindings(error, env),
+        ok => ok,
+    }
 }
 
 #[cfg(test)]

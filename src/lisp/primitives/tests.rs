@@ -13677,6 +13677,13 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
     // deliberately absent and not asserted here.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
+    // GNU starts in *scratch*, whose `lisp-interaction-mode' map shadows DEL
+    // with `backward-delete-char-untabify' -- both runtimes agree on that.
+    // These expectations are about the dumped *global* map, so read them
+    // where no major-mode map intervenes: GNU and Emaxx both answer
+    // `delete-backward-char' for DEL in a `fundamental-mode' buffer.
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(fundamental-mode)")
+        .expect("leave lisp-interaction-mode");
     for (keys, expected) in [
         (vec![Value::Integer(24), Value::Integer(19)], "save-buffer"),
         (
@@ -13918,15 +13925,18 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
     )
     .expect("spec string renders");
     set_interactive_window_metrics(None);
+    // The initial buffer is *scratch* in `lisp-interaction-mode', as in GNU.
+    // Match the mode name by prefix: the minor-mode list that follows it is
+    // not something this test has oracle evidence for.
     assert!(
-        text.contains("(Fundamental)") && text.contains("L2") && text.contains("All"),
+        text.contains("(Lisp Interaction") && text.contains("L2") && text.contains("All"),
         "dumped spec renders the GNU shape, got {text:?}"
     );
     assert!(
         text.contains("**"),
         "a modified buffer shows the ** flags, got {text:?}"
     );
-    assert_eq!(format!("{pieces}"), "\"2|All|*test*\"");
+    assert_eq!(format!("{pieces}"), "\"2|All|*scratch*\"");
 }
 
 // ── Scroll, recenter, and mode-line contracts (round: paging + mode line) ──
