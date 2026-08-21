@@ -739,20 +739,37 @@ pub(crate) fn try_completion(
             if matches.len() == 1 {
                 return Ok(Value::T);
             }
-            return Ok(Value::String(candidate.name.clone().into()));
+            return Ok(make_shared_string_value_with_multibyte(
+                candidate.name.clone(),
+                Vec::new(),
+                false,
+            ));
         }
         if let Some(candidate) = matches
             .iter()
             .find(|candidate| candidate.name.eq_ignore_ascii_case(&input))
         {
-            return Ok(Value::String(candidate.name.clone().into()));
+            return Ok(make_shared_string_value_with_multibyte(
+                candidate.name.clone(),
+                Vec::new(),
+                false,
+            ));
         }
     } else if matches.iter().all(|candidate| candidate.name == input) {
         return Ok(Value::T);
     }
 
-    Ok(Value::String(
-        completion_common_prefix(&matches, &input, ignore_case).into(),
+    // GNU's Ftry_completion returns a fresh string (not `eq' to any
+    // candidate; probed 2026-08-21), and callers mutate it in place --
+    // completion-preview.el sets a `face' on it and reads the result back
+    // through compiled locals.  A plain immutable string here made
+    // `set-text-properties' silently rewrite only the caller's environment
+    // binding, which bytecode stack slots never see; a shared string gives
+    // every holder the same mutable object, like `all-completions' above.
+    Ok(make_shared_string_value_with_multibyte(
+        completion_common_prefix(&matches, &input, ignore_case),
+        Vec::new(),
+        false,
     ))
 }
 
