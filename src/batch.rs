@@ -310,6 +310,7 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
         initialize_batch_user_emacs_directory(interpreter)?;
         complete_delayed_custom_initialization(interpreter)?;
         initialize_batch_scratch_major_mode(interpreter)?;
+        initialize_batch_bar_modes(interpreter)?;
         initialize_batch_locale_environment(interpreter)
     })(&mut interpreter);
     // Restore before propagating: a failed reconstruction must not leave the
@@ -388,6 +389,24 @@ fn complete_delayed_custom_initialization(interpreter: &mut Interpreter) -> Resu
     interpreter
         .eval(&form, &mut Vec::new())
         .map_err(|error| format!("complete delayed Custom initialization: {error}"))?;
+    Ok(())
+}
+
+fn initialize_batch_bar_modes(interpreter: &mut Interpreter) -> Result<(), String> {
+    // startup.el:1453 in `command-line': a noninteractive (or basic-display)
+    // session clears the bar modes before frame initialization.  The C
+    // defaults are t; batch GNU observably ends nil for all three.
+    let source = "(if noninteractive
+                     (setq menu-bar-mode nil
+                           tab-bar-mode nil
+                           tool-bar-mode nil))";
+    let form = Reader::new(source)
+        .read_all()
+        .map_err(|error| format!("read startup bar-mode form: {error}"))?
+        .remove(0);
+    interpreter
+        .eval(&form, &mut Vec::new())
+        .map_err(|error| format!("initialize batch bar modes: {error}"))?;
     Ok(())
 }
 
