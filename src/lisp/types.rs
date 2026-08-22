@@ -158,6 +158,7 @@ fn register_cons_mutation_watchers(field_ids: &[usize], token: &Rc<Cell<bool>>) 
 /// load regardless of unrelated data mutation; mutations pay only for caches
 /// that actually depend on the field being borrowed mutably.
 #[derive(Debug)]
+#[derive(Clone)]
 pub(crate) struct ConsMutationSnapshot {
     valid: Rc<Cell<bool>>,
     field_ids: Vec<usize>,
@@ -973,6 +974,38 @@ struct EnvFrameData {
 }
 
 impl EnvFrame {
+    /// Stable pointer identity of the shared frame data (image-clone memo
+    /// key; see ImageGraphCopier in eval.rs).
+    pub(crate) fn identity_ptr(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+
+    /// Rebuild this frame with every contained Lisp value mapped through
+    /// COPY, preserving the frame's evaluator metadata (identity,
+    /// namespace flag).  Frames shared between environments are
+    /// deduplicated by the caller via `identity_ptr'.
+    pub(crate) fn deep_copy_with(
+        &self,
+        copy: &mut impl FnMut(&Value) -> Value,
+    ) -> Self {
+        let data = &self.0;
+        Self(Rc::new(EnvFrameData {
+            bindings: data
+                .bindings
+                .iter()
+                .map(|(name, value)| (name.clone(), copy(value)))
+                .collect(),
+            identity: data.identity,
+            function_bindings: data.function_bindings,
+            local_special_declarations: data.local_special_declarations.clone(),
+            lisp_environment: data
+                .lisp_environment
+                .as_ref()
+                .map(|environment| copy(environment)),
+        }))
+    }
+
+
     pub fn new(bindings: Vec<(String, Value)>) -> Self {
         Self(Rc::new(EnvFrameData {
             bindings,

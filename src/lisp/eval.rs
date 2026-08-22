@@ -1245,6 +1245,25 @@ impl RecordState {
     }
 }
 
+/// Image-template clone semantics (see ProcessState::clone): live
+/// tree-sitter handles are not template state; a pristine template holds
+/// none, so cloning one is a caller bug.
+impl Clone for TreeSitterQueryState {
+    fn clone(&self) -> Self {
+        panic!("image-template clone with a live tree-sitter query");
+    }
+}
+impl Clone for TreeSitterLanguageState {
+    fn clone(&self) -> Self {
+        panic!("image-template clone with a loaded tree-sitter language");
+    }
+}
+impl Clone for TreeSitterParserState {
+    fn clone(&self) -> Self {
+        panic!("image-template clone with a live tree-sitter parser");
+    }
+}
+
 pub(crate) struct TreeSitterQueryState {
     pub(crate) record_id: u64,
     pub(crate) language: Value,
@@ -1732,6 +1751,22 @@ impl Drop for ProcessGnuTlsSession {
     }
 }
 
+/// Clone panics on a live TLS session (image-template semantics).
+impl Clone for ProcessGnuTlsState {
+    fn clone(&self) -> Self {
+        if self.session.is_some() {
+            panic!("image-template clone with a live gnutls session");
+        }
+        Self {
+            boot_parameters: self.boot_parameters.clone(),
+            initstage: self.initstage,
+            active: self.active,
+            session: None,
+            peer_status: self.peer_status.clone(),
+        }
+    }
+}
+
 struct ProcessGnuTlsState {
     boot_parameters: Value,
     initstage: i64,
@@ -1748,6 +1783,55 @@ impl Default for ProcessGnuTlsState {
             active: false,
             session: None,
             peer_status: Value::Nil,
+        }
+    }
+}
+
+/// Image-template clone semantics: an interpreter holding live external
+/// resources (child processes, sqlite handles, tree-sitter parsers) is not
+/// a valid template; cloning one is a caller bug and panics rather than
+/// silently sharing or dropping a live handle.
+impl Clone for ProcessState {
+    fn clone(&self) -> Self {
+        if self.runtime.is_some() || self.network.is_some() || self.serial.is_some() {
+            panic!("image-template clone with a live process runtime");
+        }
+        Self {
+            record_id: self.record_id.clone(),
+            kind: self.kind.clone(),
+            buffer_id: self.buffer_id.clone(),
+            mark_marker_id: self.mark_marker_id.clone(),
+            status: self.status.clone(),
+            filter: self.filter.clone(),
+            sentinel: self.sentinel.clone(),
+            sentinel_notified: self.sentinel_notified.clone(),
+            log: self.log.clone(),
+            name: self.name.clone(),
+            thread_id: self.thread_id.clone(),
+            query_on_exit_flag: self.query_on_exit_flag.clone(),
+            traffic_stopped: self.traffic_stopped.clone(),
+            inherit_coding_system_flag: self.inherit_coding_system_flag.clone(),
+            decoding: self.decoding.clone(),
+            encoding: self.encoding.clone(),
+            program: self.program.clone(),
+            argv: self.argv.clone(),
+            stderr_process_id: self.stderr_process_id.clone(),
+            exit_code: self.exit_code.clone(),
+            exit_signal: self.exit_signal.clone(),
+            os_pid: self.os_pid.clone(),
+            runtime: None,
+            network: None,
+            serial: None,
+            contact_host: self.contact_host.clone(),
+            contact_service: self.contact_service.clone(),
+            remote: self.remote.clone(),
+            parent_server_id: self.parent_server_id.clone(),
+            pending_stdout: self.pending_stdout.clone(),
+            pending_stderr: self.pending_stderr.clone(),
+            output_delivery_count: self.output_delivery_count.clone(),
+            plist: self.plist.clone(),
+            gnutls: self.gnutls.clone(),
+            contact: self.contact.clone(),
         }
     }
 }
@@ -1857,6 +1941,7 @@ struct PendingFileNotification {
     callbacks: Vec<(i64, Value)>,
 }
 
+#[derive(Clone)]
 pub(crate) struct FileNameHandlerMatchCacheEntry {
     pub(crate) handler_alist: Value,
     pub(crate) cons_epoch: crate::lisp::types::ConsMutationEpoch,
@@ -2014,7 +2099,592 @@ pub(crate) struct MinibufferRuntimeState {
 
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
+
+/// Issue #11: a graph-preserving deep copy of every Lisp value reachable
+/// from an image-template interpreter.  `Interpreter::clone' copies the
+/// host-side tables but SHARES the Rc value graphs, so interior mutation
+/// (setcar on a preloaded list, put-text-property on a preloaded string, a
+/// closure environment assignment) would bleed between the template and
+/// its clones -- the eval_02 validation run caught exactly that.  The
+/// copier rebuilds each mutable node once (memo per Rc identity, so
+/// sharing *inside* the clone is preserved) and leaves immutable
+/// representations (interned strings, big integers, symbols) shared.
+struct ImageGraphCopier {
+    cons: std::collections::HashMap<usize, Value>,
+    strings: std::collections::HashMap<usize, Value>,
+    lambdas: std::collections::HashMap<usize, Value>,
+    reader_forms: std::collections::HashMap<usize, Value>,
+    envs: std::collections::HashMap<usize, crate::lisp::types::SharedEnv>,
+    /// Old-env pointers whose shell has been (or is being) filled.  Marked
+    /// before the fill so a recursive closure (lambda -> captured env ->
+    /// same lambda) terminates: the inner visit sees the shell and stops.
+    envs_filled: std::collections::HashSet<usize>,
+    frames: std::collections::HashMap<usize, crate::lisp::types::EnvFrame>,
+}
+
+impl ImageGraphCopier {
+    fn new() -> Self {
+        Self {
+            cons: Default::default(),
+            strings: Default::default(),
+            lambdas: Default::default(),
+            reader_forms: Default::default(),
+            envs: Default::default(),
+            envs_filled: Default::default(),
+            frames: Default::default(),
+        }
+    }
+
+    fn copy(&mut self, value: &Value) -> Value {
+        match value {
+            Value::Cons(_) => self.copy_cons_chain(value),
+            Value::StringObject(state) => {
+                let key = std::rc::Rc::as_ptr(state) as usize;
+                if let Some(copied) = self.strings.get(&key) {
+                    return copied.clone();
+                }
+                let mut inner = state.borrow().clone();
+                let copied = Value::StringObject(std::rc::Rc::new(std::cell::RefCell::new(
+                    crate::lisp::types::SharedStringState {
+                        text: std::mem::take(&mut inner.text),
+                        props: Vec::new(),
+                        multibyte: inner.multibyte,
+                        extended_chars: std::mem::take(&mut inner.extended_chars),
+                    },
+                )));
+                self.strings.insert(key, copied.clone());
+                let props = state.borrow().props.clone();
+                let copied_props = props
+                    .iter()
+                    .map(|span| crate::lisp::types::StringPropertySpan {
+                        start: span.start,
+                        end: span.end,
+                        props: span
+                            .props
+                            .iter()
+                            .map(|(name, prop)| (name.clone(), self.copy(prop)))
+                            .collect(),
+                    })
+                    .collect();
+                if let Value::StringObject(new_state) = &copied {
+                    new_state.borrow_mut().props = copied_props;
+                }
+                copied
+            }
+            Value::Lambda(lambda) => {
+                let key = std::rc::Rc::as_ptr(lambda) as usize;
+                if let Some(copied) = self.lambdas.get(&key) {
+                    return copied.clone();
+                }
+                let copied = Value::Lambda(std::rc::Rc::new(crate::lisp::types::LambdaValue {
+                    params: lambda.params.clone(),
+                    body: std::rc::Rc::new(
+                        lambda.body.iter().map(|form| self.copy(form)).collect(),
+                    ),
+                    env: self.env_shell(&lambda.env),
+                    documentation: lambda
+                        .documentation
+                        .as_ref()
+                        .map(|documentation| self.copy(documentation)),
+                    interactive: lambda
+                        .interactive
+                        .as_ref()
+                        .map(|interactive| self.copy(interactive)),
+                    public_environment: lambda
+                        .public_environment
+                        .as_ref()
+                        .map(|environment| self.copy(environment)),
+                }));
+                self.lambdas.insert(key, copied.clone());
+                self.fill_env(&lambda.env);
+                copied
+            }
+            Value::ReaderForm(form) => {
+                let key = std::rc::Rc::as_ptr(form) as usize;
+                if let Some(copied) = self.reader_forms.get(&key) {
+                    return copied.clone();
+                }
+                let copied = Value::ReaderForm(std::rc::Rc::new(match form.as_ref() {
+                    crate::lisp::types::ReaderForm::CircularLabel { id, payload } => {
+                        crate::lisp::types::ReaderForm::CircularLabel {
+                            id: *id,
+                            payload: self.copy(payload),
+                        }
+                    }
+                    crate::lisp::types::ReaderForm::CircularReference(id) => {
+                        crate::lisp::types::ReaderForm::CircularReference(*id)
+                    }
+                    crate::lisp::types::ReaderForm::HashTable { fields } => {
+                        crate::lisp::types::ReaderForm::HashTable {
+                            fields: fields.iter().map(|field| self.copy(field)).collect(),
+                        }
+                    }
+                    crate::lisp::types::ReaderForm::CharTable { fields } => {
+                        crate::lisp::types::ReaderForm::CharTable {
+                            fields: fields.iter().map(|field| self.copy(field)).collect(),
+                        }
+                    }
+                    crate::lisp::types::ReaderForm::SubCharTable { fields } => {
+                        crate::lisp::types::ReaderForm::SubCharTable {
+                            fields: fields.iter().map(|field| self.copy(field)).collect(),
+                        }
+                    }
+                    crate::lisp::types::ReaderForm::Record { slots } => {
+                        crate::lisp::types::ReaderForm::Record {
+                            slots: slots.iter().map(|slot| self.copy(slot)).collect(),
+                        }
+                    }
+                    crate::lisp::types::ReaderForm::Closure { kind, slots } => {
+                        crate::lisp::types::ReaderForm::Closure {
+                            kind: *kind,
+                            slots: slots.iter().map(|slot| self.copy(slot)).collect(),
+                        }
+                    }
+                    crate::lisp::types::ReaderForm::BoolVector { bits } => {
+                        crate::lisp::types::ReaderForm::BoolVector { bits: bits.clone() }
+                    }
+                }));
+                self.reader_forms.insert(key, copied.clone());
+                copied
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// Copy a cons chain iteratively along the cdr spine: preloaded lists
+    /// run to tens of thousands of elements, far past the stack budget a
+    /// naive recursive copy would need.
+    fn copy_cons_chain(&mut self, head: &Value) -> Value {
+        let mut spine = Vec::new();
+        let mut cursor = head.clone();
+        loop {
+            let Value::Cons(cell) = &cursor else { break };
+            let key = crate::lisp::types::ConsCell::identity(cell);
+            if self.cons.contains_key(&key) {
+                break;
+            }
+            let placeholder = Value::cons(Value::Nil, Value::Nil);
+            self.cons.insert(key, placeholder.clone());
+            spine.push((cell.clone(), placeholder.clone()));
+            let next = cell.cdr.borrow().clone();
+            cursor = next;
+        }
+        for (source, copied) in spine.into_iter().rev() {
+            let car = source.car.borrow().clone();
+            let cdr = source.cdr.borrow().clone();
+            let copied_car = self.copy(&car);
+            let copied_cdr = self.copy(&cdr);
+            let Value::Cons(cell) = &copied else {
+                unreachable!("cons placeholder is a cons")
+            };
+            *cell.car.borrow_mut() = copied_car;
+            *cell.cdr.borrow_mut() = copied_cdr;
+        }
+        self.copy_known(head)
+    }
+
+    fn copy_known(&mut self, value: &Value) -> Value {
+        if let Value::Cons(cell) = value {
+            let key = crate::lisp::types::ConsCell::identity(cell);
+            if let Some(copied) = self.cons.get(&key) {
+                return copied.clone();
+            }
+        }
+        self.copy(value)
+    }
+
+    /// Get or create the copy of ENV without filling its frames yet.  A
+    /// lambda memoizes itself between taking the shell and filling it, so
+    /// a recursive closure (lambda -> captured env -> same lambda) hits
+    /// the lambda memo instead of copying itself twice.
+    fn env_shell(&mut self, env: &crate::lisp::types::SharedEnv) -> crate::lisp::types::SharedEnv {
+        let key = std::rc::Rc::as_ptr(env) as usize;
+        if let Some(copied) = self.envs.get(&key) {
+            return copied.clone();
+        }
+        let shell: crate::lisp::types::SharedEnv =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        self.envs.insert(key, shell.clone());
+        shell
+    }
+
+    fn fill_env(&mut self, env: &crate::lisp::types::SharedEnv) {
+        let key = std::rc::Rc::as_ptr(env) as usize;
+        if !self.envs_filled.insert(key) {
+            return;
+        }
+        let copied = self.env_shell(env);
+        let frames = env.borrow().clone();
+        let copied_frames = frames
+            .iter()
+            .map(|frame| self.copy_frame(frame))
+            .collect::<Vec<_>>();
+        *copied.borrow_mut() = copied_frames;
+    }
+
+    fn copy_frame(&mut self, frame: &crate::lisp::types::EnvFrame) -> crate::lisp::types::EnvFrame {
+        let key = frame.identity_ptr();
+        if let Some(copied) = self.frames.get(&key) {
+            return copied.clone();
+        }
+        let copied = frame.deep_copy_with(&mut |value| self.copy(value));
+        self.frames.insert(key, copied.clone());
+        copied
+    }
+}
+
+impl Interpreter {
+    /// Issue #11: clone this interpreter for use as an independent image.
+    /// `Interpreter::clone' shares every Rc-backed Lisp value with the
+    /// original; this method then rewrites all Lisp values reachable from
+    /// interpreter state through one memoized graph copy, so mutating a
+    /// preloaded object in the clone (setcar, put-text-property, closure
+    /// variable assignment, puthash) can never leak back into the
+    /// template.  Identity-keyed caches are dropped because the copied
+    /// cells have new identities; they repopulate on use.
+    pub fn deep_clone_image(&self) -> Interpreter {
+        let mut clone = self.clone();
+        let mut copier = ImageGraphCopier::new();
+        {
+            let c = &mut copier;
+            for (_, value) in clone.globals.iter_mut() {
+                *value = c.copy(value);
+            }
+            for bindings in clone.buffer_locals.values_mut() {
+                for (_, value) in bindings.iter_mut() {
+                    *value = c.copy(value);
+                }
+            }
+            for hooks in clone.buffer_local_hooks.values_mut() {
+                for (_, functions) in hooks.iter_mut() {
+                    for function in functions {
+                        *function = c.copy(function);
+                    }
+                }
+            }
+            for value in &mut clone.kbd_macro_definition {
+                *value = c.copy(value);
+            }
+            clone.local_time_zone_rule = c.copy(&clone.local_time_zone_rule.clone());
+            for (_, value) in &mut clone.symbol_properties {
+                *value = c.copy(value);
+            }
+            for (_, watchers) in &mut clone.variable_watchers {
+                for watcher in watchers {
+                    *watcher = c.copy(watcher);
+                }
+            }
+            if let Some(map) = &clone.current_global_map {
+                clone.current_global_map = Some(c.copy(map));
+            }
+            clone.frame_and_buffer_state = c.copy(&clone.frame_and_buffer_state.clone());
+            for (key, value) in &mut clone.terminal_parameters {
+                *key = c.copy(key);
+                *value = c.copy(value);
+            }
+            for table in &mut clone.char_tables {
+                table.default = c.copy(&table.default.clone());
+                for slot in &mut table.extra_slots {
+                    *slot = c.copy(slot);
+                }
+                for entry in &mut table.entries {
+                    entry.value = c.copy(&entry.value.clone());
+                }
+            }
+            for (_, plist) in &mut clone.charset_plists {
+                *plist = c.copy(plist);
+            }
+            for program in clone.ccl_programs.iter_mut().flatten() {
+                program.1 = c.copy(&program.1.clone());
+            }
+            for record in &mut clone.records {
+                record.type_tag = c.copy(&record.type_tag.clone());
+                for slot in &mut record.slots {
+                    *slot = c.copy(slot);
+                }
+            }
+            for execution in &mut clone.kbd_macro_executions {
+                for event in &mut execution.events {
+                    *event = c.copy(event);
+                }
+            }
+            for event in &mut clone.keyboard_input.command_keys {
+                *event = c.copy(event);
+            }
+            for event in &mut clone.keyboard_input.raw_keys {
+                *event = c.copy(event);
+            }
+            for event in &mut clone.keyboard_input.recent_keys {
+                *event = c.copy(event);
+            }
+            if let Some(frame) = &clone.keyboard_input.internal_last_event_frame {
+                clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));
+            }
+            for frame in &mut clone.frame_states {
+                frame.name = c.copy(&frame.name.clone());
+                for (_, value) in &mut frame.parameter_overrides {
+                    *value = c.copy(value);
+                }
+            }
+            for table in clone.equal_hash_tables.values_mut() {
+                for (key, value) in &mut table.entries {
+                    *key = c.copy(key);
+                    *value = c.copy(value);
+                }
+            }
+            for coding in &mut clone.coding_systems {
+                coding.plist = c.copy(&coding.plist.clone());
+            }
+            for (_, function) in &mut clone.functions {
+                *function = c.copy(function);
+            }
+            for function in clone.functions_index.values_mut() {
+                *function = c.copy(function);
+            }
+            for updates in clone.lexical_cell_updates.values_mut() {
+                for value in updates.values_mut() {
+                    *value = c.copy(value);
+                }
+            }
+            if let Some(table) = &clone.selected_frame_face_hash_table {
+                clone.selected_frame_face_hash_table = Some(c.copy(table));
+            }
+            clone.alternative_font_family_alist =
+                c.copy(&clone.alternative_font_family_alist.clone());
+            clone.alternative_font_registry_alist =
+                c.copy(&clone.alternative_font_registry_alist.clone());
+            for (_, value) in &mut clone.deferred_defsubst_unbindings {
+                *value = c.copy(value);
+            }
+            if let Some(error) = &clone.last_thread_error {
+                clone.last_thread_error = Some(c.copy(error));
+            }
+            for tag in &mut clone.active_catch_tags {
+                *tag = c.copy(tag);
+            }
+            for timer in &mut clone.pending_timers {
+                timer.function = c.copy(&timer.function.clone());
+                for arg in &mut timer.args {
+                    *arg = c.copy(arg);
+                }
+            }
+            for notification in &mut clone.pending_file_notifications {
+                for (_, callback) in &mut notification.callbacks {
+                    *callback = c.copy(callback);
+                }
+            }
+            for watch in clone.file_notify_watches.values_mut() {
+                watch.callback = c.copy(&watch.callback.clone());
+            }
+            for frame in &mut clone.backtrace_frames {
+                frame.function = c.copy(&frame.function.clone());
+                for arg in &mut frame.args {
+                    *arg = c.copy(arg);
+                }
+                if let Some(form) = &frame.source_form {
+                    frame.source_form = Some(c.copy(form));
+                }
+                for (_, value) in &mut frame.locals {
+                    *value = c.copy(value);
+                }
+            }
+            if let Some(backtrace) = &mut clone.batch_error_backtrace {
+                for (_, function, args, _) in &mut backtrace.frames {
+                    *function = c.copy(&function.clone());
+                    for arg in args {
+                        *arg = c.copy(arg);
+                    }
+                }
+            }
+            for handler in &mut clone.active_handlers {
+                match handler {
+                    ActiveHandler::Bind(_, function) => *function = c.copy(&function.clone()),
+                    ActiveHandler::Case(heads) => {
+                        for head in heads {
+                            *head = c.copy(head);
+                        }
+                    }
+                }
+            }
+            for face in &mut clone.lisp_face_states {
+                if let Some(global) = &face.global {
+                    face.global = Some(c.copy(global));
+                }
+                if let Some(selected) = &face.selected_frame {
+                    face.selected_frame = Some(c.copy(selected));
+                }
+            }
+            for bitmap in &mut clone.fringe_bitmap_states {
+                if let Some(definition) = &bitmap.definition {
+                    bitmap.definition = Some(c.copy(definition));
+                }
+                bitmap.face = c.copy(&bitmap.face.clone());
+            }
+            for composition in &mut clone.composition_states {
+                composition.components = c.copy(&composition.components.clone());
+            }
+            for test in &mut clone.ert_tests {
+                test.body = c.copy(&test.body.clone());
+            }
+            for restore in &mut clone.active_special_restores {
+                if let Some(previous) = &restore.previous {
+                    restore.previous = Some(c.copy(previous));
+                }
+            }
+            for restriction in &mut clone.labeled_restrictions {
+                if let Some(label) = &restriction.label {
+                    restriction.label = Some(c.copy(label));
+                }
+            }
+            for process in &mut clone.process_states {
+                if let Some(filter) = &process.filter {
+                    process.filter = Some(c.copy(filter));
+                }
+                if let Some(sentinel) = &process.sentinel {
+                    process.sentinel = Some(c.copy(sentinel));
+                }
+                if let Some(log) = &process.log {
+                    process.log = Some(c.copy(log));
+                }
+                process.decoding = c.copy(&process.decoding.clone());
+                process.encoding = c.copy(&process.encoding.clone());
+                process.plist = c.copy(&process.plist.clone());
+                process.contact = c.copy(&process.contact.clone());
+            }
+            let mut copy = |value: &Value| c.copy(value);
+            clone.buffer.rewrite_lisp_values(&mut copy);
+            for (_, buffer) in &mut clone.inactive_buffers {
+                buffer.rewrite_lisp_values(&mut copy);
+            }
+        }
+
+        // Identity-keyed caches: the copied cells have fresh identities, so
+        // every cached verdict keyed by (or holding) template cells is
+        // stale.  All of these repopulate lazily.
+        clone.plain_quote_templates.clear();
+        clone.source_form_items_cache.clear();
+        clone.lambda_source_bodies.clear();
+        clone.function_resolution_cache.clear();
+        clone.file_name_handler_match_cache.clear();
+        clone.bytecode_program_cache.clear();
+        clone.keymap_bindings_cache.get_mut().clear();
+        *clone.regexp_syntax_class_cache.get_mut() = None;
+        clone.vm_stack_pool.clear();
+        clone.backtrace_args_pool.clear();
+
+        // The public-cons registry for keymap records is keyed by cons cell
+        // identity; remap each identity to its copy.  A registered cons the
+        // copy never reached is unreachable from the clone -- drop it.
+        let remap_cons_identity = |copier: &ImageGraphCopier, identity: usize| -> Option<usize> {
+            match copier.cons.get(&identity) {
+                Some(Value::Cons(cell)) => {
+                    Some(crate::lisp::types::ConsCell::identity(cell))
+                }
+                _ => None,
+            }
+        };
+        clone.keymap_public_cons_owners = clone
+            .keymap_public_cons_owners
+            .drain()
+            .filter_map(|(identity, owners)| {
+                remap_cons_identity(&copier, identity).map(|identity| (identity, owners))
+            })
+            .collect();
+        for identities in clone.keymap_public_cons_ids.values_mut() {
+            *identities = identities
+                .drain(..)
+                .filter_map(|identity| remap_cons_identity(&copier, identity))
+                .collect();
+        }
+
+        // Weak closure-environment registries point at template envs (the
+        // template stays alive, so the weaks stay upgradable -- exactly the
+        // channel the deep copy exists to sever).  Remap each entry to the
+        // copied env; drop entries whose env the copy never reached.
+        let remap_weak = |copier: &ImageGraphCopier,
+                          weak: &std::rc::Weak<std::cell::RefCell<Env>>|
+         -> Option<std::rc::Weak<std::cell::RefCell<Env>>> {
+            copier
+                .envs
+                .get(&(weak.as_ptr() as usize))
+                .map(std::rc::Rc::downgrade)
+        };
+        clone.closure_capture_cache = clone
+            .closure_capture_cache
+            .drain(..)
+            .filter_map(|(id, weak)| remap_weak(&copier, &weak).map(|weak| (id, weak)))
+            .collect();
+        for owners in clone.captured_lexical_frames.values_mut() {
+            *owners = owners
+                .drain(..)
+                .filter_map(|weak| remap_weak(&copier, &weak))
+                .collect();
+        }
+        clone.captured_lexical_frames.retain(|_, owners| !owners.is_empty());
+        clone.registered_captured_envs = clone
+            .registered_captured_envs
+            .drain()
+            .filter_map(|(_, weak)| {
+                remap_weak(&copier, &weak)
+                    .map(|weak| (weak.as_ptr() as usize, weak))
+            })
+            .collect();
+        clone.closure_eval_contexts = clone
+            .closure_eval_contexts
+            .drain()
+            .filter_map(|(_, (weak, lexical))| {
+                remap_weak(&copier, &weak)
+                    .map(|weak| (weak.as_ptr() as usize, (weak, lexical)))
+            })
+            .collect();
+
+        // `eq'/`eql' hash tables bucket conses and lambdas by cell
+        // identity; the copies have new identities, so rebuild every
+        // bucket index from the rewritten entries.
+        let mut tables = std::mem::take(&mut clone.equal_hash_tables);
+        for table in tables.values_mut() {
+            let mut key_index: HashMap<
+                Option<i64>,
+                Vec<usize>,
+                crate::lisp::primitives::FnvBuildHasher,
+            > = HashMap::default();
+            for (index, (key, _)) in table.entries.iter().enumerate() {
+                let bucket = crate::lisp::primitives::runtime_hash_bucket_key(
+                    &clone, table.test, key,
+                );
+                key_index.entry(bucket).or_default().push(index);
+            }
+            table.key_index = key_index;
+        }
+        clone.equal_hash_tables = tables;
+
+        clone
+    }
+}
+
+/// Counts live template-derived interpreters (issue #11).  The image
+/// template shares Rc graphs with its clones, which is sound only while
+/// uses never overlap across threads; the token's Drop keeps this count
+/// honest so the template path can refuse concurrent use loudly instead
+/// of racing.
+pub(crate) static IMAGE_TEMPLATE_ACTIVE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+pub(crate) struct ImageTemplateToken;
+
+impl Drop for ImageTemplateToken {
+    fn drop(&mut self) {
+        IMAGE_TEMPLATE_ACTIVE.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone)]
 pub struct Interpreter {
+    /// Present only on interpreters cloned from the test image template.
+    /// Never read: it exists for its Drop, which decrements the live-clone
+    /// counter that keeps template use single-threaded.
+    #[allow(dead_code)]
+    pub(crate) image_template_token: Option<std::sync::Arc<ImageTemplateToken>>,
     /// Global variable bindings (defvar, setq at top level).  GNU exposes
     /// deterministic symbol enumeration while value-cell access and removal
     /// are hash operations, so keep both properties in one canonical store.
@@ -2475,6 +3145,15 @@ pub(crate) enum ActiveHandler {
     Case(Vec<Value>),
 }
 
+impl<T: Clone> Clone for ConsMutationStamped<T> {
+    fn clone(&self) -> Self {
+        Self {
+            mutations: self.mutations.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
 struct ConsMutationStamped<T> {
     mutations: crate::lisp::types::ConsMutationSnapshot,
     value: T,
@@ -2500,6 +3179,7 @@ struct SourceMacroCallCache {
     not_macro_generation: Option<u64>,
 }
 
+#[derive(Clone)]
 struct SourceFormCacheEntry {
     source: WeakConsSlot,
     analysis: SourceFormAnalysis,
@@ -2525,6 +3205,7 @@ struct SourceFormAnalysis {
     function_call: Rc<RefCell<Option<SourceFunctionCallCacheEntry>>>,
 }
 
+#[derive(Clone)]
 struct LambdaSourceBodyCacheEntry {
     source: WeakConsSlot,
     body: Weak<Vec<Value>>,
@@ -2597,6 +3278,7 @@ impl Interpreter {
             })
             .collect();
         let mut interp = Interpreter {
+            image_template_token: None,
             globals: ordered_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("obarray".into(), Value::Record(standard_obarray_id)),

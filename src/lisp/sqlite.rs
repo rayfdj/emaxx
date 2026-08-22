@@ -12,6 +12,14 @@ use super::primitives::{
 };
 use super::types::{Env, LispError, Value};
 
+/// Image-template clone semantics: a template interpreter holds no open
+/// databases; cloning a live handle is a caller bug.
+impl Clone for SqliteHandleState {
+    fn clone(&self) -> Self {
+        panic!("image-template clone with a live sqlite handle");
+    }
+}
+
 pub enum SqliteHandleState {
     Database(SqliteDatabaseState),
     Set(SqliteSetState),
