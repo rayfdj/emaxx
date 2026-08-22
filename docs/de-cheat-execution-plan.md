@@ -96,7 +96,7 @@ These change what any later number *means*, so they precede measurement.
 
 Exit: gate green, commit, push.
 
-## Step 5 — remove the remaining fabrications
+## Step 5 — remove the remaining fabrications  [5a+5b DONE 2026-08-22; 5c remains]
 
 Ordered by how much each inflates the score.
 

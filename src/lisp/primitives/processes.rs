@@ -363,6 +363,11 @@ pub(crate) fn process_command_parts(value: &Value) -> Result<(String, Vec<String
 }
 
 pub(crate) fn process_coding_pair(value: &Value) -> Result<(Value, Value), LispError> {
+    // process.c: :coding accepts either one coding system used for both
+    // directions, or a (DECODING . ENCODING) cons.
+    if let Value::Symbol(_) = value {
+        return Ok((value.clone(), value.clone()));
+    }
     if let Some((decoding, encoding)) = value.cons_values() {
         return Ok((decoding, encoding));
     }
@@ -471,6 +476,16 @@ pub(crate) fn deliver_process_output(
     output: &str,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    deliver_process_output_decoded(interp, process_id, output, true, env)
+}
+
+pub(crate) fn deliver_process_output_decoded(
+    interp: &mut Interpreter,
+    process_id: u64,
+    output: &str,
+    multibyte: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
     if output.is_empty() {
         return Ok(());
     }
@@ -508,7 +523,7 @@ pub(crate) fn deliver_process_output(
                 crate::lisp::primitives::strings::make_shared_string_value_with_multibyte(
                     output.to_string(),
                     Vec::new(),
-                    true,
+                    multibyte,
                 ),
             ],
             env,
@@ -781,6 +796,38 @@ pub(crate) fn append_process_bytes_to_buffer(
 /// Deliver the two child streams to their GNU process objects.  A `:stderr'
 /// pipe has its own filter/buffer; folding stderr into the primary process
 /// loses that observable routing during synchronous send/EOF drains.
+/// Decode a process's raw output bytes with its own decoding coding
+/// system, as GNU's read_and_dispose_of_process_output does.  Returns the
+/// decoded text and whether the resulting Lisp string is multibyte: a
+/// no-conversion/raw-text decoding yields unibyte raw bytes in GNU, never
+/// U+FFFD replacements.  A nil or undecided decoding keeps the utf-8
+/// behavior the oracle's default process coding produces on this platform.
+fn decode_process_output_bytes(
+    interp: &Interpreter,
+    process_id: u64,
+    bytes: &[u8],
+) -> (String, bool) {
+    let decoding = interp
+        .process_coding_system(process_id)
+        .ok()
+        .and_then(|pair| pair.car().ok())
+        .and_then(|value| value.as_symbol().ok().map(|name| name.to_string()));
+    let Some(decoding) = decoding.filter(|name| name != "undecided") else {
+        return (String::from_utf8_lossy(bytes).into_owned(), true);
+    };
+    let canonical = interp
+        .coding_system_canonical_name(&decoding)
+        .unwrap_or_else(|| decoding.clone());
+    let kind = interp
+        .coding_system_kind_name(&canonical)
+        .unwrap_or_else(|| canonical.clone());
+    let unibyte = matches!(kind.as_str(), "raw-text" | "no-conversion");
+    match crate::lisp::primitives::coding::decode_text_bytes(interp, bytes, &decoding) {
+        Ok(text) => (text, !unibyte),
+        Err(_) => (String::from_utf8_lossy(bytes).into_owned(), true),
+    }
+}
+
 pub(crate) fn deliver_process_streams(
     interp: &mut Interpreter,
     process_id: u64,
@@ -790,14 +837,15 @@ pub(crate) fn deliver_process_streams(
 ) -> Result<bool, LispError> {
     let mut delivered = false;
     if !stdout.is_empty() {
-        let output = String::from_utf8_lossy(stdout).into_owned();
-        deliver_process_output(interp, process_id, &output, env)?;
+        let (output, multibyte) = decode_process_output_bytes(interp, process_id, stdout);
+        deliver_process_output_decoded(interp, process_id, &output, multibyte, env)?;
         delivered = true;
     }
     if !stderr.is_empty() {
         let stderr_process_id = interp.process_stderr(process_id).unwrap_or(process_id);
-        let output = String::from_utf8_lossy(stderr).into_owned();
-        deliver_process_output(interp, stderr_process_id, &output, env)?;
+        let (output, multibyte) =
+            decode_process_output_bytes(interp, stderr_process_id, stderr);
+        deliver_process_output_decoded(interp, stderr_process_id, &output, multibyte, env)?;
         delivered = true;
     }
     Ok(delivered)

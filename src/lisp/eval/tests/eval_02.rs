@@ -731,19 +731,27 @@ fn expand_file_name_uses_dynamic_default_directory() {
 
 #[test]
 fn custom_current_group_alist_defaults_to_nil() {
-    assert_eq!(eval_str("custom-current-group-alist"), Value::Nil);
+    assert_eq!(eval_str_with_upstream_batch("custom-current-group-alist"), Value::Nil);
 }
 
 #[test]
 fn emacs_lisp_mode_syntax_table_is_the_elisp_specific_child() {
     // GNU's table inherits the Lisp-data punctuation entries but removes the
     // generic prefix flag from `@'; syntax-propertize restores it for `,@'.
+    // lisp-mode.el owns both tables; the old assertion pinned an internal
+    // char-table id from the retired fallback.  Probed on both binaries:
+    // (t nil nil) and (95 95).
     assert_eq!(
-        eval_str("emacs-lisp-mode-syntax-table"),
-        Value::CharTable(4)
+        eval_str_with_upstream_batch(
+            "(list (syntax-table-p emacs-lisp-mode-syntax-table)
+                   (eq emacs-lisp-mode-syntax-table lisp-mode-syntax-table)
+                   (eq (char-table-parent emacs-lisp-mode-syntax-table)
+                       lisp-mode-syntax-table))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::Nil])
     );
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                (set-syntax-table (copy-syntax-table emacs-lisp-mode-syntax-table))
                (list (char-syntax ?.) (char-syntax ?@)))"
@@ -3576,7 +3584,9 @@ fn emacs_version_variable_matches_the_pinned_gnu_release() {
     // emacs-minor-version) => "30.2|30|2".  A non-empty check here once hid
     // the crate's three-component semver leaking into `emacs-version'.
     assert_eq!(
-        eval_str("(format \"%s|%s|%s\" emacs-version emacs-major-version emacs-minor-version)"),
+        eval_str_with_upstream_batch(
+            "(format \"%s|%s|%s\" emacs-version emacs-major-version emacs-minor-version)"
+        ),
         Value::String("30.2|30|2".into())
     );
 }
@@ -3584,10 +3594,8 @@ fn emacs_version_variable_matches_the_pinned_gnu_release() {
 #[test]
 fn system_configuration_variable_defaults_to_non_empty_string() {
     let value = eval_str("system-configuration");
-    match value {
-        Value::String(configuration) => assert!(!configuration.is_empty()),
-        other => panic!("expected string, got {other:?}"),
-    }
+    let text = primitives::string_text(&value).expect("system-configuration is a string");
+    assert!(!text.is_empty());
 }
 
 #[test]
@@ -3651,8 +3659,8 @@ fn process_identity_supports_desktop_lock_checks() {
 
 #[test]
 fn emacs_major_and_minor_version_variables_default_to_integers() {
-    let major = eval_str("emacs-major-version");
-    let minor = eval_str("emacs-minor-version");
+    let major = eval_str_with_upstream_batch("emacs-major-version");
+    let minor = eval_str_with_upstream_batch("emacs-minor-version");
     match (major, minor) {
         (Value::Integer(major), Value::Integer(minor)) => {
             assert!(major >= 0);
@@ -3664,11 +3672,11 @@ fn emacs_major_and_minor_version_variables_default_to_integers() {
 
 #[test]
 fn etags_program_name_defaults_to_non_empty_string() {
-    let value = eval_str("etags-program-name");
-    match value {
-        Value::String(path) => assert!(!path.is_empty()),
-        other => panic!("expected string, got {other:?}"),
-    }
+    // The loaded image's strings are shared string objects; assert
+    // string-likeness, not the plain-String representation.
+    let value = eval_str_with_upstream_batch("etags-program-name");
+    let text = primitives::string_text(&value).expect("etags-program-name is a string");
+    assert!(!text.is_empty());
 }
 
 #[test]
@@ -4390,7 +4398,7 @@ fn format_time_string_supports_case_flags_widths_and_calendar_fields() {
 #[test]
 fn startup_mail_host_address_is_a_special_nil_binding() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(let ((read-mail-host (lambda () mail-host-address)))
                  (list mail-host-address
                        (let ((mail-host-address "mail.example"))
@@ -6905,13 +6913,13 @@ fn require_final_newline_matches_batch_default() {
 
 #[test]
 fn custom_file_matches_batch_default() {
-    assert_eq!(eval_str("custom-file"), Value::Nil);
+    assert_eq!(eval_str_with_upstream_batch("custom-file"), Value::Nil);
 }
 
 #[test]
 fn backup_retention_variables_match_batch_defaults() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list version-control dired-kept-versions delete-old-versions
                    kept-old-versions kept-new-versions)"
         ),
@@ -6927,12 +6935,12 @@ fn backup_retention_variables_match_batch_defaults() {
 
 #[test]
 fn sentence_end_defaults_to_nil_in_batch() {
-    assert_eq!(eval_str("sentence-end"), Value::Nil);
+    assert_eq!(eval_str_with_upstream_batch("sentence-end"), Value::Nil);
 }
 
 #[test]
 fn sentence_end_double_space_defaults_to_t() {
-    assert_eq!(eval_str("sentence-end-double-space"), Value::T);
+    assert_eq!(eval_str_with_upstream_batch("sentence-end-double-space"), Value::T);
 }
 
 #[test]
@@ -6956,21 +6964,21 @@ fn core_definition_forms_have_doc_string_slots() {
 #[test]
 fn page_delimiter_has_standard_default() {
     assert_eq!(
-        eval_str("page-delimiter"),
+        eval_str_with_upstream_batch("page-delimiter"),
         Value::String("^\u{000c}".into())
     );
 }
 
 #[test]
 fn adaptive_fill_defaults_are_bound() {
-    assert_eq!(eval_str("adaptive-fill-mode"), Value::T);
-    assert_eq!(eval_str("use-hard-newlines"), Value::Nil);
+    assert_eq!(eval_str_with_upstream_batch("adaptive-fill-mode"), Value::T);
+    assert_eq!(eval_str_with_upstream_batch("use-hard-newlines"), Value::Nil);
     assert_eq!(
-        eval_str("adaptive-fill-regexp"),
+        eval_str_with_upstream_batch("adaptive-fill-regexp"),
         Value::String("[-–!|#%;>*·•‣⁃◦ \t]*".into())
     );
     assert_eq!(
-        eval_str("adaptive-fill-first-line-regexp"),
+        eval_str_with_upstream_batch("adaptive-fill-first-line-regexp"),
         Value::String("\\`[ \t]*\\'".into())
     );
 }
@@ -6990,8 +6998,8 @@ fn exec_suffixes_matches_unix_batch_default() {
 
 #[test]
 fn debug_on_error_defaults_to_nil_in_batch() {
-    assert_eq!(eval_str("debug-on-error"), Value::Nil);
-    assert_eq!(eval_str("eval-expression-debug-on-error"), Value::T);
+    assert_eq!(eval_str_with_upstream_batch("debug-on-error"), Value::Nil);
+    assert_eq!(eval_str_with_upstream_batch("eval-expression-debug-on-error"), Value::T);
 }
 
 #[test]

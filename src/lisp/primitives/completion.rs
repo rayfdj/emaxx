@@ -1147,34 +1147,28 @@ fn completing_read_contents(
     {
         return Ok(Value::String(contents.into()));
     }
-    if let Some(initial_input) = initial_input {
-        return Ok(Value::String(initial_input.into()));
-    }
-
-    let default = args.get(6).and_then(|value| match value {
-        Value::Nil => None,
-        Value::Cons(_) => value.car().ok(),
-        other => Some(other.clone()),
-    });
-    if let Some(default) = default
-        && let Some(string) = string_like(&default)
-        && !string.text.is_empty()
-    {
-        return Ok(Value::String(string.text.into()));
-    }
-
-    if let Some(collection) = args.get(1) {
-        let predicate = args.get(2);
-        if let Some(candidate) =
-            filtered_completion_matches(interp, "", collection, predicate, env)?
-                .into_iter()
-                .next()
-        {
-            return Ok(Value::String(candidate.name.into()));
-        }
-    }
-
-    Ok(Value::String(String::new().into()))
+    // GNU never invents an answer.  With no queued input the minibuffer
+    // read happens for real: `read_minibuf' consumes stdin in batch (EOF
+    // signals end-of-file), and DEF applies only when a real read submits
+    // empty input -- a rule read-from-minibuffer already owns.  The old
+    // chain here (initial input, then DEF, then the first candidate, then
+    // "") answered on GNU's behalf without reading anything (finding 12).
+    let default = args.get(6).cloned().unwrap_or(Value::Nil);
+    crate::lisp::primitives::call(
+        interp,
+        "read-from-minibuffer",
+        &[
+            args[0].clone(),
+            initial_input
+                .map(|text| Value::String(text.into()))
+                .unwrap_or(Value::Nil),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            default,
+        ],
+        env,
+    )
 }
 
 pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {

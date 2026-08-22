@@ -120,47 +120,6 @@ pub(super) fn lisp_environment_declares_special(environment: &Value, name: &str)
     .is_some()
 }
 
-fn directory_listing_before_filename_regexp() -> &'static str {
-    static REGEXP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    REGEXP
-        .get_or_init(|| {
-            let letter = "\\([A-Za-z]\\|[^\0-\u{7f}]\\)";
-            let letter_or_quote = "\\([A-Za-z']\\|[^\0-\u{7f}]\\)";
-            let month = format!("{letter_or_quote}{letter_or_quote}+\\.?");
-            let year = "[0-9][0-9][0-9][0-9]";
-            let day = "[ 0-3][0-9]";
-            let hour_minute = "[ 0-2][0-9][:.][0-5][0-9]";
-            let seconds = "[0-6][0-9]\\([.,][0-9]+\\)?";
-            let zone = "[-+][0-2][0-9][0-5][0-9]";
-            let iso_month_day = "[01][0-9]-[0-3][0-9]";
-            let iso_time = format!("{hour_minute}\\(:{seconds}\\( ?{zone}\\)?\\)?");
-            let iso = format!(
-                "\\(\\({year}-\\)?{iso_month_day}[ T]{iso_time}\\|{year}-{iso_month_day}\\)"
-            );
-            let western = format!(
-                "\\({month} +{day}\\|{day}\\.? {month}\\) +\\({hour_minute}\\|{year}\\)"
-            );
-            let western_comma = format!("{month} +{day}, +{year}");
-            let day_month_year = format!("{day}-{month}-{year} {hour_minute}");
-            let east_asian = format!(
-                "\\([ 0-1]?[0-9]{letter}? {day}{letter}? +\\|{day} [ 0-1]?[0-9] +\\)\\({hour_minute}\\|{year}{letter}?\\)"
-            );
-
-            format!(
-                concat!(
-                    "\\([0-9][BkKMGTPEZYRQ]? {iso}",
-                    "\\|.*[0-9][BkKMGTPEZYRQ]? ",
-                    "\\({western}\\|{western_comma}\\|{day_month_year}\\|{east_asian}\\)\\) +"
-                ),
-                iso = iso,
-                western = western,
-                western_comma = western_comma,
-                day_month_year = day_month_year,
-                east_asian = east_asian,
-            )
-        })
-        .as_str()
-}
 
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
@@ -305,13 +264,8 @@ impl Interpreter {
             | "buffer-saved-size"
             | "left-margin-width"
             | "right-margin-width" => Some(Value::Integer(0)),
-            "case-replace" => Some(Value::T),
             "case-symbols-as-words" => Some(Value::Nil),
-            "use-hard-newlines" => Some(Value::Nil),
             "fill-column" => Some(Value::Integer(70)),
-            "filter-buffer-substring-function" => {
-                Some(Value::Symbol("buffer-substring--filter".into()))
-            }
             "meta-prefix-char" => Some(Value::Integer(27)),
             // character.c reserves sixteen IDs initially.  mule.el doubles
             // this vector when it fills; an empty vector can never grow
@@ -320,8 +274,6 @@ impl Interpreter {
                 std::iter::once(Value::symbol("vector-literal"))
                     .chain(std::iter::repeat_n(Value::Nil, 16)),
             )),
-            "float-e" => Some(Value::Float(std::f64::consts::E)),
-            "float-pi" => Some(Value::Float(std::f64::consts::PI)),
             "gc-elapsed" => Some(Value::Float(0.0)),
             "gcs-done" => Some(Value::Integer(0)),
             "most-positive-fixnum" => Some(Value::Integer(2_305_843_009_213_693_951)),
@@ -366,9 +318,6 @@ impl Interpreter {
             "locale-coding-system" => Some(Value::Nil),
             "coding-system-for-read" => Some(Value::Nil),
             "coding-system-for-write" => Some(Value::Nil),
-            "delay-mode-hooks" => Some(Value::Nil),
-            "delayed-mode-hooks" => Some(Value::Nil),
-            "delayed-after-hook-functions" => Some(Value::Nil),
             "coding-system-list" => Some(Value::list(
                 self.coding_system_list(false)
                     .into_iter()
@@ -386,45 +335,11 @@ impl Interpreter {
             "file-coding-system-alist" => Some(Value::Nil),
             "file-name-coding-system" => Some(Value::Nil),
             "default-file-name-coding-system" => Some(Value::Nil),
-            "completion-styles" => Some(Value::list([
-                Value::symbol("basic"),
-                Value::symbol("partial-completion"),
-                Value::symbol("emacs22"),
-            ])),
-            "completion-styles-alist" => Some(Value::list([
-                Value::list([
-                    Value::symbol("basic"),
-                    Value::symbol("completion-basic-try-completion"),
-                    Value::symbol("completion-basic-all-completions"),
-                    Value::String("Basic prefix and suffix completion.".into()),
-                ]),
-                Value::list([
-                    Value::symbol("partial-completion"),
-                    Value::symbol("completion-pcm-try-completion"),
-                    Value::symbol("completion-pcm-all-completions"),
-                    Value::String("Partial completion across word components.".into()),
-                ]),
-                Value::list([
-                    Value::symbol("emacs22"),
-                    Value::symbol("completion-emacs22-try-completion"),
-                    Value::symbol("completion-emacs22-all-completions"),
-                    Value::String("Prefix completion before point.".into()),
-                ]),
-            ])),
-            "version-control" => Some(Value::Nil),
-            "dired-kept-versions" => Some(Value::Integer(2)),
-            "delete-old-versions" => Some(Value::Nil),
-            "kept-old-versions" => Some(Value::Integer(2)),
-            "kept-new-versions" => Some(Value::Integer(2)),
             "inhibit-eol-conversion" => Some(Value::Nil),
             "inhibit-null-byte-detection" => Some(Value::Nil),
             "inhibit-iso-escape-detection" => Some(Value::Nil),
             "create-lockfiles" => Some(Value::T),
             "display-hourglass" => Some(Value::Nil),
-            "page-delimiter" => Some(Value::String("^\u{000c}".into())),
-            "adaptive-fill-mode" => Some(Value::T),
-            "adaptive-fill-regexp" => Some(Value::String("[-–!|#%;>*·•‣⁃◦ \t]*".into())),
-            "adaptive-fill-first-line-regexp" => Some(Value::String("\\`[ \t]*\\'".into())),
             "gc-cons-threshold" => Some(Value::Integer(800_000)),
             // GNU fileio.c defvar; simple.el reads it before files.el policy
             // is necessarily loaded.
@@ -437,20 +352,13 @@ impl Interpreter {
             // registry before tty-colors.el layers its portable policy over
             // the host value cell.
             "tty-defined-color-alist" => Some(Value::Nil),
-            // GNU startup.el defvar; bytecomp reads it.
-            // GNU startup.el defcustom.  Its declared special binding is
-            // observable by separately loaded lexical libraries such as
-            // time-stamp.el, even when the user leaves the value nil.
-            "mail-host-address" => Some(Value::Nil),
-            // GNU tramp defcustom (preloaded via tramp-loaddefs);
-            // directory-files-recursively let-binds it.
-            "tramp-mode" => Some(Value::T),
+
+
             // GNU emacs.c defvar (":" on POSIX).
             "path-separator" => Some(Value::String(":".into())),
             // GNU callproc.c defvar (paths.h).
             "configure-info-directory" => Some(Value::String("/usr/share/info".into())),
-            // GNU files.el defconst; shadow.el's shadow-tests read it.
-            "dir-locals-file" => Some(Value::String(".dir-locals.el".into())),
+
             // GNU xdisp.c defvar; tests let-bind it around noisy calls.
             "inhibit-message" => Some(Value::Nil),
             // GNU frame.c defines this value cell before tab-bar.el is
@@ -481,8 +389,7 @@ impl Interpreter {
             "max-mini-window-height" => Some(Value::Float(0.25)),
             "inhibit-point-motion-hooks" => Some(Value::T),
             "inhibit-x-resources" => Some(Value::T),
-            // GNU isearch.el defcustom; package.el's quick-help reads it.
-            "search-default-mode" => Some(Value::Nil),
+
             // GNU keyboard.c keymaps; simple.el define-keys them at load
             // time (event-apply-*-modifier bindings).
             "function-key-map"
@@ -491,7 +398,6 @@ impl Interpreter {
             | "local-function-key-map" => Some(Value::list([Value::Symbol("keymap".into())])),
             "values" => Some(Value::Nil),
             "read-circle" => Some(Value::T),
-            "gensym-counter" => Some(Value::Integer(0)),
             "load-suffixes" => Some(Value::list(
                 dynamic_library_suffix_values()
                     .into_iter()
@@ -533,17 +439,9 @@ impl Interpreter {
             "minor-mode-overriding-map-alist" => Some(Value::Nil),
             "standard-input" => Some(Value::T),
             "temporary-file-directory" => Some(Value::String(temp_directory_name().into())),
-            "auto-compression-mode" => Some(Value::T),
-            "command-switch-alist" => Some(Value::Nil),
-            "command-line-args-left" => Some(Value::Nil),
             "purify-flag" => Some(Value::Nil),
-            "require-final-newline" => Some(Value::Nil),
-            "sentence-end" => Some(Value::Nil),
-            "sentence-end-double-space" => Some(Value::T),
-            "null-device" => Some(Value::String("/dev/null".into())),
             "exec-suffixes" => Some(Value::list([Value::String(String::new().into())])),
             "debug-on-error" => Some(Value::Nil),
-            "eval-expression-debug-on-error" => Some(Value::T),
             "debugger-stack-frame-as-list" => Some(Value::Nil),
             "print-quoted" => Some(Value::T),
             "eval-buffer-list" => Some(Value::Nil),
@@ -554,30 +452,13 @@ impl Interpreter {
             }),
             "features" => Some(self.features_value()),
             "selection-converter-alist" => Some(Value::Nil),
-            "early-init-file" => Some(Value::Nil),
             // emacs.c defines both cells as nil.  Batch startup records the
             // real before/after values around reconstructed initialization,
             // matching startup.el's lifecycle rather than using sentinels.
             "before-init-time" | "after-init-time" => Some(Value::Nil),
-            "init-file-user" => Some(Value::Nil),
-            "site-run-file" => Some(Value::Nil),
             "user-init-file" => Some(Value::Nil),
-            "custom-file" => Some(Value::Nil),
-            "custom-versions-load-alist" => Some(Value::Nil),
             "completion-ignored-extensions" => Some(Value::Nil),
-            "regexp-unmatchable" => Some(Value::String("\\`a\\`".into())),
-            "ignored-local-variables" => Some(Value::list([
-                Value::Symbol("ignored-local-variables".into()),
-                Value::Symbol("safe-local-variable-values".into()),
-                Value::Symbol("file-local-variables-alist".into()),
-                Value::Symbol("dir-local-variables-alist".into()),
-            ])),
-            "ignored-local-variable-values" => Some(Value::Nil),
-            "safe-local-variable-values" => Some(Value::Nil),
-            "file-local-variables-alist" | "dir-local-variables-alist" => Some(Value::Nil),
             "text-quoting-style" => Some(Value::Nil),
-            "hack-local-variables-hook" => Some(Value::Nil),
-            "custom-current-group-alist" => Some(Value::Nil),
             // File-less embeddings may load a downstream library without
             // reconstructing GNU loadup first.  Keep the early nil contract
             // only until byte-run.el begins installing its real declaration
@@ -590,133 +471,21 @@ impl Interpreter {
             }
             "post-self-insert-hook" => Some(Value::Nil),
             "macroexp--dynvars" => Some(Value::Nil),
-            "macroexpand-all-environment" => Some(Value::Nil),
             "transient-mark-mode" => Some(Value::Nil),
             "select-active-regions" => Some(Value::T),
             "saved-region-selection" => Some(Value::Nil),
-            "desktop-buffer-mode-handlers" => Some(Value::Nil),
-            "find-file-visit-truename" => Some(Value::Nil),
-            "insert-directory-wildcard-in-dir-p" => Some(Value::Nil),
-            "insert-directory-program" => Some(Value::String("ls".into())),
-            "line-move-ignore-invisible" => Some(Value::T),
-            "line-move-visual" => Some(Value::T),
-            "file-name-invalid-regexp" => Some(Value::String("\0".into())),
-            "directory-listing-before-filename-regexp" => Some(Value::String(
-                directory_listing_before_filename_regexp().into(),
-            )),
-            "minor-mode-alist" => Some(Value::Nil),
             "timer-list" | "timer-idle-list" => Some(Value::Nil),
-            "revert-buffer-function" => Some(Value::Symbol("revert-buffer--default".into())),
-            "buffer-stale-function" => Some(Value::Symbol("buffer-stale--default-function".into())),
-            "buffer-auto-revert-by-notification" => Some(Value::Nil),
-            "non-essential" => Some(Value::Nil),
-            "remote-file-name-inhibit-cache" => Some(Value::Nil),
-            // files.el: derived modes consult this when setting
-            // `require-final-newline' buffer-locally.
-            "mode-require-final-newline" => Some(Value::T),
+
             // insdel.c: change hooks run unless a primitive binds this.
             "inhibit-modification-hooks" => Some(Value::Nil),
             // doc.c: name of the DOC file inside `doc-directory'.
             "internal-doc-file-name" => Some(Value::String("DOC".into())),
-            // font-lock.el: the standard face variables are self-quoting
-            // defvars that keyword FACENAME expressions evaluate.
-            "font-lock-comment-face" => Some(Value::Symbol("font-lock-comment-face".into())),
-            "font-lock-comment-delimiter-face" => {
-                Some(Value::Symbol("font-lock-comment-delimiter-face".into()))
-            }
-            "font-lock-string-face" => Some(Value::Symbol("font-lock-string-face".into())),
-            "font-lock-doc-face" => Some(Value::Symbol("font-lock-doc-face".into())),
-            "font-lock-doc-markup-face" => Some(Value::Symbol("font-lock-doc-markup-face".into())),
-            "font-lock-keyword-face" => Some(Value::Symbol("font-lock-keyword-face".into())),
-            "font-lock-builtin-face" => Some(Value::Symbol("font-lock-builtin-face".into())),
-            "font-lock-function-name-face" => {
-                Some(Value::Symbol("font-lock-function-name-face".into()))
-            }
-            "font-lock-variable-name-face" => {
-                Some(Value::Symbol("font-lock-variable-name-face".into()))
-            }
-            "font-lock-type-face" => Some(Value::Symbol("font-lock-type-face".into())),
-            "font-lock-constant-face" => Some(Value::Symbol("font-lock-constant-face".into())),
-            "font-lock-warning-face" => Some(Value::Symbol("font-lock-warning-face".into())),
-            "font-lock-negation-char-face" => {
-                Some(Value::Symbol("font-lock-negation-char-face".into()))
-            }
-            "font-lock-preprocessor-face" => {
-                Some(Value::Symbol("font-lock-preprocessor-face".into()))
-            }
+
             "overriding-local-map" => Some(Value::Nil),
             "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
-            "menu-bar-separator" => Some(Value::Symbol("menu-bar-separator".into())),
-            "window-display-table" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
-            "text-mode-syntax-table" => Some(Value::CharTable(2)),
-            "emacs-lisp-mode-syntax-table" => {
-                Some(Value::CharTable(self.emacs_lisp_mode_syntax_table_id()))
-            }
-            "lisp-mode-syntax-table" | "lisp-data-mode-syntax-table" => {
-                Some(Value::CharTable(self.lisp_data_syntax_table_id()))
-            }
-            "prog-mode-syntax-table" => Some(Value::CharTable(self.standard_syntax_table_id())),
             "frame-internal-parameters" => Some(Value::Nil),
-            "password-word-equivalents" => Some(Value::list([
-                Value::String("password".into()),
-                Value::String("passcode".into()),
-                Value::String("passphrase".into()),
-                Value::String("pass phrase".into()),
-                Value::String("pin".into()),
-                Value::String("decryption key".into()),
-                Value::String("encryption key".into()),
-                Value::String("암호".into()),
-                Value::String("パスワード".into()),
-                Value::String("ପ୍ରବେଶ ସଙ୍କେତ".into()),
-                Value::String("ពាក្យសម្ងាត់".into()),
-                Value::String("adgangskode".into()),
-                Value::String("contraseña".into()),
-                Value::String("contrasenya".into()),
-                Value::String("geslo".into()),
-                Value::String("hasło".into()),
-                Value::String("heslo".into()),
-                Value::String("iphasiwedi".into()),
-                Value::String("jelszó".into()),
-                Value::String("lösenord".into()),
-                Value::String("lozinka".into()),
-                Value::String("mật khẩu".into()),
-                Value::String("mot de passe".into()),
-                Value::String("parola".into()),
-                Value::String("pasahitza".into()),
-                Value::String("passord".into()),
-                Value::String("passwort".into()),
-                Value::String("pasvorto".into()),
-                Value::String("salasana".into()),
-                Value::String("senha".into()),
-                Value::String("slaptažodis".into()),
-                Value::String("wachtwoord".into()),
-                Value::String("كلمة السر".into()),
-                Value::String("ססמה".into()),
-                Value::String("лозинка".into()),
-                Value::String("пароль".into()),
-                Value::String("गुप्तशब्द".into()),
-                Value::String("शब्दकूट".into()),
-                Value::String("પાસવર્ડ".into()),
-                Value::String("సంకేతపదము".into()),
-                Value::String("ਪਾਸਵਰਡ".into()),
-                Value::String("ಗುಪ್ತಪದ".into()),
-                Value::String("கடவுச்சொல்".into()),
-                Value::String("അടയാളവാക്ക്".into()),
-                Value::String("গুপ্তশব্দ".into()),
-                Value::String("পাসওয়ার্ড".into()),
-                Value::String("රහස්පදය".into()),
-                Value::String("密码".into()),
-                Value::String("密碼".into()),
-            ])),
-            "password-colon-equivalents" => Some(Value::list([
-                Value::Integer(':' as i64),
-                Value::Integer(0xFF1A),
-                Value::Integer(0xFE55),
-                Value::Integer(0xFE13),
-                Value::Integer(0x17D6),
-            ])),
             // GNU's `Vsource_directory' is fixed when the binary is built
             // (epaths.h PATH_DUMPLOADSEARCH), so it names the checkout whose
             // Lisp this image reconstructs.  It must never be derived from a
@@ -751,16 +520,7 @@ impl Interpreter {
                     .unwrap_or_else(|| "user".into())
                     .into(),
             )),
-            "user-mail-address" => Some(Value::String(
-                format!(
-                    "{}@{}",
-                    primitives::current_user_login_name().unwrap_or_else(|| "user".into()),
-                    primitives::system_name_value()
-                )
-                .into(),
-            )),
             "default-directory" => Some(Value::String(primitives::default_directory().into())),
-            "current-language-environment" => Some(Value::String("English".into())),
             "window-system" => Some(Value::Nil),
             "initial-window-system" => Some(Value::Nil),
             "left-margin" => Some(Value::Integer(0)),
@@ -779,20 +539,6 @@ impl Interpreter {
                     .map(|path| Value::String(path.display().to_string().into()))
                     .collect::<Vec<_>>(),
             )),
-            "image-load-path" => Some(Value::list([
-                Value::String(
-                    primitives::compat_data_directory()
-                        .map(|path| {
-                            let mut path = std::path::PathBuf::from(path);
-                            path.push("images");
-                            primitives::path_to_directory_string(&path)
-                        })
-                        .unwrap_or_else(primitives::default_directory)
-                        .into(),
-                ),
-                Value::Symbol("data-directory".into()),
-                Value::Symbol("load-path".into()),
-            ])),
             "installation-directory" => Some(
                 primitives::compat_installation_directory()
                     .map(|value| Value::String(value.into()))
@@ -800,17 +546,11 @@ impl Interpreter {
             ),
             "tab-width" => Some(Value::Integer(8)),
             "indent-tabs-mode" => Some(Value::T),
-            "indent-line-function" => Some(Value::Symbol("indent-relative".into())),
-            "tab-stop-list" => Some(Value::Nil),
             "use-dialog-box" => Some(Value::T),
             "use-file-dialog" => Some(Value::T),
             "command-error-function" => {
                 Some(Value::Symbol("command-error-default-function".into()))
             }
-            "read-file-name-completion-ignore-case" => Some(Value::Nil),
-            "mounted-file-systems" => Some(Value::String(
-                r"^\(?:/\(?:afs/\|m\(?:edia/\|nt\)\|\(?:ne\|tmp_mn\)t/\)\)".into(),
-            )),
             "system-type" => Some(Value::Symbol(primitives::gnu_system_type().into())),
             "system-configuration" => {
                 Some(Value::String(primitives::system_configuration().into()))
@@ -836,7 +576,6 @@ impl Interpreter {
             ),
             "read-buffer-function" | "read-file-name-function" => Some(Value::Nil),
             "delete-by-moving-to-trash" => Some(Value::Nil),
-            "directory-files-no-dot-files-regexp" => Some(Value::String("[^.]\\|\\.\\.\\.".into())),
             "invocation-name" => Some(Value::String(
                 primitives::current_invocation_name()
                     .unwrap_or_else(|| "emaxx".into())
@@ -852,14 +591,8 @@ impl Interpreter {
                     .unwrap_or_else(|| "/bin/sh".into())
                     .into(),
             )),
-            "shell-command-switch" => Some(Value::String("-c".into())),
             "emacs-version" => Some(Value::String(primitives::emacs_version_value().into())),
-            "emacs-major-version" => Some(Value::Integer(primitives::emacs_major_version_value())),
-            "emacs-minor-version" => Some(Value::Integer(primitives::emacs_minor_version_value())),
-            // GNU records the dump time; erc's version stamp reads it.  A
-            // fixed nil means "not recorded", which string-replace paths
-            // handle (erc--make-message-variable-name checks it).
-            "emacs-build-time" => Some(Value::Nil),
+
             "ctags-program-name" => Some(Value::String("ctags".into())),
             "etags-program-name" => Some(Value::String("etags".into())),
             "hexl-program-name" => Some(Value::String("hexl".into())),
@@ -876,8 +609,6 @@ impl Interpreter {
                     .map(|(name, value)| Value::String(format!("{name}={value}").into()))
                     .collect::<Vec<_>>(),
             )),
-            "find-program" => Some(Value::String("find".into())),
-            "grep-program" => Some(Value::String("grep".into())),
             _ if name.starts_with(':') => Some(Value::Symbol(name.to_string().into())),
             _ => None,
         }
@@ -1482,3 +1213,155 @@ fn temp_directory_name() -> String {
     }
     directory
 }
+
+
+/// Every statically-valued name in `builtin_var_value' that GNU's C
+/// sources create with a DEFVAR_* (verified against the pinned checkout,
+/// 2026-08-22).  These are installed as *real* special-variable bindings at
+/// interpreter construction: a value that only lives in a lookup fallback
+/// is invisible to `defvar', which let preloaded Lisp overwrite C defaults
+/// (finding 37) and made the fallback table itself a fabrication surface
+/// (finding 9).  Sixteen further C-owned names stay computed lookups
+/// because they mirror *live* C state (buffer-locals, the charset and
+/// coding registries, load-in-progress bookkeeping, process-environment);
+/// freezing load-path at construction, for one, breaks the image
+/// reconstruction that assigns the real value moments later.  The
+/// Lisp-owned names that once shared the table are gone entirely.
+pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
+    "abbrev-mode",
+    "after-load-alist",
+    "auto-resize-tab-bars",
+    "auto-save-visited-file-name",
+    "before-init-time",
+    "bidi-display-reordering",
+    "buffer-display-count",
+    "buffer-display-table",
+    "bytecomp-version-regexp",
+    "case-fold-search",
+    "case-symbols-as-words",
+    "char-code-property-alist",
+    "coding-system-for-read",
+    "coding-system-for-write",
+    "command-error-function",
+    "completion-ignored-extensions",
+    "configure-info-directory",
+    "create-lockfiles",
+    "ctags-program-name",
+    "data-directory",
+    "deactivate-mark",
+    "debug-on-error",
+    "debug-on-quit",
+    "debugger-stack-frame-as-list",
+    "default-directory",
+    "default-file-name-coding-system",
+    "delete-by-moving-to-trash",
+    "display-hourglass",
+    "dynamic-library-suffixes",
+    "ebrowse-program-name",
+    "emacs-version",
+    "emacsclient-program-name",
+    "etags-program-name",
+    "eval-buffer-list",
+    "exec-suffixes",
+    "file-coding-system-alist",
+    "file-name-coding-system",
+    "fill-column",
+    "frame-internal-parameters",
+    "function-key-map",
+    "gc-cons-threshold",
+    "gc-elapsed",
+    "gcs-done",
+    "hexl-program-name",
+    "indent-tabs-mode",
+    "inhibit-eol-conversion",
+    "inhibit-iso-escape-detection",
+    "inhibit-message",
+    "inhibit-modification-hooks",
+    "inhibit-null-byte-detection",
+    "inhibit-point-motion-hooks",
+    "inhibit-quit",
+    "inhibit-redisplay",
+    "inhibit-x-resources",
+    "initial-window-system",
+    "installation-directory",
+    "internal-doc-file-name",
+    "invocation-directory",
+    "invocation-name",
+    "last-coding-system-used",
+    "last-input-event",
+    "last-nonmenu-event",
+    "left-margin",
+    "line-spacing",
+    "load-dangerous-libraries",
+    "load-file-rep-suffixes",
+    "load-force-doc-strings",
+    "load-prefer-newer",
+    "load-read-function",
+    "load-source-file-function",
+    "load-suffixes",
+    "locale-coding-system",
+    "lread--unescaped-character-literals",
+    "macroexp--dynvars",
+    "max-mini-window-height",
+    "menu-bar-final-items",
+    "meta-prefix-char",
+    "minor-mode-overriding-map-alist",
+    "module-file-suffix",
+    "most-negative-fixnum",
+    "most-positive-fixnum",
+    "movemail-program-name",
+    "overriding-local-map",
+    "overriding-terminal-local-map",
+    "overwrite-mode",
+    "path-separator",
+    "post-self-insert-hook",
+    "pre-redisplay-function",
+    "preloaded-file-list",
+    "print-quoted",
+    "purify-flag",
+    "quit-flag",
+    "rcs2log-program-name",
+    "read-buffer-function",
+    "read-circle",
+    "read-minibuffer-restore-windows",
+    "read-symbol-shorthands",
+    "region-extract-function",
+    "resize-mini-windows",
+    "saved-region-selection",
+    "scroll-margin",
+    "scroll-preserve-screen-position",
+    "select-active-regions",
+    "selection-converter-alist",
+    "set-auto-coding-function",
+    "shell-file-name",
+    "signal-hook-function",
+    "source-directory",
+    "standard-display-table",
+    "standard-input",
+    "system-configuration",
+    "system-configuration-features",
+    "system-configuration-options",
+    "system-name",
+    "system-type",
+    "tab-bar-border",
+    "tab-bar-button-margin",
+    "tab-bar-mode",
+    "tab-width",
+    "temporary-file-directory",
+    "text-quoting-style",
+    "timer-list",
+    "tool-bar-button-margin",
+    "track-mouse",
+    "transient-mark-mode",
+    "translation-table-vector",
+    "tty-defined-color-alist",
+    "unread-command-events",
+    "use-dialog-box",
+    "use-file-dialog",
+    "user-full-name",
+    "user-init-file",
+    "user-login-name",
+    "user-real-login-name",
+    "values",
+    "window-system",
+];

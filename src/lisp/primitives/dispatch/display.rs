@@ -1439,15 +1439,59 @@ define_dispatch!(
             "yes-or-no-p" => {
                 need_args(name, args, 1)?;
                 ensure_interaction_allowed(interp, env)?;
-                let _ = super::call(interp, "message", args, env)?;
-                match pop_unread_command_event_value(interp, env)
-                    .ok()
-                    .and_then(|event| unread_event_char(&event))
-                    .map(|ch| ch.to_ascii_lowercase())
+                // fns.c:3521 Fyes_or_no_p.  The old arm answered t whenever
+                // no unread event supplied a `y' or `n' -- silence became
+                // consent (finding 11).  GNU never invents an answer: it
+                // honors `use-short-answers', appends `yes-or-no-prompt',
+                // and loops on `read-from-minibuffer' until the user types
+                // yes or no; in batch, EOF on stdin signals end-of-file.
+                if interp
+                    .lookup_var("use-short-answers", env)
+                    .is_some_and(|value| value.is_truthy())
                 {
-                    Some('n') => Ok(Value::Nil),
-                    Some('y') => Ok(Value::T),
-                    _ => Ok(Value::T),
+                    return crate::lisp::primitives::call_named_function(
+                        interp, "y-or-n-p", args, env,
+                    );
+                }
+                let mut prompt = string_text(&args[0])?;
+                if !prompt.is_empty() && !prompt.ends_with(char::is_whitespace) {
+                    prompt.push(' ');
+                }
+                let suffix = interp
+                    .lookup_var("yes-or-no-prompt", env)
+                    .and_then(|value| string_like(&value).map(|text| text.text))
+                    .unwrap_or_else(|| "(yes or no) ".into());
+                prompt.push_str(&suffix);
+                loop {
+                    let answer = super::call(
+                        interp,
+                        "read-from-minibuffer",
+                        &[
+                            Value::String(prompt.clone().into()),
+                            Value::Nil,
+                            Value::Nil,
+                            Value::Nil,
+                            Value::symbol("yes-or-no-p-history"),
+                        ],
+                        env,
+                    )?;
+                    let answer = string_like(&answer)
+                        .map(|text| text.text.to_lowercase())
+                        .unwrap_or_default();
+                    match answer.as_str() {
+                        "yes" => return Ok(Value::T),
+                        "no" => return Ok(Value::Nil),
+                        _ => {}
+                    }
+                    let _ = super::call(interp, "ding", &[Value::Nil], env);
+                    let _ = super::call(interp, "discard-input", &[], env);
+                    let _ = crate::lisp::primitives::call_named_function(
+                        interp,
+                        "message",
+                        &[Value::String("Please answer yes or no.".into())],
+                        env,
+                    );
+                    let _ = super::call(interp, "sleep-for", &[Value::Integer(2)], env);
                 }
             }
 

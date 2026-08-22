@@ -3233,6 +3233,16 @@ impl Interpreter {
         // that `defvar' cannot see is indistinguishable from unbound, which
         // let preloaded Lisp overwrite GNU's C default with nil.
         interp.define_special_variable("indent-tabs-mode", Value::T);
+
+        // Install every C-owned DEFVAR as a real binding (finding 37 made
+        // general; the list is verified against the pinned checkout's
+        // DEFVAR_* declarations).  `defvar'/`defcustom' in preloaded Lisp
+        // then see these bound, exactly as they see GNU's C state.
+        for name in crate::lisp::eval::bindings::C_OWNED_DEFVAR_NAMES {
+            if let Some(value) = interp.builtin_var_value(name) {
+                interp.define_special_variable(name, value);
+            }
+        }
         // minibuf.c's history controls, read by subr.el's `add-to-history'.
         interp.define_special_variable("history-length", Value::Integer(100));
         interp.define_special_variable("history-delete-duplicates", Value::Nil);
