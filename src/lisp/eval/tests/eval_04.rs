@@ -507,8 +507,13 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
         md5::compute(canonical_source.display().to_string().as_bytes())
     );
     let source_content_hash = format!("{:x}", md5::compute(b"source contents\n"));
+    // comp.el places eln files under `comp-native-version-dir'
+    // (VERSION-ABIHASH); the oracle probe shows
+    // ".../30.2-adba4e3f/source-....eln", and Emaxx derives the same
+    // component from the seeded DEFVAR.  The bare path this test once
+    // expected predates both halves of that behavior.
     let eln_name = format!(
-        "source-{}-{}.eln",
+        "30.2-adba4e3f/source-{}-{}.eln",
         &source_path_hash[..8],
         &source_content_hash[..8]
     );
