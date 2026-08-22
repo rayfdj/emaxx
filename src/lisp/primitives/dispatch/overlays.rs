@@ -60,10 +60,7 @@ define_dispatch!(
                     } else if matches!(buffer_arg, Value::Buffer(_)) {
                         interp.resolve_buffer_id(buffer_arg)?
                     } else {
-                        return Err(LispError::TypeError(
-                            "buffer".into(),
-                            buffer_arg.type_name(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("bufferp".into(), buffer_arg.clone()));
                     }
                 } else {
                     interp.current_buffer_id()
@@ -106,7 +103,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let ov_id = match &args[0] {
                     Value::Overlay(id) => *id,
-                    _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+                    _ => return Err(LispError::WrongTypeArgument("overlayp".into(), args[0].clone())),
                 };
                 match interp.find_overlay(ov_id) {
                     Some(ov) if !ov.is_dead() => {
@@ -126,7 +123,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let ov_id = match &args[0] {
                     Value::Overlay(id) => *id,
-                    _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+                    _ => return Err(LispError::WrongTypeArgument("overlayp".into(), args[0].clone())),
                 };
                 match interp.find_overlay(ov_id) {
                     Some(ov) if !ov.is_dead() => {
@@ -152,7 +149,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let ov_id = match &args[0] {
                     Value::Overlay(id) => *id,
-                    _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+                    _ => return Err(LispError::WrongTypeArgument("overlayp".into(), args[0].clone())),
                 };
                 match interp.find_overlay(ov_id) {
                     Some(ov) if !ov.is_dead() => {
@@ -181,7 +178,7 @@ define_dispatch!(
                 }
                 let ov_id = match &args[0] {
                     Value::Overlay(id) => *id,
-                    _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+                    _ => return Err(LispError::WrongTypeArgument("overlayp".into(), args[0].clone())),
                 };
                 let target_buffer_id = if let Some(buffer_arg) = args.get(3) {
                     if buffer_arg.is_nil() {
@@ -189,10 +186,7 @@ define_dispatch!(
                     } else if matches!(buffer_arg, Value::Buffer(_)) {
                         interp.resolve_buffer_id(buffer_arg)?
                     } else {
-                        return Err(LispError::TypeError(
-                            "buffer".into(),
-                            buffer_arg.type_name(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("bufferp".into(), buffer_arg.clone()));
                     }
                 } else {
                     interp.current_buffer_id()
@@ -223,7 +217,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let ov_id = match &args[0] {
                     Value::Overlay(id) => *id,
-                    _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+                    _ => return Err(LispError::WrongTypeArgument("overlayp".into(), args[0].clone())),
                 };
                 if let Some(ov) = interp.find_overlay_mut(ov_id) {
                     ov.buffer_id = None;
@@ -241,7 +235,7 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 let ov_id = match &args[0] {
                     Value::Overlay(id) => *id,
-                    _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+                    _ => return Err(LispError::WrongTypeArgument("overlayp".into(), args[0].clone())),
                 };
                 let key = args[1].clone();
                 let value = args[2].clone();
@@ -255,7 +249,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let ov_id = match &args[0] {
                     Value::Overlay(id) => *id,
-                    _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+                    _ => return Err(LispError::WrongTypeArgument("overlayp".into(), args[0].clone())),
                 };
                 let key = args[1].clone();
                 match interp.find_overlay(ov_id) {
@@ -275,7 +269,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let ov_id = match &args[0] {
                     Value::Overlay(id) => *id,
-                    _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+                    _ => return Err(LispError::WrongTypeArgument("overlayp".into(), args[0].clone())),
                 };
                 match interp.find_overlay(ov_id) {
                     Some(ov) => {

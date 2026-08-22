@@ -2134,10 +2134,7 @@ define_dispatch!(
                     && !stuff_string.is_nil()
                     && string_like(stuff_string).is_none()
                 {
-                    return Err(LispError::TypeError(
-                        "stringp".into(),
-                        stuff_string.type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("stringp".into(), stuff_string.clone()));
                 }
                 run_named_hooks(interp, "suspend-hook", env, None)?;
                 // Emaxx currently exposes a headless batch terminal.  There is no

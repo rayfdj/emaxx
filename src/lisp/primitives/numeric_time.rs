@@ -242,10 +242,7 @@ pub(crate) fn function_arity_value(
                 .ok_or_else(|| invalid_function_arity(function))?;
             closure_arity_value(argument_spec, function)
         }
-        _ => Err(LispError::TypeError(
-            "function".into(),
-            function.type_name(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("functionp".into(), function.clone())),
     }
 }
 
@@ -338,7 +335,7 @@ pub(crate) fn integer_rounding_value(
         ));
     }
     if float_result && !matches!(args[0], Value::Float(_)) {
-        return Err(LispError::TypeError("float".into(), args[0].type_name()));
+        return Err(LispError::WrongTypeArgument("floatp".into(), args[0].clone()));
     }
 
     if args.len() == 1 {
@@ -2147,10 +2144,7 @@ pub(crate) fn numeric_ordering(
             value,
             Value::Integer(_) | Value::BigInteger(_) | Value::Float(_) | Value::Marker(_)
         ) {
-            return Err(LispError::TypeError(
-                "number-or-marker-p".into(),
-                value.type_name(),
-            ));
+            return Err(LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone()));
         }
     }
     if matches!(left, Value::Float(value) if value.is_nan())

@@ -376,7 +376,7 @@ fn window_id_or_selected(interp: &Interpreter, value: &Value) -> Result<u64, Lis
         return Ok(interp.selected_window_id());
     }
     window_record_id_from_value(interp, value)
-        .ok_or_else(|| LispError::TypeError("window".into(), value.type_name()))
+        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), value.clone()))
 }
 
 fn window_parameter_value(interp: &Interpreter, window_id: u64, parameter: &Value) -> Value {
@@ -921,7 +921,7 @@ fn window_buffer_id_or_selected(
         Some(window) => {
             window_id_or_selected(interp, window)?;
             window_buffer_id(interp, window)
-                .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))
+                .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), window.clone()))
         }
     }
 }
@@ -1646,10 +1646,7 @@ define_dispatch!(
                     let valid = matches!(character, Value::Integer(codepoint)
                     if u32::try_from(*codepoint).ok().and_then(char::from_u32).is_some());
                     if !valid {
-                        return Err(LispError::TypeError(
-                            "characterp".into(),
-                            character.type_name(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("characterp".into(), character.clone()));
                     }
                 } else {
                     let position = position_from_value(interp, &args[0])?;
@@ -1668,10 +1665,7 @@ define_dispatch!(
                         let valid = matches!(character, Value::Integer(codepoint)
                         if u32::try_from(*codepoint).ok().and_then(char::from_u32).is_some());
                         if !valid {
-                            return Err(LispError::TypeError(
-                                "characterp".into(),
-                                character.type_name(),
-                            ));
+                            return Err(LispError::WrongTypeArgument("characterp".into(), character.clone()));
                         }
                     }
                 }
@@ -1948,7 +1942,7 @@ define_dispatch!(
                     interp.selected_window_id()
                 } else {
                     crate::lisp::primitives::window::window_record_id_from_value(interp, &args[0])
-                        .ok_or_else(|| LispError::TypeError("window".into(), args[0].type_name()))?
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), args[0].clone()))?
                 };
                 let margin = |value: Option<&Value>| -> Result<Option<i64>, LispError> {
                     match value {
@@ -1967,7 +1961,7 @@ define_dispatch!(
                     interp.selected_window_id()
                 } else {
                     crate::lisp::primitives::window::window_record_id_from_value(interp, &args[0])
-                        .ok_or_else(|| LispError::TypeError("window".into(), args[0].type_name()))?
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), args[0].clone()))?
                 };
                 let (left, right) = interp.window_margins(window_id);
                 let to_value =
@@ -2024,7 +2018,7 @@ define_dispatch!(
                 let window = args.get(1).filter(|value| !value.is_nil());
                 let buffer_id = if let Some(window) = window {
                     window_buffer_id(interp, window)
-                        .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))?
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), window.clone()))?
                 } else {
                     interp.selected_window_buffer_id()
                 };
@@ -2235,7 +2229,7 @@ define_dispatch!(
                 if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
                     && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
                 {
-                    return Err(LispError::TypeError("frame".into(), frame.type_name()));
+                    return Err(LispError::WrongTypeArgument("framep".into(), frame.clone()));
                 }
                 let horizontal = args.get(1).is_some_and(Value::is_truthy);
                 let root = frame_root_window_value(interp);
@@ -2256,7 +2250,7 @@ define_dispatch!(
                 if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
                     && !matches!(frame, Value::Frame(id) if interp.frame_is_live(*id))
                 {
-                    return Err(LispError::TypeError("frame".into(), frame.type_name()));
+                    return Err(LispError::WrongTypeArgument("framep".into(), frame.clone()));
                 }
                 Ok(Value::T)
             }
@@ -2574,7 +2568,7 @@ define_dispatch!(
                     interp.selected_window_id()
                 } else {
                     window_record_id_from_value(interp, &args[0])
-                        .ok_or_else(|| LispError::TypeError("window".into(), args[0].type_name()))?
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), args[0].clone()))?
                 };
                 interp.set_window_cursor_visible(window_id, args[1].is_truthy());
                 Ok(Value::Nil)
@@ -2584,7 +2578,7 @@ define_dispatch!(
                 let window_id = match args.first() {
                     None | Some(Value::Nil) => interp.selected_window_id(),
                     Some(window) => window_record_id_from_value(interp, window)
-                        .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))?,
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), window.clone()))?,
                 };
                 Ok(if interp.window_cursor_visible(window_id) {
                     Value::T
@@ -2844,7 +2838,7 @@ define_dispatch!(
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 if window_record_id_from_value(interp, &window).is_none() {
-                    return Err(LispError::TypeError("window".into(), window.type_name()));
+                    return Err(LispError::WrongTypeArgument("windowp".into(), window.clone()));
                 }
                 let Some(buffer_id) = window_buffer_id(interp, &window) else {
                     return Ok(Value::Nil);
@@ -2880,7 +2874,7 @@ define_dispatch!(
                     args[0].clone()
                 };
                 let Some(window_id) = window_record_id_from_value(interp, &window) else {
-                    return Err(LispError::TypeError("window".into(), window.type_name()));
+                    return Err(LispError::WrongTypeArgument("windowp".into(), window.clone()));
                 };
                 let buffer_id = interp.resolve_buffer_id(&args[1])?;
                 let changes_buffer =
@@ -2910,7 +2904,7 @@ define_dispatch!(
                     interp.set_selected_window_buffer_id(buffer_id);
                 } else {
                     let Some(record) = interp.find_record_mut(window_id) else {
-                        return Err(LispError::TypeError("window".into(), window.type_name()));
+                        return Err(LispError::WrongTypeArgument("windowp".into(), window.clone()));
                     };
                     if record.slots.len() == WINDOW_BUFFER_SLOT {
                         record.slots.resize(WINDOW_BUFFER_SLOT + 1, Value::Nil);
@@ -3156,7 +3150,7 @@ define_dispatch!(
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 let Some(window_id) = window_record_id_from_value(interp, &window) else {
-                    return Err(LispError::TypeError("window".into(), window.type_name()));
+                    return Err(LispError::WrongTypeArgument("windowp".into(), window.clone()));
                 };
                 let is_minibuffer = interp
                 .find_record(window_id)

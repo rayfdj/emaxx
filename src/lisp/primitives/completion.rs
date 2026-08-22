@@ -40,10 +40,10 @@ pub(crate) fn make_obarray(interp: &mut Interpreter) -> Value {
 
 pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result<Value, LispError> {
     let Value::Record(id) = obarray else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     };
     let Some(record) = interp.find_record_mut(*id) else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     };
     if record.has_symbol_type(OBARRAY_RECORD_TYPE) {
         if record.slots.is_empty() {
@@ -59,7 +59,7 @@ pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result
         }
         record.slots[ABBREV_TABLE_ENTRIES_SLOT] = Value::Nil;
     } else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     }
     Ok(Value::Nil)
 }
@@ -78,7 +78,7 @@ pub(crate) fn obarray_symbols(
     obarray: &Value,
 ) -> Result<Vec<Value>, LispError> {
     let Value::Record(id) = obarray else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     };
     if interp.is_standard_obarray_id(*id) {
         return Ok(interp
@@ -88,7 +88,7 @@ pub(crate) fn obarray_symbols(
             .collect());
     }
     let Some(record) = interp.find_record(*id) else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     };
     if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
         return abbrev_table_entries(interp, obarray).map(|entries| {
@@ -104,7 +104,7 @@ pub(crate) fn obarray_symbols(
     if record.has_symbol_type(OBARRAY_RECORD_TYPE) {
         return record.slots.first().cloned().unwrap_or(Value::Nil).to_vec();
     }
-    Err(LispError::TypeError("obarray".into(), obarray.type_name()))
+    Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()))
 }
 
 pub(crate) fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
@@ -121,7 +121,7 @@ pub(crate) fn intern_in_obarray(
     symbol_name: &str,
 ) -> Result<Value, LispError> {
     let Value::Record(id) = obarray else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     };
     if interp.is_standard_obarray_id(*id) {
         interp.intern_symbol_name(symbol_name);
@@ -130,7 +130,7 @@ pub(crate) fn intern_in_obarray(
         ));
     }
     let Some(record) = interp.find_record_mut(*id) else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     };
     if record.has_symbol_type(ABBREV_TABLE_RECORD_TYPE) {
         if symbol_name.is_empty() {
@@ -148,7 +148,7 @@ pub(crate) fn intern_in_obarray(
         return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name).into()));
     }
     if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     }
     let mut symbols = record
         .slots
@@ -199,7 +199,7 @@ pub(crate) fn unintern_from_obarray(
     env: &Env,
 ) -> Result<bool, LispError> {
     let Value::Record(id) = obarray else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     };
     if interp.is_standard_obarray_id(*id) {
         let symbol_name = match target {
@@ -217,10 +217,10 @@ pub(crate) fn unintern_from_obarray(
         return Ok(interp.unintern_standard_symbol_name(&symbol_name));
     }
     let Some(record) = interp.find_record(*id) else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     };
     if !record.has_symbol_type(OBARRAY_RECORD_TYPE) {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     }
     let mut symbols = record
         .slots
@@ -240,7 +240,7 @@ pub(crate) fn unintern_from_obarray(
     }
     let removed = symbols.len() != original_len;
     let Some(record) = interp.find_record_mut(*id) else {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+        return Err(LispError::WrongTypeArgument("obarrayp".into(), obarray.clone()));
     };
     if record.slots.is_empty() {
         record.slots.push(Value::list(symbols));
@@ -516,6 +516,7 @@ pub(crate) fn completion_candidates(
                 .collect();
         }
         Err(LispError::TypeError(expected, _)) if expected == "obarray" => {}
+        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "obarrayp" => {}
         Err(error) => return Err(error),
     }
     completion_list_candidates(collection)

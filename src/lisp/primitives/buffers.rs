@@ -121,14 +121,11 @@ pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result
         Value::BigInteger(pos) => pos
             .to_i64()
             .map(|pos| pos.max(0) as usize)
-            .ok_or_else(|| LispError::TypeError("integer-or-marker-p".into(), value.type_name())),
+            .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone())),
         Value::Marker(id) => interp
             .marker_position(*id)
-            .ok_or_else(|| LispError::TypeError("integer-or-marker-p".into(), value.type_name())),
-        _ => Err(LispError::TypeError(
-            "integer-or-marker-p".into(),
-            value.type_name(),
-        )),
+            .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone())),
+        _ => Err(LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone())),
     }
 }
 
@@ -443,19 +440,13 @@ pub(crate) fn bool_vector_values(
     value: &Value,
 ) -> Result<Vec<Value>, LispError> {
     let Value::Record(id) = value else {
-        return Err(LispError::TypeError(
-            "bool-vector".into(),
-            value.type_name(),
-        ));
+        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()));
     };
     let record = interp
         .find_record(*id)
-        .ok_or_else(|| LispError::TypeError("bool-vector".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()))?;
     if record.kind != crate::lisp::eval::RecordKind::BoolVector {
-        return Err(LispError::TypeError(
-            "bool-vector".into(),
-            value.type_name(),
-        ));
+        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()));
     }
     Ok(record.slots.clone())
 }
@@ -493,19 +484,13 @@ pub(crate) fn set_bool_vector_bit(
     bit: bool,
 ) -> Result<(), LispError> {
     let Value::Record(id) = value else {
-        return Err(LispError::TypeError(
-            "bool-vector".into(),
-            value.type_name(),
-        ));
+        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()));
     };
     let record = interp
         .find_record_mut(*id)
-        .ok_or_else(|| LispError::TypeError("bool-vector".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()))?;
     if record.kind != crate::lisp::eval::RecordKind::BoolVector {
-        return Err(LispError::TypeError(
-            "bool-vector".into(),
-            value.type_name(),
-        ));
+        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()));
     }
     if index >= record.slots.len() {
         return Err(LispError::Signal("Args out of range".into()));

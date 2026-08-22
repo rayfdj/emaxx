@@ -1019,10 +1019,7 @@ define_dispatch!(
                     Some(Value::Integer(_)) => None,
                     Some(Value::Marker(id)) => interp.marker_position(*id),
                     Some(value) => {
-                        return Err(LispError::TypeError(
-                            "integer-or-marker-p".into(),
-                            value.type_name(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone()));
                     }
                 };
                 match pos.and_then(|position| public_buffer_char_code_at(interp, position)) {
@@ -1039,10 +1036,7 @@ define_dispatch!(
                     Some(Value::Integer(_)) => None,
                     Some(Value::Marker(id)) => interp.marker_position(*id),
                     Some(value) => {
-                        return Err(LispError::TypeError(
-                            "integer-or-marker-p".into(),
-                            value.type_name(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone()));
                     }
                 };
                 let Some(pos) = pos else {
@@ -1381,13 +1375,10 @@ define_dispatch!(
                             *pos as usize
                         }
                         Value::Marker(id) => interp.marker_position(*id).ok_or_else(|| {
-                            LispError::TypeError("integer-or-marker-p".into(), args[0].type_name())
+                            LispError::WrongTypeArgument("integer-or-marker-p".into(), args[0].clone())
                         })?,
                         _ => {
-                            return Err(LispError::TypeError(
-                                "integer-or-marker-p".into(),
-                                args[0].type_name(),
-                            ));
+                            return Err(LispError::WrongTypeArgument("integer-or-marker-p".into(), args[0].clone()));
                         }
                     }
                 };
@@ -1562,7 +1553,7 @@ define_dispatch!(
             "internal--set-buffer-modified-tick" => {
                 need_arg_range(name, args, 1, 2)?;
                 let Value::Integer(tick) = &args[0] else {
-                    return Err(LispError::TypeError("fixnump".into(), args[0].type_name()));
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[0].clone()));
                 };
                 let buffer_id = match args.get(1) {
                     Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,

@@ -1,3 +1,44 @@
+# Findings index
+
+Quick reference; each number links to its full entry below (search "**N**"
+or the section named).  Status: FIXED, DISCLOSED (real divergence,
+documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
+
+| # | One line | Status |
+|---|---|---|
+| 1-8 | Original audit S1: oracle-conditioned code (mode-line %-, coding table, ...) | FIXED |
+| 9 | builtin_var_value fabrication table (251 entries) | FIXED (step 5b; dismantled) |
+| 10-13 | Fabricated success: yes-or-no-p auto-t, completing-read invention, kqueue no-op | FIXED (step 5a) |
+| 14 | tty.rs native prefix machinery + false disclosure comment | SCHEDULED (5c, post-tty-merge) |
+| 15-21 | Measurement integrity: numerator, env leaks, fingerprints, manifest pin | FIXED |
+| 22 | Comparison ignored failure messages | FIXED (step 4) |
+| 23 | Selector documentation conflated scope with selector | FIXED (step 4) |
+| 24 | Anti-cheat gates skippable (#[cfg(test)] only) | FIXED (step 4) |
+| 25-35 | Fix-round and step-2 items (load-path, -L, user-emacs-directory, coding systems) | FIXED |
+| 36 | Keymap type-of/prin1 disagreement | SCHEDULED (5c) |
+| 37 | C-owned variables invisible to defvar | FIXED (step 5b + finding 69) |
+| 38 | handler-bind never fired from the VM | FIXED |
+| 39-40 | eval_04 quarantines (documented) | DISCLOSED |
+| 41 | sxhash unbounded recursion (ert reporter abort) | FIXED |
+| 42-45 | Printer: cycle placeholders, Brent, hash tables, PRINT_CIRCLE cap | FIXED |
+| 46 | Interpreted closure prints #<lambda>, not #[...] | DISCLOSED |
+| 47-53 | princ/escapeflag unification, subr/process/obarray/bool-vector printing, *scratch* startup | FIXED |
+| 54 | Char table prints #<char-table>, not #^[...] | DISCLOSED |
+| 55 | #& read as marker cons, not bool vector | FIXED (step 3) |
+| 56 | Unnamed thread/mutex/condvar print emaxx identity, not GNU address | DISCLOSED |
+| 57 | wrong-type-argument carried type name, not predicate+value | FIXED (waves 1-2; 104 sites remain, instrument-driven) |
+| 58-59 | eval_05 tests pinned early-runtime facts / missing cl-lib | FIXED |
+| 60 | completion-preview 1/11 (binding-rewrite invisible to VM slots) | FIXED (try-completion shared strings) |
+| 61 | propertize property order differs in prin1 | DISCLOSED |
+| 62 | Children inherited shell's ignored SIGINT/SIGQUIT (emacs_spawn) | FIXED |
+| 63 | Subject image rebuilt from elc-less test checkout | FIXED (step 3) |
+| 64 | call_named_function fabricated success (write-region clobber) | FIXED (Round A) |
+| 65 | emacs-version wrong + identity env knobs | FIXED (Round A) |
+| 66 | this-single-command-keys phantom variable | FIXED (Round A) |
+| 67 | Dispatch gate blind to super::call (4 mode-line escapes) | FIXED (Round A) |
+| 68 | Default-stack SIGABRT; oracle-build-specific gate | FIXED (Round A) |
+| 69 | DEFVAR completeness: 229 oracle-bound names void | FIXED (218 seeded, 11 disclosed; dump-frozen values OPEN QUESTION) |
+
 # Honesty audit — 2026-08-18
 
 Six independent adversarial audits of the emaxx tree, run after the de-cheat
@@ -845,3 +886,34 @@ complex-expression sites still construct the old value-less form; they
 are honest but incomplete, and the message-level instrument (finding 22)
 will surface each as it matters.  Fallout across the 2,094-test suite:
 one test, which pattern-matched the old variant.
+
+## Finding 69: the DEFVAR completeness question (2026-08-22)
+
+The tty audit found 63 C-owned DEFVARs void in Emaxx and traced real tty
+breakage to one of them (line-move reads `scroll-conservatively' on every
+interactive motion; batch takes the noninteractive branch, so every gate
+was structurally blind to the gap).  Verification here showed the gap was
+never a step-5 regression -- git grep finds none of those names at any
+commit; the fallback table simply never had them, and step 5b classified
+only what the table contained.  The missed question was completeness:
+enumerating the pinned checkout's 874 DEFVAR_* declarations against the
+batch image found **229 oracle-bound names void in Emaxx**.
+
+Resolution in this round: her 63 (cherry-picked; three value corrections
+-- gc-cons-percentage and undo-outer-limit carry *dump-frozen* loadup
+state (1.0, nil) rather than their C initializers, x-use-underline-
+position-properties is C-false), a 153-name scalar tranche seeded from
+the pinned dump's own post-load values, five portable list values, and
+GNU's startup.el:1453 bar-mode clearing replayed in batch.  End state:
+218 of 229 seeded and mass-verified byte-identical; three allocation
+counters bound but zeroed (live telemetry Emaxx does not fabricate --
+the first draft froze the oracle's own counter snapshots and was
+corrected); eleven stay void by disclosure -- the native-comp comp-*
+tables, comp-subr-list, terminal-frame and the redisplay cause tables
+carry the NS build's filesystem paths and live object state.
+
+The dump-frozen value class is an open question worth recording: the
+pinned dump observably carries values (gc-cons-percentage 1.0,
+undo-outer-limit nil) that neither the C initializers nor any Lisp file
+on disk produce; pdumper snapshots loadup-time state.  Emaxx mirrors the
+observable artifact.
