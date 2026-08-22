@@ -3916,11 +3916,11 @@ pub(crate) fn active_command_keymaps(
 }
 
 pub(crate) fn key_binding(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     key: &str,
     accept_default: bool,
     no_remap: bool,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     key_binding_with_parts(
         interp,
@@ -3935,11 +3935,11 @@ pub(crate) fn key_binding(
 /// value-aware decoding (`key_sequence_keymap_parts') preserves symbol
 /// events like `left' that a textual round-trip loses.
 pub(crate) fn key_binding_with_parts(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     key_parts: &[String],
     accept_default: bool,
     no_remap: bool,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let key_parts = key_parts.to_vec();
     let maps = active_command_keymaps(interp, env)?;
@@ -3969,6 +3969,14 @@ pub(crate) fn key_binding_with_parts(
             raw_binding = binding;
         }
     }
+
+    // Fkey_binding receives Flookup_key's value, which access_keymap has
+    // already passed through get_keyelt -- so a ("Demo" . KEYMAP) menu
+    // entry resolves to the keymap, and the remap test below sees the
+    // resolved command symbol, not its menu-item wrapper.  (Lifted from
+    // the tty branch's fix; probed: GNU (keymap keymap), Emaxx was
+    // ("Demo" keymap).)
+    let raw_binding = keymap_get_keyelt(interp, &raw_binding, true, env)?;
 
     if no_remap || raw_binding.is_nil() {
         return Ok(raw_binding);
@@ -4021,9 +4029,9 @@ fn keymap_has_prefix(
 // Whether KEY is a proper prefix of a longer binding in the active keymaps,
 // so the command loop should keep reading events instead of dispatching.
 pub(crate) fn key_sequence_is_prefix(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     key: &str,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<bool, LispError> {
     // These prefix maps are present in GNU's standard global map even when
     // none of their descendants are represented in Emaxx's compact default
