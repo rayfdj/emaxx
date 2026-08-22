@@ -7081,6 +7081,10 @@ fn forward_sexp_honors_syntax_table_category_properties() {
         // in GNU too, so the batch image's preload is the honest source.
         eval_str_with_upstream_batch(
             "(with-temp-buffer
+                   ;; syntax.c:253: the properties participate only under
+                   ;; a non-nil parse-sexp-lookup-properties; the oracle
+                   ;; answers 4 without it and 5 with it.
+                   (setq-local parse-sexp-lookup-properties t)
                    (set-syntax-table (make-syntax-table))
                    (modify-syntax-entry ?< \".\")
                    (modify-syntax-entry ?> \".\")
