@@ -544,30 +544,116 @@ fn syntax_class_from_code(code: i64) -> Option<SyntaxClass> {
     }
 }
 
+// syntax.h's gl_state, per scan: `parse-sexp-lookup-properties' is read
+// once at setup (GNU reads a C global, never a per-character variable),
+// and for property-armed scans the effective syntax source is resolved
+// once per text-property interval -- UPDATE_SYNTAX_TABLE's
+// b_property/e_property bounds -- instead of per character.  An ASCII
+// memo stands in for GNU's SYNTAX(c) array indexing, since this
+// runtime's tables store descriptors that would otherwise be re-decoded
+// per character.  A mid-scan table or property mutation is observed at
+// the next interval crossing, exactly as in GNU.
+pub(super) struct SyntaxScan {
+    table_id: u64,
+    use_properties: bool,
+    b_property: usize,
+    e_property: usize,
+    effective: EffectiveSyntax,
+    ascii_memo: [Option<SyntaxEntry>; 128],
+}
+
+#[derive(Clone, Copy)]
+enum EffectiveSyntax {
+    Table(u64),
+    Direct(SyntaxEntry),
+}
+
+impl SyntaxScan {
+    pub(super) fn table_id(&self) -> u64 {
+        self.table_id
+    }
+
+    pub(super) fn new(interp: &Interpreter, table_id: u64) -> Self {
+        // syntax.c:253 (SETUP_SYNTAX_TABLE): the property machinery arms
+        // only when `parse-sexp-lookup-properties' is non-nil.
+        let use_properties = interp
+            .lookup_var("parse-sexp-lookup-properties", &Vec::new())
+            .is_some_and(|value| value.is_truthy());
+        SyntaxScan {
+            table_id,
+            use_properties,
+            b_property: 1,
+            e_property: 0, // empty interval: first query refreshes
+            effective: EffectiveSyntax::Table(table_id),
+            ascii_memo: [None; 128],
+        }
+    }
+
+    fn refresh(&mut self, interp: &Interpreter, pos: usize) {
+        let (start, end) = interp.buffer.text_property_interval_around(pos);
+        self.b_property = start;
+        self.e_property = end.max(pos + 1);
+        // syntax.c:374 (update_syntax_table): the property comes off the
+        // interval plist with `textget' -- buffer text properties (with
+        // category indirection) only; overlays never feed syntax scans.
+        let property = crate::lisp::primitives::strings::buffer_property_at_with_category(
+            interp,
+            &interp.buffer,
+            pos,
+            "syntax-table",
+        )
+        .unwrap_or(Value::Nil);
+        self.effective = match property {
+            Value::CharTable(property_table_id) => EffectiveSyntax::Table(property_table_id),
+            Value::Nil => EffectiveSyntax::Table(self.table_id),
+            property => syntax_entry_from_value(&property)
+                .map(EffectiveSyntax::Direct)
+                .unwrap_or(EffectiveSyntax::Table(self.table_id)),
+        };
+        self.ascii_memo = [None; 128];
+    }
+
+    pub(super) fn entry_at(&mut self, interp: &Interpreter, ch: char, pos: usize) -> SyntaxEntry {
+        if !self.use_properties {
+            return self.table_entry(interp, self.table_id, ch);
+        }
+        if pos < self.b_property || pos >= self.e_property {
+            self.refresh(interp, pos);
+        }
+        match self.effective {
+            EffectiveSyntax::Table(id) => self.table_entry(interp, id, ch),
+            EffectiveSyntax::Direct(entry) => entry,
+        }
+    }
+
+    fn table_entry(&mut self, interp: &Interpreter, table_id: u64, ch: char) -> SyntaxEntry {
+        let index = ch as usize;
+        if index < 128 {
+            if let Some(entry) = self.ascii_memo[index] {
+                return entry;
+            }
+            let entry = syntax_entry_for_char(interp, table_id, ch);
+            self.ascii_memo[index] = Some(entry);
+            return entry;
+        }
+        syntax_entry_for_char(interp, table_id, ch)
+    }
+}
+
 fn syntax_entry_at_buffer_position(
     interp: &Interpreter,
     table_id: u64,
     ch: char,
     pos: usize,
 ) -> SyntaxEntry {
-    // syntax.c:253 (SETUP_SYNTAX_TABLE): the `syntax-table' text property
-    // participates in syntax scans only when `parse-sexp-lookup-properties'
-    // is non-nil; with it nil GNU reads the plain syntax table and never
-    // touches intervals or overlays.  Consulting the property
-    // unconditionally both diverged from GNU (a property would win with
-    // the variable nil) and made every scan pay a per-character
-    // overlay-and-interval walk.
+    // One-shot form for cold callers -- no scan state, no memo array;
+    // hot loops hold a SyntaxScan instead.
     if !interp
         .lookup_var("parse-sexp-lookup-properties", &Vec::new())
         .is_some_and(|value| value.is_truthy())
     {
         return syntax_entry_for_char(interp, table_id, ch);
     }
-    // syntax.c:374 (update_syntax_table): GNU reads the property off the
-    // interval plist with `textget' -- buffer text properties (with
-    // category indirection) only.  Overlays never feed syntax scans, so
-    // an overlay-decorated buffer (semantic tags, for one) must not pay
-    // -- or answer -- an overlay walk per scanned character.
     let property = crate::lisp::primitives::strings::buffer_property_at_with_category(
         interp,
         &interp.buffer,
@@ -579,6 +665,7 @@ fn syntax_entry_at_buffer_position(
         Value::CharTable(property_table_id) => {
             Some(syntax_entry_for_char(interp, property_table_id, ch))
         }
+        Value::Nil => None,
         property => syntax_entry_from_value(&property),
     }
     .unwrap_or_else(|| syntax_entry_for_char(interp, table_id, ch))
@@ -609,12 +696,13 @@ fn newline_comment_end_style(interp: &Interpreter, table_id: u64) -> Option<u8> 
 
 fn comment_start_at(
     interp: &Interpreter,
-    table_id: u64,
+    scan: &mut SyntaxScan,
     chars: &[char],
     idx: usize,
 ) -> Option<CommentStart> {
+    let table_id = scan.table_id();
     let ch = *chars.get(idx)?;
-    let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
+    let entry = scan.entry_at(interp, ch, idx + 1);
     if entry.class == SyntaxClass::GenericCommentDelimiter {
         return Some(CommentStart {
             kind: CommentKind::Fence,
@@ -633,7 +721,7 @@ fn comment_start_at(
         });
     }
     let next = *chars.get(idx + 1)?;
-    let next_entry = syntax_entry_at_buffer_position(interp, table_id, next, idx + 2);
+    let next_entry = scan.entry_at(interp, next, idx + 2);
     if !(entry.start_first && next_entry.start_second) {
         return None;
     }
@@ -676,7 +764,7 @@ fn preceded_by_odd_backslashes(chars: &[char], idx: usize) -> bool {
 
 fn skip_comment_with_status(
     interp: &Interpreter,
-    table_id: u64,
+    scan: &mut SyntaxScan,
     chars: &[char],
     idx: usize,
     start: CommentStart,
@@ -687,7 +775,7 @@ fn skip_comment_with_status(
         CommentKind::Single { line } => {
             while cursor < chars.len() {
                 let entry =
-                    syntax_entry_at_buffer_position(interp, table_id, chars[cursor], cursor + 1);
+                    scan.entry_at(interp, chars[cursor], cursor + 1);
                 if entry.class == SyntaxClass::CommentEnd
                     && scan_comment_style(&entry, None) == start.style
                 {
@@ -708,7 +796,7 @@ fn skip_comment_with_status(
         CommentKind::Fence => {
             while cursor < chars.len() {
                 let entry =
-                    syntax_entry_at_buffer_position(interp, table_id, chars[cursor], cursor + 1);
+                    scan.entry_at(interp, chars[cursor], cursor + 1);
                 if entry.class == SyntaxClass::GenericCommentDelimiter {
                     return (cursor + 1, true);
                 }
@@ -724,7 +812,7 @@ fn skip_comment_with_status(
             let mut depth = 1usize;
             while cursor < chars.len() {
                 if nested
-                    && let Some(nested_start) = comment_start_at(interp, table_id, chars, cursor)
+                    && let Some(nested_start) = comment_start_at(interp, scan, chars, cursor)
                     && nested_start.style == start.style
                     && matches!(
                         nested_start.kind,
@@ -743,18 +831,8 @@ fn skip_comment_with_status(
                     && chars[cursor] == end_first
                     && chars[cursor + 1] == end_second
                 {
-                    let first = syntax_entry_at_buffer_position(
-                        interp,
-                        table_id,
-                        chars[cursor],
-                        cursor + 1,
-                    );
-                    let second = syntax_entry_at_buffer_position(
-                        interp,
-                        table_id,
-                        chars[cursor + 1],
-                        cursor + 2,
-                    );
+                    let first = scan.entry_at(interp, chars[cursor], cursor + 1);
+                    let second = scan.entry_at(interp, chars[cursor + 1], cursor + 2);
                     if scan_comment_style(&first, Some(&second)) != start.style {
                         cursor += 1;
                         continue;
@@ -1107,12 +1185,17 @@ fn scan_char(chars: &[char], pos: i64) -> char {
     chars.get((pos - 1) as usize).copied().unwrap_or('\0')
 }
 
-fn scan_entry(interp: &Interpreter, table_id: u64, chars: &[char], pos: i64) -> SyntaxEntry {
+fn scan_entry(
+    interp: &Interpreter,
+    scan: &mut SyntaxScan,
+    chars: &[char],
+    pos: i64,
+) -> SyntaxEntry {
     if pos < 1 {
         return SyntaxEntry::default();
     }
     match chars.get((pos - 1) as usize) {
-        Some(&ch) => syntax_entry_at_buffer_position(interp, table_id, ch, pos as usize),
+        Some(&ch) => scan.entry_at(interp, ch, pos as usize),
         None => SyntaxEntry::default(),
     }
 }
@@ -1127,7 +1210,7 @@ fn scan_comment_style(first: &SyntaxEntry, second: Option<&SyntaxEntry>) -> u8 {
 // number of escape/char-quote characters.
 fn scan_char_quoted(
     interp: &Interpreter,
-    table_id: u64,
+    scan: &mut SyntaxScan,
     chars: &[char],
     pos: i64,
     beg: i64,
@@ -1136,7 +1219,7 @@ fn scan_char_quoted(
     let mut cursor = pos;
     while cursor > beg {
         cursor -= 1;
-        let entry = scan_entry(interp, table_id, chars, cursor);
+        let entry = scan_entry(interp, scan, chars, cursor);
         if !matches!(entry.class, SyntaxClass::Escape | SyntaxClass::CharQuote) {
             break;
         }
@@ -1157,7 +1240,7 @@ struct ForwardCommentOptions {
 
 fn scan_forw_comment(
     interp: &Interpreter,
-    table_id: u64,
+    scan: &mut SyntaxScan,
     chars: &[char],
     mut from: i64,
     stop: i64,
@@ -1168,7 +1251,7 @@ fn scan_forw_comment(
         if from >= stop {
             return (false, stop);
         }
-        let entry = scan_entry(interp, table_id, chars, from);
+        let entry = scan_entry(interp, scan, chars, from);
         let entry_position = from;
         let code = entry.class;
         let escaped = options.end_can_be_escaped
@@ -1206,7 +1289,7 @@ fn scan_forw_comment(
         from += 1;
         // Two-char comment ender.
         if from < stop && entry.end_first {
-            let second = scan_entry(interp, table_id, chars, from);
+            let second = scan_entry(interp, scan, chars, from);
             if second.end_second
                 && scan_comment_style(&entry, Some(&second)) == options.style
                 && !escaped
@@ -1226,7 +1309,7 @@ fn scan_forw_comment(
         }
         // Two-char nested comment starter inside a nestable comment.
         if nesting > 0 && from < stop && entry.start_first {
-            let second = scan_entry(interp, table_id, chars, from);
+            let second = scan_entry(interp, scan, chars, from);
             if second.start_second
                 && scan_comment_style(&entry, Some(&second)) == options.style
                 && (entry.nested || second.nested)
@@ -1390,11 +1473,12 @@ fn back_comment_gnu(
     let mut from = comment_end;
     let mut prev_entry: Option<SyntaxEntry> = None;
     let mut lossage = false;
+    let mut scan = SyntaxScan::new(interp, table_id);
 
     while from != stop {
         from -= 1;
         let c = chars[from - 1];
-        let entry = syntax_entry_at_buffer_position(interp, table_id, c, from);
+        let entry = scan.entry_at(interp, c, from);
         let last_entry = prev_entry;
         prev_entry = Some(entry);
         let mut code = entry.class;
@@ -1413,7 +1497,7 @@ fn back_comment_gnu(
         // try to be clever.
         if from > stop && (com2end || comstart) {
             let next_c = chars[from - 2];
-            let next_entry = syntax_entry_at_buffer_position(interp, table_id, next_c, from - 1);
+            let next_entry = scan.entry_at(interp, next_c, from - 1);
             if ((comstart || comnested) && entry.end_second && next_entry.end_first)
                 || ((com2end || comnested)
                     && entry.start_second
@@ -1443,7 +1527,7 @@ fn back_comment_gnu(
 
         // Ignore escaped characters, except enders which cannot be escaped.
         if (comment_end_can_be_escaped || code != SyntaxClass::CommentEnd)
-            && scan_char_quoted(interp, table_id, chars, from as i64, stop as i64)
+            && scan_char_quoted(interp, &mut scan, chars, from as i64, stop as i64)
         {
             continue;
         }
@@ -1621,6 +1705,7 @@ pub(super) fn scan_lists_gnu(
     // bounds, just as GNU's scan_lists does.
     let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
+    let mut scan = SyntaxScan::new(interp, table_id);
     let begv = interp.buffer.point_min() as i64;
     let zv = interp.buffer.point_max() as i64;
     let ignore_comments = interp
@@ -1642,7 +1727,7 @@ pub(super) fn scan_lists_gnu(
         let mut done = false;
         'forward: while from < stop {
             let c = scan_char(&chars, from);
-            let entry = scan_entry(interp, table_id, &chars, from);
+            let entry = scan_entry(interp, &mut scan, &chars, from);
             let mut code = entry.class;
             let mut comstyle = scan_comment_style(&entry, None);
             let mut comnested = entry.nested;
@@ -1651,7 +1736,7 @@ pub(super) fn scan_lists_gnu(
             }
             from += 1;
             if from < stop && entry.start_first && ignore_comments {
-                let second = scan_entry(interp, table_id, &chars, from);
+                let second = scan_entry(interp, &mut scan, &chars, from);
                 if second.start_second {
                     code = SyntaxClass::CommentStart;
                     comstyle = scan_comment_style(&second, Some(&entry));
@@ -1679,7 +1764,7 @@ pub(super) fn scan_lists_gnu(
                     }
                     // This word counts as a sexp; stop at its end.
                     while from < stop {
-                        let inner = scan_entry(interp, table_id, &chars, from);
+                        let inner = scan_entry(interp, &mut scan, &chars, from);
                         match inner.class {
                             SyntaxClass::CharQuote | SyntaxClass::Escape => {
                                 from += 1;
@@ -1708,7 +1793,7 @@ pub(super) fn scan_lists_gnu(
                     }
                     let (found, out) = scan_forw_comment(
                         interp,
-                        table_id,
+                        &mut scan,
                         &chars,
                         from,
                         stop,
@@ -1784,7 +1869,7 @@ pub(super) fn scan_lists_gnu(
                         if from >= stop {
                             return Err(scan_signal("Unbalanced parentheses", last_good, from));
                         }
-                        let inner = scan_entry(interp, table_id, &chars, from);
+                        let inner = scan_entry(interp, &mut scan, &chars, from);
                         let terminates = if code == SyntaxClass::StringQuote {
                             scan_char(&chars, from) == stringterm
                                 && inner.class == SyntaxClass::StringQuote
@@ -1824,13 +1909,13 @@ pub(super) fn scan_lists_gnu(
         'backward: while from > stop {
             from -= 1;
             let c = scan_char(&chars, from);
-            let entry = scan_entry(interp, table_id, &chars, from);
+            let entry = scan_entry(interp, &mut scan, &chars, from);
             let mut code = entry.class;
             if depth == min_depth {
                 last_good = from;
             }
             if from > stop && entry.end_second && ignore_comments {
-                let prev = scan_entry(interp, table_id, &chars, from - 1);
+                let prev = scan_entry(interp, &mut scan, &chars, from - 1);
                 if prev.end_first {
                     from -= 1;
                     code = SyntaxClass::CommentEnd;
@@ -1839,7 +1924,7 @@ pub(super) fn scan_lists_gnu(
             // Quoting turns anything except a comment-ender into a word
             // character (cannot hold if FROM was decremented above).
             if code != SyntaxClass::CommentEnd
-                && scan_char_quoted(interp, table_id, &chars, from, stop)
+                && scan_char_quoted(interp, &mut scan, &chars, from, stop)
             {
                 from -= 1;
                 code = SyntaxClass::Word;
@@ -1856,17 +1941,17 @@ pub(super) fn scan_lists_gnu(
                     }
                     // This word counts as a sexp; stop after passing it.
                     while from > stop {
-                        let before = scan_entry(interp, table_id, &chars, from - 1);
+                        let before = scan_entry(interp, &mut scan, &chars, from - 1);
                         // Don't allow a comment-end to be quoted.
                         if before.class == SyntaxClass::CommentEnd {
                             break;
                         }
-                        let quoted = scan_char_quoted(interp, table_id, &chars, from - 1, stop);
+                        let quoted = scan_char_quoted(interp, &mut scan, &chars, from - 1, stop);
                         if quoted {
                             from -= 1;
                         }
                         if !quoted {
-                            match scan_entry(interp, table_id, &chars, from - 1).class {
+                            match scan_entry(interp, &mut scan, &chars, from - 1).class {
                                 SyntaxClass::Word | SyntaxClass::Symbol | SyntaxClass::Quote => {}
                                 _ => break,
                             }
@@ -1936,8 +2021,8 @@ pub(super) fn scan_lists_gnu(
                             return Err(scan_signal("Unbalanced parentheses", last_good, from));
                         }
                         from -= 1;
-                        if !scan_char_quoted(interp, table_id, &chars, from, stop)
-                            && scan_entry(interp, table_id, &chars, from).class == fence_class
+                        if !scan_char_quoted(interp, &mut scan, &chars, from, stop)
+                            && scan_entry(interp, &mut scan, &chars, from).class == fence_class
                         {
                             break;
                         }
@@ -1955,9 +2040,9 @@ pub(super) fn scan_lists_gnu(
                             return Err(scan_signal("Unbalanced parentheses", last_good, from));
                         }
                         from -= 1;
-                        if !scan_char_quoted(interp, table_id, &chars, from, stop)
+                        if !scan_char_quoted(interp, &mut scan, &chars, from, stop)
                             && scan_char(&chars, from) == stringterm
-                            && scan_entry(interp, table_id, &chars, from).class
+                            && scan_entry(interp, &mut scan, &chars, from).class
                                 == SyntaxClass::StringQuote
                         {
                             break;
@@ -2030,6 +2115,7 @@ pub(super) fn parse_forward(
     // FROM and TO are absolute buffer positions even under narrowing.
     let mut chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
+    let mut scan = SyntaxScan::new(interp, table_id);
     let comment_end_can_be_escaped = interp
         .lookup_var("comment-end-can-be-escaped", env)
         .is_some_and(|value| value.is_truthy());
@@ -2049,12 +2135,12 @@ pub(super) fn parse_forward(
     while idx < end {
         if let Some(string) = state.string {
             let ch = chars[idx];
-            let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
+            let entry = scan.entry_at(interp, ch, idx + 1);
             if string.fence {
                 if entry.class == SyntaxClass::GenericStringDelimiter
                     && !scan_char_quoted(
                         interp,
-                        table_id,
+                        &mut scan,
                         &chars,
                         idx as i64 + 1,
                         interp.buffer.point_min() as i64,
@@ -2075,7 +2161,7 @@ pub(super) fn parse_forward(
                 && ch == string.quote
                 && !scan_char_quoted(
                     interp,
-                    table_id,
+                    &mut scan,
                     &chars,
                     idx as i64 + 1,
                     interp.buffer.point_min() as i64,
@@ -2097,7 +2183,7 @@ pub(super) fn parse_forward(
             match comment.kind {
                 CommentKind::Single { line } => {
                     let entry =
-                        syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+                        scan.entry_at(interp, chars[idx], idx + 1);
                     if entry.class == SyntaxClass::CommentEnd
                         && scan_comment_style(&entry, None) == comment.style
                     {
@@ -2122,7 +2208,7 @@ pub(super) fn parse_forward(
                 }
                 CommentKind::Fence => {
                     let entry =
-                        syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+                        scan.entry_at(interp, chars[idx], idx + 1);
                     if entry.class == SyntaxClass::GenericCommentDelimiter {
                         idx += 1;
                         state.comment = None;
@@ -2141,7 +2227,7 @@ pub(super) fn parse_forward(
                     nested,
                 } => {
                     if nested
-                        && let Some(start) = comment_start_at(interp, table_id, &chars, idx)
+                        && let Some(start) = comment_start_at(interp, &mut scan, &chars, idx)
                         && start.style == comment.style
                         && matches!(
                             start.kind,
@@ -2163,13 +2249,8 @@ pub(super) fn parse_forward(
                         && chars[idx + 1] == end_second
                     {
                         let first =
-                            syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
-                        let second = syntax_entry_at_buffer_position(
-                            interp,
-                            table_id,
-                            chars[idx + 1],
-                            idx + 2,
-                        );
+                            scan.entry_at(interp, chars[idx], idx + 1);
+                        let second = scan.entry_at(interp, chars[idx + 1], idx + 2);
                         if scan_comment_style(&first, Some(&second)) != comment.style {
                             idx += 1;
                             continue;
@@ -2199,7 +2280,7 @@ pub(super) fn parse_forward(
             }
         }
 
-        if let Some(start) = comment_start_at(interp, table_id, &chars, idx) {
+        if let Some(start) = comment_start_at(interp, &mut scan, &chars, idx) {
             state.comment = Some(CommentState {
                 kind: start.kind,
                 style: start.style,
@@ -2217,7 +2298,7 @@ pub(super) fn parse_forward(
         let ch = chars[idx];
         // syntax-table TEXT PROPERTIES override the char table (generic
         // string fences from syntax-propertize live there).
-        let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
+        let entry = scan.entry_at(interp, ch, idx + 1);
         if entry.class == SyntaxClass::GenericStringDelimiter {
             state.set_last_sexp(idx + 1);
             state.string = Some(StringState {
@@ -2252,7 +2333,7 @@ pub(super) fn parse_forward(
             SyntaxClass::StringQuote => {
                 if !scan_char_quoted(
                     interp,
-                    table_id,
+                    &mut scan,
                     &chars,
                     idx as i64 + 1,
                     interp.buffer.point_min() as i64,
@@ -2535,6 +2616,7 @@ pub(super) fn forward_comment_impl(
     let mut chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     chars.truncate(interp.buffer.point_max().saturating_sub(1));
     let table_id = interp.current_syntax_table_id();
+    let mut scan = SyntaxScan::new(interp, table_id);
     let comment_end_can_be_escaped = interp
         .lookup_var("comment-end-can-be-escaped", env)
         .is_some_and(|value| value.is_truthy());
@@ -2545,7 +2627,7 @@ pub(super) fn forward_comment_impl(
         for _ in 0..count {
             let candidate = skip_whitespace_forward(interp, table_id, &chars, point);
             let idx = candidate.saturating_sub(1);
-            let Some(start) = comment_start_at(interp, table_id, &chars, idx) else {
+            let Some(start) = comment_start_at(interp, &mut scan, &chars, idx) else {
                 // GNU stops before the non-comment token, keeping the
                 // whitespace crossed so far behind point.
                 interp.buffer.goto_char(candidate);
@@ -2553,7 +2635,7 @@ pub(super) fn forward_comment_impl(
             };
             let (end, closed) = skip_comment_with_status(
                 interp,
-                table_id,
+                &mut scan,
                 &chars,
                 idx,
                 start,
@@ -2582,8 +2664,8 @@ pub(super) fn forward_comment_impl(
             }
             from -= 1;
             let c = chars[from - 1];
-            let quoted = scan_char_quoted(interp, table_id, &chars, from as i64, minimum as i64);
-            let entry = syntax_entry_at_buffer_position(interp, table_id, c, from);
+            let quoted = scan_char_quoted(interp, &mut scan, &chars, from as i64, minimum as i64);
+            let entry = scan.entry_at(interp, c, from);
             let mut code = entry.class;
             let mut comstyle = 0u8;
             let mut comnested = entry.nested;
@@ -2597,11 +2679,11 @@ pub(super) fn forward_comment_impl(
                 let first_pos = from - 1;
                 let first_c = chars[first_pos - 1];
                 let first_entry =
-                    syntax_entry_at_buffer_position(interp, table_id, first_c, first_pos);
+                    scan.entry_at(interp, first_c, first_pos);
                 if first_entry.end_first
                     && !scan_char_quoted(
                         interp,
-                        table_id,
+                        &mut scan,
                         &chars,
                         first_pos as i64,
                         minimum as i64,
@@ -2623,11 +2705,11 @@ pub(super) fn forward_comment_impl(
                     from -= 1;
                     let fence_c = chars[from - 1];
                     let fence_entry =
-                        syntax_entry_at_buffer_position(interp, table_id, fence_c, from);
+                        scan.entry_at(interp, fence_c, from);
                     if fence_entry.class == SyntaxClass::GenericCommentDelimiter
                         && !scan_char_quoted(
                             interp,
-                            table_id,
+                            &mut scan,
                             &chars,
                             from as i64,
                             minimum as i64,
@@ -2699,16 +2781,17 @@ pub(super) fn backward_prefix_chars(interp: &mut Interpreter) -> Result<Value, L
     // Index the full buffer rather than the accessible substring.
     let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
+    let mut scan = SyntaxScan::new(interp, table_id);
     let minimum = interp.buffer.point_min();
     let mut position = interp.buffer.point();
     while position > minimum {
         let ch = chars[position - 2];
         let char_position = position - 1;
-        let entry = syntax_entry_at_buffer_position(interp, table_id, ch, char_position);
+        let entry = scan.entry_at(interp, ch, char_position);
         if !(entry.class == SyntaxClass::Quote || entry.prefix)
             || scan_char_quoted(
                 interp,
-                table_id,
+                &mut scan,
                 &chars,
                 char_position as i64,
                 minimum as i64,

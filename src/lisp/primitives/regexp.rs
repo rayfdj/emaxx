@@ -1839,7 +1839,18 @@ fn linear_boundary_prefilter(rendered: &str) -> Option<LinearBoundaryPrefilter> 
 struct CompiledElispRegexKey {
     pattern: String,
     syntax_property_sentinels: Vec<SyntaxPropertySentinel>,
-    runtime_table_translation: String,
+    // search.c compile_pattern re-checks its cached entry with EQ against
+    // the current syntax table before reuse; the analog here is the pair
+    // of table identities plus two write generations, so a hit costs a
+    // hash instead of re-running the whole translation.  The char-table
+    // generation observes writes through the table door; the definition
+    // generation observes interior mutation of shared structure (setcar
+    // on a cons stored as a table entry bumps it), so no route to
+    // changing what a class renders as escapes the key.
+    syntax_table_id: u64,
+    category_table_id: u64,
+    char_table_generation: u64,
+    definition_generation: u64,
     point_assertion: String,
     at_absolute_start: bool,
     case_fold: bool,
@@ -1965,7 +1976,66 @@ fn encode_syntax_property_haystack(
 /// with private-use scalars; normalize both buffer representations here so
 /// the regexp translator remains the single pattern-grammar owner and match
 /// positions stay identical to buffer positions.
+#[derive(Clone, PartialEq, Eq)]
+struct RegexpHaystackKey {
+    buffer_id: u64,
+    start: usize,
+    end: usize,
+    chars_modiff: crate::buffer::ModCount,
+    multibyte: bool,
+}
+
+const REGEXP_HAYSTACK_CACHE_LIMIT: usize = 8;
+
+thread_local! {
+    static REGEXP_HAYSTACK_CACHE: RefCell<Vec<(RegexpHaystackKey, std::rc::Rc<str>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+// GNU's re_search runs directly over the buffer text and never copies it;
+// this runtime's regex engine needs one contiguous string, so the mapped
+// haystack is built once per (buffer, range, text-modification) state and
+// shared.  CHARS_MODIFF only advances on text changes, and the mapping
+// below depends on nothing but the characters and the multibyte flag, so
+// a hit hands back byte-identical content to a fresh build.
 fn buffer_regexp_haystack(
+    interp: &Interpreter,
+    start: usize,
+    end: usize,
+) -> Result<std::rc::Rc<str>, LispError> {
+    let key = RegexpHaystackKey {
+        buffer_id: interp.current_buffer_id(),
+        start,
+        end,
+        chars_modiff: interp.buffer.chars_modification_count(),
+        multibyte: interp.buffer.is_multibyte(),
+    };
+    let cached = REGEXP_HAYSTACK_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(index) = cache.iter().position(|(entry, _)| *entry == key) {
+            let hit = cache.remove(index);
+            let text = hit.1.clone();
+            cache.push(hit);
+            Some(text)
+        } else {
+            None
+        }
+    });
+    if let Some(text) = cached {
+        return Ok(text);
+    }
+    let built: std::rc::Rc<str> = build_buffer_regexp_haystack(interp, start, end)?.into();
+    REGEXP_HAYSTACK_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= REGEXP_HAYSTACK_CACHE_LIMIT {
+            cache.remove(0);
+        }
+        cache.push((key, built.clone()));
+    });
+    Ok(built)
+}
+
+fn build_buffer_regexp_haystack(
     interp: &Interpreter,
     start: usize,
     end: usize,
@@ -2035,23 +2105,14 @@ fn compile_elisp_regex_with_syntax_properties(
         .lookup_var("case-fold-search", env)
         .is_some_and(|value| value.is_truthy());
     let category_table_id = category_scope.table_id(interp);
-    // Translation is the single owner of Emacs regexp grammar.  When a
-    // pattern depends on mutable runtime tables, its exact translation also
-    // forms the compiled-cache key; a regexp compiled under one syntax or
-    // category table can therefore never leak into another table's search.
-    let runtime_table_translation = (pattern_depends_on_syntax_table(&pattern_text)
-        || pattern_depends_on_category_table(&pattern_text))
-    .then(|| {
-        translate_elisp_regex_with_point(
-            &pattern_text,
-            point_assertion,
-            if at_absolute_start { r"\A" } else { r"(?!)" },
-            encoding,
-            case_fold,
-            Some(interp),
-            category_table_id,
-        )
-    });
+    // Translation is the single owner of Emacs regexp grammar.  A pattern
+    // that depends on mutable runtime tables is keyed by the identity of
+    // those tables plus the shared write generation (a table-independent
+    // pattern keys the same either way), so a regexp compiled under one
+    // syntax or category table can never leak into another table's search
+    // -- and a cache hit no longer pays the translation it cached.
+    let depends_on_tables = pattern_depends_on_syntax_table(&pattern_text)
+        || pattern_depends_on_category_table(&pattern_text);
     let key = CompiledElispRegexKey {
         pattern: pattern_text.clone(),
         // Bracket expressions, line anchors, dot, and ordinary literals all
@@ -2062,7 +2123,28 @@ fn compile_elisp_regex_with_syntax_properties(
         syntax_property_sentinels: encoding
             .map(|encoding| encoding.sentinels.clone())
             .unwrap_or_default(),
-        runtime_table_translation: runtime_table_translation.clone().unwrap_or_default(),
+        syntax_table_id: if depends_on_tables {
+            interp.current_syntax_table_id()
+        } else {
+            0
+        },
+        category_table_id: if depends_on_tables {
+            category_table_id.unwrap_or(0)
+        } else {
+            0
+        },
+        // case-folded rendering reads the case tables, so it shares the
+        // generation guard.
+        char_table_generation: if depends_on_tables || case_fold {
+            interp.char_table_generation()
+        } else {
+            0
+        },
+        definition_generation: if depends_on_tables {
+            interp.current_definition_generation()
+        } else {
+            0
+        },
         point_assertion: point_assertion.to_string(),
         at_absolute_start,
         case_fold,
@@ -2073,17 +2155,15 @@ fn compile_elisp_regex_with_syntax_properties(
 
     validate_elisp_regex(&pattern.text)?;
     enforce_elisp_repeat_limit(&pattern.text)?;
-    let translated = runtime_table_translation.unwrap_or_else(|| {
-        translate_elisp_regex_with_point(
-            &pattern_text,
-            point_assertion,
-            if at_absolute_start { r"\A" } else { r"(?!)" },
-            encoding,
-            case_fold,
-            Some(interp),
-            category_table_id,
-        )
-    });
+    let translated = translate_elisp_regex_with_point(
+        &pattern_text,
+        point_assertion,
+        if at_absolute_start { r"\A" } else { r"(?!)" },
+        encoding,
+        case_fold,
+        Some(interp),
+        category_table_id,
+    );
     let rendered = if case_fold {
         format!("(?mi:{translated})")
     } else {
@@ -2730,7 +2810,7 @@ pub(super) fn looking_at_impl(
     )?;
     let haystack = syntax_encoding
         .as_ref()
-        .map(|encoding| encoding.haystack.clone())
+        .map(|encoding| std::rc::Rc::<str>::from(encoding.haystack.as_str()))
         .unwrap_or(haystack);
     // The syntax-property encoder preserves one Unicode scalar per buffer
     // character, but a sentinel can occupy more UTF-8 bytes than the ASCII
@@ -2895,7 +2975,7 @@ pub(super) fn buffer_regex_search(
         )?;
         let haystack = syntax_encoding
             .as_ref()
-            .map(|encoding| encoding.haystack.clone())
+            .map(|encoding| std::rc::Rc::<str>::from(encoding.haystack.as_str()))
             .unwrap_or(haystack);
         // `captures_from_pos' takes a BYTE offset; positions are chars.
         let start_chars = start.saturating_sub(haystack_start);
@@ -3090,7 +3170,7 @@ pub(super) fn buffer_regex_search(
             )?;
             let prefix = syntax_encoding
                 .as_ref()
-                .map(|encoding| encoding.haystack.clone())
+                .map(|encoding| std::rc::Rc::<str>::from(encoding.haystack.as_str()))
                 .unwrap_or(prefix);
             let empty_line_pattern = pattern.text == "^$";
             if empty_line_pattern
