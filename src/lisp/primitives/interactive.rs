@@ -9,11 +9,9 @@ pub(crate) fn set_command_key_state(
     interp.keyboard_input.command_keys = keys.clone();
     interp.keyboard_input.single_command_start = 0;
     interp.keyboard_input.raw_keys = raw_keys;
-    interp.set_variable(
-        "this-single-command-keys",
-        Value::list(std::iter::once(Value::symbol("vector-literal")).chain(keys)),
-        env,
-    );
+    // GNU has no `this-single-command-keys' *variable* -- only the
+    // keyboard.c function, which reads this native state (finding 66).
+    let _ = (keys, env);
 }
 
 fn dribble_event_bytes(event: &Value) -> Vec<u8> {
@@ -274,18 +272,17 @@ pub(crate) fn parse_interactive_string(
                 super::call(interp, "barf-if-buffer-read-only", &[], env)?;
             }
             Some('^') => {
-                // GNU always has simple.el's handle-shift-selection
-                // dumped; a runtime without it (its autoload target not
-                // loaded) treats the flag as a no-op rather than failing
-                // every `(interactive "^p")' motion command.
-                if let Err(error) = super::call(interp, "handle-shift-selection", &[], env) {
-                    let missing = matches!(&error, LispError::VoidFunction(_))
-                        || matches!(&error, LispError::Signal(message)
-                            if message.contains("Unknown function"));
-                    if !missing {
-                        return Err(error);
-                    }
-                }
+                // callint.c:410 `call0 (Qhandle_shift_selection)': the
+                // handler is simple.el's, reached through the ordinary
+                // function cell, and GNU has no missing-function
+                // tolerance -- a runtime without simple.el loaded
+                // signals void-function exactly as GNU would.
+                interp.call_function_value(
+                    Value::Symbol("handle-shift-selection".into()),
+                    Some("handle-shift-selection"),
+                    &[],
+                    env,
+                )?;
             }
             Some('@') | Some('-') => {}
             _ => break,

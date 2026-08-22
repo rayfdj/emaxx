@@ -2213,11 +2213,6 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 interp.keyboard_input.command_keys.clear();
                 interp.keyboard_input.single_command_start = 0;
-                interp.set_variable(
-                    "this-single-command-keys",
-                    event_vector(std::iter::empty()),
-                    env,
-                );
                 if args.first().is_none_or(Value::is_nil) {
                     interp.keyboard_input.recent_keys.clear();
                 }

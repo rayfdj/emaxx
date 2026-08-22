@@ -397,6 +397,13 @@ pub(crate) fn gnu_default_makefile_mode() -> &'static str {
 
 pub(crate) fn default_system_configuration() -> String {
     let machine = uname_value("-m").unwrap_or_else(|| std::env::consts::ARCH.to_string());
+    // config.guess spells Darwin's arm64 as aarch64; GNU's triple comes
+    // from autoconf, so use the same convention for the same hardware.
+    let machine = if machine == "arm64" {
+        "aarch64".to_string()
+    } else {
+        machine
+    };
     match std::env::consts::OS {
         "macos" => {
             let release = uname_value("-r").unwrap_or_else(|| "0".into());
@@ -1077,10 +1084,14 @@ pub(crate) fn current_user_full_name() -> Option<String> {
 }
 
 pub(crate) fn emacs_version_value() -> String {
-    std::env::var("EMAXX_EMACS_VERSION")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+    // The GNU release Emaxx mirrors.  GNU reports two components ("30.2");
+    // the crate version cannot be the source, since Cargo's semver demands
+    // three ("30.2.0") and the difference is Lisp-visible in
+    // `emacs-version'.  This was also an env knob (EMAXX_EMACS_VERSION)
+    // that let a caller change the runtime's reported identity; a
+    // measured subject's identity is not configurable, so the knob is
+    // gone (finding 65).
+    "30.2".to_string()
 }
 
 pub(crate) fn emacs_major_version_value() -> i64 {
@@ -1100,11 +1111,8 @@ pub(crate) fn emacs_minor_version_value() -> i64 {
 }
 
 pub(crate) fn system_configuration() -> String {
-    if let Ok(value) = std::env::var("EMAXX_SYSTEM_CONFIGURATION")
-        && !value.is_empty()
-    {
-        return value;
-    }
+    // No env override: a runtime's reported identity is not configurable
+    // (finding 65 removed the version knob; this one went with it).
     SYSTEM_CONFIGURATION
         .get_or_init(default_system_configuration)
         .clone()
