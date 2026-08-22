@@ -560,6 +560,9 @@ pub(super) struct SyntaxScan {
     e_property: usize,
     effective: EffectiveSyntax,
     ascii_memo: [Option<SyntaxEntry>; 128],
+    // Plain buffer-table entries, property-independent: the scan's table
+    // is fixed for its lifetime, so this memo never invalidates.
+    plain_memo: [Option<SyntaxEntry>; 128],
 }
 
 #[derive(Clone, Copy)]
@@ -586,7 +589,21 @@ impl SyntaxScan {
             e_property: 0, // empty interval: first query refreshes
             effective: EffectiveSyntax::Table(table_id),
             ascii_memo: [None; 128],
+            plain_memo: [None; 128],
         }
+    }
+
+    pub(super) fn plain_table_entry(&mut self, interp: &Interpreter, ch: char) -> SyntaxEntry {
+        let index = ch as usize;
+        if index < 128 {
+            if let Some(entry) = self.plain_memo[index] {
+                return entry;
+            }
+            let entry = syntax_entry_for_char(interp, self.table_id, ch);
+            self.plain_memo[index] = Some(entry);
+            return entry;
+        }
+        syntax_entry_for_char(interp, self.table_id, ch)
     }
 
     fn refresh(&mut self, interp: &Interpreter, pos: usize) {
@@ -2486,11 +2503,22 @@ pub(super) fn syntax_class_chars_at_buffer_position(
     interp: &Interpreter,
     position: usize,
 ) -> Option<(char, char)> {
-    let ch = interp.buffer.char_at(position)?;
     let table_id = interp.current_syntax_table_id();
-    let table_class = syntax_class_char(syntax_entry_for_char(interp, table_id, ch).class);
-    let effective_class =
-        syntax_class_char(syntax_entry_at_buffer_position(interp, table_id, ch, position).class);
+    let mut effective = SyntaxScan::new(interp, table_id);
+    syntax_class_chars_with_scan(interp, &mut effective, position)
+}
+
+// Scan-holding form of the pair above for per-character loops (the
+// regexp haystack encoder): the plain-table class comes from the scan's
+// ASCII memo, the effective class through its interval state.
+pub(super) fn syntax_class_chars_with_scan(
+    interp: &Interpreter,
+    effective: &mut SyntaxScan,
+    position: usize,
+) -> Option<(char, char)> {
+    let ch = interp.buffer.char_at(position)?;
+    let table_class = syntax_class_char(effective.plain_table_entry(interp, ch).class);
+    let effective_class = syntax_class_char(effective.entry_at(interp, ch, position).class);
     Some((table_class, effective_class))
 }
 

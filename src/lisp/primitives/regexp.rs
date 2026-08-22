@@ -1928,10 +1928,13 @@ fn encode_syntax_property_haystack(
     let mut next_sentinel = 0xF0100u32;
     let mut sentinels = Vec::<SyntaxPropertySentinel>::new();
     let mut encoded = String::with_capacity(haystack.len());
+    // One scan for the whole walk: per-character cost drops to memoized
+    // table lookups plus interval-crossing property refreshes.
+    let mut scan = super::syntax::SyntaxScan::new(interp, interp.current_syntax_table_id());
     for (offset, original) in haystack.chars().enumerate() {
         let position = start + offset;
         let Some((table_class, effective_class)) =
-            super::syntax::syntax_class_chars_at_buffer_position(interp, position)
+            super::syntax::syntax_class_chars_with_scan(interp, &mut scan, position)
         else {
             encoded.push(original);
             continue;
