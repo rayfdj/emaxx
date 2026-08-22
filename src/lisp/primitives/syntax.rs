@@ -1238,33 +1238,341 @@ fn scan_forw_comment(
     }
 }
 
-// GNU syntax.c back_comment, answered through the parse-partial-sexp
-// engine: FROM sits on a comment-ender char; when that position really is
-// inside a comment, return the position of the comment starter.
-fn scan_back_comment(interp: &mut Interpreter, env: &Env, from: i64) -> Option<i64> {
-    let begv = interp.buffer.point_min() as i64;
-    if from <= begv {
+// GNU syntax.c back_comment: FROM sits on a comment-ender char; when that
+// position really ends a comment, return the position of the comment
+// starter.  This thin wrapper derives the ender's style and nestedness for
+// scan_lists' single-char call site; forward-comment computes them itself
+// (two-char enders included) exactly like Fforward_comment.
+fn scan_back_comment(interp: &mut Interpreter, env: &mut Env, from: i64) -> Option<i64> {
+    let begv = interp.buffer.point_min();
+    if from <= begv as i64 {
         return None;
     }
-    let saved_point = interp.buffer.point();
-    let state = parse_forward(
+    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
+    let from = usize::try_from(from).ok()?;
+    let ch = *chars.get(from - 1)?;
+    let table_id = interp.current_syntax_table_id();
+    let entry = syntax_entry_at_buffer_position(interp, table_id, ch, from);
+    let comment_end_can_be_escaped = interp
+        .lookup_var("comment-end-can-be-escaped", env)
+        .is_some_and(|value| value.is_truthy());
+    back_comment_gnu(
         interp,
-        begv as usize,
-        from as usize,
-        None,
-        false,
-        None,
-        CommentStop::No,
         env,
-    );
-    interp.buffer.goto_char(saved_point);
-    let items = state.ok()?.to_vec().ok()?;
-    let in_string = items.get(3).is_some_and(|value| value.is_truthy());
-    let in_comment = items.get(4).is_some_and(|value| value.is_truthy());
-    if in_string || !in_comment {
-        return None;
+        table_id,
+        &chars,
+        from,
+        begv,
+        entry.nested,
+        gnu_comment_style(&entry, None),
+        comment_end_can_be_escaped,
+    )
+    .map(|start| start as i64)
+}
+
+// SYNTAX_FLAGS_COMMENT_STYLE (syntax.h): style b comes from FLAGS itself,
+// style c from either operand.  (The pre-existing `scan_comment_style'
+// ORs b across both chars; the ported scanners follow GNU's exact rule.)
+fn gnu_comment_style(flags: &SyntaxEntry, other: Option<&SyntaxEntry>) -> u8 {
+    u8::from(flags.style_b) | (u8::from(flags.style_c || other.is_some_and(|o| o.style_c)) << 1)
+}
+
+fn comment_use_syntax_ppss_enabled(interp: &Interpreter) -> bool {
+    interp
+        .lookup_var("comment-use-syntax-ppss", &Vec::new())
+        .is_some_and(|value| value.is_truthy())
+}
+
+fn open_paren_defun_start_enabled(interp: &Interpreter) -> bool {
+    interp
+        .lookup_var("open-paren-in-column-0-is-defun-start", &Vec::new())
+        .is_some_and(|value| value.is_truthy())
+}
+
+// parse-partial-sexp element 7 (comment style) as GNU's comstyle code:
+// nil = style a, a fixnum carries the b|c style bits verbatim, and
+// `syntax-table' marks a generic (fence) comment, which this runtime's
+// comment encoding shares with style c (comment_start_at's Fence = 2).
+fn ppss_style_code(value: Option<&Value>) -> u8 {
+    match value {
+        Some(Value::Symbol(name)) if name == "syntax-table" => 2,
+        Some(Value::Integer(style)) => (*style as u8) & 3,
+        _ => 0,
     }
-    items.get(8).and_then(|value| value.as_integer().ok())
+}
+
+// syntax.c:570 find_defun_start.  Under the default non-nil
+// `comment-use-syntax-ppss' the anchor comes from syntax-ppss, whose
+// syntax.el cache bounds repeated queries; a bare runtime without that
+// Lisp falls back to the `open-paren-in-column-0-is-defun-start' scan,
+// the same algorithm GNU runs when the variable is nil.  (GNU's
+// find_start_* memo cache is an optimization we skip; the ppss path
+// caches in Lisp and the heuristic path is the rare fallback.)
+fn find_defun_start_gnu(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    chars: &[char],
+    pos: usize,
+    begv: usize,
+) -> usize {
+    if comment_use_syntax_ppss_enabled(interp) && interp.has_lisp_function("syntax-ppss") {
+        let saved_point = interp.buffer.point();
+        let result = interp.call_function_value(
+            Value::Symbol("syntax-ppss".into()),
+            Some("syntax-ppss"),
+            &[Value::Integer(pos as i64)],
+            env,
+        );
+        interp.buffer.goto_char(saved_point);
+        if let Ok(state) = result
+            && let Ok(items) = state.to_vec()
+            && let Some(start) = items.get(8).and_then(|value| value.as_integer().ok())
+            && start >= begv as i64
+        {
+            return start as usize;
+        }
+        return pos;
+    }
+    if !open_paren_defun_start_enabled(interp) {
+        return begv;
+    }
+    // Scan back line-by-line for `^\s(' -- an open-paren in column 0.
+    let table_id = interp.current_syntax_table_id();
+    let mut line_start = pos.min(chars.len() + 1);
+    while line_start > begv && chars.get(line_start - 2).copied() != Some('\n') {
+        line_start -= 1;
+    }
+    loop {
+        if let Some(&c) = chars.get(line_start - 1)
+            && syntax_entry_at_buffer_position(interp, table_id, c, line_start).class
+                == SyntaxClass::OpenParen
+        {
+            return line_start;
+        }
+        if line_start <= begv {
+            return begv;
+        }
+        line_start -= 1;
+        while line_start > begv && chars.get(line_start - 2).copied() != Some('\n') {
+            line_start -= 1;
+        }
+    }
+}
+
+// syntax.c:680 back_comment.  COMMENT_END is the 1-based position of the
+// ender's first character; the scan examines characters strictly before
+// it, counting string-quote parity and recording comment starters.  When
+// the backward scan cannot decide (mixed string delimiters, overlapping
+// two-char markers), decode forwards from find_defun_start exactly as GNU
+// does.  Returns the opener's position, or None when the ender does not
+// close a comment.
+#[allow(clippy::too_many_arguments)]
+fn back_comment_gnu(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    table_id: u64,
+    chars: &[char],
+    comment_end: usize,
+    stop: usize,
+    comnested: bool,
+    comstyle: u8,
+    comment_end_can_be_escaped: bool,
+) -> Option<usize> {
+    // Parity keys: the concrete quote char, or the two fence styles.
+    const STRING_FENCE: i64 = -2;
+    const COMMENT_FENCE: i64 = -3;
+    let mut string_style: i64 = -1;
+    let mut string_lossage = false;
+    let mut comment_lossage = false;
+    let mut comstart_pos: usize = 0;
+    let mut defun_start: usize = 0;
+    let mut nesting: i64 = 1;
+    let mut from = comment_end;
+    let mut prev_entry: Option<SyntaxEntry> = None;
+    let mut lossage = false;
+
+    while from != stop {
+        from -= 1;
+        let c = chars[from - 1];
+        let entry = syntax_entry_at_buffer_position(interp, table_id, c, from);
+        let last_entry = prev_entry;
+        prev_entry = Some(entry);
+        let mut code = entry.class;
+
+        let com2start = entry.start_first
+            && last_entry.is_some_and(|last| {
+                last.start_second
+                    && comstyle == gnu_comment_style(&last, Some(&entry))
+                    && (last.nested || entry.nested) == comnested
+            });
+        let mut com2end =
+            entry.end_first && last_entry.is_some_and(|last| last.end_second);
+        let comstart = com2start || code == SyntaxClass::CommentStart;
+
+        // Overlapping two-char sequences (snmp-mode's --, C's |*|): don't
+        // try to be clever.
+        if from > stop && (com2end || comstart) {
+            let next_c = chars[from - 2];
+            let next_entry = syntax_entry_at_buffer_position(interp, table_id, next_c, from - 1);
+            if ((comstart || comnested) && entry.end_second && next_entry.end_first)
+                || ((com2end || comnested)
+                    && entry.start_second
+                    && comstyle == gnu_comment_style(&entry, last_entry.as_ref())
+                    && next_entry.start_first)
+            {
+                lossage = true;
+                break;
+            }
+        }
+
+        if com2start && comstart_pos == 0 {
+            // First sight of a starter that is also an ender (snmp-mode):
+            // starter now, ender on subsequent sightings.
+            com2end = false;
+        }
+        if com2end {
+            code = SyntaxClass::CommentEnd;
+        } else if com2start {
+            code = SyntaxClass::CommentStart;
+        } else if code == SyntaxClass::CommentStart
+            && (comstyle != gnu_comment_style(&entry, None) || entry.nested != comnested)
+        {
+            // Comment starter of a different style.
+            continue;
+        }
+
+        // Ignore escaped characters, except enders which cannot be escaped.
+        if (comment_end_can_be_escaped || code != SyntaxClass::CommentEnd)
+            && scan_char_quoted(interp, table_id, chars, from as i64, stop as i64)
+        {
+            continue;
+        }
+
+        match code {
+            SyntaxClass::GenericStringDelimiter
+            | SyntaxClass::GenericCommentDelimiter
+            | SyntaxClass::StringQuote => {
+                let key = match code {
+                    SyntaxClass::GenericStringDelimiter => STRING_FENCE,
+                    SyntaxClass::GenericCommentDelimiter => COMMENT_FENCE,
+                    _ => c as i64,
+                };
+                if string_style == -1 {
+                    string_style = key;
+                } else if string_style == key {
+                    string_style = -1;
+                } else {
+                    // Two kinds of string delimiters: no way to grok this
+                    // scanning backwards.
+                    string_lossage = true;
+                }
+            }
+            SyntaxClass::CommentStart => {
+                if string_style != -1 || comment_lossage || string_lossage {
+                    // Odd string quotes involved (Pascal: " { " a { " }).
+                    lossage = true;
+                    break;
+                }
+                if !comnested {
+                    comstart_pos = from;
+                } else {
+                    nesting -= 1;
+                    if nesting <= 0 {
+                        // Nested comments balance: this starter is ours.
+                        return Some(from);
+                    }
+                }
+            }
+            SyntaxClass::CommentEnd => {
+                let same_style = gnu_comment_style(&entry, None) == comstyle
+                    && ((com2end && last_entry.is_some_and(|last| last.nested)) || entry.nested)
+                        == comnested;
+                if same_style {
+                    if comnested {
+                        nesting += 1;
+                    } else {
+                        // Anything earlier would match this ender, not ours.
+                        from = stop;
+                        continue;
+                    }
+                } else if comstart_pos != 0 || c != '\n' {
+                    // Mixing comment styles: be careful ({ (* } *)).
+                    comment_lossage = true;
+                }
+            }
+            SyntaxClass::OpenParen => {
+                if open_paren_defun_start_enabled(interp)
+                    && !comment_use_syntax_ppss_enabled(interp)
+                    && (from == stop || chars[from - 2] == '\n')
+                {
+                    // A defun-start is assumed to be outside of strings.
+                    defun_start = from;
+                    from = stop;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !lossage {
+        return (comstart_pos != 0).then_some(comstart_pos);
+    }
+
+    // Mixed delimiters or overlapping markers: decode going forwards from
+    // a known safe place, as GNU's lossage path does.
+    let saved_point = interp.buffer.point();
+    let mut defun_start = if defun_start != 0 {
+        defun_start
+    } else {
+        find_defun_start_gnu(interp, env, chars, comment_end, stop)
+    };
+    let mut from = comment_end;
+    loop {
+        let state = parse_forward(
+            interp,
+            defun_start,
+            comment_end,
+            None,
+            false,
+            None,
+            CommentStop::No,
+            env,
+        );
+        let items = match state.ok().and_then(|value| value.to_vec().ok()) {
+            Some(items) => items,
+            None => break,
+        };
+        defun_start = comment_end;
+        let incomment_matches = if comnested {
+            matches!(items.get(4), Some(Value::Integer(1)))
+        } else {
+            matches!(items.get(4), Some(Value::T))
+        };
+        let comstr_start = items
+            .get(8)
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| usize::try_from(value).ok());
+        if incomment_matches && ppss_style_code(items.get(7)) == comstyle {
+            if let Some(start) = comstr_start {
+                from = start;
+            }
+        } else {
+            from = comment_end;
+            if items.get(4).is_some_and(Value::is_truthy)
+                && let Some(start) = comstr_start
+            {
+                // Our ender may sit inside a surrounding comment; retry
+                // from within it (syntax.c: { a (* " *)).
+                defun_start = start + 2;
+            }
+        }
+        if defun_start >= comment_end {
+            break;
+        }
+    }
+    interp.buffer.goto_char(saved_point);
+    (from != comment_end).then_some(from)
 }
 
 // GNU scan primitives propertize lazily via UPDATE_SYNTAX_TABLE; run
@@ -1720,7 +2028,7 @@ pub(super) fn parse_forward(
         return Err(LispError::Signal("`from` is greater than `to`".into()));
     }
     // FROM and TO are absolute buffer positions even under narrowing.
-    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
+    let mut chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
     let comment_end_can_be_escaped = interp
         .lookup_var("comment-end-can-be-escaped", env)
@@ -1728,6 +2036,12 @@ pub(super) fn parse_forward(
     let mut state = decode_parse_state(oldstate);
     let mut idx = from.saturating_sub(1);
     let end = to.saturating_sub(1).min(chars.len());
+    // The scan must not read past TO: a two-char comment or string
+    // delimiter whose second character sits beyond the parse end does not
+    // exist for this parse (GNU's scan_sexps_forward never fetches past
+    // END, so `(parse-partial-sexp 1 4)' over "#|#|#" reports depth 1,
+    // not a phantom depth 2 opened by the "#|" straddling the boundary).
+    chars.truncate(end);
     // Whether we are inside a word/symbol token; token STARTS record the
     // level's last-sexp position (parse state element 2).
     let mut in_symbol = false;
@@ -2043,109 +2357,6 @@ pub(super) fn parse_forward(
     Ok(encode_parse_state(&state))
 }
 
-// Fallback for ambiguous or nested multi-character comment terminators.
-// The ordinary path uses one syntax-aware backward parse; this bounded
-// candidate check is needed only when that parse points into an earlier
-// unterminated/nested construct or an overlapping delimiter.
-fn find_complete_comment_ending_at(
-    interp: &mut Interpreter,
-    env: &Env,
-    table_id: u64,
-    chars: &[char],
-    point: usize,
-    minimum: usize,
-    comment_end_can_be_escaped: bool,
-) -> Option<usize> {
-    if point <= minimum {
-        return None;
-    }
-    let minimum_index = minimum.saturating_sub(1);
-    let mut best_start = None;
-    let mut idx = point.saturating_sub(2).min(chars.len().saturating_sub(1));
-    loop {
-        if let Some(start) = comment_start_at(interp, table_id, chars, idx)
-            && !position_is_in_string(interp, env, idx + 1)
-        {
-            let (end, closed) = skip_comment_with_status(
-                interp,
-                table_id,
-                chars,
-                idx,
-                start,
-                comment_end_can_be_escaped,
-            );
-            if closed && end + 1 == point {
-                best_start = Some(idx + 1);
-            }
-        }
-        if idx == minimum_index {
-            break;
-        }
-        idx -= 1;
-    }
-    if best_start.is_some() {
-        return best_start;
-    }
-
-    if point >= 3 && point - 2 < chars.len() {
-        let end_first = chars[point - 3];
-        let end_second = chars[point - 2];
-        let mut line_start = point.saturating_sub(2).min(chars.len().saturating_sub(1));
-        while line_start > minimum_index && chars[line_start - 1] != '\n' {
-            line_start -= 1;
-        }
-        let mut fallback = None;
-        let mut idx = point.saturating_sub(2).min(chars.len().saturating_sub(1));
-        loop {
-            if let Some(start) = comment_start_at(interp, table_id, chars, idx)
-                && !position_is_in_string(interp, env, idx + 1)
-                && let CommentKind::Block {
-                    end_first: candidate_end_first,
-                    end_second: candidate_end_second,
-                    ..
-                } = start.kind
-                && candidate_end_first == end_first
-                && candidate_end_second == end_second
-                && point >= idx + start.len + 3
-                && !(comment_end_can_be_escaped && preceded_by_odd_backslashes(chars, point - 3))
-            {
-                fallback = Some(idx + 1);
-            }
-            if idx == line_start {
-                break;
-            }
-            idx -= 1;
-        }
-        return fallback;
-    }
-
-    None
-}
-
-// The bounded backward fallback above exists for malformed and overlapping
-// comments, where a single parse from point-min cannot authoritatively select
-// the comment opener.  It must still use that parser as the grammar owner for
-// strings: a comment-looking character inside a string is never a candidate.
-fn position_is_in_string(interp: &mut Interpreter, env: &Env, position: usize) -> bool {
-    let saved_point = interp.buffer.point();
-    let state = parse_forward(
-        interp,
-        interp.buffer.point_min(),
-        position,
-        None,
-        false,
-        None,
-        CommentStop::No,
-        env,
-    );
-    interp.buffer.goto_char(saved_point);
-    state
-        .ok()
-        .and_then(|value| value.to_vec().ok())
-        .and_then(|items| items.get(3).cloned())
-        .is_some_and(|value| value.is_truthy())
-}
-
 fn syntax_entry_class_matches(entry: SyntaxEntry, class: char) -> bool {
     match class {
         // GNU accepts both ` ' and `-' as the whitespace class designator.
@@ -2358,90 +2569,126 @@ pub(super) fn forward_comment_impl(
         return Ok(Value::T);
     }
 
-    let mut point = original_point;
+    // Backward branch: syntax.c Fforward_comment's while (count1 < 0)
+    // loop, with back_comment as the grammar owner -- a local backward
+    // parity scan, falling forward from a defun-start anchor only on the
+    // ambiguous cases, never a whole-buffer reparse per query.
+    let mut from = original_point;
     for _ in 0..count.unsigned_abs() {
         loop {
-            if point <= minimum {
+            if from <= minimum {
                 interp.buffer.goto_char(minimum);
                 return Ok(Value::Nil);
             }
-            let idx = point - 2;
-            let ch = chars[idx];
-            let entry = syntax_entry_at_buffer_position(interp, table_id, ch, point - 1);
-            let comment_end_start = if matches!(
-                entry.class,
-                SyntaxClass::CommentEnd | SyntaxClass::GenericCommentDelimiter
-            ) {
-                Some(point - 1)
-            } else if entry.end_second && point >= minimum + 2 {
-                let first_position = point - 2;
-                let first = syntax_entry_at_buffer_position(
-                    interp,
-                    table_id,
-                    chars[first_position - 1],
-                    first_position,
-                );
-                first.end_first.then_some(first_position)
-            } else {
-                None
-            };
-            if let Some(end_start) = comment_end_start {
-                let quoted = comment_end_can_be_escaped
-                    && scan_char_quoted(interp, table_id, &chars, end_start as i64, minimum as i64);
-                if !quoted {
-                    let parsed_start =
-                        scan_back_comment(interp, env, end_start as i64).and_then(|start_pos| {
-                            let index = usize::try_from(start_pos).ok()?.checked_sub(1)?;
-                            let start = comment_start_at(interp, table_id, &chars, index)?;
-                            let (end, closed) = skip_comment_with_status(
-                                interp,
-                                table_id,
-                                &chars,
-                                index,
-                                start,
-                                comment_end_can_be_escaped,
-                            );
-                            (closed && end + 1 == point).then_some(start_pos as usize)
-                        });
-                    if let Some(start_pos) = parsed_start {
-                        point = start_pos;
+            from -= 1;
+            let c = chars[from - 1];
+            let quoted = scan_char_quoted(interp, table_id, &chars, from as i64, minimum as i64);
+            let entry = syntax_entry_at_buffer_position(interp, table_id, c, from);
+            let mut code = entry.class;
+            let mut comstyle = 0u8;
+            let mut comnested = entry.nested;
+            if code == SyntaxClass::CommentEnd {
+                comstyle = gnu_comment_style(&entry, None);
+            }
+            // Two-char comment ender: this is the second char, the first
+            // sits before it (and must itself be unquoted).
+            let mut two_char_ender = false;
+            if from > minimum && entry.end_second {
+                let first_pos = from - 1;
+                let first_c = chars[first_pos - 1];
+                let first_entry =
+                    syntax_entry_at_buffer_position(interp, table_id, first_c, first_pos);
+                if first_entry.end_first
+                    && !scan_char_quoted(
+                        interp,
+                        table_id,
+                        &chars,
+                        first_pos as i64,
+                        minimum as i64,
+                    )
+                {
+                    from = first_pos;
+                    code = SyntaxClass::CommentEnd;
+                    two_char_ender = true;
+                    comstyle = gnu_comment_style(&first_entry, Some(&entry));
+                    comnested = comnested || first_entry.nested;
+                }
+            }
+
+            if code == SyntaxClass::GenericCommentDelimiter {
+                // Skip to the first preceding unquoted comment fence.
+                let ini = from;
+                let mut fence_found = false;
+                while from > minimum {
+                    from -= 1;
+                    let fence_c = chars[from - 1];
+                    let fence_entry =
+                        syntax_entry_at_buffer_position(interp, table_id, fence_c, from);
+                    if fence_entry.class == SyntaxClass::GenericCommentDelimiter
+                        && !scan_char_quoted(
+                            interp,
+                            table_id,
+                            &chars,
+                            from as i64,
+                            minimum as i64,
+                        )
+                    {
+                        fence_found = true;
                         break;
                     }
                 }
-                if !quoted
-                    && let Some(start_pos) = find_complete_comment_ending_at(
+                if !fence_found {
+                    interp.buffer.goto_char(ini + 1);
+                    return Ok(Value::Nil);
+                }
+                // We have skipped one comment.
+                break;
+            } else if code == SyntaxClass::CommentEnd {
+                let found = if !quoted || !comment_end_can_be_escaped {
+                    back_comment_gnu(
                         interp,
                         env,
                         table_id,
                         &chars,
-                        point,
+                        from,
                         minimum,
+                        comnested,
+                        comstyle,
                         comment_end_can_be_escaped,
                     )
-                {
-                    point = start_pos;
-                    break;
+                } else {
+                    None
+                };
+                match found {
+                    Some(start) => {
+                        // We have skipped one comment.
+                        from = start;
+                        break;
+                    }
+                    None => {
+                        if c == '\n' {
+                            // This end-of-line is not an end-of-comment:
+                            // treat it like whitespace (CC-mode relies on
+                            // this).
+                            continue;
+                        }
+                        // Back to the end of this not-quite-endcomment.
+                        if two_char_ender {
+                            from += 1;
+                        }
+                        interp.buffer.goto_char(from + 1);
+                        return Ok(Value::Nil);
+                    }
                 }
-                if ch == '\n' {
-                    // A full parse can be confused by an earlier malformed
-                    // nested comment.  Only treat this end-comment newline as
-                    // whitespace after the bounded candidate scan has proved
-                    // that it closes no complete local comment.
-                    point -= 1;
-                    continue;
-                }
-                interp.buffer.goto_char(point);
+            } else if code == SyntaxClass::Whitespace && !quoted {
+                continue;
+            } else {
+                interp.buffer.goto_char(from + 1);
                 return Ok(Value::Nil);
             }
-            if entry.class == SyntaxClass::Whitespace {
-                point -= 1;
-                continue;
-            }
-            interp.buffer.goto_char(point);
-            return Ok(Value::Nil);
         }
     }
-    interp.buffer.goto_char(point);
+    interp.buffer.goto_char(from);
     Ok(Value::T)
 }
 
