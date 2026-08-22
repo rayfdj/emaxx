@@ -205,6 +205,16 @@ define_dispatch!(
                 overlay.beg = beg;
                 overlay.end = end;
                 overlay.buffer_id = Some(target_buffer_id);
+                // buffer.c Fmove_overlay: an overlay left empty by the
+                // move evaporates on the spot (rfn-eshadow's shadow
+                // overlay parks empty between shadowed states).
+                if overlay.beg == overlay.end
+                    && overlay
+                        .get_prop(&Value::Symbol("evaporate".into()))
+                        .is_some_and(|value| value.is_truthy())
+                {
+                    overlay.buffer_id = None;
+                }
                 interp
                     .get_buffer_by_id_mut(target_buffer_id)
                     .expect("resolved live buffer id")
@@ -241,6 +251,16 @@ define_dispatch!(
                 let value = args[2].clone();
                 if let Some(ov) = interp.find_overlay_mut(ov_id) {
                     ov.put_prop(key, value.clone());
+                    // buffer.c Foverlay_put: giving an already-empty
+                    // overlay the evaporate property deletes it on the
+                    // spot (rfn-eshadow's shadow overlay starts life
+                    // this way; move-overlay later revives it).
+                    if matches!(&args[1], Value::Symbol(prop) if prop == "evaporate")
+                        && value.is_truthy()
+                        && ov.beg == ov.end
+                    {
+                        ov.buffer_id = None;
+                    }
                 }
                 Ok(value)
             }

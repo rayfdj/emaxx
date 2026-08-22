@@ -85,6 +85,131 @@ fn validate_popup_menu(interp: &Interpreter, menu: &Value) -> Result<(), LispErr
     Ok(())
 }
 
+/// The first (X . Y) coordinate pair inside POSITION, whatever of the
+/// accepted position forms carries it.
+fn popup_position_xy(position: &Value) -> Option<(i64, i64)> {
+    match position {
+        Value::Cons(_) => {
+            if let (Ok(Value::Integer(x)), Ok(Value::Integer(y))) = (position.car(), position.cdr())
+            {
+                return Some((x, y));
+            }
+            let mut tail = position.clone();
+            while let Value::Cons(_) = tail {
+                if let Ok(car) = tail.car()
+                    && let Some(xy) = popup_position_xy(&car)
+                {
+                    return Some(xy);
+                }
+                tail = tail.cdr().unwrap_or(Value::Nil);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// term.c's tty_menu_show for a single menu keymap: draw and activate
+/// the dropdown through the frontend, under tty-menu-navigation-map.
+fn tty_popup_menu(
+    interp: &mut Interpreter,
+    position: &Value,
+    menu: &Value,
+) -> Result<Value, LispError> {
+    let mut env = Vec::new();
+    let (mut x, mut y) = popup_position_xy(position).unwrap_or((0, 0));
+    // A click event's posn carries window-relative coordinates; the
+    // dropdown draws in frame coordinates (Fx_popup_menu converts the
+    // same way before calling the terminal's menu hook).
+    if let Some(window_id) = position
+        .to_vec()
+        .ok()
+        .and_then(|items| items.get(1)?.to_vec().ok())
+        .and_then(|posn| match posn.first() {
+            Some(Value::Record(id)) => Some(*id),
+            _ => None,
+        })
+    {
+        let layout = crate::lisp::primitives::window_render_layout(interp);
+        if let Some(info) = layout.iter().find(|info| info.window_id == window_id) {
+            x += info.left as i64;
+            y += info.top as i64;
+        }
+    }
+    // The pane title is the menu keymap's prompt string ("File").
+    let title = {
+        let projected = crate::lisp::primitives::public_keymap_value(interp, menu);
+        let mut title = String::new();
+        let mut tail = projected.cdr().unwrap_or(Value::Nil);
+        while let Value::Cons(_) = tail {
+            if let Ok(car) = tail.car()
+                && let Ok(text) = string_text(&car)
+            {
+                title = text;
+                break;
+            }
+            tail = tail.cdr().unwrap_or(Value::Nil);
+        }
+        title
+    };
+    let pane = crate::lisp::primitives::tty_menu_pane_from_keymap(interp, &mut env, menu, &title);
+    if pane.items.is_empty() {
+        return Ok(Value::Nil);
+    }
+    let x0 = x.max(1) as usize;
+    let y0 = y.max(1) as usize;
+    // GNU specbinds overriding-terminal-local-map to the navigation map
+    // for the whole activation, so ordinary key resolution answers the
+    // tty-menu-* commands.
+    let navigation = interp
+        .lookup_var("tty-menu-navigation-map", &env)
+        .unwrap_or(Value::Nil);
+    let restore =
+        interp.bind_special_dynamic("overriding-terminal-local-map", navigation, &mut env)?;
+    let outcome = crate::lisp::primitives::run_tty_menu_executor(interp, &mut env, &pane, x0, y0);
+    interp.restore_special_dynamic(restore, &mut env)?;
+    match outcome {
+        Some(crate::lisp::primitives::TtyMenuOutcome::Selected(index)) => Ok(Value::list([pane
+            .items
+            .get(index)
+            .map(|item| item.key.clone())
+            .unwrap_or(Value::Nil)])),
+        Some(
+            direction @ (crate::lisp::primitives::TtyMenuOutcome::NextMenu
+            | crate::lisp::primitives::TtyMenuOutcome::PrevMenu),
+        ) => {
+            // tty_menu_new_item_coords: the adjacent menu-bar item's
+            // column, wrapping at either end.
+            let items = crate::lisp::primitives::menu_bar_row_items(interp, &mut env);
+            if items.is_empty() {
+                return Ok(Value::Nil);
+            }
+            let current = items
+                .iter()
+                .position(|(caption, _, column)| {
+                    (*column as i64) <= x && x < (*column + caption.chars().count() + 1) as i64
+                })
+                .unwrap_or(0);
+            let next = match direction {
+                crate::lisp::primitives::TtyMenuOutcome::NextMenu => (current + 1) % items.len(),
+                _ => (current + items.len() - 1) % items.len(),
+            };
+            Ok(Value::cons(
+                Value::Integer(items[next].2 as i64),
+                Value::Integer(0),
+            ))
+        }
+        Some(crate::lisp::primitives::TtyMenuOutcome::NoSelect) => Ok(Value::Nil),
+        Some(crate::lisp::primitives::TtyMenuOutcome::Quit) => {
+            // TTYM_NO_SELECT with MENU_FOR_CLICK: the event-shaped
+            // menu-bar position counts as a click, so cancelling answers
+            // nil without signalling quit (no "Quit" echo, as GNU).
+            Ok(Value::Nil)
+        }
+        None => Ok(Value::Nil),
+    }
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -97,10 +222,29 @@ define_dispatch!(
                 require_any_frame(args.get(2))?;
                 require_fixnum(&args[0])?;
                 require_fixnum(&args[1])?;
-                // Emaxx has no native-toolkit menu bar.  Its terminal frame does
-                // not retain GNU's redisplay-time menu item geometry, so there is
-                // no menu symbol to resolve at these coordinates.
-                Ok(Value::Nil)
+                let x = args[0].as_integer()?;
+                let y = args[1].as_integer()?;
+                // menu.c: the menu-bar item whose caption spans column X
+                // of row Y (the item's recorded display geometry).  A
+                // click in the gap after a caption still counts as that
+                // item, GNU's <= comparison against the next start.
+                if y != 0 {
+                    return Ok(Value::Nil);
+                }
+                let mut env = Vec::new();
+                let items = crate::lisp::primitives::menu_bar_row_items(interp, &mut env);
+                let mut chosen = Value::Nil;
+                for (caption, key, column) in items {
+                    if (column as i64) <= x {
+                        if x < (column + caption.chars().count() + 1) as i64 {
+                            chosen = key;
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                Ok(chosen)
             }
             "x-begin-drag" => {
                 need_arg_range(name, args, 1, 6)?;
@@ -182,7 +326,13 @@ define_dispatch!(
                 }
                 validate_popup_position(interp, &args[0])?;
                 validate_popup_menu(interp, &args[1])?;
-                // Like GNU's initial batch frame, Emaxx has no native menu hook.
+                // A live tty frontend shows the real dropdown (term.c's
+                // tty_menu_show); batch keeps GNU's menu-hook-less answer.
+                if crate::lisp::primitives::has_tty_menu_executor()
+                    && is_keymap_value(interp, &args[1])
+                {
+                    return tty_popup_menu(interp, &args[0], &args[1]);
+                }
                 Ok(Value::Nil)
             }
             "x-select-font" => {

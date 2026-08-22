@@ -200,6 +200,10 @@ impl Interpreter {
             .and_then(|vector| vector_slot_value(&vector, index).ok())
     }
 
+    pub(crate) fn face_definitions_generation(&self) -> u64 {
+        self.face_change_count
+    }
+
     pub(crate) fn set_lisp_face_attribute(
         &mut self,
         name: &str,
@@ -209,6 +213,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let vector = self.ensure_lisp_face(name, !global, false)?;
         aset_vector_value(&vector, index, value.clone())?;
+        self.face_change_count += 1;
         if global {
             self.sync_new_frame_face_hash_entry(name)?;
         }

@@ -446,10 +446,12 @@ define_dispatch!(
             }
             "where-is-internal" => {
                 need_arg_range(name, args, 1, 5)?;
-                let command = args[0].as_symbol()?;
                 let first_only = args.get(2).is_some_and(Value::is_truthy);
+                let nomenus = first_only
+                    && !matches!(args.get(2), Some(Value::Symbol(mode)) if mode == "non-ascii");
                 let keymaps = where_is_internal_maps(interp, args.get(1), env)?;
-                let matches = where_is_internal(interp, command, &keymaps, first_only, env)?;
+                let matches =
+                    where_is_internal(interp, &args[0], &keymaps, first_only, nomenus, env)?;
                 if first_only {
                     Ok(matches.into_iter().next().unwrap_or(Value::Nil))
                 } else {

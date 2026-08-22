@@ -98,6 +98,25 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
         // the native set-frame-{width,height,size} operations own geometry.
         return;
     }
+    if parameter == "tty-color-mode" {
+        // GNU's channel for changing a tty frame's color support
+        // (term.c's set_tty_color_mode): tty_setup_colors publishes the
+        // count, then safe_calln (Qtty_set_up_initial_frame_faces) has
+        // faces.el recompute every face against the new display.
+        let cells = match &value {
+            Value::Integer(mode) if *mode > 1 => *mode,
+            Value::Integer(_) | Value::Nil => 0,
+            _ => 8,
+        };
+        interp.set_tty_display_colors(cells);
+        if let Ok(forms) =
+            crate::lisp::reader::Reader::new("(tty-set-up-initial-frame-faces)").read_all()
+            && let Some(form) = forms.first()
+        {
+            let _ = interp.eval(form, &mut Vec::new());
+        }
+    }
+    let menu_bar_lines_changed = parameter == "menu-bar-lines";
     let Some(frame) = interp.frame_state_mut(id) else {
         return;
     };
@@ -112,6 +131,11 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
         *current = value;
     } else {
         frame.parameter_overrides.insert(0, (parameter, value));
+    }
+    if menu_bar_lines_changed {
+        // menu-bar-mode stored a new line count; on a live tty the
+        // window tree re-derives under it (frame.c adjust_frame_size).
+        interp.refresh_tty_frame_layout();
     }
 }
 

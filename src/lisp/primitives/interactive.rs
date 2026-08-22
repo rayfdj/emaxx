@@ -260,19 +260,208 @@ pub(crate) fn parse_interactive_string(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
+    // callint.c's leading flag characters, handled once at the start of
+    // the whole spec: `*' barfs on a read-only buffer, `^' runs the
+    // shift-selection protocol, `@' selects the event's window (a mouse
+    // affair the keyboard frontend has no window position for), and `-'
+    // is ignored for Lucid compatibility.
+    let mut rest = spec;
+    loop {
+        match rest.chars().next() {
+            Some('*') => {
+                super::call(interp, "barf-if-buffer-read-only", &[], env)?;
+            }
+            Some('^') => {
+                // callint.c:410 `call0 (Qhandle_shift_selection)': the
+                // handler is simple.el's, reached through the ordinary
+                // function cell, and GNU has no missing-function
+                // tolerance -- a runtime without simple.el loaded
+                // signals void-function exactly as GNU would.
+                interp.call_function_value(
+                    Value::Symbol("handle-shift-selection".into()),
+                    Some("handle-shift-selection"),
+                    &[],
+                    env,
+                )?;
+            }
+            Some('@') | Some('-') => {}
+            _ => break,
+        }
+        rest = &rest[1..];
+    }
+    let call1 = |interp: &mut Interpreter, env: &mut Env, name: &str, args: &[Value]| {
+        interp.call_function_value(Value::Symbol(name.into()), Some(name), args, env)
+    };
+    // callint.c's check_mark: the mark must exist in this buffer, and
+    // under transient-mark-mode an inactive mark signals `mark-inactive'
+    // unless mark-even-if-inactive overrides.
+    let check_mark =
+        |interp: &mut Interpreter, env: &mut Env, for_region: bool| -> Result<usize, LispError> {
+            let mark = interp.buffer.mark().ok_or_else(|| {
+                LispError::Signal(
+                    if for_region {
+                        "The mark is not set now, so there is no region"
+                    } else {
+                        "The mark is not set now"
+                    }
+                    .into(),
+                )
+            })?;
+            let transient = interp
+                .lookup_var("transient-mark-mode", env)
+                .is_some_and(|value| value.is_truthy());
+            let even_if_inactive = interp
+                .lookup_var("mark-even-if-inactive", env)
+                .is_some_and(|value| value.is_truthy());
+            if transient && !even_if_inactive && !interp.buffer.mark_active() {
+                return Err(LispError::SignalValue(Value::list([Value::Symbol(
+                    "mark-inactive".into(),
+                )])));
+            }
+            Ok(mark)
+        };
     let mut values = Vec::new();
-    for line in spec.split('\n') {
+    // GNU formats each prompt with `format-message' against the
+    // arguments read so far (callint.c builds callint_message from the
+    // visargs); a later prompt's %s shows the earlier answer.
+    let mut visible: Vec<Value> = Vec::new();
+    for line in rest.split('\n') {
         if line.is_empty() {
             continue;
         }
-        let mut chars = line.chars().skip_while(|ch| matches!(ch, '*' | '@' | '^'));
+        let mut chars = line.chars();
         let Some(code) = chars.next() else {
             continue;
         };
+        let raw_prompt: String = chars.collect();
+        // GNU builds every prompt through Fformat_message against the
+        // visible arguments read so far; that also converts quote
+        // characters per text-quoting-style, exactly as the glass shows.
+        let formatted_prompt = |interp: &mut Interpreter,
+                                env: &mut Env,
+                                visible: &[Value]|
+         -> Result<Value, LispError> {
+            let mut args = vec![Value::String(raw_prompt.clone().into())];
+            args.extend(visible.iter().cloned());
+            call1(interp, env, "format-message", &args)
+        };
+        // Each answer's visible form feeds later prompts' formats; the
+        // no-I/O codes leave nil there exactly as GNU's visargs do.
+        let mut seen = Value::Nil;
         match code {
-            'k' => {
+            'a' | 'C' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+                let predicate =
+                    Value::Symbol(if code == 'a' { "fboundp" } else { "commandp" }.into());
+                let name = call1(
+                    interp,
+                    env,
+                    "completing-read",
+                    &[message, obarray, predicate, Value::T],
+                )?;
+                let text = crate::lisp::primitives::string_text(&name)?;
+                seen = Value::String(text.clone().into());
+                values.push(Value::Symbol(text.into()));
+            }
+            'b' | 'B' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let current = call1(interp, env, "current-buffer", &[])?;
+                let in_minibuffer = call1(interp, env, "window-minibuffer-p", &[])
+                    .map(|flag| flag.is_truthy())
+                    .unwrap_or(false);
+                let default = if code == 'B' || in_minibuffer {
+                    call1(interp, env, "other-buffer", &[current])?
+                } else {
+                    current
+                };
+                let require = if code == 'b' { Value::T } else { Value::Nil };
+                let name = call1(interp, env, "read-buffer", &[message, default, require])?;
+                seen = name.clone();
+                values.push(name);
+            }
+            'c' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                // GNU shows the prompt in minibuffer-prompt face while
+                // read-char waits on the echo area.
+                let message = call1(
+                    interp,
+                    env,
+                    "propertize",
+                    &[
+                        message,
+                        Value::Symbol("face".into()),
+                        Value::Symbol("minibuffer-prompt".into()),
+                    ],
+                )
+                .unwrap_or_else(|_| Value::String(raw_prompt.clone().into()));
+                let event = call1(interp, env, "read-char", &[message])?;
+                if !matches!(event, Value::Integer(_)) {
+                    return Err(LispError::Signal("Non-character input-event".into()));
+                }
+                seen = call1(interp, env, "char-to-string", std::slice::from_ref(&event))?;
+                values.push(event);
+            }
+            'd' => values.push(Value::Integer(interp.buffer.point() as i64)),
+            'D' | 'f' | 'F' | 'G' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                // callint.c's read_file_name helper: Fread_file_name
+                // (PROMPT, nil, DEFAULT, MUSTMATCH, INITIAL, PREDICATE).
+                let (default, mustmatch, initial, predicate) = match code {
+                    'D' => (
+                        interp
+                            .lookup_var("default-directory", env)
+                            .unwrap_or(Value::Nil),
+                        Value::Symbol("lambda".into()),
+                        Value::Nil,
+                        Value::Symbol("file-directory-p".into()),
+                    ),
+                    'f' => (
+                        Value::Nil,
+                        Value::Symbol("lambda".into()),
+                        Value::Nil,
+                        Value::Nil,
+                    ),
+                    'G' => (Value::Nil, Value::Nil, Value::String("".into()), Value::Nil),
+                    _ => (Value::Nil, Value::Nil, Value::Nil, Value::Nil),
+                };
+                let name = call1(
+                    interp,
+                    env,
+                    "read-file-name",
+                    &[message, Value::Nil, default, mustmatch, initial, predicate],
+                )?;
+                seen = name.clone();
+                values.push(name);
+            }
+            'e' => {
+                // The invoking event, which must carry parameters (a
+                // mouse posn); keyboard keys never do.
+                let event = interp
+                    .lookup_var("this-command-keys-vector", env)
+                    .and_then(|keys| keys.to_vec().ok())
+                    .and_then(|events| {
+                        events
+                            .into_iter()
+                            .skip(1)
+                            .find(|event| matches!(event, Value::Cons(_)))
+                    });
+                match event {
+                    Some(event) => values.push(event),
+                    None => {
+                        return Err(LispError::Signal(
+                            "command must be bound to an event with parameters".into(),
+                        ));
+                    }
+                }
+            }
+            'k' | 'K' => {
                 let ch = unread_command_event_char(&pop_unread_command_event_value(interp, env)?)?;
                 values.push(Value::String(ch.to_string().into()));
+            }
+            'm' => {
+                let mark = check_mark(interp, env, false)?;
+                values.push(Value::Integer(mark as i64));
             }
             'p' => {
                 let prefix = interp
@@ -287,28 +476,110 @@ pub(crate) fn parse_interactive_string(
                         .unwrap_or(Value::Nil),
                 );
             }
-            'd' => {
-                // GNU callint.c: the value of point as a number, no I/O.
-                values.push(Value::Integer(interp.buffer.point() as i64));
+            // "i": an ignored argument — always nil, no I/O (window.el's
+            // commands pass their INTERACTIVE params through it).
+            'i' => values.push(Value::Nil),
+            'n' | 'N' => {
+                let prefix = interp
+                    .lookup_var("current-prefix-arg", env)
+                    .unwrap_or(Value::Nil);
+                if code == 'N' && prefix.is_truthy() {
+                    values.push(prefix_numeric_value(&prefix)?);
+                } else {
+                    let message = formatted_prompt(interp, env, &visible)?;
+                    let number = call1(interp, env, "read-number", &[message])?;
+                    seen = call1(
+                        interp,
+                        env,
+                        "number-to-string",
+                        std::slice::from_ref(&number),
+                    )
+                    .unwrap_or(Value::Nil);
+                    values.push(number);
+                }
             }
-            'N' => {
+            'r' => {
+                let mark = check_mark(interp, env, true)?;
+                let point = interp.buffer.point();
+                values.push(Value::Integer(point.min(mark) as i64));
+                values.push(Value::Integer(point.max(mark) as i64));
+            }
+            's' | 'M' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                // 'M' inherits the input method; the tty session reads
+                // plain strings either way.
+                let inherit = if code == 'M' { Value::T } else { Value::Nil };
+                let text = call1(
+                    interp,
+                    env,
+                    "read-string",
+                    &[message, Value::Nil, Value::Nil, Value::Nil, inherit],
+                )?;
+                seen = text.clone();
+                values.push(text);
+            }
+            'S' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let text = call1(
+                    interp,
+                    env,
+                    "read-string",
+                    &[message, Value::Nil, Value::Nil, Value::Nil, Value::Nil],
+                )?;
+                seen = text.clone();
+                values.push(Value::Symbol(
+                    crate::lisp::primitives::string_text(&text)?.into(),
+                ));
+            }
+            'U' => {
+                // The up-event recorded by a preceding k/K; the keyboard
+                // frontend records none, exactly like GNU without one.
+                values.push(Value::Nil);
+            }
+            'v' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let variable = call1(interp, env, "read-variable", &[message])?;
+                seen = interp
+                    .lookup_var("minibuffer-history", env)
+                    .and_then(|history| history.car().ok())
+                    .unwrap_or(Value::Nil);
+                values.push(variable);
+            }
+            'x' | 'X' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let reader = if code == 'x' {
+                    "read-minibuffer"
+                } else {
+                    "eval-minibuffer"
+                };
+                let form = call1(interp, env, reader, &[message])?;
+                values.push(form);
+            }
+            'z' => {
+                let message = formatted_prompt(interp, env, &visible)?;
+                let coding = call1(interp, env, "read-coding-system", &[message, Value::Nil])?;
+                values.push(coding);
+            }
+            'Z' => {
                 let prefix = interp
                     .lookup_var("current-prefix-arg", env)
                     .unwrap_or(Value::Nil);
                 if prefix.is_truthy() {
-                    values.push(prefix_numeric_value(&prefix)?);
+                    let message = formatted_prompt(interp, env, &visible)?;
+                    let coding = call1(interp, env, "read-non-nil-coding-system", &[message])?;
+                    values.push(coding);
                 } else {
-                    let prompt = chars.collect::<String>();
-                    values.push(interp.call_function_value(
-                        Value::Symbol("read-number".into()),
-                        Some("read-number"),
-                        &[Value::String(prompt.into())],
-                        env,
-                    )?);
+                    values.push(Value::Nil);
                 }
             }
             _ => return Err(invalid_interactive_control_letter(code)),
         }
+        if seen.is_nil()
+            && let Some(Value::String(_) | Value::StringObject(_)) = values.last()
+        {
+            seen = values.last().cloned().unwrap_or(Value::Nil);
+        }
+        visible.push(seen);
     }
     Ok(values)
 }
@@ -324,12 +595,528 @@ thread_local! {
 
 pub(crate) type TtyEventReader = Box<dyn FnMut() -> Option<Value>>;
 
+// A non-blocking companion to the reader: wait briefly for one event and
+// answer None when the terminal stays quiet.  Blocking reads poll
+// through it so ripe timers keep firing while a command waits for input
+// (GNU's read_char runs timer_check inside its wait) — the minibuffer's
+// own reads included.
+thread_local! {
+    static TTY_EVENT_POLLER: std::cell::RefCell<Option<TtyEventPoller>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) type TtyEventPoller = Box<dyn FnMut() -> Option<Option<Value>>>;
+
 pub(crate) fn set_tty_event_reader(reader: Option<TtyEventReader>) {
     TTY_EVENT_READER.with_borrow_mut(|slot| *slot = reader);
 }
 
+pub(crate) fn set_tty_event_poller(poller: Option<TtyEventPoller>) {
+    TTY_EVENT_POLLER.with_borrow_mut(|slot| *slot = poller);
+}
+
 fn read_via_tty_event_reader() -> Option<Option<Value>> {
     TTY_EVENT_READER.with_borrow_mut(|slot| slot.as_mut().map(|reader| reader()))
+}
+
+fn poll_via_tty_event_poller() -> Option<Option<Option<Value>>> {
+    TTY_EVENT_POLLER.with_borrow_mut(|slot| slot.as_mut().map(|poller| poller()))
+}
+
+/// Whether a terminal frontend is feeding events this session; the
+/// minibuffer reads through its own event loop when one is.
+pub(crate) fn has_tty_event_reader() -> bool {
+    TTY_EVENT_READER.with_borrow(|slot| slot.is_some())
+}
+
+/// What a pending key sequence resolves to under the live keymaps.
+pub(crate) enum KeyResolution {
+    Command(Value),
+    Prefix,
+    Undefined,
+}
+
+fn command_loop_call(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    interp.call_function_value(Value::Symbol(name.into()), None, args, env)
+}
+
+// GNU's kboard->echo_string for the frontend: the echo of a key
+// sequence that is still pending while its read blocks (the mouse-menu
+// popup).  The blocking reader displays it once `echo-keystrokes' idle
+// seconds pass, exactly as read_char's echo timer does.
+thread_local! {
+    static PENDING_KEYSTROKE_ECHO: std::cell::RefCell<
+        Option<(String, crate::lisp::primitives::EchoSpans)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn set_pending_keystroke_echo(
+    echo: Option<(String, crate::lisp::primitives::EchoSpans)>,
+) {
+    PENDING_KEYSTROKE_ECHO.with_borrow_mut(|slot| *slot = echo);
+}
+
+pub(crate) fn take_pending_keystroke_echo() -> Option<(String, crate::lisp::primitives::EchoSpans)>
+{
+    PENDING_KEYSTROKE_ECHO.with_borrow_mut(|slot| slot.take())
+}
+
+/// keyboard.c's echo pipeline for a pending key sequence: echo_add_key
+/// renders each event space-separated (a composite event echoes its
+/// bare head symbol name, a character its key description), echo_dash
+/// appends the trailing dash, and — when `echo-keystrokes-help' is on —
+/// help.el's own `help--append-keystrokes-help' decides whether the C-h
+/// hint follows, reading `this-single-command-keys' against the active
+/// maps and propertizing the key through substitute-command-keys.
+pub(crate) fn pending_keystroke_echo(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pending: &[Value],
+) -> (String, crate::lisp::primitives::EchoSpans) {
+    let mut text = String::new();
+    for event in pending {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        let head = match event {
+            Value::Cons(_) => event.car().unwrap_or(Value::Nil),
+            other => other.clone(),
+        };
+        match head {
+            Value::Symbol(name) => text.push_str(&name),
+            other => {
+                let description = super::call(
+                    interp,
+                    "single-key-description",
+                    std::slice::from_ref(&other),
+                    env,
+                )
+                .ok()
+                .and_then(|value| crate::lisp::primitives::string_text(&value).ok());
+                match description {
+                    Some(description) => text.push_str(&description),
+                    None => text.push_str(&format!("{other}")),
+                }
+            }
+        }
+    }
+    // echo_dash: the temporary trailing dash of an unfinished sequence.
+    text.push('-');
+    let help_wanted = interp
+        .lookup_var("echo-keystrokes-help", env)
+        .is_none_or(|value| value.is_truthy());
+    if help_wanted
+        && interp
+            .lookup_function("help--append-keystrokes-help", env)
+            .is_ok()
+    {
+        // The Lisp side reads this-single-command-keys, exactly what
+        // read_key_sequence has accumulated at this point.
+        set_command_key_state(interp, pending.to_vec(), pending.to_vec(), env);
+        // help.el's function is interpreted Lisp: route through the
+        // full function channel, not the builtin dispatch.
+        if let Ok(appended) = interp.call_function_value(
+            Value::Symbol("help--append-keystrokes-help".into()),
+            Some("help--append-keystrokes-help"),
+            &[Value::String(text.clone().into())],
+            env,
+        ) && let Ok(appended_text) = crate::lisp::primitives::string_text(&appended)
+        {
+            let spans = crate::lisp::primitives::string_face_spans(&appended);
+            return (appended_text, spans);
+        }
+    }
+    (text, Vec::new())
+}
+
+/// The event-head symbol of a parameterized mouse click event —
+/// ("C-down-mouse-3" POSN) answers the symbol; anything else nil.
+fn mouse_event_head(event: &Value) -> Option<String> {
+    let items = event.to_vec().ok()?;
+    match (items.first(), items.get(1)) {
+        (Some(Value::Symbol(head)), Some(Value::Cons(_))) if head.contains("mouse-") => {
+            Some(head.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Whether a click event's posn sits on the menu-bar area.
+fn mouse_event_on_menu_bar(event: &Value) -> bool {
+    event
+        .to_vec()
+        .ok()
+        .and_then(|items| items.get(1)?.to_vec().ok())
+        .is_some_and(|posn| matches!(posn.get(1), Some(Value::Symbol(area)) if area == "menu-bar"))
+}
+
+/// Resolve a pending key sequence through the runtime's own keymaps
+/// (`key-binding'), classifying strict prefixes so a multi-key sequence
+/// keeps reading.  This is the single resolution path for every command
+/// loop — the frame's and the minibuffer's recursive one.
+pub(crate) fn resolve_key_sequence(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pending: &[Value],
+) -> KeyResolution {
+    // keyboard.c's read_key_sequence: a click's keymap key is its head
+    // symbol, and a click on the menu-bar area inserts the fake
+    // `menu-bar' prefix before it ([menu-bar mouse-1] finds
+    // menu-bar-open-mouse).
+    let mut lookup_events: Vec<Value> = Vec::with_capacity(pending.len() + 1);
+    for (index, event) in pending.iter().enumerate() {
+        if let Some(head) = mouse_event_head(event) {
+            if index == 0 && mouse_event_on_menu_bar(event) {
+                lookup_events.push(Value::Symbol("menu-bar".into()));
+            }
+            lookup_events.push(Value::Symbol(head.into()));
+        } else {
+            lookup_events.push(event.clone());
+        }
+    }
+    let key_vector =
+        Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(lookup_events));
+    let binding = match command_loop_call(interp, env, "key-binding", &[key_vector, Value::T]) {
+        Ok(binding) => binding,
+        Err(_) => Value::Nil,
+    };
+    if binding.is_nil() {
+        // An unresolved strict prefix keeps reading (C-x alone answers nil
+        // while C-x C-f resolves), so probe whether any longer sequence can
+        // still match by asking for the prefix's own keymap.
+        if pending_sequence_is_prefix(interp, env, pending) {
+            return KeyResolution::Prefix;
+        }
+        return KeyResolution::Undefined;
+    }
+    // A prefix can answer as the keymap itself or as a prefix command
+    // symbol (`Control-X-prefix') whose function cell holds the keymap;
+    // GNU resolves through the indirection before dispatching.
+    let resolved = if let Value::Symbol(name) = &binding {
+        interp
+            .lookup_function(name, env)
+            .unwrap_or_else(|_| binding.clone())
+    } else {
+        binding.clone()
+    };
+    if crate::lisp::primitives::is_keymap_value(interp, &resolved) {
+        // A keymap bound to a parameterized click pops up as a menu
+        // (read_key_sequence's mouse-menu path — C-down-mouse-3's
+        // menu-item filter yields the menu-bar keymap); the chosen
+        // item's key path finishes the sequence.
+        if let Some(event) = pending
+            .last()
+            .filter(|event| mouse_event_head(event).is_some())
+            && has_tty_menu_executor()
+        {
+            // The sequence stays pending while the menu is up: GNU
+            // holds its echo in kboard->echo_string and read_char's
+            // timer displays it after `echo-keystrokes' idle seconds.
+            // Compute it through the real machinery now; the executor's
+            // modal read owns the timing.
+            let echo = pending_keystroke_echo(interp, env, pending);
+            set_pending_keystroke_echo(Some(echo));
+            let answer = super::call(
+                interp,
+                "x-popup-menu",
+                &[(*event).clone(), resolved.clone()],
+                env,
+            )
+            .unwrap_or(Value::Nil);
+            let path = answer.to_vec().unwrap_or_default();
+            if path.is_empty() {
+                // Cancelled: the sequence dissolves with no command and
+                // no quit (MENU_FOR_CLICK).
+                return KeyResolution::Command(Value::Symbol("ignore".into()));
+            }
+            let vector =
+                Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(path));
+            let chosen = super::call(interp, "lookup-key", &[resolved, vector], env)
+                .ok()
+                .filter(|value| !value.is_nil())
+                .and_then(|value| {
+                    crate::lisp::primitives::keymap_get_keyelt(interp, &value, true, env).ok()
+                });
+            if let Some(command) = chosen.filter(|value| !value.is_nil()) {
+                return KeyResolution::Command(command);
+            }
+            return KeyResolution::Command(Value::Symbol("ignore".into()));
+        }
+        KeyResolution::Prefix
+    } else {
+        KeyResolution::Command(binding)
+    }
+}
+
+fn pending_sequence_is_prefix(interp: &mut Interpreter, env: &mut Env, pending: &[Value]) -> bool {
+    // ESC alone is always a live prefix (meta encoding).
+    if pending.len() == 1 && matches!(pending.first(), Some(Value::Integer(27))) {
+        return true;
+    }
+    let key_vector = Value::list(
+        std::iter::once(Value::Symbol("vector-literal".into())).chain(pending.iter().cloned()),
+    );
+    // `key-binding' with ACCEPT-DEFAULT nil still answers prefix keymaps.
+    command_loop_call(interp, env, "key-binding", &[key_vector])
+        .map(|binding| {
+            !binding.is_nil()
+                && command_loop_call(interp, env, "keymapp", &[binding])
+                    .map(|value| value.is_truthy())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// Execute one resolved command with GNU's full per-command ceremony:
+/// undo boundary, echo clearing, key-state publication, prefix handoff,
+/// pre/post-command hooks around `call-interactively', and the
+/// last-command bookkeeping.  Shared by the frame command loop and the
+/// minibuffer's recursive loop.
+pub(crate) fn execute_command_binding(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    binding: Value,
+    keys: &[Value],
+    last_event: Value,
+) -> Result<(), LispError> {
+    // GNU's command loop separates each command into its own undo group
+    // (undo-auto--add-boundary after every command); `undo' relies on the
+    // boundary to skip before replaying the previous group.
+    interp.buffer.push_undo_boundary();
+    // keyboard.c read_char wipes a lingering message when the next input
+    // event arrives: the channel empties before the command runs, but the
+    // glass only catches up at the next redisplay — so a command that
+    // blocks with redisplay frozen (the F10 menu) keeps the old message
+    // visible until an explicit `message' repaints the row.
+    crate::lisp::primitives::expire_echo_area_message();
+    interp.set_variable("last-command-event", last_event, env);
+    // The canonical key-state channel: this-command-keys,
+    // this-single-command-keys, and their raw variants all read it
+    // (isearch's pre-command-hook indexes the vector).
+    set_command_key_state(interp, keys.to_vec(), keys.to_vec(), env);
+    interp.set_variable(
+        "this-command-keys-vector",
+        Value::list(
+            std::iter::once(Value::Symbol("vector-literal".into())).chain(keys.iter().cloned()),
+        ),
+        env,
+    );
+    interp.set_variable("this-command", binding.clone(), env);
+    // GNU's command loop hands the accumulated prefix to the command:
+    // current-prefix-arg takes prefix-arg's value and prefix-arg clears
+    // before the call; last-prefix-arg keeps it for the next cycle.
+    let prefix = interp.lookup_var("prefix-arg", env).unwrap_or(Value::Nil);
+    interp.set_variable("current-prefix-arg", prefix.clone(), env);
+    interp.set_variable("prefix-arg", Value::Nil, env);
+    // Timers may have messed with `deactivate-mark'; the command starts
+    // with it reset (keyboard.c command_loop_1).
+    interp.set_variable("deactivate-mark", Value::Nil, env);
+    let modified_before = (
+        interp.current_buffer_id(),
+        interp.buffer.chars_modified_tick(),
+    );
+    // pre-command-hook may rewrite `this-command' (isearch's exit path
+    // does); GNU executes whatever the hook left there.
+    let buffer_id = interp.current_buffer_id();
+    crate::lisp::primitives::safe_run_named_hooks(interp, "pre-command-hook", env, Some(buffer_id))
+        .unwrap_or(());
+    let dispatched = interp
+        .lookup_var("this-command", env)
+        .filter(|command| !command.is_nil())
+        .unwrap_or_else(|| binding.clone());
+    // GNU's command_execute is a thin wrapper over call-interactively
+    // (prefix-arg bookkeeping, kbd-macro expansion); the runtime does not
+    // define it yet, so drive the interactive call directly.
+    let result = command_loop_call(
+        interp,
+        env,
+        "call-interactively",
+        std::slice::from_ref(&dispatched),
+    )
+    .map(|_| ());
+    let buffer_id = interp.current_buffer_id();
+    crate::lisp::primitives::safe_run_named_hooks(
+        interp,
+        "post-command-hook",
+        env,
+        Some(buffer_id),
+    )
+    .unwrap_or(());
+    // After post-command-hook GNU deactivates the mark when the command
+    // asked for it (keyboard.c calls the real `deactivate-mark' so its
+    // hook runs).  Buffer-modifying primitives are insdel.c's trigger
+    // for the same flag; until every native arm publishes it, a changed
+    // modification tick stands in for that side of the protocol.
+    let deactivate = interp
+        .lookup_var("deactivate-mark", env)
+        .is_some_and(|value| value.is_truthy())
+        || (interp.current_buffer_id() == modified_before.0
+            && interp.buffer.chars_modified_tick() != modified_before.1);
+    let mark_active = interp
+        .lookup_var("mark-active", env)
+        .is_some_and(|value| value.is_truthy());
+    if deactivate && mark_active {
+        // `deactivate-mark' is GNU simple.el's; keyboard.c reaches it as
+        // an ordinary Lisp call (call0), never through native dispatch.
+        let _ = interp.call_function_value(
+            Value::Symbol("deactivate-mark".into()),
+            Some("deactivate-mark"),
+            &[],
+            env,
+        );
+    }
+    // GNU takes last-command from this-command AFTER the command ran: a
+    // prefix command (universal-argument) restores the previous value
+    // there via prefix-command-preserve-state, keeping last-command
+    // stable across the C-u chain.
+    let last_command = interp
+        .lookup_var("this-command", env)
+        .filter(|command| !command.is_nil())
+        .unwrap_or(dispatched);
+    interp.set_variable("last-command", last_command, env);
+    interp.set_variable("last-prefix-arg", prefix, env);
+    result
+}
+
+/// keyboard.c's timer_check in miniature: while the command loop waits
+/// for input, fire the ripe entries of `timer-list' (absolute times) and
+/// `timer-idle-list' (idle durations, once per idle period) through
+/// timer.el's own `timer-event-handler'.  Returns whether any ran —
+/// isearch's lazy highlight arrives this way.
+pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_seconds: f64) -> bool {
+    if interp.lookup_function("timer-event-handler", env).is_err() {
+        return false;
+    }
+    let timer_seconds = |interp: &mut Interpreter, env: &mut Env, timer: &Value| {
+        let time = interp
+            .call_function_value(
+                Value::Symbol("timer--time".into()),
+                None,
+                std::slice::from_ref(timer),
+                env,
+            )
+            .ok()?;
+        interp
+            .call_function_value(
+                Value::Symbol("float-time".into()),
+                None,
+                std::slice::from_ref(&time),
+                env,
+            )
+            .ok()?
+            .as_float()
+            .ok()
+    };
+    let mut ran = false;
+    for (list_name, idle) in [("timer-idle-list", true), ("timer-list", false)] {
+        let Some(timers) = interp
+            .lookup_var(list_name, env)
+            .and_then(|value| value.to_vec().ok())
+        else {
+            continue;
+        };
+        for timer in timers {
+            let Some(time) = timer_seconds(interp, env, &timer) else {
+                continue;
+            };
+            let due = if idle {
+                let triggered = interp
+                    .call_function_value(
+                        Value::Symbol("timer--triggered".into()),
+                        None,
+                        std::slice::from_ref(&timer),
+                        env,
+                    )
+                    .is_ok_and(|value| value.is_truthy());
+                time <= idle_seconds && !triggered
+            } else {
+                interp
+                    .call_function_value(Value::Symbol("float-time".into()), None, &[], env)
+                    .ok()
+                    .and_then(|now| now.as_float().ok())
+                    .is_some_and(|now| time <= now)
+            };
+            if due {
+                ran = true;
+                let _ = interp.call_function_value(
+                    Value::Symbol("timer-event-handler".into()),
+                    None,
+                    std::slice::from_ref(&timer),
+                    env,
+                );
+            }
+        }
+    }
+    ran
+}
+
+/// The echo-area text for a command's error, GNU's
+/// `error-message-string' rendering ("Quit", "Beginning of buffer", a
+/// user-error's own message).
+pub(crate) fn command_error_echo_text(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    error: &LispError,
+) -> String {
+    let text = match error {
+        LispError::SignalValue(data) => {
+            let data = if matches!(data, Value::Symbol(_)) {
+                Value::list([data.clone()])
+            } else {
+                data.clone()
+            };
+            command_loop_call(
+                interp,
+                env,
+                "error-message-string",
+                std::slice::from_ref(&data),
+            )
+            .ok()
+            .and_then(|value| match value {
+                Value::String(text) => Some(text.to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| format!("{data}"))
+        }
+        LispError::Signal(text) => text.clone(),
+        other => format!("{other:?}"),
+    };
+    text.replace(['\n', '\r'], " ").chars().take(200).collect()
+}
+
+// Frame repaint, installed alongside the event reader.  Command code
+// that runs its own event loop (the interactive minibuffer) calls it so
+// window-configuration changes made mid-read — a *Completions* pop-up —
+// reach the glass before the next key blocks.
+thread_local! {
+    static TTY_FRAME_REDRAW: std::cell::RefCell<Option<TtyFrameRedraw>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) type TtyFrameRedraw = Box<dyn FnMut(&mut Interpreter, &mut Env)>;
+
+pub(crate) fn set_tty_frame_redraw(hook: Option<TtyFrameRedraw>) {
+    TTY_FRAME_REDRAW.with_borrow_mut(|slot| *slot = hook);
+}
+
+/// Run the frontend's frame repaint if one is installed.  The hook is
+/// taken out for the call: redisplay evaluates Lisp (mode lines), which
+/// must not re-enter the hook cell.
+pub(crate) fn run_tty_frame_redraw(interp: &mut Interpreter, env: &mut Env) {
+    let hook = TTY_FRAME_REDRAW.with_borrow_mut(std::mem::take);
+    if let Some(mut hook) = hook {
+        hook(interp, env);
+        TTY_FRAME_REDRAW.with_borrow_mut(|slot| {
+            if slot.is_none() {
+                *slot = Some(hook);
+            }
+        });
+    }
 }
 
 pub(crate) fn pop_unread_command_event_value(
@@ -354,6 +1141,28 @@ pub(crate) fn pop_unread_command_event_value(
                 env,
             );
             return Ok(event);
+        }
+        // Poll for the event so ripe timers fire during the wait, as
+        // GNU's read_char does; the blocking reader stands in when the
+        // frontend installed no poller.
+        let mut idle_start: Option<std::time::Instant> = None;
+        while let Some(step) = poll_via_tty_event_poller() {
+            match step {
+                None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+                Some(Some(event)) => {
+                    if event == Value::Integer(7) {
+                        return Err(LispError::SignalValue(Value::Symbol("quit".into())));
+                    }
+                    record_external_input_event(interp, &event);
+                    return Ok(event);
+                }
+                Some(None) => {
+                    let idle = idle_start
+                        .get_or_insert_with(std::time::Instant::now)
+                        .elapsed();
+                    run_due_timers(interp, env, idle.as_secs_f64());
+                }
+            }
         }
         if let Some(read) = read_via_tty_event_reader() {
             return match read {
@@ -760,4 +1569,538 @@ pub(crate) fn is_composed_accessor_name(name: &str) -> bool {
         && bytes[1..bytes.len() - 1]
             .iter()
             .all(|byte| matches!(byte, b'a' | b'd'))
+}
+
+/// keyboard.c's menu_bar_items: the menu bar's top-level captions in
+/// display order.  Every active keymap's `menu-bar' prefix is scanned
+/// lowest-precedence first (global map, then local, then minor modes),
+/// so global menus lead the row and higher-precedence maps append or
+/// merge into existing entries; the keys named by
+/// `menu-bar-final-items' move to the end (Help).
+pub(crate) fn menu_bar_row_captions(interp: &mut Interpreter, env: &mut Env) -> Vec<String> {
+    menu_bar_row_items(interp, env)
+        .into_iter()
+        .map(|(caption, _, _)| caption)
+        .collect()
+}
+
+/// The menu bar's items with their display geometry: (CAPTION, KEY,
+/// COLUMN), column being where the caption starts on the row — the
+/// coordinates menu.c's menu-bar-menu-at-x-y answers from.
+pub(crate) fn menu_bar_row_items(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Vec<(String, Value, usize)> {
+    let maps = super::call(interp, "current-active-maps", &[Value::T], env)
+        .ok()
+        .and_then(|maps| maps.to_vec().ok())
+        .unwrap_or_default();
+    let menu_bar_key = Value::list([
+        Value::Symbol("vector-literal".into()),
+        Value::Symbol("menu-bar".into()),
+    ]);
+    let same_key = |a: &Value, b: &Value| match (a, b) {
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        _ => false,
+    };
+    let mut items: Vec<(Value, String)> = Vec::new();
+    for map in maps.iter().rev() {
+        let Ok(menu) = super::call(
+            interp,
+            "lookup-key",
+            &[map.clone(), menu_bar_key.clone()],
+            env,
+        ) else {
+            continue;
+        };
+        // A runtime keymap answers as its record identity; walk GNU's
+        // public `(keymap ...)' cons projection of it.
+        let menu = {
+            if let Some(id) = super::keymap_record_id(interp, &menu) {
+                let _ = super::refresh_runtime_keymap_public_view(interp, id);
+            }
+            super::public_keymap_value(interp, &menu)
+        };
+        if !matches!(menu.car(), Ok(Value::Symbol(tag)) if tag == "keymap") {
+            continue;
+        }
+        // One keymap contributes to a key only once, even when its
+        // entry list carries shadowed duplicates.
+        let mut seen: Vec<Value> = Vec::new();
+        let mut tail = menu.cdr().unwrap_or(Value::Nil);
+        while let Value::Cons(_) = tail {
+            let Ok(entry) = tail.car() else { break };
+            let next = tail.cdr().unwrap_or(Value::Nil);
+            match &entry {
+                // A parent keymap's entries follow through the tail.
+                Value::Symbol(tag) if tag == "keymap" => {}
+                Value::Cons(_) => {
+                    let key = entry.car().unwrap_or(Value::Nil);
+                    let item = entry.cdr().unwrap_or(Value::Nil);
+                    if !seen.iter().any(|earlier| same_key(earlier, &key)) {
+                        seen.push(key.clone());
+                        if matches!(&item, Value::Symbol(def) if def == "undefined") {
+                            // An explicit `undefined' discards any
+                            // previously made item for this key.
+                            items.retain(|(existing, _)| !same_key(existing, &key));
+                        } else if let Some(caption) = menu_item_caption(interp, env, &item)
+                            && !items.iter().any(|(existing, _)| same_key(existing, &key))
+                        {
+                            items.push((key, caption));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            tail = next;
+        }
+    }
+    if let Some(final_items) = interp
+        .lookup_var("menu-bar-final-items", env)
+        .and_then(|value| value.to_vec().ok())
+    {
+        for name in final_items {
+            if let Some(position) = items.iter().position(|(key, _)| same_key(key, &name)) {
+                let item = items.remove(position);
+                items.push(item);
+            }
+        }
+    }
+    let mut column = 0usize;
+    items
+        .into_iter()
+        .map(|(key, caption)| {
+            let start = column;
+            column += caption.chars().count() + 1;
+            (caption, key, start)
+        })
+        .collect()
+}
+
+/// parse_menu_item for the menu bar: the caption of a live top-level
+/// item, or None when the item is invisible, disabled, undefined, or
+/// not a menu item at all.
+fn menu_item_caption(interp: &mut Interpreter, env: &mut Env, item: &Value) -> Option<String> {
+    let (caption, def, enabled) = menu_item_details(interp, env, item)?;
+    // The menu bar drops disabled and definition-less items
+    // (parse_menu_item's inmenubar rules); a dropdown keeps them greyed.
+    (enabled && !def.is_nil()).then_some(caption)
+}
+
+/// parse_menu_item for a dropdown pane: (CAPTION, DEF, ENABLED) of a
+/// visible item — disabled and unselectable entries stay, drawn in
+/// tty-menu-disabled-face.  None only for invisible or non-items.
+pub(crate) fn menu_item_details(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    item: &Value,
+) -> Option<(String, Value, bool)> {
+    menu_item_details_with_button(interp, env, item).map(|(c, d, e, _)| (c, d, e))
+}
+
+/// A parsed pane item: (CAPTION, DEF, ENABLED, BUTTON), button being
+/// the :button spec's (TYPE-KEYWORD, SELECTED) for toggle/radio items —
+/// menu.c's checkbox prefix source.
+pub(crate) type MenuItemDetails = (String, Value, bool, Option<(String, bool)>);
+
+/// menu_item_details plus the :button spec.
+pub(crate) fn menu_item_details_with_button(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    item: &Value,
+) -> Option<MenuItemDetails> {
+    if !matches!(item, Value::Cons(_)) {
+        return None;
+    }
+    let eval_property = |interp: &mut Interpreter, env: &mut Env, form: &Value| match form {
+        Value::Symbol(name) if name != "t" && name != "nil" => {
+            interp.lookup_var(name, env).unwrap_or(Value::Nil)
+        }
+        Value::Cons(_) => interp.eval(form, env).unwrap_or(Value::Nil),
+        other => other.clone(),
+    };
+    let car = item.car().ok()?;
+    if let Ok(name) = crate::lisp::primitives::string_text(&car) {
+        // Old format (NAME [HELP-STRING] [CACHE] . DEF).
+        let mut def = item.cdr().ok()?;
+        if def.car().is_ok_and(|help| help.is_string()) {
+            def = def.cdr().ok()?;
+        }
+        if def.car().is_ok_and(|cache| {
+            matches!(cache.car(), Ok(Value::Nil))
+                || matches!(cache.car(), Ok(Value::Symbol(tag)) if tag == "vector-literal")
+        }) {
+            def = def.cdr().ok()?;
+        }
+        // Unselectable text (a separator) still draws in the enabled
+        // face; only the menu bar drops definition-less items.
+        return Some((name, def, true, None));
+    }
+    if !matches!(&car, Value::Symbol(tag) if tag == "menu-item") {
+        return None;
+    }
+    // New format (menu-item NAME DEF [CACHE] . PROPS).
+    let rest = item.cdr().ok()?.to_vec().ok()?;
+    let name_form = rest.first()?.clone();
+    let mut def = rest.get(1).cloned().unwrap_or(Value::Nil);
+    let mut index = 2;
+    if matches!(rest.get(2), Some(Value::Cons(_))) {
+        index = 3;
+    }
+    let mut filter = None;
+    let mut enabled = true;
+    let mut button = None;
+    while index + 1 < rest.len() {
+        let Value::Symbol(keyword) = &rest[index] else {
+            break;
+        };
+        let value = &rest[index + 1];
+        match keyword.as_ref() {
+            ":visible" => {
+                if eval_property(interp, env, value).is_nil() {
+                    return None;
+                }
+            }
+            ":enable" => {
+                if eval_property(interp, env, value).is_nil() {
+                    enabled = false;
+                }
+            }
+            ":filter" => filter = Some(value.clone()),
+            ":button" => {
+                if let (Ok(Value::Symbol(kind)), Ok(selected)) = (value.car(), value.cdr()) {
+                    let selected = eval_property(interp, env, &selected).is_truthy();
+                    button = Some((kind.to_string(), selected));
+                }
+            }
+            _ => {}
+        }
+        index += 2;
+    }
+    if let Some(filter) = filter {
+        def = interp
+            .call_function_value(filter, None, std::slice::from_ref(&def), env)
+            .unwrap_or(Value::Nil);
+    }
+    let name = eval_property(interp, env, &name_form);
+    let caption = crate::lisp::primitives::string_text(&name).ok()?;
+    Some((caption, def, enabled, button))
+}
+
+/// The menu bar's cheap per-redraw change signal: how many minor-mode
+/// maps are live plus whether an overriding map is installed.  Entering
+/// isearch (or any minor mode with a map) changes it, which triggers
+/// the recompute GNU gets from update_mode_lines — without walking the
+/// full active-keymap set on every keystroke.
+pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> usize {
+    let minors = interp
+        .lookup_var("minor-mode-map-alist", env)
+        .and_then(|alist| alist.to_vec().ok())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry.car().is_ok_and(|mode| {
+                        matches!(&mode, Value::Symbol(name)
+                            if interp.lookup_var(name, env).is_some_and(|on| on.is_truthy()))
+                    })
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let overriding = interp
+        .lookup_var("overriding-terminal-local-map", env)
+        .is_some_and(|map| map.is_truthy());
+    minors + usize::from(overriding)
+}
+
+/// Pop the first `unread-command-events' entry, unwrapping GNU's
+/// `(t . EVENT)' don't-re-record form — read_char's front of the input
+/// stream, consulted before the terminal.
+pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
+    let events = interp.lookup_var("unread-command-events", env)?;
+    let mut events = events.to_vec().ok()?;
+    if events.is_empty() {
+        return None;
+    }
+    let event = events.remove(0);
+    interp.set_variable("unread-command-events", Value::list(events), env);
+    match &event {
+        Value::Cons(_) if matches!(event.car(), Ok(Value::T)) => event.cdr().ok(),
+        _ => Some(event),
+    }
+}
+
+// Whether terminal input is ready without consuming it — keyboard.c's
+// input_pending, for `input-pending-p' and sit-for's early exit.
+thread_local! {
+    static TTY_INPUT_PENDING: std::cell::RefCell<Option<Box<dyn Fn() -> bool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn set_tty_input_pending_check(check: Option<Box<dyn Fn() -> bool>>) {
+    TTY_INPUT_PENDING.with_borrow_mut(|slot| *slot = check);
+}
+
+pub(crate) fn tty_input_pending() -> bool {
+    TTY_INPUT_PENDING.with_borrow(|slot| slot.as_ref().is_some_and(|check| check()))
+}
+
+pub(crate) fn has_tty_event_poller() -> bool {
+    TTY_EVENT_POLLER.with_borrow(|slot| slot.is_some())
+}
+
+/// A timed event read on the live terminal: the first event within
+/// TIMEOUT, or None when it elapses quietly.  Ripe timers fire between
+/// polls, exactly like the untimed read.
+pub(crate) fn read_tty_event_with_timeout(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    timeout: std::time::Duration,
+) -> Result<Option<Value>, LispError> {
+    let deadline = std::time::Instant::now() + timeout;
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(event) = take_unread_command_event(interp, env) {
+            record_external_input_event(interp, &event);
+            return Ok(Some(event));
+        }
+        let Some(step) = poll_via_tty_event_poller() else {
+            return Ok(None);
+        };
+        match step {
+            None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+            Some(Some(event)) => {
+                if event == Value::Integer(7) {
+                    return Err(LispError::SignalValue(Value::Symbol("quit".into())));
+                }
+                record_external_input_event(interp, &event);
+                return Ok(Some(event));
+            }
+            Some(None) => {
+                run_due_timers(interp, env, started.elapsed().as_secs_f64());
+                if std::time::Instant::now() >= deadline {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+}
+
+/// One dropdown pane ready for the glass: term.c's tty_menu built from
+/// a menu keymap, item text already NAME-padded-plus-key-hint as
+/// tty_menu_show lays it out.
+pub(crate) struct TtyMenuPane {
+    pub title: String,
+    pub items: Vec<TtyMenuPaneItem>,
+    /// Pane text width (the widest NAME+DESCRIP); the drawn box adds
+    /// the two padding blanks.
+    pub width: usize,
+}
+
+pub(crate) struct TtyMenuPaneItem {
+    pub text: String,
+    pub enabled: bool,
+    pub key: Value,
+}
+
+pub(crate) enum TtyMenuOutcome {
+    Selected(usize),
+    NextMenu,
+    PrevMenu,
+    /// A separator or disabled item was chosen: no selection, no quit
+    /// signal (GNU's TTYM_IA_SELECT).
+    NoSelect,
+    Quit,
+}
+
+// The frontend's modal dropdown executor — term.c's tty_menu_activate.
+thread_local! {
+    static TTY_MENU_EXECUTOR: std::cell::RefCell<Option<TtyMenuExecutor>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) type TtyMenuExecutor =
+    Box<dyn FnMut(&mut Interpreter, &mut Env, &TtyMenuPane, usize, usize) -> TtyMenuOutcome>;
+
+pub(crate) fn set_tty_menu_executor(executor: Option<TtyMenuExecutor>) {
+    TTY_MENU_EXECUTOR.with_borrow_mut(|slot| *slot = executor);
+}
+
+pub(crate) fn has_tty_menu_executor() -> bool {
+    TTY_MENU_EXECUTOR.with_borrow(|slot| slot.is_some())
+}
+
+pub(crate) fn run_tty_menu_executor(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pane: &TtyMenuPane,
+    x: usize,
+    y: usize,
+) -> Option<TtyMenuOutcome> {
+    let executor = TTY_MENU_EXECUTOR.with_borrow_mut(|slot| slot.take());
+    let mut executor = executor?;
+    let outcome = executor(interp, env, pane, x, y);
+    TTY_MENU_EXECUTOR.with_borrow_mut(|slot| {
+        if slot.is_none() {
+            *slot = Some(executor);
+        }
+    });
+    Some(outcome)
+}
+
+/// tty_menu_show's pane construction: walk MENU's entries in keymap
+/// order, item text = NAME padded to the widest name + "  KEY-HINT"
+/// (parse_menu_item's equivalent-key description).
+pub(crate) fn tty_menu_pane_from_keymap(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    menu: &Value,
+    title: &str,
+) -> TtyMenuPane {
+    let menu = {
+        if let Some(id) = super::keymap_record_id(interp, menu) {
+            let _ = super::refresh_runtime_keymap_public_view(interp, id);
+        }
+        super::public_keymap_value(interp, menu)
+    };
+    #[allow(clippy::type_complexity)]
+    let mut raw: Vec<(Value, String, Value, bool, Option<(String, bool)>)> = Vec::new();
+    let mut tail = menu.cdr().unwrap_or(Value::Nil);
+    let mut seen: Vec<Value> = Vec::new();
+    let same_key = |a: &Value, b: &Value| match (a, b) {
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        _ => false,
+    };
+    while let Value::Cons(_) = tail {
+        let Ok(entry) = tail.car() else { break };
+        let next = tail.cdr().unwrap_or(Value::Nil);
+        if let Value::Cons(_) = &entry {
+            let key = entry.car().unwrap_or(Value::Nil);
+            let item = entry.cdr().unwrap_or(Value::Nil);
+            if !seen.iter().any(|earlier| same_key(earlier, &key)) {
+                seen.push(key.clone());
+                if let Some((caption, def, enabled, button)) =
+                    menu_item_details_with_button(interp, env, &item)
+                {
+                    // A tty submenu item carries GNU's " >" marker,
+                    // counted by the pane's width scan.
+                    let caption = if super::is_keymap_value(interp, &def)
+                        || matches!(&def, Value::Symbol(name)
+                            if interp.lookup_function(name, env)
+                                .is_ok_and(|f| super::is_keymap_value(interp, &f)))
+                    {
+                        format!("{caption} >")
+                    } else {
+                        caption
+                    };
+                    raw.push((key, caption, def, enabled, button));
+                }
+            }
+        }
+        tail = next;
+    }
+    // menu.c's checkbox column: once any item in the pane is a
+    // toggle/radio button, every other item gains a four-blank prefix
+    // so captions line up with "[X] " — separators and empty names
+    // excepted.  A buttonless pane keeps bare captions (Edit).
+    let has_buttons = raw.iter().any(|(_, _, _, _, button)| button.is_some());
+    let raw: Vec<(Value, String, Value, bool)> = raw
+        .into_iter()
+        .map(|(key, caption, def, enabled, button)| {
+            let prefixed = match button {
+                Some((kind, selected)) => {
+                    let mark = match (kind.as_str(), selected) {
+                        (":radio", true) => "(*) ",
+                        (":radio", false) => "( ) ",
+                        (_, true) => "[X] ",
+                        (_, false) => "[ ] ",
+                    };
+                    format!("{mark}{caption}")
+                }
+                None if has_buttons && !caption.is_empty() && !caption.starts_with('-') => {
+                    format!("    {caption}")
+                }
+                None => caption,
+            };
+            (key, prefixed, def, enabled)
+        })
+        .collect();
+    // The widest NAME sets the padding column for every key hint.
+    let max_name = raw
+        .iter()
+        .map(|(_, caption, _, _)| caption.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut items = Vec::new();
+    let mut width = 0usize;
+    for (key, caption, def, enabled) in raw {
+        // parse_menu_item's equivalent-key hint: the first non-menu
+        // binding of the command, through the real where-is machinery
+        // (a [menu-bar ...] or [open]-style menu path is not a key).
+        let hint = if matches!(&def, Value::Symbol(_)) {
+            super::call(interp, "where-is-internal", std::slice::from_ref(&def), env)
+                .ok()
+                .and_then(|keys| keys.to_vec().ok())
+                .and_then(|keys| {
+                    // GNU prefers a typed key sequence (its where-is
+                    // sorts ASCII sequences first) and never shows a
+                    // menu path as the equivalent key.
+                    let event_kinds = |key: &Value| {
+                        key.to_vec()
+                            .ok()
+                            .map(|events| events.iter().skip(1).cloned().collect::<Vec<_>>())
+                            .unwrap_or_default()
+                    };
+                    let is_menu_path = |key: &Value| {
+                        matches!(
+                            event_kinds(key).first(),
+                            Some(Value::Symbol(head))
+                                if head == "menu-bar"
+                                    || head == "tool-bar"
+                                    || head == "tab-bar"
+                                    || head == "mode-line"
+                        )
+                    };
+                    let typed = keys.iter().find(|key| {
+                        event_kinds(key)
+                            .first()
+                            .is_some_and(|event| matches!(event, Value::Integer(_)))
+                    });
+                    typed
+                        .or_else(|| keys.iter().find(|key| !is_menu_path(key)))
+                        .cloned()
+                })
+                .and_then(|key| {
+                    super::call(interp, "key-description", &[key], env)
+                        .ok()
+                        .and_then(|description| {
+                            crate::lisp::primitives::string_text(&description).ok()
+                        })
+                })
+        } else {
+            None
+        };
+        let text = match hint {
+            Some(hint) => {
+                let mut text = caption.clone();
+                for _ in caption.chars().count()..max_name {
+                    text.push(' ');
+                }
+                text.push_str("  ");
+                text.push_str(&hint);
+                text
+            }
+            None => caption,
+        };
+        width = width.max(text.chars().count());
+        items.push(TtyMenuPaneItem { text, enabled, key });
+    }
+    TtyMenuPane {
+        title: title.to_string(),
+        items,
+        width,
+    }
 }

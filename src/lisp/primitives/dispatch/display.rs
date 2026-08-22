@@ -6,17 +6,136 @@ use crate::lisp::primitives::processes::wait_pumping_processes;
 // after every command and inside blocking event reads so prompts appear
 // before input is consumed.  Batch sessions never write it — their
 // `message' contract (stderr + *Messages*) is unchanged.
+/// (START, END, FACE) face runs in char offsets, the currency between
+/// renderers and the frontend's paint layer.
+pub(crate) type FaceSpans = Vec<(usize, usize, Value)>;
+pub(crate) type EchoSpans = FaceSpans;
+
 thread_local! {
-    static ECHO_AREA_MESSAGE: std::cell::RefCell<Option<String>> =
+    static ECHO_AREA_MESSAGE: std::cell::RefCell<Option<(String, EchoSpans)>> =
         const { std::cell::RefCell::new(None) };
+    /// GNU's echo_area_buffer[1]: the last message shown on the glass.
+    /// `redisplay' from Lisp is redisplay_preserve_echo_area — when the
+    /// current message was wiped by input arrival, it re-displays this
+    /// one instead of clearing the row (menu-bar-open relies on it).
+    static ECHO_AREA_LAST_DISPLAYED: std::cell::RefCell<Option<(String, EchoSpans)>> =
+        const { std::cell::RefCell::new(None) };
+    /// The frontend is redrawing under Fredisplay's preserve semantics.
+    static ECHO_PRESERVE_REDISPLAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The current echo text came from printing to the `t' stream;
+    /// further prints append (GNU's echo buffer accumulates a print
+    /// sequence) while any `message' replaces it and resets this.
+    static ECHO_FROM_PRINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Monotonic count of message emissions.  GNU's message3 repaints
+    /// the echo area directly (display_echo_area) even while a tty menu
+    /// holds redisplay frozen, whereas read_char's input-arrival
+    /// clear_message only takes effect at the next redisplay; the
+    /// frontend's menu loop tells the two apart by whether this moved.
+    static ECHO_MESSAGE_TICK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn bump_echo_message_tick() {
+    ECHO_MESSAGE_TICK.with(|tick| tick.set(tick.get().wrapping_add(1)));
+}
+
+pub(crate) fn echo_area_message_tick() -> u64 {
+    ECHO_MESSAGE_TICK.with(std::cell::Cell::get)
 }
 
 pub(crate) fn set_echo_area_message(text: Option<String>) {
-    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = text);
+    ECHO_FROM_PRINT.with(|flag| flag.set(false));
+    bump_echo_message_tick();
+    let message = text.map(|text| (text, Vec::new()));
+    // message3 displays right away: the new message (or, for a clear,
+    // nothing) becomes the last-displayed one too.
+    ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
+}
+
+/// A message carrying face spans (a propertized `message' — isearch's
+/// prompt); the frontend paints the spans on the echo row.
+pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
+    ECHO_FROM_PRINT.with(|flag| flag.set(false));
+    bump_echo_message_tick();
+    let message = Some((text, spans));
+    ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
+}
+
+/// keyboard.c read_char's wipe when the next input event arrives: the
+/// message channel empties without counting as an emission, so nothing
+/// repaints until the next redisplay — a menu freezing redisplay keeps
+/// the old pixels on the glass exactly as GNU does.
+pub(crate) fn expire_echo_area_message() {
+    ECHO_FROM_PRINT.with(|flag| flag.set(false));
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = None);
+}
+
+/// Printing to the `t' stream in an interactive session displays in the
+/// echo area (GNU's print_string to Qt); consecutive prints of one
+/// sequence — eval-expression's value then its print format — append.
+pub(crate) fn echo_area_print(text: &str) {
+    let appending = ECHO_FROM_PRINT.with(std::cell::Cell::get);
+    bump_echo_message_tick();
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| match slot {
+        Some((existing, _)) if appending => existing.push_str(text),
+        _ => *slot = Some((text.to_string(), Vec::new())),
+    });
+    ECHO_AREA_LAST_DISPLAYED
+        .with_borrow_mut(|slot| *slot = ECHO_AREA_MESSAGE.with_borrow(|current| current.clone()));
+    ECHO_FROM_PRINT.with(|flag| flag.set(true));
 }
 
 pub(crate) fn echo_area_message() -> Option<String> {
+    ECHO_AREA_MESSAGE.with_borrow(|slot| slot.as_ref().map(|(text, _)| text.clone()))
+}
+
+#[cfg(test)]
+pub(crate) fn echo_area_message_with_spans() -> Option<(String, EchoSpans)> {
     ECHO_AREA_MESSAGE.with_borrow(|slot| slot.clone())
+}
+
+/// What redisplay shows on the echo row — xdisp.c's echo_area_display.
+/// Normally the current message, which then becomes the last-displayed
+/// one (emptiness after an input-arrival wipe clears it).  Under
+/// Fredisplay's preserve semantics a wiped-but-last-displayed message
+/// shows again instead, leaving the wipe pending for the next normal
+/// redisplay (redisplay_preserve_echo_area).
+pub(crate) fn echo_display_message() -> Option<(String, EchoSpans)> {
+    let current = ECHO_AREA_MESSAGE.with_borrow(|slot| slot.clone());
+    if current.is_none() && ECHO_PRESERVE_REDISPLAY.with(std::cell::Cell::get) {
+        return ECHO_AREA_LAST_DISPLAYED.with_borrow(|slot| slot.clone());
+    }
+    ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&current));
+    current
+}
+
+/// Run F with `redisplay's preserve-echo-area semantics in force
+/// (dispnew.c's Fredisplay calls redisplay_preserve_echo_area).
+pub(crate) fn with_preserved_echo_redisplay<T>(f: impl FnOnce() -> T) -> T {
+    let previous = ECHO_PRESERVE_REDISPLAY.with(|flag| flag.replace(true));
+    let result = f();
+    ECHO_PRESERVE_REDISPLAY.with(|flag| flag.set(previous));
+    result
+}
+
+/// The face runs of a propertized string value, in char offsets.
+pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
+    let Value::StringObject(state) = value else {
+        return Vec::new();
+    };
+    let state = state.borrow();
+    state
+        .props
+        .iter()
+        .filter_map(|span| {
+            span.props
+                .iter()
+                .find(|(name, _)| name == "face")
+                .map(|(_, face)| (span.start, span.end, face.clone()))
+                .filter(|(_, _, face)| !face.is_nil())
+        })
+        .collect()
 }
 
 fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
@@ -474,6 +593,64 @@ fn window_geometry(interp: &Interpreter, window_id: u64) -> (i64, i64, i64, i64)
     )
 }
 
+/// window.c's window_resize_apply: place WINDOW at (X, Y) and commit the
+/// size staged in its new-pixel slot for the resized dimension (the
+/// other dimension keeps its current size), then lay the children back
+/// out — a vertical combination stacks them by their applied heights, a
+/// horizontal one by their applied widths.  `window--resize' (window.el)
+/// stages every affected window before calling this.
+fn apply_staged_window_sizes(
+    interp: &mut Interpreter,
+    window_id: u64,
+    horizontal: bool,
+    x: i64,
+    y: i64,
+) -> Result<(i64, i64), LispError> {
+    let (current_width, current_height, _, _) = window_geometry(interp, window_id);
+    let staged = window_slot_value(interp, window_id, WINDOW_NEW_PIXEL_SLOT)
+        .as_integer()
+        .ok()
+        .filter(|size| *size > 0)
+        .unwrap_or(if horizontal {
+            current_width
+        } else {
+            current_height
+        });
+    let (new_width, new_height) = if horizontal {
+        (staged, current_height)
+    } else {
+        (current_width, staged)
+    };
+    set_window_geometry(interp, window_id, (new_width, new_height, x, y))?;
+    let staged_normal = window_slot_value(interp, window_id, WINDOW_NEW_NORMAL_SLOT);
+    if matches!(staged_normal, Value::Float(_) | Value::Integer(_)) {
+        let slot = if horizontal {
+            WINDOW_NORMAL_WIDTH_SLOT
+        } else {
+            WINDOW_NORMAL_HEIGHT_SLOT
+        };
+        set_window_slot_value(interp, window_id, slot, staged_normal)?;
+    }
+    let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
+    let vertical_combination = matches!(
+        kind,
+        Value::Symbol(ref kind) if kind == INTERNAL_VERTICAL_WINDOW_KIND
+    );
+    let mut child = window_link(interp, window_id, WINDOW_FIRST_CHILD_SLOT);
+    let (mut child_x, mut child_y) = (x, y);
+    while let Some(child_id) = child {
+        let (applied_width, applied_height) =
+            apply_staged_window_sizes(interp, child_id, horizontal, child_x, child_y)?;
+        if vertical_combination {
+            child_y += applied_height;
+        } else {
+            child_x += applied_width;
+        }
+        child = window_link(interp, child_id, WINDOW_NEXT_SIBLING_SLOT);
+    }
+    Ok((new_width, new_height))
+}
+
 fn set_window_geometry(
     interp: &mut Interpreter,
     window_id: u64,
@@ -494,25 +671,364 @@ fn frame_root_window_value(interp: &Interpreter) -> Value {
     interp.root_window_value()
 }
 
+fn is_live_ordinary_window(interp: &Interpreter, id: u64) -> bool {
+    let kind = window_slot_value(interp, id, WINDOW_KIND_SLOT);
+    !matches!(
+        kind,
+        Value::Symbol(ref kind)
+            if matches!(
+                kind.as_str(),
+                MINIBUFFER_WINDOW_KIND
+                    | INTERNAL_HORIZONTAL_WINDOW_KIND
+                    | INTERNAL_VERTICAL_WINDOW_KIND
+                    | DELETED_WINDOW_KIND
+            )
+    ) && window_buffer_id(interp, &Value::Record(id)).is_some()
+}
+
+/// Leaf windows of the frame's window tree in GNU's canonical order — a
+/// depth-first walk that descends first children and follows sibling
+/// chains.  `next-window' cycles and `window-list' both follow it, and it
+/// is the top-to-bottom, left-to-right order the glass paints.
+fn window_tree_leaf_ids(interp: &Interpreter) -> Vec<u64> {
+    let Value::Record(root_id) = frame_root_window_value(interp) else {
+        return Vec::new();
+    };
+    // A malformed tree (stale sibling links) must not loop forever; no
+    // healthy tree revisits a window record.
+    let budget = interp.record_ids_by_type("window").len().saturating_add(1);
+    let mut leaves = Vec::new();
+    let mut stack = vec![root_id];
+    let mut visited = 0usize;
+    while let Some(id) = stack.pop() {
+        visited += 1;
+        if visited > budget {
+            return Vec::new();
+        }
+        match window_link(interp, id, WINDOW_FIRST_CHILD_SLOT) {
+            Some(child) => {
+                let mut chain = Vec::new();
+                let mut walk = Some(child);
+                while let Some(node) = walk {
+                    chain.push(node);
+                    if chain.len() > budget {
+                        return Vec::new();
+                    }
+                    walk = window_link(interp, node, WINDOW_NEXT_SIBLING_SLOT);
+                }
+                stack.extend(chain.into_iter().rev());
+            }
+            None => leaves.push(id),
+        }
+    }
+    leaves
+}
+
 fn live_ordinary_window_ids(interp: &Interpreter) -> Vec<u64> {
+    let from_tree: Vec<u64> = window_tree_leaf_ids(interp)
+        .into_iter()
+        .filter(|id| is_live_ordinary_window(interp, *id))
+        .collect();
+    if !from_tree.is_empty() {
+        return from_tree;
+    }
+    // No usable tree (no root binding yet, or a degenerate walk): fall
+    // back to record order, which equals tree order for a lone window.
     interp
         .record_ids_by_type("window")
         .into_iter()
-        .filter(|id| {
-            let kind = window_slot_value(interp, *id, WINDOW_KIND_SLOT);
-            !matches!(
-                kind,
-                Value::Symbol(ref kind)
-                    if matches!(
-                        kind.as_str(),
-                        MINIBUFFER_WINDOW_KIND
-                            | INTERNAL_HORIZONTAL_WINDOW_KIND
-                            | INTERNAL_VERTICAL_WINDOW_KIND
-                            | DELETED_WINDOW_KIND
-                    )
-            ) && window_buffer_id(interp, &Value::Record(*id)).is_some()
+        .filter(|id| is_live_ordinary_window(interp, *id))
+        .collect()
+}
+
+/// One live window as the terminal frontend renders it: its frame rect,
+/// buffer, and display anchors.  Geometry counts total lines and columns
+/// — the mode line is the rect's last row, and a window not flush with
+/// the frame's right edge spends its last column on the vertical border.
+pub(crate) struct WindowRenderInfo {
+    pub(crate) window_id: u64,
+    pub(crate) buffer_id: u64,
+    pub(crate) left: usize,
+    pub(crate) top: usize,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    /// The window's display start (the window-start slot, clamped).
+    pub(crate) start: usize,
+    /// The window's own point: the live buffer point for the selected
+    /// window, the saved window-point slot otherwise.
+    pub(crate) point: usize,
+    pub(crate) selected: bool,
+}
+
+/// The frame's live windows in paint order (the tree walk), with the
+/// geometry and content anchors redisplay needs.
+pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo> {
+    let selected_id = interp.selected_window_id();
+    live_ordinary_window_ids(interp)
+        .into_iter()
+        .filter_map(|window_id| {
+            let selected = window_id == selected_id;
+            let buffer_id = window_buffer_id(interp, &Value::Record(window_id))?;
+            let (width, height, left, top) = window_geometry(interp, window_id);
+            let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+            let clamp = |value: i64| value.clamp(point_min as i64, point_max as i64) as usize;
+            let start = if selected {
+                interp.selected_window_start()
+            } else {
+                clamp(
+                    window_slot_value(interp, window_id, WINDOW_START_SLOT)
+                        .as_integer()
+                        .unwrap_or(point_min as i64),
+                )
+            };
+            let live_point = if buffer_id == interp.current_buffer_id() {
+                interp.buffer.point()
+            } else {
+                interp
+                    .get_buffer_by_id(buffer_id)
+                    .map(|buffer| buffer.point())
+                    .unwrap_or(point_min)
+            };
+            let point = if selected {
+                live_point
+            } else {
+                window_slot_value(interp, window_id, WINDOW_POINT_SLOT)
+                    .as_integer()
+                    .map(clamp)
+                    .unwrap_or(live_point)
+            };
+            Some(WindowRenderInfo {
+                window_id,
+                buffer_id,
+                left: left.max(0) as usize,
+                top: top.max(0) as usize,
+                width: width.max(0) as usize,
+                height: height.max(0) as usize,
+                start,
+                point,
+                selected,
+            })
         })
         .collect()
+}
+
+/// A face's realized tty attributes, the frontend's paint unit: ANSI
+/// color indexes plus the boolean attributes a terminal can show.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub(crate) struct TtyFaceAttrs {
+    pub(crate) foreground: Option<u8>,
+    pub(crate) background: Option<u8>,
+    pub(crate) bold: bool,
+    pub(crate) underline: bool,
+    pub(crate) reverse: bool,
+    /// GNU's `:extend': the face keeps painting past the end of line to
+    /// the window edge (the region's whole-row highlight).
+    pub(crate) extend: bool,
+}
+
+/// Resolve FACE to its tty attributes through the runtime's own face
+/// machinery: `face-attribute' answers the realized (inherit-merged)
+/// attributes, and `tty-color-translate' maps color names onto the
+/// terminal's ANSI palette exactly as GNU's tty color support does.
+pub(crate) fn resolve_tty_face_attrs(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    face: &Value,
+) -> TtyFaceAttrs {
+    // `face-attribute' is GNU faces.el's; reach it through the ordinary
+    // function cell, never the native dispatcher.
+    let attribute = |interp: &mut Interpreter, env: &mut Env, name: &str| {
+        interp
+            .call_function_value(
+                Value::Symbol("face-attribute".into()),
+                Some("face-attribute"),
+                &[
+                    face.clone(),
+                    Value::Symbol(name.into()),
+                    Value::Nil,
+                    Value::T,
+                ],
+                env,
+            )
+            .ok()
+            .filter(|value| !matches!(value, Value::Symbol(s) if s == "unspecified"))
+            .filter(|value| !value.is_nil())
+    };
+    let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
+        let name = value?;
+        if !name.is_string() {
+            return None;
+        }
+        // tty-color-translate is tty-colors.el Lisp: resolve through the
+        // full function channel so its autoload fires like any call.
+        interp
+            .call_function_value(
+                Value::Symbol("tty-color-translate".into()),
+                None,
+                &[name],
+                env,
+            )
+            .ok()
+            .and_then(|index| index.as_integer().ok())
+            .and_then(|index| u8::try_from(index).ok())
+    };
+    let foreground = attribute(interp, env, ":foreground");
+    let background = attribute(interp, env, ":background");
+    TtyFaceAttrs {
+        foreground: color_index(interp, env, foreground),
+        background: color_index(interp, env, background),
+        bold: attribute(interp, env, ":weight")
+            .is_some_and(|weight| matches!(weight, Value::Symbol(s) if s == "bold" || s == "semi-bold" || s == "extra-bold" || s == "ultra-bold")),
+        underline: attribute(interp, env, ":underline").is_some_and(|value| value.is_truthy()),
+        reverse: attribute(interp, env, ":inverse-video").is_some_and(|value| value.is_truthy()),
+        extend: attribute(interp, env, ":extend").is_some_and(|value| value.is_truthy()),
+    }
+}
+
+/// The face spans redisplay paints over a window's text in [FROM, TO):
+/// buffer `face' text properties first, the selected window's active
+/// region above them, and overlay faces last in ascending priority —
+/// the stacking GNU's face merging produces (isearch's priority-1001
+/// overlay wins over the region, which wins over font-lock properties).
+pub(crate) fn window_face_spans(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    buffer_id: u64,
+    from: usize,
+    to: usize,
+    region_for_selected: bool,
+) -> Vec<(usize, usize, Value)> {
+    let mut spans = Vec::new();
+    let is_current = buffer_id == interp.current_buffer_id();
+    let mut overlay_spans: Vec<(i64, u64, usize, usize, Value)> = Vec::new();
+    {
+        let buffer = if is_current {
+            &interp.buffer
+        } else {
+            match interp.get_buffer_by_id(buffer_id) {
+                Some(buffer) => buffer,
+                None => return spans,
+            }
+        };
+        // The common frame — a plain buffer, no overlays, no active
+        // region — must not pay a per-character property walk on every
+        // redisplay.
+        if !buffer.has_text_property_named("face")
+            && buffer.overlays.iter().all(|overlay| overlay.is_dead())
+            && !(region_for_selected
+                && is_current
+                && interp
+                    .lookup_var("mark-active", env)
+                    .is_some_and(|active| active.is_truthy()))
+        {
+            return spans;
+        }
+        let mut pos = from;
+        while pos < to {
+            let face = buffer
+                .text_property_at(pos, "face")
+                .filter(|face| !face.is_nil());
+            let mut end = pos + 1;
+            while end < to
+                && buffer
+                    .text_property_at(end, "face")
+                    .filter(|face| !face.is_nil())
+                    == face
+            {
+                end += 1;
+            }
+            if let Some(face) = face {
+                spans.push((pos, end, face));
+            }
+            pos = end;
+        }
+        for overlay in &buffer.overlays {
+            if overlay.is_dead() || overlay.beg >= to || overlay.end <= from {
+                continue;
+            }
+            let Some(face) = overlay
+                .get_prop(&Value::Symbol("face".into()))
+                .filter(|face| !face.is_nil())
+                .cloned()
+            else {
+                continue;
+            };
+            let priority = overlay
+                .get_prop(&Value::Symbol("priority".into()))
+                .and_then(|priority| priority.as_integer().ok())
+                .unwrap_or(0);
+            overlay_spans.push((
+                priority,
+                overlay.id,
+                overlay.beg.max(from),
+                overlay.end.min(to),
+                face,
+            ));
+        }
+    }
+    // The active region, redisplay's own quasi-overlay under real ones.
+    if region_for_selected
+        && is_current
+        && interp
+            .lookup_var("transient-mark-mode", env)
+            .is_some_and(|mode| mode.is_truthy())
+        && interp
+            .lookup_var("mark-active", env)
+            .is_some_and(|active| active.is_truthy())
+        // The buffer's mark marker is native buffer.c state; `mark' itself
+        // is GNU simple.el's and must not enter the native dispatcher.
+        && let Some(mark) = interp.buffer.mark()
+    {
+        let point = interp.buffer.point();
+        let mark = mark.max(1);
+        let (beg, end) = if mark <= point {
+            (mark, point)
+        } else {
+            (point, mark)
+        };
+        let beg = beg.max(from);
+        let end = end.min(to);
+        if beg < end {
+            spans.push((beg, end, Value::Symbol("region".into())));
+        }
+    }
+    overlay_spans.sort_by_key(|(priority, id, ..)| (*priority, *id));
+    spans.extend(
+        overlay_spans
+            .into_iter()
+            .map(|(_, _, beg, end, face)| (beg, end, face)),
+    );
+    spans
+}
+
+/// A window's mode line as the display engine paints it.  GNU renders
+/// each mode line with that window selected and its buffer current
+/// (display_mode_line's context); this swaps both in — plus the window's
+/// point and live metrics — and restores every piece afterwards.
+pub(crate) fn render_window_mode_line(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    point: usize,
+    metrics: InteractiveWindowMetrics,
+) -> Result<(String, FaceSpans), LispError> {
+    let saved_window = interp.selected_window_id();
+    let saved_buffer = interp.current_buffer_id();
+    let saved_metrics = interactive_window_metrics();
+    let buffer_id = window_buffer_id(interp, &Value::Record(window_id)).unwrap_or(saved_buffer);
+    interp.set_selected_window_id(window_id);
+    let switched = buffer_id != saved_buffer && interp.set_current_buffer_id(buffer_id).is_ok();
+    let saved_point = interp.buffer.point();
+    interp.buffer.goto_char(point);
+    set_interactive_window_metrics(Some(metrics));
+    let result = render_mode_line_glass_with_spans(interp, env);
+    interp.buffer.goto_char(saved_point);
+    if switched {
+        let _ = interp.set_current_buffer_id(saved_buffer);
+    }
+    interp.set_selected_window_id(saved_window);
+    set_interactive_window_metrics(saved_metrics);
+    result
 }
 
 fn live_window_id_or_selected(
@@ -1006,11 +1522,22 @@ fn valid_window_cursor_type(value: &Value) -> bool {
     }
 }
 
-fn window_list_value(interp: &Interpreter, minibuf: Option<&Value>) -> Value {
-    let mut windows = live_ordinary_window_ids(interp)
-        .into_iter()
-        .map(Value::Record)
-        .collect::<Vec<_>>();
+fn window_list_value(
+    interp: &Interpreter,
+    minibuf: Option<&Value>,
+    start: Option<&Value>,
+) -> Value {
+    let mut ids = live_ordinary_window_ids(interp);
+    // GNU lists windows in cyclic order starting from WINDOW (default
+    // the selected window), not from the tree's first leaf.
+    let start_id = start
+        .filter(|window| !window.is_nil())
+        .and_then(|window| window_record_id_from_value(interp, window))
+        .unwrap_or_else(|| interp.selected_window_id());
+    if let Some(index) = ids.iter().position(|id| *id == start_id) {
+        ids.rotate_left(index);
+    }
+    let mut windows = ids.into_iter().map(Value::Record).collect::<Vec<_>>();
     let include_minibuffer = matches!(minibuf, Some(Value::T));
     if !include_minibuffer {
         return Value::list(windows);
@@ -1054,11 +1581,17 @@ define_dispatch!(
             }
             // ── Output ──
             "message" => {
-                let text = if args.is_empty() || args.first().is_some_and(Value::is_nil) {
-                    String::new()
-                } else {
-                    string_text(&super::call(interp, "format", args, env)?)?
-                };
+                let (text, text_spans, formatted) =
+                    if args.is_empty() || args.first().is_some_and(Value::is_nil) {
+                        (String::new(), Vec::new(), None)
+                    } else {
+                        let formatted = super::call(interp, "format", args, env)?;
+                        (
+                            string_text(&formatted)?,
+                            string_face_spans(&formatted),
+                            Some(formatted),
+                        )
+                    };
                 let buffer_name = interp
                     .lookup_var("messages-buffer-name", env)
                     .and_then(|value| string_like(&value).map(|string| string.text))
@@ -1114,11 +1647,52 @@ define_dispatch!(
                     .lookup_var("noninteractive", env)
                     .is_none_or(|value| value.is_nil())
                 {
-                    set_echo_area_message(if text.is_empty() {
-                        None
+                    if text.is_empty() {
+                        // xdisp.c clear_message: `clear-message-function'
+                        // clears its own display first (the minibuffer's
+                        // transient overlay); `dont-clear-message' keeps
+                        // the echo area untouched.
+                        let kept = interp
+                            .lookup_var("clear-message-function", env)
+                            .filter(|function| !function.is_nil())
+                            .and_then(|function| {
+                                interp.call_function_value(function, None, &[], env).ok()
+                            })
+                            .is_some_and(|result| {
+                                matches!(&result, Value::Symbol(answer)
+                                    if answer == "dont-clear-message")
+                            });
+                        if !kept {
+                            set_echo_area_message(None);
+                        }
                     } else {
-                        Some(text.clone())
-                    });
+                        // xdisp.c set_message: `set-message-function' may
+                        // replace the string or consume it entirely
+                        // (set-minibuffer-message displays it inside the
+                        // active minibuffer instead of the echo area).
+                        let mut display = Some((text.clone(), text_spans));
+                        if let Some(function) = interp
+                            .lookup_var("set-message-function", env)
+                            .filter(|function| !function.is_nil())
+                        {
+                            let string = formatted
+                                .clone()
+                                .unwrap_or_else(|| Value::String(text.clone().into()));
+                            if let Ok(result) =
+                                interp.call_function_value(function, None, &[string], env)
+                            {
+                                if result.is_string() {
+                                    display =
+                                        Some((string_text(&result)?, string_face_spans(&result)));
+                                } else if result.is_truthy() {
+                                    display = None;
+                                }
+                            }
+                        }
+                        if let Some((text, spans)) = display {
+                            set_echo_area_message_with_spans(text, spans);
+                        }
+                    }
                 }
                 // There is no echo area in batch mode.  GNU writes messages to
                 // the process stderr instead, including the newline used to
@@ -1284,11 +1858,15 @@ define_dispatch!(
             }
             "input-pending-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                Ok(if unread_command_events(interp, env)?.is_empty() {
-                    Value::Nil
-                } else {
-                    Value::T
-                })
+                Ok(
+                    if unread_command_events(interp, env)?.is_empty()
+                        && !crate::lisp::primitives::tty_input_pending()
+                    {
+                        Value::Nil
+                    } else {
+                        Value::T
+                    },
+                )
             }
             "discard-input" => {
                 need_args(name, args, 0)?;
@@ -1587,15 +2165,32 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 Ok(Value::Nil)
             }
-            "tty-type" | "tty-display-color-p" | "controlling-tty-p" | "tty-top-frame" => {
+            "tty-type" => {
+                need_arg_range(name, args, 0, 1)?;
+                require_live_terminal(interp, args.first())?;
+                Ok(interp
+                    .tty_terminal_type()
+                    .map(|terminal_type| Value::String(terminal_type.to_string().into()))
+                    .unwrap_or(Value::Nil))
+            }
+            "controlling-tty-p" | "tty-top-frame" => {
                 need_arg_range(name, args, 0, 1)?;
                 require_live_terminal(interp, args.first())?;
                 Ok(Value::Nil)
             }
+            "tty-display-color-p" => {
+                need_arg_range(name, args, 0, 1)?;
+                require_live_terminal(interp, args.first())?;
+                Ok(if interp.tty_display_color_cells() > 0 {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
             "tty-display-color-cells" => {
                 need_arg_range(name, args, 0, 1)?;
                 require_live_terminal(interp, args.first())?;
-                Ok(Value::Integer(0))
+                Ok(Value::Integer(interp.tty_display_color_cells()))
             }
             "tty-no-underline" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -2234,16 +2829,9 @@ define_dispatch!(
                 let horizontal = args.get(1).is_some_and(Value::is_truthy);
                 let root = frame_root_window_value(interp);
                 let root_id = window_id_or_selected(interp, &root)?;
-                let requested = window_slot_value(interp, root_id, WINDOW_NEW_PIXEL_SLOT)
-                    .as_integer()
-                    .unwrap_or(0);
-                let geometry = window_geometry(interp, root_id);
-                let actual = if horizontal { geometry.0 } else { geometry.1 };
-                Ok(if requested == actual {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                let (_, _, left, top) = window_geometry(interp, root_id);
+                apply_staged_window_sizes(interp, root_id, horizontal, left, top)?;
+                Ok(Value::T)
             }
             "window-resize-apply-total" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -2326,18 +2914,46 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "window-text-pixel-size" => {
-                let width = interp
-                    .buffer
-                    .buffer_string()
+                // (window-text-pixel-size &optional WINDOW FROM TO X-LIMIT
+                //  Y-LIMIT MODE-LINES).  Without a graphical frame a cell
+                // is the pixel unit: the widest line's character count and
+                // the line count stand for the pixel size of WINDOW's
+                // buffer text.  MODE-LINES non-nil adds the window's mode,
+                // header, and tab lines — `fit-window-to-buffer' sizes the
+                // whole window from that total.
+                need_arg_range(name, args, 0, 6)?;
+                let window = args.first().cloned().unwrap_or(Value::Nil);
+                let window_id = window_id_or_selected(interp, &window)?;
+                let buffer_id = window_buffer_id(interp, &Value::Record(window_id))
+                    .unwrap_or(interp.current_buffer_id());
+                let text = if buffer_id == interp.current_buffer_id() {
+                    interp.buffer.buffer_string()
+                } else {
+                    interp
+                        .get_buffer_by_id(buffer_id)
+                        .map(|buffer| buffer.buffer_string())
+                        .unwrap_or_default()
+                };
+                let mut width = text
                     .lines()
                     .map(|line| line.chars().count())
                     .max()
-                    .unwrap_or(0);
-                let height = interp.buffer.buffer_string().lines().count().max(1);
-                Ok(Value::cons(
-                    Value::Integer(width as i64),
-                    Value::Integer(height as i64),
-                ))
+                    .unwrap_or(0) as i64;
+                if let Some(limit) = args.get(3).and_then(|limit| limit.as_integer().ok()) {
+                    width = width.min(limit);
+                }
+                let mut height = text.lines().count().max(1) as i64;
+                if args.get(5).is_some_and(Value::is_truthy) {
+                    for format_variable in
+                        ["mode-line-format", "header-line-format", "tab-line-format"]
+                    {
+                        height += window_line_height(interp, buffer_id, format_variable, env);
+                    }
+                }
+                if let Some(limit) = args.get(4).and_then(|limit| limit.as_integer().ok()) {
+                    height = height.min(limit);
+                }
+                Ok(Value::cons(Value::Integer(width), Value::Integer(height)))
             }
             "buffer-text-pixel-size" => {
                 // (buffer-text-pixel-size &optional WINDOW FROM TO X-LIMIT).
@@ -2524,8 +3140,16 @@ define_dispatch!(
             }
             "redisplay" => {
                 need_arg_range(name, args, 0, 1)?;
-                // The cache-free batch renderer cannot be preempted by pending
-                // terminal input, so redisplay always completes.
+                // A live frontend repaints through its redraw hook
+                // (sit-for redisplays before waiting); the cache-free
+                // batch renderer cannot be preempted by pending terminal
+                // input, so redisplay always completes.  Fredisplay is
+                // redisplay_preserve_echo_area: a message wiped by input
+                // arrival but still last-displayed shows again instead
+                // of clearing the row (menu-bar-open relies on it).
+                with_preserved_echo_redisplay(|| {
+                    crate::lisp::primitives::run_tty_frame_redraw(interp, env)
+                });
                 Ok(Value::T)
             }
             "redraw-frame" => {
@@ -2951,7 +3575,12 @@ define_dispatch!(
             }
             "window-list" | "window-list-1" => {
                 need_arg_range(name, args, 0, 3)?;
-                Ok(window_list_value(interp, args.get(1)))
+                let start = if name == "window-list" {
+                    args.get(2)
+                } else {
+                    args.first()
+                };
+                Ok(window_list_value(interp, args.get(1), start))
             }
             "next-window" | "previous-window" => {
                 need_arg_range(name, args, 0, 3)?;
@@ -3396,9 +4025,30 @@ define_dispatch!(
                 };
                 Ok(buffer_id
                     .and_then(|buffer_id| {
-                        live_ordinary_window_ids(interp).into_iter().find(|id| {
-                            window_buffer_id(interp, &Value::Record(*id)) == Some(buffer_id)
-                        })
+                        live_ordinary_window_ids(interp)
+                            .into_iter()
+                            .find(|id| {
+                                window_buffer_id(interp, &Value::Record(*id)) == Some(buffer_id)
+                            })
+                            .or_else(|| {
+                                // ALL-FRAMES t considers the minibuffer
+                                // window when it is active (GNU's
+                                // choose-completion-string finds the
+                                // minibuffer through this).
+                                if !matches!(args.get(1), Some(Value::T)) {
+                                    return None;
+                                }
+                                interp.active_minibuffer_buffer_id()?;
+                                match interp.minibuffer_window_value() {
+                                    Value::Record(id)
+                                        if window_buffer_id(interp, &Value::Record(id))
+                                            == Some(buffer_id) =>
+                                    {
+                                        Some(id)
+                                    }
+                                    _ => None,
+                                }
+                            })
                     })
                     .map(Value::Record)
                     .unwrap_or(Value::Nil))
@@ -3486,6 +4136,7 @@ define_dispatch!(
 /// Render a mode-line construct to its display text.  LITERAL marks
 /// strings reached through a symbol's value, which GNU shows verbatim
 /// (%-constructs are only recognized in strings written in the spec).
+#[allow(clippy::too_many_arguments)]
 fn render_mode_line_element(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -3493,6 +4144,8 @@ fn render_mode_line_element(
     literal: bool,
     glass: bool,
     depth: usize,
+    offset: usize,
+    spans: &mut Vec<(usize, usize, Value)>,
 ) -> Result<String, LispError> {
     if depth > 32 {
         return Ok(String::new());
@@ -3500,11 +4153,32 @@ fn render_mode_line_element(
     match element {
         value if value.is_string() => {
             let text = string_text(value)?;
-            if literal {
-                Ok(text)
+            let rendered = if literal {
+                text
             } else {
-                expand_mode_line_percent_constructs(interp, env, &text)
+                expand_mode_line_percent_constructs(interp, env, &text)?
+            };
+            // GNU maps a template's text properties onto its expansion;
+            // the shipped formats propertize whole templates (%12b's
+            // buffer-id face), so a face covering the template covers
+            // the expansion.
+            if let Value::StringObject(state) = value {
+                let state = state.borrow();
+                let len = state.text.chars().count();
+                if let Some(face) = state.props.iter().find_map(|span| {
+                    if span.start == 0 && span.end >= len {
+                        span.props
+                            .iter()
+                            .find(|(name, _)| name == "face")
+                            .map(|(_, face)| face.clone())
+                    } else {
+                        None
+                    }
+                }) {
+                    spans.push((offset, offset + rendered.chars().count(), face));
+                }
             }
+            Ok(rendered)
         }
         Value::Symbol(name) => {
             if name == "t" || name == "nil" {
@@ -3514,7 +4188,16 @@ fn render_mode_line_element(
             // are full constructs whose strings carry %-specs (xdisp's
             // display_mode_element symbol case).
             let value = interp.lookup_var(name, env).unwrap_or(Value::Nil);
-            render_mode_line_element(interp, env, &value, value.is_string(), glass, depth + 1)
+            render_mode_line_element(
+                interp,
+                env,
+                &value,
+                value.is_string(),
+                glass,
+                depth + 1,
+                offset,
+                spans,
+            )
         }
         Value::Cons(_) => {
             let items = element.to_vec().unwrap_or_default();
@@ -3531,14 +4214,42 @@ fn render_mode_line_element(
                     let result =
                         crate::lisp::primitives::eval_impl(interp, std::slice::from_ref(form), env)
                             .unwrap_or(Value::Nil);
-                    render_mode_line_element(interp, env, &result, false, glass, depth + 1)
+                    render_mode_line_element(
+                        interp,
+                        env,
+                        &result,
+                        false,
+                        glass,
+                        depth + 1,
+                        offset,
+                        spans,
+                    )
                 }
                 Value::Symbol(keyword) if keyword == ":propertize" => {
                     let Some(inner) = items.get(1) else {
                         return Ok(String::new());
                     };
-                    let mut text =
-                        render_mode_line_element(interp, env, inner, false, glass, depth + 1)?;
+                    // The outer span goes in before the recursion so any
+                    // nested :propertize face lands after it and wins on
+                    // overlap when the spans apply in order.
+                    let face = items[2..].chunks(2).find_map(|pair| match pair {
+                        [Value::Symbol(key), value] if key == "face" => Some(value.clone()),
+                        _ => None,
+                    });
+                    let span_index = face.map(|face| {
+                        spans.push((offset, offset, face));
+                        spans.len() - 1
+                    });
+                    let mut text = render_mode_line_element(
+                        interp,
+                        env,
+                        inner,
+                        false,
+                        glass,
+                        depth + 1,
+                        offset,
+                        spans,
+                    )?;
                     // display (min-width (N.0)) only affects the glass:
                     // format-mode-line's string ignores it, while the
                     // display engine emits a stretch glyph — one column
@@ -3563,6 +4274,9 @@ fn render_mode_line_element(
                             text.extend(std::iter::repeat_n(' ', pad));
                         }
                     }
+                    if let Some(index) = span_index {
+                        spans[index].1 = offset + text.chars().count();
+                    }
                     Ok(text)
                 }
                 Value::Symbol(condition) => {
@@ -3574,9 +4288,16 @@ fn render_mode_line_element(
                         items.get(2)
                     };
                     match branch {
-                        Some(branch) => {
-                            render_mode_line_element(interp, env, branch, false, glass, depth + 1)
-                        }
+                        Some(branch) => render_mode_line_element(
+                            interp,
+                            env,
+                            branch,
+                            false,
+                            glass,
+                            depth + 1,
+                            offset,
+                            spans,
+                        ),
                         None => Ok(String::new()),
                     }
                 }
@@ -3592,6 +4313,8 @@ fn render_mode_line_element(
                             false,
                             glass,
                             depth + 1,
+                            offset + text.chars().count(),
+                            spans,
                         )?);
                     }
                     if width >= 0 {
@@ -3617,6 +4340,8 @@ fn render_mode_line_element(
                             false,
                             glass,
                             depth + 1,
+                            offset + text.chars().count(),
+                            spans,
                         )?);
                     }
                     Ok(text)
@@ -3633,12 +4358,13 @@ pub(super) fn render_mode_line_construct(
     format: &Value,
     depth: usize,
 ) -> Result<String, LispError> {
-    render_mode_line_element(interp, env, format, false, false, depth)
+    render_mode_line_element(interp, env, format, false, false, depth, 0, &mut Vec::new())
 }
 
 /// The selected window's mode line as the display engine paints it:
 /// format-mode-line's text plus the glass-only stretch behavior of
 /// `min-width' display properties.
+#[cfg(test)]
 pub(crate) fn render_mode_line_glass(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -3646,7 +4372,22 @@ pub(crate) fn render_mode_line_glass(
     let format = interp
         .lookup_var("mode-line-format", env)
         .unwrap_or(Value::Nil);
-    render_mode_line_element(interp, env, &format, false, true, 0)
+    render_mode_line_element(interp, env, &format, false, true, 0, 0, &mut Vec::new())
+}
+
+/// The glass mode line together with its `:propertize' face spans, in
+/// char offsets — the frontend paints the spans over the mode-line face
+/// (the buffer name's `mode-line-buffer-id' bold).
+pub(crate) fn render_mode_line_glass_with_spans(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(String, FaceSpans), LispError> {
+    let format = interp
+        .lookup_var("mode-line-format", env)
+        .unwrap_or(Value::Nil);
+    let mut spans = Vec::new();
+    let text = render_mode_line_element(interp, env, &format, false, true, 0, 0, &mut spans)?;
+    Ok((text, spans))
 }
 
 /// The `(min-width (N.0))' display specification's width, if VALUE is one.
@@ -3823,11 +4564,11 @@ fn decode_mode_line_spec(
         }
         'm' => {
             let mode_name = var(interp, "mode-name");
-            render_mode_line_element(interp, env, &mode_name, true, false, 0)?
+            render_mode_line_element(interp, env, &mode_name, true, false, 0, 0, &mut Vec::new())?
         }
         'M' => {
             let global = var(interp, "global-mode-string");
-            render_mode_line_element(interp, env, &global, true, false, 0)?
+            render_mode_line_element(interp, env, &global, true, false, 0, 0, &mut Vec::new())?
         }
         // Recursive-editing depth brackets: the frontend runs at level 0.
         '[' | ']' => String::new(),
@@ -3837,6 +4578,8 @@ fn decode_mode_line_spec(
     })
 }
 
+// `coding-system-mnemonic' is GNU mule.el's; reach it through the
+// ordinary function cell, never the native dispatcher.
 fn coding_mnemonic_char(interp: &mut Interpreter, env: &mut Env, coding: &Value) -> char {
     // xdisp.c:28421 `decode_mode_spec_coding' reads CODING_ATTR_MNEMONIC
     // out of the coding system's attribute vector; the same datum reaches

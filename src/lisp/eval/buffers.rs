@@ -172,28 +172,38 @@ impl Interpreter {
         let from = from.max(self.buffer.point_min());
         let to = to.min(self.buffer.point_max());
         let affected_markers = self.affected_markers_for_delete(self.current_buffer_id(), from, to);
-        // undo.c records marker adjustments immediately before recording the
-        // deletion, so the Lisp undo list exposes the deletion followed by
-        // its marker riders.  `primitive-undo' relies on that adjacency.
-        if self.buffer.undo_enabled() {
-            for marker in &affected_markers {
-                let automatic_position = if self.marker_insertion_type(marker.id) == Some(true) {
-                    to
-                } else {
-                    from
-                };
-                let adjustment = automatic_position as i64 - marker.original_pos as i64;
-                if adjustment != 0 {
-                    self.buffer
-                        .push_undo_entry(crate::buffer::UndoEntry::Opaque(Value::cons(
+        // undo.c records marker adjustments immediately before recording
+        // the deletion, so the Lisp undo list exposes the deletion followed
+        // directly by its marker riders — `primitive-undo' relies on that
+        // adjacency, and the first-change `(t . TIME)' entry the deletion
+        // itself records must stay below both.  The riders are spliced in
+        // under the deletion record once it exists.
+        let marker_adjustments: Vec<crate::buffer::UndoEntry> = if self.buffer.undo_enabled() {
+            affected_markers
+                .iter()
+                .filter_map(|marker| {
+                    let automatic_position = if self.marker_insertion_type(marker.id) == Some(true)
+                    {
+                        to
+                    } else {
+                        from
+                    };
+                    let adjustment = automatic_position as i64 - marker.original_pos as i64;
+                    (adjustment != 0).then(|| {
+                        crate::buffer::UndoEntry::Opaque(Value::cons(
                             Value::Marker(marker.id),
                             Value::Integer(adjustment),
-                        )));
-                }
-            }
-        }
+                        ))
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let related = self.related_buffer_ids(self.current_buffer_id());
         let deleted = self.buffer.delete_region(from, to)?;
+        self.buffer
+            .splice_undo_entries_before_last(marker_adjustments);
         self.buffer.attach_markers_to_last_delete(affected_markers);
         self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
         self.mirror_delete_to_related_buffers(&related, from, to);

@@ -16,6 +16,11 @@ pub struct BatchRunOptions {
     pub eval: Vec<String>,
     pub funcall: Vec<String>,
     pub args_left: Vec<String>,
+    /// Leave `custom-delayed-init-variables' queued instead of replaying
+    /// at the end of the dumped-image reconstruction.  GNU's dump keeps
+    /// the queue for startup.el to replay in the real session mode; the
+    /// interactive frontend replays it once, under `noninteractive' nil.
+    pub defer_delayed_custom_init: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -240,7 +245,68 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
     if let Ok(paths) = env::var("EMACSLOADPATH") {
         options.load_path = env::split_paths(&paths).collect();
     }
-    initialize_batch_interpreter(&options)
+    // GNU's dump leaves `custom-delayed-init-variables' queued for
+    // startup.el to replay in the live session; deferring here keeps the
+    // queue open across the whole reconstruction and the preloads below.
+    options.defer_delayed_custom_init = true;
+    // GNU's interactive session runs from a dumped image built out of
+    // compiled Lisp; the live frontend therefore resolves the same GNU
+    // owners through their `.elc' representation unconditionally, while
+    // batch keeps its configured source/compiled test gating.
+    let mut interpreter = initialize_batch_interpreter_with_load_preference(&options, true)?;
+    // GNU dumps isearch.el, minibuffer.el, and rfn-eshadow.el into the
+    // image; an interactive session must have C-s, the minibuffer's own
+    // command set (exit-minibuffer, minibuffer-complete), and file-name
+    // shadowing ready before the first keystroke.  A load-path without
+    // the real Lisp tree (unit tests) simply leaves them unbound,
+    // exactly like the batch runtime.  These preloads run with the
+    // delayed-Custom queue still open: a global minor mode's
+    // `custom-initialize-delay' defcustom runs before its mode function
+    // exists mid-load, so it must queue and replay through startup.el's
+    // custom-reevaluate-setting walk — file-name-shadow-mode turns on
+    // through that replay, as in GNU's dumped image.
+    // cus-start comes after loaddefs, as loadup.el orders it ("Late to
+    // reduce customize-rogue (needs loaddefs.el anyway)"): its unbound
+    // built-in notes land at dump time in GNU, here at init.
+    for target in [
+        "isearch",
+        "minibuffer",
+        "rfn-eshadow",
+        "loaddefs",
+        "cus-start",
+    ] {
+        if interpreter.resolve_load_target(target).is_some() {
+            interpreter
+                .load_target(target)
+                .map_err(|error| format!("preload {target}: {error}"))?;
+        }
+    }
+    // The dump ran under `noninteractive' t, but startup.el's single
+    // custom-reevaluate-setting walk runs in the live session — a
+    // delayed :init-value that consults `noninteractive' (frame.el's
+    // blink-cursor-mode) sees nil there, as it does in GNU.  startup.el
+    // defvars the -D/--basic-display flags before the walk; delayed
+    // forms read them once `noninteractive' stops short-circuiting.
+    interpreter.set_variable("noninteractive", Value::Nil, &mut Vec::new());
+    interpreter.set_variable("emacs-basic-display", Value::Nil, &mut Vec::new());
+    interpreter.set_variable("no-blinking-cursor", Value::Nil, &mut Vec::new());
+    // GNU's normal-top-level recomputes `user-emacs-directory' from the
+    // XDG-or-homedot policy before delayed Custom forms run
+    // (startup.el's setq); the replay below then evaluates delayed
+    // standard values such as `auto-save-list-file-prefix' against it.
+    // The batch reconstruction already ran this once, but the deferred
+    // delayed-Custom queue is only replayed here, under the recomputed
+    // directory — the same ordering `command-line' guarantees.
+    initialize_batch_user_emacs_directory(&mut interpreter)?;
+    complete_delayed_custom_initialization(&mut interpreter)?;
+    // startup.el enables transient-mark-mode for interactive sessions
+    // (batch keeps the dumped nil default): the region highlights.
+    interpreter.set_variable("transient-mark-mode", Value::T, &mut Vec::new());
+    // menu-bar-mode's C default is t; startup.el turns it off only when
+    // noninteractive.  An interactive session keeps the menu bar (the
+    // `menu-bar-lines' frame parameter already defaults to 1).
+    interpreter.set_variable("menu-bar-mode", Value::T, &mut Vec::new());
+    Ok(interpreter)
 }
 
 pub(crate) fn initialize_batch_interpreter(
@@ -308,7 +374,9 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
         // computed against a nil directory, so they no longer equalled
         // `(locate-user-emacs-file ...)' as they do in GNU.
         initialize_batch_user_emacs_directory(interpreter)?;
-        complete_delayed_custom_initialization(interpreter)?;
+        if !options.defer_delayed_custom_init {
+            complete_delayed_custom_initialization(interpreter)?;
+        }
         initialize_batch_scratch_major_mode(interpreter)?;
         initialize_batch_bar_modes(interpreter)?;
         initialize_batch_locale_environment(interpreter)
@@ -899,6 +967,11 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     // without requiring `menu-bar' first.  Load the complete owner here;
     // runtime keymaps retain their Rust identity while exposing GNU's mutable
     // cons-list interface to this library.
+    // The native bootstrap binds menu-bar-edit-menu as an empty stand-in
+    // for sessions without the Lisp tree; unbind it here so menu-bar.el's
+    // own defvar populates the real Edit menu exactly as GNU's dumped
+    // image carries it.
+    interpreter.remove_global_binding("menu-bar-edit-menu");
     loadup_required_sequence(
         interpreter,
         &[

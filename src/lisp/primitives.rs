@@ -220,13 +220,22 @@ pub(crate) use dispatch::NameFacts;
 pub(crate) use dispatch::call_with_facts;
 pub(crate) use dispatch::echo_area_message;
 #[cfg(test)]
+pub(crate) use dispatch::echo_area_message_with_spans;
+#[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::name_facts;
+#[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
-pub(crate) use dispatch::set_echo_area_message;
-pub(crate) use dispatch::set_tty_minibuffer_reader;
+pub(crate) use dispatch::{
+    EchoSpans, echo_area_message_tick, echo_area_print, echo_display_message,
+    expire_echo_area_message, set_echo_area_message, set_echo_area_message_with_spans,
+    string_face_spans,
+};
+pub(crate) use dispatch::{
+    TtyFaceAttrs, WindowRenderInfo, render_window_mode_line, resolve_tty_face_attrs,
+    window_face_spans, window_render_layout,
+};
 pub use dispatch::{call, is_builtin};
-pub(crate) use dispatch::{next_digit_prefix, next_negative_prefix, next_universal_prefix};
 
 #[cfg(test)]
 mod tests;

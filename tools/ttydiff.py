@@ -33,15 +33,29 @@ import fcntl
 import termios
 
 ROWS, COLS = 24, 80
+FIXTURE_PATH = "/tmp/emaxxff-fixture.dat"
+# A directory whose listing both editors complete over: two names sharing
+# the ambiguous prefix the *Completions* scenarios TAB on.
+COMPLETIONS_DIR_NAME = "emaxxffcomp"
+COMPLETIONS_DIR = f"/tmp/{COMPLETIONS_DIR_NAME}"
+
+
+# (fg, bg, bold, underline, reverse): fg/bg are ANSI indexes or None for
+# the terminal default.  Erased cells always carry DEFAULT_ATTR — only
+# explicitly painted cells hold face attributes, on both editors alike.
+DEFAULT_ATTR = (None, None, False, False, False)
 
 
 class Vt100Screen:
     """The minimum terminal model both editors' output actually uses:
-    cursor addressing, line/screen erase, alternate screen, autowrap."""
+    cursor addressing, line/screen erase, alternate screen, autowrap —
+    plus per-cell SGR attributes, the face layer of the contract."""
 
     def __init__(self, rows=ROWS, cols=COLS):
         self.rows, self.cols = rows, cols
         self.grid = [[" "] * cols for _ in range(rows)]
+        self.attrs = [[DEFAULT_ATTR] * cols for _ in range(rows)]
+        self.attr = DEFAULT_ATTR
         self.row = self.col = 0
         self.top_margin, self.bottom_margin = 0, rows - 1
         self.saved_cursor = (0, 0)
@@ -83,6 +97,7 @@ class Vt100Screen:
                     self.col = 0
                     self.row = min(self.row + 1, self.rows - 1)
                 self.grid[self.row][self.col] = c
+                self.attrs[self.row][self.col] = self.attr
                 self.col += 1
                 i += 1
 
@@ -153,11 +168,15 @@ class Vt100Screen:
                 for _ in range(max(p0, 1)):
                     self.grid.pop(self.bottom_margin)
                     self.grid.insert(self.row, [" "] * self.cols)
+                    self.attrs.pop(self.bottom_margin)
+                    self.attrs.insert(self.row, [DEFAULT_ATTR] * self.cols)
         elif final == "M":  # delete lines within the scroll region
             if self.top_margin <= self.row <= self.bottom_margin:
                 for _ in range(max(p0, 1)):
                     self.grid.pop(self.row)
                     self.grid.insert(self.bottom_margin, [" "] * self.cols)
+                    self.attrs.pop(self.row)
+                    self.attrs.insert(self.bottom_margin, [DEFAULT_ATTR] * self.cols)
         elif final == "S":  # scroll region up
             self._scroll_up(max(p0, 1))
         elif final == "T":  # scroll region down
@@ -172,11 +191,57 @@ class Vt100Screen:
             count = max(p0, 1)
             row = self.grid[self.row]
             row[self.col:] = ([" "] * count + row[self.col:])[: self.cols - self.col]
+            attrs = self.attrs[self.row]
+            attrs[self.col:] = ([DEFAULT_ATTR] * count + attrs[self.col:])[: self.cols - self.col]
         elif final == "P":  # delete characters, shifting left
             count = max(p0, 1)
             row = self.grid[self.row]
             row[self.col:] = (row[self.col + count:] + [" "] * count)[: self.cols - self.col]
-        # SGR (m), modes (h/l), and the rest do not affect the text grid.
+            attrs = self.attrs[self.row]
+            attrs[self.col:] = (attrs[self.col + count:] + [DEFAULT_ATTR] * count)[: self.cols - self.col]
+        elif final == "m":
+            self._sgr(params if body else [0])
+        # Modes (h/l) and the rest do not affect the text grid.
+
+    def _sgr(self, params):
+        fg, bg, bold, underline, reverse = self.attr
+        i = 0
+        while i < len(params):
+            p = params[i]
+            if p == 0:
+                fg, bg, bold, underline, reverse = DEFAULT_ATTR
+            elif p == 1:
+                bold = True
+            elif p == 22:
+                bold = False
+            elif p == 4:
+                underline = True
+            elif p == 24:
+                underline = False
+            elif p == 7:
+                reverse = True
+            elif p == 27:
+                reverse = False
+            elif 30 <= p <= 37:
+                fg = p - 30
+            elif p == 39:
+                fg = None
+            elif 40 <= p <= 47:
+                bg = p - 40
+            elif p == 49:
+                bg = None
+            elif 90 <= p <= 97:
+                fg = p - 90 + 8
+            elif 100 <= p <= 107:
+                bg = p - 100 + 8
+            elif p in (38, 48) and i + 2 < len(params) and params[i + 1] == 5:
+                if p == 38:
+                    fg = params[i + 2]
+                else:
+                    bg = params[i + 2]
+                i += 2
+            i += 1
+        self.attr = (fg, bg, bold, underline, reverse)
 
     def _linefeed(self):
         if self.row == self.bottom_margin:
@@ -188,36 +253,78 @@ class Vt100Screen:
         for _ in range(count):
             self.grid.pop(self.top_margin)
             self.grid.insert(self.bottom_margin, [" "] * self.cols)
+            self.attrs.pop(self.top_margin)
+            self.attrs.insert(self.bottom_margin, [DEFAULT_ATTR] * self.cols)
 
     def _scroll_down(self, count):
         for _ in range(count):
             self.grid.pop(self.bottom_margin)
             self.grid.insert(self.top_margin, [" "] * self.cols)
+            self.attrs.pop(self.bottom_margin)
+            self.attrs.insert(self.top_margin, [DEFAULT_ATTR] * self.cols)
 
     def _erase_screen(self, mode):
         if mode == 2:
             self.grid = [[" "] * self.cols for _ in range(self.rows)]
+            self.attrs = [[DEFAULT_ATTR] * self.cols for _ in range(self.rows)]
         elif mode == 0:
             self._erase_line(0)
             for r in range(self.row + 1, self.rows):
                 self.grid[r] = [" "] * self.cols
+                self.attrs[r] = [DEFAULT_ATTR] * self.cols
         elif mode == 1:
             self._erase_line(1)
             for r in range(self.row):
                 self.grid[r] = [" "] * self.cols
+                self.attrs[r] = [DEFAULT_ATTR] * self.cols
 
     def _erase_line(self, mode):
         if mode == 0:
             for c in range(self.col, self.cols):
                 self.grid[self.row][c] = " "
+                self.attrs[self.row][c] = DEFAULT_ATTR
         elif mode == 1:
             for c in range(self.col + 1):
                 self.grid[self.row][c] = " "
+                self.attrs[self.row][c] = DEFAULT_ATTR
         else:
             self.grid[self.row] = [" "] * self.cols
+            self.attrs[self.row] = [DEFAULT_ATTR] * self.cols
 
     def lines(self):
         return ["".join(row).rstrip() for row in self.grid]
+
+    def attr_rows(self):
+        """Per-row cell attributes, full width — the face layer of the
+        comparison contract."""
+        return [list(row) for row in self.attrs]
+
+
+def describe_attr_row(attrs):
+    """Compact human-readable runs for divergence messages:
+    \"[0-13 rv][14-25 rv+b]\" — default-attribute runs are omitted."""
+    parts = []
+    start = 0
+    while start < len(attrs):
+        end = start
+        while end < len(attrs) and attrs[end] == attrs[start]:
+            end += 1
+        if attrs[start] != DEFAULT_ATTR:
+            fg, bg, bold, underline, reverse = attrs[start]
+            bits = [
+                item
+                for item in (
+                    f"fg{fg}" if fg is not None else "",
+                    f"bg{bg}" if bg is not None else "",
+                    "b" if bold else "",
+                    "u" if underline else "",
+                    "rv" if reverse else "",
+                )
+                if item
+            ]
+            parts.append(f"[{start}-{end - 1} {'+'.join(bits)}]")
+        start = end
+    return "".join(parts) or "[default]"
 
 
 class Session:
@@ -307,14 +414,20 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
 
         gnu_lines = gnu.screen.lines()
         emaxx_lines = emaxx.screen.lines()
+        gnu_attrs = gnu.screen.attr_rows()
+        emaxx_attrs = emaxx.screen.attr_rows()
 
         gnu_mode = find_mode_line(gnu_lines)
         emaxx_mode = find_mode_line(emaxx_lines)
-        # GNU runs with the menu bar disabled (emaxx does not render one
-        # yet), so both editors work a 22-row text window and every text
-        # row — including scroll positions — must agree exactly.
+        # Both editors show the default menu bar on row 0 and work a
+        # 21-row text window under it; every row — menu captions and
+        # scroll positions included — must agree exactly.
         gnu_text = gnu_lines[0:gnu_mode]
         emaxx_text = emaxx_lines[0:emaxx_mode]
+
+        # Faces are part of the contract: every cell's SGR attributes must
+        # agree, on text rows, mode lines, and the echo area alike.
+        compare_attrs = os.environ.get("EMAXX_TTYDIFF_TEXT_ONLY") is None
 
         length = max(len(gnu_text), len(emaxx_text))
         gnu_text += [""] * (length - len(gnu_text))
@@ -323,13 +436,37 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
         for offset, (expected, actual) in enumerate(zip(gnu_text, emaxx_text)):
             if expected != actual:
                 divergences.append((offset, expected, actual))
+            elif compare_attrs and gnu_attrs[offset] != emaxx_attrs[offset]:
+                divergences.append(
+                    (
+                        f"{offset} (attrs)",
+                        describe_attr_row(gnu_attrs[offset]),
+                        describe_attr_row(emaxx_attrs[offset]),
+                    )
+                )
         # The mode line is part of the contract: same characters, same
         # padding, same percent/line indicators.
         if gnu_lines[gnu_mode] != emaxx_lines[emaxx_mode]:
             divergences.append(("mode-line", gnu_lines[gnu_mode], emaxx_lines[emaxx_mode]))
+        elif compare_attrs and gnu_attrs[gnu_mode] != emaxx_attrs[emaxx_mode]:
+            divergences.append(
+                (
+                    "mode-line (attrs)",
+                    describe_attr_row(gnu_attrs[gnu_mode]),
+                    describe_attr_row(emaxx_attrs[emaxx_mode]),
+                )
+            )
         # So is the echo area: the same final message (or its absence).
         if gnu_lines[-1] != emaxx_lines[-1]:
             divergences.append(("echo", gnu_lines[-1], emaxx_lines[-1]))
+        elif compare_attrs and gnu_attrs[len(gnu_lines) - 1] != emaxx_attrs[len(emaxx_lines) - 1]:
+            divergences.append(
+                (
+                    "echo (attrs)",
+                    describe_attr_row(gnu_attrs[len(gnu_lines) - 1]),
+                    describe_attr_row(emaxx_attrs[len(emaxx_lines) - 1]),
+                )
+            )
 
         if divergences:
             print(f"DIVERGE [{scenario}]: {len(divergences)} text row(s) differ")
@@ -446,6 +583,30 @@ SCENARIOS = [
         "alpha\nbeta\n",
         [b"\x06", b"\x07"],
     ),
+    # M-: shows the value with eval-expression-print-format in the echo.
+    (
+        "eval-expression",
+        "alpha\nbeta\n",
+        [b"\x1b:", b"(+ 1 2)", b"\r"],
+    ),
+    # Kill a region and yank it back: C-SPC, C-k lines, C-y.
+    (
+        "kill-yank",
+        "alpha one\nbeta two\ngamma three\ndelta four\n",
+        [b"\x00", b"\x0e\x0e", b"\x17", b"\x1b>", b"\x19"],
+    ),
+    # Copy with M-w, move, yank: the region stays put, the copy lands.
+    (
+        "copy-yank",
+        "alpha one\nbeta two\ngamma three\n",
+        [b"\x00", b"\x0e", b"\x05", b"\x1bw", b"\x1b>", b"\x19"],
+    ),
+    # C-x C-x swaps point and mark and reactivates the region.
+    (
+        "exchange-point-mark",
+        "alpha one\nbeta two\ngamma three\n",
+        [b"\x0e", b"\x00", b"\x0e", b"\x06\x06", b"\x18\x18"],
+    ),
     # An unbound key reports itself in the echo area.
     (
         "undefined-key",
@@ -463,6 +624,345 @@ SCENARIOS = [
         "message-then-motion",
         "alpha\nbeta\ngamma\n",
         [b"\x1b>", b"\x10"],
+    ),
+    # M-x completes a unique command prefix with TAB.
+    (
+        "mx-tab-completion",
+        "alpha\n",
+        [b"\x1bxforward-ch\t\r", b"X"],
+    ),
+    # M-p in M-x recalls the previously executed command.
+    (
+        "mx-history-recall",
+        "alpha\n",
+        [b"\x1bxforward-char\r", b"\x1bx\x1bp\r", b"Z"],
+    ),
+    # C-x C-f opens a typed absolute path.
+    (
+        "find-file-typed",
+        "original\n",
+        [b"\x18\x06", FIXTURE_PATH.encode() + b"\r"],
+    ),
+    # TAB completes the fixture's file name in the C-x C-f prompt.
+    (
+        "find-file-tab",
+        "original\n",
+        [b"\x18\x06", FIXTURE_PATH[:-7].encode() + b"\t\r"],
+    ),
+    # The C-x C-f prompt itself: GNU preloads the default directory.
+    (
+        "find-file-prompt",
+        "original\n",
+        [b"\x18\x06"],
+    ),
+    # C-s live search: the echo shows the accumulating search string.
+    (
+        "isearch-enter",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor"],
+    ),
+    # RET exits the search at the match end.
+    (
+        "isearch-exit-point",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\r", b"X"],
+    ),
+    # C-s repeats to the next match.
+    (
+        "isearch-repeat",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\x13", b"\r", b"Y"],
+    ),
+    # A failing search reports itself and leaves point at the origin.
+    (
+        "isearch-fail",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"zzq"],
+    ),
+    # Repeating past the last match fails, and one more C-s wraps.
+    (
+        "isearch-wrap",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\x13", b"\x13", b"\x13"],
+    ),
+    # C-g during a successful search cancels back to the origin.
+    (
+        "isearch-cancel",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\x07", b"Z"],
+    ),
+    # C-r searches backward from the end of the buffer.
+    (
+        "isearch-backward",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x1b>", b"\x12", b"wor", b"\r", b"B"],
+    ),
+    # A key outside the search map exits isearch and then runs.
+    (
+        "isearch-other-key-exit",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"wor", b"\x01", b"Q"],
+    ),
+    # DEL edits the search string.
+    (
+        "isearch-del-edits",
+        "alpha one\nbeta word two\ngamma word three\n",
+        [b"\x13", b"worz", b"\x7f", b"\r", b"D"],
+    ),
+    # A match beyond the window scrolls it into view.
+    (
+        "isearch-scroll",
+        "".join(f"line {n:03}\n" for n in range(50)) + "needle here\n",
+        [b"\x13", b"needle", b"\r", b"N"],
+    ),
+    # C-x 2: two stacked windows on the same buffer, a mode line each
+    # (the root's 23 lines split 12/11, upper keeps the extra row).
+    (
+        "split-below-two-windows",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182"],
+    ),
+    # Motion after C-x 2 moves point in the upper (selected) window only;
+    # the two mode lines disagree on L.
+    (
+        "split-below-motion",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x0e\x0e\x0e"],
+    ),
+    # C-x o selects the lower window; motion there leaves the upper
+    # window's point alone.
+    (
+        "other-window-motion",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x18o", b"\x0e" * 5],
+    ),
+    # C-x 3: side-by-side windows with the vertical border column and
+    # per-window mode lines truncated to each body width.
+    (
+        "split-right-vertical",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x183"],
+    ),
+    # Windows narrower than truncate-partial-width-windows truncate long
+    # lines with the `$' marker instead of wrapping them.
+    (
+        "split-right-truncated",
+        "short one\n" + "W" * 100 + "\n" + "".join(f"line {n:02} alpha\n" for n in range(3, 40)),
+        [b"\x183"],
+    ),
+    # C-x o then motion in the right-hand window.
+    (
+        "split-right-other",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x183", b"\x18o", b"\x0e\x0e"],
+    ),
+    # C-x 0 gives the deleted window's rows back to its sibling.
+    (
+        "delete-window-restores",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x180"],
+    ),
+    # C-x 1 from the lower window makes it fill the frame.
+    (
+        "delete-other-windows",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x18o", b"\x181"],
+    ),
+    # C-x 2 then C-x 3 splits only the upper window.
+    (
+        "three-way-split",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x183"],
+    ),
+    # C-x o cycles in tree order: upper-left, upper-right, bottom.
+    (
+        "three-way-cycle",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x183", b"\x18o", b"X"],
+    ),
+    # C-v in the lower window scrolls it by its own page size; the upper
+    # window must not move.
+    (
+        "split-scroll-independent",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x18o", b"\x16"],
+    ),
+    # C-v in the upper window: page size follows its 11 text rows.
+    (
+        "split-scroll-upper",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x16"],
+    ),
+    # M-> in the lower window recenters around the buffer end there.
+    (
+        "split-jump-end",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x182", b"\x18o", b"\x1b>"],
+    ),
+    # An ambiguous TAB in the C-x C-f prompt pops *Completions* at the
+    # frame bottom, sized to its candidate list.
+    (
+        "completions-pop-up",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x18\x06", COMPLETIONS_DIR_NAME.encode() + b"/am", b"\t", b"\t"],
+    ),
+    # Finishing the file name removes the *Completions* window again.
+    (
+        "completions-dismiss",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 61)),
+        [b"\x18\x06", COMPLETIONS_DIR_NAME.encode() + b"/am", b"\t", b"\t", b"1.dat\r"],
+    ),
+    # C-SPC then motion: the active region shows in the region face.
+    (
+        "region-highlight",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 30)),
+        [b"\x00", b"\x0e\x0e", b"\x06\x06\x06"],
+    ),
+    # A region marked backward (point before mark) highlights the same.
+    (
+        "region-backward",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 30)),
+        [b"\x0e\x0e\x0e", b"\x00", b"\x10\x10"],
+    ),
+    # C-g deactivates the mark and the highlight disappears.
+    (
+        "region-deactivate",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 30)),
+        [b"\x00", b"\x0e\x0e", b"\x07", b"\x0e"],
+    ),
+    # C-x C-x re-activates the region and swaps point with mark.
+    (
+        "exchange-point-mark",
+        "alpha one\nbeta two\ngamma three\n",
+        [b"\x00", b"\x0e\x0e", b"\x18\x18"],
+    ),
+    # M-y replaces the just-yanked text with the previous kill.
+    (
+        "yank-pop",
+        "alpha one\nbeta two\ngamma three\n",
+        [b"\x0b", b"\x0e", b"\x0b", b"\x1b>", b"\x19", b"\x1by"],
+    ),
+    # The file-name prompt shadows the ignored prefix; a tty without a
+    # displayable shadow face brackets it instead (rfn-eshadow).
+    (
+        "filename-shadow",
+        "fixture\n",
+        [b"\x18\x06", b"/etc", b"\x07"],
+    ),
+    # TAB with no completion shows minibuffer-message's transient.
+    (
+        "completion-no-match",
+        "fixture\n",
+        [b"\x18\x06", b"/nonexistent-zz", b"\t"],
+    ),
+    # F10 drops the File menu; down-arrow moves the selection.
+    (
+        "f10-open",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[B"],
+    ),
+    # Right-arrow closes File and opens Edit at its bar column.
+    (
+        "f10-cycle",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[C"],
+    ),
+    # RET on "Visit New File..." runs find-file: the prompt appears.
+    (
+        "f10-select",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[B", b"\r"],
+    ),
+    # C-g dismisses the menu and restores the glass behind it.
+    (
+        "f10-dismiss",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x07", b"\x0e"],
+    ),
+    # RET on Edit's "Search >" descends into the submenu: popup-menu's
+    # loop reopens x-popup-menu with the sub-keymap at the same spot.
+    (
+        "submenu-open",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[C"] + [b"\x1b[B"] * 9 + [b"\r"],
+    ),
+    # Selecting "String Backwards..." runs an `(interactive "s...")'
+    # command: the prompt reads through the real minibuffer and the bar
+    # gains its Minibuf entry.
+    (
+        "submenu-string-search",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[C"] + [b"\x1b[B"] * 9 + [b"\r", b"\x1b[B", b"\r"],
+    ),
+    # Right-arrow inside a submenu cycles to the next menu-bar menu;
+    # Options draws its checkboxes ([X] Blink Cursor needs the delayed
+    # Custom replay to run in interactive session mode).
+    (
+        "submenu-cycle-options",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[C"] + [b"\x1b[B"] * 9 + [b"\r", b"\x1b[C"],
+    ),
+    # Two levels down: Tools, then its Shell Commands submenu.
+    (
+        "submenu-nested",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~"] + [b"\x1b[C"] * 4 + [b"\x1b[B"] * 2 + [b"\r"],
+    ),
+    # The File pane is taller than the glass: Up at the top wraps to the
+    # menu's last window with the final item selected (MI_SCROLL_BACK).
+    (
+        "menu-scroll-wrap-up",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~", b"\x1b[A"],
+    ),
+    # Down past the last visible row advances the window one item at a
+    # time (MI_SCROLL_FORWARD) while the selection rides the bottom row.
+    (
+        "menu-scroll-forward",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b[21~"] + [b"\x1b[B"] * 24,
+    ),
+    # M-` runs the real tmm.el: split window, shortcut-lettered
+    # *Completions*, and the Menu bar prompt.
+    (
+        "tmm-open",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b`"],
+    ),
+    # A shortcut letter descends into that menu's own tmm level, key
+    # hints and :enable states computed after the first level tore down.
+    (
+        "tmm-pick-file",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b`", b"f"],
+    ),
+    # C-g aborts: the split heals and the pre-read window layout returns.
+    (
+        "tmm-cancel",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1b`", b"\x07"],
+    ),
+    # SGR mouse press+release on the menu bar (xterm-mouse-mode decodes
+    # in GNU; the frontend's terminal layer cooks the same events):
+    # [menu-bar mouse-1] finds menu-bar-open-mouse, Edit's pane drops.
+    (
+        "mouse-bar-click",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1bxxterm-mouse-mode\r", b"\x1b[<0;6;1M", b"\x1b[<0;6;1m"],
+    ),
+    # The clicked menu dismisses with C-g and the glass heals.
+    (
+        "mouse-bar-click-dismiss",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1bxxterm-mouse-mode\r", b"\x1b[<0;6;1M", b"\x1b[<0;6;1m", b"\x07", b"\x0e"],
+    ),
+    # C-mouse-3's menu-item filter yields the menu-bar keymap; a keymap
+    # bound to a click pops up at the click point with the pending-keys
+    # echo ("C-down-mouse-3- (C-h for help)") under it.
+    (
+        "mouse-cmenu",
+        "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+        [b"\x1bxxterm-mouse-mode\r", b"\x1b[<18;10;5M", b"\x1b[<18;10;5m"],
     ),
 ]
 
@@ -483,6 +983,14 @@ def main():
         [lisp_dir] + sorted(e.path for e in os.scandir(lisp_dir) if e.is_dir())
     )
 
+    with open(FIXTURE_PATH, "w") as fixture:
+        fixture.write("fixture line one\nfixture line two\n")
+    os.makedirs(COMPLETIONS_DIR, exist_ok=True)
+    for entry in os.listdir(COMPLETIONS_DIR):
+        os.unlink(os.path.join(COMPLETIONS_DIR, entry))
+    for name in ("ambig1.dat", "ambig2.dat"):
+        with open(os.path.join(COMPLETIONS_DIR, name), "w"):
+            pass
     failures = 0
     for name, contents, keys in SCENARIOS:
         handle, path = tempfile.mkstemp(suffix=".dat", prefix=f"ttydiff-{name}-")
@@ -492,7 +1000,7 @@ def main():
             ok = compare(
                 name,
                 keys,
-                [gnu_binary, "-nw", "-Q", "--eval", "(menu-bar-mode -1)", path],
+                [gnu_binary, "-nw", "-Q", path],
                 [emaxx_binary, path],
                 {},
                 {"EMACSLOADPATH": load_path},

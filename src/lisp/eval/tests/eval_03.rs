@@ -1774,6 +1774,8 @@ fn headless_window_vscroll_is_zero() {
 
 #[test]
 fn mode_line_buffer_identification_is_bound() {
+    // bindings.el owns this defvar-local; the bare runtime leaves it
+    // unbound rather than fabricating a Lisp-owned value cell.
     assert_eq!(
         eval_str_with_upstream_batch(
             "(and (boundp 'mode-line-buffer-identification) (listp mode-line-buffer-identification))"
