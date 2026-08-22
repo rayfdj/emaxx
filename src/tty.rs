@@ -204,19 +204,6 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     let mut interpreter = batch::initialize_interactive_interpreter()?;
     let mut env: Env = Vec::new();
     interpreter.set_variable("noninteractive", Value::Nil, &mut env);
-    // GNU's interactive startup derives the default coding from the
-    // locale; this container runs UTF-8, so buffers with no detected
-    // coding show `U' in the mode line exactly like GNU under it.
-    let _ = call(
-        &mut interpreter,
-        &mut env,
-        "set-default",
-        &[
-            Value::Symbol("buffer-file-coding-system".into()),
-            Value::Symbol("utf-8-unix".into()),
-        ],
-    );
-
     if let Some(path) = initial_file {
         let path = path.display().to_string();
         let find_file = call(
@@ -226,10 +213,10 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
             &[Value::String(path.clone().into())],
         );
         if let Err(error) = &find_file {
-            debug_log(&format!("find-file {path}: {error:?}"));
-            // A runtime without a working `find-file' still edits: read the
-            // file directly into a buffer carrying its name.
-            visit_file_directly(&mut interpreter, &mut env, &path);
+            // The real files.el `find-file' is the only honest visit path;
+            // fabricating a native visit here would keep the screen
+            // plausible while hiding the breakage.
+            panic!("find-file {path} failed: {error:?}");
         }
         debug_log(&format!(
             "startup buffer={:?} point={}",
@@ -532,29 +519,6 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
         style::Print(&text),
     );
     let _ = out.flush();
-}
-
-fn visit_file_directly(interpreter: &mut Interpreter, env: &mut Env, path: &str) {
-    let name = std::path::Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string());
-    let _ = call(
-        interpreter,
-        env,
-        "switch-to-buffer",
-        &[Value::String(name.into())],
-    );
-    if let Ok(contents) = std::fs::read_to_string(path) {
-        interpreter.buffer.insert(&contents);
-        interpreter.buffer.goto_char(interpreter.buffer.point_min());
-    }
-    let _ = call(
-        interpreter,
-        env,
-        "set-visited-file-name",
-        &[Value::String(path.to_string().into())],
-    );
 }
 
 fn command_loop(
@@ -1523,31 +1487,23 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             )
         });
     for job in &mode_line_jobs {
-        let (mut mode_line, spans) = crate::lisp::primitives::render_window_mode_line(
+        let (mut mode_line, spans) = match crate::lisp::primitives::render_window_mode_line(
             interpreter,
             env,
             job.window_id,
             job.point,
             job.metrics,
-        )
-        .inspect_err(|error| debug_log(&format!("mode-line render: {error:?}")))
-        .ok()
-        .filter(|(text, _)| !text.is_empty())
-        .unwrap_or_else(|| {
-            // A session whose spec fails to render still shows the basics.
-            let modified = if interpreter.buffer.is_modified() {
-                "**"
-            } else {
-                "--"
-            };
-            (
-                format!(
-                    "-UUU:{modified}-  {}   L{}   (Fundamental)",
-                    interpreter.buffer.name, job.point_line
-                ),
-                Vec::new(),
-            )
-        });
+        ) {
+            Ok((text, spans)) if !text.is_empty() => (text, spans),
+            // A GNU-shaped fabrication here would feed the very
+            // differential tool that checks mode lines; render failures
+            // must be visible.
+            Ok(_) => ("[mode-line: empty render]".to_string(), Vec::new()),
+            Err(error) => {
+                debug_log(&format!("mode-line render: {error:?}"));
+                (format!("[mode-line render error: {error:?}]"), Vec::new())
+            }
+        };
         if mode_line.chars().count() < job.body_width {
             let missing = job.body_width - mode_line.chars().count();
             mode_line.extend(std::iter::repeat_n('-', missing));
@@ -2542,8 +2498,27 @@ gamma word three
 
     #[test]
     fn key_resolution_distinguishes_prefixes_commands_and_undefined() {
+        // GNU builds the global map entirely in preloaded Lisp; the bare
+        // host starts with no global bindings.  Exercise the resolution
+        // mechanics against a real keymap assembled through C-owned
+        // primitives instead of any transcribed default table.
         let mut interpreter = Interpreter::new();
         let mut env: Env = Vec::new();
+        for form in [
+            "(defvar tty-test-global-map (make-sparse-keymap))",
+            "(use-global-map tty-test-global-map)",
+            "(define-key tty-test-global-map \"\\C-x\" (make-sparse-keymap))",
+            "(define-key tty-test-global-map \"h\" 'self-insert-command)",
+            "(define-key tty-test-global-map \"\\C-x\\C-s\" 'save-buffer)",
+        ] {
+            let parsed = crate::lisp::reader::Reader::new(form)
+                .read()
+                .expect("keymap setup form parses")
+                .expect("keymap setup form exists");
+            interpreter
+                .eval(&parsed, &mut env)
+                .expect("keymap setup form evaluates");
+        }
 
         let prefix = resolve_pending(&mut interpreter, &mut env, &[Value::Integer(24)]);
         assert!(matches!(prefix, Resolution::Prefix), "C-x must be a prefix");

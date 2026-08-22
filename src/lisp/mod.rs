@@ -1017,8 +1017,15 @@ pub fn load_file_strict(
     })
 }
 
+/// Whether `load'/`require' prefer a compiled `.elc' over its `.el' source.
+///
+/// GNU's `load-suffixes' is (".so" ".dylib" ".elc" ".el") with
+/// `load-prefer-newer' nil, so a `.elc' wins whenever one exists; that is the
+/// faithful default here too.  `EMAXX_BYTECODE_VM=0' forces source loads for
+/// debugging.  This selects resolution only -- the bytecode VM itself is
+/// always available.
 pub(crate) fn bytecode_vm_enabled() -> bool {
-    std::env::var_os("EMAXX_BYTECODE_VM").is_some_and(|flag| flag == "1")
+    std::env::var_os("EMAXX_BYTECODE_VM").is_none_or(|flag| flag != "0")
 }
 
 fn restore_special_dynamic_bindings(

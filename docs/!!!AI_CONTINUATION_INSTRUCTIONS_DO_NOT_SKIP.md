@@ -13,8 +13,9 @@ The canonical ordered manifest is:
 - `compat/oracle_tests_all.txt`
 - `compat/oracle_tests_all.md`
 
-The denominator is 7080 selected tests. Do not use source-tree `ert-deftest`
-counts as the progress denominator.
+The denominator is 7595 selected tests (regenerated 2026-08-18; older
+checkpoints below cite the stale 7080 figure). Do not use source-tree
+`ert-deftest` counts as the progress denominator.
 
 The authoritative Rust publication/correctness gate runs serially with
 `--test-threads=1`.  Parallel execution may be used only as a non-authoritative
@@ -24,6 +25,271 @@ files serially.  Do not spend compatibility time diagnosing aggregate
 parallel-only noise.
 
 ## Current Resume Point
+
+- 2026-08-18 SWEEP TRIAGE IN PROGRESS (after phases 4-6): the
+  compat_runtime module is green 76/76 serial (commit 4093638) — 24
+  facade tests deleted (their honest coverage is the oracle harness),
+  11 C-owned tests rewritten without subr.el helpers, plus two native
+  fixes (raw-text/no-conversion `:for-unibyte t'; native gunzip in
+  insert-file-contents deleted — .gz now flows through real
+  jka-compr.el via the existing file-name-handler dispatch,
+  GNU-identical output).  perf module green 11/11 after
+  compat/interpreter_perf.el switched defun/(lambda to
+  defalias/#'(lambda (verified in GNU).  batch.rs
+  effective_batch_load_path now defaults to the pinned sibling
+  checkout when nothing is configured — GNU --batch always carries its
+  dumped image, so an unconfigured emaxx invocation reconstructs it;
+  this makes bare CLI invocations Lisp-complete (and slow per
+  invocation: the issue-#11 reconstruction cost, now unavoidable
+  everywhere honesty requires the image).  lisp::primitives::tests had
+  139 failures, almost all bare-host tests using Lisp-owned helpers:
+  127 were mechanically converted to
+  initialized_gnu_early_lisp_interpreter (debug-early/byte-run/
+  backquote/subr from GNU sources); ~14 of those need the full batch
+  image instead (help-function-arglist, keymap-set, find-file,
+  substitute-command-keys consumers) and will be switched on the next
+  iteration; 10 full-image tests (emaxx_batch_output/
+  initialize_interactive_interpreter users) should be fixed by the
+  sibling-default load path alone.  Later in the same round: the native pre-seeding of
+  Lisp-owned keymaps (esc-map, ctl-x-4/5-map, tab-prefix-map,
+  ctl-x-map with its hand C-f binding, global-map with hand
+  ESC/C-x/C-]/C-f bindings, the mode maps, Buffer-menu-mode-map,
+  menu-bar-edit-menu, minibuffer-local-completion-map,
+  query-replace-map) was deleted — GNU's C creates none of these
+  (keymap.c staticpros only current_global_map and DEFVARs only
+  minibuffer-local-map, which stays native); the pre-seeded objects
+  made subr.el's defvar keep incomplete native maps, silently
+  dropping dumped bindings like C-x b.  key-binding now decodes key
+  sequences value-aware (key_sequence_keymap_parts) so symbol events
+  like <left> resolve through the real Lisp-built global map; the
+  dumped-bindings test asserts GNU's raw dumped map, with the NS
+  oracle's term/ns-win.el rebinds (<home>/<end> to
+  beginning/end-of-buffer) documented as a deliberate platform
+  divergence (emaxx models a no-window-system build).  Remaining
+  session fixes: CLI load-path composition (user paths first, pinned
+  sibling appended, like GNU's installation lisp at the load-path
+  tail), reconstruction messages silenced via inhibit-message during
+  preload (a dumped GNU starts silently), make-process :name accepts
+  any string type.  The last 30 primitives failures were then
+  cleared: fifteen native call() sites of Lisp-owned names switched to
+  call_via_lisp on the full image (copy-overlay, delete-line,
+  font-lock helpers, indent-rigidly, looking-at-p/back, make-button,
+  coding-system-type, process-lines, run-at-time/run-with-timer,
+  seq-uniq, string-limit, subregexp-context-p); eight tests moved to
+  the full image for simple.el/files.el/help.el owners; the process
+  connection probe runs on the early runtime so its `ignore' sentinel
+  exists; two more C DEFVARs defined natively with GNU defaults
+  (emacs.c noninteractive nil, xdisp.c show-trailing-whitespace nil);
+  treesit's library search skips a non-string user-emacs-directory
+  (subr.el owns that variable) instead of signaling;
+  run-window-configuration-change-hook now consults the Lisp-visible
+  buffer-local value cell in addition to the native hook mirror, so
+  Elisp add-hook LOCAL registrations fire (GNU window.c parity); the
+  keymap-character contract runs on the full image where files.el
+  genuinely binds C-x C-f.  The gate then reported 263/270 for
+  primitives, and those last seven were each traced to a cause rather
+  than adjusted away:
+
+  * minibuf.c DEFVARs missing natively — minibuffer-setup-hook,
+    minibuffer-exit-hook, minibuffer-follows-selected-frame,
+    read-buffer-completion-ignore-case, read-hide-char.  The two hooks
+    matter beyond their values: without a C declaration, a `let' on
+    them under lexical binding binds LEXICALLY, so minibuffer.el's own
+    `minibuffer-with-setup-hook' (which installs the completion
+    session with setq-local) silently never ran.  Reproduced outside
+    the test suite: with a lexical-binding cookie Emaxx returned nil
+    for minibuffer-completion-table where GNU returns ("a").
+  * minibuf.c ordering: `minibuffer-setup-hook' now runs with the
+    minibuffer already current, as read_minibuf does (the statement
+    after it there is bset_undo_list (current_buffer, Qnil)).
+  * syntax.c parity: internal-describe-syntax-value called
+    substitute-command-keys through the native dispatch, which
+    fail-closes because help.el owns it; GNU uses call1, i.e. a funcall
+    through the symbol cell.
+  * noninteractive is now a real DEFVAR (nil), so code that had been
+    reading "unbound means batch" needed the batch session stated
+    explicitly, as a real batch startup does.
+  * Three test expectations were corrected to GNU probes rather than
+    kept: (make-button nil 3 ...) signals wrong-type-argument (it does
+    not silently ignore the range), (font-lock-mode) returns nil and
+    enables nothing in a batch session, and mule.el's coding-system
+    accessors must be reached through the function cell.
+  * read-command/read-variable: GNU's minibuffer reads real stdin in
+    batch, which an in-process interpreter cannot prime, so that half
+    moved to tests/cli.rs where Emaxx runs as a process with the same
+    piped answers as the oracle; Emaxx and GNU print byte-identical
+    output there.
+
+  Native gap found and NOT papered over: `(let ((executing-kbd-macro
+  t)) (read-command "C: " 'foo))' HANGS in Emaxx where GNU returns
+  immediately (empty-macro end condition in the native read loop).
+  completing-read on the same path is fine; only the read-command
+  family hangs.  Track it before the interactive/minibuffer work.
+
+- 2026-08-18 DE-CHEAT PHASES 4-5 CHECKPOINT (phase 6 pending): the
+  oracle manifest was regenerated on this machine with the identical
+  command and 20-second per-file timeout: 7595 tests across 515 files
+  (was 7080/510).  Five previously timed-out files now load and are
+  included: ert-tests (55), simple-tests (53), python-tests (366),
+  process-tests (37), c-ts-mode-tests (4).  The four remaining
+  exclusions are environment-bound (tramp needs remote access, eglot
+  needs LSP servers, comp-tests is native-comp-specific,
+  emacs-module-tests needs a compiled C module).  compat-harness
+  frozen-manifest constants and its unit test now assert 515/4/7595
+  ("frozen-7595" mode); `compat/oracle_tests_all.md` and this file
+  record the new denominator.
+
+  Phase 5 disguise/displacement removals this round: the preloaded-Lisp
+  docstring scraper (builtin_doc_from_lisp_sources and its parser
+  helpers) is deleted — native documentation comes only from GNU's
+  etc/DOC database; func-arity/subr-arity no longer reverse-engineer
+  arities from docstrings nor fabricate (0 . many) — a manifest miss
+  signals "emaxx: no GNU-derived arity for subr NAME"; the
+  `(vals start end)` semantic-lambda hijack and its entire hand-rolled
+  mini-evaluator (semantic_action_* family in eval/core.rs) are
+  deleted — such lambdas now take normal application; the if/cond
+  tail-alias machinery (setcdr_tail_aliases and friends), which
+  detected self-mutating test forms, REVERSED the user's mutation and
+  fabricated a canned Void error, is deleted — a Vec-snapshot
+  evaluator honestly cannot see GNU's cons-mutation semantics, and any
+  affected oracle tests must fail as a tracked architectural gap.
+  Facade-dependent unit tests fixed honestly: func-arity caar → format
+  (caar is subr.el Lisp; bare runtime leaves it void),
+  file-attribute-size → (nth 7 ...) (files.el Lisp), describe-vector's
+  bare-runtime half rewritten with C-owned buffer primitives and
+  #'(lambda ...) (bare `lambda' is a subr.el macro and honestly void;
+  its GNU contract re-probed and passing).
+
+  Validation so far: anti-cheat 13/13 serial; compat-harness bin tests
+  37/37; arity/subrp/documentation/symbol-function/describe slices
+  green serially.  A full serial compat_runtime_tests run has ~30+
+  pre-existing failures (part of the deferred 176 non-eval sweep
+  backlog; many assert facades that phases 1-5 removed) — triage after
+  phase 6.
+
+  Phase 5 remaining backlog: dead hand-patched arities
+  (caar/remq/version-to-list/sha1 in builtin_arity_value — now
+  unreachable, delete); native isearch C-s interception; native
+  minibuffer editing + prefix-arg simulation; narrow-to-region
+  special-case (lists.rs); auto-compression/jka-compr
+  (buffers.rs/file_io.rs); completion styles + completing-read
+  fabrication (completion.rs); default_global_binding_for_key table
+  (values.rs); Unicode special-case subset (case.rs); gnutls digest
+  table (gnutls.rs); remaining Lisp-command entries in
+  builtin_interactive_string; safe_run_hooks recovery divergence.
+
+  Phase 6 DONE: the harness now invokes the measured side exactly like
+  the oracle — `-l ert -l compat/emacs_compat_runner.el -l FILE --eval
+  (emaxx-compat-run SEL)` with EMAXX_COMPAT_RUNNER naming the subject
+  in reports.  batch.rs's extract_ert_batch_selector interception, the
+  native post-action BatchReport emission (which silently OVERWROTE
+  any Lisp-written result JSON), and the native ERT batch runner path
+  are deleted; real ert.el runs the tests and the shared Lisp reporter
+  writes the JSON on both sides.  Load errors still emit a native
+  load-error report (mirroring the oracle helper's
+  command-error-function contract, selector from
+  EMAXX_COMPAT_SELECTOR).  A fabricated "native-compile" startup
+  feature was removed along the way (emaxx models a no-native-comp
+  GNU: featurep and native-comp-available-p are now both nil).
+  End-to-end proof, first honest compat fixes already landed through
+  the new pipeline: abbrev-tests PASSES 22/22 (the mismatch was
+  minibuf.c's history-length/history-delete-duplicates/
+  history-add-new-input DEFVARs missing natively — now defined with
+  GNU defaults); ring-tests and character-tests PASS; casefiddle-tests
+  PASSES after two GNU-verified casing fixes: capitalize consults the
+  `titlecase' uniprop (all four Latin digraph families) BEFORE the
+  case-table upcase mapping (casefiddle.c order), and the Greek
+  final-sigma post-pass overrides the case-table's Σ→σ mapping at end
+  of word (case_character).  The audit's "Unicode special-case subset"
+  item is thereby partially burned down; the multi-char SpecialCasing
+  table (ß→SS, ﬁ→FI, …) remains the small verified subset.  The put/ert--test mirror in buffer_edit.rs stays: it
+  performs the real property write AND updates the native index, which
+  the internal lib-test runner (lisp::run_ert_file, eval tests) still
+  uses; that runner is dev infrastructure, not the measured side.
+
+
+- 2026-08-18 DE-CHEAT PHASES 1-3 CHECKPOINT: a four-way honesty audit
+  (primitives dispatch, eval core, runtime/harness/anti-cheat, test
+  integrity) ran before the 7080 measurement; its findings are recorded
+  in the session and the first three fix phases are complete:
+
+  Phase 1, fabrications removed: the invented tex-mode `"' keybinding
+  injection in key-binding; file-attributes' hardcoded mode strings
+  (now a real filemodestring port over lstat bits, GNU-verified);
+  forward-sexp/backward-sexp's wrong interactive spec (now "^p\nd",
+  with the `d' callint letter implemented); the dot-prefix catch-all
+  that bound every `.foo' symbol.
+
+  Phase 2, poisoning and silent successes removed: `defvar' now skips
+  its init form only when a REAL global binding exists — the lazily
+  synthesized builtin fallback table no longer counts, so loaded GNU
+  files' defvars initialize honestly (mode-line-modes and
+  user-emacs-directory were the proven poisonings; five bogus table
+  entries deleted).  The autoload native fallback fires only on
+  file-missing (a found file's eval errors propagate like GNU's
+  Fautoload_do_load).  `require' signals GNU's "failed to provide"
+  error instead of self-providing (GNU probe: float-sup and lisp
+  signal identically, so two tests requiring non-providing preloaded
+  files were corrected to use the batch preload).  The hardcoded
+  cus-edit and semantic/symref dependency knowledge is gone.
+
+  Phase 3, hardening: tests/ert_runner.rs now fails on load errors,
+  timeouts, and any failing test.  tty.rs lost its silent find-file
+  fallback (panics loudly), its fabricated mode line (explicit render
+  error marker), and its locale-coding mask.  Anti-cheat gates now scan
+  tty.rs/bin/frontends, ban the removed fallback patterns, and a new
+  gate regenerates the GNU C manifest from the pinned sibling and
+  requires byte identity (passing).  Consequential fix: honest
+  data-directory made describe-function scan real NEWS files like GNU,
+  exceeding the regex delegate's default backtrack cap — the cap is
+  raised (GNU has none).
+
+  Validation: anti-cheat 13/13; targeted de-cheat tests 20/20; the
+  eval_01+eval_02 pair reran 591 tests with the only three failures
+  fixed as above.  Remaining audit backlog (phases 4-6, NOT started):
+  regenerate the oracle manifest on this machine (two of the nine
+  excluded "timed out" files load cleanly today — the 7080 denominator
+  is stale); retire the preloaded-Lisp disguise stack (counterfeit
+  byte-code wrappers, subrp lies, transcribed preloaded-file-list) and
+  the displacement backlog (native isearch/kill-line/prefix-arg paths,
+  auto-compression, version-to-list, completion styles, default keymap
+  table, Unicode special-case subset, gnutls digest table,
+  completing-read fabrication); replace the native ERT runner with the
+  Lisp-driven runner on the measured side.  The 176 non-eval-sweep
+  failures should be triaged only after those phases, since many test
+  the very facades slated for removal.
+
+- 2026-08-17 EVAL_05 CERTIFIED CHECKPOINT: the complete `eval_05` module
+  ran serially with no skips: 347 of 348 passed in 8490.81 seconds.  The
+  single failure is upstream_completion_preview_uses_preloaded_forward_
+  symbol, the documented string-mutability quarantine (GitHub issue #14;
+  GNU mutates capf-returned string literals in place, which Emaxx's
+  immutable interned strings cannot host).  Every other eval_05 item is
+  repaired, including the former "hang": eshell_matching_input_
+  navigation passes in ~11s now — the hang was process-pipe writes
+  failing with EAGAIN and each eshell command then burning its 300s
+  wait, fixed by GNU send_process semantics (retry the nonblocking
+  write while accepting pending process output).  Other native repairs
+  in this round: doc-directory falls back to the pinned sibling's etc/
+  so Snarf-documentation and help-C-file-name read GNU's DOC database;
+  VM condition-case frames now register in the interpreter's handler
+  stack so signal-time `handler-bind' dispatch at native-call
+  boundaries cannot bypass a compiled condition-case (GNU handlerlist
+  parity — this was making ERT capture errors that custom.el had
+  handled); and `call-interactively' resolves interactive forms of
+  compiled OClosures through `oclosure-interactive-form', so advised
+  commands like edebug's eval-defun receive their composed "P"
+  argument.  GNU-probed test corrections: cl--generic-name projection
+  (the raw generic struct is not assertable), dumped_bootstrap's
+  lexical-binding t under batch eval.
+
+  ALL FIVE EVAL MODULES ARE NOW CERTIFIED in complete serial runs:
+  eval_01 313, eval_02 278, eval_03 310, eval_04 240, eval_05 347/348
+  (one issue-#14 quarantine).  Next: the ~500 never-run non-eval
+  suites (lisp::primitives tests 270, compat_runtime_tests 101,
+  reader/json/tty/perf/etc., plus the compat-harness bin tests outside
+  --lib), then one uninterrupted full serial publication gate, then
+  the honest canonical X/7080 harness measurement.
 
 - 2026-08-17 EVAL_05 NEAR-CLEAN CHECKPOINT (commit 52a0cdf): 341 of 347
   `eval_05` tests pass serially, with one test quarantined and six red.

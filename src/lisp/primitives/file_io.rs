@@ -963,43 +963,6 @@ pub(crate) fn buffer_position_at_line_start(
     position <= buffer.point_min() || buffer.char_at(position.saturating_sub(1)) == Some('\n')
 }
 
-pub(crate) fn render_princ(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.to_string(),
-        Value::StringObject(state) => state.borrow().text.clone(),
-        // princ prints a buffer as its name.
-        Value::Buffer(buffer) => buffer.name.to_string(),
-        _ => value.to_string(),
-    }
-}
-
-pub(crate) fn render_native_princ(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-) -> Result<String, LispError> {
-    // GNU 30.2 print.c routes PVEC_SYMBOL_WITH_POS through the same branch
-    // for escaped and unescaped printing.  `format' uses this path for %s,
-    // which is how bytecomp renders many warning arguments.
-    if let Some((symbol, position)) = symbol_with_pos_parts(interp, value) {
-        if interp
-            .lookup_var("print-symbols-bare", env)
-            .is_some_and(|setting| setting.is_truthy())
-        {
-            return Ok(render_princ(&symbol));
-        }
-        return Ok(format!("#<symbol {} at {position}>", render_princ(&symbol)));
-    }
-    if interp
-        .lookup_var("print-integers-as-characters", env)
-        .is_some_and(|setting| setting.is_truthy())
-        && matches!(value, Value::Integer(_) | Value::BigInteger(_))
-    {
-        return Ok(render_princ_integer_as_character(value).unwrap_or_else(|| value.to_string()));
-    }
-    Ok(render_princ(value))
-}
-
 fn auto_coding_for_file(
     interp: &mut Interpreter,
     env: &Env,
@@ -1158,6 +1121,8 @@ pub(crate) fn decode_file_contents(
     Ok((decode_text_bytes(interp, &normalized, &detected)?, detected))
 }
 
+
+
 pub(crate) fn insert_file_contents(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1192,7 +1157,7 @@ pub(crate) fn insert_file_contents(
     {
         let _ = checked_coding_symbol(interp, &coding)?;
     }
-    let mut bytes = match read_insert_file_bytes(&path, start, end) {
+    let bytes = match read_insert_file_bytes(&path, start, end) {
         Ok(bytes) => bytes,
         Err(error) => {
             // GNU completes the visiting part of `insert-file-contents'
@@ -1207,13 +1172,7 @@ pub(crate) fn insert_file_contents(
             return Err(error);
         }
     };
-    let mut decoding_path = path.clone();
-    if !literal && start.is_none() && end.is_none() && should_auto_decompress(interp, env, &path) {
-        bytes = maybe_decompress_file_bytes(&path, bytes)?;
-        decoding_path = compressed_payload_path(&path).unwrap_or(decoding_path);
-    }
-    let (text, detected) =
-        decode_file_contents(interp, env, &bytes, literal, Some(&decoding_path))?;
+    let (text, detected) = decode_file_contents(interp, env, &bytes, literal, Some(&path))?;
     // A REPLACE is one file-read transaction, not an ordinary user edit.
     // GNU dynamically hides `buffer-file-name' across its delete+insert so
     // the generic stale-file edit guard cannot interrupt the operation in

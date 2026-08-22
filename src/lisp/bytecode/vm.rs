@@ -141,6 +141,10 @@ struct Handler {
     dest: usize,
     stack_len: usize,
     unwind_len: usize,
+    /// Interpreter handler-registry watermark for a condition-case frame,
+    /// so signal-time `handler-bind' dispatch sees VM frames like GNU's
+    /// handlerlist.
+    registry_start: Option<usize>,
 }
 
 /// Whether `EMAXX_TRACE_LOAD_ERRORS' asks for VM dispatch traces, read
@@ -1107,22 +1111,33 @@ fn run_with_stack(
                         dest: target as usize,
                         stack_len: stack.len(),
                         unwind_len: unwinds.len(),
+                        registry_start: None,
                     });
                 }
                 Op::PushConditionCase { target } => {
                     let conditions = pop!();
+                    // Register the clause head with the interpreter so
+                    // signal-time `handler-bind' dispatch at native-call
+                    // boundaries sees this frame before any outer handler,
+                    // exactly like an interpreted `condition-case'.
+                    let registry_start =
+                        interp.push_condition_case_handler(vec![conditions.clone()]);
                     handlers.push(Handler {
                         kind: HandlerKind::ConditionCase(conditions),
                         dest: target as usize,
                         stack_len: stack.len(),
                         unwind_len: unwinds.len(),
+                        registry_start: Some(registry_start),
                     });
                 }
                 Op::PopHandler => {
-                    if let Some(handler) = handlers.pop()
-                        && matches!(handler.kind, HandlerKind::Catch(_))
-                    {
-                        interp.pop_active_catch_tag();
+                    if let Some(handler) = handlers.pop() {
+                        if matches!(handler.kind, HandlerKind::Catch(_)) {
+                            interp.pop_active_catch_tag();
+                        }
+                        if let Some(start) = handler.registry_start {
+                            interp.pop_handler_bindings(start);
+                        }
                     }
                 }
                 Op::Switch => {
@@ -1393,6 +1408,9 @@ fn run_with_stack(
                     if matches!(handler.kind, HandlerKind::Catch(_)) {
                         interp.pop_active_catch_tag();
                     }
+                    if let Some(start) = handler.registry_start {
+                        interp.pop_handler_bindings(start);
+                    }
                     let matched_value = match (&handler.kind, &error) {
                         (HandlerKind::Catch(tag), LispError::Throw(thrown, value)) => {
                             let same = prim(interp, "eq", &[tag.clone(), thrown.clone()], env)?;
@@ -1449,15 +1467,31 @@ fn run_with_stack(
     // the frame's specpdl watermark), running unwind-protect handlers
     // and restoring saved buffer state on the way out; catch tags of
     // still-pushed handlers leave the registry with their frame.
-    for handler in handlers {
+    for handler in handlers.into_iter().rev() {
         if matches!(handler.kind, HandlerKind::Catch(_)) {
             interp.pop_active_catch_tag();
+        }
+        if let Some(start) = handler.registry_start {
+            interp.pop_handler_bindings(start);
         }
     }
     while let Some(entry) = unwinds.pop() {
         unwind_one(interp, entry, env)?;
     }
-    result
+    // GNU runs `handler-bind' handlers from `signal' itself, so an error
+    // raised inside byte-code reaches them exactly as one raised by the
+    // interpreter does.  Emaxx dispatches at each native-call boundary
+    // (eval/core.rs); without the same dispatch here, an error escaping the VM
+    // skipped every enclosing handler-bind — which meant ert could not turn a
+    // failing compiled test body into a result, and only ever showed up once
+    // the subject started executing GNU's compiled Lisp.  A condition-case
+    // inside this frame has already had its chance above, so anything still
+    // propagating belongs to an outer handler.
+    match result {
+        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
+        Err(error) => interp.dispatch_handler_bindings(error, env),
+        ok => ok,
+    }
 }
 
 #[cfg(test)]

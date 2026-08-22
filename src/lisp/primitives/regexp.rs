@@ -1796,9 +1796,13 @@ impl CompiledElispRegex {
 fn build_fancy_regex(rendered: &str) -> Result<FancyRegex, fancy_regex::Error> {
     // Bounded repetitions over Unicode classes (cc-mode uses `\{,1000\}'
     // on symbol-char classes) overflow the delegate's default 10MB
-    // compiled-program budget; GNU regexps have no such limit.
+    // compiled-program budget; GNU regexps have no such limit.  The
+    // backtrack budget likewise must not fail searches GNU completes:
+    // help-fns scans multi-megabyte NEWS files with alternation patterns
+    // that exceed the delegate's default one-million-step cap.
     fancy_regex::RegexBuilder::new(rendered)
         .delegate_size_limit(512 * 1024 * 1024)
+        .backtrack_limit(u32::MAX as usize)
         .build()
 }
 

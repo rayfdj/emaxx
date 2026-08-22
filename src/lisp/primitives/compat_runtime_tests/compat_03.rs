@@ -96,15 +96,17 @@ fn func_arity_matches_upstream_core_cases() {
         .expect("func-arity car"),
         Value::cons(Value::Integer(1), Value::Integer(1))
     );
+    // `caar' is subr.el Lisp in GNU; the bare runtime honestly leaves it
+    // void, so cover the variadic C case with `format' instead.
     assert_eq!(
         call(
             &mut interp,
             "func-arity",
-            &[Value::Symbol("caar".into())],
+            &[Value::Symbol("format".into())],
             &mut env,
         )
-        .expect("func-arity caar"),
-        Value::cons(Value::Integer(1), Value::Integer(1))
+        .expect("func-arity format"),
+        Value::cons(Value::Integer(1), Value::Symbol("many".into()))
     );
     assert_eq!(
         call(

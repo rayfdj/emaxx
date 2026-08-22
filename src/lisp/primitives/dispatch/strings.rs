@@ -826,9 +826,12 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let (mut description, prefix) = syntax::describe_syntax_value(&args[0]);
                 if prefix {
-                    let suffix = super::call(
-                        interp,
-                        "substitute-command-keys",
+                    // GNU syntax.c: insert1 (call1 (Qsubstitute_command_keys,
+                    // prefixdoc)) — a funcall through the symbol's cell, which
+                    // reaches help.el's Lisp owner.
+                    let suffix = interp.call_function_value(
+                        Value::symbol("substitute-command-keys"),
+                        Some("substitute-command-keys"),
                         &[Value::String(
                             ",\n\t  is a prefix character for `backward-prefix-chars'".into(),
                         )],
@@ -953,6 +956,33 @@ define_dispatch!(
     }
 );
 
+/// casefiddle.c's `uniprop_table (Qtitlecase)' and friends: resolve a Unicode
+/// property char-table, loading its generated `uni-*.el' owner on demand.
+/// An unavailable property yields None exactly as GNU's nil table does, and
+/// the caller then falls back to the case table.
+pub(crate) fn uniprop_table_id(
+    interp: &mut Interpreter,
+    property: &str,
+    env: &mut Env,
+) -> Option<u64> {
+    match registered_unicode_property(interp, property, env).ok()?? {
+        Value::CharTable(table_id) => Some(table_id),
+        _ => None,
+    }
+}
+
+/// CHAR_TABLE_REF over a Unicode property table, decoding the compressed
+/// representation the generated `uni-*.el' tables use.
+pub(crate) fn uniprop_table_ref(
+    interp: &Interpreter,
+    table_id: u64,
+    code: u32,
+) -> Option<Value> {
+    let raw = interp.char_table_get(table_id, code)?;
+    let decoded = decode_unicode_property_value(interp, table_id, raw).ok()?;
+    (!decoded.is_nil()).then_some(decoded)
+}
+
 fn registered_unicode_property(
     interp: &mut Interpreter,
     property: &str,
@@ -1004,7 +1034,7 @@ fn unicode_property_character(value: &Value) -> Result<u32, LispError> {
     }
 }
 
-pub(super) fn decode_unicode_property_value(
+pub(crate) fn decode_unicode_property_value(
     interp: &Interpreter,
     table_id: u64,
     value: Value,

@@ -39,32 +39,11 @@ impl Interpreter {
         self.materialize_read_object_literals(items[1].clone())
     }
 
-    pub(super) fn sf_if(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-        test_mentions_setcdr: bool,
-    ) -> Result<Value, LispError> {
+    pub(super) fn sf_if(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         let Some(test_form) = items.get(1) else {
             return Ok(Value::Nil);
         };
-        // The tail-alias machinery guards a self-mutating test form
-        // ((setcdr X ...) where X aliases the `if' form's own tail).  The
-        // source-form cache performs this mutation-stamped scan once.
-        let tail_aliases = if test_mentions_setcdr {
-            setcdr_tail_aliases(self, test_form, &Value::list(items[1..].to_vec()), env)
-        } else {
-            Vec::new()
-        };
-        let saved_aliases = snapshot_tail_alias_values(self, &tail_aliases, env);
-        let cond_result = self.eval(test_form, env);
-        let tail_became_improper =
-            !tail_aliases.is_empty() && tail_aliases_became_improper(self, &tail_aliases, env);
-        restore_tail_alias_values(self, &saved_aliases, env);
-        let cond = cond_result?;
-        if tail_became_improper {
-            return Err(LispError::Void("if".into()));
-        }
+        let cond = self.eval(test_form, env)?;
         if cond.is_truthy() {
             items
                 .get(2)
@@ -76,25 +55,12 @@ impl Interpreter {
     }
 
     pub(super) fn sf_cond(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        for (clause_index, clause) in items[1..].iter().enumerate() {
+        for clause in items[1..].iter() {
             let clause_items = clause.to_vec()?;
             if clause_items.is_empty() {
                 continue;
             }
-            let tail_aliases = setcdr_tail_aliases(
-                self,
-                &clause_items[0],
-                &Value::list(items[clause_index + 1..].to_vec()),
-                env,
-            );
-            let saved_aliases = snapshot_tail_alias_values(self, &tail_aliases, env);
-            let test_result = self.eval(&clause_items[0], env);
-            let tail_became_improper = tail_aliases_became_improper(self, &tail_aliases, env);
-            restore_tail_alias_values(self, &saved_aliases, env);
-            let test = test_result?;
-            if tail_became_improper {
-                return Err(LispError::Void("cond".into()));
-            }
+            let test = self.eval(&clause_items[0], env)?;
             if test.is_truthy() {
                 if clause_items.len() == 1 {
                     return Ok(test);

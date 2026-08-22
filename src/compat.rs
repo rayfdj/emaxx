@@ -218,6 +218,13 @@ pub struct ComparisonReport {
     pub file: String,
     pub matches: bool,
     pub issues: Vec<ComparisonIssue>,
+    /// Per-test tallies over the union of both runners' reported outcomes.
+    /// A compatibility score is a count of TESTS, so it has to be computed
+    /// here; file-level counts cannot be converted into one afterwards.
+    #[serde(default)]
+    pub matching_outcomes: usize,
+    #[serde(default)]
+    pub mismatching_outcomes: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -413,6 +420,16 @@ pub fn configure_upstream_like_env_with_home(
     for key in UNSET_ENV_VARS {
         command.env_remove(key);
     }
+    // Every EMAXX_* knob is invisible to GNU but can change what the subject
+    // does -- EMAXX_BYTECODE_VM selects the execution engine, EMAXX_EMACS_VERSION
+    // and EMAXX_SYSTEM_CONFIGURATION change its reported identity.  An operator's
+    // exported variable must not reach a measured run; the harness sets the few
+    // it needs explicitly, after this point.
+    for (key, _) in std::env::vars() {
+        if key.starts_with("EMAXX_") {
+            command.env_remove(key);
+        }
+    }
     for key in SUPPORTED_ENV_VARS {
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);
@@ -521,7 +538,10 @@ pub fn repo_local_elisp_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, Str
                     .into_iter()
                     .flat_map(|iter| iter.filter_map(Result::ok))
                     .any(|child| {
-                        child.file_type().is_ok_and(|file_type| file_type.is_file())
+                        // `read_dir' file types do not follow symlinks; a
+                        // shadowed tree of per-file symlinks is still a Lisp
+                        // directory, so judge the target, not the link.
+                        child.path().is_file()
                             && child.path().extension().is_some_and(|ext| ext == "el")
                     })
             {
@@ -911,9 +931,19 @@ pub fn compare_reports(expected: &BatchReport, actual: &BatchReport) -> Comparis
         .chain(actual_results.keys())
         .cloned()
         .collect::<BTreeSet<_>>();
+    let mut matching_outcomes = 0usize;
+    let mut mismatching_outcomes = 0usize;
     for name in names {
         match (expected_results.get(&name), actual_results.get(&name)) {
             (Some(left), Some(right)) => {
+                let same_status = left.status == right.status;
+                let same_condition = left.condition_type == right.condition_type
+                    || (left.status == TestStatus::Passed && right.status == TestStatus::Passed);
+                if same_status && same_condition {
+                    matching_outcomes += 1;
+                } else {
+                    mismatching_outcomes += 1;
+                }
                 if left.status != right.status {
                     issues.push(ComparisonIssue {
                         kind: "test_status".into(),
@@ -935,20 +965,24 @@ pub fn compare_reports(expected: &BatchReport, actual: &BatchReport) -> Comparis
                     });
                 }
             }
-            (Some(_), None) => issues.push(ComparisonIssue {
+            (Some(_), None) => issues.push({
+                mismatching_outcomes += 1;
+                ComparisonIssue {
                 kind: "missing_test_result".into(),
                 detail: format!(
                     "{} reported `{name}` but {} did not",
                     expected.runner, actual.runner
                 ),
-            }),
-            (None, Some(_)) => issues.push(ComparisonIssue {
+            }}),
+            (None, Some(_)) => issues.push({
+                mismatching_outcomes += 1;
+                ComparisonIssue {
                 kind: "extra_test_result".into(),
                 detail: format!(
                     "{} reported `{name}` but {} did not",
                     actual.runner, expected.runner
                 ),
-            }),
+            }}),
             (None, None) => {}
         }
     }
@@ -957,6 +991,8 @@ pub fn compare_reports(expected: &BatchReport, actual: &BatchReport) -> Comparis
         file: actual.file.clone(),
         matches: issues.is_empty(),
         issues,
+        matching_outcomes,
+        mismatching_outcomes,
     }
 }
 

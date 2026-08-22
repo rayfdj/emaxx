@@ -2,8 +2,7 @@ use super::*;
 use crate::lisp::primitives::string_like;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::path::PathBuf;
 
 thread_local! {
     static SEMANTIC_CPP_INCLUDE_TAG_CACHE: RefCell<HashMap<PathBuf, Vec<Value>>> =
@@ -295,20 +294,14 @@ define_dispatch!(
             "help--describe-vector" => help_describe_vector(interp, args, env),
             "key-binding" => {
                 need_arg_range(name, args, 1, 4)?;
-                let key = key_sequence_binding_text(&args[0])?;
-                let parts = key_sequence_keymap_parts(&args[0])?;
-                let binding = key_binding_with_parts(
+                let key_parts = key_sequence_keymap_parts(&args[0])?;
+                key_binding_with_parts(
                     interp,
-                    &key,
-                    &parts,
+                    &key_parts,
                     args.get(1).is_some_and(Value::is_truthy),
                     args.get(2).is_some_and(Value::is_truthy),
                     env,
-                )?;
-                // access_keymap resolves every answer through
-                // get_keyelt: a menu binding ("Edit" . KEYMAP) or
-                // (menu-item ...) answers its real definition.
-                keymap_get_keyelt(interp, &binding, true, env)
+                )
             }
             "keymap-prompt" => {
                 need_args(name, args, 1)?;
@@ -447,33 +440,11 @@ define_dispatch!(
                 // CHECK_SYMBOL/XSYMBOL, sharing the positioned-symbol
                 // contract with `fboundp'.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
-                if let Some(wrapper) = materialize_preloaded_lisp_function(interp, &symbol, env) {
-                    // The implementation stays native, but GNU's dumped
-                    // function cell is compiled Lisp.  Materialize that stable
-                    // observable wrapper on first inspection so help, advice,
-                    // and byte-code-function-p see the dumped contract without
-                    // moving the implementation across the Lisp/host boundary.
-                    return Ok(wrapper);
-                }
                 Ok(match interp.logical_function_binding(&symbol, env) {
                     Some(value) => value,
                     None if is_special_form_name(&symbol) => {
                         Value::BuiltinFunc(symbol.clone().into())
                     }
-                    None if symbol == "benchmark-run" => Value::list([
-                        Value::Symbol("autoload".into()),
-                        Value::String("benchmark.el".into()),
-                        Value::String("Autoloaded benchmark-run.".into()),
-                        Value::Nil,
-                        Value::Nil,
-                    ]),
-                    None if symbol == "tetris" => Value::list([
-                        Value::Symbol("autoload".into()),
-                        Value::String("tetris.el".into()),
-                        Value::String("Autoloaded tetris.".into()),
-                        Value::T,
-                        Value::Nil,
-                    ]),
                     // GNU returns nil for an unbound function cell (nadvice's
                     // pending-advice path reads it).
                     None => Value::Nil,
@@ -689,6 +660,9 @@ define_dispatch!(
                 let mut rehash_size = Value::Float(1.5);
                 let mut rehash_threshold = Value::Float(0.8125);
                 let mut weakness = Value::Nil;
+                // fns.c still accepts `:purecopy'; print.c:2609 reports it
+                // back, so the flag has to be recorded rather than dropped.
+                let mut purecopy = Value::Nil;
                 let mut index = 0usize;
                 while index + 1 < args.len() {
                     let key = args[index].as_symbol()?;
@@ -714,7 +688,7 @@ define_dispatch!(
                                 other => other.clone(),
                             };
                         }
-                        ":purecopy" => {}
+                        ":purecopy" => purecopy = args[index + 1].clone(),
                         _ => {
                             return Err(LispError::Signal(format!(
                                 "Invalid hash table parameter: {key}"
@@ -735,13 +709,14 @@ define_dispatch!(
                 let record = interp
                     .find_record_mut(id)
                     .expect("make_hash_table should create a record");
-                if record.slots.len() < 6 {
-                    record.slots.resize(6, Value::Nil);
+                if record.slots.len() < 7 {
+                    record.slots.resize(7, Value::Nil);
                 }
                 record.slots[2] = size;
                 record.slots[3] = rehash_size;
                 record.slots[4] = rehash_threshold;
                 record.slots[5] = weakness;
+                record.slots[6] = purecopy;
                 Ok(table)
             }
             "hash-table-p" => {
@@ -1672,68 +1647,7 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
     }
 }
 
-fn byte_code_function_slots(
-    interp: &Interpreter,
-    symbol: Option<&str>,
-    callable: Value,
-    lap: Option<Value>,
-    dynamic_binding: bool,
-) -> Vec<Value> {
-    let doc = symbol
-        .and_then(|name| {
-            interp
-                .get_symbol_property(name, "function-documentation")
-                .or_else(|| {
-                    super::misc::fallback_function_documentation(interp, name)
-                        .map(|value| Value::String(value.into()))
-                })
-        })
-        .and_then(|value| byte_code_docstring(value, &callable));
-    let interactive = symbol
-        .and_then(|name| interp.get_symbol_property(name, "interactive-form"))
-        .and_then(|form| form.to_vec().ok())
-        .and_then(|items| items.get(1).cloned())
-        .unwrap_or(Value::Nil);
-    vec![
-        callable,
-        lap.unwrap_or(Value::Nil),
-        if dynamic_binding {
-            Value::Symbol("dynamic-binding".into())
-        } else {
-            Value::Nil
-        },
-        Value::Nil,
-        doc.unwrap_or(Value::Nil),
-        interactive,
-    ]
-}
 
-pub(super) fn materialize_preloaded_lisp_function(
-    interp: &mut Interpreter,
-    symbol: &str,
-    env: &Env,
-) -> Option<Value> {
-    let Value::BuiltinFunc(builtin) = interp.logical_function_binding(symbol, env)? else {
-        return None;
-    };
-    if !builtin_is_gnu_preloaded_lisp(interp, &builtin) {
-        return None;
-    }
-    let slots = byte_code_function_slots(
-        interp,
-        Some(symbol),
-        Value::BuiltinFunc(builtin),
-        None,
-        false,
-    );
-    let wrapper = interp.create_pseudovector(
-        crate::lisp::eval::RecordKind::Closure,
-        "byte-code-function",
-        slots,
-    );
-    interp.set_function_binding(symbol, Some(wrapper.clone()));
-    Some(wrapper)
-}
 
 fn legacy_struct_vector_type(interp: &Interpreter, value: &Value, env: &Env) -> Option<String> {
     if !interp
@@ -1756,303 +1670,8 @@ fn legacy_struct_vector_type(interp: &Interpreter, value: &Value, env: &Env) -> 
     }
 }
 
-fn byte_code_docstring(doc: Value, callable: &Value) -> Option<Value> {
-    let text = match doc {
-        Value::String(text) => text,
-        Value::StringObject(state) => state.borrow().text.clone().into(),
-        _ => return None,
-    };
-    let Some(usage) = byte_code_usage(callable) else {
-        return Some(Value::String(text));
-    };
-    Some(Value::String(format!("{text}\n\n{usage}").into()))
-}
 
-fn byte_code_usage(callable: &Value) -> Option<String> {
-    match callable {
-        Value::Lambda(lambda) => Some(format!("(fn{})", byte_code_usage_params(&lambda.params))),
-        value if is_lambda_value(value) => {
-            let items = value.to_vec().ok()?;
-            let params = items.get(1)?.to_vec().ok()?;
-            let params = params
-                .iter()
-                .filter_map(|value| value.as_symbol().ok().map(str::to_string))
-                .collect::<Vec<_>>();
-            Some(format!("(fn{})", byte_code_usage_params(&params)))
-        }
-        _ => None,
-    }
-}
 
-fn byte_code_usage_params(params: &[String]) -> String {
-    let rendered = params
-        .iter()
-        .filter(|param| !param.starts_with('&'))
-        .map(|param| param.to_ascii_uppercase())
-        .collect::<Vec<_>>();
-    if rendered.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", rendered.join(" "))
-    }
-}
 
-// GNU's 30.2 `preloaded-file-list' (loadup.el order, lisp/-relative).
-// `symbol-file' resolves natives that are preloaded elisp in GNU by
-// scanning these sources for the defining form, standing in for the
-// dumped load-history.
-const GNU_PRELOADED_LISP_FILES: &[&str] = &[
-    "emacs-lisp/rmc",
-    "international/iso-transl",
-    "tooltip",
-    "cus-start",
-    "emacs-lisp/cconv",
-    "emacs-lisp/eldoc",
-    "emacs-lisp/shorthands",
-    "paren",
-    "electric",
-    "uniquify",
-    "vc/ediff-hook",
-    "vc/vc-hooks",
-    "emacs-lisp/float-sup",
-    "progmodes/elisp-mode",
-    "buff-menu",
-    "emacs-lisp/tabulated-list",
-    "replace",
-    "newcomment",
-    "textmodes/fill",
-    "textmodes/text-mode",
-    "emacs-lisp/lisp-mode",
-    "progmodes/prog-mode",
-    "textmodes/paragraphs",
-    "register",
-    "textmodes/page",
-    "emacs-lisp/lisp",
-    "tab-bar",
-    "menu-bar",
-    "rfn-eshadow",
-    "isearch",
-    "emacs-lisp/easymenu",
-    "emacs-lisp/timer",
-    "select",
-    "mouse",
-    "jit-lock",
-    "font-lock",
-    "emacs-lisp/syntax",
-    "font-core",
-    "term/tty-colors",
-    "startup",
-    "frame",
-    "minibuffer",
-    "emacs-lisp/nadvice",
-    "emacs-lisp/seq",
-    "simple",
-    "emacs-lisp/cl-generic",
-    "indent",
-    "language/indonesian",
-    "language/philippine",
-    "language/cham",
-    "language/burmese",
-    "language/khmer",
-    "language/georgian",
-    "language/utf-8-lang",
-    "language/misc-lang",
-    "language/vietnamese",
-    "language/tibetan",
-    "language/thai",
-    "language/tai-viet",
-    "language/lao",
-    "language/korean",
-    "language/japanese",
-    "international/eucjp-ms",
-    "international/cp51932",
-    "language/hebrew",
-    "language/greek",
-    "language/romanian",
-    "language/slovak",
-    "language/czech",
-    "language/european",
-    "language/ethiopic",
-    "language/english",
-    "language/sinhala",
-    "language/indian",
-    "language/cyrillic",
-    "international/uni-special-lowercase.el",
-    "language/chinese",
-    "composite",
-    "international/emoji-zwj",
-    "international/charscript",
-    "international/uni-lowercase.el",
-    "international/uni-uppercase.el",
-    "international/uni-category.el",
-    "international/uni-brackets.el",
-    "international/uni-mirrored.el",
-    "international/uni-bidi.el",
-    "international/characters",
-    "international/charprop.el",
-    "case-table",
-    "international/mule-cmds",
-    "epa-hook",
-    "jka-cmpr-hook",
-    "help",
-    "abbrev",
-    "obarray",
-    "emacs-lisp/oclosure",
-    "emacs-lisp/cl-preloaded",
-    "button",
-    "theme-loaddefs.el",
-    "loaddefs",
-    "faces",
-    "cus-face",
-    "emacs-lisp/macroexp",
-    "files",
-    "window",
-    "bindings",
-    "format",
-    "env",
-    "international/mule-conf",
-    "international/mule",
-    "emacs-lisp/map-ynp",
-    "custom",
-    "widget",
-    "version",
-    "keymap",
-    "subr",
-    "emacs-lisp/backquote",
-    "emacs-lisp/byte-run",
-    "emacs-lisp/debug-early",
-    "loadup.el",
-];
 
-fn preloaded_lisp_directory(interp: &Interpreter) -> Option<PathBuf> {
-    if let Some(repo_etc) = crate::lisp::primitives::compat_data_directory() {
-        let directory = std::path::Path::new(&repo_etc).parent()?.join("lisp");
-        if directory.join("subr.el").is_file() {
-            return Some(directory);
-        }
-    }
-    interp
-        .lookup_var("load-path", &Vec::new())?
-        .to_vec()
-        .ok()?
-        .into_iter()
-        .filter_map(|value| string_like(&value).map(|string| PathBuf::from(string.text)))
-        .find(|directory| directory.join("subr.el").is_file())
-}
 
-type PreloadedSourceIndex = HashMap<String, String>;
-type PreloadedSourceIndexCache = Mutex<HashMap<PathBuf, Arc<PreloadedSourceIndex>>>;
-
-fn build_preloaded_source_index(lisp_dir: &Path) -> PreloadedSourceIndex {
-    static DEFINITION: OnceLock<regex::Regex> = OnceLock::new();
-    let pattern = DEFINITION.get_or_init(|| {
-        regex::Regex::new(r"(?m)^\(def\S*\s+'?([^\s()]+)[\s)\n]")
-            .expect("static preloaded definition regex")
-    });
-    let mut index = HashMap::new();
-    for relative in GNU_PRELOADED_LISP_FILES {
-        let path = lisp_dir.join(format!("{relative}.el"));
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let rendered_path = path.display().to_string();
-        for captures in pattern.captures_iter(&contents) {
-            if let Some(symbol) = captures.get(1) {
-                // GNU's dumped load-history resolves the first preloaded
-                // definition in loadup order.
-                index
-                    .entry(symbol.as_str().to_string())
-                    .or_insert_with(|| rendered_path.clone());
-            }
-        }
-    }
-    index
-}
-
-fn preloaded_source_index(lisp_dir: &Path) -> Arc<PreloadedSourceIndex> {
-    static CACHE: OnceLock<PreloadedSourceIndexCache> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock().expect("preloaded source index lock");
-    Arc::clone(
-        cache
-            .entry(lisp_dir.to_path_buf())
-            .or_insert_with(|| Arc::new(build_preloaded_source_index(lisp_dir))),
-    )
-}
-
-// True when NAME is a native emaxx builtin that GNU defines in PRELOADED
-// LISP (simple.el, lisp.el, subr.el...): such a function is NOT a subr in
-// GNU (`subrp' nil; find-func resolves it through `symbol-file').
-// The complete immutable source index is memoized per oracle tree.
-pub(crate) fn builtin_is_gnu_preloaded_lisp(interp: &Interpreter, name: &str) -> bool {
-    let Some(lisp_dir) = preloaded_lisp_directory(interp) else {
-        return false;
-    };
-    preloaded_source_index(&lisp_dir).contains_key(name)
-}
-
-#[cfg(test)]
-mod preloaded_source_index_tests {
-    use super::*;
-
-    #[test]
-    fn index_preserves_load_order_and_is_reused_per_source_tree() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("emaxx-preloaded-index-{unique}"));
-        let emacs_lisp = root.join("emacs-lisp");
-        std::fs::create_dir_all(&emacs_lisp).expect("create preloaded source directory");
-        let first = emacs_lisp.join("rmc.el");
-        std::fs::write(
-            &first,
-            "(defun first-probe ())\n(defvar 'quoted-probe nil)\n  (defun indented-probe ())\n",
-        )
-        .expect("write first preloaded source");
-        let second = root.join("international/iso-transl.el");
-        std::fs::create_dir_all(second.parent().expect("second source parent"))
-            .expect("create second preloaded source directory");
-        std::fs::write(
-            &second,
-            "(defun first-probe ())\n(define-derived-mode derived-probe fundamental-mode \"Probe\")\n",
-        )
-        .expect("write second preloaded source");
-
-        let first_index = preloaded_source_index(&root);
-        let second_index = preloaded_source_index(&root);
-        assert!(Arc::ptr_eq(&first_index, &second_index));
-        assert_eq!(
-            first_index.get("first-probe").map(String::as_str),
-            Some(first.to_string_lossy().as_ref())
-        );
-        assert_eq!(
-            first_index.get("quoted-probe").map(String::as_str),
-            Some(first.to_string_lossy().as_ref())
-        );
-        assert_eq!(
-            first_index.get("derived-probe").map(String::as_str),
-            Some(second.to_string_lossy().as_ref())
-        );
-        assert!(!first_index.contains_key("indented-probe"));
-
-        std::fs::remove_dir_all(root).expect("remove preloaded source fixture");
-    }
-
-    #[test]
-    fn unique_preloaded_ownership_misses_share_one_fast_index() {
-        let interp = Interpreter::new();
-        let started = std::time::Instant::now();
-        for index in 0..512 {
-            assert!(!builtin_is_gnu_preloaded_lisp(
-                &interp,
-                &format!("emaxx-absent-preloaded-symbol-{index}")
-            ));
-        }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "preloaded ownership lookups rebuilt or rescanned the source index: {:?}",
-            started.elapsed()
-        );
-    }
-}

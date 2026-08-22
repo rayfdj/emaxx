@@ -294,33 +294,12 @@ pub(crate) fn format_s_conversion(
         let props = slice_string_props(&string.props, 0, end);
         return Ok((text, props));
     }
-    // `%s' uses princ semantics: a buffer prints as its name.
-    if let Value::Buffer(buffer) = arg {
-        let mut text = buffer.name.to_string();
-        if let Some(precision) = precision {
-            text = text.chars().take(precision).collect();
-        }
-        return Ok((text, Vec::new()));
-    }
-    // GNU format.c implements %s through the ordinary unescaped printer.
-    // In particular, src/print.c's PVEC_SYMBOL_WITH_POS branch must see
-    // `print-symbols-bare'; Value's host Display cannot represent that
-    // dynamic Lisp contract.
-    if symbol_with_pos_parts(interp, arg).is_some() {
-        let mut text = render_native_princ(interp, arg, env)?;
-        if let Some(precision) = precision {
-            text = text.chars().take(precision).collect();
-        }
-        return Ok((text, Vec::new()));
-    }
-    let mut text = if ["print-circle", "print-gensym"].into_iter().any(|name| {
-        interp
-            .lookup_var(name, env)
-            .is_some_and(|value| value.is_truthy())
-    }) {
-        render_prin1_ephemeral(interp, arg, env)?
-    } else {
-        number_to_string(arg).unwrap_or_else(|_| arg.to_string())
+    // format.c's %s is print.c's `print_object' with `escapeflag' cleared,
+    // which is exactly `princ' -- including for nested elements, so
+    // (format "%s" (list "a")) yields `(a)' and not `("a")'.
+    let mut text = match number_to_string(arg) {
+        Ok(number) => number,
+        Err(_) => crate::lisp::primitives::print::render_princ_object(interp, arg, env)?,
     };
     if let Some(precision) = precision {
         text = text.chars().take(precision).collect();

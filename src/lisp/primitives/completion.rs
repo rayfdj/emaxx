@@ -739,20 +739,37 @@ pub(crate) fn try_completion(
             if matches.len() == 1 {
                 return Ok(Value::T);
             }
-            return Ok(Value::String(candidate.name.clone().into()));
+            return Ok(make_shared_string_value_with_multibyte(
+                candidate.name.clone(),
+                Vec::new(),
+                false,
+            ));
         }
         if let Some(candidate) = matches
             .iter()
             .find(|candidate| candidate.name.eq_ignore_ascii_case(&input))
         {
-            return Ok(Value::String(candidate.name.clone().into()));
+            return Ok(make_shared_string_value_with_multibyte(
+                candidate.name.clone(),
+                Vec::new(),
+                false,
+            ));
         }
     } else if matches.iter().all(|candidate| candidate.name == input) {
         return Ok(Value::T);
     }
 
-    Ok(Value::String(
-        completion_common_prefix(&matches, &input, ignore_case).into(),
+    // GNU's Ftry_completion returns a fresh string (not `eq' to any
+    // candidate; probed 2026-08-21), and callers mutate it in place --
+    // completion-preview.el sets a `face' on it and reads the result back
+    // through compiled locals.  A plain immutable string here made
+    // `set-text-properties' silently rewrite only the caller's environment
+    // binding, which bytecode stack slots never see; a shared string gives
+    // every holder the same mutable object, like `all-completions' above.
+    Ok(make_shared_string_value_with_multibyte(
+        completion_common_prefix(&matches, &input, ignore_case),
+        Vec::new(),
+        false,
     ))
 }
 
@@ -956,6 +973,13 @@ pub(crate) fn run_active_minibuffer<T>(
     // included, and the pre-read window selection returns.
     let saved_windows = minibuffer.saved_windows.clone();
     let result = (|| {
+        // GNU minibuf.c:read_minibuf runs `minibuffer-setup-hook' with the
+        // minibuffer already current (the next statement there is
+        // `bset_undo_list (current_buffer, Qnil)').  Hooks therefore see the
+        // minibuffer's buffer-local state, including the completion table.
+        if interp.has_buffer_id(minibuffer.buffer_id) {
+            interp.set_current_buffer_id(minibuffer.buffer_id)?;
+        }
         run_named_hooks(
             interp,
             "minibuffer-setup-hook",
@@ -1263,12 +1287,9 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
                 .next()?;
             return parsed.to_vec().ok();
         }
-        return builtin_interactive_string(name).map(|spec| {
-            vec![
-                Value::Symbol("interactive".into()),
-                Value::String(spec.into()),
-            ]
-        });
+        // The GNU-generated interactive-form table is the only native
+        // source; a miss means the builtin is not a command.
+        return None;
     }
     // A raw `(lambda ARGS . BODY)' LIST also has an interactive form (GNU
     // interactive_form handles unevaluated lambda expressions; advice.el's
@@ -1336,24 +1357,6 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
     None
 }
 
-// Interactive specs of the built-in commands keyboard macros dispatch to;
-// motion commands take the numeric prefix argument like their GNU C
-// counterparts.
-fn builtin_interactive_string(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "next-line" | "previous-line" => "^p\np",
-        "forward-char"
-        | "backward-char"
-        | "forward-line"
-        | "move-beginning-of-line"
-        | "move-end-of-line"
-        | "forward-sexp"
-        | "backward-sexp" => "^p",
-        "delete-char" => "p\nP",
-        "kill-line" | "eval-defun" => "P",
-        _ => return None,
-    })
-}
 
 pub(crate) fn interactive_spec_form(interp: &Interpreter, func: &Value) -> Option<Value> {
     callable_interactive_form_items(interp, func)

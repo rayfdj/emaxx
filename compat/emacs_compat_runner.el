@@ -10,6 +10,10 @@
   (or (getenv "EMAXX_COMPAT_SELECTOR") "(quote t)")
   "Stringified selector used when synthesizing load-error reports.")
 
+(defvar emaxx-compat--runner-name
+  (or (getenv "EMAXX_COMPAT_RUNNER") "oracle")
+  "Runner label recorded in reports; the harness sets it per subject.")
+
 (defvar emaxx-compat--command-error-default-function command-error-function
   "Original command error function installed before the compat wrapper.")
 
@@ -83,7 +87,7 @@ printing test can contaminate the next test's first `prin1-to-string' result."
 
 (defun emaxx-compat--load-error-report (data)
   (list
-   (cons 'runner "oracle")
+   (cons 'runner emaxx-compat--runner-name)
    (cons 'file (emaxx-compat--relative-file))
    (cons 'selector emaxx-compat--selector)
    (cons 'file_status "load_error")
@@ -118,7 +122,7 @@ printing test can contaminate the next test's first `prin1-to-string' result."
     (setq discovered (emaxx-compat--sorted-tests discovered))
     (setq selected (emaxx-compat--sorted-tests selected))
     (list
-     (cons 'runner "oracle")
+     (cons 'runner emaxx-compat--runner-name)
      (cons 'file (emaxx-compat--relative-file))
      (cons 'selector (format "%S" selector))
      (cons 'file_status "loaded")

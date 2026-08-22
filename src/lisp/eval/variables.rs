@@ -943,6 +943,20 @@ impl Interpreter {
         true
     }
 
+    /// Whether NAME has a real global default binding, ignoring the
+    /// synthesized builtin fallback table.  `defvar' consults this: a table
+    /// answer is not a binding and must not suppress a loaded file's
+    /// init form.
+    pub fn global_default_binding_exists(&self, name: &str) -> bool {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        if let Some(previous) = self.active_global_toplevel_value(&resolved) {
+            return previous.is_some();
+        }
+        self.global_value(&resolved).is_some()
+    }
+
     pub fn default_toplevel_value(&self, name: &str) -> Option<Value> {
         let resolved = self
             .resolve_variable_name(name)
@@ -1470,7 +1484,7 @@ impl Interpreter {
         start
     }
 
-    pub(super) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
+    pub(crate) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
         let start = self.active_handlers.len();
         self.active_handlers.push(ActiveHandler::Case(heads));
         start
@@ -1493,21 +1507,27 @@ impl Interpreter {
             .unwrap_or_default()
     }
 
-    /// GNU handler matching: `t' matches anything; otherwise the handler
-    /// symbol must be `memq' in the signaled symbol's `error-conditions',
-    /// falling back to the condition-or-`error' rule when none is defined.
+    /// GNU handler matching (`eval.c:find_handler_clause' ->
+    /// `signal_or_quit''s conditions walk): `t' matches anything; otherwise the
+    /// handler symbol must be `memq' in the signaled symbol's
+    /// `error-conditions' property.  A symbol with NO `error-conditions' — one
+    /// that never went through `define-error' — is caught only by `t'.  GNU
+    /// probe: (condition-case nil (signal 'undefined-cond nil)
+    /// (error 'as-error) (t 'as-t)) => as-t.  Treating an unregistered
+    /// condition as `error' would let `ignore-errors' and `should-error'
+    /// silently absorb conditions Emaxx forgot to register.
     pub(super) fn condition_symbol_matches(
         symbol: &str,
         error_type: &str,
         condition_list: &[String],
     ) -> bool {
         if symbol == "t" {
-            true
-        } else if condition_list.is_empty() {
-            symbol == error_type || symbol == "error"
-        } else {
-            condition_list.iter().any(|entry| entry == symbol)
+            return true;
         }
+        if condition_list.is_empty() {
+            return symbol == error_type;
+        }
+        condition_list.iter().any(|entry| entry == symbol)
     }
 
     pub(crate) fn clause_head_matches(
@@ -1541,7 +1561,7 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn dispatch_handler_bindings(
+    pub(crate) fn dispatch_handler_bindings(
         &mut self,
         error: LispError,
         env: &mut Env,

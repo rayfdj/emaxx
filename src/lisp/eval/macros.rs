@@ -50,6 +50,21 @@ impl Interpreter {
         records: &mut std::collections::HashMap<usize, Value>,
     ) -> Result<Value, LispError> {
         if let Value::ReaderForm(form) = value
+            && let ReaderForm::BoolVector { bits } = form.as_ref()
+        {
+            // GNU's reader allocates the bool vector itself; Emaxx does it
+            // here, at the same boundary as `#s(...)' records, so the object
+            // -- not a reader marker -- is what quoted structure, bytecode
+            // constants and `read' hand to Lisp.
+            return Ok(self.create_pseudovector(
+                RecordKind::BoolVector,
+                "bool-vector",
+                bits.iter()
+                    .map(|bit| if *bit { Value::T } else { Value::Nil })
+                    .collect(),
+            ));
+        }
+        if let Value::ReaderForm(form) = value
             && matches!(
                 form.as_ref(),
                 ReaderForm::Record { .. } | ReaderForm::Closure { .. }

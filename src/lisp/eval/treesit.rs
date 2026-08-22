@@ -92,6 +92,9 @@ fn language_candidates(
         ));
     }
 
+    // GNU treesit.c:668 expands `library_base' against the *value* of
+    // `user-emacs-directory', so a non-string value signals there rather than
+    // being skipped.  Keep that propagation.
     if let Some(user_directory) = interp.lookup_var("user-emacs-directory", &Env::new()) {
         candidates.extend(library_names(
             &PathBuf::from(value_string(&user_directory)?)

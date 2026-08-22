@@ -886,16 +886,17 @@ pub(crate) fn encode_utf8_bytes(text: &str, with_bom: bool) -> Result<Vec<u8>, L
     Ok(bytes)
 }
 
+/// EUC-JP (japanese-iso-8bit) encoding is not implemented.
+///
+/// What stood here encoded exactly one non-ASCII character — `あ', the
+/// character the tests happened to use — and signalled for every other.  A
+/// codec that knows one codepoint is a fabrication, not a partial
+/// implementation, so it signals honestly until the JIS X 0208 tables exist.
 pub(crate) fn encode_euc_jp_bytes(text: &str) -> Result<Vec<u8>, LispError> {
-    let mut bytes = Vec::new();
-    for ch in text.chars() {
-        match ch {
-            'あ' => bytes.extend([0xA4, 0xA2]),
-            _ if (ch as u32) <= 0x7F => bytes.push(ch as u8),
-            _ => return Err(LispError::Signal("Character cannot be encoded".into())),
-        }
+    if text.chars().all(|ch| (ch as u32) <= 0x7F) {
+        return Ok(text.bytes().collect());
     }
-    Ok(bytes)
+    Err(LispError::Signal("Character cannot be encoded".into()))
 }
 
 pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
@@ -1231,9 +1232,9 @@ pub(crate) fn string_unencodable_positions(
             }
             "iso-latin-1" | "raw-text" | "no-conversion" => raw_byte.is_some() || code <= 0xFF,
             "us-ascii" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
-            "sjis" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F || ch == 'あ',
+            "sjis" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
             "big5" | "iso-2022-7bit" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
-            "euc-jp" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F || ch == 'あ',
+            "euc-jp" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
             "charset" => {
                 (coding_system_is_ascii_compatible(interp, &canonical)
                     && (raw_byte.is_some_and(|byte| byte <= 0x7f) || code <= 0x7f))

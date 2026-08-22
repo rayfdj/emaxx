@@ -1,7 +1,5 @@
 use super::*;
 use crate::lisp::reader::Reader;
-use flate2::Compression;
-use flate2::write::GzEncoder;
 
 fn make_compat_temp_file(interp: &mut Interpreter, env: &mut Env, prefix: &str) -> String {
     let absolute_prefix = std::env::temp_dir().join(prefix);
