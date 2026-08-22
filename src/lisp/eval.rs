@@ -3938,9 +3938,18 @@ impl Interpreter {
             ("x-underline-at-descent-line", Value::Nil),
             ("x-use-underline-position-properties", Value::T),
             ("yes-or-no-prompt", Value::String("(yes or no) ".into())),
+            // syntax.c: forward-comment's backward scan anchors its
+            // recovery parse through `syntax-ppss' by default, and the
+            // escaped-ender rule is a bound (buffer-local-capable) nil,
+            // not an absent variable.
+            ("comment-use-syntax-ppss", Value::T),
+            ("comment-end-can-be-escaped", Value::Nil),
         ] {
             interp.define_special_variable(name, value);
         }
+        // syntax.c:3797 Fmake_variable_buffer_local: a setq must localize,
+        // never leak into the global default.
+        interp.mark_auto_buffer_local("comment-end-can-be-escaped");
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
             ("eol-mnemonic-unix", Value::String(":".into())),
