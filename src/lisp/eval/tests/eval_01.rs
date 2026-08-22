@@ -2360,18 +2360,31 @@ fn newline_inserts_requested_line_breaks() {
 }
 
 #[test]
-fn completing_read_uses_default_without_interaction() {
+fn completing_read_returns_default_when_typed_input_is_empty() {
+    // minibuf.c read_minibuf: DEF applies when a real read submits empty
+    // input.  The old test asserted the default with no input source at
+    // all -- an answer GNU never invents (finding 12).
     assert_eq!(
-        eval_str(r#"(completing-read "File: " '("one" "two") nil nil nil nil "two")"#),
+        eval_str(
+            r#"(let ((unread-command-events (listify-key-sequence "
+")))
+                 (completing-read "File: " '("one" "two") nil nil nil nil "two"))"#
+        ),
         Value::String("two".into())
     );
 }
 
 #[test]
-fn completing_read_falls_back_to_first_candidate() {
+fn completing_read_returns_typed_candidate() {
+    // The replaced test pinned pure invention: the first candidate out of
+    // thin air, which GNU never does (it reads or signals).
     assert_eq!(
-        eval_str(r#"(completing-read "File: " '("one" "two"))"#),
-        Value::String("one".into())
+        eval_str(
+            r#"(let ((unread-command-events (listify-key-sequence "two
+")))
+                 (completing-read "File: " '("one" "two")))"#
+        ),
+        Value::String("two".into())
     );
 }
 
@@ -3643,8 +3656,15 @@ fn copy_alist_rejects_vectors_and_strings() {
 
 #[test]
 fn float_constants_are_available_as_builtin_variables() {
-    assert_eq!(eval_str("float-e"), Value::Float(std::f64::consts::E));
-    assert_eq!(eval_str("float-pi"), Value::Float(std::f64::consts::PI));
+    // float-sup.el owns these; they exist only in the loaded image.
+    assert_eq!(
+        eval_str_with_upstream_batch("float-e"),
+        Value::Float(std::f64::consts::E)
+    );
+    assert_eq!(
+        eval_str_with_upstream_batch("float-pi"),
+        Value::Float(std::f64::consts::PI)
+    );
 }
 
 #[test]
@@ -4977,7 +4997,7 @@ fn directory_listing_regexp_matches_common_ls_output() {
         "-rw-r--r--     1 alpha  staff      0 2026-06-12 13:35 foo.c",
     ] {
         assert_ne!(
-            eval_str(&format!(
+            eval_str_with_upstream_batch(&format!(
                 "(string-match-p directory-listing-before-filename-regexp {listing:?})"
             )),
             Value::Nil,
