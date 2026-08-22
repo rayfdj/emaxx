@@ -245,7 +245,7 @@ impl Interpreter {
 
     fn source_form_analysis(&mut self, source: &Value) -> Result<SourceFormAnalysis, LispError> {
         let Some((source_anchor, _)) = source.cons_cells() else {
-            return Err(LispError::TypeError("list".into(), source.type_name()));
+            return Err(LispError::WrongTypeArgument("listp".into(), source.clone()));
         };
         let source_id = source_anchor.cell_id();
         if let Some(cached) = self

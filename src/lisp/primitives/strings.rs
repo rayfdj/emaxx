@@ -176,7 +176,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
 pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
     string_like(value)
         .map(|string| string.text)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))
 }
 
 pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
@@ -231,7 +231,7 @@ pub(crate) fn string_compare_codes(
     clamp_end: bool,
 ) -> Result<Vec<i64>, LispError> {
     let string = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     let codes = string_sequence_values(&string)
         .into_iter()
         .map(|value| value.as_integer())
@@ -359,7 +359,7 @@ pub(crate) fn aset_string_value(
     new_value: &Value,
 ) -> Result<Value, LispError> {
     let mut string = string_like(target)
-        .ok_or_else(|| LispError::TypeError("string".into(), target.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), target.clone()))?;
     let code = new_value.as_integer()?;
     let mut chars: Vec<char> = string.text.chars().collect();
     if index >= chars.len() {
@@ -472,7 +472,7 @@ pub(crate) fn string_like_value(text: String, props: Vec<TextPropertySpan>) -> V
 
 pub(crate) fn reverse_string_like_value(value: &Value) -> Result<Value, LispError> {
     let string = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     let len = string.text.chars().count();
     let text = string.text.chars().rev().collect::<String>();
     let props = string
@@ -510,7 +510,7 @@ pub(crate) fn reverse_sequence_value(
             items.reverse();
             Ok(Value::list(items))
         }
-        _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
+        _ => Err(LispError::WrongTypeArgument("sequencep".into(), value.clone())),
     }
 }
 
@@ -540,7 +540,7 @@ pub(crate) fn nreverse_sequence_value(
             Ok(value.clone())
         }
         Value::Nil | Value::Cons(_) => nreverse_list_cells(value),
-        _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
+        _ => Err(LispError::WrongTypeArgument("sequencep".into(), value.clone())),
     }
 }
 
@@ -552,7 +552,7 @@ fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
         let cell = match &current {
             Value::Nil => return Ok(reversed),
             Value::Cons(cell) => Rc::clone(cell),
-            other => return Err(LispError::TypeError("list".into(), other.type_name())),
+            other => return Err(LispError::WrongTypeArgument("listp".into(), other.clone())),
         };
         if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
             return Err(LispError::SignalValue(Value::list([
@@ -947,7 +947,7 @@ where
         if matches!(value, Value::String(_)) {
             return Ok(());
         }
-        return Err(LispError::TypeError("string".into(), value.type_name()));
+        return Err(LispError::WrongTypeArgument("stringp".into(), value.clone()));
     };
     let mut state = state.borrow_mut();
     let len = state.text.chars().count();

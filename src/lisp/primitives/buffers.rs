@@ -273,7 +273,7 @@ fn translation_sequence_match(value: &Value, source: &[u32]) -> Option<(usize, V
 pub(crate) fn marker_id_from_value(value: &Value) -> Result<u64, LispError> {
     match value {
         Value::Marker(id) => Ok(*id),
-        _ => Err(LispError::TypeError("marker".into(), value.type_name())),
+        _ => Err(LispError::WrongTypeArgument("markerp".into(), value.clone())),
     }
 }
 
@@ -386,7 +386,7 @@ pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -
 
 pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispError> {
     let Some(root) = vector_root_slot(value) else {
-        return Err(LispError::TypeError("vector".into(), value.type_name()));
+        return Err(LispError::WrongTypeArgument("vectorp".into(), value.clone()));
     };
     let key = root.cell_id();
     if let Some(slots) = VECTOR_SLOT_CACHE.with_borrow_mut(|cache| match cache.get(&key) {
@@ -403,7 +403,7 @@ pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispE
     }
 
     let Some((_, cdr)) = (value).cons_cells() else {
-        return Err(LispError::TypeError("vector".into(), value.type_name()));
+        return Err(LispError::WrongTypeArgument("vectorp".into(), value.clone()));
     };
     let mut current = cdr.borrow().clone();
     let mut slots = Vec::new();
@@ -414,7 +414,7 @@ pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispE
                 current = cell.cdr.borrow().clone();
             }
             Value::Nil => break,
-            _ => return Err(LispError::TypeError("vector".into(), value.type_name())),
+            _ => return Err(LispError::WrongTypeArgument("vectorp".into(), value.clone())),
         }
     }
 

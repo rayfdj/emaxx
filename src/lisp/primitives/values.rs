@@ -453,7 +453,7 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
     let mut remaining = match count {
         Value::Integer(n) => BigInt::from(*n),
         Value::BigInteger(n) => n.clone().into(),
-        _ => return Err(LispError::TypeError("integer".into(), count.type_name())),
+        _ => return Err(LispError::WrongTypeArgument("integerp".into(), count.clone())),
     };
 
     if remaining <= BigInt::zero() {
@@ -527,10 +527,10 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
                 // pseudovectors.  Flength accepts none of them here; bool
                 // vectors and keymaps were projected through their GNU public
                 // sequence representations above.
-                _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
+                _ => Err(LispError::WrongTypeArgument("sequencep".into(), value.clone())),
             }
         }
-        _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
+        _ => Err(LispError::WrongTypeArgument("sequencep".into(), value.clone())),
     }
 }
 
@@ -1139,7 +1139,7 @@ pub(crate) fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
 
 pub(crate) fn copy_alist_value(value: &Value) -> Result<Value, LispError> {
     if string_like(value).is_some() || is_vector_value(value) {
-        return Err(LispError::TypeError("list".into(), value.type_name()));
+        return Err(LispError::WrongTypeArgument("listp".into(), value.clone()));
     }
     let items = value.to_vec()?;
     let mut copied = Vec::with_capacity(items.len());
@@ -1191,7 +1191,7 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         let Some((car, cdr)) = (current.clone()).cons_cells() else {
-            return Err(LispError::TypeError("consp".into(), current.type_name()));
+            return Err(LispError::WrongTypeArgument("consp".into(), current.clone()));
         };
         let cell_id = car.cell_id();
         if seen.step(cell_id) {

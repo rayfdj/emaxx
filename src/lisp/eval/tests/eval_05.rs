@@ -5581,9 +5581,11 @@ fn cached_source_forms_observe_mutation_and_recover_after_errors() {
     assert_eq!(interp.eval(&form, &mut env).unwrap(), Value::Integer(6));
 
     let improper = Value::cons(Value::symbol("+"), Value::Integer(1));
+    // GNU: (wrong-type-argument listp DATUM) -- predicate symbol plus the
+    // offending value itself (finding 57).
     assert!(matches!(
         interp.eval(&improper, &mut env),
-        Err(LispError::TypeError(expected, _)) if expected == "list"
+        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "listp"
     ));
     assert_eq!(interp.eval(&form, &mut env).unwrap(), Value::Integer(6));
 }

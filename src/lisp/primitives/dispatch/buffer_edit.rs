@@ -644,7 +644,7 @@ define_dispatch!(
                 let (goal_col, n) = match &args[0] {
                     cons @ Value::Cons(_) => {
                         let (car, cdr) = cons.cons_values().ok_or_else(|| {
-                            LispError::TypeError("cons".into(), args[0].type_name())
+                            LispError::WrongTypeArgument("consp".into(), args[0].clone())
                         })?;
                         // COLS may be a float (line-move-visual divides
                         // pixels by the frame char width); GNU truncates
@@ -1078,7 +1078,7 @@ define_dispatch!(
             "get-byte" => {
                 if let Some(string_value) = args.get(1).filter(|value| !value.is_nil()) {
                     let string = string_like(string_value).ok_or_else(|| {
-                        LispError::TypeError("string".into(), string_value.type_name())
+                        LispError::WrongTypeArgument("stringp".into(), string_value.clone())
                     })?;
                     let position = match args.first().filter(|value| !value.is_nil()) {
                         Some(Value::Integer(position)) if *position >= 0 => *position as usize,

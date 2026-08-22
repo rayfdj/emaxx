@@ -2108,7 +2108,7 @@ define_dispatch!(
                 )?;
                 let path = PathBuf::from(
                     string_like(&expanded)
-                        .ok_or_else(|| LispError::TypeError("stringp".into(), args[0].type_name()))?
+                        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?
                         .text,
                 );
                 if path.exists() {
@@ -2218,7 +2218,7 @@ define_dispatch!(
             "set--this-command-keys" => {
                 need_args(name, args, 1)?;
                 let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::TypeError("stringp".into(), args[0].type_name()))?;
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
                 let keys = string
                     .text
                     .chars()

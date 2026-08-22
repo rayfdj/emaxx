@@ -1562,7 +1562,7 @@ pub(crate) fn read_from_callable_source(
             Value::Integer(code) => Some(code),
             Value::Nil => None,
             other => {
-                return Err(LispError::TypeError("integer".into(), other.type_name()));
+                return Err(LispError::WrongTypeArgument("integerp".into(), other.clone()));
             }
         }) else {
             break;

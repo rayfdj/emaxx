@@ -524,6 +524,14 @@ define_dispatch!(
                     _ => {
                         if is_vector_value(&args[0]) {
                             vector_slot_value(&args[0], idx)
+                        } else if args[0].is_list() {
+                            // data.c Faref: a plain list is not an array;
+                            // Emaxx silently indexed it (returning the nth
+                            // element GNU refuses to produce).
+                            return Err(LispError::WrongTypeArgument(
+                                "arrayp".into(),
+                                args[0].clone(),
+                            ));
                         } else {
                             let items = vector_items(&args[0])?;
                             items
@@ -578,7 +586,7 @@ define_dispatch!(
                         *slot = args[2].clone();
                         Ok(args[2].clone())
                     }
-                    _ => Err(LispError::TypeError("array".into(), args[0].type_name())),
+                    _ => Err(LispError::WrongTypeArgument("arrayp".into(), args[0].clone())),
                 }
             }
 
@@ -643,7 +651,7 @@ define_dispatch!(
                         table.clear_entries();
                         Ok(args[0].clone())
                     }
-                    other => Err(LispError::TypeError("array".into(), other.type_name())),
+                    other => Err(LispError::WrongTypeArgument("arrayp".into(), other.clone())),
                 }
             }
             "load-average" => {
@@ -679,7 +687,7 @@ define_dispatch!(
                         Ok(Value::Nil)
                     }
                     Value::String(_) => Ok(Value::Nil),
-                    other => Err(LispError::TypeError("string".into(), other.type_name())),
+                    other => Err(LispError::WrongTypeArgument("stringp".into(), other.clone())),
                 }
             }
 
@@ -688,7 +696,7 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
                 let props = args[1..]
                     .chunks(2)
                     .map(|pair| Ok((pair[0].as_symbol()?.to_string(), pair[1].clone())))
@@ -718,7 +726,7 @@ define_dispatch!(
                 let subtype = match &args[0] {
                     Value::Nil => None,
                     Value::Symbol(symbol) => Some(symbol.to_string()),
-                    other => return Err(LispError::TypeError("symbol".into(), other.type_name())),
+                    other => return Err(LispError::WrongTypeArgument("symbolp".into(), other.clone())),
                 };
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
                 Ok(interp.make_char_table(subtype, default))
@@ -1301,7 +1309,7 @@ define_dispatch!(
                                 remaining -= 1;
                             }
                             value => {
-                                return Err(LispError::TypeError("list".into(), value.type_name()));
+                                return Err(LispError::WrongTypeArgument("listp".into(), value.clone()));
                             }
                         }
                     }
@@ -1332,7 +1340,7 @@ define_dispatch!(
                                 }
                             }
                             value => {
-                                return Err(LispError::TypeError("list".into(), value.type_name()));
+                                return Err(LispError::WrongTypeArgument("listp".into(), value.clone()));
                             }
                         }
                     }
@@ -1347,7 +1355,7 @@ define_dispatch!(
                             }
                             Ok(head)
                         }
-                        value => Err(LispError::TypeError("list".into(), value.type_name())),
+                        value => Err(LispError::WrongTypeArgument("listp".into(), value.clone())),
                     }
                 }
             }

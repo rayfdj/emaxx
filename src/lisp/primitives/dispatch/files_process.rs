@@ -2064,7 +2064,7 @@ define_dispatch!(
                     && !base_url.is_nil()
                     && string_like(base_url).is_none()
                 {
-                    return Err(LispError::TypeError("stringp".into(), base_url.type_name()));
+                    return Err(LispError::WrongTypeArgument("stringp".into(), base_url.clone()));
                 }
                 let source = interp
                     .buffer
