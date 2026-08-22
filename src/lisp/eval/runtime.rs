@@ -1612,6 +1612,14 @@ impl Interpreter {
         Ok(())
     }
 
+    /// The shared char-table write generation (see find_char_table_mut):
+    /// caches derived from any char table key on this to observe every
+    /// mutation, exactly as GNU's compile_pattern re-checks its cached
+    /// entry's syntax table with EQ before reuse.
+    pub(crate) fn char_table_generation(&self) -> u64 {
+        self.char_table_mutation_generation
+    }
+
     pub fn char_table_get(&self, id: u64, key: u32) -> Option<Value> {
         let table = self.find_char_table(id)?;
         if let Some(entry) = table.explicit_entry(key) {

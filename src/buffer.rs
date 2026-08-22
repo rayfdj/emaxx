@@ -365,6 +365,12 @@ impl Buffer {
         self.multibyte
     }
 
+    /// CHARS_MODIFF analog: bumped only when buffer text changes, so a
+    /// text-derived cache keyed on it can never serve stale content.
+    pub fn chars_modification_count(&self) -> ModCount {
+        self.chars_modiff
+    }
+
     pub fn set_multibyte(&mut self, enabled: bool) {
         self.multibyte = enabled;
     }
@@ -812,6 +818,29 @@ impl Buffer {
 
     pub fn text_properties_at(&self, pos: usize) -> Vec<(String, Value)> {
         self.text_properties_at_ref(pos).to_vec()
+    }
+
+    /// The interval [start, end) around POS over which the text-property
+    /// list is constant: a covering span's own bounds, or the
+    /// property-free gap up to the neighboring spans (syntax.h's
+    /// b_property/e_property discipline for update_syntax_table).
+    pub(crate) fn text_property_interval_around(&self, pos: usize) -> (usize, usize) {
+        let begv = self.point_min();
+        let zv = self.point_max();
+        let spans = &self.text_properties;
+        let insertion = spans.partition_point(|span| span.start <= pos);
+        if let Some(span) = insertion.checked_sub(1).and_then(|index| spans.get(index))
+            && pos < span.end
+        {
+            return (span.start.max(begv), span.end.min(zv));
+        }
+        let start = insertion
+            .checked_sub(1)
+            .and_then(|index| spans.get(index))
+            .map(|span| span.end)
+            .unwrap_or(0);
+        let end = spans.get(insertion).map(|span| span.start).unwrap_or(zv);
+        (start.max(begv), end.min(zv).max(start.max(begv)))
     }
 
     pub fn add_text_properties(&mut self, start: usize, end: usize, props: &[(String, Value)]) {
