@@ -23,6 +23,27 @@ fn rust_files_below(relative: &str) -> Vec<std::path::PathBuf> {
     files
 }
 
+/// Every Rust file the facade/spelling gates must scan.  The Lisp runtime
+/// tree plus the frontends and binaries: silent fallbacks have historically
+/// hidden in src/tty.rs, which sat outside the original src/lisp scope.
+fn facade_gate_files() -> Vec<std::path::PathBuf> {
+    let mut files = rust_files_below("src/lisp");
+    files.extend(rust_files_below("src/bin"));
+    for extra in [
+        "src/tty.rs",
+        "src/batch.rs",
+        "src/buffer.rs",
+        "src/overlay.rs",
+        "src/compat.rs",
+    ] {
+        let path = repo_root().join(extra);
+        if path.exists() {
+            files.push(path);
+        }
+    }
+    files
+}
+
 #[test]
 fn repo_does_not_define_batch_report_delegation() {
     let delegation_files = ["src/compat.rs", "src/batch.rs", "src/bin/compat-harness.rs"];
@@ -171,7 +192,7 @@ fn runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists() {
         concat!("emaxx-", "cl-defmethod-documentation"),
     ];
 
-    for path in rust_files_below("src/lisp") {
+    for path in facade_gate_files() {
         if path
             .components()
             .any(|component| component.as_os_str() == "tests")
@@ -218,7 +239,7 @@ fn runtime_does_not_reintroduce_removed_private_lisp_state() {
         concat!("emaxx", "--default-revert-buffer-function"),
     ];
 
-    for path in rust_files_below("src/lisp") {
+    for path in facade_gate_files() {
         if path
             .components()
             .any(|component| component.as_os_str() == "tests")
@@ -244,7 +265,7 @@ fn runtime_contains_no_project_private_lisp_namespace() {
     // may ship no replacement Elisp.  A different prefix therefore cannot
     // turn a renamed bridge into an allowed implementation.
     let banned_namespaces = [concat!("emaxx", "--"), concat!("__", "emaxx")];
-    for path in rust_files_below("src/lisp") {
+    for path in facade_gate_files() {
         if path
             .components()
             .any(|component| component.as_os_str() == "tests")
@@ -298,7 +319,7 @@ fn runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch() {
         concat!("\"emaxx", "--general-category-description\" =>"),
     ];
 
-    for path in rust_files_below("src/lisp") {
+    for path in facade_gate_files() {
         if path
             .components()
             .any(|component| component.as_os_str() == "tests")
@@ -327,7 +348,7 @@ fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
         regex::Regex::new(r#"(?s)(?:crate::lisp::)?primitives::call\s*\(\s*[^,]+,\s*"([^"]+)""#)
             .expect("compile direct-native-call pattern");
 
-    for path in rust_files_below("src/lisp") {
+    for path in facade_gate_files() {
         if path
             .components()
             .any(|component| component.as_os_str() == "tests")
@@ -502,4 +523,74 @@ fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
             "bare runtime unexpectedly owned GNU Elisp form `{name}`: {result:?}"
         );
     }
+}
+
+#[test]
+fn tty_frontend_does_not_reintroduce_silent_fallback_fabrications() {
+    // Removed 2026-08-18: a native file visit that papered over a broken
+    // `find-file', and a hand-painted GNU-shaped mode line covering render
+    // failures.  Both kept the screen plausible while hiding breakage.
+    let banned = [
+        concat!("visit_file_", "directly"),
+        concat!("-UUU:", "{modified}-"),
+    ];
+    for path in facade_gate_files() {
+        if path.file_name().is_some_and(|name| name == "anti_cheat.rs") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("read gate source file");
+        for token in banned {
+            assert!(
+                !text.contains(token),
+                "{} reintroduces a silent fallback fabrication `{token}`",
+                path.strip_prefix(repo_root()).unwrap_or(&path).display()
+            );
+        }
+    }
+}
+
+#[test]
+fn gnu_c_manifest_matches_fresh_regeneration() {
+    // A hand edit to the generated manifest could reclassify an Elisp-owned
+    // name as C-owned and unlock a native dispatch arm.  Regenerate from the
+    // pinned sibling checkout and require byte identity.
+    let root = repo_root();
+    let oracle = root.join("../emacs/src/emacs");
+    assert!(
+        oracle.exists(),
+        "pinned GNU sibling checkout required for the manifest regeneration gate"
+    );
+    let fresh_path =
+        std::env::temp_dir().join(format!("emaxx-manifest-regen-{}.rs", std::process::id()));
+    let status = std::process::Command::new(&oracle)
+        .current_dir(root)
+        .args([
+            "-Q",
+            "--batch",
+            "-l",
+            "compat/generate_gnu_c_primitive_manifest.el",
+            "--eval",
+            &format!(
+                "(emaxx-generate-gnu-c-primitive-manifest \"../emacs/src\" {:?})",
+                fresh_path.display().to_string()
+            ),
+        ])
+        .status()
+        .expect("run the GNU C manifest generator with the oracle binary");
+    assert!(status.success(), "manifest generator failed");
+    let fmt = std::process::Command::new("rustfmt")
+        .args(["--edition", "2024"])
+        .arg(&fresh_path)
+        .status()
+        .expect("run rustfmt on the regenerated manifest");
+    assert!(fmt.success(), "rustfmt failed on the regenerated manifest");
+    let fresh = fs::read_to_string(&fresh_path).expect("read regenerated manifest");
+    let committed =
+        fs::read_to_string(root.join("src/lisp/primitives/generated_gnu_c_primitives.rs"))
+            .expect("read committed manifest");
+    assert_eq!(
+        fresh, committed,
+        "committed GNU C manifest does not match fresh regeneration from the pinned checkout"
+    );
+    let _ = fs::remove_file(&fresh_path);
 }

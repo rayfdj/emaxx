@@ -309,7 +309,6 @@ impl Interpreter {
             "case-symbols-as-words" => Some(Value::Nil),
             "use-hard-newlines" => Some(Value::Nil),
             "fill-column" => Some(Value::Integer(70)),
-            "indent-according-to-mode" => Some(Value::Symbol("indent-according-to-mode".into())),
             "filter-buffer-substring-function" => {
                 Some(Value::Symbol("buffer-substring--filter".into()))
             }
@@ -439,7 +438,6 @@ impl Interpreter {
             // the host value cell.
             "tty-defined-color-alist" => Some(Value::Nil),
             // GNU startup.el defvar; bytecomp reads it.
-            "startup-redirect-eln-cache" => Some(Value::Nil),
             // GNU startup.el defcustom.  Its declared special binding is
             // observable by separately loaded lexical libraries such as
             // time-stamp.el, even when the user leaves the value nil.
@@ -593,7 +591,6 @@ impl Interpreter {
             "post-self-insert-hook" => Some(Value::Nil),
             "macroexp--dynvars" => Some(Value::Nil),
             "macroexpand-all-environment" => Some(Value::Nil),
-            "ls-lisp-use-insert-directory-program" => Some(Value::T),
             "transient-mark-mode" => Some(Value::Nil),
             "select-active-regions" => Some(Value::T),
             "saved-region-selection" => Some(Value::Nil),
@@ -794,15 +791,14 @@ impl Interpreter {
                 Value::Integer(0xFE13),
                 Value::Integer(0x17D6),
             ])),
+            // GNU's `Vsource_directory' is fixed when the binary is built
+            // (epaths.h PATH_DUMPLOADSEARCH), so it names the checkout whose
+            // Lisp this image reconstructs.  It must never be derived from a
+            // harness variable such as EMACS_TEST_DIRECTORY.
             "source-directory" => Some(Value::String(
-                std::env::var("EMACS_TEST_DIRECTORY")
-                    .ok()
-                    .and_then(|path| {
-                        std::path::PathBuf::from(path)
-                            .parent()
-                            .map(|path| path.display().to_string())
-                    })
-                    .unwrap_or_else(primitives::default_directory)
+                crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
+                    .map(|path| primitives::file_name_as_directory(&path.display().to_string()))
+                    .unwrap_or_else(|_| primitives::default_directory())
                     .into(),
             )),
             "data-directory" | "doc-directory" => Some(Value::String(
@@ -861,10 +857,13 @@ impl Interpreter {
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
             "overwrite-mode" => Some(Value::Nil),
+            // GNU's `load-path' entries are plain directory names with no
+            // trailing separator ("/…/lisp", not "/…/lisp/"), so string
+            // comparisons against them behave the same way.
             "load-path" => Some(Value::list(
                 self.load_path
                     .iter()
-                    .map(|path| Value::String(primitives::path_to_directory_string(path).into()))
+                    .map(|path| Value::String(path.display().to_string().into()))
                     .collect::<Vec<_>>(),
             )),
             "image-load-path" => Some(Value::list([
@@ -919,11 +918,6 @@ impl Interpreter {
                     .map(|value| Value::Symbol(value.into()))
                     .collect::<Vec<_>>(),
             )),
-            "ert-resource-directory-format" => Some(Value::String("%s-resources/".into())),
-            "ert-resource-directory-trim-left-regexp" => Some(Value::String(String::new().into())),
-            "ert-resource-directory-trim-right-regexp" => {
-                Some(Value::String("\\(-tests?\\)?\\.el".into()))
-            }
             "load-file-name" => Some(
                 self.current_load_file
                     .clone()
@@ -933,7 +927,6 @@ impl Interpreter {
             "read-buffer-function" | "read-file-name-function" => Some(Value::Nil),
             "delete-by-moving-to-trash" => Some(Value::Nil),
             "directory-files-no-dot-files-regexp" => Some(Value::String("[^.]\\|\\.\\.\\.".into())),
-            "user-emacs-directory" => Some(Value::String("/nonexistent/.emacs.d/".into())),
             "invocation-name" => Some(Value::String(
                 primitives::current_invocation_name()
                     .unwrap_or_else(|| "emaxx".into())
@@ -975,7 +968,6 @@ impl Interpreter {
             )),
             "find-program" => Some(Value::String("find".into())),
             "grep-program" => Some(Value::String("grep".into())),
-            _ if name.starts_with('.') => Some(Value::Nil),
             _ if name.starts_with(':') => Some(Value::Symbol(name.to_string().into())),
             _ => None,
         }

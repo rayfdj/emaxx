@@ -1,5 +1,44 @@
 use super::*;
 
+/// Child-side setup shared by every Lisp-visible subprocess, mirroring GNU's
+/// `emacs_spawn' (callproc.c:1441) -- the single choke point both
+/// `call-process' and `make-process' children pass through.  Every child
+/// gets, exactly as in GNU:
+///
+/// * Default signal dispositions for SIGINT, SIGQUIT, SIGPROF and (on
+///   Darwin) SIGCHLD -- callproc.c:1385's sigdefault set.  SIG_IGN survives
+///   exec, so without this a child of an Emaxx started as a background job
+///   (where the shell ignores SIGINT/SIGQUIT) could never be interrupted.
+///   Rust's `Command' resets the signal *mask* but only the SIGPIPE
+///   *disposition*.
+/// * A fresh session: POSIX_SPAWN_SETSID in GNU's non-pty path, `setsid' in
+///   its fork path (callproc.c:1289).  A PTY child additionally acquires
+///   stdin's slave as its controlling terminal.
+#[cfg(unix)]
+fn configure_emacs_spawn(command: &mut Command, controlling_pty: bool) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: signal/setsid/ioctl are async-signal-safe child-side calls;
+    // fd 0 is already the PTY slave when CONTROLLING_PTY.
+    unsafe {
+        command.pre_exec(move || {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            libc::signal(libc::SIGPROF, libc::SIG_DFL);
+            #[cfg(target_os = "macos")]
+            libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if controlling_pty
+                && libc::ioctl(libc::STDIN_FILENO, libc::c_ulong::from(libc::TIOCSCTTY), 0) < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 pub(crate) fn run_external_process(
     interp: &Interpreter,
     program: &str,
@@ -13,6 +52,8 @@ pub(crate) fn run_external_process(
     let mut command = Command::new(program);
     command.args(argv);
     configure_external_command(interp, env, &mut command);
+    #[cfg(unix)]
+    configure_emacs_spawn(&mut command, false);
     command.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -144,33 +185,7 @@ pub(crate) fn spawn_persistent_process(
     }
 
     #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-
-        // GNU gives every asynchronous child its own process group.  PTY
-        // children also lead a fresh session and acquire stdin's slave as
-        // their controlling terminal.  Signals then target the child job,
-        // including descendants, instead of Emaxx's own process group.
-        // SAFETY: setsid/setpgid/ioctl are async-signal-safe child-side
-        // operations; fd 0 is already the PTY slave for input_pty.
-        unsafe {
-            command.pre_exec(move || {
-                if input_pty || output_pty {
-                    if libc::setsid() < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                } else if libc::setpgid(0, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if input_pty
-                    && libc::ioctl(libc::STDIN_FILENO, libc::c_ulong::from(libc::TIOCSCTTY), 0) < 0
-                {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
+    configure_emacs_spawn(&mut command, input_pty);
 
     let child = command
         .spawn()
@@ -1145,9 +1160,9 @@ pub(crate) fn make_network_process(
         let value = &pair[1];
         match key {
             ":name" => {
-                name = Some(match value {
-                    Value::String(name) => name.to_string(),
-                    _ => return Err(LispError::Signal(":name value not a string".into())),
+                name = Some(match string_like(value) {
+                    Some(text) => text.text,
+                    None => return Err(LispError::Signal(":name value not a string".into())),
                 });
             }
             ":buffer" => buffer_id = process_buffer_target(interp, value)?,

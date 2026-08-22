@@ -1329,7 +1329,21 @@ pub(crate) fn hash_str(state: &mut u64, text: &str) {
     }
 }
 
-pub(crate) fn hash_props(interp: &Interpreter, state: &mut u64, props: &[StringPropertySpan]) {
+/// fns.c:5336 `SXHASH_MAX_DEPTH' and fns.c:5341 `SXHASH_MAX_LEN'.  GNU stops
+/// descending at depth 3 and folds in at most seven elements of a list or
+/// vector, so hashing a cyclic structure terminates instead of recursing
+/// forever: `cl-print' labels a closure `#<bytecode %#x>' by calling
+/// `sxhash' on it, and a closure's constants routinely point back at the
+/// closure (ert builds exactly that graph while reporting a failure).
+const SXHASH_MAX_DEPTH: u32 = 3;
+const SXHASH_MAX_LEN: usize = 7;
+
+pub(crate) fn hash_props(
+    interp: &Interpreter,
+    state: &mut u64,
+    props: &[StringPropertySpan],
+    depth: u32,
+) {
     hash_mix(state, props.len() as u64);
     for span in props {
         hash_mix(state, span.start as u64);
@@ -1337,7 +1351,7 @@ pub(crate) fn hash_props(interp: &Interpreter, state: &mut u64, props: &[StringP
         hash_mix(state, span.props.len() as u64);
         for (key, value) in &span.props {
             hash_str(state, key);
-            hash_value_recursive(interp, state, value, HashMode::EqualIncludingProperties);
+            hash_value_equal_at(interp, state, value, true, depth + 1);
         }
     }
 }
@@ -1472,6 +1486,22 @@ pub(crate) fn hash_value_equal(
     value: &Value,
     include_properties: bool,
 ) {
+    hash_value_equal_at(interp, state, value, include_properties, 0);
+}
+
+/// `sxhash_obj' (fns.c:5505) with GNU's depth bound: past `SXHASH_MAX_DEPTH'
+/// every object hashes as 0 regardless of its contents.
+pub(crate) fn hash_value_equal_at(
+    interp: &Interpreter,
+    state: &mut u64,
+    value: &Value,
+    include_properties: bool,
+    depth: u32,
+) {
+    if depth > SXHASH_MAX_DEPTH {
+        hash_mix(state, 0);
+        return;
+    }
     match value {
         Value::Nil => hash_mix(state, 30),
         Value::T => hash_mix(state, 31),
@@ -1507,7 +1537,7 @@ pub(crate) fn hash_value_equal(
                 hash_mix(state, u64::from(*code));
             }
             if include_properties {
-                hash_props(interp, state, &shared.props);
+                hash_props(interp, state, &shared.props, depth);
             }
         }
         Value::Symbol(symbol) => {
@@ -1515,12 +1545,24 @@ pub(crate) fn hash_value_equal(
             hash_str(state, symbol);
         }
         Value::Cons(_) => {
-            let Some((car, cdr)) = value.cons_values() else {
-                return;
-            };
             hash_mix(state, 38);
-            hash_value_equal(interp, state, &car, include_properties);
-            hash_value_equal(interp, state, &cdr, include_properties);
+            // `sxhash_list' (fns.c:5420): walk at most `SXHASH_MAX_LEN'
+            // elements, and only while the structure is shallower than
+            // `SXHASH_MAX_DEPTH'; whatever tail remains is folded in one
+            // level deeper, which is what terminates a circular list.
+            let mut tail = value.clone();
+            if depth < SXHASH_MAX_DEPTH {
+                for _ in 0..SXHASH_MAX_LEN {
+                    let Some((car, cdr)) = tail.cons_values() else {
+                        break;
+                    };
+                    hash_value_equal_at(interp, state, &car, include_properties, depth + 1);
+                    tail = cdr;
+                }
+            }
+            if !tail.is_nil() {
+                hash_value_equal_at(interp, state, &tail, include_properties, depth + 1);
+            }
         }
         Value::BuiltinFunc(name) => {
             hash_mix(state, 39);
@@ -1528,8 +1570,13 @@ pub(crate) fn hash_value_equal(
         }
         Value::Lambda(lambda_value) => {
             hash_mix(state, 40);
-            for slot in interp.interpreted_closure_slots(lambda_value) {
-                hash_value_equal(interp, state, &slot, include_properties);
+            // `sxhash_vector' (fns.c:5447) bounds a closure the same way.
+            for slot in interp
+                .interpreted_closure_slots(lambda_value)
+                .into_iter()
+                .take(SXHASH_MAX_LEN)
+            {
+                hash_value_equal_at(interp, state, &slot, include_properties, depth + 1);
             }
         }
         Value::Buffer(buffer_value) => {
@@ -1547,7 +1594,7 @@ pub(crate) fn hash_value_equal(
             hash_mix(state, *id);
         }
         Value::CharTable(id) => {
-            hash_char_table_equal(interp, state, *id, include_properties);
+            hash_char_table_equal(interp, state, *id, include_properties, depth);
         }
         Value::Frame(id) => {
             hash_mix(state, 48);
@@ -1558,7 +1605,7 @@ pub(crate) fn hash_value_equal(
             hash_mix(state, *id);
         }
         Value::Record(id) => {
-            hash_record_equal(interp, state, *id, include_properties);
+            hash_record_equal(interp, state, *id, include_properties, depth);
         }
         Value::Finalizer(id) => {
             hash_mix(state, 46);
@@ -1590,6 +1637,7 @@ pub(crate) fn hash_char_table_equal(
     state: &mut u64,
     id: u64,
     include_properties: bool,
+    depth: u32,
 ) {
     hash_mix(state, 44);
     let Some(table) = interp.find_char_table(id) else {
@@ -1605,16 +1653,16 @@ pub(crate) fn hash_char_table_equal(
         None => hash_mix(state, 0),
     }
     hash_mix(state, table.parent.unwrap_or(0));
-    hash_value_equal(interp, state, &table.default, include_properties);
+    hash_value_equal_at(interp, state, &table.default, include_properties, depth + 1);
     hash_mix(state, table.extra_slots.len() as u64);
-    for slot in &table.extra_slots {
-        hash_value_equal(interp, state, slot, include_properties);
+    for slot in table.extra_slots.iter().take(SXHASH_MAX_LEN) {
+        hash_value_equal_at(interp, state, slot, include_properties, depth + 1);
     }
     hash_mix(state, table.entries.len() as u64);
-    for entry in &table.entries {
+    for entry in table.entries.iter().take(SXHASH_MAX_LEN) {
         hash_mix(state, entry.start as u64);
         hash_mix(state, entry.end as u64);
-        hash_value_equal(interp, state, &entry.value, include_properties);
+        hash_value_equal_at(interp, state, &entry.value, include_properties, depth + 1);
     }
     hash_mix(state, table.category_docs.len() as u64);
     for (code, doc) in &table.category_docs {
@@ -1628,6 +1676,7 @@ pub(crate) fn hash_record_equal(
     state: &mut u64,
     id: u64,
     include_properties: bool,
+    depth: u32,
 ) {
     hash_mix(state, 45);
     let Some(record) = interp.find_record(id) else {
@@ -1661,17 +1710,18 @@ pub(crate) fn hash_record_equal(
         | crate::lisp::eval::RecordKind::TreeSitterNode
         | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
         | crate::lisp::eval::RecordKind::Sqlite => {
-            hash_value_equal(interp, state, &record.type_tag, include_properties);
+            hash_value_equal_at(interp, state, &record.type_tag, include_properties, depth + 1);
             hash_mix(state, id);
         }
         crate::lisp::eval::RecordKind::Record
         | crate::lisp::eval::RecordKind::Closure
         | crate::lisp::eval::RecordKind::Font
         | crate::lisp::eval::RecordKind::Keymap => {
-            hash_value_equal(interp, state, &record.type_tag, include_properties);
+            hash_value_equal_at(interp, state, &record.type_tag, include_properties, depth + 1);
             hash_mix(state, record.slots.len() as u64);
-            for slot in &record.slots {
-                hash_value_equal(interp, state, slot, include_properties);
+            // fns.c:5447 `sxhash_vector' hashes a record's leading slots only.
+            for slot in record.slots.iter().take(SXHASH_MAX_LEN) {
+                hash_value_equal_at(interp, state, slot, include_properties, depth + 1);
             }
         }
     }
@@ -2283,21 +2333,6 @@ pub(crate) fn keymap_bindings_value(bindings: Vec<RuntimeKeymapBinding>) -> Valu
     }))
 }
 
-pub(crate) fn keymap_define_binding(
-    interp: &mut Interpreter,
-    keymap: &Value,
-    key: &str,
-    binding: Value,
-) -> Result<(), LispError> {
-    keymap_define_binding_with_placement(
-        interp,
-        keymap,
-        key,
-        Some(approximate_key_parts(key)),
-        binding,
-        true,
-    )
-}
 
 pub(crate) fn keymap_define_character_range(
     interp: &mut Interpreter,
@@ -3778,61 +3813,6 @@ pub(crate) fn collect_where_is_matches(
     Ok(())
 }
 
-pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> {
-    match key {
-        "C-s" => Some("isearch-forward"),
-        "RET" => Some("newline"),
-        "C-n" => Some("next-line"),
-        "C-p" => Some("previous-line"),
-        "C-e" => Some("move-end-of-line"),
-        "C-a" => Some("move-beginning-of-line"),
-        "C-f" => Some("forward-char"),
-        "C-b" => Some("backward-char"),
-        "C-k" => Some("kill-line"),
-        "C-y" => Some("yank"),
-        "M-y" => Some("yank-pop"),
-        "C-w" => Some("kill-region"),
-        "M-w" => Some("kill-ring-save"),
-        "C-d" => Some("delete-char"),
-        "M-a" => Some("backward-sentence"),
-        "C-SPC" => Some("set-mark-command"),
-        "M-}" => Some("forward-paragraph"),
-        "C-x n n" => Some("narrow-to-region"),
-        "M-/" => Some("dabbrev-expand"),
-        "C-M-/" => Some("dabbrev-completion"),
-        "C-x 4 d" => Some("dired-other-window"),
-        "C-x 5 d" => Some("dired-other-frame"),
-        "C-x 5 C-o" => Some("display-buffer-other-frame"),
-        // bindings.el / simple.el dumped defaults consumed by the terminal
-        // frontend.  Three retarget onto the nearest live command until the
-        // GNU-named owner exists: DEL (GNU `delete-backward-char'),
-        // C-x C-c (GNU `save-buffers-kill-terminal'), and the horizontal
-        // arrows (GNU `right-char'/`left-char').
-        "DEL" => Some("backward-delete-char-untabify"),
-        "C-g" => Some("keyboard-quit"),
-        "C-_" => Some("undo"),
-        "C-x C-s" => Some("save-buffer"),
-        "C-x C-w" => Some("write-file"),
-        "C-x C-c" => Some("save-buffers-kill-emacs"),
-        "C-v" => Some("scroll-up-command"),
-        "M-v" => Some("scroll-down-command"),
-        "C-l" => Some("recenter-top-bottom"),
-        "C-x b" => Some("switch-to-buffer"),
-        "C-x k" => Some("kill-buffer"),
-        "C-x h" => Some("mark-whole-buffer"),
-        "C-x u" => Some("undo"),
-        // Symbol events spell as their bare names in binding-part form.
-        "up" => Some("previous-line"),
-        "down" => Some("next-line"),
-        "left" => Some("backward-char"),
-        "right" => Some("forward-char"),
-        "home" => Some("move-beginning-of-line"),
-        "end" => Some("move-end-of-line"),
-        "deletechar" => Some("delete-forward-char"),
-        key if key.chars().count() == 1 => Some("self-insert-command"),
-        _ => None,
-    }
-}
 
 pub(crate) fn remap_key_binding_text(command: &str) -> String {
     format!("<remap> <{command}>")
@@ -4007,26 +3987,30 @@ pub(crate) fn active_command_keymaps(
 }
 
 pub(crate) fn key_binding(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     key: &str,
     accept_default: bool,
     no_remap: bool,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    let key_parts = approximate_key_parts(key);
-    key_binding_with_parts(interp, key, &key_parts, accept_default, no_remap, env)
+    key_binding_with_parts(
+        interp,
+        &approximate_key_parts(key),
+        accept_default,
+        no_remap,
+        env,
+    )
 }
 
-/// `key-binding' over already-parsed event parts: a symbolic event in a
-/// key vector must not round-trip through kbd text, where a bare "f10"
-/// re-reads as the three keys f 1 0.
+/// keymap.c:Fkey_binding over an already-decoded event-part sequence; the
+/// value-aware decoding (`key_sequence_keymap_parts') preserves symbol
+/// events like `left' that a textual round-trip loses.
 pub(crate) fn key_binding_with_parts(
-    interp: &Interpreter,
-    key: &str,
+    interp: &mut Interpreter,
     key_parts: &[String],
     accept_default: bool,
     no_remap: bool,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let key_parts = key_parts.to_vec();
     let maps = active_command_keymaps(interp, env)?;
@@ -4044,16 +4028,6 @@ pub(crate) fn key_binding_with_parts(
         }
     }
 
-    if raw_binding.is_nil()
-        && key == "\""
-        && matches!(
-            interp.lookup_var("major-mode", env),
-            Some(Value::Symbol(mode)) if mode == "tex-mode"
-        )
-    {
-        raw_binding = Value::Symbol("tex-insert-quote".into());
-    }
-
     let global_map = interp.current_global_map_value();
     if raw_binding.is_nil() && is_keymap_value(interp, &global_map) {
         let binding = keymap_lookup_binding_exact_parts_with_default(
@@ -4067,11 +4041,11 @@ pub(crate) fn key_binding_with_parts(
         }
     }
 
-    if raw_binding.is_nil()
-        && let Some(command) = default_global_binding_for_key(key)
-    {
-        raw_binding = Value::Symbol(command.into());
-    }
+    // Fkey_binding receives Flookup_key's value, which access_keymap has
+    // already passed through get_keyelt — so a ("Demo" . KEYMAP) menu
+    // entry resolves to the keymap, and the remap test below sees the
+    // resolved command symbol, not its menu-item wrapper.
+    let raw_binding = keymap_get_keyelt(interp, &raw_binding, true, env)?;
 
     if no_remap || raw_binding.is_nil() {
         return Ok(raw_binding);
@@ -4124,9 +4098,9 @@ fn keymap_has_prefix(
 // Whether KEY is a proper prefix of a longer binding in the active keymaps,
 // so the command loop should keep reading events instead of dispatching.
 pub(crate) fn key_sequence_is_prefix(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     key: &str,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<bool, LispError> {
     // These prefix maps are present in GNU's standard global map even when
     // none of their descendants are represented in Emaxx's compact default

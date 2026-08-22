@@ -56,6 +56,42 @@ fn batch_read_string_consumes_a_line_from_piped_stdin() {
 }
 
 #[test]
+fn batch_symbol_readers_answer_piped_stdin_like_gnu() {
+    // GNU's minibuffer reads real stdin in batch, so this comparison needs a
+    // process with piped input rather than an in-process interpreter.  The
+    // expected output is byte-for-byte what `emacs -Q -batch' prints for the
+    // same program and the same three empty answers.
+    let program = r#"(progn
+          (defun emaxx-test-readable-command () (interactive))
+          (prin1
+           (list
+            (read-command "Command: " 'emaxx-test-readable-command)
+            (read-command "Command: ")
+            (read-variable "Variable: " 'tab-width)
+            (subrp (symbol-function 'read-command))
+            (subrp (symbol-function 'read-variable)))))"#;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .args(["--quick", "--batch", "--eval", program])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"\n\n\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "batch symbol readers failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Command: Command: Variable: (emaxx-test-readable-command ## tab-width t t)"
+    );
+}
+
+#[test]
 fn batch_accepts_gnu_single_dash_long_spelling_and_build_details_abbreviation() {
     let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
         .args([

@@ -165,7 +165,11 @@ impl Interpreter {
             self.push_local_special_declaration(&resolved, env);
         }
         // Bare `defvar` declarations mark a variable special without binding it.
-        if self.default_toplevel_value(&resolved).is_none() && items.len() > 2 {
+        // GNU skips the init form only when a REAL default binding exists.
+        // The lazily synthesized builtin fallback table must not count:
+        // treating it as a binding silently discarded the init forms of
+        // genuinely loaded GNU defvars (mode-line-modes, user-emacs-directory).
+        if !self.global_default_binding_exists(&resolved) && items.len() > 2 {
             let val = self.eval(&items[2], env)?;
             self.set_default_toplevel_value(&resolved, val);
         }

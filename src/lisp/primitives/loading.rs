@@ -59,7 +59,22 @@ pub(crate) fn collect_interactive_args(
     // GNU's C interactive_form consults `oclosure-interactive-form' for
     // OClosures: nadvice's advice objects have no (interactive ...) in their
     // body and instead COMPOSE the advised function's spec.
-    let oclosure_spec = if crate::lisp::primitives::dispatch::oclosure_type_of(&func).is_some()
+    // Compiled OClosures (like nadvice's advice objects) are closure
+    // records, not interpreted lambdas, so ask the real `oclosure-type'
+    // owner when the native lambda-shape probe misses.
+    let is_oclosure = crate::lisp::primitives::dispatch::oclosure_type_of(&func).is_some()
+        || (matches!(&func, Value::Record(_) | Value::Lambda(_))
+            && interp.has_lisp_function("oclosure-type")
+            && interp
+                .call_function_value(
+                    Value::Symbol("oclosure-type".into()),
+                    Some("oclosure-type"),
+                    std::slice::from_ref(&func),
+                    env,
+                )
+                .map(|value| value.is_truthy())
+                .unwrap_or(false));
+    let oclosure_spec = if is_oclosure
         && interp.has_lisp_function("oclosure-interactive-form")
         && interactive_spec_form(interp, &func).is_none()
     {

@@ -1808,200 +1808,23 @@ thread_local! {
 /// have no lambda body to read a docstring from, yet their docstrings are not in
 /// the `DOC` file either — they live inline in the byte-compiled sources.  We
 /// scan the `.el` sources once and cache a name → first-docstring map.
-fn builtin_doc_from_lisp_sources(interp: &Interpreter, function: &str) -> Option<String> {
-    let lisp_root = lisp_source_root(interp)?;
-    let root_str = lisp_root.to_string_lossy().to_string();
-
-    let map = LISP_SOURCE_DOC_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some((cached_root, cached_map)) = cache.as_ref()
-            && *cached_root == root_str
-        {
-            return Some(cached_map.clone());
-        }
-        if !lisp_root.is_dir() {
-            return None;
-        }
-        let mut map = std::collections::HashMap::new();
-        scan_lisp_dir_for_docstrings(&lisp_root, &mut map);
-        let parsed = std::rc::Rc::new(map);
-        *cache = Some((root_str.clone(), parsed.clone()));
-        Some(parsed)
-    })?;
-
-    map.get(function).cloned()
-}
 
 pub(crate) fn fallback_function_documentation(
     interp: &Interpreter,
     function: &str,
 ) -> Option<String> {
+    // The etc/DOC database is the sole honest source for native
+    // documentation; scraping GNU .el sources forged Lisp provenance for
+    // natively implemented names.
     builtin_doc_from_doc_file(interp, function)
-        .or_else(|| builtin_doc_from_lisp_sources(interp, function))
 }
 
-/// Recursively walk DIR collecting the first docstring of every top-level
-/// `defun`/`defmacro`/`defsubst`/`define-inline`/`cl-defun`/`cl-defmacro` form
-/// in each `.el` file into MAP (first definition wins).
-fn scan_lisp_dir_for_docstrings(
-    dir: &std::path::Path,
-    map: &mut std::collections::HashMap<String, String>,
-) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            scan_lisp_dir_for_docstrings(&path, map);
-        } else if path.extension().is_some_and(|ext| ext == "el")
-            && let Ok(text) = std::fs::read_to_string(&path)
-        {
-            parse_el_source_docstrings(&text, map);
-        }
-    }
-}
 
-/// Extract `(NAME . docstring)` pairs from a single `.el` source's top-level
-/// definition forms.  A top-level form begins at column 0 with `(`.
-fn parse_el_source_docstrings(text: &str, map: &mut std::collections::HashMap<String, String>) {
-    const HEADS: [&str; 6] = [
-        "defun",
-        "defmacro",
-        "defsubst",
-        "define-inline",
-        "cl-defun",
-        "cl-defmacro",
-    ];
-    let bytes = text.as_bytes();
-    for line_start in line_starts(text) {
-        let rest = &text[line_start..];
-        // Only column-0 open-paren forms are top-level definitions.
-        if !rest.starts_with('(') {
-            continue;
-        }
-        let after_paren = &rest[1..];
-        let Some(head) = HEADS.iter().find(|head| {
-            after_paren.starts_with(**head) && is_symbol_boundary(after_paren, head.len())
-        }) else {
-            continue;
-        };
-        let mut idx = line_start + 1 + head.len();
-        idx = skip_ws(bytes, idx);
-        let name_start = idx;
-        while idx < bytes.len() && is_lisp_symbol_byte(bytes[idx]) {
-            idx += 1;
-        }
-        if idx == name_start {
-            continue;
-        }
-        let name = &text[name_start..idx];
-        idx = skip_ws(bytes, idx);
-        // Skip the arglist `(...)`.
-        if idx >= bytes.len() || bytes[idx] != b'(' {
-            continue;
-        }
-        let Ok(Some(arglist)) = crate::lisp::reader::Reader::new(&text[idx..]).read() else {
-            continue;
-        };
-        idx = match skip_balanced_parens(bytes, idx) {
-            Some(next) => next,
-            None => continue,
-        };
-        idx = skip_ws(bytes, idx);
-        // The docstring, if present, is the next form and starts with `"`.
-        if idx >= bytes.len() || bytes[idx] != b'"' {
-            continue;
-        }
-        if let Ok(Some(doc)) = crate::lisp::reader::Reader::new(&text[idx..]).read() {
-            let mut doc = match doc {
-                Value::String(text) => text.to_string(),
-                Value::StringObject(state) => state.borrow().text.clone(),
-                _ => continue,
-            };
-            if !doc.contains("(fn") {
-                let parameters = arglist
-                    .to_vec()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|parameter| parameter.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                doc.push_str("\n\n(fn");
-                if !parameters.is_empty() {
-                    doc.push(' ');
-                    doc.push_str(&parameters);
-                }
-                doc.push(')');
-            }
-            map.entry(name.to_string()).or_insert(doc);
-        }
-    }
-}
 
-/// Byte offsets of the start of each line in TEXT.
-fn line_starts(text: &str) -> impl Iterator<Item = usize> + '_ {
-    std::iter::once(0).chain(
-        text.match_indices('\n')
-            .map(|(index, _)| index + 1)
-            .filter(move |index| *index < text.len()),
-    )
-}
 
-fn is_symbol_boundary(text: &str, offset: usize) -> bool {
-    text.as_bytes()
-        .get(offset)
-        .is_none_or(|b| !is_lisp_symbol_byte(*b))
-}
 
-fn is_lisp_symbol_byte(b: u8) -> bool {
-    !b.is_ascii_whitespace() && !matches!(b, b'(' | b')' | b'"' | b';' | b'\'' | b'`' | b',')
-}
 
-fn skip_ws(bytes: &[u8], mut idx: usize) -> usize {
-    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-        idx += 1;
-    }
-    idx
-}
 
-/// Given IDX at an opening `(`, return the offset just past the matching `)`,
-/// honoring string literals and character/escape syntax.
-fn skip_balanced_parens(bytes: &[u8], mut idx: usize) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut in_string = false;
-    while idx < bytes.len() {
-        let b = bytes[idx];
-        if in_string {
-            match b {
-                b'\\' => idx += 1,
-                b'"' => in_string = false,
-                _ => {}
-            }
-        } else {
-            match b {
-                b'"' => in_string = true,
-                b'?' => idx += 1, // character literal: skip the next byte
-                b';' => {
-                    while idx < bytes.len() && bytes[idx] != b'\n' {
-                        idx += 1;
-                    }
-                    continue;
-                }
-                b'(' => depth += 1,
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(idx + 1);
-                    }
-                }
-                _ => {}
-            }
-        }
-        idx += 1;
-    }
-    None
-}
 
 /// Parse a GNU Emacs `DOC` file into a map from function name to docstring.
 ///

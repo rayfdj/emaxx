@@ -200,7 +200,8 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
     StartupFeature::new("lcms2"),
     StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     StartupFeature::new("md5"),
-    StartupFeature::new("native-compile"),
+    // No "native-compile": Emaxx models a no-native-comp GNU build, where
+    // comp.c registers nothing and `native-comp-available-p' is nil.
     StartupFeature::new("overlay").with_subfeatures(overlay_subfeatures),
     StartupFeature::new("sha1"),
     StartupFeature::new("text-properties").with_subfeatures(text_properties_subfeatures),
@@ -862,6 +863,65 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             &["json-utf8-decode-error", "json-error", "error"],
             "invalid utf-8 encoding",
         ),
+        // comp.c and treesit.c register these the same way (DEFSYM plus
+        // `error-conditions'/`error-message' puts); values probed from the
+        // pinned oracle.  Emaxx signals all three, so leaving them
+        // unregistered made them catchable only by `t'.
+        (
+            "native-lisp-load-failed",
+            &["native-lisp-load-failed", "error"],
+            "Native elisp load failed",
+        ),
+        (
+            "treesit-buffer-too-large",
+            &["treesit-buffer-too-large", "treesit-error", "error"],
+            "Buffer too large (> 4GiB)",
+        ),
+        (
+            "treesit-error",
+            &["treesit-error", "error"],
+            "Generic tree-sitter error",
+        ),
+        (
+            "treesit-invalid-predicate",
+            &["treesit-invalid-predicate", "treesit-error", "error"],
+            "Invalid predicate, see `treesit-thing-settings' for valid forms for a predicate",
+        ),
+        (
+            "treesit-load-language-error",
+            &["treesit-load-language-error", "treesit-error", "error"],
+            "Cannot load language definition",
+        ),
+        (
+            "treesit-node-buffer-killed",
+            &["treesit-node-buffer-killed", "treesit-error", "error"],
+            "The buffer associated with this node is killed",
+        ),
+        (
+            "treesit-node-outdated",
+            &["treesit-node-outdated", "treesit-error", "error"],
+            "This node is outdated, please retrieve a new one",
+        ),
+        (
+            "treesit-parse-error",
+            &["treesit-parse-error", "treesit-error", "error"],
+            "Parse failed",
+        ),
+        (
+            "treesit-parser-deleted",
+            &["treesit-parser-deleted", "treesit-error", "error"],
+            "This parser is deleted and cannot be used",
+        ),
+        (
+            "treesit-query-error",
+            &["treesit-query-error", "treesit-error", "error"],
+            "Query pattern is malformed",
+        ),
+        (
+            "treesit-range-invalid",
+            &["treesit-range-invalid", "treesit-error", "error"],
+            "RANGES are invalid: they have to be ordered and should not overlap",
+        ),
     ];
 
     definitions
@@ -1303,41 +1363,18 @@ enum ThreadStatus {
 enum ThreadProgram {
     Main,
     Ignore,
+    /// Run a real callable to completion in one scheduler step.  Emaxx has no
+    /// preemptive threads, so such a body cannot interleave with the main
+    /// thread; that is a tracked architectural gap, not something to simulate.
     Call(Value),
-    SetGlobal {
-        name: String,
-        value: Value,
-    },
+    Noop,
+    /// Body shapes the cooperative scheduler can actually step.  These are
+    /// recognised by shape only — never by function or variable name.
     Sleep {
         blocked: bool,
     },
-    YieldThenSetGlobal {
-        target: String,
-        value: Value,
-        phase: u8,
-    },
-    MutexContention {
-        phase: u8,
-    },
-    MutexBlock {
-        phase: u8,
-    },
-    SignalError {
-        value: Value,
-    },
-    Noop,
     InfiniteYield,
     SignalMainThread,
-    CondvarWaitTwice {
-        phase: u8,
-    },
-    CaptureBufferLocal {
-        target: String,
-        source: String,
-    },
-    ThreadListMutexWait {
-        phase: u8,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -2478,7 +2515,6 @@ struct SourceFormAnalysis {
     items: Rc<Vec<Value>>,
     native_form: Option<core::NativeForm>,
     literal_kind: core::SourceLiteralKind,
-    if_test_mentions_setcdr: bool,
     /// The generation-stamped non-macro verdict shares the source-analysis
     /// lifetime.  Actual macro expansions are deliberately never cached:
     /// GNU's interpreted evaluator invokes the macro expander on every
@@ -2494,62 +2530,6 @@ struct LambdaSourceBodyCacheEntry {
     body: Weak<Vec<Value>>,
 }
 
-fn make_query_replace_map(interp: &mut Interpreter) -> Value {
-    let map = primitives::make_runtime_keymap(interp, Some("query-replace-map"));
-    // replace.el is part of GNU's dumped image.  map-y-or-n-p and other
-    // preloaded prompt helpers therefore see this complete response map
-    // before `replace' is explicitly loaded.
-    for (key, answer) in [
-        ("SPC", "act"),
-        ("DEL", "skip"),
-        ("delete", "skip"),
-        ("backspace", "skip"),
-        ("y", "act"),
-        ("n", "skip"),
-        ("Y", "act"),
-        ("N", "skip"),
-        ("e", "edit-replacement"),
-        ("E", "edit-replacement-exact-case"),
-        (",", "act-and-show"),
-        ("q", "exit"),
-        ("RET", "exit"),
-        ("return", "exit"),
-        (".", "act-and-exit"),
-        ("C-r", "edit"),
-        ("C-w", "delete-and-edit"),
-        ("C-l", "recenter"),
-        ("!", "automatic"),
-        ("^", "backup"),
-        ("u", "undo"),
-        ("U", "undo-all"),
-        ("C-h", "help"),
-        ("f1", "help"),
-        ("help", "help"),
-        ("?", "help"),
-        ("C-g", "quit"),
-        ("C-]", "quit"),
-        ("C-v", "scroll-up"),
-        ("M-v", "scroll-down"),
-        ("next", "scroll-up"),
-        ("prior", "scroll-down"),
-        ("C-M-v", "scroll-other-window"),
-        ("M-next", "scroll-other-window"),
-        ("C-M-S-v", "scroll-other-window-down"),
-        ("M-prior", "scroll-other-window-down"),
-        ("escape", "exit-prefix"),
-    ] {
-        primitives::keymap_define_binding_with_placement(
-            interp,
-            &map,
-            key,
-            Some(vec![key.into()]),
-            Value::Symbol(answer.into()),
-            true,
-        )
-        .expect("static query-replace-map binding");
-    }
-    map
-}
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
     let map = primitives::make_runtime_keymap(interp, Some("visual-line-mode-map"));
@@ -2867,7 +2847,7 @@ impl Interpreter {
             uninterned_standard_symbol_names: HashSet::new(),
             standard_obarray_id,
             variable_watchers: Vec::new(),
-            buffer: crate::buffer::Buffer::new("*test*"),
+            buffer: crate::buffer::Buffer::new("*scratch*"),
             current_global_map: None,
             keymap_public_cons_owners: HashMap::new(),
             keymap_public_cons_ids: HashMap::new(),
@@ -2904,7 +2884,10 @@ impl Interpreter {
             terminal_parameters: Vec::new(),
             terminal_live: true,
             inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
-            buffer_list: vec![(0, "*test*".to_string()), (1, "*Messages*".to_string())],
+            // GNU's batch `buffer-list' is (*scratch* " *Minibuf-0*"
+            // *Messages*); *Messages* joins the list once the minibuffer
+            // buffer exists, below.
+            buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
             next_overlay_id: 1,
             next_marker_id: 1,
@@ -3241,6 +3224,34 @@ impl Interpreter {
         // `function-put'/`define-symbol-prop' handler pushes entries here and
         // `get' consults it before the symbol's own plist.
         interp.define_special_variable("overriding-plist-environment", Value::Nil);
+        // The remaining minibuf.c DEFVARs.  `minibuffer-setup-hook' and
+        // `minibuffer-exit-hook' matter beyond their values: without the C
+        // declaration a `let' on them under lexical binding is lexical, so
+        // minibuffer.el's own `minibuffer-with-setup-hook' machinery (which
+        // installs the completion session with `setq-local') silently never
+        // runs.
+        interp.define_special_variable("minibuffer-setup-hook", Value::Nil);
+        interp.define_special_variable("minibuffer-exit-hook", Value::Nil);
+        interp.define_special_variable("minibuffer-follows-selected-frame", Value::T);
+        interp.define_special_variable("read-buffer-completion-ignore-case", Value::Nil);
+        interp.define_special_variable("read-hide-char", Value::Nil);
+        // emacs.c's session-mode flag: nil in the dumped default; batch
+        // startup flips it to t.
+        interp.define_special_variable("noninteractive", Value::Nil);
+        // xdisp.c's trailing-whitespace highlight switch, read by dumped
+        // simple.el commands like `kill-line'.
+        interp.define_special_variable("show-trailing-whitespace", Value::Nil);
+        // indent.c:2486 DEFVAR_BOOL, initialised to 1.  This must be a real
+        // binding, not a `builtin_var_value' fallback: simple.el's
+        // `define-minor-mode indent-tabs-mode' supplies no :init-value, so its
+        // defcustom keeps whatever the variable already holds — and a fallback
+        // that `defvar' cannot see is indistinguishable from unbound, which
+        // let preloaded Lisp overwrite GNU's C default with nil.
+        interp.define_special_variable("indent-tabs-mode", Value::T);
+        // minibuf.c's history controls, read by subr.el's `add-to-history'.
+        interp.define_special_variable("history-length", Value::Integer(100));
+        interp.define_special_variable("history-delete-duplicates", Value::Nil);
+        interp.define_special_variable("history-add-new-input", Value::T);
         for variable in GNU_XDISP_GLOBAL_VARIABLES {
             interp.define_special_variable(variable.name, variable.default.value());
         }
@@ -3287,96 +3298,16 @@ impl Interpreter {
                 interp.put_symbol_property(feature.name, "subfeatures", subfeatures());
             }
         }
-        let esc_map = primitives::make_runtime_full_keymap(&mut interp, Some("esc-map"));
-        interp.set_global_binding("esc-map", esc_map.clone());
-        let ctl_x_4_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-4-map"));
-        interp.set_global_binding("ctl-x-4-map", ctl_x_4_map.clone());
-        let ctl_x_5_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-5-map"));
-        interp.set_global_binding("ctl-x-5-map", ctl_x_5_map.clone());
-        let tab_prefix_map = primitives::make_runtime_keymap(&mut interp, Some("tab-prefix-map"));
-        interp.set_global_binding("tab-prefix-map", tab_prefix_map.clone());
-        let ctl_x_map = primitives::make_runtime_full_keymap(&mut interp, Some("ctl-x-map"));
-        interp.set_global_binding("ctl-x-map", ctl_x_map.clone());
-        // C-x is bound through the prefix command symbol in GNU; keep the
-        // symbol's definition around so `where-is-internal' can find it.
-        interp.push_function_binding("Control-X-prefix", ctl_x_map.clone());
-        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "4", ctl_x_4_map);
-        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "5", ctl_x_5_map);
-        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "t", tab_prefix_map);
-        let _ = primitives::keymap_define_binding_with_placement(
-            &mut interp,
-            &ctl_x_map,
-            "C-f",
-            Some(vec!["C-f".into()]),
-            Value::Symbol("find-file".into()),
-            true,
-        );
-        let global_map = primitives::make_runtime_full_keymap(&mut interp, Some("global-map"));
-        interp.current_global_map = Some(global_map.clone());
-        interp.set_global_binding("global-map", global_map);
-        // Dumped mode maps are identity-bearing Lisp objects.  A computed
-        // fallback would allocate a fresh `(keymap ...)' facade on every
-        // variable read, breaking `eq', mapatoms, mutation, and aliases.
-        for name in [
-            "text-mode-map",
-            "lisp-mode-shared-map",
-            "lisp-mode-map",
-            "emacs-lisp-mode-map",
-            "special-mode-map",
-        ] {
-            let keymap = primitives::make_runtime_keymap(&mut interp, Some(name));
-            interp.set_global_binding(name, keymap);
-        }
-        let buffer_menu_mode_map =
-            primitives::make_runtime_full_keymap(&mut interp, Some("Buffer-menu-mode-map"));
-        interp.set_global_binding("Buffer-menu-mode-map", buffer_menu_mode_map.clone());
-        let global_map = interp
-            .lookup_var("global-map", &Vec::new())
-            .unwrap_or(Value::Nil);
-        let _ = primitives::keymap_define_binding_with_placement(
-            &mut interp,
-            &buffer_menu_mode_map,
-            "SPC",
-            Some(vec!["SPC".into()]),
-            Value::Symbol("Buffer-menu-select".into()),
-            true,
-        );
-        let esc_map = interp
-            .lookup_var("esc-map", &Vec::new())
-            .unwrap_or(Value::Nil);
-        let _ = primitives::keymap_define_binding(
-            &mut interp,
-            &esc_map,
-            "x",
-            Value::Symbol("execute-extended-command".into()),
-        );
-        let ctl_x_map = interp
-            .lookup_var("ctl-x-map", &Vec::new())
-            .unwrap_or(Value::Nil);
-        let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{1b}", esc_map);
-        let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{18}", ctl_x_map);
-        // subr.el constructs the initial global map before bindings.el is
-        // dumped.  C-] is intentionally defined there (and not repeated by
-        // bindings.el), so the native bootstrap side of that existing
-        // boundary must carry it too.
-        let _ = primitives::keymap_define_binding(
-            &mut interp,
-            &global_map,
-            "C-]",
-            Value::Symbol("abort-recursive-edit".into()),
-        );
-        // bindings.el's dumped global map supplies this canonical motion
-        // binding.  Help's command-key substitution reads the live map, so
-        // omitting it changes every `\[forward-char]' doc reference into the
-        // unbound-command fallback instead of GNU's `C-f'.
-        let _ = primitives::keymap_define_binding(
-            &mut interp,
-            &global_map,
-            "C-f",
-            Value::Symbol("forward-char".into()),
-        );
-        let menu_bar_edit_menu = primitives::make_runtime_keymap(&mut interp, Some("Edit"));
-        interp.set_global_binding("menu-bar-edit-menu", menu_bar_edit_menu);
+        // GNU's C creates no global-map/esc-map/ctl-x-map/menu variables:
+        // subr.el and its preloaded successors own every one of them
+        // (keymap.c staticpros only `current_global_map').  Pre-seeding
+        // native maps here made subr.el's `defvar' keep the incomplete
+        // native objects, silently dropping dumped bindings like
+        // `C-x b' -> `switch-to-buffer' from the reconstructed image.
+        // keymap.c's own DEFVAR_LISP map is the one exception.
+        let minibuffer_local_map =
+            primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
+        interp.define_special_variable("minibuffer-local-map", minibuffer_local_map);
         let input_decode_map =
             primitives::make_runtime_keymap(&mut interp, Some("input-decode-map"));
         interp.set_global_binding("input-decode-map", input_decode_map);
@@ -3392,17 +3323,6 @@ impl Interpreter {
             let keymap = primitives::make_runtime_keymap(&mut interp, Some(name));
             interp.define_special_variable(name, keymap);
         }
-        let minibuffer_local_map =
-            primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
-        interp.set_global_binding("minibuffer-local-map", minibuffer_local_map);
-        let minibuffer_local_completion_map =
-            primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-completion-map"));
-        interp.set_global_binding(
-            "minibuffer-local-completion-map",
-            minibuffer_local_completion_map,
-        );
-        let query_replace_map = make_query_replace_map(&mut interp);
-        interp.set_global_binding("query-replace-map", query_replace_map);
         // `visual-line-mode' deliberately stays native in Emaxx, so its
         // native bootstrap owns the same complete mode contract that GNU's
         // dumped simple.el creates: a stable map, mode variable, hook family,
@@ -3435,16 +3355,20 @@ impl Interpreter {
         interp.define_per_buffer_special("header-line-indent-mode", Value::Nil);
         interp.set_global_binding("major-mode", Value::Symbol("fundamental-mode".into()));
         interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
-        let mode_line_format = default_mode_line_format();
-        interp.define_per_buffer_special("mode-line-format", mode_line_format.clone());
-        interp.put_symbol_property(
-            "mode-line-format",
-            "standard-value",
-            Value::list([quoted_literal(&mode_line_format)]),
-        );
+        // buffer.c:4794 seeds the C default as the string "%-", with the
+        // comment "real setup is done in bindings.el"; that preloaded file
+        // installs the real spec and its `standard-value'.  Transcribing
+        // bindings.el here made the bare host claim a dumped image it does
+        // not have.
+        interp.define_per_buffer_special("mode-line-format", Value::String("%-".into()));
         for name in ["header-line-format", "tab-line-format"] {
             interp.define_per_buffer_special(name, Value::Nil);
         }
+        // bindings.el owns `mode-line-buffer-identification' via defvar-local,
+        // and its value carries text properties from
+        // `propertized-buffer-identification'.  Pre-seeding a plain ("%12b")
+        // here made that defvar keep the native value, exactly as the
+        // pre-seeded keymaps did.
         let glyphless_char_display =
             interp.make_char_table(Some("glyphless-char-display".into()), Value::Nil);
         interp.set_global_binding("glyphless-char-display", glyphless_char_display);
@@ -3502,215 +3426,12 @@ impl Interpreter {
             interp.define_special_variable(name, value);
         }
         interp.define_per_buffer_special("read-only-mode", Value::Nil);
-        // GNU's preloaded `(declare (indent N))' effects: every symbol
-        // carrying a `lisp-indent-function' property at oracle startup
-        // (None encodes the symbol `defun').  calculate-lisp-indent and
-        // lisp-indent-function consult these for special-form indentation.
-        const PRELOADED_LISP_INDENT: &[(&str, Option<i64>)] = &[
-            ("and-let*", Some(1)),
-            ("atomic-change-group", Some(0)),
-            ("autoload", None),
-            ("benchmark-progn", Some(0)),
-            ("benchmark-run", Some(1)),
-            ("benchmark-run-compiled", Some(1)),
-            ("bindings--define-key", Some(2)),
-            ("catch", Some(1)),
-            ("cl--define-built-in-type", Some(2)),
-            ("cl-defgeneric", Some(2)),
-            ("cl-defmethod", None),
-            ("cl-generic-define-context-rewriter", None),
-            ("cl-generic-define-generalizer", Some(1)),
-            ("combine-after-change-calls", Some(0)),
-            ("combine-change-calls", Some(2)),
-            ("comment-with-narrowing", Some(2)),
-            ("condition-case", Some(2)),
-            ("condition-case-unless-debug", Some(2)),
-            ("def-edebug-elem-spec", Some(1)),
-            ("def-edebug-spec", Some(1)),
-            ("defadvice", Some(2)),
-            ("defalias", None),
-            ("defconst", None),
-            ("defcustom", None),
-            ("defface", None),
-            ("defgroup", None),
-            ("defimage", None),
-            ("define-abbrev", None),
-            ("define-abbrev-table", None),
-            ("define-advice", Some(2)),
-            ("define-alternatives", None),
-            ("define-auto-insert", None),
-            ("define-button-type", None),
-            ("define-category", None),
-            ("define-ccl-program", None),
-            ("define-char-code-property", None),
-            ("define-charset", None),
-            ("define-charset-internal", None),
-            ("define-coding-system", None),
-            ("define-derived-mode", None),
-            ("define-fringe-bitmap", None),
-            ("define-generic-mode", Some(1)),
-            ("define-globalized-minor-mode", None),
-            ("define-ibuffer-column", None),
-            ("define-ibuffer-filter", Some(2)),
-            ("define-ibuffer-op", Some(2)),
-            ("define-ibuffer-sorter", Some(1)),
-            ("define-inline", None),
-            ("define-iso-single-byte-charset", None),
-            ("define-key-after", None),
-            ("define-keymap", None),
-            ("define-mail-user-agent", None),
-            ("define-minor-mode", None),
-            ("define-multisession-variable", None),
-            ("define-obsolete-function-alias", None),
-            ("define-obsolete-variable-alias", None),
-            ("define-short-documentation-group", None),
-            ("define-skeleton", None),
-            ("define-translation-hash-table", None),
-            ("define-translation-table", None),
-            ("define-widget", None),
-            ("define-widget-keywords", None),
-            ("defmacro", Some(2)),
-            ("defmath", None),
-            ("defsubst", Some(2)),
-            ("deftheme", Some(1)),
-            ("defun", Some(2)),
-            ("defvar", None),
-            ("defvar-keymap", Some(1)),
-            ("defvar-local", Some(2)),
-            ("defvaralias", None),
-            ("delay-mode-hooks", Some(0)),
-            ("dlet", Some(1)),
-            ("dolist", Some(1)),
-            ("dolist-with-progress-reporter", Some(2)),
-            ("dont-compile", Some(0)),
-            ("dotimes", Some(1)),
-            ("dotimes-with-progress-reporter", Some(2)),
-            ("easy-menu-define", None),
-            ("easy-mmode-defmap", Some(1)),
-            ("easy-mmode-defsyntax", Some(1)),
-            ("eldoc--documentation-strategy-defcustom", Some(2)),
-            ("ert-deftest", Some(2)),
-            ("ert-font-lock-deftest", Some(1)),
-            ("ert-font-lock-deftest-file", Some(1)),
-            ("eval-after-load", Some(1)),
-            ("eval-and-compile", Some(0)),
-            ("eval-when-compile", Some(0)),
-            ("gv-define-expander", Some(1)),
-            ("gv-define-setter", Some(2)),
-            ("gv-letplace", Some(2)),
-            ("handler-bind", Some(1)),
-            ("handler-case", Some(1)),
-            ("if", Some(2)),
-            ("if-let", Some(2)),
-            ("if-let*", Some(2)),
-            ("ignore-error", Some(1)),
-            ("ignore-errors", Some(0)),
-            ("isearch-define-mode-toggle", None),
-            ("keymap-set-after", None),
-            ("lambda", None),
-            ("let", Some(1)),
-            ("let*", Some(1)),
-            ("let-alist", Some(1)),
-            ("let-when-compile", Some(1)),
-            ("letrec", Some(1)),
-            ("macroexp--accumulate", Some(1)),
-            ("macroexp--with-extended-form-stack", Some(1)),
-            ("macroexp-let2", Some(3)),
-            ("macroexp-let2*", Some(2)),
-            ("minibuffer-with-setup-hook", Some(1)),
-            ("named-let", Some(2)),
-            ("oclosure--lambda", Some(3)),
-            ("oclosure-define", Some(1)),
-            ("oclosure-lambda", Some(2)),
-            ("pcase", Some(1)),
-            ("pcase-defmacro", Some(2)),
-            ("pcase-dolist", Some(1)),
-            ("pcase-exhaustive", Some(1)),
-            ("pcase-lambda", None),
-            ("pcase-let", Some(1)),
-            ("pcase-let*", Some(1)),
-            ("prog1", Some(1)),
-            ("prog2", Some(2)),
-            ("progn", Some(0)),
-            ("replace--push-stack", Some(0)),
-            ("rx-define", None),
-            ("rx-let", Some(1)),
-            ("rx-let-eval", Some(1)),
-            ("save-current-buffer", Some(0)),
-            ("save-excursion", Some(0)),
-            ("save-mark-and-excursion", Some(0)),
-            ("save-match-data", Some(0)),
-            ("save-restriction", Some(0)),
-            ("save-selected-window", Some(0)),
-            ("save-window-excursion", Some(0)),
-            ("seq-doseq", Some(1)),
-            ("seq-let", Some(2)),
-            ("static-if", Some(2)),
-            ("track-mouse", Some(0)),
-            ("transient-append-suffix", None),
-            ("transient-insert-suffix", None),
-            ("transient-remove-suffix", None),
-            ("transient-replace-suffix", None),
-            ("unless", Some(1)),
-            ("unwind-protect", Some(1)),
-            ("use-package", None),
-            ("wallpaper-setter-create", Some(1)),
-            ("when", Some(1)),
-            ("when-let", Some(1)),
-            ("when-let*", Some(1)),
-            ("which-key-add-keymap-based-replacements", None),
-            ("which-key-add-major-mode-key-based-replacements", None),
-            ("while", Some(1)),
-            ("while-let", Some(1)),
-            ("while-no-input", Some(0)),
-            ("with-auto-compression-mode", Some(0)),
-            ("with-case-table", Some(1)),
-            ("with-category-table", Some(1)),
-            ("with-coding-priority", Some(1)),
-            ("with-connection-local-application-variables", Some(1)),
-            ("with-current-buffer", Some(1)),
-            ("with-current-buffer-window", Some(3)),
-            ("with-delayed-message", Some(1)),
-            ("with-demoted-errors", Some(1)),
-            ("with-displayed-buffer-window", Some(3)),
-            ("with-environment-variables", Some(1)),
-            ("with-eval-after-load", Some(1)),
-            ("with-existing-directory", Some(0)),
-            ("with-file-modes", Some(1)),
-            ("with-help-window", Some(1)),
-            ("with-local-quit", Some(0)),
-            ("with-locale-environment", Some(1)),
-            ("with-memoization", Some(1)),
-            ("with-minibuffer-completions-window", Some(0)),
-            ("with-minibuffer-selected-window", Some(0)),
-            ("with-mutex", Some(1)),
-            ("with-no-warnings", Some(0)),
-            ("with-output-to-string", Some(0)),
-            ("with-output-to-temp-buffer", Some(1)),
-            ("with-restriction", Some(2)),
-            ("with-selected-frame", Some(1)),
-            ("with-selected-window", Some(1)),
-            ("with-silent-modifications", Some(0)),
-            ("with-suppressed-warnings", Some(1)),
-            ("with-syntax-table", Some(1)),
-            ("with-temp-buffer", Some(0)),
-            ("with-temp-buffer-window", Some(3)),
-            ("with-temp-file", Some(1)),
-            ("with-temp-message", Some(1)),
-            ("with-timeout", Some(1)),
-            ("with-undo-amalgamate", Some(0)),
-            ("with-window-non-dedicated", Some(1)),
-            ("with-wrapper-hook", Some(2)),
-            ("without-remote-files", Some(0)),
-            ("without-restriction", Some(0)),
-        ];
-        for (name, method) in PRELOADED_LISP_INDENT {
-            let value = match method {
-                Some(count) => Value::Integer(*count),
-                None => Value::Symbol("defun".into()),
-            };
-            interp.put_symbol_property(name, "lisp-indent-function", value);
-        }
+        // No `lisp-indent-function' properties are seeded here.  GNU's C never
+        // sets that property (zero occurrences in src/*.c); every one comes from
+        // `(declare (indent N))' processed by byte-run.el, `lisp-mode.el''s
+        // `put' forms, or loaddefs.el's `function-put' forms as those files
+        // load.  Seeding them made the bare host claim a dumped image it does
+        // not have.
         // Defaults not synthesized by `builtin_var_value'; locality and
         // permanence come exclusively from GNU_NATIVE_PER_BUFFER_VARIABLES.
         for name in ["buffer-auto-save-file-name", "selective-display"] {
@@ -4173,6 +3894,7 @@ impl Interpreter {
             window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
         }
         let (minibuffer_buffer_id, _) = interp.create_buffer(" *Minibuf-0*");
+        interp.buffer_list.push((1, "*Messages*".to_string()));
         let minibuffer_window = interp.create_pseudovector(
             RecordKind::Window,
             "window",
@@ -5051,98 +4773,12 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
     Ok(())
 }
 
-fn setcdr_tail_aliases(
-    interp: &Interpreter,
-    value: &Value,
-    tail: &Value,
-    env: &Env,
-) -> Vec<String> {
-    let mut aliases = Vec::new();
-    collect_setcdr_tail_aliases(interp, value, tail, env, &mut aliases);
-    aliases
-}
 
-/// Allocation-free pre-scan for `setcdr' anywhere in FORM, so the hot
-/// `if' path skips the tail-alias machinery entirely.  BUDGET caps the
-/// walk (reader forms can be circular); an exhausted budget reports
-/// true, deferring to the cycle-safe slow path.
-pub(crate) fn form_mentions_setcdr(value: &Value, budget: &mut u32) -> bool {
-    if *budget == 0 {
-        return true;
-    }
-    *budget -= 1;
-    match value {
-        Value::Symbol(name) => name == "setcdr",
-        Value::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            form_mentions_setcdr(&car.borrow(), budget)
-                || form_mentions_setcdr(&cdr.borrow(), budget)
-        }
-        _ => false,
-    }
-}
 
-fn collect_setcdr_tail_aliases(
-    interp: &Interpreter,
-    value: &Value,
-    tail: &Value,
-    env: &Env,
-    aliases: &mut Vec<String>,
-) {
-    let Ok(items) = value.to_vec() else {
-        return;
-    };
-    if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "setcdr")
-        && let Some(Value::Symbol(name)) = items.get(1)
-        && interp.lookup_var(name, env).as_ref() == Some(tail)
-        && !aliases.iter().any(|alias| alias == name)
-    {
-        aliases.push(name.to_string());
-    }
-    for item in &items {
-        collect_setcdr_tail_aliases(interp, item, tail, env, aliases);
-    }
-}
 
-fn tail_aliases_became_improper(interp: &Interpreter, aliases: &[String], env: &Env) -> bool {
-    aliases.iter().any(|name| {
-        interp
-            .lookup_var(name, env)
-            .is_some_and(|value| value.to_vec().is_err())
-    })
-}
 
-fn snapshot_tail_alias_values(
-    interp: &Interpreter,
-    aliases: &[String],
-    env: &Env,
-) -> Vec<(String, Value)> {
-    aliases
-        .iter()
-        .filter_map(|name| {
-            interp
-                .lookup_var(name, env)
-                .map(|value| (name.clone(), deep_copy_value(&value)))
-        })
-        .collect()
-}
 
-fn restore_tail_alias_values(interp: &mut Interpreter, aliases: &[(String, Value)], env: &mut Env) {
-    for (name, value) in aliases {
-        interp.set_variable(name, value.clone(), env);
-    }
-}
 
-fn deep_copy_value(value: &Value) -> Value {
-    match value {
-        Value::Cons(cell) => Value::cons(
-            deep_copy_value(&cell.car.borrow()),
-            deep_copy_value(&cell.cdr.borrow()),
-        ),
-        _ => value.clone(),
-    }
-}
 
 // GNU pcase--funcall for `app' patterns: a call form may name the object
 // with `_'; without a placeholder the object becomes the last argument.

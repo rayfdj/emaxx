@@ -426,10 +426,18 @@ pub(crate) fn compat_repo_root_from_test_directory(test_directory: &str) -> Opti
 }
 
 pub(crate) fn compat_data_directory() -> Option<String> {
-    std::env::var("EMACS_TEST_DIRECTORY")
+    if let Some(directory) = std::env::var("EMACS_TEST_DIRECTORY")
         .ok()
         .and_then(|test_directory| compat_repo_root_from_test_directory(&test_directory))
         .map(|repo_root| path_to_directory_string(&repo_root.join("etc")))
+    {
+        return Some(directory);
+    }
+    // Outside the compat harness, the pinned sibling GNU checkout supplies
+    // etc/ the same way it supplies the Lisp load path; its DOC database is
+    // what `Snarf-documentation' and `help-C-file-name' read in GNU.
+    let sibling = crate::compat::project_root().join("../emacs/etc");
+    sibling.is_dir().then(|| path_to_directory_string(&sibling))
 }
 
 pub(crate) fn compat_installation_directory() -> Option<String> {

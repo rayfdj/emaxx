@@ -14,7 +14,6 @@ use unicode_names2::character as unicode_character;
 
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
-const BOOL_VECTOR_LITERAL_SYMBOL: &str = "bool-vector-literal";
 static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
@@ -84,6 +83,8 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                 ReaderForm::Record { slots } | ReaderForm::Closure { slots, .. } => {
                     pending.extend(slots.iter().cloned());
                 }
+                // A bool vector holds no sub-objects to scan.
+                ReaderForm::BoolVector { .. } => {}
                 ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
                     return true;
                 }
@@ -264,6 +265,8 @@ fn resolve_circular_read_syntax_inner(
                     kind: *kind,
                     slots: resolve_fields(slots, labels)?,
                 },
+                // Bits carry no reader labels to resolve.
+                ReaderForm::BoolVector { bits } => ReaderForm::BoolVector { bits: bits.clone() },
                 ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
                     unreachable!("circular reader forms are handled before structural descent")
                 }
@@ -1405,12 +1408,9 @@ impl<'a> Reader<'a> {
                 }
                 bits.resize(len, false);
 
-                Ok(Some(Value::list(
-                    std::iter::once(Value::symbol(BOOL_VECTOR_LITERAL_SYMBOL)).chain(
-                        bits.into_iter()
-                            .map(|bit| if bit { Value::T } else { Value::Nil }),
-                    ),
-                )))
+                Ok(Some(Value::ReaderForm(std::rc::Rc::new(
+                    crate::lisp::types::ReaderForm::BoolVector { bits },
+                ))))
             }
             Some(b':') => {
                 self.advance();
@@ -2302,19 +2302,14 @@ mod tests {
 
     #[test]
     fn reads_bool_vector_literals() {
+        let Value::ReaderForm(form) = read_one(r#"#&8"\1""#) else {
+            panic!("bool vector literal should read as a reader form");
+        };
         assert_eq!(
-            read_one(r#"#&8"\1""#),
-            Value::list([
-                Value::Symbol(BOOL_VECTOR_LITERAL_SYMBOL.into()),
-                Value::T,
-                Value::Nil,
-                Value::Nil,
-                Value::Nil,
-                Value::Nil,
-                Value::Nil,
-                Value::Nil,
-                Value::Nil,
-            ])
+            *form,
+            crate::lisp::types::ReaderForm::BoolVector {
+                bits: vec![true, false, false, false, false, false, false, false],
+            }
         );
     }
 

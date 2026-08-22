@@ -388,7 +388,7 @@ fn defalias_replaces_an_existing_function_cell() {
 #[test]
 fn md5_accepts_buffer_sources_and_coding_symbols() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(with-temp-buffer \
                    (insert \"abc\") \
                    (md5 (current-buffer) nil nil 'utf-8-emacs-unix))"
@@ -823,7 +823,7 @@ fn eval_arithmetic() {
     assert_eq!(eval_str("(logior 1 2 4)"), Value::Integer(7));
     assert_eq!(eval_str("(logxor 1 2 3)"), Value::Integer(0));
     assert_eq!(eval_str("(lognot 5)"), Value::Integer(-6));
-    let (_permit, mut interp) = upstream_batch_interpreter_with_features(&["cl-lib", "float-sup"]);
+    let (_permit, mut interp) = upstream_batch_interpreter_with_features(&["cl-lib"]);
     assert_eq!(
         // `cl-evenp' and `cl-oddp' are GNU Elisp functions in cl-lib.el.
         eval_str_with(
@@ -1352,7 +1352,7 @@ fn temporary_file_directory_names_a_directory_with_trailing_separator() {
 #[test]
 fn write_region_accepts_string_data_even_with_numeric_end_argument() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(let ((path (make-temp-name temporary-file-directory)))
                      (unwind-protect
                          (progn
@@ -1892,7 +1892,7 @@ fn unibyte_string_sequences_return_byte_values() {
 #[test]
 fn byte_to_string_preserves_octets_as_unibyte_strings() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(list
                  (mapcar (lambda (byte)
                            (let ((string (byte-to-string byte)))
@@ -4416,7 +4416,10 @@ fn native_permanent_buffer_locals_survive_major_mode_reset() {
 
 #[test]
 fn builtin_text_codings_expose_complete_eol_variant_families() {
-    let interp = Interpreter::new();
+    // These coding systems and their eol variants are created by
+    // international/mule-conf.el in GNU's dumped image; coding.c defines only
+    // no-conversion and undecided, so a file-less host has neither.
+    let interp = crate::test_support::initialized_upstream_batch_interpreter();
     for base in [
         "undecided",
         "us-ascii",
@@ -4941,10 +4944,13 @@ fn letstar_initializer_closure_does_not_capture_a_later_binding() {
 #[test]
 fn locate_user_emacs_file_uses_user_emacs_directory() {
     assert_eq!(
-        // GNU 30.2 owns `locate-user-emacs-file' in files.el.
+        // GNU 30.2 owns `locate-user-emacs-file' in files.el.  Bind the
+        // directory explicitly: the real subr.el defvar computes it from
+        // the live HOME, so an unbound test would depend on the machine.
         eval_str_with_upstream_batch_feature(
             "files",
-            r#"(locate-user-emacs-file "ido.last" ".ido.last")"#,
+            r#"(let ((user-emacs-directory "/nonexistent/.emacs.d/"))
+                 (locate-user-emacs-file "ido.last" ".ido.last"))"#,
         ),
         Value::String("/nonexistent/.emacs.d/ido.last".into())
     );
@@ -7070,10 +7076,10 @@ fn defun_navigation_defaults_bracket_the_current_top_level_form() {
 #[test]
 fn forward_sexp_honors_syntax_table_category_properties() {
     assert_eq!(
-        // GNU 30.2 owns `forward-sexp' in emacs-lisp/lisp.el; its scanner
-        // ultimately delegates to C-owned syntax primitives.
-        eval_str_with_upstream_batch_feature(
-            "lisp",
+        // GNU 30.2 owns `forward-sexp' in emacs-lisp/lisp.el, which loadup
+        // preloads without providing a feature — `(require 'lisp)' signals
+        // in GNU too, so the batch image's preload is the honest source.
+        eval_str_with_upstream_batch(
             "(with-temp-buffer
                    (set-syntax-table (make-syntax-table))
                    (modify-syntax-entry ?< \".\")
@@ -7345,13 +7351,17 @@ fn menu_bar_captions_follow_keymap_order_and_final_items() {
     eval_str_with(
         &mut interp,
         "(progn
-           (define-key global-map [menu-bar help-menu] (cons \"Help\" (make-sparse-keymap \"Help\")))
-           (define-key global-map [menu-bar tools] (cons \"Tools\" (make-sparse-keymap \"Tools\")))
-           (define-key global-map [menu-bar file]
+           ;; C leaves current_global_map nil (keymap.c syms_of_keymap);
+           ;; subr.el installs the real one, so a bare-runtime test must
+           ;; bring its own via the use-global-map primitive.
+           (use-global-map (make-sparse-keymap))
+           (define-key (current-global-map) [menu-bar help-menu] (cons \"Help\" (make-sparse-keymap \"Help\")))
+           (define-key (current-global-map) [menu-bar tools] (cons \"Tools\" (make-sparse-keymap \"Tools\")))
+           (define-key (current-global-map) [menu-bar file]
              (list 'menu-item \"File\" (make-sparse-keymap \"File\")))
-           (define-key global-map [menu-bar hidden]
+           (define-key (current-global-map) [menu-bar hidden]
              (list 'menu-item \"Hidden\" (make-sparse-keymap) :visible nil))
-           (define-key global-map [menu-bar broken] 'undefined)
+           (define-key (current-global-map) [menu-bar broken] 'undefined)
            (setq menu-bar-final-items '(help-menu)))",
     );
     let mut env: Env = Vec::new();
@@ -7369,7 +7379,8 @@ fn tty_menu_pane_lays_out_margins_hints_and_submenu_markers() {
     eval_str_with(
         &mut interp,
         "(progn
-           (define-key global-map \"\\C-t\" 'transpose-chars)
+           (use-global-map (make-sparse-keymap))
+           (define-key (current-global-map) \"\\C-t\" 'transpose-chars)
            (defalias 'demo-noop (function (lambda () (interactive))))
            (defvar demo-submenu (make-sparse-keymap \"More\"))
            (defvar demo-menu (make-sparse-keymap \"Demo\"))
@@ -7404,9 +7415,10 @@ fn menu_bar_menu_at_x_y_maps_columns_to_bar_items() {
     let result = eval_str_with(
         &mut interp,
         "(progn
-           (define-key global-map [menu-bar edit]
+           (use-global-map (make-sparse-keymap))
+           (define-key (current-global-map) [menu-bar edit]
              (cons \"Edit\" (make-sparse-keymap \"Edit\")))
-           (define-key global-map [menu-bar file]
+           (define-key (current-global-map) [menu-bar file]
              (cons \"File\" (make-sparse-keymap \"File\")))
            (prin1-to-string
             (list (menu-bar-menu-at-x-y 0 0)
@@ -7430,8 +7442,9 @@ fn key_binding_resolves_function_keys_and_menu_entries() {
     let result = eval_str_with(
         &mut interp,
         "(progn
-           (define-key global-map [f9] 'ignore)
-           (define-key global-map [menu-bar demo]
+           (use-global-map (make-sparse-keymap))
+           (define-key (current-global-map) [f9] 'ignore)
+           (define-key (current-global-map) [menu-bar demo]
              (cons \"Demo\" (make-sparse-keymap \"Demo\")))
            (prin1-to-string
             (list (key-binding [f9])
@@ -7449,20 +7462,21 @@ fn where_is_internal_prefers_ascii_and_rejects_menus_under_firstonly() {
     let result = eval_str_with(
         &mut interp,
         "(progn
+           (use-global-map (make-sparse-keymap))
            (defalias 'demo-where-is-command (function (lambda () (interactive))))
-           (define-key global-map [f6] 'demo-where-is-command)
-           (define-key global-map \"\\C-t\" 'demo-where-is-command)
-           (define-key global-map [menu-bar demo]
+           (define-key (current-global-map) [f6] 'demo-where-is-command)
+           (define-key (current-global-map) \"\\C-t\" 'demo-where-is-command)
+           (define-key (current-global-map) [menu-bar demo]
              (cons \"Demo\" (make-sparse-keymap \"Demo\")))
            (defalias 'demo-menu-only-command (function (lambda () (interactive))))
-           (define-key global-map [menu-bar demo run]
+           (define-key (current-global-map) [menu-bar demo run]
              '(menu-item \"Run\" demo-menu-only-command))
            (prin1-to-string
             (list (key-description (where-is-internal 'demo-where-is-command nil t))
                   (where-is-internal 'demo-menu-only-command nil t)
                   (key-description
                    (car (where-is-internal
-                         (lookup-key global-map [menu-bar demo])))))))",
+                         (lookup-key (current-global-map) [menu-bar demo])))))))",
     );
     // A character sequence (C-t) beats the symbolic f6 no matter the
     // definition order; a non-nil FIRSTONLY rejects menu bindings
@@ -7477,12 +7491,13 @@ fn lookup_key_converts_lucid_event_lists_but_not_event_conses() {
     let result = eval_str_with(
         &mut interp,
         "(progn
+           (use-global-map (make-sparse-keymap))
            (defalias 'demo-lucid-command (function (lambda () (interactive))))
-           (define-key global-map [(control ?t)] 'demo-lucid-command)
-           (define-key global-map [C-down-mouse-3] 'demo-lucid-command)
+           (define-key (current-global-map) [(control ?t)] 'demo-lucid-command)
+           (define-key (current-global-map) [C-down-mouse-3] 'demo-lucid-command)
            (prin1-to-string
-            (list (lookup-key global-map \"\\C-t\")
-                  (lookup-key global-map
+            (list (lookup-key (current-global-map) \"\\C-t\")
+                  (lookup-key (current-global-map)
                               (vector
                                (list 'C-down-mouse-3
                                      (list nil 'menu-bar (cons 5 0) 0)))))))",

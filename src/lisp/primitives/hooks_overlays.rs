@@ -216,21 +216,62 @@ pub(crate) fn safe_run_named_hooks(
             Ok(_) => {}
             Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
             Err(error) => {
-                let function_name = match &hook {
-                    Value::Symbol(name) | Value::BuiltinFunc(name) => name.to_string(),
-                    _ => "anonymous-function".to_string(),
-                };
-                let message = format!("Error in {hook_name} ({function_name}): {error}");
+                // GNU keyboard.c:safe_run_hooks_error — message with prin1
+                // renderings, then remove the failing function from the
+                // hook's local value (or, failing that, its default) so a
+                // broken hook cannot wedge every subsequent command.
+                // GNU keyboard.c:1896 does
+                // CALLN (Fmessage, "Error in %s (%S): %S", hook, fun, error),
+                // so the data is formatted BY `message' and a `%' inside a
+                // printed object cannot be reinterpreted as a directive.
+                let condition = crate::lisp::eval::error_condition_value(&error);
                 let _ = crate::lisp::primitives::call(
                     interp,
                     "message",
-                    &[Value::String(message.into())],
+                    &[
+                        Value::String("Error in %s (%S): %S".into()),
+                        Value::symbol(hook_name),
+                        hook.clone(),
+                        condition,
+                    ],
                     env,
                 );
+                remove_hook_function_after_error(interp, hook_name, &hook, env);
             }
         }
     }
     Ok(())
+}
+
+/// GNU keyboard.c:safe_run_hooks_error's recovery step: delete FUN from
+/// HOOK's Lisp-visible value.  The local (current) value is preferred; if
+/// FUN only appears in the default value, edit that instead.
+fn remove_hook_function_after_error(
+    interp: &mut Interpreter,
+    hook_name: &str,
+    fun: &Value,
+    env: &mut crate::lisp::types::Env,
+) {
+    let filter = |interp: &Interpreter, value: Option<Value>| -> Option<Vec<Value>> {
+        let items = value?.to_vec().ok()?;
+        let mut found = false;
+        let mut kept = Vec::with_capacity(items.len());
+        for item in items {
+            if crate::lisp::primitives::values::values_eq_in_env(interp, &item, fun, env) {
+                found = true;
+            } else {
+                kept.push(item);
+            }
+        }
+        found.then_some(kept)
+    };
+    if let Some(kept) = filter(interp, interp.lookup_var(hook_name, env)) {
+        interp.set_variable(hook_name, Value::list(kept), env);
+        return;
+    }
+    if let Some(kept) = filter(interp, interp.default_value(hook_name)) {
+        interp.set_default_toplevel_value(hook_name, Value::list(kept));
+    }
 }
 
 pub(crate) fn call_named_function(

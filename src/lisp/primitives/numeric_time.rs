@@ -187,17 +187,7 @@ fn arity_value((minimum, maximum): (i64, i64)) -> Value {
 }
 
 pub(crate) fn builtin_arity_value(name: &str) -> Option<Value> {
-    if let Some(arity) = generated_builtin_arities::generated_builtin_arity(name) {
-        return Some(arity_value(arity));
-    }
-    let arity = match name {
-        "caar" => (1, 1),
-        "remq" => (2, 2),
-        "version-to-list" => (1, 1),
-        "sha1" => (1, 4),
-        _ => return None,
-    };
-    Some(arity_value(arity))
+    generated_builtin_arities::generated_builtin_arity(name).map(arity_value)
 }
 
 pub(crate) fn special_form_arity_value(name: &str) -> Option<Value> {
@@ -207,13 +197,6 @@ pub(crate) fn special_form_arity_value(name: &str) -> Option<Value> {
         .map(arity_value)
 }
 
-pub(crate) fn fallback_subr_arity_value(name: &str) -> Value {
-    if is_special_form_name(name) {
-        Value::cons(Value::Integer(0), Value::Symbol("unevalled".into()))
-    } else {
-        Value::cons(Value::Integer(0), Value::Symbol("many".into()))
-    }
-}
 
 pub(crate) fn lambda_arity_value(params: &[String]) -> Value {
     let mut required = 0i64;
@@ -317,13 +300,13 @@ pub(crate) fn function_arity_value(
     env: &Env,
 ) -> Result<Value, LispError> {
     match function {
+        // Every genuine subr has its arity in the GNU-generated table; a
+        // miss means an emaxx coverage gap, never a value to invent.
         Value::BuiltinFunc(name) => builtin_arity_value(name)
             .or_else(|| special_form_arity_value(name))
-            .or_else(|| {
-                super::dispatch::misc::fallback_function_documentation(interp, name)
-                    .and_then(|doc| docstring_arity_text(&doc))
-            })
-            .ok_or_else(|| LispError::TypeError("function".into(), function.type_name())),
+            .ok_or_else(|| {
+                LispError::Signal(format!("emaxx: no GNU-derived arity for subr {name}"))
+            }),
         Value::Lambda(lambda) => Ok(lambda_arity_value(&lambda.params)),
         Value::Symbol(symbol) => {
             if let Some(arity) = special_form_arity_value(symbol) {
@@ -351,31 +334,6 @@ pub(crate) fn function_arity_value(
     }
 }
 
-fn docstring_arity_text(doc: &str) -> Option<Value> {
-    let usage = doc.rsplit_once("(fn")?.1.split_once(')')?.0;
-    let mut required = 0i64;
-    let mut optional = 0i64;
-    let mut optional_mode = false;
-    let mut variadic = false;
-    for parameter in usage.split_whitespace() {
-        match parameter.to_ascii_lowercase().as_str() {
-            "&optional" => optional_mode = true,
-            "&rest" | "&key" | "&body" => variadic = true,
-            _ if variadic => {}
-            _ if optional_mode || parameter.starts_with('[') => optional += 1,
-            _ => required += 1,
-        }
-        variadic |= parameter.ends_with("...");
-    }
-    Some(Value::cons(
-        Value::Integer(required),
-        if variadic {
-            Value::Symbol("many".into())
-        } else {
-            Value::Integer(required + optional)
-        },
-    ))
-}
 
 pub(crate) fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
     match value {

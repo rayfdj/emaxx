@@ -1201,7 +1201,7 @@ fn insert_file_contents_rejects_circular_after_insert_file_functions() {
 
     let path_literal = path.display().to_string().replace('\\', "\\\\");
     assert_eq!(
-        eval_str(&format!(
+        eval_str_with_upstream_batch(&format!(
             "(let ((after-insert-file-functions (list 'identity))) \
                    (setcdr after-insert-file-functions after-insert-file-functions) \
                    (condition-case err \
@@ -1712,7 +1712,7 @@ fn split_window_returns_distinct_live_windows_in_headless_runtime() {
 #[test]
 fn query_replace_map_is_preloaded_for_prompt_helpers() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list (keymapp query-replace-map)
                        (lookup-key query-replace-map \"y\")
                        (lookup-key query-replace-map \"n\")
@@ -1776,10 +1776,8 @@ fn headless_window_vscroll_is_zero() {
 fn mode_line_buffer_identification_is_bound() {
     // bindings.el owns this defvar-local; the bare runtime leaves it
     // unbound rather than fabricating a Lisp-owned value cell.
-    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     assert_eq!(
-        eval_str_with(
-            &mut interp,
+        eval_str_with_upstream_batch(
             "(and (boundp 'mode-line-buffer-identification) (listp mode-line-buffer-identification))"
         ),
         Value::T
@@ -2090,8 +2088,7 @@ fn loaded_js_library_owns_the_complete_mode_policy() {
 #[test]
 fn indent_line_to_leaves_point_and_return_value_at_gnu_boundaries() {
     assert_eq!(
-        eval_str_with_upstream_batch_feature(
-            "indent",
+        eval_str_with_upstream_batch(
             r#"
                 (list
                  (with-temp-buffer
@@ -4744,7 +4741,7 @@ fn align_c_function_declaration_matches_resource_output() {
     run_with_large_stack(|| {
         let emacs_repo = upstream_emacs_repo();
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
-        let mut interp = Interpreter::new();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         interp.set_load_path(load_path);
         interp.set_variable("noninteractive", Value::T, &mut Vec::new());
         interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
@@ -4775,7 +4772,7 @@ fn align_c_variable_declaration_rule_is_runnable_and_valid() {
     run_with_large_stack(|| {
         let emacs_repo = upstream_emacs_repo();
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
-        let mut interp = Interpreter::new();
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         interp.set_load_path(load_path);
         interp.set_variable("noninteractive", Value::T, &mut Vec::new());
         interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
@@ -5122,8 +5119,10 @@ fn cl_letf_can_temporarily_override_native_read_event() {
 #[test]
 fn map_y_or_n_p_honors_a_temporarily_overridden_read_event() {
     assert_eq!(
+        // GNU's map-ynp.el carries no `provide', so (require 'map-ynp)
+        // signals there too; the dumped image simply has the file loaded.
         eval_str_with_upstream_batch_features(
-            &["map-ynp", "cl-macs"],
+            &["cl-macs"],
             r#"
                 (let ((use-dialog-box nil)
                       (reads 0))
@@ -7296,7 +7295,7 @@ fn upstream_script_modes_own_their_derived_mode_contracts() {
 
 #[test]
 fn treesit_language_available_defaults_to_nil() {
-    assert_eq!(eval_str("(treesit-language-available-p 'json)"), Value::Nil);
+    assert_eq!(eval_str_with_upstream_batch("(treesit-language-available-p 'json)"), Value::Nil);
 }
 
 #[test]

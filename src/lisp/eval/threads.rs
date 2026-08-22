@@ -1599,30 +1599,71 @@ impl Interpreter {
             self.connection_send(record_id, input)?;
             return Ok((Vec::new(), Vec::new()));
         }
-        let process = self
-            .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
-        let Some(runtime) = process.runtime.as_mut() else {
-            return Ok((input.to_vec(), Vec::new()));
-        };
-        let stdin: &mut dyn Write = if let Some(pty) = runtime.pty_input.as_mut() {
-            pty
-        } else if let Some(stdin) = runtime.child.stdin.as_mut() {
-            stdin
-        } else {
-            return Err(LispError::Signal("Process stdin is closed".into()));
-        };
-        stdin
-            .write_all(input)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        stdin
-            .flush()
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+        // GNU's send_process blocks until the pty or pipe accepts the bytes,
+        // accepting pending process output while it waits so a full write
+        // buffer cannot deadlock against an unread child.  A nonblocking fd
+        // therefore retries on EAGAIN instead of surfacing "Resource
+        // temporarily unavailable" to Lisp.
+        let mut pumped_stdout = Vec::new();
+        let mut pumped_stderr = Vec::new();
+        let mut offset = 0usize;
+        while offset < input.len() {
+            let write_result = {
+                let process = self
+                    .find_process_state_mut(record_id)
+                    .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+                let Some(runtime) = process.runtime.as_mut() else {
+                    return Ok((input[offset..].to_vec(), Vec::new()));
+                };
+                let stdin: &mut dyn Write = if let Some(pty) = runtime.pty_input.as_mut() {
+                    pty
+                } else if let Some(stdin) = runtime.child.stdin.as_mut() {
+                    stdin
+                } else {
+                    return Err(LispError::Signal("Process stdin is closed".into()));
+                };
+                stdin.write(&input[offset..])
+            };
+            match write_result {
+                Ok(0) => return Err(LispError::Signal("Process stdin is closed".into())),
+                Ok(written) => offset += written,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    let (out, err) = self.poll_process_output(record_id)?;
+                    pumped_stdout.extend_from_slice(&out);
+                    pumped_stderr.extend_from_slice(&err);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(LispError::Signal(error.to_string())),
+            }
+        }
+        {
+            let process = self
+                .find_process_state_mut(record_id)
+                .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+            if let Some(runtime) = process.runtime.as_mut() {
+                let stdin: Option<&mut dyn Write> = if let Some(pty) = runtime.pty_input.as_mut() {
+                    Some(pty)
+                } else if let Some(stdin) = runtime.child.stdin.as_mut() {
+                    Some(stdin)
+                } else {
+                    None
+                };
+                if let Some(stdin) = stdin
+                    && let Err(error) = stdin.flush()
+                    && !matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    )
+                {
+                    return Err(LispError::Signal(error.to_string()));
+                }
+            }
+        }
         // GNU queues the bytes and returns; filters run when the event loop
-        // later accepts process output.  Waiting here made every send block
-        // for up to 100 ms and hid ordering bugs behind an accidental
-        // synchronous drain.
-        Ok((Vec::new(), Vec::new()))
+        // later accepts process output.  Only output drained while waiting
+        // for a full pipe is handed back for delivery here.
+        Ok((pumped_stdout, pumped_stderr))
     }
 
     pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
@@ -2254,26 +2295,11 @@ impl Interpreter {
         let Some(thread) = self.find_thread_state(record_id) else {
             return Vec::new();
         };
-        match (&thread.program, &thread.status) {
-            (
-                ThreadProgram::ThreadListMutexWait { .. },
-                ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id)),
-            ) => vec![
-                (
-                    true,
-                    Value::Symbol("mutex-lock".into()),
-                    vec![Value::Record(*mutex_id)],
-                    false,
-                ),
-                (
-                    true,
-                    Value::Symbol("thread-tests--thread-function".into()),
-                    Vec::new(),
-                    false,
-                ),
-            ],
-            _ => Vec::new(),
-        }
+        // GNU thread.c walks the blocked thread's real backtrace.  Emaxx has
+        // no per-thread backtrace capture yet, so report none rather than
+        // synthesising frames.
+        let _ = &thread.status;
+        Vec::new()
     }
 
     pub fn thread_buffer_disposition(&self, record_id: u64) -> Result<Value, LispError> {
@@ -2383,16 +2409,6 @@ impl Interpreter {
                 .unwrap_or(ThreadStatus::Finished);
             match status {
                 ThreadStatus::Runnable => self.step_thread(thread_id, env)?,
-                ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id))
-                    if self.find_thread_state(thread_id).is_some_and(|thread| {
-                        matches!(thread.program, ThreadProgram::ThreadListMutexWait { .. })
-                    }) && self.mutex_is_available(thread_id, mutex_id) =>
-                {
-                    if let Some(thread) = self.find_thread_state_mut(thread_id) {
-                        thread.status = ThreadStatus::Runnable;
-                    }
-                    self.step_thread(thread_id, env)?;
-                }
                 ThreadStatus::Blocked(ThreadBlocker::Sleep) if wake_sleepers => {
                     self.finish_thread_success(thread_id, Value::Nil);
                 }
@@ -2523,9 +2539,6 @@ impl Interpreter {
             ) {
                 continue;
             }
-            if let ThreadProgram::CondvarWaitTwice { phase } = &mut thread.program {
-                *phase = phase.saturating_add(1);
-            }
             thread.status = ThreadStatus::Runnable;
             if !notify_all {
                 break;
@@ -2571,12 +2584,6 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn mutex_is_available(&self, thread_id: u64, mutex_id: u64) -> bool {
-        self.mutex_states
-            .iter()
-            .find(|mutex| mutex.record_id == mutex_id)
-            .is_some_and(|mutex| mutex.owner.is_none() || mutex.owner == Some(thread_id))
-    }
 
     pub(super) fn unlock_mutex(&mut self, thread_id: u64, mutex_id: u64) {
         let Some(mutex) = self.find_mutex_state_mut(mutex_id) else {
@@ -2610,21 +2617,7 @@ impl Interpreter {
         self.last_thread_error = Some(value);
     }
 
-    pub(super) fn thread_buffer_var_value(&self, buffer_id: u64, name: &str) -> Value {
-        self.buffer_local_toplevel_value(buffer_id, name)
-            .or_else(|| self.default_toplevel_value(name))
-            .unwrap_or(Value::Nil)
-    }
 
-    pub(super) fn set_env_or_global(&mut self, env: &mut Env, name: &str, value: Value) {
-        for frame in env.iter_mut().rev() {
-            if let Some((_, existing)) = frame.iter_mut().rev().find(|(bound, _)| bound == name) {
-                *existing = Self::stored_value(value);
-                return;
-            }
-        }
-        self.set_global_binding(name, value);
-    }
 
     pub(super) fn deliver_signal_to_main_thread(
         &mut self,
@@ -2670,77 +2663,11 @@ impl Interpreter {
                     }
                 }
             }
-            ThreadProgram::SetGlobal { name, value } => {
-                self.set_global_binding(&name, value.clone());
-                self.finish_thread_success(record_id, value);
-                Ok(())
-            }
             ThreadProgram::Sleep { blocked } => {
                 if !blocked && let Some(thread) = self.find_thread_state_mut(record_id) {
                     thread.program = ThreadProgram::Sleep { blocked: true };
                     thread.status = ThreadStatus::Blocked(ThreadBlocker::Sleep);
                 }
-                Ok(())
-            }
-            ThreadProgram::YieldThenSetGlobal {
-                target,
-                value,
-                phase,
-            } => {
-                if phase == 0 {
-                    if let Some(thread) = self.find_thread_state_mut(record_id) {
-                        thread.program = ThreadProgram::YieldThenSetGlobal {
-                            target,
-                            value,
-                            phase: 1,
-                        };
-                    }
-                } else {
-                    self.set_global_binding(&target, value.clone());
-                    self.finish_thread_success(record_id, value);
-                }
-                Ok(())
-            }
-            ThreadProgram::MutexContention { phase } => {
-                let mutex_value = self
-                    .default_toplevel_value("threads-mutex")
-                    .unwrap_or(Value::Nil);
-                let mutex_id = self.resolve_mutex_id(&mutex_value)?;
-                if phase == 0 {
-                    if self.try_lock_mutex(record_id, mutex_id) {
-                        self.set_global_binding("threads-mutex-key", Value::Integer(23));
-                        if let Some(thread) = self.find_thread_state_mut(record_id) {
-                            thread.program = ThreadProgram::MutexContention { phase: 1 };
-                        }
-                    }
-                } else if !self
-                    .default_toplevel_value("threads-mutex-key")
-                    .unwrap_or(Value::Nil)
-                    .is_truthy()
-                {
-                    self.unlock_mutex(record_id, mutex_id);
-                    self.finish_thread_success(record_id, Value::Nil);
-                }
-                Ok(())
-            }
-            ThreadProgram::MutexBlock { phase } => {
-                if phase == 0 {
-                    self.set_global_binding("threads-mutex-key", Value::Integer(23));
-                    let mutex_value = self
-                        .default_toplevel_value("threads-mutex")
-                        .unwrap_or(Value::Nil);
-                    let mutex_id = self.resolve_mutex_id(&mutex_value)?;
-                    if self.try_lock_mutex(record_id, mutex_id) {
-                        self.finish_thread_success(record_id, Value::Nil);
-                    } else if let Some(thread) = self.find_thread_state_mut(record_id) {
-                        thread.program = ThreadProgram::MutexBlock { phase: 1 };
-                        thread.status = ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id));
-                    }
-                }
-                Ok(())
-            }
-            ThreadProgram::SignalError { value } => {
-                self.finish_thread_with_signal(record_id, value);
                 Ok(())
             }
             ThreadProgram::InfiniteYield => Ok(()),
@@ -2754,56 +2681,6 @@ impl Interpreter {
                 self.finish_thread_success(record_id, Value::Nil);
                 Ok(())
             }
-            ThreadProgram::CondvarWaitTwice { phase } => {
-                let condvar_value = self
-                    .default_toplevel_value("threads-condvar")
-                    .unwrap_or(Value::Nil);
-                let condvar_id = self.resolve_condition_variable_id(&condvar_value)?;
-                match phase {
-                    0 => {
-                        if let Some(thread) = self.find_thread_state_mut(record_id) {
-                            thread.status =
-                                ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(condvar_id));
-                        }
-                    }
-                    1 => {
-                        if let Some(thread) = self.find_thread_state_mut(record_id) {
-                            thread.program = ThreadProgram::CondvarWaitTwice { phase: 2 };
-                            thread.status =
-                                ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(condvar_id));
-                        }
-                    }
-                    _ => self.finish_thread_success(record_id, Value::Nil),
-                }
-                Ok(())
-            }
-            ThreadProgram::CaptureBufferLocal { target, source } => {
-                let buffer_id = self
-                    .find_thread_state(record_id)
-                    .map(|thread| thread.buffer_id)
-                    .unwrap_or(self.current_buffer_id);
-                let value = self.thread_buffer_var_value(buffer_id, &source);
-                self.set_env_or_global(env, &target, value.clone());
-                self.finish_thread_success(record_id, value);
-                Ok(())
-            }
-            ThreadProgram::ThreadListMutexWait { phase } => {
-                let mutex_value = self
-                    .default_toplevel_value("thread-tests-mutex")
-                    .unwrap_or(Value::Nil);
-                let mutex_id = self.resolve_mutex_id(&mutex_value)?;
-                if phase == 0 {
-                    self.set_global_binding("thread-tests-flag", Value::T);
-                }
-                if self.try_lock_mutex(record_id, mutex_id) {
-                    self.unlock_mutex(record_id, mutex_id);
-                    self.finish_thread_success(record_id, Value::Nil);
-                } else if let Some(thread) = self.find_thread_state_mut(record_id) {
-                    thread.program = ThreadProgram::ThreadListMutexWait { phase: 1 };
-                    thread.status = ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id));
-                }
-                Ok(())
-            }
         };
         self.active_thread_id = previous_active;
         result
@@ -2815,9 +2692,7 @@ impl Interpreter {
     ) -> Result<ThreadProgram, LispError> {
         match function {
             Value::Symbol(name) if name == "ignore" => Ok(ThreadProgram::Ignore),
-            Value::Symbol(name) => self
-                .thread_program_from_symbol(name)
-                .or_else(|_| Ok(ThreadProgram::Call(function.clone()))),
+            Value::Symbol(_) => Ok(ThreadProgram::Call(function.clone())),
             Value::BuiltinFunc(name) if name == "ignore" => Ok(ThreadProgram::Ignore),
             Value::BuiltinFunc(_) => Ok(ThreadProgram::Call(function.clone())),
             Value::Lambda(lambda) if lambda.params.is_empty() => self
@@ -2827,40 +2702,15 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn thread_program_from_symbol(
-        &self,
-        name: &str,
-    ) -> Result<ThreadProgram, LispError> {
-        Ok(match name {
-            "threads-test-thread1" | "threads-test-io-switch" => ThreadProgram::SetGlobal {
-                name: "threads-test-global".into(),
-                value: Value::Integer(23),
-            },
-            "threads-thread-sleeps" => ThreadProgram::Sleep { blocked: false },
-            "threads-test-thread2" => ThreadProgram::YieldThenSetGlobal {
-                target: "threads-test-global".into(),
-                value: Value::Integer(23),
-                phase: 0,
-            },
-            "threads-test-mlock" => ThreadProgram::MutexContention { phase: 0 },
-            "threads-test-mlock2" => ThreadProgram::MutexBlock { phase: 0 },
-            "threads-call-error" => ThreadProgram::SignalError {
-                value: Value::list([
-                    Value::Symbol("error".into()),
-                    Value::String("Error is called".into()),
-                ]),
-            },
-            "thread-tests--thread-function" => ThreadProgram::ThreadListMutexWait { phase: 0 },
-            "threads-custom" => ThreadProgram::Noop,
-            "threads-test-condvar-wait" => ThreadProgram::CondvarWaitTwice { phase: 0 },
-            other => {
-                return Err(LispError::Signal(format!(
-                    "Unsupported thread entry point: {other}"
-                )));
-            }
-        })
-    }
-
+    /// Classify a thread body by *shape* for the cooperative scheduler.
+    ///
+    /// Emaxx has no preemptive threads: `ThreadProgram::Call' runs a body to
+    /// completion in one scheduler step, so only the shapes recognised here can
+    /// interleave with the main thread at all.  This must stay shape-generic —
+    /// never keyed to any function or variable name — and an unrecognised body
+    /// falls through to `Call', which is honest about running without
+    /// interleaving.  Genuine cooperative stepping of arbitrary bodies is a
+    /// tracked architectural gap.
     pub(super) fn thread_program_from_lambda(
         &self,
         body: &[Value],
@@ -2870,16 +2720,6 @@ impl Interpreter {
             && matches!(items.first(), Some(Value::Symbol(name)) if name == "sleep-for")
         {
             return Ok(ThreadProgram::Sleep { blocked: false });
-        }
-
-        if body.len() == 1
-            && let Ok(items) = body[0].to_vec()
-            && matches!(items.as_slice(), [Value::Symbol(head), Value::Symbol(name), Value::Symbol(source)] if head == "setq" && name == "seen" && source == "threads-test--var")
-        {
-            return Ok(ThreadProgram::CaptureBufferLocal {
-                target: "seen".into(),
-                source: "threads-test--var".into(),
-            });
         }
 
         if body.len() == 1
