@@ -1038,6 +1038,7 @@ pub(crate) fn proper_list_length(value: &Value) -> Option<usize> {
     match value.to_vec() {
         Ok(items) => Some(items.len()),
         Err(LispError::TypeError(expected, _)) if expected == "list" => None,
+        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "listp" => None,
         Err(LispError::SignalValue(signal)) if circular_list_signal_p(&signal) => None,
         Err(_) => None,
     }
@@ -1088,10 +1089,7 @@ pub(crate) fn remove_equal(
                 .filter(|item| !values_equal(interp, item, elt))
                 .collect::<Vec<_>>(),
         )),
-        _ => Err(LispError::TypeError(
-            "sequence".into(),
-            sequence.type_name(),
-        )),
+        _ => Err(LispError::WrongTypeArgument("sequencep".into(), sequence.clone())),
     }
 }
 

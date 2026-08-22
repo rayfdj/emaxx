@@ -526,7 +526,7 @@ pub(crate) fn nreverse_sequence_value(
     {
         let record = interp
             .find_record_mut(*id)
-            .ok_or_else(|| LispError::TypeError("bool-vector".into(), value.type_name()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()))?;
         record.slots.reverse();
         return Ok(value.clone());
     }

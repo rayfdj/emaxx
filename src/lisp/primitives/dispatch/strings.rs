@@ -917,10 +917,7 @@ define_dispatch!(
             "get-unicode-property-internal" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(table_id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
@@ -934,10 +931,7 @@ define_dispatch!(
             "put-unicode-property-internal" => {
                 need_args(name, args, 3)?;
                 let Value::CharTable(table_id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));

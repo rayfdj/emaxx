@@ -37,7 +37,7 @@ fn current_or_named_buffer(
         None | Some(Value::Nil) => interp.current_buffer_id(),
         Some(buffer @ Value::Buffer(_)) => interp.resolve_buffer_id(buffer)?,
         Some(other) => {
-            return Err(LispError::TypeError("bufferp".into(), other.type_name()));
+            return Err(LispError::WrongTypeArgument("bufferp".into(), other.clone()));
         }
     };
     Ok((buffer_id, interp.root_buffer_id(buffer_id)))
@@ -1054,7 +1054,7 @@ define_dispatch!(
                     .treesit_node_state(&args[0])
                     .map(|node| Value::Record(node.parser_id))
                     .ok_or_else(|| {
-                        LispError::TypeError("treesit-node-p".into(), args[0].type_name())
+                        LispError::WrongTypeArgument("treesit-node-p".into(), args[0].clone())
                     })
             }
             "treesit-node-type" => {
@@ -1208,10 +1208,10 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let left = interp.treesit_node_state(&args[0]).ok_or_else(|| {
-                    LispError::TypeError("treesit-node-p".into(), args[0].type_name())
+                    LispError::WrongTypeArgument("treesit-node-p".into(), args[0].clone())
                 })?;
                 let right = interp.treesit_node_state(&args[1]).ok_or_else(|| {
-                    LispError::TypeError("treesit-node-p".into(), args[1].type_name())
+                    LispError::WrongTypeArgument("treesit-node-p".into(), args[1].clone())
                 })?;
                 Ok(
                     if left.parser_id == right.parser_id
@@ -1414,10 +1414,7 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 4)?;
                 let process = args.get(2).filter(|function| !function.is_nil());
                 if process.is_some_and(|function| !functionp(interp, function, env)) {
-                    return Err(LispError::TypeError(
-                        "functionp".into(),
-                        args[2].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("functionp".into(), args[2].clone()));
                 }
                 let depth = args
                     .get(3)

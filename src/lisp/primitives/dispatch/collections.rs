@@ -769,10 +769,7 @@ define_dispatch!(
             "char-table-subtype" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 Ok(interp
                     .char_table_subtype(id)
@@ -784,10 +781,7 @@ define_dispatch!(
             "char-table-parent" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 Ok(interp
                     .char_table_parent(id)
@@ -803,16 +797,13 @@ define_dispatch!(
             "set-char-table-parent" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 let parent = match &args[1] {
                     Value::Nil => None,
                     Value::CharTable(parent_id) => Some(*parent_id),
                     other => {
-                        return Err(LispError::TypeError("char-table".into(), other.type_name()));
+                        return Err(LispError::WrongTypeArgument("char-table-p".into(), other.clone()));
                     }
                 };
                 interp.set_char_table_parent(id, parent)?;
@@ -822,10 +813,7 @@ define_dispatch!(
             "char-table-extra-slot" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 let slot = args[1].as_integer()?.max(0) as usize;
                 Ok(interp.char_table_extra_slot(id, slot).unwrap_or(Value::Nil))
@@ -834,10 +822,7 @@ define_dispatch!(
             "set-char-table-extra-slot" => {
                 need_args(name, args, 3)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 let slot = args[1].as_integer()?.max(0) as usize;
                 interp.set_char_table_extra_slot(id, slot, args[2].clone())?;
@@ -847,10 +832,7 @@ define_dispatch!(
             "char-table-range" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 match char_table_range_spec(&args[1])? {
                     None => Ok(interp
@@ -875,10 +857,7 @@ define_dispatch!(
             "set-char-table-range" => {
                 need_args(name, args, 3)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 match char_table_range_spec(&args[1])? {
                     None => interp.char_table_set_default(id, args[2].clone())?,
@@ -891,10 +870,7 @@ define_dispatch!(
             "optimize-char-table" => {
                 need_arg_range(name, args, 1, 2)?;
                 if !matches!(args[0], Value::CharTable(_)) {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 }
                 // Emaxx stores ranges directly instead of allocating GNU's
                 // nested sub-char-tables, so there is no structural compaction
@@ -905,13 +881,10 @@ define_dispatch!(
             "map-char-table" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(id) = args[1] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[1].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[1].clone()));
                 };
                 let effective = interp.char_table_effective_ranges(id).ok_or_else(|| {
-                    LispError::TypeError("char-table".into(), args[1].type_name())
+                    LispError::WrongTypeArgument("char-table-p".into(), args[1].clone())
                 })?;
                 for entry in effective {
                     let key = if entry.start == entry.end {
@@ -940,10 +913,7 @@ define_dispatch!(
             "set-case-table" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 interp.set_current_case_table(id);
                 Ok(args[0].clone())
@@ -952,10 +922,7 @@ define_dispatch!(
             "set-standard-case-table" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 interp.set_standard_case_table(id);
                 Ok(args[0].clone())
@@ -969,7 +936,7 @@ define_dispatch!(
                     Some(Value::CharTable(id)) => *id,
                     Some(Value::Nil) | None => interp.standard_syntax_table_id(),
                     Some(other) => {
-                        return Err(LispError::TypeError("char-table".into(), other.type_name()));
+                        return Err(LispError::WrongTypeArgument("char-table-p".into(), other.clone()));
                     }
                 };
                 if interp.char_table_purpose(source) != Some("syntax-table") {
@@ -991,10 +958,7 @@ define_dispatch!(
             "set-syntax-table" => {
                 need_args(name, args, 1)?;
                 let Value::CharTable(id) = args[0] else {
-                    return Err(LispError::TypeError(
-                        "char-table".into(),
-                        args[0].type_name(),
-                    ));
+                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
                 };
                 interp.set_current_syntax_table(id);
                 Ok(args[0].clone())
@@ -1028,7 +992,7 @@ define_dispatch!(
                 let table_id = match args.get(2) {
                     Some(Value::CharTable(id)) => *id,
                     Some(other) => {
-                        return Err(LispError::TypeError("char-table".into(), other.type_name()));
+                        return Err(LispError::WrongTypeArgument("char-table-p".into(), other.clone()));
                     }
                     None => interp.current_syntax_table_id(),
                 };
@@ -1262,10 +1226,7 @@ define_dispatch!(
                 let table_id = match &args[2] {
                     Value::CharTable(id) => *id,
                     _ => {
-                        return Err(LispError::TypeError(
-                            "char-table".into(),
-                            args[2].type_name(),
-                        ));
+                        return Err(LispError::WrongTypeArgument("char-table-p".into(), args[2].clone()));
                     }
                 };
                 if interp.char_table_purpose(table_id) != Some("translation-table") {
@@ -1332,10 +1293,7 @@ define_dispatch!(
                                     }
                                     Value::Nil => return Ok(head),
                                     value => {
-                                        return Err(LispError::TypeError(
-                                            "list".into(),
-                                            value.type_name(),
-                                        ));
+                                        return Err(LispError::WrongTypeArgument("listp".into(), value.clone()));
                                     }
                                 }
                             }

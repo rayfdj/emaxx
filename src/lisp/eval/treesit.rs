@@ -484,7 +484,7 @@ impl Interpreter {
     pub(crate) fn treesit_node_outdated(&self, value: &Value) -> Result<bool, LispError> {
         let node = self
             .treesit_node_state(value)
-            .ok_or_else(|| LispError::TypeError("treesit-node-p".into(), value.type_name()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), value.clone()))?;
         let parser = self
             .treesit_parsers
             .iter()
@@ -496,7 +496,7 @@ impl Interpreter {
     pub(crate) fn treesit_node_live(&self, value: &Value) -> Result<bool, LispError> {
         let node = self
             .treesit_node_state(value)
-            .ok_or_else(|| LispError::TypeError("treesit-node-p".into(), value.type_name()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), value.clone()))?;
         let parser = self
             .treesit_parsers
             .iter()
@@ -513,7 +513,7 @@ impl Interpreter {
         let node = self
             .treesit_node_state(value)
             .cloned()
-            .ok_or_else(|| LispError::TypeError("treesit-node-p".into(), value.type_name()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), value.clone()))?;
         let parser = self
             .treesit_parsers
             .iter()
@@ -548,7 +548,7 @@ impl Interpreter {
         let state = self
             .treesit_node_state(source)
             .cloned()
-            .ok_or_else(|| LispError::TypeError("treesit-node-p".into(), source.type_name()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("treesit-node-p".into(), source.clone()))?;
         Ok(self.create_treesit_node(state.parser_id, node_id, state.generation))
     }
 
