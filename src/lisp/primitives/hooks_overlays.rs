@@ -280,10 +280,13 @@ pub(crate) fn call_named_function(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    match interp.lookup_function(name, env) {
-        Ok(function) => interp.call_function_value(function, Some(name), args, env),
-        Err(_) => Ok(Value::T),
-    }
+    // GNU's call1/call2 do not tolerate a missing function: an unbound name
+    // signals void-function.  The old `Err(_) => Ok(t)' arm here fabricated
+    // success -- most dangerously for `write-region's MUSTBENEW prompt,
+    // where "the asker is missing" became "the user said yes" and Emaxx
+    // overwrote files GNU refuses to touch (finding 64).
+    let function = interp.lookup_function(name, env)?;
+    interp.call_function_value(function, Some(name), args, env)
 }
 
 pub(crate) fn dispatch_file_notification(

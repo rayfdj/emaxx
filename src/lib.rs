@@ -16,7 +16,6 @@ pub mod overlay;
 pub mod perf;
 pub mod tty;
 
-#[cfg(test)]
-mod anti_cheat;
+pub mod anti_cheat;
 #[cfg(test)]
 pub(crate) mod test_support;

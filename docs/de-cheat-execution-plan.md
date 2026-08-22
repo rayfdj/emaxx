@@ -65,7 +65,19 @@ both fixed, final result 145/145 matching across 13 files.
 A ~12-file run to prove the numerator and `.elc` parity hold at scale before
 either is trusted.  Explicitly not a baseline and not an artifact to cite.
 
-## Step 4 — finish the measuring instrument
+## Round A — second-audit response  [DONE 2026-08-21]
+
+Findings 64-68: call_named_function's fabricated success (and the
+write-region MUSTBENEW clobber), the reported-identity knobs and the wrong
+emacs-version, the this-single-command-keys phantom variable, the
+direct-dispatch gate's `super::call' blind spot (four mode-line escapes,
+each re-implemented from its xdisp.c source), the default-stack SIGABRT,
+and the oracle build contract (docs/oracle-build-contract.md).  Also from
+the second audit, folded into step 5's scope: the fabricated-defaults count
+is 100 of 251, and the kbd-macro engine's isearch/prefix/minibuffer
+approximations need verification.
+
+## Step 4 — finish the measuring instrument  [DONE 2026-08-22]
 
 These change what any later number *means*, so they precede measurement.
 
@@ -96,7 +108,7 @@ Ordered by how much each inflates the score.
    *first candidate*); `kqueue-add-watch` that never watches and never fails;
    `set-network-process-option` returning `t` unvalidated; process output never
    decoded with the process coding system.
-2. **The 98 fabricated variable defaults** (finding 9).  79 are read by nothing
+2. **The 100 fabricated variable defaults** (finding 9; recount by the second audit).  Most are read by nothing
    in Emaxx and go outright; 19 are consulted by native code and need
    per-case judgement — the native reader must tolerate the variable being
    void, as GNU does before the owning file loads.  `this-single-command-keys`
