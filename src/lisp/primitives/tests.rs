@@ -10138,8 +10138,9 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
     assert_eq!(
         where_is_internal(
             &mut interp,
-            "keymap-tests-command",
+            &Value::Symbol("keymap-tests-command".into()),
             &[keymap],
+            false,
             false,
             &mut env,
         )
@@ -13625,45 +13626,489 @@ fn tty_event_reader_does_not_preempt_queued_events() {
 }
 
 #[test]
-fn tty_minibuffer_reader_answers_interactive_prompts() {
+fn tty_events_answer_interactive_minibuffer_prompts() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_minibuffer_reader(Some(Box::new(|prompt, initial| {
-        assert_eq!(prompt, "File: ");
-        assert_eq!(initial, "");
-        Some("answer.txt".into())
-    })));
+    // The terminal feeds "answer.txt" then RET into the minibuffer loop.
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "answer.txt\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
     let result = call(
         &mut interp,
         "read-string",
         &[Value::String("File: ".into())],
         &mut env,
     );
-    set_tty_minibuffer_reader(None);
+    set_tty_event_reader(None);
     assert_eq!(
-        result.expect("tty reader answers the prompt"),
+        result.expect("tty events answer the prompt"),
         Value::String("answer.txt".into())
     );
 }
 
 #[test]
-fn tty_minibuffer_reader_quit_signals_gnu_quit() {
+fn tty_minibuffer_edits_complete_and_recall_history() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    set_tty_minibuffer_reader(Some(Box::new(|_, _| None)));
+    interp.set_variable(
+        "minibuffer-history",
+        Value::list([Value::String("older-entry".into())]),
+        &mut env,
+    );
+    // Type "zebraX", delete the X, recall history with M-p, come back
+    // with M-n, then submit the edited fresh input.
+    let keys = "zebraX\u{7f}\u{1b}p\u{1b}n\r";
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            keys.chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[
+            Value::String("Input: ".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol("minibuffer-history".into()),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        result.expect("edited input submits"),
+        Value::String("zebra".into())
+    );
+    // The submission lands at the head of the history variable.
+    let history = interp
+        .lookup_var("minibuffer-history", &env)
+        .expect("history variable");
+    assert_eq!(
+        history,
+        Value::list([
+            Value::String("zebra".into()),
+            Value::String("older-entry".into())
+        ])
+    );
+}
+
+#[test]
+fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable(
+        "minibuffer-history",
+        Value::list([Value::String("recalled".into())]),
+        &mut env,
+    );
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "\u{1b}p\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[
+            Value::String("Input: ".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol("minibuffer-history".into()),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        result.expect("history recall submits"),
+        Value::String("recalled".into())
+    );
+}
+
+#[test]
+fn tty_minibuffer_quit_signals_gnu_quit() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    // The frontend's reader answers None for C-g; the loop signals quit.
+    set_tty_event_reader(Some(Box::new(|| None)));
     let result = call(
         &mut interp,
         "read-string",
         &[Value::String("File: ".into())],
         &mut env,
     );
-    set_tty_minibuffer_reader(None);
+    set_tty_event_reader(None);
     let Err(LispError::SignalValue(data)) = result else {
-        panic!("C-g from the minibuffer reader must signal, got {result:?}");
+        panic!("C-g from the minibuffer loop must signal, got {result:?}");
     };
     assert_eq!(data, Value::Symbol("quit".into()));
+}
+
+#[test]
+fn tty_completing_read_completes_with_tab() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "forw\t\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "completing-read",
+        &[
+            Value::String("Command: ".into()),
+            Value::list([
+                Value::String("forward-char".into()),
+                Value::String("backward-char".into()),
+            ]),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        result.expect("TAB completes the unique prefix"),
+        Value::String("forward-char".into())
+    );
+}
+
+/// A batch interpreter with the upstream Lisp tree on the load path and
+/// minibuffer.el preloaded — the interactive session's shape, minus the
+/// terminal.
+fn upstream_interactive_interpreter() -> (Interpreter, Env) {
+    let root = crate::compat::project_root().join("../emacs");
+    let load_path = crate::compat::emaxx_upstream_load_path(&root).expect("upstream load path");
+    let options = crate::batch::BatchRunOptions {
+        load_path,
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp
+        .load_target("minibuffer")
+        .expect("minibuffer.el loads");
+    (interp, env)
+}
+
+#[test]
+fn tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands() {
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "alp\t\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "completing-read",
+        &[
+            Value::String("Word: ".into()),
+            Value::list([
+                Value::String("alphabet".into()),
+                Value::String("alphameric".into()),
+            ]),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    // TAB ran minibuffer.el's `minibuffer-complete' (the common prefix of
+    // the two candidates), and RET exited through `exit-minibuffer's
+    // throw — the keymap-dispatched command is what last-command records.
+    assert_eq!(
+        result.expect("the real minibuffer loop submits"),
+        Value::String("alpha".into())
+    );
+    assert_eq!(
+        interp.lookup_var("last-command", &env),
+        Some(Value::Symbol("exit-minibuffer".into())),
+        "RET must dispatch minibuffer.el's exit-minibuffer"
+    );
+}
+
+#[test]
+fn minibuffer_prompt_carries_its_face_through_the_read() {
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "x\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    // Observe the live minibuffer from the frame-redraw hook, exactly
+    // where the frontend composes the echo row.
+    let observed: std::rc::Rc<std::cell::RefCell<Vec<(Value, Value)>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&observed);
+    set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
+        let active = interp
+            .active_minibuffer_buffer_id()
+            .and_then(|id| interp.buffer_identity_value(id))
+            .unwrap_or(Value::Nil);
+        let face = interp
+            .buffer
+            .text_property_at(interp.buffer.point_min(), "face")
+            .unwrap_or(Value::Nil);
+        sink.borrow_mut().push((active, face));
+    })));
+    let result = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[Value::String("P: ".into())],
+        &mut env,
+    );
+    set_tty_frame_redraw(None);
+    set_tty_event_reader(None);
+    assert_eq!(result.expect("read submits"), Value::String("x".into()));
+    let observed = observed.borrow();
+    assert!(!observed.is_empty(), "the redraw hook runs during the read");
+    let (active, face) = &observed[0];
+    assert!(
+        matches!(active, Value::Buffer(_)),
+        "the native minibuffer runtime holds the live buffer, got {active:?}"
+    );
+    assert_eq!(
+        face,
+        &Value::Symbol("minibuffer-prompt".into()),
+        "the prompt text carries minibuffer-prompt via minibuffer-prompt-properties"
+    );
+}
+
+#[test]
+fn tty_real_minibuffer_history_recalls_through_simple_el() {
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    let feed_events = |events: &str| {
+        let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(
+                events
+                    .chars()
+                    .rev()
+                    .map(|ch| Value::Integer(ch as i64))
+                    .collect(),
+            ));
+        let feed = std::rc::Rc::clone(&script);
+        set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    };
+    let history = Value::Symbol("emaxx--test-history".into());
+    feed_events("first\r");
+    let first = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[
+            Value::String("P: ".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            history.clone(),
+        ],
+        &mut env,
+    );
+    assert_eq!(
+        first.expect("first read submits"),
+        Value::String("first".into())
+    );
+    // M-p arrives as ESC p and must dispatch simple.el's
+    // previous-history-element against the recorded history.
+    feed_events("\u{1b}p\r");
+    let recalled = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[
+            Value::String("P: ".into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            history,
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        recalled.expect("history recall submits"),
+        Value::String("first".into())
+    );
+}
+
+#[test]
+fn window_resize_apply_commits_staged_pixel_sizes() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let upper = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
+    call(
+        &mut interp,
+        "split-window-internal",
+        &[
+            upper.clone(),
+            Value::Integer(12),
+            Value::Nil,
+            Value::Float(0.5),
+        ],
+        &mut env,
+    )
+    .expect("split succeeds");
+    let windows = call(&mut interp, "window-list", &[], &mut env)
+        .expect("window list")
+        .to_vec()
+        .expect("list of windows");
+    let lower = windows[1].clone();
+    for (window, staged) in [(&upper, 16i64), (&lower, 8i64)] {
+        call(
+            &mut interp,
+            "set-window-new-pixel",
+            &[(*window).clone(), Value::Integer(staged)],
+            &mut env,
+        )
+        .expect("staging succeeds");
+    }
+    call(&mut interp, "window-resize-apply", &[], &mut env).expect("apply succeeds");
+    let edges = |interp: &mut Interpreter, env: &mut Env, window: &Value| {
+        window_edges_from_natives(interp, env, std::slice::from_ref(window))
+    };
+    assert_eq!(
+        edges(&mut interp, &mut env, &upper),
+        vec![0, 0, 80, 16],
+        "the upper window takes its staged 16 lines"
+    );
+    assert_eq!(
+        edges(&mut interp, &mut env, &lower),
+        vec![0, 16, 80, 24],
+        "the lower window is laid out below the applied upper size"
+    );
+}
+
+#[test]
+fn window_text_pixel_size_measures_the_window_buffer_with_mode_lines() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.buffer.insert("aa\nbbbb\nc\n");
+    let plain = call(&mut interp, "window-text-pixel-size", &[], &mut env).expect("size");
+    assert_eq!(
+        plain,
+        Value::cons(Value::Integer(4), Value::Integer(3)),
+        "widest line and line count in cell units"
+    );
+    let with_mode_line = call(
+        &mut interp,
+        "window-text-pixel-size",
+        &[
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+        ],
+        &mut env,
+    )
+    .expect("size with mode lines");
+    assert_eq!(
+        with_mode_line,
+        Value::cons(Value::Integer(4), Value::Integer(4)),
+        "MODE-LINES t adds the window's mode line — fit-window-to-buffer sizes from this"
+    );
+}
+
+#[test]
+fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    // `switch-to-buffer' is GNU window.el's; the undo protocol under
+    // test only needs the buffer to become current.
+    let undo_buffer = call(
+        &mut interp,
+        "get-buffer-create",
+        &[Value::String("undo-markers".into())],
+        &mut env,
+    )
+    .expect("buffer creates");
+    call(&mut interp, "set-buffer", &[undo_buffer], &mut env).expect("buffer switches");
+    call(&mut interp, "buffer-enable-undo", &[], &mut env).expect("undo enables");
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String("one\ntwo\n".into())],
+        &mut env,
+    )
+    .expect("insert succeeds");
+    call(
+        &mut interp,
+        "set-buffer-modified-p",
+        &[Value::Nil],
+        &mut env,
+    )
+    .expect("modified clears");
+    let marker = call(&mut interp, "make-marker", &[], &mut env).expect("marker");
+    call(
+        &mut interp,
+        "set-marker",
+        &[marker.clone(), Value::Integer(4)],
+        &mut env,
+    )
+    .expect("marker set");
+    call(&mut interp, "undo-boundary", &[], &mut env).expect("boundary");
+    call(
+        &mut interp,
+        "delete-region",
+        &[Value::Integer(1), Value::Integer(4)],
+        &mut env,
+    )
+    .expect("delete succeeds");
+    let undo_list = interp
+        .lookup_var("buffer-undo-list", &env)
+        .expect("undo list")
+        .to_vec()
+        .expect("list entries");
+    // undo.c's order: the deletion record first, its marker adjustment
+    // directly after, the first-change (t . TIME) entry below both —
+    // primitive-undo consumes marker riders only by that adjacency.
+    let deletion = undo_list[0].cons_values().expect("deletion entry");
+    assert!(deletion.0.is_string(), "car is the deleted text");
+    let rider = undo_list[1].cons_values().expect("marker rider");
+    assert!(
+        matches!(rider.0, Value::Marker(_)),
+        "the marker adjustment follows its deletion, got {:?}",
+        undo_list[1]
+    );
+    assert_eq!(rider.1, Value::Integer(-3));
+    let first_change = undo_list[2].cons_values().expect("first-change entry");
+    assert_eq!(first_change.0, Value::T, "the (t . TIME) entry sits below");
 }
 
 #[test]
@@ -14232,6 +14677,501 @@ fn error_message_strings_match_the_oracle() {
     let answer = "Quit|Beginning of buffer|boom|Wrong type argument: listp, t|No further undo information|Opening input file: No such file, /tmp/x";
     assert_upstream_primitive_contract(program, answer);
     assert_eq!(emaxx_batch_output(program), answer);
+}
+
+fn window_edges_from_natives(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window: &[Value],
+) -> Vec<i64> {
+    // GNU's `window-edges' is window.el Lisp over these window.c
+    // primitives; compose the same (LEFT TOP RIGHT BOTTOM) answer here.
+    let field = |interp: &mut Interpreter, env: &mut Env, name: &str| {
+        call(interp, name, window, env)
+            .expect(name)
+            .as_integer()
+            .expect("integer geometry")
+    };
+    let left = field(interp, env, "window-left-column");
+    let top = field(interp, env, "window-top-line");
+    let width = field(interp, env, "window-total-width");
+    let height = field(interp, env, "window-total-height");
+    vec![left, top, left + width, top + height]
+}
+
+#[test]
+fn tty_frame_size_shapes_the_root_and_minibuffer_windows() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_tty_frame_size(80, 24);
+    let root_edges = window_edges_from_natives(&mut interp, &mut env, &[]);
+    assert_eq!(
+        root_edges,
+        vec![0, 1, 80, 23],
+        "a 24-row tty reserves the menu-bar line above 22 root lines"
+    );
+    let minibuffer = call(&mut interp, "minibuffer-window", &[], &mut env).expect("window");
+    let minibuffer_edges =
+        window_edges_from_natives(&mut interp, &mut env, std::slice::from_ref(&minibuffer));
+    assert_eq!(minibuffer_edges, vec![0, 23, 80, 24]);
+}
+
+#[test]
+fn window_render_layout_reports_split_geometry_in_tree_order() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\ngamma\n");
+    let upper = interp.selected_window_value();
+    // C-x 2's shape on the 24-row tty: under the menu-bar line the
+    // 22-line root splits 11/11.
+    let lower = call(
+        &mut interp,
+        "split-window-internal",
+        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &mut env,
+    )
+    .expect("split-window-internal");
+    let Value::Record(lower_id) = lower else {
+        panic!("split answers the new window record");
+    };
+
+    let layout = crate::lisp::primitives::window_render_layout(&interp);
+    assert_eq!(layout.len(), 2, "two live leaves after one split");
+    let (top, bottom) = (&layout[0], &layout[1]);
+    assert_eq!(
+        (top.left, top.top, top.width, top.height),
+        (0, 1, 80, 11),
+        "the old window keeps the upper 11 lines"
+    );
+    assert!(top.selected, "the split leaves the old window selected");
+    assert_eq!(
+        (bottom.left, bottom.top, bottom.width, bottom.height),
+        (0, 12, 80, 11)
+    );
+    assert_eq!(bottom.window_id, lower_id);
+    assert!(!bottom.selected);
+    assert_eq!(
+        top.buffer_id, bottom.buffer_id,
+        "both windows show the split buffer"
+    );
+    assert_eq!(bottom.start, 1);
+    assert_eq!(bottom.point, 1);
+}
+
+#[test]
+fn window_cycling_follows_tree_order_from_the_selected_window() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\n");
+    let upper_left = interp.selected_window_value();
+    // C-x 2 then C-x 3: the bottom window exists before the upper-right
+    // one, so creation order and tree order disagree.
+    let bottom = call(
+        &mut interp,
+        "split-window-internal",
+        &[
+            upper_left.clone(),
+            Value::Integer(11),
+            Value::Nil,
+            Value::Float(0.5),
+        ],
+        &mut env,
+    )
+    .expect("split below");
+    let upper_right = call(
+        &mut interp,
+        "split-window-internal",
+        &[
+            upper_left.clone(),
+            Value::Integer(40),
+            Value::T,
+            Value::Float(0.5),
+        ],
+        &mut env,
+    )
+    .expect("split right");
+
+    let next = call(&mut interp, "next-window", &[], &mut env).expect("next-window");
+    assert_eq!(
+        next, upper_right,
+        "next-window walks the tree: upper-left, upper-right, bottom"
+    );
+    let previous = call(&mut interp, "previous-window", &[], &mut env).expect("previous-window");
+    assert_eq!(previous, bottom, "previous-window wraps to the last leaf");
+
+    let listed = call(&mut interp, "window-list", &[], &mut env).expect("window-list");
+    assert_eq!(
+        format!("{listed}"),
+        format!("({upper_left} {upper_right} {bottom})"),
+        "window-list starts at the selected window and follows tree order"
+    );
+
+    call(
+        &mut interp,
+        "select-window",
+        std::slice::from_ref(&upper_right),
+        &mut env,
+    )
+    .expect("select");
+    let listed = call(&mut interp, "window-list", &[], &mut env).expect("window-list");
+    assert_eq!(
+        format!("{listed}"),
+        format!("({upper_right} {bottom} {upper_left})"),
+        "the cyclic order rotates to keep the selected window first"
+    );
+}
+
+#[test]
+fn window_mode_lines_render_in_each_windows_own_context() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\ngamma\ndelta\n");
+    let upper = interp.selected_window_value();
+    let lower = call(
+        &mut interp,
+        "split-window-internal",
+        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &mut env,
+    )
+    .expect("split");
+    let Value::Record(lower_id) = lower.clone() else {
+        panic!("window record");
+    };
+    // The lower window shows a different buffer with its own point.
+    let other = call(
+        &mut interp,
+        "get-buffer-create",
+        &[Value::String("other.txt".into())],
+        &mut env,
+    )
+    .expect("buffer");
+    call(
+        &mut interp,
+        "set-window-buffer",
+        &[lower.clone(), other],
+        &mut env,
+    )
+    .expect("set-window-buffer");
+    {
+        let saved = interp.current_buffer_id();
+        let other = call(
+            &mut interp,
+            "get-buffer",
+            &[Value::String("other.txt".into())],
+            &mut env,
+        )
+        .expect("get-buffer");
+        call(&mut interp, "set-buffer", &[other], &mut env).expect("set-buffer");
+        interp.buffer.insert("one\ntwo\nthree\n");
+        let _ = interp.set_current_buffer_id(saved);
+    }
+    call(
+        &mut interp,
+        "set-window-point",
+        &[lower.clone(), Value::Integer(9)],
+        &mut env,
+    )
+    .expect("set-window-point");
+    // A spec exercising the per-window pieces: buffer name, the window's
+    // line number, and the dedication mark.  mode-line-format is
+    // buffer-local when set, so shape the default every buffer inherits.
+    let spec = Reader::new(
+        "(set-default 'mode-line-format
+           (list \"%b L%l\"
+                 '(:eval (cond ((eq (window-dedicated-p) t) \"D\")
+                               ((window-dedicated-p) \"d\")
+                               (t \"\")))))",
+    )
+    .read()
+    .expect("spec parses")
+    .expect("a form is present");
+    interp.eval(&spec, &mut env).expect("spec installs");
+
+    let selected_before = interp.selected_window_id();
+    let buffer_before = interp.current_buffer_id();
+    let point_before = interp.buffer.point();
+    let metrics = crate::lisp::primitives::InteractiveWindowMetrics {
+        text_height: 10,
+        window_end: 14,
+    };
+    let (mode_line, _) = crate::lisp::primitives::render_window_mode_line(
+        &mut interp,
+        &mut env,
+        lower_id,
+        9,
+        metrics,
+    )
+    .expect("mode line renders");
+    assert!(
+        mode_line.contains("other.txt"),
+        "the window's own buffer names the mode line: {mode_line:?}"
+    );
+    assert!(
+        mode_line.contains("L3"),
+        "L reflects the window's point, not the selected window's: {mode_line:?}"
+    );
+    assert_eq!(
+        interp.selected_window_id(),
+        selected_before,
+        "selection restored"
+    );
+    assert_eq!(
+        interp.current_buffer_id(),
+        buffer_before,
+        "current buffer restored"
+    );
+    assert_eq!(interp.buffer.point(), point_before, "point restored");
+
+    // Dedication marks: display-buffer's weak kind shows `d', strong `D'.
+    call(
+        &mut interp,
+        "set-window-dedicated-p",
+        &[lower.clone(), Value::Symbol("soft".into())],
+        &mut env,
+    )
+    .expect("dedicate softly");
+    let (softly, _) = crate::lisp::primitives::render_window_mode_line(
+        &mut interp,
+        &mut env,
+        lower_id,
+        9,
+        metrics,
+    )
+    .expect("mode line renders");
+    assert!(softly.ends_with('d'), "weak dedication shows d: {softly:?}");
+    call(
+        &mut interp,
+        "set-window-dedicated-p",
+        &[lower, Value::T],
+        &mut env,
+    )
+    .expect("dedicate strongly");
+    let (strongly, _) = crate::lisp::primitives::render_window_mode_line(
+        &mut interp,
+        &mut env,
+        lower_id,
+        9,
+        metrics,
+    )
+    .expect("mode line renders");
+    assert!(
+        strongly.ends_with('D'),
+        "strong dedication shows D: {strongly:?}"
+    );
+}
+
+#[test]
+fn interactive_spec_i_passes_nil_without_reading_anything() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        "(defalias 'emaxx-test-spec-i (function (lambda (a b) (interactive \"i\\np\") (setq emaxx-test-spec-args (list a b)))))",
+    )
+    .read()
+    .expect("defun parses")
+    .expect("a form is present");
+    interp.eval(&form, &mut env).expect("defun evaluates");
+    call(
+        &mut interp,
+        "call-interactively",
+        &[Value::Symbol("emaxx-test-spec-i".into())],
+        &mut env,
+    )
+    .expect("call-interactively");
+    let args = interp
+        .lookup_var("emaxx-test-spec-args", &env)
+        .expect("args recorded");
+    assert_eq!(format!("{args}"), "(nil 1)");
+}
+
+#[test]
+fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
+    // The pop-up is minibuffer.el's own machinery end to end:
+    // minibuffer-complete detects no progress, minibuffer-completion-help
+    // fills *Completions* and displays it through display-buffer, and the
+    // exit teardown's window-configuration restore removes it.
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\n");
+
+    // "am" TAB completes to the common prefix; the second TAB makes no
+    // progress and pops *Completions*; "1" RET submits "ambig1".
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "am\t\t1\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    // The frame-redraw hook runs once per minibuffer iteration; observing
+    // the layout there sees the pop-up while the read is still live.
+    type LayoutSnapshots = Vec<Vec<(String, usize)>>;
+    let observed: std::rc::Rc<std::cell::RefCell<LayoutSnapshots>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&observed);
+    crate::lisp::primitives::set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
+        let snapshot = crate::lisp::primitives::window_render_layout(interp)
+            .into_iter()
+            .map(|info| {
+                let name = if info.buffer_id == interp.current_buffer_id() {
+                    interp.buffer.name.clone()
+                } else {
+                    interp
+                        .get_buffer_by_id(info.buffer_id)
+                        .map(|buffer| buffer.name.clone())
+                        .unwrap_or_default()
+                };
+                (name, info.height)
+            })
+            .collect();
+        sink.borrow_mut().push(snapshot);
+    })));
+    let result = call(
+        &mut interp,
+        "completing-read",
+        &[
+            Value::String("Pick: ".into()),
+            Value::list([
+                Value::String("ambig1".into()),
+                Value::String("ambig2".into()),
+            ]),
+        ],
+        &mut env,
+    );
+    crate::lisp::primitives::set_tty_frame_redraw(None);
+    set_tty_event_reader(None);
+    assert_eq!(
+        result.expect("the minibuffer submits"),
+        Value::String("ambig1".into())
+    );
+
+    let observed = observed.borrow();
+    let popped: Vec<_> = observed
+        .iter()
+        .filter(|snapshot| snapshot.iter().any(|(name, _)| name == "*Completions*"))
+        .collect();
+    assert!(
+        !popped.is_empty(),
+        "the ambiguous TAB shows *Completions* while the read is live: {observed:?}"
+    );
+    let (_, height) = popped[0]
+        .iter()
+        .find(|(name, _)| name == "*Completions*")
+        .expect("completions window in snapshot");
+    // Content: two help lines, a blank, the count line, two candidates —
+    // six lines plus the mode line, GNU's fit-window-to-buffer answer.
+    assert_eq!(*height, 7, "the pop-up fits its candidate list");
+
+    let final_layout = crate::lisp::primitives::window_render_layout(&interp);
+    assert_eq!(
+        final_layout.len(),
+        1,
+        "submitting the minibuffer removes the *Completions* window"
+    );
+    assert_eq!(
+        final_layout[0].height, 22,
+        "the surviving window takes the frame back under the menu bar"
+    );
+
+    // The buffer itself carries GNU 30.2's tty help text and shape.
+    let (completions_id, _) = interp.find_buffer("*Completions*").expect("buffer exists");
+    let saved = interp.current_buffer_id();
+    interp
+        .set_current_buffer_id(completions_id)
+        .expect("switch");
+    let text = interp
+        .buffer
+        .buffer_substring(1, interp.buffer.point_max())
+        .expect("contents");
+    let _ = interp.set_current_buffer_id(saved);
+    // minibuffer.el's completion--insert-strings separates candidates
+    // with newlines; the buffer ends at the last candidate.
+    assert_eq!(
+        text,
+        "Type M-RET on a completion to select it.\n\
+         Type M-<down> or M-<up> to move point between completions.\n\n\
+         2 possible completions:\nambig1\nambig2"
+    );
+}
+
+#[test]
+fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\ngamma\n");
+    interp.buffer.goto_char(7); // line 2
+    let entry_window = interp.selected_window_value();
+
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "ok\r"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let observed: std::rc::Rc<std::cell::RefCell<Vec<(Value, String)>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&observed);
+    crate::lisp::primitives::set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+        let selected = interp.selected_window_value();
+        let shown = call(
+            interp,
+            "window-buffer",
+            std::slice::from_ref(&selected),
+            env,
+        )
+        .ok()
+        .and_then(|buffer| {
+            call(interp, "buffer-name", &[buffer], env)
+                .ok()
+                .map(|name| format!("{name}"))
+        })
+        .unwrap_or_default();
+        sink.borrow_mut().push((selected, shown));
+    })));
+    let result = call(
+        &mut interp,
+        "read-string",
+        &[Value::String("Answer: ".into())],
+        &mut env,
+    );
+    crate::lisp::primitives::set_tty_frame_redraw(None);
+    set_tty_event_reader(None);
+    assert_eq!(result.expect("read"), Value::String("ok".into()));
+
+    let observed = observed.borrow();
+    assert!(!observed.is_empty(), "the read repainted at least once");
+    for (selected, shown) in observed.iter() {
+        assert_ne!(
+            selected, &entry_window,
+            "the read runs in the minibuffer window, not the entry window"
+        );
+        assert!(
+            shown.contains("*Minibuf-1*"),
+            "the minibuffer window shows the minibuffer buffer: {shown}"
+        );
+    }
+    assert_eq!(
+        interp.selected_window_value(),
+        entry_window,
+        "finishing the read restores the entry window"
+    );
+    assert_eq!(
+        interp.buffer.point(),
+        7,
+        "the entry buffer's point survives"
+    );
 }
 
 #[test]

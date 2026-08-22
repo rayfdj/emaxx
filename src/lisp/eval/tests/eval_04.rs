@@ -2417,6 +2417,61 @@ fn call_interactively_records_declared_history_arguments() {
 }
 
 #[test]
+fn call_interactively_reads_region_mark_and_point_codes() {
+    // GNU batch answers: (3 8) for "r" with mark 3 and point 8; the two
+    // check_mark error messages differ between "m" and "r".
+    assert_eq!(
+        eval_str(
+            "(progn
+               (insert \"hello world\")
+               (set-marker (mark-marker) 3)
+               (goto-char 8)
+               (call-interactively (lambda (b e) (interactive \"r\") (list b e))))"
+        ),
+        Value::list([Value::Integer(3), Value::Integer(8)])
+    );
+    assert_eq!(
+        eval_str(
+            "(progn
+               (insert \"abc\")
+               (goto-char 2)
+               (call-interactively (lambda (d) (interactive \"d\") d)))"
+        ),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        eval_str(
+            "(cadr (condition-case e
+                       (call-interactively (lambda (m) (interactive \"m\") m))
+                     (error e)))"
+        ),
+        Value::String("The mark is not set now".into())
+    );
+    assert_eq!(
+        eval_str(
+            "(cadr (condition-case e
+                       (call-interactively (lambda (b e) (interactive \"r\") (list b e)))
+                     (error e)))"
+        ),
+        Value::String("The mark is not set now, so there is no region".into())
+    );
+}
+
+#[test]
+fn call_interactively_star_flag_barfs_on_read_only_buffers() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (setq buffer-read-only t)
+               (car (condition-case e
+                        (call-interactively (lambda (n) (interactive \"*p\") n))
+                      (error e))))"
+        ),
+        Value::Symbol("buffer-read-only".into())
+    );
+}
+
+#[test]
 fn call_interactively_rejects_invalid_control_letters() {
     assert_eq!(
         eval_str_with_upstream_batch_feature(

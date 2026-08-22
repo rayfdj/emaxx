@@ -5421,6 +5421,9 @@ fn deactivate_mark_clears_active_region() {
             r#"(let ((transient-mark-mode t))
                   (with-temp-buffer
                     (insert "abc")
+                    ;; This bare interpreter fixture does not preload GNU
+                    ;; simple.el.  Install the mark through native marker
+                    ;; storage; `deactivate-mark' is the behavior under test.
                     (set-marker (mark-marker) 1 (current-buffer))
                     (setq mark-active t)
                     (goto-char 3)
@@ -6086,6 +6089,99 @@ fn defface_records_nested_default_plists() {
         ),
         Value::list([Value::Symbol("bold".into()), Value::T])
     );
+}
+
+#[test]
+fn tty_face_attrs_resolve_through_the_face_machinery() {
+    // The GNU image supplies defface, faces.el's face-attribute, and
+    // tty-colors.el's real tty-color-translate; the terminal publishes
+    // eight colors exactly as the live frontend does.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    interp.set_tty_display_colors(8);
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (tty-register-default-colors)
+           (defface sample-parent-face '((t :background \"magenta\")) \"doc\")
+           (defface sample-resolved-face
+             '((t :foreground \"cyan\" :weight bold :extend t
+                  :inherit sample-parent-face))
+             \"doc\"))",
+    );
+    let mut env: Env = Vec::new();
+    let attrs = crate::lisp::primitives::resolve_tty_face_attrs(
+        &mut interp,
+        &mut env,
+        &Value::Symbol("sample-resolved-face".into()),
+    );
+    assert_eq!(attrs.foreground, Some(6));
+    assert_eq!(
+        attrs.background,
+        Some(5),
+        "unspecified attributes merge from the :inherit parent"
+    );
+    assert!(attrs.bold && attrs.extend);
+    assert!(!attrs.reverse && !attrs.underline);
+}
+
+#[test]
+fn window_face_spans_layer_text_properties_region_and_overlays() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (insert \"abcdefghij\")
+           (put-text-property 2 4 'face 'bold)
+           (setq transient-mark-mode t)
+           (set-marker (mark-marker) 5)
+           (setq mark-active t)
+           (goto-char 8)
+           (let ((overlay (make-overlay 6 9)))
+             (overlay-put overlay 'face 'isearch)
+             (overlay-put overlay 'priority 1001)))",
+    );
+    let mut env: Env = Vec::new();
+    let buffer_id = interp.current_buffer_id();
+    let spans =
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 11, true);
+    assert_eq!(
+        spans,
+        vec![
+            (2, 4, Value::Symbol("bold".into())),
+            (5, 8, Value::Symbol("region".into())),
+            (6, 9, Value::Symbol("isearch".into())),
+        ],
+        "text properties first, then the active region, overlays above"
+    );
+
+    let without_region =
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 11, false);
+    assert!(
+        without_region
+            .iter()
+            .all(|(_, _, face)| !matches!(face, Value::Symbol(s) if s == "region")),
+        "non-selected windows do not paint the region"
+    );
+}
+
+#[test]
+fn propertized_messages_carry_face_spans_to_the_echo_area() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(message \"%sabc\" (propertize \"I-search: \" 'face 'minibuffer-prompt))",
+    );
+    let (text, spans) = crate::lisp::primitives::echo_area_message_with_spans()
+        .expect("message sets the echo area");
+    assert_eq!(text, "I-search: abc");
+    assert_eq!(
+        spans,
+        vec![(0, 10, Value::Symbol("minibuffer-prompt".into()))],
+        "format keeps the argument's face properties in char offsets"
+    );
+    eval_str_with(&mut interp, "(message \"plain\")");
+    let (_, spans) = crate::lisp::primitives::echo_area_message_with_spans().unwrap();
+    assert!(spans.is_empty(), "plain messages carry no spans");
 }
 
 #[test]
@@ -7219,5 +7315,264 @@ fn dumped_simple_completion_policies_exist_before_minibuffer_display() {
                          (custom-variable-p 'completion-auto-select))))"
         ),
         Value::list([Value::T, Value::Nil, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn evaporating_overlays_die_empty_and_revive_through_move_overlay() {
+    let values = eval_str(
+        "(with-temp-buffer
+           (insert \"alpha\")
+           (let ((ov (make-overlay 3 3)))
+             (overlay-put ov 'before-string \"{\")
+             (list (progn (overlay-put ov 'evaporate t) (overlay-buffer ov))
+                   (progn (move-overlay ov 2 4) (overlay-buffer ov))
+                   (overlay-get ov 'before-string)
+                   (progn (move-overlay ov 3 3) (overlay-buffer ov))
+                   (progn (move-overlay ov 1 2) (goto-char 1)
+                          (insert \"x\")
+                          (list (overlay-start ov) (overlay-end ov))))))",
+    )
+    .to_vec()
+    .unwrap();
+    assert!(
+        values[0].is_nil(),
+        "overlay-put of evaporate on an empty overlay deletes it"
+    );
+    assert!(!values[1].is_nil(), "move-overlay revives it with a span");
+    assert_string_value(values[2].clone(), "{");
+    assert!(values[3].is_nil(), "moving to an empty span deletes again");
+    assert_eq!(
+        values[4],
+        Value::list([Value::Integer(1), Value::Integer(3)]),
+        "a live span survives modification, growing over the insertion"
+    );
+}
+
+#[test]
+fn the_mark_keeps_its_place_across_insertion_at_point() {
+    let values = eval_str(
+        "(with-temp-buffer
+           (insert \"ab\")
+           (goto-char 2)
+           (set-marker (mark-marker) 2)
+           (insert \"XY\")
+           (list (marker-position (mark-marker)) (point)))",
+    )
+    .to_vec()
+    .unwrap();
+    assert_eq!(
+        values[0],
+        Value::Integer(2),
+        "the mark marker has nil insertion type: text inserted at it goes after it"
+    );
+    assert_eq!(values[1], Value::Integer(4));
+}
+
+#[test]
+fn menu_bar_captions_follow_keymap_order_and_final_items() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           ;; C leaves current_global_map nil (keymap.c syms_of_keymap);
+           ;; subr.el installs the real one, so a bare-runtime test must
+           ;; bring its own via the use-global-map primitive.
+           (use-global-map (make-sparse-keymap))
+           (define-key (current-global-map) [menu-bar help-menu] (cons \"Help\" (make-sparse-keymap \"Help\")))
+           (define-key (current-global-map) [menu-bar tools] (cons \"Tools\" (make-sparse-keymap \"Tools\")))
+           (define-key (current-global-map) [menu-bar file]
+             (list 'menu-item \"File\" (make-sparse-keymap \"File\")))
+           (define-key (current-global-map) [menu-bar hidden]
+             (list 'menu-item \"Hidden\" (make-sparse-keymap) :visible nil))
+           (define-key (current-global-map) [menu-bar broken] 'undefined)
+           (setq menu-bar-final-items '(help-menu)))",
+    );
+    let mut env: Env = Vec::new();
+    let captions = crate::lisp::primitives::menu_bar_row_captions(&mut interp, &mut env);
+    assert_eq!(
+        captions,
+        vec!["File".to_string(), "Tools".to_string(), "Help".to_string()],
+        "definition order with final items moved to the end; invisible and undefined dropped"
+    );
+}
+
+#[test]
+fn tty_menu_pane_lays_out_margins_hints_and_submenu_markers() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (use-global-map (make-sparse-keymap))
+           (define-key (current-global-map) \"\\C-t\" 'transpose-chars)
+           (defalias 'demo-noop (function (lambda () (interactive))))
+           (defvar demo-submenu (make-sparse-keymap \"More\"))
+           (defvar demo-menu (make-sparse-keymap \"Demo\"))
+           (define-key demo-menu [more] (list 'menu-item \"More\" demo-submenu))
+           (define-key demo-menu [toggle]
+             '(menu-item \"Marker\" demo-noop :button (:toggle . t)))
+           (define-key demo-menu [sep] '(\"--\"))
+           (define-key demo-menu [swap] '(menu-item \"Swap\" transpose-chars)))",
+    );
+    let mut env: Env = Vec::new();
+    let menu = eval_str_with(&mut interp, "demo-menu");
+    let pane =
+        crate::lisp::primitives::tty_menu_pane_from_keymap(&mut interp, &mut env, &menu, "Demo");
+    let texts: Vec<&str> = pane.items.iter().map(|item| item.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        vec!["    Swap    C-t", "--", "[X] Marker", "    More >"],
+        "a pane with a button gains the four-blank checkbox margin \
+         (separators excepted), submenus carry the \" >\" marker before \
+         the width scan, and key hints sit two blanks past the widest name"
+    );
+    assert_eq!(pane.width, 15, "pane width is the widest laid-out item");
+    assert!(
+        pane.items[1].enabled,
+        "a separator draws in the enabled face; only the menu bar drops it"
+    );
+}
+
+#[test]
+fn menu_bar_menu_at_x_y_maps_columns_to_bar_items() {
+    let mut interp = Interpreter::new();
+    let result = eval_str_with(
+        &mut interp,
+        "(progn
+           (use-global-map (make-sparse-keymap))
+           (define-key (current-global-map) [menu-bar edit]
+             (cons \"Edit\" (make-sparse-keymap \"Edit\")))
+           (define-key (current-global-map) [menu-bar file]
+             (cons \"File\" (make-sparse-keymap \"File\")))
+           (prin1-to-string
+            (list (menu-bar-menu-at-x-y 0 0)
+                  (menu-bar-menu-at-x-y 4 0)
+                  (menu-bar-menu-at-x-y 5 0)
+                  (menu-bar-menu-at-x-y 42 0)
+                  (menu-bar-menu-at-x-y 0 1))))",
+    );
+    assert_string_value(
+        result,
+        "(file file edit nil nil)",
+        // Each caption owns its columns plus the separating blank
+        // (menu.c's menu_bar_menu_at_x_y); anything off the bar row or
+        // past the last caption answers nil.
+    );
+}
+
+#[test]
+fn key_binding_resolves_function_keys_and_menu_entries() {
+    let mut interp = Interpreter::new();
+    let result = eval_str_with(
+        &mut interp,
+        "(progn
+           (use-global-map (make-sparse-keymap))
+           (define-key (current-global-map) [f9] 'ignore)
+           (define-key (current-global-map) [menu-bar demo]
+             (cons \"Demo\" (make-sparse-keymap \"Demo\")))
+           (prin1-to-string
+            (list (key-binding [f9])
+                  (car (key-binding [menu-bar demo])))))",
+    );
+    // A symbolic event must not round-trip through kbd text (a bare
+    // \"f9\" re-reads as the keys f 9), and a (\"Demo\" . KEYMAP) menu
+    // entry resolves through get_keyelt to the keymap itself.
+    assert_string_value(result, "(ignore keymap)");
+}
+
+#[test]
+fn where_is_internal_prefers_ascii_and_rejects_menus_under_firstonly() {
+    let mut interp = Interpreter::new();
+    let result = eval_str_with(
+        &mut interp,
+        "(progn
+           (use-global-map (make-sparse-keymap))
+           (defalias 'demo-where-is-command (function (lambda () (interactive))))
+           (define-key (current-global-map) [f6] 'demo-where-is-command)
+           (define-key (current-global-map) \"\\C-t\" 'demo-where-is-command)
+           (define-key (current-global-map) [menu-bar demo]
+             (cons \"Demo\" (make-sparse-keymap \"Demo\")))
+           (defalias 'demo-menu-only-command (function (lambda () (interactive))))
+           (define-key (current-global-map) [menu-bar demo run]
+             '(menu-item \"Run\" demo-menu-only-command))
+           (prin1-to-string
+            (list (key-description (where-is-internal 'demo-where-is-command nil t))
+                  (where-is-internal 'demo-menu-only-command nil t)
+                  (key-description
+                   (car (where-is-internal
+                         (lookup-key (current-global-map) [menu-bar demo])))))))",
+    );
+    // A character sequence (C-t) beats the symbolic f6 no matter the
+    // definition order; a non-nil FIRSTONLY rejects menu bindings
+    // entirely (keymap.c's nomenus); and a keymap object as DEFINITION
+    // finds the key bound to that very keymap when menus are allowed.
+    assert_string_value(result, "(\"C-t\" nil \"<menu-bar> <demo>\")");
+}
+
+#[test]
+fn lookup_key_converts_lucid_event_lists_but_not_event_conses() {
+    let mut interp = Interpreter::new();
+    let result = eval_str_with(
+        &mut interp,
+        "(progn
+           (use-global-map (make-sparse-keymap))
+           (defalias 'demo-lucid-command (function (lambda () (interactive))))
+           (define-key (current-global-map) [(control ?t)] 'demo-lucid-command)
+           (define-key (current-global-map) [C-down-mouse-3] 'demo-lucid-command)
+           (prin1-to-string
+            (list (lookup-key (current-global-map) \"\\C-t\")
+                  (lookup-key (current-global-map)
+                              (vector
+                               (list 'C-down-mouse-3
+                                     (list nil 'menu-bar (cons 5 0) 0)))))))",
+    );
+    // keymap.c's lookup converts a Lucid list such as (control ?t)
+    // through event-convert-list — its car is a modifier, not an event
+    // head — while a genuine composite event still traverses by its
+    // EVENT_HEAD symbol.
+    assert_string_value(result, "(demo-lucid-command demo-lucid-command)");
+}
+
+#[test]
+fn pending_keystroke_echo_renders_event_heads_with_the_dash() {
+    let mut interp = Interpreter::new();
+    let mut env: Env = Vec::new();
+    let click = Value::list([
+        Value::Symbol("C-down-mouse-3".into()),
+        Value::list([
+            Value::Nil,
+            Value::Symbol("menu-bar".into()),
+            Value::cons(Value::Integer(5), Value::Integer(0)),
+            Value::Integer(0),
+        ]),
+    ]);
+    let (text, spans) =
+        crate::lisp::primitives::pending_keystroke_echo(&mut interp, &mut env, &[click]);
+    // echo_add_key renders a composite event's bare head symbol and
+    // echo_dash appends the dash; without help.el loaded the C-h hint
+    // machinery has no Lisp owner to consult, so no suffix appears.
+    assert_eq!(text, "C-down-mouse-3-");
+    assert!(spans.is_empty());
+}
+
+#[test]
+fn unread_command_events_pop_ahead_of_the_terminal() {
+    let mut interp = Interpreter::new();
+    let mut env: Env = Vec::new();
+    eval_str_with(
+        &mut interp,
+        "(setq unread-command-events (list 97 (cons t 98)))",
+    );
+    let first = crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env);
+    assert_eq!(first, Some(Value::Integer(97)));
+    let second = crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env);
+    assert_eq!(
+        second,
+        Some(Value::Integer(98)),
+        "the (t . EVENT) don't-re-record form unwraps"
+    );
+    assert_eq!(
+        crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env),
+        None
     );
 }

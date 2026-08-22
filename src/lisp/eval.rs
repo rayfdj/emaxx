@@ -2448,6 +2448,17 @@ pub struct Interpreter {
     handler_dispatch_depth: usize,
     suspend_condition_case_count: usize,
     window_margins: Vec<(u64, Option<i64>, Option<i64>)>,
+    /// Live terminal color count published by the tty frontend; batch
+    /// sessions keep GNU's dumb-terminal zero.
+    pub(crate) tty_display_color_cells: i64,
+    pub(crate) tty_terminal_type: Option<String>,
+    /// True once a live tty published its frame size; the layout then
+    /// tracks `menu-bar-lines' changes like GNU's adjust_frame_size.
+    pub(crate) tty_frame_sized: bool,
+    /// Bumped whenever a face definition changes, GNU's face_change
+    /// flag: the frontend invalidates its resolved-attribute cache on a
+    /// new value instead of re-resolving faces every redisplay.
+    pub(crate) face_change_count: u64,
 }
 
 /// One entry in the dynamic handler stack, mirroring GNU's handlerlist.
@@ -3163,6 +3174,10 @@ impl Interpreter {
             handler_dispatch_depth: 0,
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
+            tty_display_color_cells: 0,
+            tty_terminal_type: None,
+            tty_frame_sized: false,
+            face_change_count: 0,
         };
         interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
         // Startup globals are dumped `defvar'/DEFVAR value cells, hence

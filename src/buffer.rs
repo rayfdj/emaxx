@@ -365,6 +365,12 @@ impl Buffer {
         self.multibyte
     }
 
+    /// CHARS_MODIFF analog: bumped only when buffer text changes, so a
+    /// text-derived cache keyed on it can never serve stale content.
+    pub fn chars_modification_count(&self) -> ModCount {
+        self.chars_modiff
+    }
+
     pub fn set_multibyte(&mut self, enabled: bool) {
         self.multibyte = enabled;
     }
@@ -814,6 +820,29 @@ impl Buffer {
         self.text_properties_at_ref(pos).to_vec()
     }
 
+    /// The interval [start, end) around POS over which the text-property
+    /// list is constant: a covering span's own bounds, or the
+    /// property-free gap up to the neighboring spans (syntax.h's
+    /// b_property/e_property discipline for update_syntax_table).
+    pub(crate) fn text_property_interval_around(&self, pos: usize) -> (usize, usize) {
+        let begv = self.point_min();
+        let zv = self.point_max();
+        let spans = &self.text_properties;
+        let insertion = spans.partition_point(|span| span.start <= pos);
+        if let Some(span) = insertion.checked_sub(1).and_then(|index| spans.get(index))
+            && pos < span.end
+        {
+            return (span.start.max(begv), span.end.min(zv));
+        }
+        let start = insertion
+            .checked_sub(1)
+            .and_then(|index| spans.get(index))
+            .map(|span| span.end)
+            .unwrap_or(0);
+        let end = spans.get(insertion).map(|span| span.start).unwrap_or(zv);
+        (start.max(begv), end.min(zv).max(start.max(begv)))
+    }
+
     pub fn add_text_properties(&mut self, start: usize, end: usize, props: &[(String, Value)]) {
         self.modify_text_properties(start, end, |mut current| {
             // GNU replaces existing properties in place and CONSES new
@@ -973,15 +1002,19 @@ impl Buffer {
         // Adjust zv (the buffer grew)
         self.zv += nchars;
 
-        // Adjust mark if it's at or after the insertion point
+        // The mark is a marker with nil insertion type: text inserted at
+        // its position goes after it, so only a mark strictly beyond the
+        // insertion point advances (yank-pop deletes the (mark, point)
+        // stretch a yank at mark left behind).
         if let Some(ref mut m) = self.mark
-            && *m >= self.pt - nchars
+            && *m > self.pt - nchars
         {
             *m += nchars;
         }
 
         // Adjust overlays
         crate::overlay::adjust_for_insert(&mut self.overlays, insert_at, nchars);
+        crate::overlay::evaporate(&mut self.overlays);
 
         self.adjust_text_properties_for_insert(insert_at, nchars);
         self.adjust_extended_chars_for_insert(insert_at, nchars);
@@ -1359,6 +1392,20 @@ impl Buffer {
         let entries = self.undo_list.split_off(start);
         self.invalidate_undo_list_view();
         entries
+    }
+
+    /// Splice ENTRIES immediately below the newest undo record: undo.c
+    /// records marker adjustments before the deletion they ride with, so
+    /// the Lisp list exposes the deletion first and its markers directly
+    /// after — `primitive-undo' consumes them by that adjacency, and a
+    /// first-change `(t . TIME)' entry must not sit between them.
+    pub fn splice_undo_entries_before_last(&mut self, entries: Vec<UndoEntry>) {
+        if entries.is_empty() || self.undo_disabled {
+            return;
+        }
+        let at = self.undo_list.len().saturating_sub(1);
+        self.undo_list.splice(at..at, entries);
+        self.invalidate_undo_list_view();
     }
 
     pub fn attach_markers_to_last_delete(&mut self, markers: Vec<UndoMarker>) {
