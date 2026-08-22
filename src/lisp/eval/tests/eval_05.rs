@@ -881,7 +881,7 @@ fn standard_minibuffer_completion_map_is_bound() {
 
 #[test]
 fn completion_style_defaults_are_bound() {
-    let result = eval_str(
+    let result = eval_str_with_upstream_batch(
         "(list (boundp 'completion-styles)
                (not (null (memq 'basic completion-styles)))
                (not (null (assq 'basic completion-styles-alist))))",
@@ -4366,7 +4366,10 @@ fn defcustom_records_version_and_group_membership() {
                  :group 'sample-custom-parent)
                (list (equal (get 'sample-custom-versioned 'custom-version) \"31.1\")
                      (get 'sample-custom-parent 'custom-group)
-                     custom-versions-load-alist))"
+                     ;; custom-versions-load-alist is void in emacs -Q batch
+                     ;; (probed on both binaries); the old bare reference
+                     ;; pinned the retired fallback's invented nil.
+                     (boundp 'custom-versions-load-alist)))"
         ),
         Value::list([
             Value::T,

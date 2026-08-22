@@ -2567,30 +2567,6 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     Ok(RunnerArtifacts { report, process })
 }
 
-fn remap_load_paths(
-    paths: Vec<PathBuf>,
-    source_repo: &Path,
-    isolated_repo: &Path,
-) -> Result<Vec<PathBuf>, String> {
-    let source_repo = compat::canonicalize_path(source_repo)?;
-    paths
-        .into_iter()
-        .map(|path| match path.strip_prefix(&source_repo) {
-            Ok(relative) => {
-                let isolated = isolated_repo.join(relative);
-                if isolated.is_dir() {
-                    Ok(isolated)
-                } else {
-                    Err(format!(
-                        "isolated load-path directory is missing: {}",
-                        isolated.display()
-                    ))
-                }
-            }
-            Err(_) => Ok(path),
-        })
-        .collect()
-}
 
 fn load_or_synthesize_report(
     result_path: &Path,
@@ -3908,37 +3884,6 @@ mod tests {
         drop(checkout);
         assert!(!checkout_root.exists());
         fs::remove_dir_all(source).unwrap();
-    }
-
-    #[test]
-    fn isolated_runner_preserves_the_oracles_load_path_order() {
-        let source = unique_temp_path("load-path-source-test").unwrap();
-        let isolated = unique_temp_path("load-path-isolated-test").unwrap();
-        fs::create_dir_all(source.join("lisp/emacs-lisp")).unwrap();
-        fs::create_dir_all(isolated.join("lisp/emacs-lisp")).unwrap();
-        let source = source.canonicalize().unwrap();
-        let external = PathBuf::from("/external/load-path");
-
-        assert_eq!(
-            remap_load_paths(
-                vec![
-                    source.join("lisp"),
-                    source.join("lisp/emacs-lisp"),
-                    external.clone()
-                ],
-                &source,
-                &isolated,
-            )
-            .unwrap(),
-            vec![
-                isolated.join("lisp"),
-                isolated.join("lisp/emacs-lisp"),
-                external
-            ]
-        );
-
-        fs::remove_dir_all(source).unwrap();
-        fs::remove_dir_all(isolated).unwrap();
     }
 
     #[test]

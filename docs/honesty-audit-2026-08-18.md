@@ -754,3 +754,74 @@ kbd-macro engine await verification in step 5.
   selector.  The manifest's own rows prove the 7,595 denominator was
   always the pinned default selector's selection (autorevert:
   discovered=16 selected=7); the document now says so.
+
+## Step 5a: input and process fabrications (2026-08-22)
+
+- **Finding 11 fixed** — `yes-or-no-p' answered t whenever no unread event
+  supplied a `y' or `n': silence was consent.  It now implements
+  fns.c:3521 -- `use-short-answers' honored through the function cell,
+  `yes-or-no-prompt' appended, and a real `read-from-minibuffer' loop with
+  GNU's ding/"Please answer yes or no."/sleep-for retry.  Five probe
+  branches (EOF signal, yes, no, retry, short-answers) are byte-identical.
+- **Finding 12 fixed** — the native `completing-read' fallback invented
+  answers: initial input, then DEF, then *the first candidate*, then "".
+  The measured CLI never reached it (minibuffer.el's
+  `completing-read-function' owns the path there, and probes match GNU on
+  EOF/piped/default cases), but the bare runtime returned fabricated
+  values, and two lib tests pinned them -- one asserted the
+  first-candidate invention outright.  The chain is now a real
+  `read-from-minibuffer' call (DEF applies only when a real read submits
+  empty input), and the tests type their input through
+  `unread-command-events'.
+- **Finding 13 sharpened and fixed** — `kqueue-add-watch' accepted any
+  path and returned a live descriptor; kqueue.c signals file-missing
+  first, and now Emaxx does, byte-identical.  The second audit's "watches
+  nothing" was half right: watches DO fire for Emaxx-initiated file
+  operations (seven generation sites; that model is what let
+  autorevert-tests match the oracle 145/145), but kernel-level *external*
+  changes are not observed -- that remains a disclosed architectural
+  divergence, not faked.
+- **Process output decoding fixed** — output bytes went through
+  `String::from_utf8_lossy' unconditionally: the process's decoding
+  coding system was never consulted, invalid UTF-8 became U+FFFD, and
+  `:coding SYMBOL' (process.c's one-system-for-both-directions form) was
+  rejected outright.  Output now decodes with the process's own coding
+  system; `binary' yields GNU's unibyte raw bytes
+  (`(99 97 102 195 169 10) nil` on both binaries), the default path is
+  unchanged and still byte-identical.
+
+## Step 5b: the variable table (2026-08-22)
+
+Finding 9's fabrication surface is dismantled.  `builtin_var_value' held
+251 entries; the audit's classification (verified name-by-name against the
+pinned checkout's DEFVAR_* declarations) split them 152 C-owned / 99
+Lisp-owned (plus nil/t):
+
+- **96 Lisp-owned arms deleted** outright, with their dead support code
+  (the hand-written ls-listing regexp, the version-component parser).  The
+  bare runtime now reports these unbound, exactly like GNU before its Lisp
+  loads; the batch image gets every one honestly from the files that own
+  them.  The remaining Lisp-owned pair (`emacs-lisp-mode-syntax-table' et
+  al.) went with them.
+- **136 statically-valued C-owned names are now real bindings** installed
+  at interpreter construction (finding 37 made general): `defvar' and
+  `defcustom' see them bound, as they see GNU's C state.  A 152-variable
+  mass comparison against the oracle shows zero regressions and zero
+  movement -- the 34 names that differ, differed before, and are the known
+  backlog (charset inventory, coding aliases, environmental timestamps).
+- **16 C-owned names stay computed lookups** because they mirror live C
+  state (buffer-locals, charset/coding registries, load bookkeeping,
+  process-environment); freezing `load-path' at construction, for one,
+  broke image reconstruction outright.
+
+Discovery fallout: 25 tests.  Nineteen pinned deleted fabrications with
+bare-runtime reads; each migrated to the batch image after probing GNU for
+the very expression asserted -- all 17 probed expressions matched
+byte-for-byte, including two new parities the fallback had been hiding
+(`custom-versions-load-alist' is void in GNU batch too; `with-temp-buffer'
+`indent-line-function' is `indent-relative' on both).  One pinned an
+internal char-table id and became behavioral.  Four asserted silent
+success where GNU *prompts*: `save-buffer' on a write-protected file and
+bare `revert-buffer' both ask "(yes or no)" and, in batch, signal
+end-of-file -- probed byte-identical on both binaries now that finding
+11's auto-t is gone.  Those tests now assert the real contract.

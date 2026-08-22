@@ -664,7 +664,10 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
         .buffer
         .set_visited_file_modtime(file_modtime(&path).expect("source modtime"));
 
-    crate::test_support::eval_lisp(&mut interp, &mut env, "(revert-buffer)")
+    // A bare revert-buffer call with no NOCONFIRM asks "(yes or no)" and,
+    // in batch, signals end-of-file at EOF -- probed identical on both
+    // binaries.  NOCONFIRM exercises the same revert machinery silently.
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(revert-buffer nil t)")
         .expect("revert raw buffer");
 
     assert_eq!(interp.buffer.buffer_string(), decode_raw_text_bytes(&bytes));
@@ -693,8 +696,18 @@ fn save_buffer_skips_unmodified_and_unchanged_files() {
     crate::test_support::eval_lisp(&mut interp, &mut env, "(save-buffer)")
         .expect("unmodified save is a no-op");
     interp.buffer.set_modified();
-    crate::test_support::eval_lisp(&mut interp, &mut env, "(save-buffer)")
-        .expect("unchanged text does not need a write");
+    // GNU does not skip the write for a modified buffer whose text happens
+    // to equal the file: it reaches the write path, finds the file
+    // write-protected, asks "try to save anyway? (yes or no)" and -- in
+    // batch -- signals end-of-file at EOF.  Probed identical on both
+    // binaries; the old expectation of silent success pinned the auto-t
+    // prompt fabrication this round removed (finding 11).
+    let error = crate::test_support::eval_lisp(&mut interp, &mut env, "(save-buffer)")
+        .expect_err("write-protected save prompts and, in batch, signals");
+    assert!(
+        format!("{error:?}").contains("end-of-file"),
+        "expected the batch prompt EOF signal, got {error:?}"
+    );
 
     std::fs::set_permissions(&path, original_permissions).expect("restore writable file");
     std::fs::remove_file(path).expect("cleanup unmodified save file");
@@ -763,7 +776,7 @@ fn revert_buffer_honors_buffer_local_revert_function() {
                     (revert-buffer--default ignore-auto noconfirm))
                   (setq sample-revert-called nil)
                   (setq-local revert-buffer-function 'sample-revert-function)
-                  (revert-buffer)
+                  (revert-buffer nil t)
                   sample-revert-called)
                 "#,
         )
@@ -797,7 +810,7 @@ fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
                     (error "wrapper should be dynamically suppressed"))
                   (setq-local revert-buffer-function 'sample-revert-wrapper)
                   (let ((revert-buffer-function nil))
-                    (revert-buffer))
+                    (revert-buffer nil t))
                   (buffer-string))
                 "#,
         )
