@@ -3854,6 +3854,93 @@ impl Interpreter {
         // keyboard.c's dumped translation table default; simple.el reads it
         // during interactive input handling.
         interp.define_special_variable("keyboard-translate-table", Value::Nil);
+        // C-owned DEFVARs (xdisp.c, frame.c, dispnew.c, keyboard.c, undo.c,
+        // callint.c, minibuf.c, alloc.c, emacs.c, terminal.c, term.c,
+        // fringe.c, syntax.c, fns.c) restored as real construction bindings
+        // with their C initialization values: the step-5 reclassification
+        // dropped them as if Lisp-owned, but GNU's C defines every one
+        // before loadup, and preloaded Lisp reads them unconditionally
+        // (simple.el's line-move reads `scroll-conservatively' on every
+        // interactive C-p, which is how the tty battery caught the gap).
+        for (name, value) in [
+            ("blink-cursor-alist", Value::Nil),
+            ("composition-break-at-point", Value::Nil),
+            ("debug-on-event", Value::Symbol("sigusr2".into())),
+            ("display-fill-column-indicator", Value::Nil),
+            ("display-fill-column-indicator-character", Value::Nil),
+            ("display-fill-column-indicator-column", Value::T),
+            ("display-line-numbers", Value::Nil),
+            ("display-line-numbers-current-absolute", Value::T),
+            ("display-line-numbers-major-tick", Value::Integer(0)),
+            ("display-line-numbers-minor-tick", Value::Integer(0)),
+            ("display-line-numbers-widen", Value::Nil),
+            ("display-line-numbers-width", Value::Nil),
+            ("display-raw-bytes-as-hex", Value::Nil),
+            ("focus-follows-mouse", Value::Nil),
+            (
+                "frame-inhibit-implied-resize",
+                Value::list([Value::Symbol("tab-bar-lines".into())]),
+            ),
+            ("frame-resize-pixelwise", Value::Nil),
+            ("garbage-collection-messages", Value::Nil),
+            ("gc-cons-percentage", Value::Float(0.1)),
+            ("highlight-nonselected-windows", Value::Nil),
+            ("hourglass-delay", Value::Integer(1)),
+            (
+                "iconify-child-frame",
+                Value::Symbol("iconify-top-level".into()),
+            ),
+            ("inverse-video", Value::Nil),
+            ("line-number-display-limit", Value::Nil),
+            ("line-number-display-limit-width", Value::Integer(200)),
+            ("make-cursor-line-fully-visible", Value::T),
+            ("make-pointer-invisible", Value::T),
+            ("mark-even-if-inactive", Value::T),
+            ("maximum-scroll-margin", Value::Float(0.25)),
+            ("menu-bar-mode", Value::T),
+            ("menu-prompting", Value::T),
+            ("minibuffer-follows-selected-frame", Value::T),
+            ("mode-line-compact", Value::Nil),
+            ("mouse-autoselect-window", Value::Nil),
+            ("mouse-highlight", Value::T),
+            ("mouse-prefer-closest-glyph", Value::Nil),
+            ("no-redraw-on-reenter", Value::Nil),
+            ("overflow-newline-into-fringe", Value::T),
+            ("overline-margin", Value::Integer(2)),
+            ("read-buffer-completion-ignore-case", Value::Nil),
+            ("record-all-keys", Value::Nil),
+            (
+                "report-emacs-bug-address",
+                Value::String("bug-gnu-emacs@gnu.org".into()),
+            ),
+            ("resize-mini-frames", Value::Nil),
+            ("ring-bell-function", Value::Nil),
+            ("scroll-conservatively", Value::Integer(0)),
+            ("scroll-step", Value::Integer(0)),
+            ("show-trailing-whitespace", Value::Nil),
+            ("tab-bar-position", Value::Nil),
+            ("tool-bar-max-label-size", Value::Integer(14)),
+            ("tool-bar-mode", Value::T),
+            ("tool-bar-style", Value::Nil),
+            ("tooltip-reuse-hidden-frame", Value::Nil),
+            ("translate-upper-case-key-bindings", Value::T),
+            ("underline-minimum-offset", Value::Integer(1)),
+            ("undo-limit", Value::Integer(160000)),
+            ("undo-outer-limit", Value::Integer(24000000)),
+            ("undo-strong-limit", Value::Integer(240000)),
+            ("unibyte-display-via-language-environment", Value::Nil),
+            ("use-system-tooltips", Value::T),
+            ("visible-bell", Value::Nil),
+            ("visible-cursor", Value::T),
+            ("void-text-area-pointer", Value::Symbol("arrow".into())),
+            ("word-wrap-by-category", Value::Nil),
+            ("words-include-escapes", Value::Nil),
+            ("x-underline-at-descent-line", Value::Nil),
+            ("x-use-underline-position-properties", Value::T),
+            ("yes-or-no-prompt", Value::String("(yes or no) ".into())),
+        ] {
+            interp.define_special_variable(name, value);
+        }
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
             ("eol-mnemonic-unix", Value::String(":".into())),
