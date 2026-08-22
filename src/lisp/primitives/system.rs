@@ -1094,21 +1094,7 @@ pub(crate) fn emacs_version_value() -> String {
     "30.2".to_string()
 }
 
-pub(crate) fn emacs_major_version_value() -> i64 {
-    parse_version_components(&emacs_version_value())
-        .unwrap_or_default()
-        .first()
-        .copied()
-        .unwrap_or(0)
-}
 
-pub(crate) fn emacs_minor_version_value() -> i64 {
-    parse_version_components(&emacs_version_value())
-        .unwrap_or_default()
-        .get(1)
-        .copied()
-        .unwrap_or(0)
-}
 
 pub(crate) fn system_configuration() -> String {
     // No env override: a runtime's reported identity is not configurable

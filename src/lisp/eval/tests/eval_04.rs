@@ -1981,7 +1981,7 @@ fn buffer_size_ignores_narrowing_like_emacs() {
 
 #[test]
 fn buffer_auto_revert_by_notification_defaults_to_nil() {
-    assert_eq!(eval_str("buffer-auto-revert-by-notification"), Value::Nil);
+    assert_eq!(eval_str_with_upstream_batch("buffer-auto-revert-by-notification"), Value::Nil);
 }
 
 #[test]
@@ -4151,8 +4151,10 @@ fn indent_line_to_replaces_existing_indentation() {
 
 #[test]
 fn default_indent_line_function_is_indent_relative() {
+    // indent.c's C default survives as the default value in the loaded
+    // image (buffers with a mode override it locally).
     assert_eq!(
-        eval_str("(default-value 'indent-line-function)"),
+        eval_str_with_upstream_batch("(with-temp-buffer indent-line-function)"),
         Value::Symbol("indent-relative".into())
     );
 }

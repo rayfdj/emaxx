@@ -1006,6 +1006,17 @@ define_dispatch!(
             "kqueue-add-watch" => {
                 need_args(name, args, 3)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                // kqueue.c signals file-missing before registering anything;
+                // Emaxx accepted any path and returned a live descriptor
+                // (finding 13's "never fails" half, per the second audit).
+                if std::fs::symlink_metadata(&path).is_err() {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("file-missing"),
+                        Value::String("File does not exist".into()),
+                        Value::String("No such file or directory".into()),
+                        Value::String(string_text(&args[0])?.into()),
+                    ])));
+                }
                 let descriptor =
                     FILE_NOTIFY_DESCRIPTOR_COUNTER.fetch_add(1, AtomicOrdering::Relaxed) as i64;
                 // Watches taken from a remotely visited buffer model Tramp's
