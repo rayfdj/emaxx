@@ -800,6 +800,47 @@ impl Buffer {
             .any(|span| span.props.iter().any(|(name, _)| name == property))
     }
 
+    /// Rewrite every Lisp value stored in this buffer through COPY
+    /// (image-template deep clone; see `Interpreter::deep_clone_image').
+    /// The undo-list view cache holds a materialized Lisp value built from
+    /// template cells, so it is dropped rather than rewritten.
+    pub(crate) fn rewrite_lisp_values(&mut self, copy: &mut impl FnMut(&Value) -> Value) {
+        for span in &mut self.text_properties {
+            for (_, value) in &mut span.props {
+                *value = copy(value);
+            }
+        }
+        fn rewrite_undo_entry(entry: &mut UndoEntry, copy: &mut impl FnMut(&Value) -> Value) {
+            match entry {
+                UndoEntry::Combined { display, entries } => {
+                    *display = copy(display);
+                    for entry in entries {
+                        rewrite_undo_entry(entry, copy);
+                    }
+                }
+                UndoEntry::Opaque(value) => *value = copy(value),
+                UndoEntry::Delete { props, .. } => {
+                    for span in props {
+                        for (_, value) in &mut span.props {
+                            *value = copy(value);
+                        }
+                    }
+                }
+                UndoEntry::Insert { .. } | UndoEntry::Boundary => {}
+            }
+        }
+        for entry in &mut self.undo_list {
+            rewrite_undo_entry(entry, copy);
+        }
+        self.undo_list_view = UndoListViewCache::default();
+        for overlay in &mut self.overlays {
+            for (key, value) in &mut overlay.plist {
+                *key = copy(key);
+                *value = copy(value);
+            }
+        }
+    }
+
     pub fn text_property_at(&self, pos: usize, prop: &str) -> Option<Value> {
         self.text_properties_at_ref(pos)
             .iter()

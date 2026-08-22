@@ -226,6 +226,50 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter_with(libraries: &[&str]) ->
 }
 
 pub(crate) fn initialized_upstream_batch_interpreter() -> Interpreter {
+    // EMAXX_IMAGE_TEMPLATE=1: reconstruct the image once per test thread
+    // and clone it per test (issue #11).  The clone shares immutable Rc
+    // structure; interpreter-owned tables are per-clone.  Validation
+    // criterion: identical results to the reconstruct-per-test path,
+    // stage for stage.
+    if std::env::var("EMAXX_IMAGE_TEMPLATE").is_ok() {
+        // Process-global template.  Interpreter holds Rc graphs, which are
+        // sound across threads only when uses never overlap: libtest runs
+        // each test on its own thread, so the serial gate's
+        // --test-threads=1 is the required schedule.  The ACTIVE counter
+        // makes a violation panic before any concurrent Rc touch: at most
+        // one template-derived interpreter may be alive at a time.
+        struct AssertSend<T>(T);
+        unsafe impl<T> Send for AssertSend<T> {}
+        static TEMPLATE: std::sync::Mutex<Option<AssertSend<Interpreter>>> =
+            std::sync::Mutex::new(None);
+        use crate::lisp::eval::{IMAGE_TEMPLATE_ACTIVE, ImageTemplateToken};
+        let mut slot = TEMPLATE.lock().expect("image template lock");
+        if IMAGE_TEMPLATE_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            panic!(
+                "EMAXX_IMAGE_TEMPLATE requires --test-threads=1: a second \
+                 template-derived interpreter was requested while one is live"
+            );
+        }
+        if slot.is_none() {
+            let started = std::time::Instant::now();
+            *slot = Some(AssertSend(build_upstream_batch_interpreter()));
+            if std::env::var("EMAXX_DEBUG_TEMPLATE").is_ok() {
+                eprintln!("TEMPLATE build {:?}", started.elapsed());
+            }
+        }
+        let started = std::time::Instant::now();
+        let mut clone = slot.as_ref().expect("image template built").0.deep_clone_image();
+        if std::env::var("EMAXX_DEBUG_TEMPLATE").is_ok() {
+            eprintln!("TEMPLATE clone {:?}", started.elapsed());
+        }
+        IMAGE_TEMPLATE_ACTIVE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        clone.image_template_token = Some(std::sync::Arc::new(ImageTemplateToken));
+        return clone;
+    }
+    build_upstream_batch_interpreter()
+}
+
+fn build_upstream_batch_interpreter() -> Interpreter {
     let upstream = crate::compat::project_root().join("../emacs");
     let options = crate::batch::BatchRunOptions {
         load_path: crate::compat::emaxx_upstream_load_path(&upstream)
