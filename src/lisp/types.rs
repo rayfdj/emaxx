@@ -1389,30 +1389,36 @@ impl Value {
     // Accessors
 
     pub fn as_integer(&self) -> Result<i64, LispError> {
+        // GNU's CHECK_FIXNUM names `integerp' ((nth 'a ...) => (integerp a)).
         match self {
             Value::Integer(n) => Ok(*n),
             Value::BigInteger(n) => n
                 .to_i64()
-                .ok_or_else(|| LispError::TypeError("fixnum".into(), self.type_name())),
-            _ => Err(LispError::TypeError("integer".into(), self.type_name())),
+                .ok_or_else(|| LispError::WrongTypeArgument("fixnump".into(), self.clone())),
+            _ => Err(LispError::WrongTypeArgument("integerp".into(), self.clone())),
         }
     }
 
     pub fn as_float(&self) -> Result<f64, LispError> {
+        // Arithmetic contexts: GNU's coercion check names
+        // `number-or-marker-p' ((+ 'a 1) => (number-or-marker-p a)).
         match self {
             Value::Float(f) => Ok(*f),
             Value::Integer(n) => Ok(*n as f64),
-            Value::BigInteger(n) => n
-                .to_f64()
-                .ok_or_else(|| LispError::TypeError("number".into(), self.type_name())),
-            _ => Err(LispError::TypeError("number".into(), self.type_name())),
+            Value::BigInteger(n) => n.to_f64().ok_or_else(|| {
+                LispError::WrongTypeArgument("number-or-marker-p".into(), self.clone())
+            }),
+            _ => Err(LispError::WrongTypeArgument(
+                "number-or-marker-p".into(),
+                self.clone(),
+            )),
         }
     }
 
     pub fn as_string(&self) -> Result<&str, LispError> {
         match self {
             Value::String(s) => Ok(s),
-            _ => Err(LispError::TypeError("string".into(), self.type_name())),
+            _ => Err(LispError::WrongTypeArgument("stringp".into(), self.clone())),
         }
     }
 
@@ -1421,7 +1427,7 @@ impl Value {
             Value::Nil => Ok("nil"),
             Value::T => Ok("t"),
             Value::Symbol(s) => Ok(s),
-            _ => Err(LispError::TypeError("symbol".into(), self.type_name())),
+            _ => Err(LispError::WrongTypeArgument("symbolp".into(), self.clone())),
         }
     }
 
@@ -1429,7 +1435,7 @@ impl Value {
         match self {
             Value::Cons(cell) => Ok(cell.car.borrow().clone()),
             Value::Nil => Ok(Value::Nil),
-            _ => Err(LispError::TypeError("list".into(), self.type_name())),
+            _ => Err(LispError::WrongTypeArgument("listp".into(), self.clone())),
         }
     }
 
@@ -1437,7 +1443,7 @@ impl Value {
         match self {
             Value::Cons(cell) => Ok(cell.cdr.borrow().clone()),
             Value::Nil => Ok(Value::Nil),
-            _ => Err(LispError::TypeError("list".into(), self.type_name())),
+            _ => Err(LispError::WrongTypeArgument("listp".into(), self.clone())),
         }
     }
 
@@ -1447,7 +1453,7 @@ impl Value {
                 *cell.car.borrow_mut() = new_car;
                 Ok(())
             }
-            _ => Err(LispError::TypeError("cons".into(), self.type_name())),
+            _ => Err(LispError::WrongTypeArgument("consp".into(), self.clone())),
         }
     }
 
@@ -1457,7 +1463,7 @@ impl Value {
                 *cell.cdr.borrow_mut() = new_cdr;
                 Ok(())
             }
-            _ => Err(LispError::TypeError("cons".into(), self.type_name())),
+            _ => Err(LispError::WrongTypeArgument("consp".into(), self.clone())),
         }
     }
 
@@ -1504,7 +1510,7 @@ impl Value {
                     result.push(cell.car.borrow().clone());
                     current = cell.cdr.borrow().clone();
                 }
-                _ => return Err(LispError::TypeError("list".into(), current.type_name())),
+                _ => return Err(LispError::WrongTypeArgument("listp".into(), current.clone())),
             }
         }
     }
@@ -1723,6 +1729,13 @@ pub struct EmacsTermination {
 pub enum LispError {
     /// Type mismatch: expected, got
     TypeError(String, String),
+    /// GNU's `(wrong-type-argument PREDICATE VALUE)': the predicate symbol
+    /// the failed check names, and the offending value itself.  The older
+    /// `TypeError' carried a type *name* instead of the value, which is
+    /// visible in every condition datum and error message (finding 57);
+    /// construction sites migrate here as their predicates are verified
+    /// against the oracle.
+    WrongTypeArgument(String, Value),
     /// Unbound variable
     Void(String),
     /// Unbound function cell
@@ -1753,6 +1766,7 @@ impl LispError {
     pub fn condition_type(&self) -> String {
         match self {
             LispError::TypeError(_, _) => "wrong-type-argument".into(),
+            LispError::WrongTypeArgument(_, _) => "wrong-type-argument".into(),
             LispError::Void(_) => "void-variable".into(),
             LispError::VoidFunction(_) => "void-function".into(),
             LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
@@ -1781,6 +1795,9 @@ impl fmt::Display for LispError {
         match self {
             LispError::TypeError(expected, got) => {
                 write!(f, "Wrong type argument: {}, {}", expected, got)
+            }
+            LispError::WrongTypeArgument(predicate, value) => {
+                write!(f, "Wrong type argument: {}, {}", predicate, value)
             }
             LispError::Void(name) => write!(
                 f,

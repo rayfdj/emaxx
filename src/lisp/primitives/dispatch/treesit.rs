@@ -465,7 +465,7 @@ fn regexp_matches(
     env: &Env,
 ) -> Result<bool, LispError> {
     let pattern = primitives::string_like(pattern)
-        .ok_or_else(|| LispError::TypeError("stringp".into(), pattern.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), pattern.clone()))?;
     let mut case_sensitive = env.clone();
     case_sensitive.push(vec![("case-fold-search".into(), Value::Nil)].into());
     regexp::compile_elisp_regex(interp, &pattern, &case_sensitive, "", true)?
@@ -1025,7 +1025,7 @@ define_dispatch!(
             "treesit-parser-set-included-ranges" => {
                 need_args(name, args, 2)?;
                 if !args[1].is_list() {
-                    return Err(LispError::TypeError("consp".into(), args[1].type_name()));
+                    return Err(LispError::WrongTypeArgument("consp".into(), args[1].clone()));
                 }
                 interp.set_treesit_included_ranges(&args[0], args[1].clone())?;
                 Ok(Value::Nil)
@@ -1169,7 +1169,7 @@ define_dispatch!(
                 }
                 let field = primitives::string_like(&args[1])
                     .map(|string| string.text)
-                    .ok_or_else(|| LispError::TypeError("stringp".into(), args[1].type_name()))?;
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1].clone()))?;
                 related_node(interp, &args[0], |node| node.child_by_field_name(field))
             }
             "treesit-node-field-name-for-child" => {
@@ -1304,7 +1304,7 @@ define_dispatch!(
             "treesit-query-compile" => {
                 need_arg_range(name, args, 2, 3)?;
                 if !args[0].is_symbol() {
-                    return Err(LispError::TypeError("symbolp".into(), args[0].type_name()));
+                    return Err(LispError::WrongTypeArgument("symbolp".into(), args[0].clone()));
                 }
                 if interp.treesit_query_state(&args[1]).is_some() {
                     return Ok(args[1].clone());

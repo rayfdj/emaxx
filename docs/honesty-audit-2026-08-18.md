@@ -825,3 +825,23 @@ success where GNU *prompts*: `save-buffer' on a write-protected file and
 bare `revert-buffer' both ask "(yes or no)" and, in batch, signal
 end-of-file -- probed byte-identical on both binaries now that finding
 11's auto-t is gone.  Those tests now assert the real contract.
+
+## Finding 57, first wave (2026-08-22)
+
+`wrong-type-argument' now carries what GNU carries.  A new
+`WrongTypeArgument(predicate, value)' error variant holds the predicate
+symbol the failed check names and the offending value itself, so
+condition data matches structurally and messages render the value through
+the real printer -- the host `Display' shapes (`#<record id:N>',
+`builtin<car>') are gone from user-visible errors.  Migrated in this
+wave: the core Value accessors, the arithmetic coercion funnel, and 109
+mechanically-convertible sites, each family verified against an oracle
+probe battery (arith, nth, aref, substring, symbol-name, string-match,
+length, elt, car/setcar) that now matches byte-for-byte.  Two semantic
+divergences surfaced beyond message text: `aref' silently indexed plain
+lists where GNU signals `(wrong-type-argument arrayp ...)', and
+`substring' named `stringp' where editfns.c checks `arrayp'.  223
+complex-expression sites still construct the old value-less form; they
+are honest but incomplete, and the message-level instrument (finding 22)
+will surface each as it matters.  Fallout across the 2,094-test suite:
+one test, which pattern-matched the old variant.

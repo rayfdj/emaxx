@@ -375,7 +375,7 @@ pub(crate) fn process_coding_pair(value: &Value) -> Result<(Value, Value), LispE
     if items.len() == 2 {
         return Ok((items[0].clone(), items[1].clone()));
     }
-    Err(LispError::TypeError("cons".into(), value.type_name()))
+    Err(LispError::WrongTypeArgument("consp".into(), value.clone()))
 }
 
 fn process_creation_coding_systems(

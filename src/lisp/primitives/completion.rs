@@ -483,7 +483,7 @@ pub(crate) fn completion_list_candidates(
                 current = cdr.borrow().clone();
             }
             Value::Integer(_) => return Ok(candidates),
-            _ => return Err(LispError::TypeError("list".into(), current.type_name())),
+            _ => return Err(LispError::WrongTypeArgument("listp".into(), current.clone())),
         }
     }
 }
@@ -558,7 +558,7 @@ pub(crate) fn completion_regex_matches(
     pattern: &Value,
 ) -> Result<bool, LispError> {
     let pattern = string_like(pattern)
-        .ok_or_else(|| LispError::TypeError("string".into(), pattern.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), pattern.clone()))?;
     let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
     regex
         .is_match(candidate)

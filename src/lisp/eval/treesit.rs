@@ -15,7 +15,7 @@ fn load_error(kind: &str, data: impl IntoIterator<Item = Value>) -> LispError {
 fn value_string(value: &Value) -> Result<String, LispError> {
     primitives::string_like(value)
         .map(|string| string.text)
-        .ok_or_else(|| LispError::TypeError("stringp".into(), value.type_name()))
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))
 }
 
 fn library_suffixes(interp: &Interpreter) -> Result<Vec<String>, LispError> {
