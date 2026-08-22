@@ -77,7 +77,7 @@ fn resolve_ccl_program(
     program: &Value,
 ) -> Result<Option<Vec<i32>>, LispError> {
     if !is_vector_value(program) {
-        return Err(LispError::TypeError("vector".into(), program.type_name()));
+        return Err(LispError::WrongTypeArgument("vectorp".into(), program.clone()));
     }
     let items = vector_items(program)?;
     if items.len() <= CCL_HEADER_MAIN {
@@ -196,7 +196,7 @@ fn register_code_conversion_map(
 ) -> Result<Value, LispError> {
     let symbol = symbol.as_symbol()?.to_string();
     if !is_vector_value(map) {
-        return Err(LispError::TypeError("vector".into(), map.type_name()));
+        return Err(LispError::WrongTypeArgument("vectorp".into(), map.clone()));
     }
     let table = interp
         .default_value("code-conversion-map-vector")
@@ -241,7 +241,7 @@ fn register_code_conversion_map(
 
 fn initial_registers(value: &Value, length: usize) -> Result<[i32; 8], LispError> {
     if !is_vector_value(value) {
-        return Err(LispError::TypeError("vector".into(), value.type_name()));
+        return Err(LispError::WrongTypeArgument("vectorp".into(), value.clone()));
     }
     let items = vector_items(value)?;
     if items.len() != length {
@@ -300,7 +300,7 @@ fn ccl_execute_on_string(
         .filter(|pc| CCL_HEADER_MAIN < *pc && *pc < code.len())
         .unwrap_or(CCL_HEADER_MAIN);
     let string = string_like(source)
-        .ok_or_else(|| LispError::TypeError("string".into(), source.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), source.clone()))?;
     let input = if string.multibyte {
         string.text.chars().map(|ch| ch as i32).collect()
     } else {

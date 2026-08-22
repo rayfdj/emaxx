@@ -383,7 +383,7 @@ pub(crate) fn set_last_coding_system_used(interp: &mut Interpreter, coding: &str
 
 pub(crate) fn shared_string_copy(value: &Value) -> Result<Value, LispError> {
     let string = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     Ok(make_shared_string_value_with_multibyte(
         string.text,
         string.props,
@@ -460,7 +460,7 @@ pub(crate) fn aset_vector_value(
                 current = cdr.borrow().clone();
             }
             Value::Nil => return Err(LispError::Signal("Args out of range".into())),
-            _ => return Err(LispError::TypeError("array".into(), target.type_name())),
+            _ => return Err(LispError::WrongTypeArgument("arrayp".into(), target.clone())),
         }
     }
 }
@@ -572,7 +572,7 @@ pub(crate) fn base64_encode_string_value(
     base64url: bool,
 ) -> Result<Value, LispError> {
     let string = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     let bytes = encode_base64_source_bytes(&string.text, string.multibyte)?;
     Ok(Value::String(
         encode_base64_bytes(&bytes, line_break, pad, base64url).into(),
@@ -658,7 +658,7 @@ pub(crate) fn decode_base64_string_value(
     ignore_invalid: bool,
 ) -> Result<Value, LispError> {
     let string = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     let bytes = encode_raw_text_bytes(&string.text)?;
     let mut cursor = 0usize;
     let mut decoded = Vec::with_capacity((bytes.len() / 4) * 3);
@@ -1662,7 +1662,7 @@ pub(crate) fn encode_coding_value(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let string = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     let Some(coding) = coding else {
         set_last_coding_system_used(interp, "no-conversion", env);
         return if nocopy {
@@ -1740,7 +1740,7 @@ pub(crate) fn decode_coding_text(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let string = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     let Some(coding) = coding else {
         set_last_coding_system_used(interp, "no-conversion", env);
         return if nocopy {

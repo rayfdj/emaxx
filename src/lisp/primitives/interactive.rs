@@ -156,7 +156,7 @@ pub(crate) fn checked_symbol_name(
     {
         return Ok(symbol.to_string());
     }
-    Err(LispError::TypeError("symbol".into(), value.type_name()))
+    Err(LispError::WrongTypeArgument("symbolp".into(), value.clone()))
 }
 
 #[cfg(test)]

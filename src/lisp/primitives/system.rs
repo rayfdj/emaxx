@@ -18,7 +18,7 @@ pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, Lis
                     Value::Symbol(symbol) if symbol == "alist" => JsonObjectType::Alist,
                     Value::Symbol(symbol) if symbol == "plist" => JsonObjectType::Plist,
                     other => {
-                        return Err(LispError::TypeError("symbol".into(), other.type_name()));
+                        return Err(LispError::WrongTypeArgument("symbolp".into(), other.clone()));
                     }
                 };
             }
@@ -27,7 +27,7 @@ pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, Lis
                     Value::Symbol(symbol) if symbol == "vector" => JsonArrayType::Vector,
                     Value::Symbol(symbol) if symbol == "list" => JsonArrayType::List,
                     other => {
-                        return Err(LispError::TypeError("symbol".into(), other.type_name()));
+                        return Err(LispError::WrongTypeArgument("symbolp".into(), other.clone()));
                     }
                 };
             }
@@ -1571,7 +1571,7 @@ pub(crate) fn dispatch_file_name_handler(
             } else {
                 string_like(visit)
                     .map(|name| name.text)
-                    .ok_or_else(|| LispError::TypeError("string".into(), visit.type_name()))?
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), visit.clone()))?
             };
             interp.buffer.file = Some(expand_file_name_runtime(interp, env, &visited_name, None)?);
             interp.buffer.set_unmodified();
@@ -1602,7 +1602,7 @@ pub(crate) fn directory_files(
     }
     if let Some(matcher) = matcher {
         let pattern = string_like(matcher)
-            .ok_or_else(|| LispError::TypeError("string".into(), matcher.type_name()))?;
+            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), matcher.clone()))?;
         regexp::validate_elisp_regex(&pattern.text)?;
         let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
         let mut filtered = Vec::new();

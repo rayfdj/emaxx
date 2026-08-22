@@ -4610,11 +4610,11 @@ fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
                 return function_name_from_binding_form(&items[1]);
             }
             let other = unquote(value);
-            Err(LispError::TypeError("symbol".into(), other.type_name()))
+            Err(LispError::WrongTypeArgument("symbolp".into(), other.clone()))
         }
         _ => match unquote(value) {
             Value::Symbol(name) => Ok(name.to_string()),
-            other => Err(LispError::TypeError("symbol".into(), other.type_name())),
+            other => Err(LispError::WrongTypeArgument("symbolp".into(), other.clone())),
         },
     }
 }
@@ -4624,7 +4624,7 @@ fn assignment_target_name(value: &Value) -> Result<String, LispError> {
         Value::Symbol(name) => Ok(name.to_string()),
         Value::Nil => Ok("nil".into()),
         Value::T => Ok("t".into()),
-        other => Err(LispError::TypeError("symbol".into(), other.type_name())),
+        other => Err(LispError::WrongTypeArgument("symbolp".into(), other.clone())),
     }
 }
 
@@ -4656,6 +4656,12 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
                 "nil" => Value::Nil,
                 _ => Value::String(got.clone().into()),
             },
+        ]),
+        // GNU's datum: the predicate symbol and the offending value itself.
+        LispError::WrongTypeArgument(predicate, value) => Value::list([
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol(predicate.clone().into()),
+            value.clone(),
         ]),
         LispError::Void(symbol) => Value::list([
             Value::Symbol("void-variable".into()),

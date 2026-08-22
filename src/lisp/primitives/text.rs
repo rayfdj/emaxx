@@ -67,7 +67,7 @@ pub(crate) fn secure_hash_source_bytes(
         }
         _ => {
             let string = string_like(source)
-                .ok_or_else(|| LispError::TypeError("string".into(), source.type_name()))?;
+                .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), source.clone()))?;
             let codes = string.character_codes();
             let start = normalize_string_index(start, 0, codes.len() as i64)? as usize;
             let end = normalize_string_index(end, codes.len() as i64, codes.len() as i64)? as usize;
@@ -187,9 +187,9 @@ pub(crate) fn string_distance_value(
     compare_bytes: bool,
 ) -> Result<Value, LispError> {
     let left_string =
-        string_like(left).ok_or_else(|| LispError::TypeError("string".into(), left.type_name()))?;
+        string_like(left).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), left.clone()))?;
     let right_string = string_like(right)
-        .ok_or_else(|| LispError::TypeError("string".into(), right.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), right.clone()))?;
 
     let distance = if compare_bytes {
         let left_bytes = internal_string_bytes(&left_string)?;
@@ -267,12 +267,12 @@ pub(crate) fn format_char_conversion(arg: &Value) -> Result<String, LispError> {
         Value::Integer(n) => *n,
         Value::BigInteger(n) => n
             .to_i64()
-            .ok_or_else(|| LispError::TypeError("character".into(), arg.type_name()))?,
+            .ok_or_else(|| LispError::WrongTypeArgument("characterp".into(), arg.clone()))?,
         Value::Float(_) => {
             return Err(LispError::TypeError("integer".into(), "float".into()));
         }
         _ => {
-            return Err(LispError::TypeError("integer".into(), arg.type_name()));
+            return Err(LispError::WrongTypeArgument("integerp".into(), arg.clone()));
         }
     };
     char_from_integer(n)
@@ -344,7 +344,7 @@ pub(crate) fn integer_for_format(
             let n = integer_like_i64(interp, value)?;
             Ok((Some(n), BigInt::from(n)))
         }
-        _ => Err(LispError::TypeError("integer".into(), value.type_name())),
+        _ => Err(LispError::WrongTypeArgument("integerp".into(), value.clone())),
     }
 }
 
