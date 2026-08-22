@@ -2418,9 +2418,9 @@ pub(super) fn string_match_impl(
         ));
     }
     let pattern = string_like(&args[0])
-        .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
     let haystack = string_like(&args[1])
-        .ok_or_else(|| LispError::TypeError("string".into(), args[1].type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1].clone()))?;
     // The overwhelmingly common no-START path searches the original string.
     // Counting and copying the full haystack made it O(n) before the regex
     // engine even ran (particularly painful for large buffers/Unicode data).
@@ -2475,9 +2475,9 @@ pub(super) fn posix_string_match_impl(
         ));
     }
     let pattern = string_like(&args[0])
-        .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
     let haystack = string_like(&args[1])
-        .ok_or_else(|| LispError::TypeError("string".into(), args[1].type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1].clone()))?;
     let start = if let Some(start) = args.get(2) {
         normalize_string_index(Some(start), 0, haystack.text.chars().count() as i64)? as usize
     } else {
@@ -2673,7 +2673,7 @@ pub(super) fn looking_at_impl(
     env: &Env,
 ) -> Result<Value, LispError> {
     let pattern = string_like(pattern_value)
-        .ok_or_else(|| LispError::TypeError("string".into(), pattern_value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), pattern_value.clone()))?;
     let pattern = regex_pattern_with_search_spaces(interp, &pattern, env);
     let pos = interp.buffer.point();
     let tail = buffer_regexp_haystack(interp, pos, interp.buffer.point_max())?;
@@ -2785,7 +2785,7 @@ pub(super) fn buffer_regex_search(
         ));
     }
     let pattern = string_like(&args[0])
-        .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
     let pattern = regex_pattern_with_search_spaces(interp, &pattern, env);
     let noerror = args.get(2).is_some_and(Value::is_truthy);
     let move_on_failure = search_noerror_moves(args.get(2));

@@ -533,7 +533,7 @@ pub(crate) fn parse_value_source(
     require_eof: bool,
 ) -> Result<JsonParseSuccess, LispError> {
     let source = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     parse_text_source(interp, &source.text, source.multibyte, options, require_eof)
 }
 
@@ -837,7 +837,7 @@ fn serialize_array(
 
 fn serialize_string(value: &Value) -> Result<String, LispError> {
     let string = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     let mut rendered = String::from("\"");
     for ch in string.text.chars() {
         if ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some() {
@@ -872,7 +872,7 @@ fn serialize_hash_table(
 ) -> Result<String, LispError> {
     let depth = json_nested_depth(depth)?;
     let Some((_, entries)) = hash_table_entries(interp, value) else {
-        return Err(LispError::TypeError("hash-table".into(), value.type_name()));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), value.clone()));
     };
     serialize_object_entries(
         interp,
@@ -1022,7 +1022,7 @@ fn is_alist_entry(value: &Value) -> bool {
 fn alist_entry_parts(entry: &Value) -> Result<(Value, Value), LispError> {
     entry
         .cons_values()
-        .ok_or_else(|| LispError::TypeError("cons".into(), entry.type_name()))
+        .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), entry.clone()))
 }
 
 fn object_key_string(value: &Value) -> Result<String, LispError> {
@@ -1034,13 +1034,13 @@ fn object_key_string(value: &Value) -> Result<String, LispError> {
 
 fn hash_table_key_string(value: &Value) -> Result<String, LispError> {
     let string = string_like(value)
-        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     if string
         .text
         .chars()
         .any(|ch| ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some())
     {
-        return Err(LispError::TypeError("string".into(), value.type_name()));
+        return Err(LispError::WrongTypeArgument("stringp".into(), value.clone()));
     }
     Ok(string.text)
 }
@@ -1084,7 +1084,7 @@ fn list_to_entries(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {
         .map(|entry| {
             entry
                 .cons_values()
-                .ok_or_else(|| LispError::TypeError("cons".into(), entry.type_name()))
+                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), entry.clone()))
         })
         .collect()
 }

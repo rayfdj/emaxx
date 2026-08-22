@@ -1787,15 +1787,19 @@ define_dispatch!(
                     };
                 if !data.is_empty() {
                     text.push_str(": ");
-                    let rendered = data
-                        .iter()
-                        .map(|datum| match string_like(datum) {
+                    // print.c prin1's non-string data with the real printer;
+                    // the host Display impl leaked `#<record id:N>' shapes
+                    // GNU never prints (finding 57's message half).
+                    let mut rendered = Vec::with_capacity(data.len());
+                    for datum in data {
+                        rendered.push(match string_like(datum) {
                             Some(datum) => datum.text,
-                            None => datum.to_string(),
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    text.push_str(&rendered);
+                            None => crate::lisp::primitives::print::render_prin1_ephemeral(
+                                interp, datum, env,
+                            )?,
+                        });
+                    }
+                    text.push_str(&rendered.join(", "));
                 }
                 Ok(Value::String(text.into()))
             }

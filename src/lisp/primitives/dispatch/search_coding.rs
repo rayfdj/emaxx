@@ -483,7 +483,7 @@ define_dispatch!(
             "match-data--translate" => {
                 need_args(name, args, 1)?;
                 let Value::Integer(delta) = args[0] else {
-                    return Err(LispError::TypeError("fixnum".into(), args[0].type_name()));
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[0].clone()));
                 };
                 if let Some(match_data) = &mut interp.last_match_data {
                     for entry in match_data.iter_mut().flatten() {
@@ -558,7 +558,7 @@ define_dispatch!(
                     .ok_or_else(|| LispError::Signal("No previous search".into()))?;
                 if let Some(source) = args.get(3).filter(|value| !value.is_nil()) {
                     let source = string_like(source)
-                        .ok_or_else(|| LispError::TypeError("string".into(), source.type_name()))?;
+                        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), source.clone()))?;
                     let matched = regexp::slice_string_chars(&source.text, start, end);
                     let mut replacement = regexp::expand_replace_match_text(
                         &replacement,
@@ -700,7 +700,7 @@ define_dispatch!(
                         }
                     }),
                     Some(value) => {
-                        return Err(LispError::TypeError("integer".into(), value.type_name()));
+                        return Err(LispError::WrongTypeArgument("integerp".into(), value.clone()));
                     }
                 };
                 let deadline = match args.get(1) {

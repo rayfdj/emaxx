@@ -20,11 +20,11 @@ pub(crate) fn call_hash_table_test_function(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let Some((_, before_entries)) = json::hash_table_entries(interp, table) else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), table.clone()));
     };
     let result = call_function_value(interp, function, args, env);
     let Some((_, after_entries)) = json::hash_table_entries(interp, table) else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), table.clone()));
     };
     if before_entries != after_entries {
         set_hash_table_entries(interp, table, before_entries)?;
@@ -118,13 +118,13 @@ pub(crate) fn hash_table_metadata_slot(
     default: Value,
 ) -> Result<Value, LispError> {
     let Value::Record(id) = table else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), table.clone()));
     };
     let Some(record) = interp.find_record(*id) else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), table.clone()));
     };
     if record.kind != crate::lisp::eval::RecordKind::HashTable {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), table.clone()));
     }
     Ok(record.slots.get(slot).cloned().unwrap_or(default))
 }
@@ -263,7 +263,7 @@ pub(crate) fn set_hash_table_entries(
     entries: Vec<(Value, Value)>,
 ) -> Result<(), LispError> {
     let Value::Record(id) = table else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), table.clone()));
     };
     let Some(test) = interp
         .find_record(*id)
@@ -272,10 +272,10 @@ pub(crate) fn set_hash_table_entries(
         .and_then(|value| value.as_symbol().ok())
         .map(str::to_string)
     else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), table.clone()));
     };
     let Some(record) = interp.find_record_mut(*id) else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+        return Err(LispError::WrongTypeArgument("hash-table-p".into(), table.clone()));
     };
     if record.slots.len() < 2 {
         record.slots.resize(2, Value::Nil);
