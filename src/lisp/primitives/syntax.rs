@@ -550,7 +550,31 @@ fn syntax_entry_at_buffer_position(
     ch: char,
     pos: usize,
 ) -> SyntaxEntry {
-    let property = buffer_char_property_at(interp, &interp.buffer, pos, "syntax-table");
+    // syntax.c:253 (SETUP_SYNTAX_TABLE): the `syntax-table' text property
+    // participates in syntax scans only when `parse-sexp-lookup-properties'
+    // is non-nil; with it nil GNU reads the plain syntax table and never
+    // touches intervals or overlays.  Consulting the property
+    // unconditionally both diverged from GNU (a property would win with
+    // the variable nil) and made every scan pay a per-character
+    // overlay-and-interval walk.
+    if !interp
+        .lookup_var("parse-sexp-lookup-properties", &Vec::new())
+        .is_some_and(|value| value.is_truthy())
+    {
+        return syntax_entry_for_char(interp, table_id, ch);
+    }
+    // syntax.c:374 (update_syntax_table): GNU reads the property off the
+    // interval plist with `textget' -- buffer text properties (with
+    // category indirection) only.  Overlays never feed syntax scans, so
+    // an overlay-decorated buffer (semantic tags, for one) must not pay
+    // -- or answer -- an overlay walk per scanned character.
+    let property = crate::lisp::primitives::strings::buffer_property_at_with_category(
+        interp,
+        &interp.buffer,
+        pos,
+        "syntax-table",
+    )
+    .unwrap_or(Value::Nil);
     match property {
         Value::CharTable(property_table_id) => {
             Some(syntax_entry_for_char(interp, property_table_id, ch))
