@@ -268,111 +268,12 @@ fn finish_kbd_macro_command_cycle(
     Ok(())
 }
 
-fn pending_prefix_argument(interp: &Interpreter, env: &Env) -> Value {
-    interp.lookup_var("prefix-arg", env).unwrap_or(Value::Nil)
-}
 
-fn prefix_integer(value: &Value) -> Option<BigInt> {
-    match value {
-        Value::Integer(integer) => Some(BigInt::from(*integer)),
-        Value::BigInteger(integer) => Some(integer.clone().into()),
-        _ => None,
-    }
-}
 
-pub(crate) fn next_universal_prefix(pending: &Value) -> Value {
-    match pending {
-        Value::Nil => Value::list([Value::Integer(4)]),
-        Value::Cons(_) => {
-            let factor = prefix_numeric_value(pending)
-                .ok()
-                .and_then(|value| prefix_integer(&value))
-                .unwrap_or_else(|| BigInt::from(4));
-            Value::list([normalize_bigint_value(factor * BigInt::from(4))])
-        }
-        Value::Symbol(minus) if minus == "-" => Value::list([Value::Integer(-4)]),
-        other => other.clone(),
-    }
-}
 
-pub(crate) fn next_negative_prefix(pending: &Value) -> Value {
-    if let Some(integer) = prefix_integer(pending) {
-        normalize_bigint_value(-integer)
-    } else if matches!(pending, Value::Symbol(minus) if minus == "-") {
-        Value::Nil
-    } else {
-        Value::Symbol("-".into())
-    }
-}
 
-pub(crate) fn next_digit_prefix(pending: &Value, digit: i64) -> Value {
-    if let Some(integer) = prefix_integer(pending) {
-        let negative = integer.sign() == Sign::Minus;
-        let digit = BigInt::from(digit);
-        normalize_bigint_value(if negative {
-            integer * BigInt::from(10) - digit
-        } else {
-            integer * BigInt::from(10) + digit
-        })
-    } else if matches!(pending, Value::Symbol(minus) if minus == "-") {
-        if digit == 0 {
-            Value::Symbol("-".into())
-        } else {
-            Value::Integer(-digit)
-        }
-    } else {
-        Value::Integer(digit)
-    }
-}
 
-fn run_minibuffer_prefix_command(
-    interp: &mut Interpreter,
-    command_name: &str,
-    event: &Value,
-    next_prefix: Value,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let original_command = Value::Symbol(command_name.into());
-    set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
-    interp.set_variable("last-command-event", event.clone(), env);
-    interp.set_variable("last-input-event", event.clone(), env);
-    interp.set_variable("this-original-command", original_command.clone(), env);
-    interp.set_variable("this-command", original_command.clone(), env);
-    increment_num_input_keys(interp, env);
-    safe_run_named_hooks(
-        interp,
-        "pre-command-hook",
-        env,
-        Some(interp.current_buffer_id()),
-    )?;
-    let dispatched = interp
-        .lookup_var("this-command", env)
-        .filter(|command| !command.is_nil())
-        .unwrap_or_else(|| original_command.clone());
-    let has_command_owner = interp.lookup_function("command-execute", env).is_ok()
-        || dispatched != original_command
-        || interp.lookup_function(command_name, env).is_ok();
-    if has_command_owner {
-        execute_kbd_command_body(interp, &dispatched, env)?;
-    } else if let Ok(preserve) = interp.lookup_function("prefix-command-preserve-state", env) {
-        prepare_native_kbd_command_body(interp, env)?;
-        call_function_value(interp, &preserve, &[], env)?;
-        interp.set_variable("prefix-arg", next_prefix, env);
-    } else {
-        prepare_native_kbd_command_body(interp, env)?;
-        interp.set_variable("prefix-arg", next_prefix, env);
-    }
-    finish_kbd_macro_command_cycle(interp, original_command, dispatched, env)?;
-    sync_kbd_macro_execution(interp, env)
-}
 
-fn active_minibuffer_prompt_end(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<usize, LispError> {
-    let position = super::call(interp, "minibuffer-prompt-end", &[], env)?.as_integer()?;
-    usize::try_from(position).map_err(|_| LispError::Signal("Invalid minibuffer prompt".into()))
-}
 
 fn active_minibuffer_text(interp: &mut Interpreter, env: &mut Env) -> Result<String, LispError> {
     let contents = super::call(interp, "minibuffer-contents-no-properties", &[], env)?;
@@ -428,12 +329,21 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
     env: &mut Env,
     _initial: &str,
 ) -> Result<Option<String>, LispError> {
+    // The recursive minibuffer command loop, driven by the macro's
+    // remaining events.  Keys resolve through the active keymaps -- the
+    // minibuffer's own local map included -- and dispatch the real
+    // commands; nothing is intercepted by event code.  GNU's read_minibuf
+    // wraps this loop in a `catch \='exit`: `exit-minibuffer' and its
+    // relatives (minibuffer-complete-and-exit, read--expression-try-read)
+    // return the submitted text by throwing to that tag.
+    let mut pending_keys: Vec<String> = Vec::new();
+    let mut pending_events: Vec<Value> = Vec::new();
     while let Some(event) = current_kbd_macro_event(interp, 0) {
         // `read-kbd-macro' can retain GNU's modifier bits on character
         // events, whereas literal macro strings contain resolved control
         // bytes.  Minibuffer editing must see C-a/C-k identically in both
         // representations.
-        let event = crate::lisp::primitives::reader_key_event_value(event);
+        let mut event = crate::lisp::primitives::reader_key_event_value(event);
         let code = match &event {
             Value::Integer(code) => *code,
             Value::Symbol(name) => function_key_default_translation(name).unwrap_or(-1),
@@ -442,97 +352,68 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
         if code < 0 {
             break;
         }
+        let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+        let mut event_key = key_sequence_binding_text(&key)?;
+        if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
+            event_key = format!("<{event_key}>");
+        }
+        // GNU's local-function-key-map translates unbound function-key
+        // symbols to their ASCII equivalents before lookup.
+        if pending_keys.is_empty()
+            && matches!(&event, Value::Symbol(_))
+            && key_binding(interp, &event_key, false, false, env)?.is_nil()
+            && !key_sequence_is_prefix(interp, &event_key, env)?
+        {
+            event = Value::Integer(code);
+            let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            event_key = key_sequence_binding_text(&translated)?;
+        }
         advance_kbd_macro_index(interp, 1, env);
-        let original_command = Value::Symbol(
-            match code {
-                13 | 10 => "exit-minibuffer",
-                1 => "beginning-of-line",
-                5 => "end-of-line",
-                11 => "kill-line",
-                127 => "delete-backward-char",
-                _ => "self-insert-command",
-            }
-            .into(),
-        );
-        set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
-        interp.set_variable("last-command-event", event.clone(), env);
-        interp.set_variable("last-input-event", event, env);
-        interp.set_variable("this-original-command", original_command.clone(), env);
-        interp.set_variable("this-command", original_command.clone(), env);
-        increment_num_input_keys(interp, env);
-        safe_run_named_hooks(
-            interp,
-            "pre-command-hook",
-            env,
-            Some(interp.current_buffer_id()),
-        )?;
-        let command = interp
-            .lookup_var("this-command", env)
-            .filter(|command| !command.is_nil())
-            .unwrap_or_else(|| original_command.clone());
-        let native_command = matches!(
-            command.as_symbol().unwrap_or(""),
-            "ignore"
-                | "exit-minibuffer"
-                | "move-beginning-of-line"
-                | "beginning-of-line"
-                | "move-end-of-line"
-                | "end-of-line"
-                | "kill-line"
-                | "delete-backward-char"
-                | "self-insert-command"
-        );
-        if native_command {
-            prepare_native_kbd_command_body(interp, env)?;
+        pending_keys.push(event_key);
+        pending_events.push(event.clone());
+        let binding_key = pending_keys.join(" ");
+        let binding = key_binding(interp, &binding_key, false, false, env)?;
+        if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
+            load_autoloaded_prefix_map(interp, &binding, env)?;
+            continue;
         }
-        let mut exit = false;
-        match command.as_symbol().unwrap_or("") {
-            "ignore" => {}
-            "exit-minibuffer" => exit = true,
-            "move-beginning-of-line" | "beginning-of-line" => {
-                let prompt_end = active_minibuffer_prompt_end(interp, env)?;
-                interp.buffer.goto_char(prompt_end);
-            }
-            "move-end-of-line" | "end-of-line" => {
-                interp.buffer.goto_char(interp.buffer.point_max());
-            }
-            "kill-line" => {
-                let point = interp.buffer.point();
-                let end = interp.buffer.point_max();
-                delete_region_with_hooks(interp, point, end, env)?;
-            }
-            "delete-backward-char" => {
-                let point = interp.buffer.point();
-                if point > active_minibuffer_prompt_end(interp, env)? {
-                    delete_region_with_hooks(interp, point - 1, point, env)?;
-                }
-            }
-            "self-insert-command" => {
-                let event = interp
-                    .lookup_var("last-command-event", env)
-                    .unwrap_or(Value::Integer(code));
-                if let Some(ch) = unread_event_char(&event)
-                    && (!ch.is_control() || ch == '\t')
+        if !binding.is_nil() {
+            // GNU read_minibuf establishes `catch \='exit` around its
+            // recursive edit; register the tag so the exiting command's
+            // `throw' reaches this boundary instead of failing `no-catch'.
+            interp.push_catch_tag(Value::Symbol("exit".into()));
+            let dispatch = execute_kbd_macro_command(interp, &binding, &pending_events, env);
+            interp.pop_catch_tag();
+            match dispatch {
+                Ok(()) => {}
+                Err(LispError::Throw(tag, _))
+                    if matches!(&tag, Value::Symbol(name) if name == "exit") =>
                 {
-                    insert_text_with_hooks(interp, &ch.to_string(), &[], &[], false, false, env)?;
+                    // The exiting command leaves the recursive loop before
+                    // its post-command phase.  The prompting command
+                    // resumes, consumes the submitted text, and only then
+                    // runs its own post-command hook.
+                    sync_kbd_macro_execution(interp, env)?;
+                    return active_minibuffer_text(interp, env).map(Some);
                 }
+                Err(error) => return Err(error),
             }
-            _ => {
-                execute_kbd_command_body(interp, &command, env)?;
-            }
-        }
-        // `exit-minibuffer' leaves the recursive command loop before its
-        // post-command phase.  The prompting command resumes, consumes the
-        // submitted text, and only then runs its own post-command hook.  In
-        // particular, a keyboard-macro thunk attached to RET must observe
-        // the prompting command's completed assignment, not the state from
-        // just before `read-from-minibuffer' returns.
-        if exit {
             sync_kbd_macro_execution(interp, env)?;
-            break;
+            pending_keys.clear();
+            pending_events.clear();
+            continue;
         }
-        finish_kbd_macro_command_cycle(interp, original_command, command, env)?;
-        sync_kbd_macro_execution(interp, env)?;
+        if pending_keys.len() == 1
+            && let Some(text) = keyboard_macro_self_insert_text(&event)
+        {
+            execute_kbd_macro_self_insert(interp, &text, &event, env)?;
+            sync_kbd_macro_execution(interp, env)?;
+            pending_keys.clear();
+            pending_events.clear();
+            continue;
+        }
+        pending_keys.clear();
+        pending_events.clear();
     }
     active_minibuffer_text(interp, env).map(Some)
 }
@@ -667,44 +548,6 @@ fn read_minibuffer_text_from_unread_events_inner(
         pending_events.push(event.clone());
         let binding_key = pending_keys.join(" ");
 
-        if binding_key == "C-u" {
-            let pending = pending_prefix_argument(interp, env);
-            let next = next_universal_prefix(&pending);
-            let command = if pending.is_nil() {
-                "universal-argument"
-            } else {
-                "universal-argument-more"
-            };
-            run_minibuffer_prefix_command(interp, command, &event, next, env)?;
-            pending_keys.clear();
-            pending_events.clear();
-            continue;
-        }
-        if pending_keys.len() == 1
-            && matches!(code, Some(code) if code == '-' as i64)
-            && pending_prefix_argument(interp, env).is_truthy()
-        {
-            let next = next_negative_prefix(&pending_prefix_argument(interp, env));
-            run_minibuffer_prefix_command(interp, "negative-argument", &event, next, env)?;
-            pending_keys.clear();
-            pending_events.clear();
-            continue;
-        }
-        if pending_keys.len() == 1
-            && let Some(code) = code
-            && (0x30..=0x39).contains(&code)
-        {
-            let pending = pending_prefix_argument(interp, env);
-            if !pending.is_nil() {
-                let digit = code - 0x30;
-                let next = next_digit_prefix(&pending, digit);
-                run_minibuffer_prefix_command(interp, "digit-argument", &event, next, env)?;
-                pending_keys.clear();
-                pending_events.clear();
-                continue;
-            }
-        }
-
         let binding = key_binding(interp, &binding_key, false, false, env)?;
         if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
             load_autoloaded_prefix_map(interp, &binding, env)?;
@@ -778,43 +621,6 @@ fn advance_kbd_macro_index(interp: &mut Interpreter, count: usize, env: &mut Env
     }
 }
 
-// Some compact batch implementations (currently Isearch) perform the command
-// body natively but must still expose each input event to the Lisp command
-// loop.  Return true when hooks left COMMAND unchanged, so the caller should
-// perform that native body; a rewritten command is dispatched here instead.
-fn run_internal_kbd_macro_command(
-    interp: &mut Interpreter,
-    command: &str,
-    event: &Value,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    let command = Value::Symbol(command.into());
-    set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
-    interp.set_variable("last-command-event", event.clone(), env);
-    interp.set_variable("last-input-event", event.clone(), env);
-    interp.set_variable("this-original-command", command.clone(), env);
-    interp.set_variable("this-command", command.clone(), env);
-    increment_num_input_keys(interp, env);
-    safe_run_named_hooks(
-        interp,
-        "pre-command-hook",
-        env,
-        Some(interp.current_buffer_id()),
-    )?;
-    let dispatched = interp
-        .lookup_var("this-command", env)
-        .filter(|value| !value.is_nil())
-        .unwrap_or_else(|| command.clone());
-    let unchanged = dispatched == command;
-    if unchanged {
-        prepare_native_kbd_command_body(interp, env)?;
-    } else {
-        execute_kbd_command_body(interp, &dispatched, env)?;
-    }
-    finish_kbd_macro_command_cycle(interp, command, dispatched, env)?;
-    sync_kbd_macro_execution(interp, env)?;
-    Ok(unchanged)
-}
 
 // Dispatch commands from the innermost keyboard macro until its events run
 // out.  `recursive-edit` re-enters this loop on the same shared cursor, so a
@@ -870,105 +676,9 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
                 event_key = format!("<{event_key}>");
             }
         }
-        if pending_keys.is_empty() && event_key == "C-s" {
-            advance_kbd_macro_index(interp, 1, env);
-            if !run_internal_kbd_macro_command(interp, "isearch-forward", &event, env)? {
-                continue;
-            }
-            let mut search_text = String::new();
-            while let Some(next_event) = current_kbd_macro_event(interp, 0) {
-                if let Some(text) = keyboard_macro_self_insert_text(&next_event) {
-                    advance_kbd_macro_index(interp, 1, env);
-                    if run_internal_kbd_macro_command(
-                        interp,
-                        "isearch-printing-char",
-                        &next_event,
-                        env,
-                    )? {
-                        search_text.push_str(&text);
-                    }
-                } else {
-                    break;
-                }
-            }
-            if !search_text.is_empty() {
-                // GNU Isearch starts from `case-fold-search', then typed
-                // uppercase disables folding when `search-upper-case' is
-                // enabled.  This matters even in our compact keyboard-macro
-                // driver: treating `Ind' as `ind' can select "Windows" and
-                // leave every following motion command in the wrong region.
-                let smart_case = interp.lookup_var("case-fold-search", env) == Some(Value::T)
-                    && interp
-                        .lookup_var("search-upper-case", env)
-                        .is_some_and(|value| value.is_truthy());
-                let case_fold = if smart_case
-                    && !crate::lisp::primitives::regexp::isearch_no_upper_case_p(
-                        &search_text,
-                        false,
-                    ) {
-                    Value::Nil
-                } else {
-                    interp
-                        .lookup_var("case-fold-search", env)
-                        .unwrap_or(Value::Nil)
-                };
-                let restore = interp.bind_special_variable("case-fold-search", case_fold, env)?;
-                let search_result = super::call(
-                    interp,
-                    "search-forward",
-                    &[Value::String(search_text.into()), Value::Nil, Value::T],
-                    env,
-                );
-                interp.restore_special_binding(restore, env)?;
-                search_result?;
-            }
-            continue;
-        }
         pending_keys.push(event_key);
         pending_events.push(event.clone());
         let binding_key = pending_keys.join(" ");
-        if binding_key == "C-u" {
-            let pending = pending_prefix_argument(interp, env);
-            let next = next_universal_prefix(&pending);
-            pending_keys.clear();
-            pending_events.clear();
-            advance_kbd_macro_index(interp, 1, env);
-            let command = if pending.is_nil() {
-                "universal-argument"
-            } else {
-                "universal-argument-more"
-            };
-            run_minibuffer_prefix_command(interp, command, &event, next, env)?;
-            continue;
-        }
-        if pending_keys.len() == 1
-            && matches!(event.as_integer(), Ok(code) if code == '-' as i64)
-            && pending_prefix_argument(interp, env).is_truthy()
-        {
-            let next = next_negative_prefix(&pending_prefix_argument(interp, env));
-            pending_keys.clear();
-            pending_events.clear();
-            advance_kbd_macro_index(interp, 1, env);
-            run_minibuffer_prefix_command(interp, "negative-argument", &event, next, env)?;
-            continue;
-        }
-        // While a prefix argument is being entered, digits accumulate into it
-        // (`digit-argument') instead of dispatching as ordinary keys.
-        if pending_keys.len() == 1
-            && let Ok(code) = event.as_integer()
-            && (0x30..=0x39).contains(&code)
-        {
-            let pending = pending_prefix_argument(interp, env);
-            if !pending.is_nil() {
-                let digit = code - 0x30;
-                let next = next_digit_prefix(&pending, digit);
-                pending_keys.clear();
-                pending_events.clear();
-                advance_kbd_macro_index(interp, 1, env);
-                run_minibuffer_prefix_command(interp, "digit-argument", &event, next, env)?;
-                continue;
-            }
-        }
         let binding = key_binding(interp, &binding_key, false, false, env)?;
         if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
             load_autoloaded_prefix_map(interp, &binding, env)?;

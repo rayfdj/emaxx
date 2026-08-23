@@ -5123,6 +5123,16 @@ impl Interpreter {
         }
     }
 
+    /// Register TAG as an active `catch' target for the extent of a native
+    /// command-loop boundary (see GNU read_minibuf's `catch \='exit`).
+    pub(crate) fn push_catch_tag(&mut self, tag: Value) {
+        self.active_catch_tags.push(tag);
+    }
+
+    pub(crate) fn pop_catch_tag(&mut self) {
+        self.active_catch_tags.pop();
+    }
+
     pub(crate) fn register_captured_lexical_frames(&mut self, closure_env: &SharedEnv) {
         let identity = Rc::as_ptr(closure_env) as usize;
         if self

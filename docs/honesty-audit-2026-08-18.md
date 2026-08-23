@@ -9,13 +9,13 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 1-8 | Original audit S1: oracle-conditioned code (mode-line %-, coding table, ...) | FIXED |
 | 9 | builtin_var_value fabrication table (251 entries) | FIXED (step 5b; dismantled) |
 | 10-13 | Fabricated success: yes-or-no-p auto-t, completing-read invention, kqueue no-op | FIXED (step 5a) |
-| 14 | tty.rs native prefix machinery + false disclosure comment | SCHEDULED (5c, post-tty-merge) |
+| 14 | tty.rs native prefix machinery + false disclosure comment | FIXED (5c: tty merge removed the comments; kbd-macro/minibuffer loops now dispatch prefix keys and isearch through the keymaps) |
 | 15-21 | Measurement integrity: numerator, env leaks, fingerprints, manifest pin | FIXED |
 | 22 | Comparison ignored failure messages | FIXED (step 4) |
 | 23 | Selector documentation conflated scope with selector | FIXED (step 4) |
 | 24 | Anti-cheat gates skippable (#[cfg(test)] only) | FIXED (step 4) |
 | 25-35 | Fix-round and step-2 items (load-path, -L, user-emacs-directory, coding systems) | FIXED |
-| 36 | Keymap type-of/prin1 disagreement | SCHEDULED (5c) |
+| 36 | Keymap type-of/prin1 disagreement | FIXED (5c: prin1 prints the public list view) |
 | 37 | C-owned variables invisible to defvar | FIXED (step 5b + finding 69) |
 | 38 | handler-bind never fired from the VM | FIXED |
 | 39-40 | eval_04 quarantines (documented) | DISCLOSED |
@@ -190,6 +190,17 @@ corpus and answers it.
     ignores the keymap it was handed; the TTY loop intercepts prefix arguments
     before `key-binding`; the kbd-macro loop performs isearch natively.  These
     are on the documented backlog.
+    [RESOLVED 2026-08-23, step 5c: the tty merge rebuilt the TTY loop on
+    `key-binding`/`command-execute`; the kbd-macro and unread-events loops
+    dropped their C-s isearch simulation and hardcoded C-u/digit/negative
+    interception (oracle probes: a rebound C-u must run the rebinding, and
+    `C-s Ind ESC` must trace isearch-forward + isearch-printing-char x3 --
+    both now match); the kbd-macro minibuffer reader resolves every key
+    through the active keymaps and dispatches the real commands inside a
+    native `catch 'exit` boundary mirroring read_minibuf (oracle probes:
+    `M-: 2 RET` traces read--expression-try-read, not a hardcoded
+    exit-minibuffer; C-a/C-e/C-k/DEL edits and kill-line's end-of-buffer
+    signal at eob all match GNU).]
 28. Unicode case data comes from Rust's own tables (Unicode 16 vs GNU's 15.1)
     with a 5-entry special-casing table against GNU's 151; `char-equal`
     truncates via `as u8` under case folding.
