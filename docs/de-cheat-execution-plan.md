@@ -164,6 +164,11 @@ matching the one that protects the C manifest; delete the dead
 `ComposedAccessor` route (`caar`..`cddddr`, subr.el names) that the ownership
 test cannot see; delete `incf`/`decf`, which do not exist in GNU 30.2; teach
 `compat/generate_dumped_autoloads.el` to whitelist `function-put`.
+[DONE 2026-08-23.  The function-put item resolved by deletion instead: the
+batch runtime executes the real loaddefs.el, so the Rust projection AND its
+generator (`generate_dumped_autoloads.el`) were dead tooling -- both removed
+rather than improved.  Also removed while sweeping warnings: the tty merge's
+unused `syntax_class_chars_at_buffer_position` and `ModeLineJob.point_line`.]
 
 ## Step 8 — the baseline measurement
 

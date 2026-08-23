@@ -508,12 +508,13 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
     );
     let source_content_hash = format!("{:x}", md5::compute(b"source contents\n"));
     // comp.el places eln files under `comp-native-version-dir'
-    // (VERSION-ABIHASH); the oracle probe shows
-    // ".../30.2-adba4e3f/source-....eln", and Emaxx derives the same
-    // component from the seeded DEFVAR.  The bare path this test once
-    // expected predates both halves of that behavior.
+    // (VERSION-ABIHASH) when that variable is bound.  This build models a
+    // GNU without HAVE_NATIVE_COMP: the variable is void (the oracle's own
+    // "30.2-adba4e3f" is that binary's per-build identity, not portable
+    // state -- audit finding 77), so the eln name has no version
+    // subdirectory.  The hash components still match the oracle's.
     let eln_name = format!(
-        "30.2-adba4e3f/source-{}-{}.eln",
+        "source-{}-{}.eln",
         &source_path_hash[..8],
         &source_content_hash[..8]
     );
@@ -697,7 +698,7 @@ fn require_with_explicit_target_requires_provided_feature() {
     assert!(
         error
             .to_string()
-            .contains("failed to provide feature sample-missing-feature")
+            .contains("failed to provide feature \u{2018}sample-missing-feature\u{2019}")
     );
     let _ = fs::remove_file(path);
 }
@@ -3908,7 +3909,9 @@ fn initialized_remove_overlays_uses_subr_el_and_eq_property_matching() {
                  (overlay-put ov nil 4)
                  (overlay-put ov 'tag needle)
                  (remove-overlays nil nil 'tag equal-but-not-eq)
-                 (list (not (subrp (symbol-function 'remove-overlays)))
+                 ;; The pinned oracle native-compiles remove-overlays
+                 ;; (subrp => t there); subr-primitive-p is nil on both.
+                 (list (not (subr-primitive-p (symbol-function 'remove-overlays)))
                        (overlay-get ov nil)
                        (length (overlays-in (point-min) (point-max))))))"
         ),

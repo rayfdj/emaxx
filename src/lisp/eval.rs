@@ -2856,6 +2856,12 @@ pub struct Interpreter {
     charset_plists: Vec<(String, Value)>,
     /// Current charset priority order.
     charset_priority: Vec<String>,
+    /// `charset-list' order: every charset and alias name, newest first
+    /// (charset.c prepends on each new definition and each alias).
+    charset_names: Vec<String>,
+    /// Charsets defined with :supplementary-p; they sort after every
+    /// non-supplementary charset in the ordered (priority) list.
+    charset_supplementary: HashSet<String>,
     /// ISO charset associations keyed by (dimension, chars, final).
     iso_charsets: Vec<(i64, i64, u32, String)>,
     /// Coding systems keyed by canonical name.
@@ -3697,7 +3703,27 @@ impl Interpreter {
                     ]),
                 ),
             ],
-            charset_priority: vec!["unicode".into(), "ascii".into(), "eight-bit".into()],
+            // charset.c's C-level definitions, in definition order: the
+            // ordered list keeps non-supplementary charsets first (`emacs'
+            // and `eight-bit' are supplementary), and `charset-list' holds
+            // newest-first.
+            charset_priority: vec![
+                "ascii".into(),
+                "iso-8859-1".into(),
+                "unicode".into(),
+                "emacs".into(),
+                "eight-bit".into(),
+            ],
+            charset_names: vec![
+                "eight-bit".into(),
+                "emacs".into(),
+                "unicode".into(),
+                "iso-8859-1".into(),
+                "ascii".into(),
+            ],
+            charset_supplementary: ["emacs".to_string(), "eight-bit".to_string()]
+                .into_iter()
+                .collect(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             coding_systems: builtin_coding_systems(),
             ccl_programs: vec![None; 32],
@@ -3966,10 +3992,14 @@ impl Interpreter {
             ("command-history", Value::Nil),
             ("comment-end-can-be-escaped", Value::Nil),
             ("comment-use-syntax-ppss", Value::T),
-            ("comp-abi-hash", Value::String("adba4e3f".into())),
+            // comp.c is compiled only under HAVE_NATIVE_COMP; this build
+            // reports `native-comp-available-p' nil, so `comp-abi-hash' and
+            // `comp-native-version-dir' are void exactly as in a GNU build
+            // without the native compiler.  The previous seeds copied the
+            // oracle binary's OWN build hash -- per-build identity values,
+            // not portable state (2026-08-23 audit finding 77).
             ("comp-ctxt", Value::Nil),
             ("comp-file-preloaded-p", Value::Nil),
-            ("comp-native-version-dir", Value::String("30.2-adba4e3f".into())),
             ("comp-sanitizer-active", Value::Nil),
             ("compose-chars-after-function", Value::symbol("compose-chars-after")),
             // The *-consed counters are live allocation telemetry; Emaxx does
@@ -4000,7 +4030,9 @@ impl Interpreter {
             ("enable-disabled-menus-and-buttons", Value::Nil),
             ("extra-keyboard-modifiers", Value::Integer(0)),
             ("float-output-format", Value::Nil),
-            ("floats-consed", Value::Integer(350)),
+            // Zeroed like its *-consed siblings: live allocation telemetry
+            // (the frozen oracle snapshot here survived the first sweep).
+            ("floats-consed", Value::Integer(0)),
             ("font-log", Value::T),
             ("fontification-functions", Value::Nil),
             ("frame-alpha-lower-limit", Value::Integer(20)),
@@ -4026,7 +4058,7 @@ impl Interpreter {
             ("internal--top-level-message", Value::String("Back to top level".into())),
             ("internal-make-interpreted-closure-function", Value::symbol("cconv-make-interpreted-closure")),
             ("internal-when-entered-debugger", Value::Integer(-1)),
-            ("intervals-consed", Value::Integer(42)),
+            ("intervals-consed", Value::Integer(0)),
             ("large-hscroll-threshold", Value::Integer(10000)),
             ("last-command-event", Value::Nil),
             ("line-prefix", Value::Nil),
@@ -4052,7 +4084,10 @@ impl Interpreter {
             ("nobreak-char-display", Value::T),
             ("operating-system-release", Value::String("25.6.0".into())),
             ("overriding-local-map-menu-flag", Value::Nil),
-            ("pdumper-fingerprint", Value::String("62c9a668554fe450fafe4fb6530950c51f7f0d63a1d4a3791ed4c52339f0b330".into())),
+            // pdumper.c documents `pdumper-fingerprint' as "unique to each
+            // build of Emacs"; the value is computed lazily from THIS
+            // executable in builtin_var_value, never copied from the
+            // oracle's binary (2026-08-23 audit finding 77).
             ("post-gc-hook", Value::Nil),
             ("post-select-region-hook", Value::Nil),
             ("print-escape-control-characters", Value::Nil),
@@ -4076,7 +4111,7 @@ impl Interpreter {
             ("string-chars-consed", Value::Integer(0)),
             ("strings-consed", Value::Integer(0)),
             ("suspend-tty-functions", Value::Nil),
-            ("symbols-consed", Value::Integer(18102)),
+            ("symbols-consed", Value::Integer(0)),
             ("system-key-alist", Value::Nil),
             ("tab-bar--dragging-in-progress", Value::Nil),
             ("tab-bar-separator-image-expression", Value::Nil),
@@ -4089,7 +4124,7 @@ impl Interpreter {
             ("unread-input-method-events", Value::Nil),
             ("unread-post-input-method-events", Value::Nil),
             ("use-default-font-for-symbols", Value::T),
-            ("vector-cells-consed", Value::Integer(990381)),
+            ("vector-cells-consed", Value::Integer(0)),
             ("where-is-preferred-modifier", Value::Nil),
             ("wrap-prefix", Value::Nil),
             ("write-region-annotate-functions", Value::Nil),

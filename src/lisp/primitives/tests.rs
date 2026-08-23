@@ -1667,16 +1667,10 @@ fn native_dispatch_fails_closed_at_the_gnu_c_boundary() {
 
 #[test]
 fn generated_rust_manifests_never_contain_trailing_whitespace() {
-    for (name, source) in [
-        (
-            "dumped autoloads",
-            include_str!("../eval/generated_autoloads.rs"),
-        ),
-        (
-            "builtin arities",
-            include_str!("generated_builtin_arities.rs"),
-        ),
-    ] {
+    for (name, source) in [(
+        "builtin arities",
+        include_str!("generated_builtin_arities.rs"),
+    )] {
         for (line_index, line) in source.lines().enumerate() {
             assert!(
                 !line.ends_with(' ') && !line.ends_with('\t'),
@@ -3879,9 +3873,11 @@ fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
     assert!(interp.has_charset("latin"));
 
     interp.set_charset_priority(&["ascii".into(), "unicode".into()]);
+    // charset.c Fset_charset_priority moves the given charsets to the
+    // front and keeps every other charset in its old relative order.
     assert_eq!(
         interp.charset_priority_list(),
-        vec!["ascii", "unicode", "eight-bit"]
+        vec!["ascii", "unicode", "iso-8859-1", "emacs", "eight-bit"]
     );
     assert_eq!(
         charsets_for_text("Aあ", &interp),

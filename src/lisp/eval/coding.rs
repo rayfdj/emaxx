@@ -34,24 +34,43 @@ impl Interpreter {
             .map(|(_, id)| *id)
     }
 
-    pub fn define_charset(&mut self, name: &str, plist: Value) -> i64 {
-        let id = self
+    pub fn define_charset(&mut self, name: &str, plist: Value, supplementary: bool) -> i64 {
+        let existing = self
             .charset_ids
             .iter()
             .rev()
             .find(|(registered, _)| registered == name)
-            .map(|(_, id)| *id)
-            .unwrap_or_else(|| {
-                let id = self
-                    .charset_ids
+            .map(|(_, id)| *id);
+        let new_definition = existing.is_none();
+        let id = existing.unwrap_or_else(|| {
+            let id = self
+                .charset_ids
+                .iter()
+                .map(|(_, id)| *id)
+                .max()
+                .unwrap_or(-1)
+                + 1;
+            self.charset_ids.push((name.to_string(), id));
+            id
+        });
+        if new_definition {
+            // charset.c Fdefine_charset_internal: `charset-list' gains the
+            // name at its head; the ordered list appends a supplementary
+            // charset at the end and inserts a normal one before the first
+            // supplementary entry.
+            self.charset_names.insert(0, name.to_string());
+            if supplementary {
+                self.charset_supplementary.insert(name.to_string());
+                self.charset_priority.push(name.to_string());
+            } else {
+                let position = self
+                    .charset_priority
                     .iter()
-                    .map(|(_, id)| *id)
-                    .max()
-                    .unwrap_or(-1)
-                    + 1;
-                self.charset_ids.push((name.to_string(), id));
-                id
-            });
+                    .position(|existing| self.charset_supplementary.contains(existing))
+                    .unwrap_or(self.charset_priority.len());
+                self.charset_priority.insert(position, name.to_string());
+            }
+        }
         if let Some((_, existing)) = self
             .charset_plists
             .iter_mut()
@@ -105,7 +124,15 @@ impl Interpreter {
         } else {
             self.charset_aliases.push((alias.to_string(), canonical));
         }
+        // charset.c Fdefine_charset_alias: the alias joins `charset-list'.
+        if !self.charset_names.iter().any(|existing| existing == alias) {
+            self.charset_names.insert(0, alias.to_string());
+        }
         Ok(())
+    }
+
+    pub fn charset_name_list(&self) -> Vec<String> {
+        self.charset_names.clone()
     }
 
     pub fn charset_priority_list(&self) -> Vec<String> {
@@ -113,20 +140,26 @@ impl Interpreter {
     }
 
     pub fn set_charset_priority(&mut self, names: &[String]) {
-        let mut reordered = Vec::new();
+        // charset.c Fset_charset_priority: the given charsets move to the
+        // front in the given order; every other charset keeps its old
+        // relative order behind them.
+        let mut new_head = Vec::new();
         for name in names {
             if let Some(canonical) = self.charset_canonical_name(name)
-                && !reordered.iter().any(|existing| existing == &canonical)
+                && !new_head.iter().any(|existing| existing == &canonical)
+                && self.charset_priority.iter().any(|existing| existing == &canonical)
             {
-                reordered.push(canonical);
+                new_head.push(canonical);
             }
         }
-        for default in ["unicode", "ascii", "eight-bit"] {
-            if !reordered.iter().any(|existing| existing == default) {
-                reordered.push(default.to_string());
-            }
-        }
-        self.charset_priority = reordered;
+        let tail = self
+            .charset_priority
+            .iter()
+            .filter(|existing| !new_head.iter().any(|head| &head == existing))
+            .cloned()
+            .collect::<Vec<_>>();
+        new_head.extend(tail);
+        self.charset_priority = new_head;
     }
 
     pub fn charset_priority_rank(&self, name: &str) -> usize {

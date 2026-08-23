@@ -610,6 +610,60 @@ pub(crate) fn gnu_c_manifest_matches_fresh_regeneration() {
     let _ = fs::remove_file(&fresh_path);
 }
 
+pub(crate) fn builtin_arities_match_fresh_regeneration() {
+    // The arities manifest feeds native dispatch arity checks and
+    // interactive forms.  A hand edit could widen an arity or forge an
+    // interactive spec, so regenerate from the committed C manifest plus
+    // the pinned oracle and require byte identity, exactly like the C
+    // manifest's own gate above.
+    let root = repo_root();
+    let oracle = root.join("../emacs/src/emacs");
+    assert!(
+        oracle.exists(),
+        "pinned GNU sibling checkout required for the arities regeneration gate"
+    );
+    let reported_configuration = std::process::Command::new(&oracle)
+        .args(["-Q", "--batch", "--eval", "(princ system-configuration)"])
+        .output()
+        .expect("query oracle system-configuration");
+    let reported_configuration = String::from_utf8_lossy(&reported_configuration.stdout)
+        .trim()
+        .to_string();
+    assert!(
+        reported_configuration.contains("apple-darwin"),
+        "arities regeneration requires the pinned Darwin NS oracle build; \
+         this oracle reports `{reported_configuration}'.  See \
+         docs/oracle-build-contract.md"
+    );
+    let fresh_path =
+        std::env::temp_dir().join(format!("emaxx-arities-regen-{}.rs", std::process::id()));
+    let status = std::process::Command::new(&oracle)
+        .current_dir(&root)
+        .args([
+            "-Q",
+            "--batch",
+            "-l",
+            "compat/generate_builtin_arities.el",
+            "--eval",
+            &format!(
+                "(emaxx-generate-builtin-arities \"src/lisp\" {:?})",
+                fresh_path.display().to_string()
+            ),
+        ])
+        .status()
+        .expect("run the arities generator with the oracle binary");
+    assert!(status.success(), "arities generator failed");
+    let fresh = fs::read_to_string(&fresh_path).expect("read regenerated arities");
+    let committed =
+        fs::read_to_string(root.join("src/lisp/primitives/generated_builtin_arities.rs"))
+            .expect("read committed arities");
+    assert_eq!(
+        fresh, committed,
+        "committed arities manifest does not match fresh regeneration from the pinned oracle"
+    );
+    let _ = fs::remove_file(&fresh_path);
+}
+
 /// Run every anti-cheat gate and collect the violations.  The gates were
 /// once only `#[cfg(test)]' tests, so a measured run could be produced
 /// from a tree that had never passed them; the compat harness now calls
@@ -631,6 +685,7 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
         ("bare_runtime_rejects_gnu_elisp_owned_definition_forms", bare_runtime_rejects_gnu_elisp_owned_definition_forms as fn()),
         ("tty_frontend_does_not_reintroduce_silent_fallback_fabrications", tty_frontend_does_not_reintroduce_silent_fallback_fabrications as fn()),
         ("gnu_c_manifest_matches_fresh_regeneration", gnu_c_manifest_matches_fresh_regeneration as fn()),
+        ("builtin_arities_match_fresh_regeneration", builtin_arities_match_fresh_regeneration as fn()),
     ];
     let mut violations = Vec::new();
     for (name, gate) in gates {
@@ -703,5 +758,10 @@ mod gate_tests {
     #[test]
     fn gnu_c_manifest_matches_fresh_regeneration() {
         super::gnu_c_manifest_matches_fresh_regeneration();
+    }
+
+    #[test]
+    fn builtin_arities_match_fresh_regeneration() {
+        super::builtin_arities_match_fresh_regeneration();
     }
 }
