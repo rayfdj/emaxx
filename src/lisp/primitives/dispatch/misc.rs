@@ -1137,8 +1137,24 @@ define_dispatch!(
 
             "current-idle-time" => {
                 need_args(name, args, 0)?;
-                // Batch Emaxx has no input loop in which idle time accumulates.
-                Ok(Value::Nil)
+                // keyboard.c Fcurrent_idle_time: the span since idleness
+                // began, as (HIGH LOW USEC PSEC), or nil while input is
+                // being processed (and always nil in batch, which has no
+                // input loop).
+                match crate::lisp::primitives::tty_current_idle_duration() {
+                    Some(elapsed) => {
+                        let secs = elapsed.as_secs();
+                        let usec = elapsed.subsec_micros();
+                        let psec = (elapsed.subsec_nanos() % 1_000) * 1_000_000;
+                        Ok(Value::list([
+                            Value::Integer((secs >> 16) as i64),
+                            Value::Integer((secs & 0xffff) as i64),
+                            Value::Integer(i64::from(usec)),
+                            Value::Integer(i64::from(psec)),
+                        ]))
+                    }
+                    None => Ok(Value::Nil),
+                }
             }
             "subr-type" => {
                 need_args(name, args, 1)?;

@@ -60,6 +60,13 @@ pub(crate) fn function_documentation(
         Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok()?,
         other => other.clone(),
     };
+    // doc.c Fdocumentation: a macro's documentation lives on the function
+    // inside its (macro . FUNCTION) cons.
+    let value = if matches!(value.car(), Ok(Value::Symbol(ref name)) if name == "macro") {
+        value.cdr().ok()?
+    } else {
+        value
+    };
     if let Value::Record(id) = value
         && let Some(record) = interp.find_record(id)
         && record.kind == crate::lisp::eval::RecordKind::Closure
@@ -884,10 +891,21 @@ pub(crate) fn execute_command_binding(
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
-    // GNU's command loop separates each command into its own undo group
-    // (undo-auto--add-boundary after every command); `undo' relies on the
-    // boundary to skip before replaying the previous group.
-    interp.buffer.push_undo_boundary();
+    // keyboard.c:1537: before this command runs, boundaries for the
+    // LAST command's changes are ensured through simple.el's own
+    // `undo-auto--add-boundary', whose amalgamation policy (fusing runs
+    // of self-inserts) native boundary pushes cannot reproduce.  A bare
+    // runtime without simple.el keeps the plain native boundary.
+    if interp.lookup_function("undo-auto--add-boundary", env).is_ok() {
+        let _ = interp.call_function_value(
+            Value::Symbol("undo-auto--add-boundary".into()),
+            Some("undo-auto--add-boundary"),
+            &[],
+            env,
+        );
+    } else {
+        interp.buffer.push_undo_boundary();
+    }
     // keyboard.c read_char wipes a lingering message when the next input
     // event arrives: the channel empties before the command runs, but the
     // glass only catches up at the next redisplay — so a command that
@@ -974,20 +992,99 @@ pub(crate) fn execute_command_binding(
     // prefix command (universal-argument) restores the previous value
     // there via prefix-command-preserve-state, keeping last-command
     // stable across the C-u chain.
+    // undo.c's run_undoable_change fires on the first change a command
+    // makes in a buffer; at command granularity the same set is "every
+    // buffer whose text tick moved" -- report each through simple.el's
+    // `undo-auto--undoable-change' so the next `undo-auto--add-boundary'
+    // sees it.  (Changes made by idle timers between commands are the
+    // disclosed gap of this granularity.)
+    if interp
+        .lookup_function("undo-auto--undoable-change", env)
+        .is_ok()
+    {
+        let current_changed = interp.current_buffer_id() == modified_before.0
+            && interp.buffer.chars_modified_tick() != modified_before.1;
+        let switched_and_changed = interp.current_buffer_id() != modified_before.0
+            && interp
+                .get_buffer_by_id(modified_before.0)
+                .is_some_and(|buffer| buffer.chars_modified_tick() != modified_before.1);
+        if current_changed {
+            let _ = interp.call_function_value(
+                Value::Symbol("undo-auto--undoable-change".into()),
+                Some("undo-auto--undoable-change"),
+                &[],
+                env,
+            );
+        }
+        if switched_and_changed {
+            let here = interp.current_buffer_id();
+            if interp.set_current_buffer_id(modified_before.0).is_ok() {
+                let _ = interp.call_function_value(
+                    Value::Symbol("undo-auto--undoable-change".into()),
+                    Some("undo-auto--undoable-change"),
+                    &[],
+                    env,
+                );
+                let _ = interp.set_current_buffer_id(here);
+            }
+        }
+    }
     let last_command = interp
         .lookup_var("this-command", env)
         .filter(|command| !command.is_nil())
         .unwrap_or(dispatched);
     interp.set_variable("last-command", last_command, env);
     interp.set_variable("last-prefix-arg", prefix, env);
+    // keyboard.c:1421 (command_loop_1): before waiting for the next key
+    // sequence, `this-command' and its shadows go nil -- Lisp that runs
+    // between commands (idle timers; eldoc's `(not this-command)' guard)
+    // must see no command executing.
+    interp.set_variable("this-command", Value::Nil, env);
+    interp.set_variable("real-this-command", Value::Nil, env);
+    interp.set_variable("this-original-command", Value::Nil, env);
     result
 }
 
-/// keyboard.c's timer_check in miniature: while the command loop waits
-/// for input, fire the ripe entries of `timer-list' (absolute times) and
-/// `timer-idle-list' (idle durations, once per idle period) through
-/// timer.el's own `timer-event-handler'.  Returns whether any ran —
-/// isearch's lazy highlight arrives this way.
+// keyboard.c's timer_check in miniature: while the command loop waits
+// for input, fire the ripe entries of `timer-list' (absolute times) and
+// `timer-idle-list' (idle durations, once per idle period) through
+// timer.el's own `timer-event-handler'.  The idle clock below backs
+// `current-idle-time'; isearch's lazy highlight arrives this way.
+thread_local! {
+    static TTY_IDLE_START: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+// keyboard.c timer_start_idle: on entering the idle state (and only on
+// entering it), every idle timer becomes a candidate again -- GNU calls
+// timer.el's `internal-timer-start-idle' to clear the triggered flags,
+// and so do we.  The recorded instant backs `current-idle-time'.
+pub(crate) fn tty_note_idle_start(interp: &mut Interpreter, env: &mut Env) {
+    let already_idle = TTY_IDLE_START.with(|cell| cell.get().is_some());
+    if already_idle {
+        return;
+    }
+    TTY_IDLE_START.with(|cell| cell.set(Some(std::time::Instant::now())));
+    if interp.lookup_function("internal-timer-start-idle", env).is_ok() {
+        let _ = interp.call_function_value(
+            Value::Symbol("internal-timer-start-idle".into()),
+            Some("internal-timer-start-idle"),
+            &[],
+            env,
+        );
+    }
+}
+
+// keyboard.c timer_stop_idle: input ends the idle period.
+pub(crate) fn tty_note_idle_end() {
+    TTY_IDLE_START.with(|cell| cell.set(None));
+}
+
+// Fcurrent_idle_time's backing state: the elapsed idle span, when idle.
+pub(crate) fn tty_current_idle_duration() -> Option<std::time::Duration> {
+    TTY_IDLE_START.with(|cell| cell.get()).map(|start| start.elapsed())
+}
+
 pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_seconds: f64) -> bool {
     if interp.lookup_function("timer-event-handler", env).is_err() {
         return false;
@@ -1597,14 +1694,43 @@ pub(crate) fn menu_bar_row_items(
     };
     let mut items: Vec<(Value, String)> = Vec::new();
     for map in maps.iter().rev() {
-        let Ok(menu) = super::call(
-            interp,
-            "lookup-key",
-            &[map.clone(), menu_bar_key.clone()],
-            env,
-        ) else {
-            continue;
-        };
+        // keymap.c access_keymap merges every `menu-bar' submap bound
+        // along the map's parent chain into one `(keymap CHILD PARENT)'
+        // reference, so a mode map's own menus and its parent's (shell's
+        // Complete over comint's In/Out and Signals) all reach the bar.
+        // Enumerate the chain child-first; a level without its own
+        // binding answers its parent's submap, which the identity dedup
+        // below drops.
+        let mut chain_menus: Vec<Value> = Vec::new();
+        let mut level = map.clone();
+        for _ in 0..32 {
+            if let Ok(menu) = super::call(
+                interp,
+                "lookup-key",
+                &[level.clone(), menu_bar_key.clone()],
+                env,
+            ) && super::is_keymap_value(interp, &menu)
+            {
+                let identity = super::keymap_record_id(interp, &menu);
+                let duplicate = chain_menus.iter().any(|earlier| {
+                    match (identity, super::keymap_record_id(interp, earlier)) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => false,
+                    }
+                });
+                if !duplicate {
+                    chain_menus.push(menu);
+                }
+            }
+            match super::call(interp, "keymap-parent", &[level.clone()], env) {
+                Ok(parent) if parent.is_truthy() => level = parent,
+                _ => break,
+            }
+        }
+        // One keymap contributes to a key only once across its chain,
+        // even when its entry list carries shadowed duplicates.
+        let mut seen: Vec<Value> = Vec::new();
+        for menu in chain_menus {
         // A runtime keymap answers as its record identity; walk GNU's
         // public `(keymap ...)' cons projection of it.
         let menu = {
@@ -1616,9 +1742,6 @@ pub(crate) fn menu_bar_row_items(
         if !matches!(menu.car(), Ok(Value::Symbol(tag)) if tag == "keymap") {
             continue;
         }
-        // One keymap contributes to a key only once, even when its
-        // entry list carries shadowed duplicates.
-        let mut seen: Vec<Value> = Vec::new();
         let mut tail = menu.cdr().unwrap_or(Value::Nil);
         while let Value::Cons(_) = tail {
             let Ok(entry) = tail.car() else { break };
@@ -1645,6 +1768,7 @@ pub(crate) fn menu_bar_row_items(
                 _ => {}
             }
             tail = next;
+        }
         }
     }
     if let Some(final_items) = interp

@@ -196,12 +196,23 @@ impl Interpreter {
             .map(|process| process.plist.clone())
     }
 
+    /// GNU's `Vprocess_alist' membership: a process stays visible to
+    /// `process-list', `get-process', and `get-buffer-process' after it
+    /// exits until status_notify processes the change — process.c:7853
+    /// removes it there (`delete-exited-processes', default t) right
+    /// before the sentinel runs.  `sentinel_notified' marks exactly that
+    /// point, so an exited-but-unnotified process is still listed, and a
+    /// filter or hook running on its final output can still find it.
+    fn in_process_alist(process: &ProcessState) -> bool {
+        process.status.is_live() || !process.sentinel_notified
+    }
+
     pub fn process_list_value(&self) -> Value {
         Value::list(
             self.process_states
                 .iter()
                 .rev()
-                .filter(|process| process.status.is_live())
+                .filter(|process| Self::in_process_alist(process))
                 .map(|process| Value::Record(process.record_id)),
         )
     }
@@ -679,7 +690,7 @@ impl Interpreter {
         self.process_states
             .iter()
             .rev()
-            .find(|process| process.name == name && process.status.is_live())
+            .find(|process| process.name == name && Self::in_process_alist(process))
             .map(|process| process.record_id)
     }
 
@@ -1115,7 +1126,7 @@ impl Interpreter {
     pub fn process_value_for_buffer(&mut self, buffer_id: u64) -> Option<Value> {
         self.process_states.iter_mut().rev().find_map(|process| {
             let _ = Self::refresh_process_state(process);
-            (process.buffer_id == Some(buffer_id) && process.status.is_live())
+            (process.buffer_id == Some(buffer_id) && Self::in_process_alist(process))
                 .then_some(Value::Record(process.record_id))
         })
     }

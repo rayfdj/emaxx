@@ -482,12 +482,57 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
         emaxx.close()
 
 
+ELISP_SAMPLE = """;; A comment line for font-lock.
+(defun demo-function (arg)
+  "Documentation string here."
+  (let ((value (concat "literal" arg)))
+    (if value
+        (message "%s" value)
+      nil)))
+
+(defvar demo-variable 42
+  "Another doc string.")
+"""
+
 SCENARIOS = [
-    # (name, initial file contents, keystrokes)
+    # (name, initial file contents, keystrokes[, file suffix])
     ("type-one-line", "", [b"hello world"]),
+    # Opening a Lisp source file engages lisp-mode via auto-mode-alist
+    # and font-lock paints the visible text: keywords, strings, comments
+    # and names must carry GNU's colors on the glass.
+    ("fontify-elisp", ELISP_SAMPLE, [b"\x0e\x0e"], ".el"),
+    # Editing refontifies: breaking a string open recolors the tail of
+    # the buffer through jit-lock's after-change machinery.
+    ("fontify-edit", ELISP_SAMPLE, [b"\x0e\x0e\x0e", b"\x05", b" ;; tail comment"], ".el"),
     ("multiline-and-motion", "", [b"first line\rsecond line\rthird line", b"\x10\x10", b"\x01", b"X"]),
     ("open-existing-and-edit", "alpha\nbeta\ngamma\n", [b"\x0e\x0e", b"\x05", b" tail"]),
     ("kill-line-and-undo", "one\ntwo\nthree\n", [b"\x0b", b"\x1f"]),
+    # A run of self-inserts amalgamates into shared undo groups
+    # (simple.el's undo-auto machinery, driven from the command loop and
+    # cmds.c's amalgamation calls): one undo removes the whole tail
+    # group, not one character.
+    ("undo-amalgamation", "", [b"abcdefghijklmnopqrstuvwxy", b"\x1f"]),
+    # Subprocess output reaches the glass between keystrokes: the command
+    # loop's wait pumps process output through filters and sentinels
+    # (wait_reading_process_output), the popped window shows the output,
+    # and after exit the mode line's %s construct answers "no process".
+    ("async-shell", "sample text\n", [b"\x1b&echo hi\r", b"\x0c"]),
+    # M-x shell end to end: comint spawns $SHELL on a pty, the prompt
+    # arrives propertized (comint-highlight-prompt via the font-lock-face
+    # alias), typed input echoes bold, RET sends the line, and the
+    # command's output plus the next prompt land like GNU paints them --
+    # mode-line process status, In/Out and Signals menus included.
+    ("mx-shell", "sample text\n", [b"\x1bxshell\r", b"echo hi\r", b"\x0c"]),
+    # A raw make-process with the default filter: output inserts at the
+    # process mark in the named buffer while the loop waits.
+    (
+        "make-process",
+        "sample text\n",
+        [
+            b"\x1b:(make-process :name \"p\" :command (list \"echo\" \"hi\") :buffer \"*out*\")\r",
+            b"\x18b*out*\r",
+        ],
+    ),
     ("delete-and-backspace", "abcdef\n", [b"\x06\x06", b"\x04", b"\x7f\x7f"]),
     # A logical line wider than the window: GNU wraps it onto continuation
     # rows (with a trailing "\" marker); motion afterwards must land on the
@@ -992,8 +1037,12 @@ def main():
         with open(os.path.join(COMPLETIONS_DIR, name), "w"):
             pass
     failures = 0
-    for name, contents, keys in SCENARIOS:
-        handle, path = tempfile.mkstemp(suffix=".dat", prefix=f"ttydiff-{name}-")
+    for entry in SCENARIOS:
+        name, contents, keys = entry[0], entry[1], entry[2]
+        # A scenario may carry a file suffix; `.el' engages lisp-mode and
+        # font-lock through the ordinary auto-mode-alist path.
+        suffix = entry[3] if len(entry) > 3 else ".dat"
+        handle, path = tempfile.mkstemp(suffix=suffix, prefix=f"ttydiff-{name}-")
         with os.fdopen(handle, "w") as out:
             out.write(contents)
         try:

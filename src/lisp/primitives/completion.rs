@@ -1318,14 +1318,36 @@ pub(crate) fn callable_interactive_form_items(
     {
         // GNU keys interactivity on the slot's presence (PVSIZE >
         // COMPILED_INTERACTIVE): a bare `(interactive)' stores nil there
-        // and the function is still a command.
-        let mut form = vec![Value::symbol("interactive")];
-        if !spec.is_nil() {
-            form.push(spec);
-        }
-        return Some(form);
+        // and the function is still a command.  callint.c
+        // Finteractive_form: a vector in the slot is the byte-compiler's
+        // (SPEC MODES) encoding -- the form is element 0 alone; the mode
+        // list is `command-modes' data and never reaches the caller of
+        // the interactive form.
+        let spec = match spec.to_vec() {
+            Ok(items)
+                if matches!(items.first(),
+                    Some(Value::Symbol(tag)) if tag == "vector-literal") =>
+            {
+                items.get(1).cloned().unwrap_or(Value::Nil)
+            }
+            _ => spec,
+        };
+        return Some(vec![Value::symbol("interactive"), spec]);
     }
-    interactive_form_items(func)
+    // callint.c's cons-lambda branch: a spec without MODES entries is
+    // answered verbatim (`(interactive)' stays bare, `(interactive "p")'
+    // unchanged); only a spec carrying modes is trimmed to
+    // `(interactive DESCRIPTOR)'.
+    interactive_form_items(func).map(|items| {
+        if items.len() <= 2 {
+            items
+        } else {
+            vec![
+                Value::symbol("interactive"),
+                items.get(1).cloned().unwrap_or(Value::Nil),
+            ]
+        }
+    })
 }
 
 fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
@@ -1587,10 +1609,42 @@ fn history_variable_name(spec: &Value) -> Option<String> {
     }
 }
 
+/// minibuf.c:763: read_minibuf sets an unbound history variable to nil
+/// before the read, so simple.el's history motion and `add-to-history'
+/// (both of which take `symbol-value' of it) see a real list.
+fn ensure_history_variable_bound(interp: &mut Interpreter, env: &mut Env, variable: &str) {
+    if interp.lookup_var(variable, env).is_none() {
+        interp.set_variable(variable, Value::Nil, env);
+    }
+}
+
 /// Record submitted minibuffer input, GNU's add_to_history: skip empty
 /// input and an immediate duplicate, honor `history-length'.
 fn push_minibuffer_history(interp: &mut Interpreter, env: &mut Env, variable: &str, text: &str) {
     if text.is_empty() {
+        return;
+    }
+    // minibuf.c:968: unless `history-add-new-input' is nil, the string
+    // goes through subr.el's `add-to-history', which owns deduplication
+    // (`history-delete-duplicates' anywhere in the list), per-variable
+    // `history-length' properties, and trimming.  Only a runtime without
+    // subr.el keeps the native head-dedup subset.
+    if interp
+        .lookup_var("history-add-new-input", env)
+        .is_some_and(|value| value.is_nil())
+    {
+        return;
+    }
+    if interp.lookup_function("add-to-history", env).is_ok() {
+        let _ = interp.call_function_value(
+            Value::Symbol("add-to-history".into()),
+            Some("add-to-history"),
+            &[
+                Value::Symbol(variable.into()),
+                Value::String(text.into()),
+            ],
+            env,
+        );
         return;
     }
     let current = interp.lookup_var(variable, env).unwrap_or(Value::Nil);
@@ -1673,6 +1727,9 @@ pub(crate) fn interactive_minibuffer_command_loop(
         "minibuffer-history-position",
         Value::Integer(history_position),
     );
+    if let Some(variable) = history_variable_name(history_spec) {
+        ensure_history_variable_bound(interp, env, &variable);
+    }
 
     // read_minibuf saves the window configuration before the read; the
     // teardown below puts it back (default `read-minibuffer-restore-windows'
@@ -1803,6 +1860,9 @@ fn drive_interactive_minibuffer(
         .map(str::to_string)
         .unwrap_or_default();
     let history_variable = history_variable_name(history_spec);
+    if let Some(variable) = history_variable.as_deref() {
+        ensure_history_variable_bound(interp, env, variable);
+    }
     let mut contents: Vec<char> = initial.chars().collect();
     let mut cursor = contents.len();
     // 0 = editing fresh input; N = showing the Nth newest history entry.
