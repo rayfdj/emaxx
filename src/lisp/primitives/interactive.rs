@@ -891,10 +891,21 @@ pub(crate) fn execute_command_binding(
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
-    // GNU's command loop separates each command into its own undo group
-    // (undo-auto--add-boundary after every command); `undo' relies on the
-    // boundary to skip before replaying the previous group.
-    interp.buffer.push_undo_boundary();
+    // keyboard.c:1537: before this command runs, boundaries for the
+    // LAST command's changes are ensured through simple.el's own
+    // `undo-auto--add-boundary', whose amalgamation policy (fusing runs
+    // of self-inserts) native boundary pushes cannot reproduce.  A bare
+    // runtime without simple.el keeps the plain native boundary.
+    if interp.lookup_function("undo-auto--add-boundary", env).is_ok() {
+        let _ = interp.call_function_value(
+            Value::Symbol("undo-auto--add-boundary".into()),
+            Some("undo-auto--add-boundary"),
+            &[],
+            env,
+        );
+    } else {
+        interp.buffer.push_undo_boundary();
+    }
     // keyboard.c read_char wipes a lingering message when the next input
     // event arrives: the channel empties before the command runs, but the
     // glass only catches up at the next redisplay — so a command that
@@ -981,6 +992,43 @@ pub(crate) fn execute_command_binding(
     // prefix command (universal-argument) restores the previous value
     // there via prefix-command-preserve-state, keeping last-command
     // stable across the C-u chain.
+    // undo.c's run_undoable_change fires on the first change a command
+    // makes in a buffer; at command granularity the same set is "every
+    // buffer whose text tick moved" -- report each through simple.el's
+    // `undo-auto--undoable-change' so the next `undo-auto--add-boundary'
+    // sees it.  (Changes made by idle timers between commands are the
+    // disclosed gap of this granularity.)
+    if interp
+        .lookup_function("undo-auto--undoable-change", env)
+        .is_ok()
+    {
+        let current_changed = interp.current_buffer_id() == modified_before.0
+            && interp.buffer.chars_modified_tick() != modified_before.1;
+        let switched_and_changed = interp.current_buffer_id() != modified_before.0
+            && interp
+                .get_buffer_by_id(modified_before.0)
+                .is_some_and(|buffer| buffer.chars_modified_tick() != modified_before.1);
+        if current_changed {
+            let _ = interp.call_function_value(
+                Value::Symbol("undo-auto--undoable-change".into()),
+                Some("undo-auto--undoable-change"),
+                &[],
+                env,
+            );
+        }
+        if switched_and_changed {
+            let here = interp.current_buffer_id();
+            if interp.set_current_buffer_id(modified_before.0).is_ok() {
+                let _ = interp.call_function_value(
+                    Value::Symbol("undo-auto--undoable-change".into()),
+                    Some("undo-auto--undoable-change"),
+                    &[],
+                    env,
+                );
+                let _ = interp.set_current_buffer_id(here);
+            }
+        }
+    }
     let last_command = interp
         .lookup_var("this-command", env)
         .filter(|command| !command.is_nil())

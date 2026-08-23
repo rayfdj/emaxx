@@ -1587,10 +1587,42 @@ fn history_variable_name(spec: &Value) -> Option<String> {
     }
 }
 
+/// minibuf.c:763: read_minibuf sets an unbound history variable to nil
+/// before the read, so simple.el's history motion and `add-to-history'
+/// (both of which take `symbol-value' of it) see a real list.
+fn ensure_history_variable_bound(interp: &mut Interpreter, env: &mut Env, variable: &str) {
+    if interp.lookup_var(variable, env).is_none() {
+        interp.set_variable(variable, Value::Nil, env);
+    }
+}
+
 /// Record submitted minibuffer input, GNU's add_to_history: skip empty
 /// input and an immediate duplicate, honor `history-length'.
 fn push_minibuffer_history(interp: &mut Interpreter, env: &mut Env, variable: &str, text: &str) {
     if text.is_empty() {
+        return;
+    }
+    // minibuf.c:968: unless `history-add-new-input' is nil, the string
+    // goes through subr.el's `add-to-history', which owns deduplication
+    // (`history-delete-duplicates' anywhere in the list), per-variable
+    // `history-length' properties, and trimming.  Only a runtime without
+    // subr.el keeps the native head-dedup subset.
+    if interp
+        .lookup_var("history-add-new-input", env)
+        .is_some_and(|value| value.is_nil())
+    {
+        return;
+    }
+    if interp.lookup_function("add-to-history", env).is_ok() {
+        let _ = interp.call_function_value(
+            Value::Symbol("add-to-history".into()),
+            Some("add-to-history"),
+            &[
+                Value::Symbol(variable.into()),
+                Value::String(text.into()),
+            ],
+            env,
+        );
         return;
     }
     let current = interp.lookup_var(variable, env).unwrap_or(Value::Nil);
@@ -1673,6 +1705,9 @@ pub(crate) fn interactive_minibuffer_command_loop(
         "minibuffer-history-position",
         Value::Integer(history_position),
     );
+    if let Some(variable) = history_variable_name(history_spec) {
+        ensure_history_variable_bound(interp, env, &variable);
+    }
 
     // read_minibuf saves the window configuration before the read; the
     // teardown below puts it back (default `read-minibuffer-restore-windows'
@@ -1803,6 +1838,9 @@ fn drive_interactive_minibuffer(
         .map(str::to_string)
         .unwrap_or_default();
     let history_variable = history_variable_name(history_spec);
+    if let Some(variable) = history_variable.as_deref() {
+        ensure_history_variable_bound(interp, env, variable);
+    }
     let mut contents: Vec<char> = initial.chars().collect();
     let mut cursor = contents.len();
     // 0 = editing fresh input; N = showing the Nth newest history entry.

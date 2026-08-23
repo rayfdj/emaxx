@@ -507,6 +507,11 @@ SCENARIOS = [
     ("multiline-and-motion", "", [b"first line\rsecond line\rthird line", b"\x10\x10", b"\x01", b"X"]),
     ("open-existing-and-edit", "alpha\nbeta\ngamma\n", [b"\x0e\x0e", b"\x05", b" tail"]),
     ("kill-line-and-undo", "one\ntwo\nthree\n", [b"\x0b", b"\x1f"]),
+    # A run of self-inserts amalgamates into shared undo groups
+    # (simple.el's undo-auto machinery, driven from the command loop and
+    # cmds.c's amalgamation calls): one undo removes the whole tail
+    # group, not one character.
+    ("undo-amalgamation", "", [b"abcdefghijklmnopqrstuvwxy", b"\x1f"]),
     ("delete-and-backspace", "abcdef\n", [b"\x06\x06", b"\x04", b"\x7f\x7f"]),
     # A logical line wider than the window: GNU wraps it onto continuation
     # rows (with a trailing "\" marker); motion afterwards must land on the
