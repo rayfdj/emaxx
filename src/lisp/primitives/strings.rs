@@ -848,9 +848,13 @@ pub(crate) fn text_property_search_buffer(
         return None;
     }
     for pos in start..end {
+        // textprop.c's Ftext_property_any/not_all read each position
+        // through textget, so `char-property-alias-alist' entries (the
+        // face -> font-lock-face alias font-lock-mode installs) answer
+        // here exactly as for `get-text-property'.
         let matches = values_equal(
             interp,
-            &buffer.text_property_at(pos, prop).unwrap_or(Value::Nil),
+            &buffer_property_at_with_category(interp, buffer, pos, prop).unwrap_or(Value::Nil),
             wanted,
         );
         if matches == want_match {

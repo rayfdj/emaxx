@@ -486,8 +486,10 @@ define_dispatch!(
                     if let Some(mark) = mark {
                         buffer.set_mark(mark);
                     }
+                    // Property spans are 1-based buffer positions, the
+                    // same coordinates set_text_properties consumes.
                     for span in props {
-                        buffer.set_text_properties(span.start + 1, span.end + 1, &span.props);
+                        buffer.set_text_properties(span.start, span.end, &span.props);
                     }
                     buffer.overlays = overlays;
                 }
