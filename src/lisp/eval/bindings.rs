@@ -619,8 +619,11 @@ impl Interpreter {
                     .unwrap_or_else(primitives::default_directory)
                     .into(),
             )),
+            // callproc.c:2040 init_callproc: the SHELL environment
+            // variable verbatim, "/bin/sh" only when it is unset.
             "shell-file-name" => Some(Value::String(
-                primitives::find_executable("sh")
+                std::env::var("SHELL")
+                    .ok()
                     .unwrap_or_else(|| "/bin/sh".into())
                     .into(),
             )),

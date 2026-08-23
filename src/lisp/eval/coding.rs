@@ -676,6 +676,40 @@ impl Interpreter {
         }
     }
 
+    /// GNU keeps each window's point as real markers (w->pointm and
+    /// w->old_pointm), so insdel.c's marker adjustment drags them with
+    /// every insertion and deletion — a process filter inserting before
+    /// markers at a non-selected window's point moves that window's
+    /// point exactly like any other marker.  The native window records
+    /// hold integer point slots instead; this sweep applies the same
+    /// insertion-type-nil marker rules to those integers.  (The
+    /// window-start slot stays under the native scroll recomputation.)
+    fn adjust_window_point_slots(&mut self, buffer_id: u64, adjust: impl Fn(usize) -> usize) {
+        const POINT_SLOTS: [usize; 2] = [
+            crate::lisp::primitives::WINDOW_OLD_POINT_SLOT,
+            crate::lisp::primitives::WINDOW_POINT_SLOT,
+        ];
+        for window_id in self.record_ids_by_type("window") {
+            let Some(record) = self.find_record_mut(window_id) else {
+                continue;
+            };
+            let shows_buffer = matches!(
+                record.slots.get(crate::lisp::primitives::WINDOW_BUFFER_SLOT),
+                Some(Value::Integer(id)) if *id == buffer_id as i64
+            );
+            if !shows_buffer {
+                continue;
+            }
+            for slot in POINT_SLOTS {
+                if let Some(Value::Integer(position)) = record.slots.get(slot)
+                    && let Ok(position) = usize::try_from(*position)
+                {
+                    record.slots[slot] = Value::Integer(adjust(position) as i64);
+                }
+            }
+        }
+    }
+
     pub fn adjust_markers_for_insert(
         &mut self,
         buffer_id: u64,
@@ -686,6 +720,13 @@ impl Interpreter {
         if nchars == 0 {
             return;
         }
+        self.adjust_window_point_slots(buffer_id, |position| {
+            if position > pos || (position == pos && before_markers) {
+                position + nchars
+            } else {
+                position
+            }
+        });
         let Some(marker_ids) = self.markers_by_buffer.get(&buffer_id) else {
             return;
         };
@@ -712,6 +753,15 @@ impl Interpreter {
             return;
         }
         let nchars = to - from;
+        self.adjust_window_point_slots(buffer_id, |position| {
+            if position > to {
+                position - nchars
+            } else if position > from {
+                from
+            } else {
+                position
+            }
+        });
         let Some(marker_ids) = self.markers_by_buffer.get(&buffer_id) else {
             return;
         };

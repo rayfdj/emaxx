@@ -2232,16 +2232,16 @@ define_dispatch!(
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
-                        interp
-                            .buffer
-                            .put_text_property(start, end, &prop, prop_value);
+                        interp.apply_text_property_change_shared(&|buffer| {
+                            buffer.put_text_property(start, end, &prop, prop_value.clone())
+                        });
                     }
                 } else {
                     let start = position_from_value(interp, &args[0])?;
                     let end = position_from_value(interp, &args[1])?;
-                    interp
-                        .buffer
-                        .put_text_property(start, end, &prop, prop_value);
+                    interp.apply_text_property_change_shared(&|buffer| {
+                        buffer.put_text_property(start, end, &prop, prop_value.clone())
+                    });
                 }
                 Ok(Value::T)
             }
@@ -2271,12 +2271,16 @@ define_dispatch!(
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
-                        interp.buffer.add_text_properties(start, end, &props);
+                        interp.apply_text_property_change_shared(&|buffer| {
+                            buffer.add_text_properties(start, end, &props)
+                        });
                     }
                 } else {
                     let start = position_from_value(interp, &args[0])?;
                     let end = position_from_value(interp, &args[1])?;
-                    interp.buffer.add_text_properties(start, end, &props);
+                    interp.apply_text_property_change_shared(&|buffer| {
+                        buffer.add_text_properties(start, end, &props)
+                    });
                 }
                 Ok(Value::T)
             }
@@ -2296,12 +2300,16 @@ define_dispatch!(
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
-                        interp.buffer.set_text_properties(start, end, &props);
+                        interp.apply_text_property_change_shared(&|buffer| {
+                            buffer.set_text_properties(start, end, &props)
+                        });
                     }
                 } else {
                     let start = position_from_value(interp, &args[0])?;
                     let end = position_from_value(interp, &args[1])?;
-                    interp.buffer.set_text_properties(start, end, &props);
+                    interp.apply_text_property_change_shared(&|buffer| {
+                        buffer.set_text_properties(start, end, &props)
+                    });
                 }
                 Ok(Value::T)
             }
@@ -2327,16 +2335,16 @@ define_dispatch!(
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
-                        interp
-                            .buffer
-                            .remove_list_of_text_properties(start, end, &names);
+                        interp.apply_text_property_change_shared(&|buffer| {
+                            buffer.remove_list_of_text_properties(start, end, &names)
+                        });
                     }
                 } else {
                     let start = position_from_value(interp, &args[0])?;
                     let end = position_from_value(interp, &args[1])?;
-                    interp
-                        .buffer
-                        .remove_list_of_text_properties(start, end, &names);
+                    interp.apply_text_property_change_shared(&|buffer| {
+                        buffer.remove_list_of_text_properties(start, end, &names)
+                    });
                 }
                 Ok(Value::T)
             }
@@ -2361,16 +2369,16 @@ define_dispatch!(
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
-                        interp
-                            .buffer
-                            .remove_list_of_text_properties(start, end, &names);
+                        interp.apply_text_property_change_shared(&|buffer| {
+                            buffer.remove_list_of_text_properties(start, end, &names)
+                        });
                     }
                 } else {
                     let start = position_from_value(interp, &args[0])?;
                     let end = position_from_value(interp, &args[1])?;
-                    interp
-                        .buffer
-                        .remove_list_of_text_properties(start, end, &names);
+                    interp.apply_text_property_change_shared(&|buffer| {
+                        buffer.remove_list_of_text_properties(start, end, &names)
+                    });
                 }
                 Ok(Value::T)
             }

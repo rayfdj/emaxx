@@ -725,24 +725,15 @@ pub(crate) fn font_lock_put_buffer_property(
     prop: &str,
     value: Value,
 ) -> Result<(), LispError> {
-    if buffer_id == interp.current_buffer_id() {
+    let applied = interp.apply_text_property_change_shared_for(buffer_id, &|buffer| {
         if value.is_nil() {
-            interp
-                .buffer
-                .remove_list_of_text_properties(start, end, &[prop.to_string()]);
+            buffer.remove_list_of_text_properties(start, end, &[prop.to_string()]);
         } else {
-            interp.buffer.put_text_property(start, end, prop, value);
+            buffer.put_text_property(start, end, prop, value.clone());
         }
-        return Ok(());
-    }
-
-    let buffer = interp
-        .get_buffer_by_id_mut(buffer_id)
-        .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-    if value.is_nil() {
-        buffer.remove_list_of_text_properties(start, end, &[prop.to_string()]);
-    } else {
-        buffer.put_text_property(start, end, prop, value);
+    });
+    if !applied {
+        return Err(LispError::Signal(format!("No buffer with id {}", buffer_id)));
     }
     Ok(())
 }

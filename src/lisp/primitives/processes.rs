@@ -510,7 +510,7 @@ pub(crate) fn deliver_process_output_decoded(
         if let Some(buffer_id) = target_buffer_id
             && switched
         {
-            interp.switch_to_buffer_id(buffer_id)?;
+            interp.set_current_buffer_id(buffer_id)?;
         }
         // GNU hands the filter an ordinary mutable string; filters such as
         // eshell's propertize it in place, so the value must carry live
@@ -529,7 +529,7 @@ pub(crate) fn deliver_process_output_decoded(
             env,
         );
         if switched {
-            interp.switch_to_buffer_id(saved_buffer_id)?;
+            interp.set_current_buffer_id(saved_buffer_id)?;
         }
         result?;
         return Ok(());
@@ -558,7 +558,7 @@ pub(crate) fn internal_default_process_filter(
     let saved_buffer_id = interp.current_buffer_id();
     let switched = buffer_id != saved_buffer_id;
     if switched {
-        interp.switch_to_buffer_id(buffer_id)?;
+        interp.set_current_buffer_id(buffer_id)?;
     }
     let old_point = interp.buffer.point();
     let insert_at = interp
@@ -576,7 +576,7 @@ pub(crate) fn internal_default_process_filter(
     };
     interp.buffer.goto_char(restored_point);
     if switched {
-        interp.switch_to_buffer_id(saved_buffer_id)?;
+        interp.set_current_buffer_id(saved_buffer_id)?;
     }
     result
 }
@@ -609,7 +609,7 @@ pub(crate) fn internal_default_process_sentinel(
     let saved_buffer_id = interp.current_buffer_id();
     let switched = buffer_id != saved_buffer_id;
     if switched {
-        interp.switch_to_buffer_id(buffer_id)?;
+        interp.set_current_buffer_id(buffer_id)?;
     }
     let old_point = interp.buffer.point();
     let insert_at = interp
@@ -627,7 +627,7 @@ pub(crate) fn internal_default_process_sentinel(
     };
     interp.buffer.goto_char(restored_point);
     if switched {
-        interp.switch_to_buffer_id(saved_buffer_id)?;
+        interp.set_current_buffer_id(saved_buffer_id)?;
     }
     result
 }
@@ -712,7 +712,7 @@ pub(crate) fn append_process_bytes_to_buffer(
     };
     let original_id = interp.current_buffer_id();
     if target_id != original_id {
-        interp.switch_to_buffer_id(target_id)?;
+        interp.set_current_buffer_id(target_id)?;
     }
     let mut coding = interp
         .lookup_var("coding-system-for-read", env)
@@ -788,7 +788,7 @@ pub(crate) fn append_process_bytes_to_buffer(
         env,
     );
     if target_id != original_id {
-        interp.switch_to_buffer_id(original_id)?;
+        interp.set_current_buffer_id(original_id)?;
     }
     Ok(())
 }

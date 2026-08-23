@@ -567,6 +567,23 @@ fn command_loop(
                 let mut state = shared_state.borrow_mut();
                 let _ = redraw(interpreter, env, &mut state);
             }
+            // keyboard.c's kbd_buffer_get_event blocks inside
+            // wait_reading_process_output (READ_KBD -1, do_display set):
+            // subprocess output reaches filters and sentinels while the
+            // loop waits for a key, and a delivery repaints the glass,
+            // process.c's redisplay_preserve_echo_area.  Process output
+            // does not end the idle period; only keyboard input does.
+            match pump_processes_during_wait(interpreter, env) {
+                Ok(true) => {
+                    let mut state = shared_state.borrow_mut();
+                    let _ = redraw(interpreter, env, &mut state);
+                }
+                Ok(false) => {}
+                Err(LispError::Terminate(termination)) => {
+                    return Ok(termination.exit_code);
+                }
+                Err(_) => {}
+            }
             let _ = event::poll(std::time::Duration::from_millis(50));
         };
         // Input arrived: the idle period is over (timer_stop_idle).
@@ -725,6 +742,34 @@ fn append_prefix_echo(echo: &str, key: &str) -> String {
 /// user-error's own message).
 fn command_error_text(interpreter: &mut Interpreter, env: &mut Env, error: &LispError) -> String {
     crate::lisp::primitives::command_error_echo_text(interpreter, env, error)
+}
+
+/// One pump of subprocess and network output for the key wait.
+/// process.c wraps every filter call (read_process_output_call under
+/// internal_condition_case_1) and sentinel call (exec_sentinel's
+/// handler) so an error reports to the echo area and the wait
+/// continues; only a termination unwinds the command loop.  Returns
+/// whether anything was delivered, which the caller repaints.
+fn pump_processes_during_wait(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let mut progressed = false;
+    for outcome in [
+        crate::lisp::primitives::pump_external_process_output(interpreter, env),
+        crate::lisp::primitives::pump_connection_processes(interpreter, env),
+    ] {
+        match outcome {
+            Ok(pumped) => progressed |= pumped,
+            Err(error @ LispError::Terminate(_)) => return Err(error),
+            Err(error) => {
+                let text = command_error_text(interpreter, env, &error);
+                crate::lisp::primitives::set_echo_area_message(Some(text));
+                progressed = true;
+            }
+        }
+    }
+    Ok(progressed)
 }
 
 // ── Event encoding ──────────────────────────────────────────────────────
