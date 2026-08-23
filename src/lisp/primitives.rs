@@ -232,8 +232,9 @@ pub(crate) use dispatch::{
     string_face_spans,
 };
 pub(crate) use dispatch::{
-    TtyFaceAttrs, WindowRenderInfo, render_window_mode_line, resolve_tty_face_attrs,
-    window_face_spans, window_render_layout,
+    TtyFaceAttrs, WindowRenderInfo, render_window_header_line, render_window_mode_line,
+    resolve_tty_face_attrs,
+    store_window_hscroll_state, window_face_spans, window_hscroll_state, window_render_layout,
 };
 pub use dispatch::{call, is_builtin};
 

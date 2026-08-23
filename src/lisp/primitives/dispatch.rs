@@ -24,8 +24,10 @@ pub(crate) use display::echo_area_message_with_spans;
 #[cfg(test)]
 pub(crate) use display::render_mode_line_glass;
 pub(crate) use display::{
-    EchoSpans, TtyFaceAttrs, WindowRenderInfo, render_window_mode_line, resolve_tty_face_attrs,
-    string_face_spans, window_face_spans, window_render_layout,
+    EchoSpans, TtyFaceAttrs, WindowRenderInfo, render_window_header_line, render_window_mode_line,
+    resolve_tty_face_attrs,
+    store_window_hscroll_state, string_face_spans, window_face_spans, window_hscroll_state,
+    window_render_layout,
 };
 pub(crate) use display::{
     echo_area_message, echo_area_message_tick, echo_area_print, echo_display_message,

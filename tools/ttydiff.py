@@ -482,6 +482,8 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
         emaxx.close()
 
 
+WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird line\n"
+
 ELISP_SAMPLE = """;; A comment line for font-lock.
 (defun demo-function (arg)
   "Documentation string here."
@@ -512,6 +514,49 @@ SCENARIOS = [
     # cmds.c's amalgamation calls): one undo removes the whole tail
     # group, not one character.
     ("undo-amalgamation", "", [b"abcdefghijklmnopqrstuvwxy", b"\x1f"]),
+    # truncate-lines: the too-wide line ends in the `$' truncation glyph;
+    # with point at its end, auto-hscroll (xdisp.c hscroll_window_tree)
+    # scrolls the window so point is visible, marking every line's
+    # scrolled-off text with `$' in column zero.
+    ("truncate-long", WIDE_SAMPLE, [b"\x1b:(setq truncate-lines t)\r", b"\x05"], ".dat"),
+    # Point moving back to a short column releases the auto-hscroll: the
+    # recomputed hscroll returns to zero and the plain truncated view.
+    (
+        "truncate-motion",
+        WIDE_SAMPLE,
+        [b"\x1b:(setq truncate-lines t)\r", b"\x05", b"\x0e", b"\x01"],
+        ".dat",
+    ),
+    # C-x < invokes scroll-left, a command bindings.el marks disabled:
+    # novice.el's disabled-command-function shows its help window through
+    # read-multiple-choice, and the two-line prompt grows the mini window
+    # (GNU's resize_mini_window, grow-only), wrapping with `\\'.
+    ("hscroll-disabled", WIDE_SAMPLE, [b"\x1b:(setq truncate-lines t)\r", b"\x18<"], ".dat"),
+    # Explicit scroll-left hscrolls the window and suspends auto-hscroll:
+    # `$' at both edges of the wide line, a lone `$' on the lines
+    # scrolled entirely off.
+    (
+        "hscroll-explicit",
+        WIDE_SAMPLE,
+        [b"\x1b:(setq truncate-lines t)\r", b"\x1b:(scroll-left 20)\r"],
+        ".dat",
+    ),
+    # header-line-format carves the window's first row: the header text
+    # in the header-line face, the body shifted down one row.
+    (
+        "header-line",
+        "alpha\nbeta\ngamma\n",
+        [b'\x1b:(setq header-line-format "HEADER text here")\r', b"\x0e\x0e"],
+        ".dat",
+    ),
+    # The header renders through the mode-line machinery: %-constructs
+    # (%b, %l) expand in the window's own buffer context.
+    (
+        "header-line-percent",
+        "alpha\nbeta\ngamma\n",
+        [b'\x1b:(setq header-line-format "buf %b line %l")\r', b"\x0e"],
+        ".dat",
+    ),
     # Subprocess output reaches the glass between keystrokes: the command
     # loop's wait pumps process output through filters and sentinels
     # (wait_reading_process_output), the popped window shows the output,
