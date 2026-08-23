@@ -2029,3 +2029,26 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
         Value::T
     );
 }
+
+#[test]
+fn member_ignore_case_matches_strings_case_insensitively_on_the_image() {
+    // Finding 34 re-host; expectations probed against the pinned oracle
+    // (note GNU's compare-strings does NOT fold German sharp s to "SS").
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    assert_eq!(
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            "(list (member-ignore-case \"FOO\" '(\"bar\" \"foo\" \"baz\"))
+                   (member-ignore-case \"qux\" '(\"bar\"))
+                   (member-ignore-case \"\u{00df}\" '(\"SS\")))",
+        )
+        .expect("member-ignore-case on the dumped image"),
+        Value::list([
+            Value::list([Value::String("foo".into()), Value::String("baz".into())]),
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}

@@ -1,29 +1,5 @@
 use super::*;
 
-pub(crate) fn call_composed_accessor(
-    interp: &Interpreter,
-    name: &str,
-    args: &[Value],
-) -> Result<Value, LispError> {
-    need_args(name, args, 1)?;
-    let mut value = args[0].clone();
-    for op in name[1..name.len() - 1].bytes().rev() {
-        if let Some(items) = keymap_list_items(interp, &value)? {
-            value = match op {
-                b'a' => items.into_iter().next().unwrap_or(Value::Nil),
-                b'd' => Value::list(items.into_iter().skip(1)),
-                _ => unreachable!("validated by is_composed_accessor_name"),
-            };
-            continue;
-        }
-        value = match op {
-            b'a' => value.car()?,
-            b'd' => value.cdr()?,
-            _ => unreachable!("validated by is_composed_accessor_name"),
-        };
-    }
-    Ok(value)
-}
 
 pub(crate) fn normalize_random_seed(seed: u64) -> u64 {
     if seed == 0 {

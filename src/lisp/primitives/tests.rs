@@ -1667,16 +1667,10 @@ fn native_dispatch_fails_closed_at_the_gnu_c_boundary() {
 
 #[test]
 fn generated_rust_manifests_never_contain_trailing_whitespace() {
-    for (name, source) in [
-        (
-            "dumped autoloads",
-            include_str!("../eval/generated_autoloads.rs"),
-        ),
-        (
-            "builtin arities",
-            include_str!("generated_builtin_arities.rs"),
-        ),
-    ] {
+    for (name, source) in [(
+        "builtin arities",
+        include_str!("generated_builtin_arities.rs"),
+    )] {
         for (line_index, line) in source.lines().enumerate() {
             assert!(
                 !line.ends_with(' ') && !line.ends_with('\t'),

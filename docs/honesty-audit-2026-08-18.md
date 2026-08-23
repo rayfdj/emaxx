@@ -237,6 +237,14 @@ corpus and answers it.
 
 ## S1/S2 — introduced by this session's own work (self-audit)
 
+    [RESOLVED 2026-08-23, step 7: generated_autoloads.rs and its generator
+    generate_dumped_autoloads.el deleted (the runtime executes the real
+    loaddefs.el, so improving the generator's function-put handling was
+    moot); ComposedAccessor route deleted -- probes confirm caar..cddddr
+    resolve through the preloaded subr.el definitions; incf/decf name
+    special-case deleted, both now void exactly as in GNU 30.2;
+    generated_builtin_arities.rs gained a byte-identity regeneration gate
+    mirroring the C manifest's, registered in enforce_all (14 gates).]
 30. **New fabrication, mine.** `src/lisp/primitives/case.rs:143-166` — the
     titlecase fix committed in `0fc8ca0` hardcodes 12 codepoints and justifies
     them with the comment "the only characters whose titlecase differs from
@@ -270,6 +278,11 @@ corpus and answers it.
     `member-ignore-case` and the `display-buffer` trio — GNU's test tree has no
     test for those, so coverage was net dropped.  Re-host them on the full
     image.
+    [RESOLVED 2026-08-23, step 7: all five re-hosted on the dumped image with
+    oracle-probed expectations (including display-buffer's action-function
+    return contract, which the old facade tests had wrong: a non-window
+    truthy return makes display-buffer return nil, and a nil return falls
+    through to the default actions).]
 35. Latent, adjacent to this session's coding-system edit: emaxx gives
     `raw-text` `:mnemonic ?r`; GNU's is `?t`.
 
