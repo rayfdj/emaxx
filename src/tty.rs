@@ -1430,7 +1430,6 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         row: usize,
         left: usize,
         body_width: usize,
-        point_line: usize,
         metrics: crate::lisp::primitives::InteractiveWindowMetrics,
     }
     let mut mode_line_jobs: Vec<ModeLineJob> = Vec::new();
@@ -1477,7 +1476,6 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             truncate,
             info.selected,
         );
-        let point_line = buffer.line_number_at_pos(info.point);
         for (row, (rendered, _, _, _)) in plan.rendered.iter().enumerate() {
             frame[info.top + row].blit(info.left, rendered, CellAttrs::default());
         }
@@ -1521,7 +1519,6 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             row: info.top + info.height - 1,
             left: info.left,
             body_width,
-            point_line,
             metrics,
         });
     }

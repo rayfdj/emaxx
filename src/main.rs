@@ -19,7 +19,9 @@ struct Cli {
     batch: bool,
     // GNU resolves `-b' to the no-build-details startup option.  Emaxx does
     // not add build metadata, so parsing the flag is the complete behavior.
-    #[arg(short = 'b', long = "no-build-details")]
+    // GNU has no short `-b'; only `--no-build-details' (and the
+    // single-dash long spelling) exist.
+    #[arg(long = "no-build-details")]
     _no_build_details: bool,
     #[arg(long)]
     no_init_file: bool,

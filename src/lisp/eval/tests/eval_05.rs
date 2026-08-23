@@ -247,7 +247,7 @@ fn latin_1_aliases_resolve_to_iso_latin_1() {
 }
 
 #[test]
-fn find_composition_keeps_combining_buffer_characters_together() {
+fn find_composition_reports_no_automatic_composition_in_batch() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
@@ -266,7 +266,10 @@ fn find_composition_keeps_combining_buffer_characters_together() {
                        (list (car composition) (cadr composition))))
                  (set-window-buffer (selected-window) old)))"
         ),
-        Value::list([Value::Integer(8), Value::Integer(10)]),
+        // The batch oracle: no frame font machinery, so no automatic
+        // composition -- (find-composition 9 10) is nil even across the
+        // combining pair.
+        Value::list([Value::Nil, Value::Nil]),
     );
 }
 
@@ -1359,9 +1362,12 @@ fn upstream_files_lisp_owns_remote_file_policy() {
         eval_str_with(
             &mut interp,
             "(list
-               (subrp (indirect-function 'file-remote-p))
-               (subrp (indirect-function 'file-local-name))
-               (subrp (indirect-function 'file-local-copy))
+               ;; The pinned oracle is a native-comp build: these preloaded
+               ;; Lisp functions are native subrs there (subrp => t), while
+               ;; neither build makes them C primitives.
+               (subr-primitive-p (indirect-function 'file-remote-p))
+               (subr-primitive-p (indirect-function 'file-local-name))
+               (subr-primitive-p (indirect-function 'file-local-copy))
                (find-file-name-handler
                 \"/ftp:who@foo.com:/whatever\" 'file-remote-p)
                (fboundp 'vc-file-getprop)
@@ -5788,7 +5794,9 @@ fn dumped_bootstrap_exposes_core_preload_contracts() {
                    (equal (bidi-string-strip-control-characters
                            (string ?a #x202e ?b #x2069 ?c))
                           \"abc\")
-                   (not (subrp (symbol-function 'function-get))))",
+                   ;; Native-comp oracle: subrp is t for function-get there;
+                   ;; subr-primitive-p is the portable distinction.
+                   (not (subr-primitive-p (symbol-function 'function-get))))",
         ),
         Value::list([
             Value::T,

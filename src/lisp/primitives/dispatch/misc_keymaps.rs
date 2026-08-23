@@ -917,7 +917,8 @@ define_dispatch!(
                 }
                 interp.profiler_memory_running = true;
                 interp.profiler_memory_log_pending = true;
-                Ok(Value::Nil)
+                // profiler.c Fprofiler_memory_start returns t.
+                Ok(Value::T)
             }
             "profiler-memory-stop" => {
                 let was_running = interp.profiler_memory_running;
@@ -929,7 +930,11 @@ define_dispatch!(
                     if !interp.profiler_memory_running {
                         interp.profiler_memory_log_pending = false;
                     }
-                    Ok(Value::String("#<hash-table>".into()))
+                    // GNU's log is a real hash table.  Emaxx collects no
+                    // samples, so the honest log is a real EMPTY hash table
+                    // of the same test -- never a string spelled to print
+                    // like one (2026-08-23 audit finding 78).
+                    call(interp, "make-hash-table", &[Value::symbol(":test"), Value::symbol("equal")], env)
                 } else {
                     Ok(Value::Nil)
                 }
@@ -952,7 +957,8 @@ define_dispatch!(
                         &mut Vec::new(),
                     );
                 }
-                Ok(Value::Nil)
+                // profiler.c Fprofiler_cpu_start returns t.
+                Ok(Value::T)
             }
             "profiler-cpu-stop" => {
                 let was_running = interp.profiler_cpu_running;
@@ -964,7 +970,7 @@ define_dispatch!(
                     if !interp.profiler_cpu_running {
                         interp.profiler_cpu_log_pending = false;
                     }
-                    Ok(Value::String("#<hash-table>".into()))
+                    call(interp, "make-hash-table", &[Value::symbol(":test"), Value::symbol("equal")], env)
                 } else {
                     Ok(Value::Nil)
                 }
