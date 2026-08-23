@@ -246,9 +246,7 @@ pub(crate) fn user_full_name_from_uid(_uid: u32) -> Option<String> {
 #[cfg(not(unix))]
 pub(crate) fn user_full_name_from_login(login: &str) -> Option<String> {
     (current_user_login_name().as_deref() == Some(login)).then(|| {
-        std::env::var("EMAXX_USER_FULL_NAME")
-            .or_else(|_| std::env::var("NAME"))
-            .unwrap_or_else(|_| login.to_string())
+        std::env::var("NAME").unwrap_or_else(|_| login.to_string())
     })
 }
 
@@ -1055,26 +1053,21 @@ pub(crate) fn current_real_user_login_name() -> Option<String> {
 }
 
 pub(crate) fn system_name_value() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::env::var("COMPUTERNAME")
-                .ok()
-                .filter(|value| !value.is_empty())
-        })
-        // GNU resolves the host identity in-process with gethostname (or the
-        // platform equivalent).  `sysinfo` provides that same cross-platform
-        // boundary without spawning `hostname` on every Lisp call.
-        .or_else(sysinfo::System::host_name)
-        .unwrap_or_else(|| "localhost".into())
+    // GNU resolves the host identity in-process with gethostname (or the
+    // platform equivalent); it consults no environment variable.  `sysinfo`
+    // provides that same boundary without spawning `hostname` on every
+    // Lisp call.  The HOSTNAME/COMPUTERNAME overrides that used to sit in
+    // front of it were identity dress-up (finding 65's class) and are gone.
+    sysinfo::System::host_name().unwrap_or_else(|| "localhost".into())
 }
 
 pub(crate) fn current_user_full_name() -> Option<String> {
-    std::env::var("EMAXX_USER_FULL_NAME")
+    // editfns.c consults $NAME then the passwd entry; the private
+    // EMAXX_USER_FULL_NAME knob ahead of it was identity dress-up
+    // (finding 65's class) and is gone.
+    std::env::var("NAME")
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var("NAME").ok().filter(|value| !value.is_empty()))
         .or_else(|| {
             current_user_login_name()
                 .as_deref()

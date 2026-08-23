@@ -23,10 +23,15 @@ pub const SUPPORTED_ENV_VARS: [&str; 4] = [
     "EMACS_TEST_JUNIT_REPORT",
     "TEST_BACKTRACE_LINE_LENGTH",
 ];
-pub const UNSET_ENV_VARS: [&str; 6] = [
+pub const UNSET_ENV_VARS: [&str; 7] = [
     "EMACSDATA",
     "EMACSDOC",
     "EMACSLOADPATH",
+    // A native-comp oracle honors this .eln load path: an exported value
+    // could shadow pinned Lisp with doctored natives that live outside the
+    // oracle repo, invisible to both the git-clean check and the elc
+    // fingerprint.  Strip it like the rest (2026-08-23 pipeline audit F2).
+    "EMACSNATIVELOADPATH",
     "EMACSPATH",
     "GREP_OPTIONS",
     "XDG_CONFIG_HOME",
@@ -236,6 +241,11 @@ pub struct OracleLock {
     pub system_type: String,
     #[serde(default)]
     pub native_compilation: bool,
+    /// sha256 of the oracle binary at pin time.  Everything else in this
+    /// lock is the binary's SELF-reported identity; this is the one field
+    /// that pins the artifact itself (2026-08-23 pipeline audit F1).
+    #[serde(default)]
+    pub emacs_binary_sha256: String,
     pub selector_default: String,
     pub selector_expensive: String,
     pub selector_all: String,
@@ -256,6 +266,7 @@ impl OracleLock {
         emacs_version: String,
         system_type: String,
         native_compilation: bool,
+        emacs_binary_sha256: String,
     ) -> Self {
         let test_native_comp = should_enable_nativecomp_tests(&system_type, native_compilation);
         let selector_aliases = selector_aliases(test_native_comp);
@@ -265,6 +276,7 @@ impl OracleLock {
             emacs_repo_commit: repo_commit,
             system_type,
             native_compilation,
+            emacs_binary_sha256,
             selector_default: selector_aliases["default"].clone(),
             selector_expensive: selector_aliases["expensive"].clone(),
             selector_all: selector_aliases["all"].clone(),
@@ -696,6 +708,14 @@ pub fn current_emacs_runtime(emacs_binary: &Path) -> Result<EmacsRuntime, String
     })
 }
 
+pub fn sha256_of_file(path: &Path) -> Result<String, String> {
+    use sha2::Digest;
+    let bytes = fs::read(path).map_err(|error| format!("read {} for hashing: {error}", path.display()))?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 pub fn validate_oracle(lock: &OracleLock, local: &OracleLocalConfig) -> Result<(), String> {
     if !(1..=2).contains(&lock.format_version) {
         return Err(format!(
@@ -745,6 +765,18 @@ pub fn validate_oracle(lock: &OracleLock, local: &OracleLocalConfig) -> Result<(
             local.emacs_binary.display(),
             local.emacs_repo.display()
         ));
+    }
+    if !lock.emacs_binary_sha256.is_empty() {
+        let actual = sha256_of_file(&local.emacs_binary)?;
+        if actual != lock.emacs_binary_sha256 {
+            return Err(format!(
+                "oracle binary hash mismatch: pinned {} but {} hashes to {actual}; \
+                 the measured binary is not the pinned artifact -- rebuild from the \
+                 pinned checkout or repin deliberately",
+                lock.emacs_binary_sha256,
+                local.emacs_binary.display()
+            ));
+        }
     }
     if lock.format_version >= 2 && runtime.native_compilation != lock.native_compilation {
         return Err(format!(
@@ -1106,7 +1138,13 @@ mod tests {
 
     #[test]
     fn resolve_selector_supports_named_aliases_and_literals() {
-        let lock = OracleLock::current("deadbeef".into(), "31.0.50".into(), "darwin".into(), true);
+        let lock = OracleLock::current(
+            "deadbeef".into(),
+            "31.0.50".into(),
+            "darwin".into(),
+            true,
+            String::new(),
+        );
         assert_eq!(
             resolve_selector(&lock, "check-expensive").expect("resolve selector"),
             "(not (tag :unstable))"

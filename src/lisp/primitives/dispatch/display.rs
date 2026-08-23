@@ -1805,13 +1805,31 @@ define_dispatch!(
             }
             "command-error-default-function" => {
                 need_args(name, args, 3)?;
-                let _context = string_text(&args[1])?;
-                // GNU prints the unhandled error (and exits in noninteractive
-                // mode).  Emaxx embeds the evaluator in its batch runner, whose
-                // outer error boundary owns process termination; this primitive
-                // must remain callable so dumped help.el can wrap it without
-                // turning the original error into a void-function failure.
-                let _ = super::call(interp, "error-message-string", &[args[0].clone()], env)?;
+                let context = string_text(&args[1])?;
+                // keyboard.c command-error-default-function, noninteractive
+                // branch: print CONTEXT plus the error to stderr and
+                // kill-emacs -1.  The previous arm computed the message and
+                // discarded it, silently converting a should-fail batch run
+                // into a clean exit (2026-08-23 audit finding 80).
+                let message =
+                    super::call(interp, "error-message-string", &[args[0].clone()], env)?;
+                let rendered = string_text(&message).unwrap_or_default();
+                if interp
+                    .lookup_var("noninteractive", env)
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    use std::io::Write;
+                    let _ = writeln!(std::io::stderr(), "{context}{rendered}");
+                    return super::call(interp, "kill-emacs", &[Value::Integer(-1)], env);
+                }
+                // Interactive frames echo instead; emaxx's tty loop reads the
+                // echo area, so route the text there via `message'.
+                super::call(
+                    interp,
+                    "message",
+                    &[Value::String(format!("{context}{rendered}").into())],
+                    env,
+                )?;
                 Ok(Value::Nil)
             }
             "ding" => Ok(Value::Nil),

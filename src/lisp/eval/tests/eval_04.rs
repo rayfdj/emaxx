@@ -508,12 +508,13 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
     );
     let source_content_hash = format!("{:x}", md5::compute(b"source contents\n"));
     // comp.el places eln files under `comp-native-version-dir'
-    // (VERSION-ABIHASH); the oracle probe shows
-    // ".../30.2-adba4e3f/source-....eln", and Emaxx derives the same
-    // component from the seeded DEFVAR.  The bare path this test once
-    // expected predates both halves of that behavior.
+    // (VERSION-ABIHASH) when that variable is bound.  This build models a
+    // GNU without HAVE_NATIVE_COMP: the variable is void (the oracle's own
+    // "30.2-adba4e3f" is that binary's per-build identity, not portable
+    // state -- audit finding 77), so the eln name has no version
+    // subdirectory.  The hash components still match the oracle's.
     let eln_name = format!(
-        "30.2-adba4e3f/source-{}-{}.eln",
+        "source-{}-{}.eln",
         &source_path_hash[..8],
         &source_content_hash[..8]
     );
