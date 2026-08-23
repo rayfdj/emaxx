@@ -1,5 +1,20 @@
 use super::*;
 
+// cmds.c:236/288: `self-insert-command' and `delete-char' amalgamate
+// their undo with a preceding run of the same command when the count's
+// magnitude is below 2 -- through simple.el's own `undo-auto-amalgamate',
+// reached as an ordinary Lisp call.
+fn call_undo_auto_amalgamate(interp: &mut Interpreter, env: &mut Env) {
+    if interp.lookup_function("undo-auto-amalgamate", env).is_ok() {
+        let _ = interp.call_function_value(
+            Value::Symbol("undo-auto-amalgamate".into()),
+            Some("undo-auto-amalgamate"),
+            &[],
+            env,
+        );
+    }
+}
+
 fn word_syntax_at(interp: &Interpreter, env: &Env, position: usize) -> bool {
     super::super::syntax::syntax_class_at_buffer_position_matches(interp, env, position, 'w')
 }
@@ -347,6 +362,15 @@ define_dispatch!(
             "insert-char" => insert_char_impl(interp, args, env),
             "self-insert-command" => {
                 need_arg_range(name, args, 0, 2)?;
+                let amalgamating = args
+                    .first()
+                    .filter(|value| !value.is_nil())
+                    .map_or(1, |value| value.as_integer().unwrap_or(1))
+                    .abs()
+                    < 2;
+                if amalgamating {
+                    call_undo_auto_amalgamate(interp, env);
+                }
                 let event = args
                     .get(1)
                     .filter(|value| !value.is_nil())
@@ -1163,6 +1187,9 @@ define_dispatch!(
                 } else {
                     args[0].as_integer()?
                 };
+                if n.abs() < 2 {
+                    call_undo_auto_amalgamate(interp, env);
+                }
                 let point = interp.buffer.point();
                 if n >= 0 {
                     let to = point + n as usize;
