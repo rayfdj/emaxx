@@ -162,6 +162,9 @@ struct TtyState {
     /// line deep.
     painted_rows: Vec<PaintRow>,
     painted_echo: Vec<PaintRow>,
+    /// `max-mini-window-height' as resolved at the last full redisplay,
+    /// so the interpreter-less painter can grow the echo area too.
+    echo_max_rows: usize,
     /// Rows the mini window currently occupies.  GNU's
     /// `resize-mini-windows' default `grow-only': a message taller than
     /// the window grows it (up to `max-mini-window-height'), a shorter
@@ -200,6 +203,7 @@ impl TtyState {
             painted_rows: Vec::new(),
             painted_echo: Vec::new(),
             echo_rows: 1,
+            echo_max_rows: 6,
             painted_size: (0, 0),
             face_cache: std::collections::HashMap::new(),
             face_cache_generation: 0,
@@ -544,15 +548,25 @@ fn draw_echo_row_composed(
     }
     let frontend_echo = state.echo.clone();
     let cols = cols.max(10) as usize;
-    let mini_rows = state.echo_rows.max(1);
+    let max_rows = state.echo_max_rows.max(1);
     let (long, _) = compose_echo_row(
         interpreter,
         env,
         &frontend_echo,
-        cols * mini_rows,
+        cols * max_rows,
         &mut state.face_cache,
     );
-    let mut echo_paint = wrap_echo_paint(&long, cols, mini_rows);
+    let mut echo_paint = wrap_echo_paint(&long, cols, max_rows);
+    let mut mini_rows = state.echo_rows.max(1);
+    if echo_paint.len() > mini_rows {
+        for row in (rows.max(4) as usize).saturating_sub(echo_paint.len())..(rows.max(4) as usize) {
+            if row < state.painted_rows.len() {
+                state.painted_rows[row] = PaintRow::unpainted();
+            }
+        }
+        state.echo_rows = echo_paint.len();
+        mini_rows = echo_paint.len();
+    }
     echo_paint.resize(mini_rows, PaintRow::blank(cols));
     let base = (rows.max(4) as usize).saturating_sub(mini_rows);
     let mut out = io::stdout();
@@ -584,6 +598,7 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
             return;
         }
         mini_rows = state.echo_rows.max(1);
+        let max_rows = state.echo_max_rows.max(1);
         // Painting (or confirming) the channel brings the glass up to
         // date with every message emitted so far.
         state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
@@ -596,10 +611,23 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
             return;
         }
         state.painted_echo = Vec::new();
+        // A message taller than the current mini window grows it right
+        // now, GNU's message3 entering redisplay: the rows it covers
+        // are marked stale so the next full redisplay repaints the
+        // resized window tree beneath.
+        let mut probe = PaintRow::blank(cols * max_rows);
+        probe.blit(0, &text, CellAttrs::default());
+        let needed = wrap_echo_paint(&probe, cols, max_rows).len();
+        if needed > mini_rows {
+            for row in (rows as usize).saturating_sub(needed)..(rows as usize) {
+                if row < state.painted_rows.len() {
+                    state.painted_rows[row] = PaintRow::unpainted();
+                }
+            }
+            state.echo_rows = needed;
+            mini_rows = needed;
+        }
     }
-    // The interpreter-less painter shows what fits the current mini
-    // window; a message needing growth reaches the glass at the next
-    // full redisplay, which resizes the window tree.
     let mut long = PaintRow::blank(cols * mini_rows);
     long.blit(0, &text, CellAttrs::default());
     let mut echo_paint = wrap_echo_paint(&long, cols, mini_rows);
@@ -1078,9 +1106,9 @@ fn describe_char(code: i64, meta: bool) -> String {
 /// A window's planned text rows and display geometry for one redisplay.
 struct WindowPlan {
     /// Text rows, top to bottom, each at most the window's body width,
-    /// with the buffer line, wrap segment, and start position each row
-    /// shows — the anchors face spans map through.
-    rendered: Vec<(String, usize, usize, usize)>,
+    /// with the buffer line, wrap segment, start position, and hscroll
+    /// each row shows — the anchors face spans map through.
+    rendered: Vec<(String, usize, usize, usize, usize)>,
     /// Buffer position where the window's display starts.
     top_pos: usize,
     /// Position just past the last displayed character (GNU window-end).
@@ -1111,6 +1139,11 @@ fn truncated_on_right(line_w: usize, hscroll: usize, w: usize) -> bool {
 struct RenderGeometry {
     truncate: bool,
     hscroll: usize,
+    /// `auto-hscroll-mode' `current-line': only the row showing point
+    /// hscrolls by `hscroll'; every other row keeps `min_hscroll'
+    /// (xdisp.c hscrolling_current_line_p).
+    current_line_only: bool,
+    min_hscroll: usize,
 }
 
 /// init_iterator's wrap decision plus hscroll_window_tree, for one
@@ -1156,7 +1189,12 @@ fn window_render_geometry(
         suspended = false;
     }
 
-    let auto_mode = buffer_local(interpreter, "auto-hscroll-mode").is_truthy();
+    let auto_mode_value = buffer_local(interpreter, "auto-hscroll-mode");
+    let auto_mode = auto_mode_value.is_truthy();
+    // hscrolling_current_line_p: `current-line' hscrolls only the row
+    // showing point, and only while auto-hscroll is not suspended.
+    let current_line_only = !suspended
+        && matches!(&auto_mode_value, Value::Symbol(name) if name == "current-line");
     let truncate_now = truncate_lines || hscroll > 0 || partial_truncates;
     if auto_mode && !suspended && truncate_now {
         let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
@@ -1167,6 +1205,8 @@ fn window_render_geometry(
             return RenderGeometry {
                 truncate: truncate_now,
                 hscroll: hscroll.max(0) as usize,
+                current_line_only: false,
+                min_hscroll: state.min_hscroll.max(0) as usize,
             };
         };
         let point_pos = info.point.clamp(buffer.point_min(), buffer.point_max());
@@ -1186,8 +1226,12 @@ fn window_render_geometry(
         // hscroll_window_tree discounts it from the margin.
         let x_offset: i64 = if hscroll > 0 { -1 } else { 0 };
         let row_truncated_right = truncated_on_right(line_w, hscroll.max(0) as usize, body_width);
+        // The third hscroll_window_tree trigger: when only the current
+        // line hscrolls and point moved to a line that does not need
+        // it, the recomputation brings hscroll back toward min_hscroll.
         let trigger = (hscroll > 0 && cursor_x <= margin + x_offset)
-            || (row_truncated_right && cursor_x >= w - margin);
+            || (row_truncated_right && cursor_x >= w - margin)
+            || (current_line_only && hscroll != state.min_hscroll && hscroll > 0);
         if trigger {
             let at_eol = point_dcol >= line_w as i64;
             let step = interpreter.lookup_var("hscroll-step", env);
@@ -1223,6 +1267,8 @@ fn window_render_geometry(
     RenderGeometry {
         truncate: truncate_lines || hscroll > 0 || partial_truncates,
         hscroll: hscroll.max(0) as usize,
+        current_line_only,
+        min_hscroll: state.min_hscroll.max(0) as usize,
     }
 }
 
@@ -1431,6 +1477,7 @@ fn displayed_line_text(buffer: &crate::buffer::Buffer, line: usize) -> String {
 /// render the visible rows under the window's own wrap-or-truncate
 /// geometry.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn plan_window_text(
     buffer: &crate::buffer::Buffer,
     spec: &InvisibilitySpec,
@@ -1440,9 +1487,10 @@ fn plan_window_text(
     text_rows: usize,
     body_width: usize,
     truncate: bool,
-    hscroll: usize,
+    geometry: &RenderGeometry,
     selected: bool,
 ) -> WindowPlan {
+    let hscroll = geometry.hscroll;
     let usable = body_width.saturating_sub(1).max(1);
     let segs_of = |line: &str| {
         if truncate {
@@ -1558,15 +1606,23 @@ fn plan_window_text(
     // never the buffer size.  Each visual line yields at least one row,
     // so text_rows visual lines always cover the window.
     let last_line = buffer.line_number_at_pos(buffer.point_max());
-    let mut rendered: Vec<(String, usize, usize, usize)> = Vec::with_capacity(text_rows);
+    let mut rendered: Vec<(String, usize, usize, usize, usize)> = Vec::with_capacity(text_rows);
     // First row past the window, as (line, segment): the window's end.
     let mut past_window: Option<(usize, usize)> = None;
     let mut fill_line = view.top_line;
     let mut first_fill = true;
     'fill: while rendered.len() < text_rows && fill_line <= last_line {
         let visual = visual_line_at(buffer, spec, fill_line);
+        // `auto-hscroll-mode' `current-line': the row showing point
+        // hscrolls by the window's hscroll, every other row keeps the
+        // explicit minimum.
+        let row_hscroll = if !geometry.current_line_only || fill_line == point_line {
+            hscroll
+        } else {
+            geometry.min_hscroll
+        };
         let segments = if truncate {
-            vec![truncate_row_hscrolled(&visual.text, body_width, hscroll)]
+            vec![truncate_row_hscrolled(&visual.text, body_width, row_hscroll)]
         } else {
             wrap_segments(&visual.text, body_width)
         };
@@ -1579,7 +1635,7 @@ fn plan_window_text(
         let next_line = fill_line + visual.lines_spanned;
         for (seg_index, segment) in segments.iter().enumerate().skip(from) {
             let row_start = position_of_visual_row(buffer, spec, fill_line, seg_index, usable);
-            rendered.push((segment.clone(), fill_line, seg_index, row_start));
+            rendered.push((segment.clone(), fill_line, seg_index, row_start, row_hscroll));
             if rendered.len() == text_rows {
                 past_window = Some(if seg_index + 1 < segments.len() {
                     (fill_line, seg_index + 1)
@@ -1591,7 +1647,7 @@ fn plan_window_text(
         }
         fill_line = next_line;
     }
-    rendered.resize(text_rows, (String::new(), 0, 0, usize::MAX));
+    rendered.resize(text_rows, (String::new(), 0, 0, usize::MAX, 0));
 
     let top_pos = position_of_visual_row(buffer, spec, view.top_line, view.top_seg, usable);
     let window_end = match past_window {
@@ -1760,6 +1816,7 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     // The mini window's height comes first: a tall message shrinks the
     // window tree above it (GNU's resize_mini_window, grow-only policy).
     let max_mini = max_mini_window_rows(interpreter, rows);
+    state.echo_max_rows = max_mini.max(1);
     let frontend_echo_early = state.echo.clone();
     let (echo_long, echo_from_minibuffer) = compose_echo_row(
         interpreter,
@@ -1772,11 +1829,39 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     let echo_empty = echo_paint.len() == 1
         && echo_paint[0].text.iter().all(|c| *c == ' ')
         && !echo_from_minibuffer;
+    let previous_echo_rows = state.echo_rows;
     state.echo_rows = if echo_empty {
         1
     } else {
         state.echo_rows.max(echo_paint.len()).min(max_mini.max(1))
     };
+    if state.echo_rows != previous_echo_rows {
+        // GNU's grow_mini_window/shrink_mini_window resize the real
+        // window tree: window.el's own resizer stages new sizes for the
+        // windows above the mini window, and the staged sizes apply --
+        // window-height and friends answer the shrunken sizes while the
+        // echo area is grown.  The render-level clamp below stays as
+        // the safety net if the Lisp resizer declines.
+        let delta = state.echo_rows as i64 - previous_echo_rows as i64;
+        let _ = (|interpreter: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
+            let root = call(interpreter, env, "frame-root-window", &[])?;
+            let grow = call(
+                interpreter,
+                env,
+                "window--resize-root-window-vertically",
+                &[root, Value::Integer(-delta), Value::T],
+            )?;
+            if grow.as_integer().unwrap_or(0) != 0 {
+                call(
+                    interpreter,
+                    env,
+                    "window-resize-apply",
+                    &[Value::Nil, Value::Nil],
+                )?;
+            }
+            Ok(())
+        })(interpreter, env);
+    }
     let frame_rows = rows - state.echo_rows; // everything above the echo area
     // The rows the frame keeps above the window tree are the menu bar's
     // (GNU's FRAME_MENU_BAR_LINES); `menu-bar-mode' drives the count
@@ -1875,9 +1960,6 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     // Face spans over window text apply after the text lands (their
     // resolution evaluates Lisp, which the buffer borrow above forbids).
     struct TextFaceJob {
-        /// Columns the window is hscrolled; a non-zero value means rows
-        /// are truncated and column zero holds the `$' glyph.
-        hscroll: usize,
         buffer_id: u64,
         selected: bool,
         top: usize,
@@ -1886,7 +1968,7 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         usable: usize,
         start: usize,
         window_end: usize,
-        rows: Vec<(usize, usize, usize)>,
+        rows: Vec<(usize, usize, usize, usize)>,
     }
     let mut text_face_jobs: Vec<TextFaceJob> = Vec::new();
 
@@ -1924,14 +2006,13 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             text_rows,
             body_width,
             geometry.truncate,
-            geometry.hscroll,
+            &geometry,
             info.selected,
         );
-        for (row, (rendered, _, _, _)) in plan.rendered.iter().enumerate() {
+        for (row, (rendered, _, _, _, _)) in plan.rendered.iter().enumerate() {
             frame[text_top + row].blit(info.left, rendered, CellAttrs::default());
         }
         text_face_jobs.push(TextFaceJob {
-            hscroll: geometry.hscroll,
             buffer_id: info.buffer_id,
             selected: info.selected,
             top: text_top,
@@ -1943,7 +2024,7 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             rows: plan
                 .rendered
                 .iter()
-                .map(|(_, line, seg, start)| (*line, *seg, *start))
+                .map(|(_, line, seg, start, row_hscroll)| (*line, *seg, *start, *row_hscroll))
                 .collect(),
         });
         if body_width < info.width {
@@ -2032,14 +2113,14 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             }
         };
         let job_invisibility = resolve_buffer_invisibility(interpreter, buffer, job.buffer_id);
-        for (index, (line, seg, row_start)) in job.rows.iter().enumerate() {
+        for (index, (line, seg, row_start, row_hscroll)) in job.rows.iter().enumerate() {
             if *row_start == usize::MAX {
                 continue;
             }
             let row_end = job
                 .rows
                 .get(index + 1)
-                .map(|(_, _, next)| *next)
+                .map(|(_, _, next, _)| *next)
                 .filter(|next| *next != usize::MAX)
                 .unwrap_or(job.window_end);
             if row_end <= *row_start {
@@ -2072,11 +2153,11 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
                 let col_of = |pos: usize| {
                     let offset = display_index_of(pos);
                     let column = display_column(&line_text, offset);
-                    if job.hscroll > 0 {
+                    if *row_hscroll > 0 {
                         // The `$' glyph owns column zero, replacing the
                         // character at column HSCROLL itself; visible
                         // text maps to column - HSCROLL from column one.
-                        (column as i64 - job.hscroll as i64).max(1) as usize
+                        (column as i64 - *row_hscroll as i64).max(1) as usize
                     } else {
                         column.saturating_sub(seg * job.usable)
                     }
@@ -2105,8 +2186,8 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             // copy the preceding cell's attributes over the dots.
             for &ellipsis_index in &visual.ellipses {
                 let mut column = display_column(&line_text, ellipsis_index);
-                if job.hscroll > 0 {
-                    let shifted = column as i64 - job.hscroll as i64;
+                if *row_hscroll > 0 {
+                    let shifted = column as i64 - *row_hscroll as i64;
                     if shifted < 1 {
                         continue;
                     }
@@ -2939,7 +3020,12 @@ mod tests {
             10,
             80,
             false,
-            0,
+            &RenderGeometry {
+                truncate: false,
+                hscroll: 0,
+                current_line_only: false,
+                min_hscroll: 0,
+            },
             false,
         );
         assert_eq!(plan.rendered[0].0, "line 30");
@@ -2973,7 +3059,12 @@ mod tests {
             11,
             80,
             false,
-            0,
+            &RenderGeometry {
+                truncate: false,
+                hscroll: 0,
+                current_line_only: false,
+                min_hscroll: 0,
+            },
             true,
         );
         // GNU recenters half a window above point: 40 - 11/2 = line 35.
@@ -3001,7 +3092,12 @@ mod tests {
             11,
             39,
             true,
-            0,
+            &RenderGeometry {
+                truncate: true,
+                hscroll: 0,
+                current_line_only: false,
+                min_hscroll: 0,
+            },
             true,
         );
         assert_eq!(plan.rendered[0].0, "short one");
