@@ -60,6 +60,13 @@ pub(crate) fn function_documentation(
         Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok()?,
         other => other.clone(),
     };
+    // doc.c Fdocumentation: a macro's documentation lives on the function
+    // inside its (macro . FUNCTION) cons.
+    let value = if matches!(value.car(), Ok(Value::Symbol(ref name)) if name == "macro") {
+        value.cdr().ok()?
+    } else {
+        value
+    };
     if let Value::Record(id) = value
         && let Some(record) = interp.find_record(id)
         && record.kind == crate::lisp::eval::RecordKind::Closure
@@ -980,6 +987,13 @@ pub(crate) fn execute_command_binding(
         .unwrap_or(dispatched);
     interp.set_variable("last-command", last_command, env);
     interp.set_variable("last-prefix-arg", prefix, env);
+    // keyboard.c:1421 (command_loop_1): before waiting for the next key
+    // sequence, `this-command' and its shadows go nil -- Lisp that runs
+    // between commands (idle timers; eldoc's `(not this-command)' guard)
+    // must see no command executing.
+    interp.set_variable("this-command", Value::Nil, env);
+    interp.set_variable("real-this-command", Value::Nil, env);
+    interp.set_variable("this-original-command", Value::Nil, env);
     result
 }
 
@@ -988,6 +1002,41 @@ pub(crate) fn execute_command_binding(
 /// `timer-idle-list' (idle durations, once per idle period) through
 /// timer.el's own `timer-event-handler'.  Returns whether any ran —
 /// isearch's lazy highlight arrives this way.
+thread_local! {
+    static TTY_IDLE_START: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+// keyboard.c timer_start_idle: on entering the idle state (and only on
+// entering it), every idle timer becomes a candidate again -- GNU calls
+// timer.el's `internal-timer-start-idle' to clear the triggered flags,
+// and so do we.  The recorded instant backs `current-idle-time'.
+pub(crate) fn tty_note_idle_start(interp: &mut Interpreter, env: &mut Env) {
+    let already_idle = TTY_IDLE_START.with(|cell| cell.get().is_some());
+    if already_idle {
+        return;
+    }
+    TTY_IDLE_START.with(|cell| cell.set(Some(std::time::Instant::now())));
+    if interp.lookup_function("internal-timer-start-idle", env).is_ok() {
+        let _ = interp.call_function_value(
+            Value::Symbol("internal-timer-start-idle".into()),
+            Some("internal-timer-start-idle"),
+            &[],
+            env,
+        );
+    }
+}
+
+// keyboard.c timer_stop_idle: input ends the idle period.
+pub(crate) fn tty_note_idle_end() {
+    TTY_IDLE_START.with(|cell| cell.set(None));
+}
+
+// Fcurrent_idle_time's backing state: the elapsed idle span, when idle.
+pub(crate) fn tty_current_idle_duration() -> Option<std::time::Duration> {
+    TTY_IDLE_START.with(|cell| cell.get()).map(|start| start.elapsed())
+}
+
 pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_seconds: f64) -> bool {
     if interp.lookup_function("timer-event-handler", env).is_err() {
         return false;
