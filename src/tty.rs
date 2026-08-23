@@ -21,6 +21,9 @@ use crossterm::{cursor, event, execute, queue, style, terminal};
 use crate::batch;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, LispError, Value};
+use crate::lisp::primitives::{
+    InvisibilitySpec, invisible_run_at, resolve_buffer_invisibility, visual_line_first_line,
+};
 
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
@@ -1240,6 +1243,130 @@ fn space_align_to_target(value: &Value) -> Option<usize> {
     }
 }
 
+/// A visual line under invisibility: the laid-out text starting at the
+/// display line holding FIRST_LINE, with invisible runs skipped, the
+/// display-table ellipsis spliced where a run asks for it, and hidden
+/// newlines joining the raw lines that follow.  `map' takes a raw char
+/// offset (from the first raw line's start) to the display char index
+/// where it (or the next visible content) lands; `raw_of_display' is the
+/// reverse.  `lines_spanned' counts the raw buffer lines consumed.
+struct VisualLine {
+    text: String,
+    map: Vec<usize>,
+    raw_of_display: Vec<usize>,
+    lines_spanned: usize,
+    /// Display char indexes where a three-dot ellipsis begins.
+    ellipses: Vec<usize>,
+}
+
+fn visual_line_at(
+    buffer: &crate::buffer::Buffer,
+    spec: &InvisibilitySpec,
+    first_line: usize,
+) -> VisualLine {
+    if !spec.active {
+        let (text, display_map) = displayed_line_with_map(buffer, first_line);
+        let display_count = text.chars().count();
+        let map = display_map.unwrap_or_else(|| (0..=display_count).collect());
+        // Invert the (raw offset -> display index) map; `display'
+        // padding cells belong to the raw char that produced them.
+        let mut raw_of_display = vec![0usize; display_count + 1];
+        for raw in 0..map.len().saturating_sub(1) {
+            for display in map[raw]..map[raw + 1].min(display_count + 1) {
+                raw_of_display[display] = raw;
+            }
+        }
+        if let Some(last) = map.last() {
+            for cell in raw_of_display.iter_mut().skip(*last) {
+                *cell = map.len().saturating_sub(1);
+            }
+        }
+        return VisualLine {
+            text,
+            map,
+            raw_of_display,
+            lines_spanned: 1,
+            ellipses: Vec::new(),
+        };
+    }
+    let line_begin = buffer.line_start_of(first_line);
+    let end = buffer.point_max();
+    let has_display_prop = buffer.has_text_property_named("display");
+    let mut text = String::new();
+    let mut map: Vec<usize> = Vec::new();
+    let mut raw_of_display: Vec<usize> = Vec::new();
+    let mut display_chars = 0usize;
+    let mut col = 0usize;
+    let mut lines_spanned = 1usize;
+    let mut ellipses: Vec<usize> = Vec::new();
+    let mut pos = line_begin;
+    while pos < end {
+        if let Some((run_end, ellipsis)) = invisible_run_at(buffer, spec, pos) {
+            lines_spanned += buffer
+                .buffer_substring(pos, run_end)
+                .map(|hidden| hidden.matches('\n').count())
+                .unwrap_or(0);
+            if ellipsis {
+                ellipses.push(display_chars);
+                for _ in 0..3 {
+                    text.push('.');
+                    raw_of_display.push(run_end - line_begin);
+                    display_chars += 1;
+                    col += 1;
+                }
+            }
+            // Hidden positions land past the ellipsis: a face span over
+            // folded text collapses to nothing instead of painting the
+            // dots (GNU gives the ellipsis the preceding text's face).
+            for _ in pos..run_end {
+                map.push(display_chars);
+            }
+            pos = run_end;
+            continue;
+        }
+        let Some(ch) = buffer.char_at(pos) else {
+            break;
+        };
+        if ch == '\n' {
+            break;
+        }
+        let offset = pos - line_begin;
+        let align_target = if has_display_prop {
+            buffer
+                .text_property_at(pos, "display")
+                .and_then(|value| space_align_to_target(&value))
+        } else {
+            None
+        };
+        if let Some(target) = align_target {
+            map.push(display_chars);
+            let pad = target.saturating_sub(col);
+            for _ in 0..pad {
+                text.push(' ');
+                raw_of_display.push(offset);
+                display_chars += 1;
+            }
+            col += pad;
+        } else {
+            map.push(display_chars);
+            text.push(ch);
+            raw_of_display.push(offset);
+            display_chars += 1;
+            col += if ch == '\t' { 8 - (col % 8) } else { 1 };
+        }
+        pos += 1;
+    }
+    map.push(display_chars);
+    raw_of_display.push(pos - line_begin);
+    VisualLine {
+        text,
+        map,
+        raw_of_display,
+        lines_spanned,
+        ellipses,
+    }
+}
+
 /// One buffer line as redisplay lays it out: a character carrying a
 /// `(space :align-to COL)' `display' property renders as blank space up
 /// to display column COL in place of the character itself.  Returns the
@@ -1299,15 +1426,6 @@ fn displayed_line_text(buffer: &crate::buffer::Buffer, line: usize) -> String {
     displayed_line_with_map(buffer, line).0
 }
 
-fn displayed_lines_from(buffer: &crate::buffer::Buffer, from: usize, count: usize) -> Vec<String> {
-    if !buffer.has_text_property_named("display") {
-        return buffer.lines_from(from, count);
-    }
-    (from..from + count)
-        .map(|line| displayed_line_text(buffer, line))
-        .collect()
-}
-
 /// Plan one window's text: adopt a commanded window-start, keep point
 /// visible with GNU's recenter-on-jump model (selected window only), and
 /// render the visible rows under the window's own wrap-or-truncate
@@ -1315,6 +1433,7 @@ fn displayed_lines_from(buffer: &crate::buffer::Buffer, from: usize, count: usiz
 #[allow(clippy::too_many_arguments)]
 fn plan_window_text(
     buffer: &crate::buffer::Buffer,
+    spec: &InvisibilitySpec,
     view: &mut WindowView,
     commanded_start: usize,
     point: usize,
@@ -1332,11 +1451,23 @@ fn plan_window_text(
             segment_count(display_width(line), usable)
         }
     };
-    let line_text_at = |line: usize| displayed_line_text(buffer, line);
+    let line_text_at = |line: usize| visual_line_at(buffer, spec, line).text;
+    // The display column a buffer position occupies on its visual line
+    // (invisible runs collapse; the ellipsis and joined tails count).
+    let visual_dcol = |first_line: usize, pos: usize| {
+        let visual = visual_line_at(buffer, spec, first_line);
+        let offset = pos.saturating_sub(buffer.line_start_of(first_line));
+        let index = visual
+            .map
+            .get(offset)
+            .copied()
+            .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
+        display_column(&visual.text, index)
+    };
 
-    let point_line = buffer.line_number_at_pos(point); // 1-based
+    let point_line = visual_line_first_line(buffer, spec, buffer.line_number_at_pos(point));
     let point_line_text = line_text_at(point_line);
-    let point_dcol = display_column(&point_line_text, point - buffer.line_start_at(point));
+    let point_dcol = visual_dcol(point_line, point);
     let (point_seg, cursor_col) = if truncate {
         // An hscrolled window spends column zero on the left `$' glyph,
         // which replaces the character at column HSCROLL itself: a
@@ -1354,11 +1485,9 @@ fn plan_window_text(
     // simply show their commanded start — GNU only enforces point
     // visibility in the selected window's redisplay.
     if commanded_start != view.synced_start || !selected {
-        let start_line = buffer.line_number_at_pos(commanded_start);
-        let start_dcol = display_column(
-            &line_text_at(start_line),
-            commanded_start - buffer.line_start_at(commanded_start),
-        );
+        let start_line =
+            visual_line_first_line(buffer, spec, buffer.line_number_at_pos(commanded_start));
+        let start_dcol = visual_dcol(start_line, commanded_start);
         view.top_line = start_line;
         view.top_seg = if truncate { 0 } else { start_dcol / usable };
     }
@@ -1373,22 +1502,25 @@ fn plan_window_text(
     if selected && !recenter {
         if point_line == view.top_line {
             point_row = point_seg - view.top_seg;
-        } else if point_line - view.top_line >= text_rows {
+        } else if point_line - view.top_line >= text_rows && !spec.active {
             // Every line fills at least one row: certainly off-screen.
             recenter = true;
         } else {
-            let span = point_line - view.top_line;
+            // Walk the visual lines between the top and point; hidden
+            // newlines make one visual line span several raw lines.
             let mut rows_before = 0usize;
-            for (index, line) in displayed_lines_from(buffer, view.top_line, span)
-                .iter()
-                .enumerate()
-            {
-                let segs = segs_of(line);
-                let skipped = if index == 0 { view.top_seg } else { 0 };
+            let mut walk = view.top_line;
+            let mut first = true;
+            while walk < point_line {
+                let visual = visual_line_at(buffer, spec, walk);
+                let segs = segs_of(&visual.text);
+                let skipped = if first { view.top_seg } else { 0 };
+                first = false;
                 rows_before += segs.saturating_sub(skipped);
                 if rows_before > text_rows {
                     break;
                 }
+                walk += visual.lines_spanned;
             }
             point_row = rows_before.saturating_add(point_seg);
         }
@@ -1409,7 +1541,7 @@ fn plan_window_text(
                 budget -= step;
                 stepped += step;
             } else if line > 1 {
-                line -= 1;
+                line = visual_line_first_line(buffer, spec, line - 1);
                 seg = segs_of(&line_text_at(line)) - 1;
                 budget -= 1;
                 stepped += 1;
@@ -1423,47 +1555,51 @@ fn plan_window_text(
     }
 
     // Fetch only the window: redisplay cost must follow the screen size,
-    // never the buffer size.  Each line yields at least one visual row,
-    // so text_rows lines always cover the window.
-    let lines = displayed_lines_from(buffer, view.top_line, text_rows);
+    // never the buffer size.  Each visual line yields at least one row,
+    // so text_rows visual lines always cover the window.
+    let last_line = buffer.line_number_at_pos(buffer.point_max());
     let mut rendered: Vec<(String, usize, usize, usize)> = Vec::with_capacity(text_rows);
     // First row past the window, as (line, segment): the window's end.
     let mut past_window: Option<(usize, usize)> = None;
-    'fill: for (index, line) in lines.iter().enumerate() {
+    let mut fill_line = view.top_line;
+    let mut first_fill = true;
+    'fill: while rendered.len() < text_rows && fill_line <= last_line {
+        let visual = visual_line_at(buffer, spec, fill_line);
         let segments = if truncate {
-            vec![truncate_row_hscrolled(line, body_width, hscroll)]
+            vec![truncate_row_hscrolled(&visual.text, body_width, hscroll)]
         } else {
-            wrap_segments(line, body_width)
+            wrap_segments(&visual.text, body_width)
         };
-        let from = if index == 0 {
+        let from = if first_fill {
             view.top_seg.min(segments.len() - 1)
         } else {
             0
         };
+        first_fill = false;
+        let next_line = fill_line + visual.lines_spanned;
         for (seg_index, segment) in segments.iter().enumerate().skip(from) {
-            let row_line = view.top_line + index;
-            let row_start = position_of_visual_row(buffer, row_line, seg_index, usable);
-            rendered.push((segment.clone(), row_line, seg_index, row_start));
+            let row_start = position_of_visual_row(buffer, spec, fill_line, seg_index, usable);
+            rendered.push((segment.clone(), fill_line, seg_index, row_start));
             if rendered.len() == text_rows {
                 past_window = Some(if seg_index + 1 < segments.len() {
-                    (view.top_line + index, seg_index + 1)
+                    (fill_line, seg_index + 1)
                 } else {
-                    (view.top_line + index + 1, 0)
+                    (next_line, 0)
                 });
                 break 'fill;
             }
         }
+        fill_line = next_line;
     }
     rendered.resize(text_rows, (String::new(), 0, 0, usize::MAX));
 
-    let top_pos = position_of_visual_row(buffer, view.top_line, view.top_seg, usable);
-    let last_line = buffer.line_number_at_pos(buffer.point_max());
+    let top_pos = position_of_visual_row(buffer, spec, view.top_line, view.top_seg, usable);
     let window_end = match past_window {
         // A row past the final buffer line means the window shows
         // everything: window-end is ZV (a buffer without a trailing
         // newline has no line beyond its last).
         Some((line, _)) if line > last_line => buffer.point_max(),
-        Some((line, seg)) => position_of_visual_row(buffer, line, seg, usable),
+        Some((line, seg)) => position_of_visual_row(buffer, spec, line, seg, usable),
         None => buffer.point_max(),
     };
     WindowPlan {
@@ -1778,8 +1914,10 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         }) else {
             continue;
         };
+        let invisibility = resolve_buffer_invisibility(interpreter, buffer, info.buffer_id);
         let plan = plan_window_text(
             buffer,
+            &invisibility,
             view,
             info.start,
             info.point,
@@ -1893,6 +2031,7 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
                 None => continue,
             }
         };
+        let job_invisibility = resolve_buffer_invisibility(interpreter, buffer, job.buffer_id);
         for (index, (line, seg, row_start)) in job.rows.iter().enumerate() {
             if *row_start == usize::MAX {
                 continue;
@@ -1906,7 +2045,8 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             if row_end <= *row_start {
                 continue;
             }
-            let (line_text, offset_map) = displayed_line_with_map(buffer, *line);
+            let visual = visual_line_at(buffer, &job_invisibility, *line);
+            let line_text = visual.text.clone();
             let line_begin = buffer.line_start_of(*line);
             for (span_begin, span_end, attrs) in &resolved {
                 let begin = (*span_begin).max(*row_start);
@@ -1914,14 +2054,23 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
                 if begin >= end {
                     continue;
                 }
+                let display_index_of = |pos: usize| {
+                    let offset = pos.saturating_sub(line_begin);
+                    visual
+                        .map
+                        .get(offset)
+                        .copied()
+                        .unwrap_or_else(|| visual.map.last().copied().unwrap_or(offset))
+                };
+                // A span lying entirely inside hidden text occupies no
+                // display cells: nothing to paint (its newline included).
+                if display_index_of(begin) == display_index_of(end)
+                    && begin.saturating_sub(line_begin) < visual.map.len().saturating_sub(1)
+                {
+                    continue;
+                }
                 let col_of = |pos: usize| {
-                    let mut offset = pos.saturating_sub(line_begin);
-                    if let Some(map) = &offset_map {
-                        offset = map
-                            .get(offset)
-                            .copied()
-                            .unwrap_or_else(|| map.last().copied().unwrap_or(offset));
-                    }
+                    let offset = display_index_of(pos);
                     let column = display_column(&line_text, offset);
                     if job.hscroll > 0 {
                         // The `$' glyph owns column zero, replacing the
@@ -1950,6 +2099,32 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
                     continue;
                 }
                 frame[job.top + index].overlay(job.left + from_col, job.left + to_col, *attrs);
+            }
+            // The ellipsis takes the face of the text before it
+            // (display_ellipsis draws with the iterator's saved face):
+            // copy the preceding cell's attributes over the dots.
+            for &ellipsis_index in &visual.ellipses {
+                let mut column = display_column(&line_text, ellipsis_index);
+                if job.hscroll > 0 {
+                    let shifted = column as i64 - job.hscroll as i64;
+                    if shifted < 1 {
+                        continue;
+                    }
+                    column = shifted as usize;
+                } else {
+                    column = column.saturating_sub(seg * job.usable);
+                }
+                if column == 0 || column >= job.body_width {
+                    continue;
+                }
+                let row = &mut frame[job.top + index];
+                let inherited = row.attrs[(job.left + column - 1).min(row.attrs.len() - 1)];
+                for dot in 0..3usize {
+                    let cell = job.left + column + dot;
+                    if column + dot < job.body_width && cell < row.attrs.len() {
+                        row.attrs[cell] = inherited;
+                    }
+                }
             }
         }
     }
@@ -2409,6 +2584,7 @@ fn truncate_row_hscrolled(line: &str, width: usize, hscroll: usize) -> String {
 /// under the current wrap geometry.
 fn position_of_visual_row(
     buffer: &crate::buffer::Buffer,
+    spec: &InvisibilitySpec,
     line: usize,
     seg: usize,
     usable: usize,
@@ -2417,22 +2593,23 @@ fn position_of_visual_row(
     if seg == 0 {
         return start;
     }
-    let text = buffer
-        .lines_from(line, 1)
-        .into_iter()
-        .next()
-        .unwrap_or_default();
+    let visual = visual_line_at(buffer, spec, line);
     let target = seg * usable;
     let mut col = 0usize;
-    let mut offset = 0usize;
-    for c in text.chars() {
+    let mut index = 0usize;
+    for c in visual.text.chars() {
         if col >= target {
             break;
         }
         col += if c == '\t' { 8 - (col % 8) } else { 1 };
-        offset += 1;
+        index += 1;
     }
-    start + offset
+    start
+        + visual
+            .raw_of_display
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| visual.raw_of_display.last().copied().unwrap_or(0))
 }
 
 /// A buffer line's display form: tabs expanded to 8-column stops.
@@ -2720,11 +2897,11 @@ mod tests {
             .buffer
             .insert(&format!("top\n{}\nbottom\n", "wide".repeat(50)));
         let buffer = &interpreter.buffer;
-        assert_eq!(position_of_visual_row(buffer, 1, 0, 79), 1);
-        assert_eq!(position_of_visual_row(buffer, 2, 0, 79), 5);
-        assert_eq!(position_of_visual_row(buffer, 2, 1, 79), 84);
-        assert_eq!(position_of_visual_row(buffer, 2, 2, 79), 163);
-        assert_eq!(position_of_visual_row(buffer, 3, 0, 79), 206);
+        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 1, 0, 79), 1);
+        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 0, 79), 5);
+        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 1, 79), 84);
+        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 2, 79), 163);
+        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 3, 0, 79), 206);
     }
 
     #[test]
@@ -2755,6 +2932,7 @@ mod tests {
         let mut view = WindowView::default();
         let plan = plan_window_text(
             &interpreter.buffer,
+            &InvisibilitySpec::default(),
             &mut view,
             start,
             interpreter.buffer.line_start_of(55),
@@ -2788,6 +2966,7 @@ mod tests {
         let point = interpreter.buffer.line_start_of(40);
         let plan = plan_window_text(
             &interpreter.buffer,
+            &InvisibilitySpec::default(),
             &mut view,
             interpreter.buffer.point_min(),
             point,
@@ -2813,7 +2992,18 @@ mod tests {
             interpreter.buffer.insert(&format!("line {n:02}\n"));
         }
         let mut view = WindowView::default();
-        let plan = plan_window_text(&interpreter.buffer, &mut view, 1, 1, 11, 39, true, 0, true);
+        let plan = plan_window_text(
+            &interpreter.buffer,
+            &InvisibilitySpec::default(),
+            &mut view,
+            1,
+            1,
+            11,
+            39,
+            true,
+            0,
+            true,
+        );
         assert_eq!(plan.rendered[0].0, "short one");
         assert_eq!(plan.rendered[1].0, "W".repeat(38) + "$");
         assert_eq!(

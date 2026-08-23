@@ -1,5 +1,4 @@
 use super::*;
-use std::borrow::Cow;
 
 const REGEX_WORD_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\x{2620}]";
 const REGEX_NON_WORD_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\x{2620}]";
@@ -2512,33 +2511,36 @@ pub(super) fn string_match_impl(
     } else {
         0
     };
-    let tail = if start == 0 {
-        Cow::Borrowed(haystack.text.as_str())
+    // GNU searches the whole string from START: `^' matches only at the
+    // string's beginning or after a newline, never bare at START, and
+    // `\\`' means the true string start.  Slicing the tail off made the
+    // slice boundary a bogus beginning-of-line (org-persist's
+    // `(replace-regexp-in-string "^.." ...)' split every two characters).
+    let text = haystack.text.as_str();
+    let byte_start = if start == 0 {
+        0
+    } else if text.is_ascii() {
+        start
     } else {
-        Cow::Owned(haystack.text.chars().skip(start).collect::<String>())
+        text.char_indices()
+            .nth(start)
+            .map(|(byte, _)| byte)
+            .unwrap_or(text.len())
     };
-    let regex = compile_elisp_regex(interp, &pattern, env, "", start == 0)?;
+    let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
     let captures = regex
-        .captures(&tail)
+        .captures_from_pos(text, byte_start)
         .map_err(|error| LispError::Signal(error.to_string()))?;
     if let Some(captures) = captures
         && let Some(matched) = captures.get(0)
     {
-        let match_start = start
-            + if tail.is_ascii() {
-                matched.start()
-            } else {
-                tail[..matched.start()].chars().count()
-            };
+        let match_start = if text.is_ascii() {
+            matched.start()
+        } else {
+            text[..matched.start()].chars().count()
+        };
         if update_match_data && !args.get(3).is_some_and(Value::is_truthy) {
-            set_match_data(
-                interp,
-                start,
-                &tail,
-                &captures,
-                regex.capture_mapping(),
-                None,
-            );
+            set_match_data(interp, 0, text, &captures, regex.capture_mapping(), None);
         }
         Ok(Value::Integer(match_start as i64))
     } else {
@@ -2566,21 +2568,27 @@ pub(super) fn posix_string_match_impl(
     } else {
         0
     };
-    let tail = if start == 0 {
-        Cow::Borrowed(haystack.text.as_str())
+    let text = haystack.text.as_str();
+    let byte_start = if start == 0 {
+        0
+    } else if text.is_ascii() {
+        start
     } else {
-        Cow::Owned(haystack.text.chars().skip(start).collect::<String>())
+        text.char_indices()
+            .nth(start)
+            .map(|(byte, _)| byte)
+            .unwrap_or(text.len())
     };
 
     if let Some(selected) = posix_longest_match(
         interp,
         &pattern,
-        &tail,
-        0,
+        text,
+        byte_start,
         PosixMatchContext {
-            position_base: start,
+            position_base: 0,
             point_boundary: SearchPointBoundary::None,
-            haystack_at_absolute_start: start == 0,
+            haystack_at_absolute_start: true,
             category_scope: RegexpCategoryScope::Standard,
             env,
         },

@@ -2585,13 +2585,43 @@ pub(crate) fn visual_segment_starts(
 pub(crate) fn visual_line_bounds(interp: &Interpreter, pos: usize) -> (usize, usize) {
     let point_min = interp.buffer.point_min();
     let point_max = interp.buffer.point_max();
-    let mut bol = pos.max(point_min);
-    while bol > point_min && interp.buffer.char_at(bol - 1) != Some('\n') {
-        bol -= 1;
-    }
-    let mut eol = pos.max(point_min);
-    while eol < point_max && interp.buffer.char_at(eol) != Some('\n') {
-        eol += 1;
+    let raw_bol = |mut from: usize| {
+        while from > point_min && interp.buffer.char_at(from - 1) != Some('\n') {
+            from -= 1;
+        }
+        from
+    };
+    let raw_eol = |mut from: usize| {
+        while from < point_max && interp.buffer.char_at(from) != Some('\n') {
+            from += 1;
+        }
+        from
+    };
+    let mut bol = raw_bol(pos.max(point_min));
+    let mut eol = raw_eol(pos.max(point_min));
+    // GNU's vertical-motion walks display lines through the iterator:
+    // a newline hidden by the `invisible' property does not end the
+    // line, so a display line spans every raw line an invisible run
+    // joins (org's folded subtrees collapse onto their headline).
+    let spec = crate::lisp::primitives::resolve_buffer_invisibility(
+        interp,
+        &interp.buffer,
+        interp.current_buffer_id(),
+    );
+    if spec.active {
+        while bol > point_min
+            && crate::lisp::primitives::invisible_class_at(&interp.buffer, &spec, bol - 1) != 0
+        {
+            bol = raw_bol(bol - 1);
+        }
+        while eol < point_max {
+            let Some((run_end, _)) =
+                crate::lisp::primitives::invisible_run_at(&interp.buffer, &spec, eol)
+            else {
+                break;
+            };
+            eol = raw_eol(run_end);
+        }
     }
     (bol, eol)
 }

@@ -4539,18 +4539,6 @@ pub(crate) fn render_mode_line_glass(
 /// The glass mode line together with its `:propertize' face spans, in
 /// char offsets — the frontend paints the spans over the mode-line face
 /// (the buffer name's `mode-line-buffer-id' bold).
-pub(crate) fn render_mode_line_glass_with_spans(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(String, FaceSpans), LispError> {
-    let format = interp
-        .lookup_var("mode-line-format", env)
-        .unwrap_or(Value::Nil);
-    let mut spans = Vec::new();
-    let text = render_mode_line_element(interp, env, &format, false, true, 0, 0, &mut spans)?;
-    Ok((text, spans))
-}
-
 /// The `(min-width (N.0))' display specification's width, if VALUE is one.
 fn mode_line_min_width(value: &Value) -> Option<usize> {
     let items = value.to_vec().ok()?;

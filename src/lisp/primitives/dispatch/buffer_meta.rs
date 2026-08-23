@@ -568,10 +568,11 @@ define_dispatch!(
                 Ok(Value::buffer(0, "*scratch*"))
             }
             "buffer-base-buffer" => {
-                let buffer_id = if let Some(buffer) = args.first() {
-                    interp.resolve_buffer_id(buffer)?
-                } else {
-                    interp.current_buffer_id()
+                // buffer.c Fbuffer_base_buffer: a nil BUFFER means the
+                // current buffer, exactly like an omitted argument.
+                let buffer_id = match args.first() {
+                    Some(Value::Nil) | None => interp.current_buffer_id(),
+                    Some(buffer) => interp.resolve_buffer_id(buffer)?,
                 };
                 Ok(interp
                     .buffer_base_id(buffer_id)
