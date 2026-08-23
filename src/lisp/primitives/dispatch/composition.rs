@@ -446,12 +446,19 @@ fn find_composition(interp: &mut Interpreter, args: &[Value]) -> Result<Value, L
             Value::Integer(width),
         ]));
     }
-    // No automatic composition here: GNU's find_automatic_composition
-    // consults composition-function-table rules that produce a gstring only
-    // with a live frame's font (or terminal) machinery, so the batch oracle
-    // answers nil for text no static composition covers.  The previous
-    // grapheme-cluster substitute fabricated compositions GNU does not
-    // report in batch.
+    // No automatic composition here.  For BUFFER positions the batch
+    // oracle answers nil (no frame font machinery), which this matches.
+    // For the STRING argument the oracle DOES compose in batch, through
+    // composition-function-table rules and terminal gstring shaping
+    // ((find-composition 0 nil "e\u{301}" t) returns a real gstring with
+    // per-script cluster structure); Emaxx does not implement that shaping
+    // yet, so the string surface diverges and answers nil -- disclosed in
+    // docs/honesty-audit-2026-08-18.md (2026-08-23 audit finding).  No test
+    // in the pinned oracle's test tree calls find-composition, so the
+    // frozen measurement never exercises either surface.  The previous
+    // grapheme-cluster substitute is gone because it fabricated buffer
+    // compositions GNU does not report and mismatched GNU's string gstring
+    // structure.
     Ok(Value::Nil)
 }
 

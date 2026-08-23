@@ -901,6 +901,7 @@ fn pin_oracle(args: PinArgs) -> Result<(), String> {
         runtime.emacs_version.clone(),
         runtime.system_type.clone(),
         runtime.native_compilation,
+        compat::sha256_of_file(&emacs_binary)?,
     );
     let local = OracleLocalConfig::new(emacs_binary.clone(), emacs_repo.clone());
     compat::write_oracle_lock(&lock)?;
@@ -1034,6 +1035,27 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
 }
 
 fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
+    // The frozen score is the project's headline claim, so it binds tighter
+    // than the exploratory modes (2026-08-23 pipeline audit F5/F6):
+    // the anti-cheat gates scan and behaviorally probe THIS tree, so the
+    // measured subject must be this tree; and the number must be
+    // commit-addressable, so a dirty tree is refused rather than merely
+    // recorded in provenance.
+    if args.subject_root.is_some() {
+        return Err(
+            "frozen mode measures the gate-checked tree itself; --subject-root would \
+             decouple the anti-cheat gates from the measured subject.  Run frozen \
+             from the subject checkout instead."
+                .into(),
+        );
+    }
+    let (_, dirty) = git_state(&compat::project_root())?;
+    if dirty != Some(false) {
+        return Err(
+            "frozen mode requires a clean working tree so the score is \
+             commit-addressable; commit or stash first".into(),
+        );
+    }
     enforce_anti_cheat_gates()?;
     let context = load_context()?;
     let manifest = FrozenCompatibilityManifest::load()?;

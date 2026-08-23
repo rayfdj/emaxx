@@ -38,6 +38,18 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 67 | Dispatch gate blind to super::call (4 mode-line escapes) | FIXED (Round A) |
 | 68 | Default-stack SIGABRT; oracle-build-specific gate | FIXED (Round A) |
 | 69 | DEFVAR completeness: 229 oracle-bound names void | FIXED (218 seeded, 11 disclosed; dump-frozen values OPEN QUESTION) |
+| 70 | Four *-consed counters frozen despite "zeroed" disclosure | FIXED (all seven zeroed) |
+| 71 | find-composition string surface retired under false claim | DISCLOSED (no measured test exercises it) |
+| 72 | Oracle binary pinned by self-report only | FIXED (lock pins binary sha256) |
+| 73 | EMACSNATIVELOADPATH not stripped from children | FIXED |
+| 74 | Frozen mode accepted --subject-root / dirty tree | FIXED (both refused) |
+| 75 | Anti-cheat blind-spot catalogue (token splitting, unscanned files) | DISCLOSED |
+| 76 | Probe-found runtime gaps (ppss elt-2/10, charset text prop, WTA tail) | DISCLOSED |
+| 77 | comp-abi-hash/version-dir/pdumper-fingerprint copied the oracle's build identity | FIXED (comp vars void per no-native-comp model; fingerprint computed from this binary) |
+| 78 | Profiler faked started-state and returned a print-mimic "#<hash-table>" string | FIXED (real state, real empty hash tables) |
+| 79 | set-network-process-option fabricated success | FIXED (processp signal + network check) |
+| 80 | command-error-default-function swallowed GNU's print-and-exit contract | FIXED (stderr + kill-emacs -1 in batch) |
+| 81 | HOSTNAME/COMPUTERNAME/EMAXX_USER_FULL_NAME identity knobs | FIXED (removed; gethostname/$NAME only) |
 
 # Honesty audit — 2026-08-18
 
@@ -965,3 +977,99 @@ pinned dump observably carries values (gc-cons-percentage 1.0,
 undo-outer-limit nil) that neither the C initializers nor any Lisp file
 on disk produce; pdumper snapshots loadup-time state.  Emaxx mirrors the
 observable artifact.
+
+## Full-codebase pre-7595 audit (2026-08-23)
+
+Three parallel adversarial audits before the step-8 measurement: the
+measurement pipeline, the d95b13e..HEAD diffs (51 seeded DEFVAR values,
+both charset lists, all step-6 expectation flips, the five finding-34
+re-hosts, and the keymap/prefix/isearch rework all re-probed against the
+live oracle and confirmed), and the runtime at large.  Findings and
+dispositions:
+
+70. **Four `*-consed` counters were frozen oracle snapshots despite the
+    "zeroed" disclosure** (floats-consed 350, intervals-consed 42,
+    symbols-consed 18102, vector-cells-consed 990381 -- live telemetry in
+    GNU, matching no current oracle run).  The tranche comment, commit
+    131b843, and finding 69's note all said the counters were zeroed; only
+    three of seven were.  FIXED: all seven now start at zero.  No test
+    read any of them.
+71. **find-composition's string surface diverges and was retired under a
+    false blanket claim** (2adbbd4 said "batch GNU answers nil"; true only
+    for buffer positions -- the batch oracle composes STRINGS through
+    composition-function-table rules and terminal gstring shaping).
+    DISCLOSED, not yet implemented: emaxx answers nil for the string case.
+    No file in the pinned test tree calls find-composition, so the frozen
+    measurement never exercises the gap.  The code comment now states the
+    asymmetry instead of the false claim.
+72. **Oracle binary identity was pinned only by self-report.**  The lock
+    now records `emacs_binary_sha256` at pin time and `validate_oracle`
+    refuses a binary whose hash differs (pipeline audit F1).  This also
+    de-circularizes the two manifest regeneration gates, which previously
+    trusted the same self-reporting binary they were regenerating from.
+73. **`EMACSNATIVELOADPATH` was not stripped from the children's env** --
+    an exported value could shadow pinned oracle Lisp with .eln files
+    outside every fingerprint.  FIXED: added to UNSET_ENV_VARS (F2).
+74. **Frozen mode accepted `--subject-root` and a dirty tree.**  The
+    anti-cheat gates scan and behaviorally probe the harness's own tree,
+    so a foreign subject root decoupled the gates from the measured
+    binary; a dirty tree made the score non-commit-addressable.  FIXED:
+    frozen mode now refuses both (F5/F6).
+75. Anti-cheat blind spots catalogued for the record (pipeline audit):
+    token gates are tripwires against known spellings, defeatable by
+    concat!/format! splitting; `src/main.rs`, `src/lib.rs`, `src/perf.rs`
+    and build.rs are outside the facade-gate file set; the native-dispatch
+    literal-capture regex cannot see calls through a name variable; the
+    regeneration gates hardcode `../emacs/src/emacs` rather than reading
+    oracle.local.json.  These are verifiability limits, not active
+    cheats; each was checked for current exploitation and none found.
+    Ungated summary modes (`landed`, `regressions`, `compare-subjects`)
+    are distinguishable by their `mode` field and must not be quoted as
+    compatibility evidence.
+76. Runtime gaps found by probe, no test pinning the wrong behavior:
+    parse-partial-sexp elt-2 (last complete sexp start) and elt-10
+    internal-state printing diverge from the oracle on open-string
+    inputs; `decode-coding-string` drops the `charset` text property the
+    oracle attaches; the wrong-type-argument tail (finding 57) includes
+    aref/elt/upcase/lsh predicate names beyond the disclosed
+    multi-type-contract set.  All DISCLOSED here as open gaps.
+
+77. **The runtime carried the oracle binary's own identity**: `comp-abi-hash'
+    "adba4e3f", `comp-native-version-dir' "30.2-adba4e3f" and
+    `pdumper-fingerprint' were byte-copies of the pinned oracle's per-build
+    values, while emaxx simultaneously (and honestly) reports
+    `native-comp-available-p' nil and empty configuration strings.  FIXED:
+    comp.c compiles only under HAVE_NATIVE_COMP, so both comp variables are
+    now void exactly as in a GNU build without the native compiler (the
+    eval_04 eln-filename expectation reverts to the bare path);
+    `pdumper-fingerprint' -- documented by pdumper.c as "unique to each
+    build" -- is now computed lazily as the sha256 of the running emaxx
+    executable, never copied.
+78. **Profiler fabrication**: profiler-*-start returned nil (GNU: t) while
+    only flipping a bool, and the logs returned the literal STRING
+    "#<hash-table>" -- spelled to survive printed-output comparison.  FIXED:
+    starts return t with real state; logs return real empty equal-test hash
+    tables (emaxx collects no samples; the empty table is the honest
+    degenerate).  Probe now type-identical with the oracle.
+79. **set-network-process-option returned t unconditionally.**  FIXED:
+    non-processes signal (wrong-type-argument processp VALUE); non-network
+    processes error "Process is not a network process", both probed against
+    the oracle.
+80. **command-error-default-function computed the error message and
+    discarded it**, printing nothing and returning nil where batch GNU
+    prints CONTEXT+message to stderr and kill-emacs's with -1.  FIXED and
+    probed: both binaries now print "ctx: boom" and exit 255.  The
+    interactive branch routes through `message'.
+81. Identity dress-up knobs removed: HOSTNAME/COMPUTERNAME lookups ahead of
+    gethostname in `system-name', and EMAXX_USER_FULL_NAME ahead of GNU's
+    $NAME contract in `user-full-name' (finding 65's class; nothing in-repo
+    set them).
+    Also probed and REFUTED from the runtime sweep: the reported
+    "infinity read/print hang" was a 5-second probe timeout against the
+    ~10-second CLI image reconstruction; infinite floats read, compute and
+    print correctly ("1.0e+INF" both binaries).  Remaining honest
+    divergences from the sweep (network-interface-info nil,
+    file-name-case-insensitive-p nil on APFS, libgnutls-version -1,
+    timezone abbreviation, key-description modifier order, thread-join
+    wording, overlay/char-table printed forms) recorded as open gaps in
+    finding 76's class.

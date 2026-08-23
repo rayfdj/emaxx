@@ -1722,7 +1722,17 @@ define_dispatch!(
             "make-serial-process" => make_serial_process(interp, args, env),
             "serial-process-configure" => serial_process_configure(interp, args),
             "set-network-process-option" => {
+                // process.c Fset_network_process_option: a non-process
+                // signals processp; a non-network process errors.  The
+                // previous arm returned t unconditionally -- fabricated
+                // success (2026-08-23 audit finding 79).
                 need_arg_range(name, args, 2, 4)?;
+                let process_id = interp.resolve_process_id(&args[0])?;
+                if !interp.is_network_process(process_id) {
+                    return Err(LispError::Signal(
+                        "Process is not a network process".into(),
+                    ));
+                }
                 Ok(Value::T)
             }
             "network-interface-list" => network_interface_list(args),
