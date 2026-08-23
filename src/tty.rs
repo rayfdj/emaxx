@@ -553,6 +553,13 @@ fn command_loop(
                 Ok(Some(event)) => break event,
                 Ok(None) => {}
             }
+            // Entering the wait means Emacs is idle: keyboard.c's
+            // timer_start_idle marks every idle timer runnable again
+            // (once per idle period) and starts the `current-idle-time'
+            // clock.
+            if idle_since.is_none() {
+                crate::lisp::primitives::tty_note_idle_start(interpreter, env);
+            }
             let idle = idle_since
                 .get_or_insert_with(std::time::Instant::now)
                 .elapsed();
@@ -562,6 +569,8 @@ fn command_loop(
             }
             let _ = event::poll(std::time::Duration::from_millis(50));
         };
+        // Input arrived: the idle period is over (timer_stop_idle).
+        crate::lisp::primitives::tty_note_idle_end();
         // Typed mouse input becomes GNU's click event now that the frame
         // state is in reach; motion and wheel produce nothing.
         let event = match event {
@@ -1195,6 +1204,144 @@ fn plan_window_text(
     }
 }
 
+// xdisp.c:4532 handle_fontified_prop, at window granularity: before a
+// window's glyphs are produced, every visible position must carry a
+// non-nil `fontified' char-property, or `fontification-functions' runs
+// for it -- jit-lock fontifies a chunk and marks it -- with the
+// variable rebound to nil around the call exactly as GNU specbinds it.
+// A `t' in a buffer-local hook value runs the global entries too.
+fn fontify_window_ranges(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    layout: &[crate::lisp::primitives::WindowRenderInfo],
+) {
+    if interpreter
+        .lookup_var("fontification-functions", env)
+        .is_none_or(|value| value.is_nil())
+    {
+        return;
+    }
+    let saved_buffer = interpreter.current_buffer_id();
+    for info in layout {
+        if interpreter.current_buffer_id() != info.buffer_id
+            && interpreter.set_current_buffer_id(info.buffer_id).is_err()
+        {
+            continue;
+        }
+        let z = interpreter.buffer.point_max();
+        // Every cell could hold one character (continuation lines
+        // included); past that the window cannot reach this frame.
+        let start = info.start.min(z);
+        let end = info.start.saturating_add(info.width * info.height).min(z);
+        let mut pos = start;
+        let mut rounds = 0usize;
+        while pos < end && rounds < 512 {
+            rounds += 1;
+            let fontified = crate::lisp::primitives::buffer_char_property_at(
+                interpreter,
+                &interpreter.buffer,
+                pos,
+                "fontified",
+            );
+            if !fontified.is_nil() {
+                let (_, span_end) = interpreter.buffer.text_property_interval_around(pos);
+                pos = span_end.max(pos + 1);
+                continue;
+            }
+            let functions = interpreter
+                .lookup_var("fontification-functions", env)
+                .unwrap_or(Value::Nil);
+            let Ok(restore) =
+                interpreter.bind_special_dynamic("fontification-functions", Value::Nil, env)
+            else {
+                break;
+            };
+            run_fontification_functions(interpreter, env, &functions, pos);
+            let _ = interpreter.restore_special_dynamic(restore, env);
+            let fontified = crate::lisp::primitives::buffer_char_property_at(
+                interpreter,
+                &interpreter.buffer,
+                pos,
+                "fontified",
+            );
+            if fontified.is_nil() {
+                // The functions declined to mark this position; a loop
+                // here could never terminate (GNU simply moves on with
+                // the iterator).
+                break;
+            }
+        }
+    }
+    if interpreter.current_buffer_id() != saved_buffer {
+        let _ = interpreter.set_current_buffer_id(saved_buffer);
+    }
+}
+
+// The hook-call shape of handle_fontified_prop: a non-list (or a bare
+// lambda) is called directly; a list runs each element, with `t'
+// standing for the global value's entries.  Errors are swallowed as
+// GNU's dsafe_call1 swallows them.
+fn run_fontification_functions(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    value: &Value,
+    pos: usize,
+) {
+    let pos_value = Value::Integer(pos as i64);
+    let is_bare_lambda = matches!(
+        value.car(),
+        Ok(Value::Symbol(ref name)) if name == "lambda"
+    );
+    if !matches!(value, Value::Cons(_)) || is_bare_lambda {
+        let _ = interpreter.call_function_value(
+            value.clone(),
+            None,
+            std::slice::from_ref(&pos_value),
+            env,
+        );
+        return;
+    }
+    let mut rest = value.clone();
+    while let Value::Cons(_) = rest {
+        let Ok(function) = rest.car() else {
+            break;
+        };
+        if matches!(function, Value::T) {
+            let mut globals = interpreter
+                .default_value("fontification-functions")
+                .unwrap_or(Value::Nil);
+            while let Value::Cons(_) = globals {
+                let Ok(global_fn) = globals.car() else {
+                    break;
+                };
+                if !matches!(global_fn, Value::T) {
+                    let _ = interpreter.call_function_value(
+                        global_fn,
+                        None,
+                        std::slice::from_ref(&pos_value),
+                        env,
+                    );
+                }
+                let Ok(next) = globals.cdr() else {
+                    break;
+                };
+                globals = next;
+            }
+        } else {
+            let _ = interpreter.call_function_value(
+                function,
+                None,
+                std::slice::from_ref(&pos_value),
+                env,
+            );
+        }
+        let Ok(next) = rest.cdr() else {
+            break;
+        };
+        rest = next;
+    }
+}
+
 fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let cols = cols.max(10) as usize;
@@ -1251,6 +1398,11 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     state
         .views
         .retain(|id, _| layout.iter().any(|window| window.window_id == *id));
+
+    // Fontify what this frame will show before any text is snapshotted:
+    // GNU's iterator handles the `fontified' property before producing
+    // glyphs (xdisp.c handle_fontified_prop).
+    fontify_window_ranges(interpreter, env, &layout);
 
     let mut frame = vec![PaintRow::blank(cols); frame_rows];
     // GNU's tty vertical border draws in the vertical-border face (its
