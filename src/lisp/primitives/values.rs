@@ -226,7 +226,7 @@ pub(crate) fn values_equal_recursive(
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Buffer(a), Value::Buffer(b)) => a.id == b.id,
         (Value::Marker(a), Value::Marker(b)) => markers_equal(interp, *a, *b),
-        (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b),
+        (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b, seen),
         (Value::CharTable(left_id), Value::CharTable(right_id)) => {
             char_tables_equal(interp, *left_id, *right_id, seen)
         }
@@ -1811,22 +1811,46 @@ pub(crate) fn markers_equal(interp: &Interpreter, left_id: u64, right_id: u64) -
     left.buffer_id == right.buffer_id && left.position == right.position
 }
 
-pub(crate) fn overlays_equal(interp: &Interpreter, left_id: u64, right_id: u64) -> bool {
-    let Some(left) = interp.find_overlay(left_id) else {
-        return left_id == right_id;
-    };
-    let Some(right) = interp.find_overlay(right_id) else {
-        return false;
-    };
-    left.beg == right.beg
-        && left.end == right.end
-        && left.buffer_id == right.buffer_id
-        && left.plist.len() == right.plist.len()
-        && left.plist.iter().zip(&right.plist).all(
-            |((left_key, left_value), (right_key, right_value))| {
-                left_key == right_key && values_equal(interp, left_value, right_value)
-            },
-        )
+pub(crate) fn overlays_equal(
+    interp: &Interpreter,
+    left_id: u64,
+    right_id: u64,
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
+    // fns.c internal_equal memoizes objects it has descended into (the
+    // depth>10 eq hash table) and assumes equality on revisit, so cyclic
+    // overlay graphs -- semantic's tag<->overlay plists are exactly that --
+    // terminate instead of recursing forever.  The pair-set mirrors GNU's
+    // termination the same way keymap_records_equal already does; without
+    // it this comparison overflowed an 8 GiB stack on
+    // test/lisp/cedet/semantic-utest-ia.el.
+    let pair = (
+        (left_id as usize) | (1usize << 62),
+        (right_id as usize) | (1usize << 62),
+    );
+    if !seen.insert(pair) {
+        return true;
+    }
+    let equal = (|| {
+        let Some(left) = interp.find_overlay(left_id) else {
+            return left_id == right_id;
+        };
+        let Some(right) = interp.find_overlay(right_id) else {
+            return false;
+        };
+        left.beg == right.beg
+            && left.end == right.end
+            && left.buffer_id == right.buffer_id
+            && left.plist.len() == right.plist.len()
+            && left.plist.iter().zip(&right.plist).all(
+                |((left_key, left_value), (right_key, right_value))| {
+                    values_equal_recursive(interp, left_key, right_key, seen)
+                        && values_equal_recursive(interp, left_value, right_value, seen)
+                },
+            )
+    })();
+    seen.remove(&pair);
+    equal
 }
 
 pub(crate) fn resolve_callable(
