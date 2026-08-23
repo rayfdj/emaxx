@@ -88,6 +88,64 @@ impl Interpreter {
         }
     }
 
+    /// GNU stores text properties in the intervals of the shared text
+    /// itself, so a property change made through any member of an
+    /// indirect-buffer family is visible in every other member (comint's
+    /// input fontification reads the base buffer's `field' properties
+    /// through its indirect buffer).  The native model keeps one buffer
+    /// struct per member and mirrors text edits between them;
+    /// property-only edits must mirror the same way.
+    pub fn apply_text_property_change_shared(
+        &mut self,
+        apply: &dyn Fn(&mut crate::buffer::Buffer),
+    ) {
+        apply(&mut self.buffer);
+        if self.indirect_buffers.is_empty() {
+            return;
+        }
+        let current_id = self.current_buffer_id();
+        for buffer_id in self.related_buffer_ids(current_id) {
+            if buffer_id == current_id {
+                continue;
+            }
+            if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                apply(buffer);
+            }
+        }
+    }
+
+    /// The same family-wide property mirroring for an explicit target
+    /// buffer.  Returns whether any buffer received the change.
+    pub fn apply_text_property_change_shared_for(
+        &mut self,
+        target_id: u64,
+        apply: &dyn Fn(&mut crate::buffer::Buffer),
+    ) -> bool {
+        let current_id = self.current_buffer_id();
+        if self.indirect_buffers.is_empty() {
+            if target_id == current_id {
+                apply(&mut self.buffer);
+                return true;
+            }
+            if let Some(buffer) = self.get_buffer_by_id_mut(target_id) {
+                apply(buffer);
+                return true;
+            }
+            return false;
+        }
+        let mut applied = false;
+        for buffer_id in self.related_buffer_ids(target_id) {
+            if buffer_id == current_id {
+                apply(&mut self.buffer);
+                applied = true;
+            } else if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                apply(buffer);
+                applied = true;
+            }
+        }
+        applied
+    }
+
     pub fn insert_current_buffer(&mut self, s: &str) {
         let pos = self.buffer.point();
         let nchars = s.chars().count();

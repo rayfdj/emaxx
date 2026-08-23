@@ -512,6 +512,27 @@ SCENARIOS = [
     # cmds.c's amalgamation calls): one undo removes the whole tail
     # group, not one character.
     ("undo-amalgamation", "", [b"abcdefghijklmnopqrstuvwxy", b"\x1f"]),
+    # Subprocess output reaches the glass between keystrokes: the command
+    # loop's wait pumps process output through filters and sentinels
+    # (wait_reading_process_output), the popped window shows the output,
+    # and after exit the mode line's %s construct answers "no process".
+    ("async-shell", "sample text\n", [b"\x1b&echo hi\r", b"\x0c"]),
+    # M-x shell end to end: comint spawns $SHELL on a pty, the prompt
+    # arrives propertized (comint-highlight-prompt via the font-lock-face
+    # alias), typed input echoes bold, RET sends the line, and the
+    # command's output plus the next prompt land like GNU paints them --
+    # mode-line process status, In/Out and Signals menus included.
+    ("mx-shell", "sample text\n", [b"\x1bxshell\r", b"echo hi\r", b"\x0c"]),
+    # A raw make-process with the default filter: output inserts at the
+    # process mark in the named buffer while the loop waits.
+    (
+        "make-process",
+        "sample text\n",
+        [
+            b"\x1b:(make-process :name \"p\" :command (list \"echo\" \"hi\") :buffer \"*out*\")\r",
+            b"\x18b*out*\r",
+        ],
+    ),
     ("delete-and-backspace", "abcdef\n", [b"\x06\x06", b"\x04", b"\x7f\x7f"]),
     # A logical line wider than the window: GNU wraps it onto continuation
     # rows (with a trailing "\" marker); motion afterwards must land on the

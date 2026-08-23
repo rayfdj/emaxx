@@ -835,6 +835,35 @@ pub(crate) fn resolve_tty_face_attrs(
     env: &mut Env,
     face: &Value,
 ) -> TtyFaceAttrs {
+    // xfaces.c merge_face_ref: a face reference may be a LIST of face
+    // references, merged left to right with the entries nearer the
+    // front taking precedence (comint's prompt carries
+    // `(comint-highlight-prompt comint-highlight-prompt)').  Realize
+    // each member and fold, letting an earlier member's set attributes
+    // override a later one's.
+    if matches!(face, Value::Cons(_))
+        && let Ok(items) = face.to_vec()
+        && !items.is_empty()
+        && items
+            .iter()
+            .all(|item| matches!(item, Value::Symbol(name) if name != ":foreground" && name != ":background"))
+    {
+        let mut merged = TtyFaceAttrs::default();
+        for item in items.iter().rev() {
+            let attrs = resolve_tty_face_attrs(interp, env, item);
+            if attrs.foreground.is_some() {
+                merged.foreground = attrs.foreground;
+            }
+            if attrs.background.is_some() {
+                merged.background = attrs.background;
+            }
+            merged.bold |= attrs.bold;
+            merged.underline |= attrs.underline;
+            merged.reverse |= attrs.reverse;
+            merged.extend |= attrs.extend;
+        }
+        return merged;
+    }
     // `face-attribute' is GNU faces.el's; reach it through the ordinary
     // function cell, never the native dispatcher.
     let attribute = |interp: &mut Interpreter, env: &mut Env, name: &str| {
@@ -910,10 +939,32 @@ pub(crate) fn window_face_spans(
                 None => return spans,
             }
         };
+        // font-core.el:165: font-lock-mode installs `font-lock-face' as
+        // an alias of `face' in the buffer-local
+        // `char-property-alias-alist'; the display engine resolves the
+        // face for each position through the same alias chain textget
+        // uses, which is how comint's font-lock-face-only output reaches
+        // the glass.
+        let face_alias_names: Vec<String> = interp
+            .buffer_local_value(buffer_id, "char-property-alias-alist")
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                let key = entry.car().ok()?;
+                matches!(&key, Value::Symbol(name) if name == "face")
+                    .then(|| entry.cdr().ok()?.to_vec().ok())?
+            })
+            .flatten()
+            .filter_map(|alias| alias.as_symbol().ok().map(str::to_string))
+            .collect();
         // The common frame — a plain buffer, no overlays, no active
         // region — must not pay a per-character property walk on every
         // redisplay.
         if !buffer.has_text_property_named("face")
+            && face_alias_names
+                .iter()
+                .all(|name| !buffer.has_text_property_named(name))
             && buffer.overlays.iter().all(|overlay| overlay.is_dead())
             && !(region_for_selected
                 && is_current
@@ -923,18 +974,23 @@ pub(crate) fn window_face_spans(
         {
             return spans;
         }
+        let face_at = |pos: usize| {
+            buffer
+                .text_property_at(pos, "face")
+                .filter(|face| !face.is_nil())
+                .or_else(|| {
+                    face_alias_names.iter().find_map(|name| {
+                        buffer
+                            .text_property_at(pos, name)
+                            .filter(|face| !face.is_nil())
+                    })
+                })
+        };
         let mut pos = from;
         while pos < to {
-            let face = buffer
-                .text_property_at(pos, "face")
-                .filter(|face| !face.is_nil());
+            let face = face_at(pos);
             let mut end = pos + 1;
-            while end < to
-                && buffer
-                    .text_property_at(end, "face")
-                    .filter(|face| !face.is_nil())
-                    == face
-            {
+            while end < to && face_at(end) == face {
                 end += 1;
             }
             if let Some(face) = face {
@@ -4587,6 +4643,20 @@ fn decode_mode_line_spec(
         'M' => {
             let global = var(interp, "global-mode-string");
             render_mode_line_element(interp, env, &global, true, false, 0, 0, &mut Vec::new())?
+        }
+        's' => {
+            // xdisp.c:28899 case 's': the status of the current buffer's
+            // process -- Fget_buffer_process, "no process" when there is
+            // none, else the `process-status' symbol's name.
+            match super::call(interp, "get-buffer-process", &[Value::Nil], env) {
+                Ok(process) if process.is_truthy() => {
+                    match super::call(interp, "process-status", &[process], env) {
+                        Ok(Value::Symbol(status)) => status.to_string(),
+                        _ => String::new(),
+                    }
+                }
+                _ => "no process".to_string(),
+            }
         }
         // Recursive-editing depth brackets: the frontend runs at level 0.
         '[' | ']' => String::new(),

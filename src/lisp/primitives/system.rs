@@ -340,20 +340,6 @@ pub(crate) fn group_name_from_gid(_gid: i64) -> Result<Option<String>, LispError
     Ok(None)
 }
 
-pub(crate) fn find_executable(name: &str) -> Option<String> {
-    if name.contains(std::path::MAIN_SEPARATOR) && std::path::Path::new(name).exists() {
-        return Some(name.to_string());
-    }
-    let path = std::env::var_os("PATH")?;
-    for entry in std::env::split_paths(&path) {
-        let candidate = entry.join(name);
-        if candidate.exists() {
-            return Some(candidate.display().to_string());
-        }
-    }
-    None
-}
-
 pub(crate) fn default_directory() -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     path_to_directory_string(&cwd)

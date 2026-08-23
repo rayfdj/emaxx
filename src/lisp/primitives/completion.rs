@@ -1318,14 +1318,36 @@ pub(crate) fn callable_interactive_form_items(
     {
         // GNU keys interactivity on the slot's presence (PVSIZE >
         // COMPILED_INTERACTIVE): a bare `(interactive)' stores nil there
-        // and the function is still a command.
-        let mut form = vec![Value::symbol("interactive")];
-        if !spec.is_nil() {
-            form.push(spec);
-        }
-        return Some(form);
+        // and the function is still a command.  callint.c
+        // Finteractive_form: a vector in the slot is the byte-compiler's
+        // (SPEC MODES) encoding -- the form is element 0 alone; the mode
+        // list is `command-modes' data and never reaches the caller of
+        // the interactive form.
+        let spec = match spec.to_vec() {
+            Ok(items)
+                if matches!(items.first(),
+                    Some(Value::Symbol(tag)) if tag == "vector-literal") =>
+            {
+                items.get(1).cloned().unwrap_or(Value::Nil)
+            }
+            _ => spec,
+        };
+        return Some(vec![Value::symbol("interactive"), spec]);
     }
-    interactive_form_items(func)
+    // callint.c's cons-lambda branch: a spec without MODES entries is
+    // answered verbatim (`(interactive)' stays bare, `(interactive "p")'
+    // unchanged); only a spec carrying modes is trimmed to
+    // `(interactive DESCRIPTOR)'.
+    interactive_form_items(func).map(|items| {
+        if items.len() <= 2 {
+            items
+        } else {
+            vec![
+                Value::symbol("interactive"),
+                items.get(1).cloned().unwrap_or(Value::Nil),
+            ]
+        }
+    })
 }
 
 fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {

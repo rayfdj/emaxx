@@ -13963,6 +13963,81 @@ fn tty_real_minibuffer_history_recalls_through_simple_el() {
 }
 
 #[test]
+fn interactive_form_strips_command_modes_like_gnu() {
+    // callint.c Finteractive_form answers exactly `(interactive SPEC)':
+    // MODES entries after the descriptor belong to `command-modes', and
+    // a bare `(interactive)' reports an explicit nil descriptor.
+    let contract = r#"
+        (progn
+          (fset 'emaxx--tc-modes '(lambda () (interactive nil text-mode) 1))
+          (fset 'emaxx--tc-arg '(lambda (n) (interactive "p" text-mode) n))
+          (fset 'emaxx--tc-bare '(lambda () (interactive) 2))
+          (list (interactive-form 'emaxx--tc-modes)
+                (interactive-form 'emaxx--tc-arg)
+                (interactive-form 'emaxx--tc-bare)))
+    "#;
+    let expected = r#"((interactive nil) (interactive "p") (interactive))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("interactive-form contract should parse")
+        .expect("interactive-form contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("interactive-form contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
+fn indirect_buffers_share_text_properties_with_their_base() {
+    // GNU keeps text properties in the intervals of the shared text, so
+    // an indirect buffer sees the base's properties — those present at
+    // creation and every later change — and the base sees changes made
+    // through the indirect buffer (comint's input fontification reads
+    // `field' through its indirect buffer this way).
+    let contract = r#"
+        (progn
+          (save-current-buffer
+            (set-buffer (get-buffer-create "b"))
+            (insert "hello world")
+            (put-text-property 1 6 'field 'output))
+          (make-indirect-buffer "b" "i")
+          (save-current-buffer
+            (set-buffer "b") (put-text-property 7 9 'field 'late))
+          (save-current-buffer
+            (set-buffer "i") (put-text-property 9 11 'field 'from-ind))
+          (list (save-current-buffer
+                  (set-buffer "i")
+                  (list (get-text-property 1 'field)
+                        (get-text-property 5 'field)
+                        (get-text-property 6 'field)
+                        (get-text-property 7 'field)))
+                (save-current-buffer
+                  (set-buffer "b") (get-text-property 9 'field))))
+    "#;
+    let expected = "((output output nil late) from-ind)";
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(contract)
+        .read()
+        .expect("indirect property contract should parse")
+        .expect("indirect property contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("indirect property contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
 fn window_resize_apply_commits_staged_pixel_sizes() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

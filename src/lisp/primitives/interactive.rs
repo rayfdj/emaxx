@@ -1045,11 +1045,11 @@ pub(crate) fn execute_command_binding(
     result
 }
 
-/// keyboard.c's timer_check in miniature: while the command loop waits
-/// for input, fire the ripe entries of `timer-list' (absolute times) and
-/// `timer-idle-list' (idle durations, once per idle period) through
-/// timer.el's own `timer-event-handler'.  Returns whether any ran —
-/// isearch's lazy highlight arrives this way.
+// keyboard.c's timer_check in miniature: while the command loop waits
+// for input, fire the ripe entries of `timer-list' (absolute times) and
+// `timer-idle-list' (idle durations, once per idle period) through
+// timer.el's own `timer-event-handler'.  The idle clock below backs
+// `current-idle-time'; isearch's lazy highlight arrives this way.
 thread_local! {
     static TTY_IDLE_START: std::cell::Cell<Option<std::time::Instant>> =
         const { std::cell::Cell::new(None) };
@@ -1694,14 +1694,43 @@ pub(crate) fn menu_bar_row_items(
     };
     let mut items: Vec<(Value, String)> = Vec::new();
     for map in maps.iter().rev() {
-        let Ok(menu) = super::call(
-            interp,
-            "lookup-key",
-            &[map.clone(), menu_bar_key.clone()],
-            env,
-        ) else {
-            continue;
-        };
+        // keymap.c access_keymap merges every `menu-bar' submap bound
+        // along the map's parent chain into one `(keymap CHILD PARENT)'
+        // reference, so a mode map's own menus and its parent's (shell's
+        // Complete over comint's In/Out and Signals) all reach the bar.
+        // Enumerate the chain child-first; a level without its own
+        // binding answers its parent's submap, which the identity dedup
+        // below drops.
+        let mut chain_menus: Vec<Value> = Vec::new();
+        let mut level = map.clone();
+        for _ in 0..32 {
+            if let Ok(menu) = super::call(
+                interp,
+                "lookup-key",
+                &[level.clone(), menu_bar_key.clone()],
+                env,
+            ) && super::is_keymap_value(interp, &menu)
+            {
+                let identity = super::keymap_record_id(interp, &menu);
+                let duplicate = chain_menus.iter().any(|earlier| {
+                    match (identity, super::keymap_record_id(interp, earlier)) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => false,
+                    }
+                });
+                if !duplicate {
+                    chain_menus.push(menu);
+                }
+            }
+            match super::call(interp, "keymap-parent", &[level.clone()], env) {
+                Ok(parent) if parent.is_truthy() => level = parent,
+                _ => break,
+            }
+        }
+        // One keymap contributes to a key only once across its chain,
+        // even when its entry list carries shadowed duplicates.
+        let mut seen: Vec<Value> = Vec::new();
+        for menu in chain_menus {
         // A runtime keymap answers as its record identity; walk GNU's
         // public `(keymap ...)' cons projection of it.
         let menu = {
@@ -1713,9 +1742,6 @@ pub(crate) fn menu_bar_row_items(
         if !matches!(menu.car(), Ok(Value::Symbol(tag)) if tag == "keymap") {
             continue;
         }
-        // One keymap contributes to a key only once, even when its
-        // entry list carries shadowed duplicates.
-        let mut seen: Vec<Value> = Vec::new();
         let mut tail = menu.cdr().unwrap_or(Value::Nil);
         while let Value::Cons(_) = tail {
             let Ok(entry) = tail.car() else { break };
@@ -1742,6 +1768,7 @@ pub(crate) fn menu_bar_row_items(
                 _ => {}
             }
             tail = next;
+        }
         }
     }
     if let Some(final_items) = interp
