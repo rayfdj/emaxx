@@ -329,12 +329,54 @@ impl Interpreter {
                 "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
             ));
         }
+        // GNU grows `max-lisp-eval-depth' while C stack remains and signals
+        // before the stack dies (eval.c near_C_stack_top).  The scaled
+        // counter above cannot see the actual stack, and a deep non-tail
+        // recursion can exhaust even the 8 GiB batch thread before it
+        // trips (the pinned semantic-utest-ia.el did exactly that, as a
+        // SIGABRT with no report).  Mirror GNU's contract directly: when
+        // the running thread's stack headroom falls below the margin,
+        // signal `excessive-lisp-nesting' instead of crashing.
+        if self.lisp_eval_depth % 64 == 0 && !Self::stack_headroom_remains() {
+            self.lisp_eval_depth -= 1;
+            return Err(LispError::Signal(
+                "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
+            ));
+        }
         let result = self.eval_inner(expr, env);
         self.lisp_eval_depth -= 1;
         if outermost && result.is_ok() {
             self.clear_batch_error_backtrace();
         }
         result
+    }
+
+    /// True while the current thread still has comfortable stack left.
+    /// macOS reports the thread's stack extent exactly; the margin covers
+    /// the deepest single native frame chain between two depth checks plus
+    /// unwinding.  On other platforms the probe is inert (the counter
+    /// guard above still applies).
+    #[cfg(target_os = "macos")]
+    fn stack_headroom_remains() -> bool {
+        let approximate_sp = {
+            let probe = 0u8;
+            std::ptr::addr_of!(probe) as usize
+        };
+        unsafe {
+            let thread = libc::pthread_self();
+            let top = libc::pthread_get_stackaddr_np(thread) as usize;
+            let size = libc::pthread_get_stacksize_np(thread);
+            // The stack grows down from `top'; headroom is what remains
+            // above the guard page.
+            let bottom = top.saturating_sub(size);
+            const MARGIN: usize = 48 * 1024 * 1024;
+            approximate_sp > bottom.saturating_add(MARGIN)
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn stack_headroom_remains() -> bool {
+        true
     }
 
     fn max_lisp_eval_depth(&self) -> usize {
