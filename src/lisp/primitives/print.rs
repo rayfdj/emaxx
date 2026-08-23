@@ -1176,6 +1176,18 @@ pub(crate) fn render_prin1_body(
                             name
                         }
                     }
+                    // print.c has no keymap case at all: a GNU keymap IS
+                    // the list, so it prints as one.  Print the public list
+                    // view -- the same value `car', `cdr' and `equal'
+                    // already expose -- so `prin1' stops contradicting
+                    // `type-of' about what a keymap is.
+                    crate::lisp::eval::RecordKind::Keymap => {
+                        let view = crate::lisp::primitives::values::runtime_keymap_public_view(
+                            interp, value,
+                        )
+                        .unwrap_or(Value::Nil);
+                        render_prin1_with_context(interp, &view, env, context, depth)?
+                    }
                     // print.c:2087.
                     crate::lisp::eval::RecordKind::Obarray => {
                         let count = crate::lisp::primitives::completion::obarray_symbols(

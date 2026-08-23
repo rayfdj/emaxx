@@ -2595,20 +2595,6 @@ pub(super) fn posix_string_match_impl(
     Ok(Value::Nil)
 }
 
-pub(super) fn isearch_no_upper_case_p(text: &str, regexp_flag: bool) -> bool {
-    let mut quote_flag = false;
-    for ch in text.chars() {
-        if regexp_flag && ch == '\\' {
-            quote_flag = !quote_flag;
-            continue;
-        }
-        if !quote_flag && ch.is_uppercase() {
-            return false;
-        }
-        quote_flag = false;
-    }
-    !(regexp_flag && (text.contains("[:upper:]") || text.contains("[:lower:]")))
-}
 
 struct SkipCharsSpec {
     negate: bool,
