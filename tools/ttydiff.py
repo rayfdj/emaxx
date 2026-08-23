@@ -569,6 +569,24 @@ SCENARIOS = [
         [b"\x1b:(setq truncate-lines t)\r", b"\x1b:(scroll-left 20)\r"],
         ".dat",
     ),
+    # `auto-hscroll-mode' `current-line': only the row showing point
+    # hscrolls; the other rows keep their columns (min-hscroll zero).
+    (
+        "hscroll-current-line",
+        WIDE_SAMPLE,
+        [b"\x1b:(setq truncate-lines t auto-hscroll-mode (quote current-line))\r", b"\x05"],
+        ".dat",
+    ),
+    # A message wider than the frame grows the mini window immediately
+    # and wraps with the `\\' marker; the window tree above shrinks by
+    # the same rows (grow_mini_window resizes the real tree).
+    (
+        "long-message",
+        "sample\n",
+        [b"\x1b:(message "
+         b"\"first part of a very long message that certainly wraps beyond the eighty column frame edge\")\r"],
+        ".dat",
+    ),
     # header-line-format carves the window's first row: the header text
     # in the header-line face, the body shifted down one row.
     (
