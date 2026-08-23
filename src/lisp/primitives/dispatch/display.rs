@@ -1068,6 +1068,30 @@ pub(crate) fn render_window_mode_line(
     point: usize,
     metrics: InteractiveWindowMetrics,
 ) -> Result<(String, FaceSpans), LispError> {
+    render_window_line_with_format(interp, env, window_id, point, metrics, "mode-line-format")
+}
+
+/// The window's header line, rendered by the same machinery as its mode
+/// line (xdisp.c's display_mode_lines drives both through
+/// display_mode_line with the window's `header-line-format').
+pub(crate) fn render_window_header_line(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    point: usize,
+    metrics: InteractiveWindowMetrics,
+) -> Result<(String, FaceSpans), LispError> {
+    render_window_line_with_format(interp, env, window_id, point, metrics, "header-line-format")
+}
+
+fn render_window_line_with_format(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    point: usize,
+    metrics: InteractiveWindowMetrics,
+    format_variable: &str,
+) -> Result<(String, FaceSpans), LispError> {
     let saved_window = interp.selected_window_id();
     let saved_buffer = interp.current_buffer_id();
     let saved_metrics = interactive_window_metrics();
@@ -1077,7 +1101,12 @@ pub(crate) fn render_window_mode_line(
     let saved_point = interp.buffer.point();
     interp.buffer.goto_char(point);
     set_interactive_window_metrics(Some(metrics));
-    let result = render_mode_line_glass_with_spans(interp, env);
+    let result = (|| {
+        let format = interp.lookup_var(format_variable, env).unwrap_or(Value::Nil);
+        let mut spans = Vec::new();
+        let text = render_mode_line_element(interp, env, &format, false, true, 0, 0, &mut spans)?;
+        Ok((text, spans))
+    })();
     interp.buffer.goto_char(saved_point);
     if switched {
         let _ = interp.set_current_buffer_id(saved_buffer);
@@ -1537,6 +1566,64 @@ fn window_text_width_columns(interp: &Interpreter, window_id: u64) -> i64 {
         i64::from(left.saturating_add(total) < root_left.saturating_add(root_width));
     let (left, right) = interp.window_margins(window_id);
     (total - vertical_separator - left.unwrap_or(0) - right.unwrap_or(0)).max(0)
+}
+
+/// The per-window horizontal-scroll state xdisp.c's hscroll_window_tree
+/// reads and writes: w->hscroll, w->min_hscroll, w->suspend_auto_hscroll,
+/// and w->old_pointm (the point the last redisplay saw, which decides
+/// when an explicit scroll's suspension lifts).
+pub(crate) struct WindowHscrollState {
+    pub(crate) hscroll: i64,
+    pub(crate) min_hscroll: i64,
+    pub(crate) suspended: bool,
+    pub(crate) old_point: Option<i64>,
+}
+
+pub(crate) fn window_hscroll_state(interp: &Interpreter, window_id: u64) -> WindowHscrollState {
+    WindowHscrollState {
+        hscroll: window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
+            .as_integer()
+            .unwrap_or(0)
+            .max(0),
+        min_hscroll: window_slot_value(interp, window_id, WINDOW_MIN_HSCROLL_SLOT)
+            .as_integer()
+            .unwrap_or(0)
+            .max(0),
+        suspended: window_slot_value(interp, window_id, WINDOW_SUSPEND_AUTO_HSCROLL_SLOT)
+            .is_truthy(),
+        old_point: window_slot_value(interp, window_id, WINDOW_OLD_POINT_SLOT)
+            .as_integer()
+            .ok(),
+    }
+}
+
+/// hscroll_window_tree's write-back: the recomputed hscroll, the
+/// (possibly lifted) suspension, and the remembered window point.
+pub(crate) fn store_window_hscroll_state(
+    interp: &mut Interpreter,
+    window_id: u64,
+    hscroll: i64,
+    suspended: bool,
+    old_point: i64,
+) {
+    let _ = set_window_slot_value(
+        interp,
+        window_id,
+        WINDOW_HSCROLL_SLOT,
+        Value::Integer(hscroll.max(0)),
+    );
+    let _ = set_window_slot_value(
+        interp,
+        window_id,
+        WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
+        if suspended { Value::T } else { Value::Nil },
+    );
+    let _ = set_window_slot_value(
+        interp,
+        window_id,
+        WINDOW_OLD_POINT_SLOT,
+        Value::Integer(old_point),
+    );
 }
 
 fn set_window_hscroll_value(

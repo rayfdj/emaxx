@@ -158,7 +158,13 @@ struct TtyState {
     /// only rows that differ — GNU's dispnew current-matrix idea, one
     /// line deep.
     painted_rows: Vec<PaintRow>,
-    painted_echo: PaintRow,
+    painted_echo: Vec<PaintRow>,
+    /// Rows the mini window currently occupies.  GNU's
+    /// `resize-mini-windows' default `grow-only': a message taller than
+    /// the window grows it (up to `max-mini-window-height'), a shorter
+    /// one keeps the height, and an empty echo area returns it to one
+    /// row.
+    echo_rows: usize,
     painted_size: (usize, usize),
     /// Resolved face attributes, valid while the interpreter's face
     /// generation is unchanged (GNU's face_change flag).
@@ -189,7 +195,8 @@ impl TtyState {
             pending: Vec::new(),
             echo: String::new(),
             painted_rows: Vec::new(),
-            painted_echo: PaintRow::unpainted(),
+            painted_echo: Vec::new(),
+            echo_rows: 1,
             painted_size: (0, 0),
             face_cache: std::collections::HashMap::new(),
             face_cache_generation: 0,
@@ -452,6 +459,68 @@ fn make_event_reader(
     })
 }
 
+/// Slice one unbounded echo paint into mini-window rows exactly as the
+/// GNU tty displays a tall message: embedded newlines break rows, a
+/// wider line continues with the `\' marker in the last column, and the
+/// result is capped at MAX_ROWS (`max-mini-window-height').
+fn wrap_echo_paint(long: &PaintRow, cols: usize, max_rows: usize) -> Vec<PaintRow> {
+    let used = long
+        .text
+        .iter()
+        .rposition(|c| *c != ' ')
+        .map(|last| last + 1)
+        .unwrap_or(0);
+    let has_newline = long.text[..used].contains(&'\n');
+    if used <= cols && !has_newline {
+        let mut row = PaintRow::blank(cols);
+        for (col, (c, attrs)) in long.text.iter().zip(long.attrs.iter()).enumerate().take(cols) {
+            row.text[col] = *c;
+            row.attrs[col] = *attrs;
+        }
+        return vec![row];
+    }
+    let usable = cols.saturating_sub(1).max(1);
+    let mut rows = Vec::new();
+    let mut row = PaintRow::blank(cols);
+    let mut col = 0usize;
+    for index in 0..used {
+        let c = long.text[index];
+        if c == '\n' {
+            rows.push(std::mem::replace(&mut row, PaintRow::blank(cols)));
+            col = 0;
+            if rows.len() == max_rows {
+                return rows;
+            }
+            continue;
+        }
+        if col == usable {
+            row.text[usable] = '\\';
+            rows.push(std::mem::replace(&mut row, PaintRow::blank(cols)));
+            col = 0;
+            if rows.len() == max_rows {
+                return rows;
+            }
+        }
+        row.text[col] = c;
+        row.attrs[col] = long.attrs[index];
+        col += 1;
+    }
+    rows.push(row);
+    rows
+}
+
+/// The mini window's height ceiling, GNU's `max-mini-window-height'
+/// (default 0.25 of the frame).
+fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
+    match interpreter.lookup_var("max-mini-window-height", &Vec::new()) {
+        Some(Value::Integer(lines)) if lines > 0 => (lines as usize).min(rows.saturating_sub(2)),
+        Some(Value::Float(fraction)) if fraction > 0.0 => {
+            (((rows as f64) * fraction) as usize).clamp(1, rows.saturating_sub(2))
+        }
+        _ => ((rows as f64 * 0.25) as usize).clamp(1, rows.saturating_sub(2)),
+    }
+}
+
 /// The composed echo repaint for contexts that hold the interpreter —
 /// the menu executor's message3-style paint carries face spans (the
 /// C-h help hint's help-key-binding face), which the interpreter-less
@@ -471,18 +540,25 @@ fn draw_echo_row_composed(
         return;
     }
     let frontend_echo = state.echo.clone();
-    let (row, _) = compose_echo_row(
+    let cols = cols.max(10) as usize;
+    let mini_rows = state.echo_rows.max(1);
+    let (long, _) = compose_echo_row(
         interpreter,
         env,
         &frontend_echo,
-        cols.max(10) as usize,
+        cols * mini_rows,
         &mut state.face_cache,
     );
+    let mut echo_paint = wrap_echo_paint(&long, cols, mini_rows);
+    echo_paint.resize(mini_rows, PaintRow::blank(cols));
+    let base = (rows.max(4) as usize).saturating_sub(mini_rows);
     let mut out = io::stdout();
-    let _ = paint_row(&mut out, rows.max(4) as usize - 1, &row);
+    for (index, echo_row) in echo_paint.iter().enumerate() {
+        let _ = paint_row(&mut out, base + index, echo_row);
+    }
     let _ = out.flush();
     state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
-    state.painted_echo = row;
+    state.painted_echo = echo_paint;
 }
 
 /// Paint the live echo-area line without interpreter access; the message
@@ -493,8 +569,9 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
     let Ok((cols, rows)) = terminal::size() else {
         return;
     };
-    let mut text = crate::lisp::primitives::echo_area_message().unwrap_or_default();
-    text.truncate(cols.max(10) as usize);
+    let text = crate::lisp::primitives::echo_area_message().unwrap_or_default();
+    let cols = cols.max(10) as usize;
+    let mut mini_rows = 1usize;
     if let Ok(mut state) = state.try_borrow_mut() {
         // An active minibuffer's composed row (prompt face, overlay
         // strings) belongs to full redisplay; commands are the only
@@ -503,21 +580,32 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
         if state.minibuffer_owns_echo {
             return;
         }
+        mini_rows = state.echo_rows.max(1);
         // Painting (or confirming) the channel brings the glass up to
         // date with every message emitted so far.
         state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
-        let painted: String = state.painted_echo.text.iter().collect();
-        if painted.trim_end_matches(' ') == text {
+        let painted: String = state
+            .painted_echo
+            .first()
+            .map(|row| row.text.iter().collect())
+            .unwrap_or_default();
+        if state.painted_echo.len() <= 1 && painted.trim_end_matches(' ') == text {
             return;
         }
+        state.painted_echo = Vec::new();
     }
+    // The interpreter-less painter shows what fits the current mini
+    // window; a message needing growth reaches the glass at the next
+    // full redisplay, which resizes the window tree.
+    let mut long = PaintRow::blank(cols * mini_rows);
+    long.blit(0, &text, CellAttrs::default());
+    let mut echo_paint = wrap_echo_paint(&long, cols, mini_rows);
+    echo_paint.resize(mini_rows, PaintRow::blank(cols));
+    let base = (rows as usize).saturating_sub(mini_rows);
     let mut out = io::stdout();
-    let _ = queue!(
-        out,
-        cursor::MoveTo(0, rows.saturating_sub(1)),
-        terminal::Clear(terminal::ClearType::CurrentLine),
-        style::Print(&text),
-    );
+    for (index, echo_row) in echo_paint.iter().enumerate() {
+        let _ = paint_row(&mut out, base + index, echo_row);
+    }
     let _ = out.flush();
 }
 
@@ -708,7 +796,7 @@ fn command_loop(
         }
         // A blocking reader may have painted the echo row outside the
         // matrix; repaint it against fresh state next frame.
-        state.painted_echo = PaintRow::unpainted();
+        state.painted_echo = Vec::new();
     }
 }
 
@@ -1001,7 +1089,139 @@ struct WindowPlan {
 /// GNU's `truncate-partial-width-windows' default: windows narrower than
 /// this — when not the frame's full width — truncate long lines with `$'
 /// instead of wrapping them.
-const TRUNCATE_PARTIAL_WIDTH: usize = 50;
+const TRUNCATE_PARTIAL_WIDTH: i64 = 50;
+
+/// Whether a line of LINE_W display columns, shown from column HSCROLL in
+/// a window W columns wide, still extends past the right edge (GNU's
+/// row->truncated_on_right_p).  A left-truncated row spends its first
+/// column on the `$' glyph.
+fn truncated_on_right(line_w: usize, hscroll: usize, w: usize) -> bool {
+    let hidden = hscroll + usize::from(hscroll > 0);
+    let remaining = line_w.saturating_sub(hidden);
+    let available = w.saturating_sub(usize::from(hscroll > 0)).max(1);
+    remaining >= available
+}
+
+/// The window's line-display geometry for this redisplay: whether lines
+/// truncate, and the horizontal scroll after xdisp.c's
+/// hscroll_window_tree ran for the window.
+struct RenderGeometry {
+    truncate: bool,
+    hscroll: usize,
+}
+
+/// init_iterator's wrap decision plus hscroll_window_tree, for one
+/// window.  Lines truncate when the buffer-local `truncate-lines' is
+/// non-nil, when the window is hscrolled, or when the window is
+/// narrower than the frame and `truncate-partial-width-windows' says so
+/// (t, or an integer exceeding the window's width).  Auto-hscroll
+/// (xdisp.c:16114) then keeps point's column visible: an explicit
+/// scroll-left/right suspends it until window point moves, and with the
+/// default `hscroll-step' 0 the recomputed hscroll centers point — or
+/// leaves four columns of headroom when point sits at the end of its
+/// line.  `auto-hscroll-mode' `current-line' is treated as t (the
+/// single-line variant is not modeled).
+fn window_render_geometry(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    info: &crate::lisp::primitives::WindowRenderInfo,
+    body_width: usize,
+    frame_cols: usize,
+) -> RenderGeometry {
+    let buffer_local = |interpreter: &Interpreter, name: &str| {
+        interpreter
+            .buffer_local_value(info.buffer_id, name)
+            .or_else(|| interpreter.lookup_var(name, &Vec::new()))
+            .unwrap_or(Value::Nil)
+    };
+    let truncate_lines = buffer_local(interpreter, "truncate-lines").is_truthy();
+    let partial = info.width < frame_cols;
+    let partial_truncates = partial
+        && match interpreter.lookup_var("truncate-partial-width-windows", env) {
+            Some(Value::Integer(columns)) => columns > info.width as i64,
+            Some(value) => value.is_truthy(),
+            None => TRUNCATE_PARTIAL_WIDTH > info.width as i64,
+        };
+
+    let state = crate::lisp::primitives::window_hscroll_state(interpreter, info.window_id);
+    let mut hscroll = state.hscroll.max(0);
+    let mut suspended = state.suspended;
+    let point = info.point as i64;
+    // An explicit scroll's suspension lifts once the window's point has
+    // moved (hscroll_window_tree compares against w->old_pointm).
+    if suspended && state.old_point != Some(point) {
+        suspended = false;
+    }
+
+    let auto_mode = buffer_local(interpreter, "auto-hscroll-mode").is_truthy();
+    let truncate_now = truncate_lines || hscroll > 0 || partial_truncates;
+    if auto_mode && !suspended && truncate_now {
+        let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
+            Some(&interpreter.buffer)
+        } else {
+            interpreter.get_buffer_by_id(info.buffer_id)
+        }) else {
+            return RenderGeometry {
+                truncate: truncate_now,
+                hscroll: hscroll.max(0) as usize,
+            };
+        };
+        let point_pos = info.point.clamp(buffer.point_min(), buffer.point_max());
+        let point_line = buffer.line_number_at_pos(point_pos);
+        let line_text = displayed_line_text(buffer, point_line);
+        let point_dcol =
+            display_column(&line_text, point_pos - buffer.line_start_at(point_pos)) as i64;
+        let line_w = display_width(&line_text);
+        let w = body_width as i64;
+        let margin = interpreter
+            .lookup_var("hscroll-margin", env)
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(5)
+            .clamp(0, 1_000_000);
+        let cursor_x = point_dcol - hscroll;
+        // On a tty the left truncation glyph occupies a text column;
+        // hscroll_window_tree discounts it from the margin.
+        let x_offset: i64 = if hscroll > 0 { -1 } else { 0 };
+        let row_truncated_right = truncated_on_right(line_w, hscroll.max(0) as usize, body_width);
+        let trigger = (hscroll > 0 && cursor_x <= margin + x_offset)
+            || (row_truncated_right && cursor_x >= w - margin);
+        if trigger {
+            let at_eol = point_dcol >= line_w as i64;
+            let step = interpreter.lookup_var("hscroll-step", env);
+            let new_hscroll = match step {
+                Some(Value::Float(relative)) if relative >= 0.0 => {
+                    let wanted = if cursor_x >= w - margin {
+                        (w as f64) * (1.0 - relative) - margin as f64
+                    } else {
+                        (w as f64) * relative + (margin + x_offset) as f64
+                    };
+                    (point_dcol - wanted as i64).max(0)
+                }
+                Some(Value::Integer(step)) if step > 0 => {
+                    let wanted = if cursor_x >= w - margin {
+                        w - step - margin
+                    } else {
+                        step + margin + x_offset
+                    };
+                    (point_dcol - wanted).max(0)
+                }
+                _ => (point_dcol - if at_eol { w - 4 } else { w / 2 }).max(0),
+            };
+            hscroll = new_hscroll.max(state.min_hscroll);
+        }
+    }
+    crate::lisp::primitives::store_window_hscroll_state(
+        interpreter,
+        info.window_id,
+        hscroll,
+        suspended,
+        point,
+    );
+    RenderGeometry {
+        truncate: truncate_lines || hscroll > 0 || partial_truncates,
+        hscroll: hscroll.max(0) as usize,
+    }
+}
 
 /// The `display' `(space :align-to COL)' target of the property value,
 /// if the value is such a space spec (xdisp.c's stretch glyphs;
@@ -1101,6 +1321,7 @@ fn plan_window_text(
     text_rows: usize,
     body_width: usize,
     truncate: bool,
+    hscroll: usize,
     selected: bool,
 ) -> WindowPlan {
     let usable = body_width.saturating_sub(1).max(1);
@@ -1117,7 +1338,11 @@ fn plan_window_text(
     let point_line_text = line_text_at(point_line);
     let point_dcol = display_column(&point_line_text, point - buffer.line_start_at(point));
     let (point_seg, cursor_col) = if truncate {
-        (0, point_dcol.min(body_width.saturating_sub(1)))
+        // An hscrolled window spends column zero on the left `$' glyph,
+        // which replaces the character at column HSCROLL itself: a
+        // character at column C lands on screen column C - HSCROLL.
+        let on_screen = (point_dcol as i64 - hscroll as i64).max(0);
+        (0, (on_screen as usize).min(body_width.saturating_sub(1)))
     } else {
         let seg = (point_dcol / usable).min(segs_of(&point_line_text) - 1);
         (seg, point_dcol - seg * usable)
@@ -1206,7 +1431,7 @@ fn plan_window_text(
     let mut past_window: Option<(usize, usize)> = None;
     'fill: for (index, line) in lines.iter().enumerate() {
         let segments = if truncate {
-            vec![truncate_row(line, body_width)]
+            vec![truncate_row_hscrolled(line, body_width, hscroll)]
         } else {
             wrap_segments(line, body_width)
         };
@@ -1396,7 +1621,27 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     if interpreter.frame_width() != cols as i64 || interpreter.frame_height() != rows as i64 {
         interpreter.set_tty_frame_size(cols as i64, rows as i64);
     }
-    let frame_rows = rows - 1; // everything above the echo area
+    // The mini window's height comes first: a tall message shrinks the
+    // window tree above it (GNU's resize_mini_window, grow-only policy).
+    let max_mini = max_mini_window_rows(interpreter, rows);
+    let frontend_echo_early = state.echo.clone();
+    let (echo_long, echo_from_minibuffer) = compose_echo_row(
+        interpreter,
+        env,
+        &frontend_echo_early,
+        cols * max_mini.max(1),
+        &mut state.face_cache,
+    );
+    let echo_paint = wrap_echo_paint(&echo_long, cols, max_mini.max(1));
+    let echo_empty = echo_paint.len() == 1
+        && echo_paint[0].text.iter().all(|c| *c == ' ')
+        && !echo_from_minibuffer;
+    state.echo_rows = if echo_empty {
+        1
+    } else {
+        state.echo_rows.max(echo_paint.len()).min(max_mini.max(1))
+    };
+    let frame_rows = rows - state.echo_rows; // everything above the echo area
     // The rows the frame keeps above the window tree are the menu bar's
     // (GNU's FRAME_MENU_BAR_LINES); `menu-bar-mode' drives the count
     // through the `menu-bar-lines' frame parameter.
@@ -1416,6 +1661,14 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     }
 
     let mut layout = crate::lisp::primitives::window_render_layout(interpreter);
+    // The Lisp window records assume a one-row echo area; when the mini
+    // window grew, the windows overlapping the reclaimed rows give them
+    // up (grow_mini_window shrinks the tree above the same way).
+    for window in &mut layout {
+        if window.top + window.height > frame_rows {
+            window.height = frame_rows.saturating_sub(window.top).max(2);
+        }
+    }
     let layout_fits = !layout.is_empty()
         && layout.iter().all(|window| {
             window.width >= 2
@@ -1478,9 +1731,17 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         metrics: crate::lisp::primitives::InteractiveWindowMetrics,
     }
     let mut mode_line_jobs: Vec<ModeLineJob> = Vec::new();
+    // A window whose buffer sets `header-line-format' spends its first
+    // body row on the header (xdisp.c window_wants_header_line); the
+    // header renders through the mode-line machinery in the
+    // `header-line' face, padded with spaces.
+    let mut header_line_jobs: Vec<ModeLineJob> = Vec::new();
     // Face spans over window text apply after the text lands (their
     // resolution evaluates Lisp, which the buffer borrow above forbids).
     struct TextFaceJob {
+        /// Columns the window is hscrolled; a non-zero value means rows
+        /// are truncated and column zero holds the `$' glyph.
+        hscroll: usize,
         buffer_id: u64,
         selected: bool,
         top: usize,
@@ -1501,8 +1762,14 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         } else {
             info.width
         };
-        let text_rows = info.height - 1;
-        let truncate = info.width < cols && info.width < TRUNCATE_PARTIAL_WIDTH;
+        let has_header_line = interpreter
+            .buffer_local_value(info.buffer_id, "header-line-format")
+            .or_else(|| interpreter.lookup_var("header-line-format", env))
+            .is_some_and(|format| format.is_truthy());
+        let header_rows = usize::from(has_header_line && info.height > 2);
+        let text_top = info.top + header_rows;
+        let text_rows = info.height - 1 - header_rows;
+        let geometry = window_render_geometry(interpreter, env, info, body_width, cols);
         let view = state.views.entry(info.window_id).or_default();
         let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
             Some(&interpreter.buffer)
@@ -1518,16 +1785,18 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             info.point,
             text_rows,
             body_width,
-            truncate,
+            geometry.truncate,
+            geometry.hscroll,
             info.selected,
         );
         for (row, (rendered, _, _, _)) in plan.rendered.iter().enumerate() {
-            frame[info.top + row].blit(info.left, rendered, CellAttrs::default());
+            frame[text_top + row].blit(info.left, rendered, CellAttrs::default());
         }
         text_face_jobs.push(TextFaceJob {
+            hscroll: geometry.hscroll,
             buffer_id: info.buffer_id,
             selected: info.selected,
-            top: info.top,
+            top: text_top,
             left: info.left,
             body_width,
             usable: body_width.saturating_sub(1).max(1),
@@ -1552,7 +1821,7 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             if let Some((row, col)) = plan.cursor {
                 cursor_position = (
                     (info.left + col).min(cols - 1) as u16,
-                    (info.top + row).min(frame_rows - 1) as u16,
+                    (text_top + row).min(frame_rows - 1) as u16,
                 );
             }
             view.synced_start = plan.top_pos;
@@ -1566,6 +1835,16 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
             body_width,
             metrics,
         });
+        if header_rows > 0 {
+            header_line_jobs.push(ModeLineJob {
+                window_id: info.window_id,
+                point: info.point,
+                row: info.top,
+                left: info.left,
+                body_width,
+                metrics,
+            });
+        }
     }
 
     // Publish the selected window's displayed geometry to the interpreter:
@@ -1643,7 +1922,15 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
                             .copied()
                             .unwrap_or_else(|| map.last().copied().unwrap_or(offset));
                     }
-                    display_column(&line_text, offset).saturating_sub(seg * job.usable)
+                    let column = display_column(&line_text, offset);
+                    if job.hscroll > 0 {
+                        // The `$' glyph owns column zero, replacing the
+                        // character at column HSCROLL itself; visible
+                        // text maps to column - HSCROLL from column one.
+                        (column as i64 - job.hscroll as i64).max(1) as usize
+                    } else {
+                        column.saturating_sub(seg * job.usable)
+                    }
                 };
                 let from_col = col_of(begin).min(job.body_width);
                 // A span covering the newline paints its glyph's cell —
@@ -1719,6 +2006,55 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
         }
     }
 
+    // Header lines paint through the same machinery in the
+    // `header-line' face, padded with spaces to the body (GNU's
+    // display_mode_line for the header row).
+    if !header_line_jobs.is_empty() {
+        let header_attrs = *state
+            .face_cache
+            .entry("header-line".into())
+            .or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(
+                    interpreter,
+                    env,
+                    &Value::Symbol("header-line".into()),
+                )
+            });
+        for job in &header_line_jobs {
+            let (mut header, spans) = match crate::lisp::primitives::render_window_header_line(
+                interpreter,
+                env,
+                job.window_id,
+                job.point,
+                job.metrics,
+            ) {
+                Ok((text, spans)) => (text, spans),
+                Err(error) => {
+                    debug_log(&format!("header-line render: {error:?}"));
+                    (format!("[header-line render error: {error:?}]"), Vec::new())
+                }
+            };
+            if header.chars().count() > job.body_width {
+                header = header.chars().take(job.body_width).collect();
+            }
+            let mut padded = header.clone();
+            padded.extend(std::iter::repeat_n(
+                ' ',
+                job.body_width.saturating_sub(header.chars().count()),
+            ));
+            frame[job.row].blit(job.left, &padded, header_attrs);
+            for (from, to, face) in spans {
+                let key = format!("{face}");
+                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
+                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+                });
+                let from = job.left + from.min(job.body_width);
+                let to = job.left + to.min(job.body_width);
+                frame[job.row].overlay(from, to, attrs);
+            }
+        }
+    }
+
     // The menu bar row (GNU's display_menu_bar): every active keymap's
     // top-level captions one space apart, the whole row in the `menu'
     // face.  Recomputed — after menu-bar-update-hook, like GNU's
@@ -1778,7 +2114,7 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     // current-matrix idea, one line deep): a self-insert repaints one
     // text row, not the frame.
     if full_repaint {
-        state.painted_echo = PaintRow::unpainted();
+        state.painted_echo = Vec::new();
         state.painted_size = (cols, rows);
         state.painted_rows.clear();
     }
@@ -1798,21 +2134,17 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     // active minibuffer's row comes from its buffer with the text
     // properties read_minibuf applied — the prompt's face reaches the
     // glass.
-    let frontend_echo = state.echo.clone();
-    let (echo_row, from_minibuffer) = compose_echo_row(
-        interpreter,
-        env,
-        &frontend_echo,
-        cols,
-        &mut state.face_cache,
-    );
-    state.minibuffer_owns_echo = from_minibuffer;
+    state.minibuffer_owns_echo = echo_from_minibuffer;
     // Full redisplay reflects the message channel; the glass is caught
     // up with every emission made so far.
     state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
-    if state.painted_echo != echo_row {
-        paint_row(&mut out, frame_rows, &echo_row)?;
-        state.painted_echo = echo_row;
+    let mut echo_paint = echo_paint;
+    echo_paint.resize(state.echo_rows, PaintRow::blank(cols));
+    if state.painted_echo != echo_paint {
+        for (index, echo_row) in echo_paint.iter().enumerate() {
+            paint_row(&mut out, frame_rows + index, echo_row)?;
+        }
+        state.painted_echo = echo_paint;
     }
     queue!(
         out,
@@ -2043,6 +2375,33 @@ fn truncate_row(line: &str, width: usize) -> String {
     }
     let mut row: String = expanded.chars().take(width.saturating_sub(1)).collect();
     row.push('$');
+    row
+}
+
+/// A truncated row under horizontal scrolling, as GNU's tty draws it:
+/// column zero carries the `$' left-truncation glyph whenever the line
+/// has any character scrolled off (an empty line shows nothing), the
+/// visible text follows from column HSCROLL of the expanded line, and a
+/// tail that still does not fit ends in the `$' right-truncation glyph.
+fn truncate_row_hscrolled(line: &str, width: usize, hscroll: usize) -> String {
+    if hscroll == 0 {
+        return truncate_row(line, width);
+    }
+    let expanded = expand_tabs(line);
+    if expanded.is_empty() {
+        return expanded;
+    }
+    // The `$' glyph replaces the character at column HSCROLL itself;
+    // visible text resumes one column past it.
+    let remaining: Vec<char> = expanded.chars().skip(hscroll + 1).collect();
+    let available = width.saturating_sub(1).max(1);
+    let mut row = String::from("$");
+    if remaining.len() < available {
+        row.extend(remaining);
+    } else {
+        row.extend(remaining[..available.saturating_sub(1)].iter());
+        row.push('$');
+    }
     row
 }
 
@@ -2402,6 +2761,7 @@ mod tests {
             10,
             80,
             false,
+            0,
             false,
         );
         assert_eq!(plan.rendered[0].0, "line 30");
@@ -2434,6 +2794,7 @@ mod tests {
             11,
             80,
             false,
+            0,
             true,
         );
         // GNU recenters half a window above point: 40 - 11/2 = line 35.
@@ -2452,7 +2813,7 @@ mod tests {
             interpreter.buffer.insert(&format!("line {n:02}\n"));
         }
         let mut view = WindowView::default();
-        let plan = plan_window_text(&interpreter.buffer, &mut view, 1, 1, 11, 39, true, true);
+        let plan = plan_window_text(&interpreter.buffer, &mut view, 1, 1, 11, 39, true, 0, true);
         assert_eq!(plan.rendered[0].0, "short one");
         assert_eq!(plan.rendered[1].0, "W".repeat(38) + "$");
         assert_eq!(

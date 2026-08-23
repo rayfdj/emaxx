@@ -925,12 +925,6 @@ pub(crate) fn execute_command_binding(
         env,
     );
     interp.set_variable("this-command", binding.clone(), env);
-    // GNU's command loop hands the accumulated prefix to the command:
-    // current-prefix-arg takes prefix-arg's value and prefix-arg clears
-    // before the call; last-prefix-arg keeps it for the next cycle.
-    let prefix = interp.lookup_var("prefix-arg", env).unwrap_or(Value::Nil);
-    interp.set_variable("current-prefix-arg", prefix.clone(), env);
-    interp.set_variable("prefix-arg", Value::Nil, env);
     // Timers may have messed with `deactivate-mark'; the command starts
     // with it reset (keyboard.c command_loop_1).
     interp.set_variable("deactivate-mark", Value::Nil, env);
@@ -947,16 +941,33 @@ pub(crate) fn execute_command_binding(
         .lookup_var("this-command", env)
         .filter(|command| !command.is_nil())
         .unwrap_or_else(|| binding.clone());
-    // GNU's command_execute is a thin wrapper over call-interactively
-    // (prefix-arg bookkeeping, kbd-macro expansion); the runtime does not
-    // define it yet, so drive the interactive call directly.
-    let result = command_loop_call(
-        interp,
-        env,
-        "call-interactively",
-        std::slice::from_ref(&dispatched),
-    )
-    .map(|_| ());
+    // keyboard.c command_loop_1 executes the command through simple.el's
+    // `command-execute' (call1 (Qcommand_execute, Vthis_command)): the
+    // prefix-arg handoff (current-prefix-arg takes prefix-arg, which
+    // clears, with `prefix-command-update' run), the `disabled' property
+    // check routing to `disabled-command-function', and keyboard-macro
+    // arrays all live there.  A bare runtime without simple.el keeps the
+    // native equivalent of the prefix handoff plus call-interactively.
+    let result = if interp.lookup_function("command-execute", env).is_ok() {
+        command_loop_call(
+            interp,
+            env,
+            "command-execute",
+            std::slice::from_ref(&dispatched),
+        )
+        .map(|_| ())
+    } else {
+        let prefix = interp.lookup_var("prefix-arg", env).unwrap_or(Value::Nil);
+        interp.set_variable("current-prefix-arg", prefix, env);
+        interp.set_variable("prefix-arg", Value::Nil, env);
+        command_loop_call(
+            interp,
+            env,
+            "call-interactively",
+            std::slice::from_ref(&dispatched),
+        )
+        .map(|_| ())
+    };
     let buffer_id = interp.current_buffer_id();
     crate::lisp::primitives::safe_run_named_hooks(
         interp,
@@ -1034,7 +1045,12 @@ pub(crate) fn execute_command_binding(
         .filter(|command| !command.is_nil())
         .unwrap_or(dispatched);
     interp.set_variable("last-command", last_command, env);
-    interp.set_variable("last-prefix-arg", prefix, env);
+    // keyboard.c takes last-prefix-arg from current-prefix-arg after the
+    // command ran (command-execute moved prefix-arg there).
+    let last_prefix = interp
+        .lookup_var("current-prefix-arg", env)
+        .unwrap_or(Value::Nil);
+    interp.set_variable("last-prefix-arg", last_prefix, env);
     // keyboard.c:1421 (command_loop_1): before waiting for the next key
     // sequence, `this-command' and its shadows go nil -- Lisp that runs
     // between commands (idle timers; eldoc's `(not this-command)' guard)

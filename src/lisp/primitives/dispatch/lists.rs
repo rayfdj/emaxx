@@ -1991,6 +1991,11 @@ define_dispatch!(
                     };
                 }
                 ensure_interaction_allowed(interp, env)?;
+                // GNU's read_char enters redisplay before blocking for
+                // input: window-configuration changes a command made
+                // before reading (rmc's help pop-up, y-or-n-p's prompt
+                // context) reach the glass while the read waits.
+                crate::lisp::primitives::run_tty_frame_redraw(interp, env);
                 let event = pop_unread_command_event_value(interp, env)?;
                 if read_event {
                     normalize_input_event_value(event)
