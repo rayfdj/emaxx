@@ -1045,6 +1045,14 @@ pub(crate) fn execute_command_binding(
         .filter(|command| !command.is_nil())
         .unwrap_or(dispatched);
     interp.set_variable("last-command", last_command, env);
+    // keyboard.c:1585: real-last-command takes real-this-command after
+    // the command ran (execute-extended-command sets real-this-command
+    // to the invoked function, and its suggestion timer compares
+    // against real-last-command).
+    let real_last = interp
+        .lookup_var("real-this-command", env)
+        .unwrap_or(Value::Nil);
+    interp.set_variable("real-last-command", real_last, env);
     // keyboard.c takes last-prefix-arg from current-prefix-arg after the
     // command ran (command-execute moved prefix-arg there).
     let last_prefix = interp

@@ -484,6 +484,15 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
 
 WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird line\n"
 
+ORG_SAMPLE = """* Head one
+body line one
+body line two
+** Sub head
+sub body
+* Head two
+body b
+"""
+
 ELISP_SAMPLE = """;; A comment line for font-lock.
 (defun demo-function (arg)
   "Documentation string here."
@@ -514,6 +523,25 @@ SCENARIOS = [
     # cmds.c's amalgamation calls): one undo removes the whole tail
     # group, not one character.
     ("undo-amalgamation", "", [b"abcdefghijklmnopqrstuvwxy", b"\x1f"]),
+    # Opening an .org file engages org-mode: outline faces (org-level-N)
+    # paint the headlines through font-lock.
+    ("org-open", ORG_SAMPLE, [b"\x0e"], ".org"),
+    # TAB on a headline folds its subtree: org 9.7 hides the body with
+    # overlay `invisible' properties, the hidden newlines join onto the
+    # headline row, and the display-table ellipsis "..." shows in the
+    # headline's face.
+    ("org-fold", ORG_SAMPLE, [b"\t"], ".org"),
+    # Motion skips folded text: C-n from the folded headline lands on
+    # the next visible line (vertical-motion walks display lines), and
+    # the typed character lands there.
+    ("org-fold-motion", ORG_SAMPLE, [b"\t", b"\x0e", b"x"], ".org"),
+    # A second TAB cycles FOLDED -> CHILDREN: sub-headlines reappear
+    # with their own ellipses, bodies stay hidden.
+    ("org-cycle-children", ORG_SAMPLE, [b"\t", b"\t"], ".org"),
+    # M-x org-todo: the TODO keyword lands on the headline, and
+    # execute-extended-command's suggestion timer (guarded by
+    # real-last-command) offers the C-c C-t binding in the echo area.
+    ("org-todo", ORG_SAMPLE, [b"\x1bxorg-todo\r"], ".org"),
     # truncate-lines: the too-wide line ends in the `$' truncation glyph;
     # with point at its end, auto-hscroll (xdisp.c hscroll_window_tree)
     # scrolls the window so point is visible, marking every line's
