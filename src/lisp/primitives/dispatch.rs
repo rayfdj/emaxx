@@ -65,7 +65,6 @@ macro_rules! define_dispatch_modules {
         #[derive(Clone, Copy, PartialEq)]
         enum DispatchModule {
             $($variant,)+
-            ComposedAccessor,
             None,
         }
 
@@ -76,17 +75,13 @@ macro_rules! define_dispatch_modules {
                         return Self::$variant;
                     }
                 )+
-                if is_composed_accessor_name(name) {
-                    Self::ComposedAccessor
-                } else {
-                    Self::None
-                }
+                Self::None
             }
 
             fn prefer_builtin(self, name: &str) -> bool {
                 match self {
                     $(Self::$variant => $module::prefer_builtin(name),)+
-                    Self::ComposedAccessor | Self::None => false,
+                    Self::None => false,
                 }
             }
 
@@ -99,7 +94,6 @@ macro_rules! define_dispatch_modules {
             ) -> Result<Value, LispError> {
                 match self {
                     $(Self::$variant => $call,)+
-                    Self::ComposedAccessor => call_composed_accessor($interp, $name, $args),
                     Self::None => Err(LispError::Signal(format!(
                         "Unknown function: {}",
                         $name

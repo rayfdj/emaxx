@@ -1495,3 +1495,113 @@ fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
 
     std::fs::remove_file(path).expect("cleanup fixture");
 }
+
+// Finding 34 re-hosts: the originals ran on the bare interpreter against
+// native facades and were deleted with them; GNU's own test tree covers
+// none of these, so the coverage lives here on the full dumped image,
+// with every expectation probed against the pinned oracle.
+
+#[test]
+fn skeleton_insert_inserts_strings_and_places_point_at_the_interesting_spot() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    assert_eq!(
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (require 'skeleton)
+                 (with-temp-buffer
+                   (skeleton-insert '(nil "f" _ "oo"))
+                   (list (buffer-string) (point))))"#,
+        )
+        .expect("skeleton-insert on the dumped image"),
+        Value::list([Value::String("foo".into()), Value::Integer(2)])
+    );
+}
+
+#[test]
+fn special_mode_sets_major_mode_read_only_and_its_keymap() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    assert_eq!(
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            r#"(with-temp-buffer
+                 (special-mode)
+                 (list major-mode buffer-read-only (key-binding "q") (key-binding " ")))"#,
+        )
+        .expect("special-mode on the dumped image"),
+        Value::list([
+            Value::symbol("special-mode"),
+            Value::T,
+            Value::symbol("quit-window"),
+            Value::symbol("scroll-up-command"),
+        ])
+    );
+}
+
+#[test]
+fn jka_compr_sniffs_compression_info_from_file_suffixes() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    assert_eq!(
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (require 'jka-compr)
+                 (list (not (null (jka-compr-get-compression-info "foo.gz")))
+                       (jka-compr-get-compression-info "foo.txt")
+                       (not (null (jka-compr-get-compression-info "a.tar.bz2")))))"#,
+        )
+        .expect("jka-compr sniffing on the dumped image"),
+        Value::list([Value::T, Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn display_buffer_honors_inhibit_same_window_and_action_function_returns() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    assert_eq!(
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            // Oracle contract: with inhibit-same-window the chosen window is
+            // real, not the selected one, and shows the buffer.  An action
+            // function returning a non-window truthy value stops the chain
+            // and display-buffer returns nil; a nil return falls through to
+            // the default actions, which produce a real window.
+            r#"(let ((buf (generate-new-buffer "*display-rehost*")))
+                 (list
+                  (let ((win (display-buffer buf '(nil (inhibit-same-window . t)))))
+                    (list (windowp win)
+                          (eq win (selected-window))
+                          (eq (window-buffer win) buf)))
+                  (let ((calls nil))
+                    (list (display-buffer
+                           buf
+                           (list (lambda (b a)
+                                   (push (list (buffer-name b) a) calls)
+                                   'marker)))
+                          calls))
+                  (windowp
+                   (display-buffer buf (list (lambda (_b _a) nil)
+                                             (cons 'fallback nil))))))"#,
+        )
+        .expect("display-buffer on the dumped image"),
+        Value::list([
+            Value::list([Value::T, Value::Nil, Value::T]),
+            Value::list([
+                Value::Nil,
+                Value::list([Value::list([
+                    Value::String("*display-rehost*".into()),
+                    Value::Nil,
+                ])]),
+            ]),
+            Value::T,
+        ])
+    );
+}

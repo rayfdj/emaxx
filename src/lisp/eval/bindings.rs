@@ -729,7 +729,7 @@ impl Interpreter {
         if let Some(value) = self.functions_index.get(name) {
             return Some((value.clone(), false));
         }
-        if matches!(name, "incf" | "decf") || facts.builtin || facts.special_form {
+        if facts.builtin || facts.special_form {
             return Some((Value::BuiltinFunc(name.to_string().into()), false));
         }
         None

@@ -2499,14 +2499,6 @@ pub(super) fn syntax_class_at_buffer_position_matches(
     syntax_entry_class_matches(entry, class)
 }
 
-pub(super) fn syntax_class_chars_at_buffer_position(
-    interp: &Interpreter,
-    position: usize,
-) -> Option<(char, char)> {
-    let table_id = interp.current_syntax_table_id();
-    let mut effective = SyntaxScan::new(interp, table_id);
-    syntax_class_chars_with_scan(interp, &mut effective, position)
-}
 
 // Scan-holding form of the pair above for per-character loops (the
 // regexp haystack encoder): the plain-table class comes from the scan's

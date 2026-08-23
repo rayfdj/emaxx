@@ -1561,15 +1561,6 @@ pub(crate) fn need_arg_range(
     }
 }
 
-pub(crate) fn is_composed_accessor_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    bytes.len() >= 3
-        && bytes.first() == Some(&b'c')
-        && bytes.last() == Some(&b'r')
-        && bytes[1..bytes.len() - 1]
-            .iter()
-            .all(|byte| matches!(byte, b'a' | b'd'))
-}
 
 /// keyboard.c's menu_bar_items: the menu bar's top-level captions in
 /// display order.  Every active keymap's `menu-bar' prefix is scanned
