@@ -38,3 +38,4 @@ __pycache__/
 test.elc
 /foo
 /bar
+.claude/
