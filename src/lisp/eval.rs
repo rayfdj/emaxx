@@ -2856,6 +2856,12 @@ pub struct Interpreter {
     charset_plists: Vec<(String, Value)>,
     /// Current charset priority order.
     charset_priority: Vec<String>,
+    /// `charset-list' order: every charset and alias name, newest first
+    /// (charset.c prepends on each new definition and each alias).
+    charset_names: Vec<String>,
+    /// Charsets defined with :supplementary-p; they sort after every
+    /// non-supplementary charset in the ordered (priority) list.
+    charset_supplementary: HashSet<String>,
     /// ISO charset associations keyed by (dimension, chars, final).
     iso_charsets: Vec<(i64, i64, u32, String)>,
     /// Coding systems keyed by canonical name.
@@ -3697,7 +3703,27 @@ impl Interpreter {
                     ]),
                 ),
             ],
-            charset_priority: vec!["unicode".into(), "ascii".into(), "eight-bit".into()],
+            // charset.c's C-level definitions, in definition order: the
+            // ordered list keeps non-supplementary charsets first (`emacs'
+            // and `eight-bit' are supplementary), and `charset-list' holds
+            // newest-first.
+            charset_priority: vec![
+                "ascii".into(),
+                "iso-8859-1".into(),
+                "unicode".into(),
+                "emacs".into(),
+                "eight-bit".into(),
+            ],
+            charset_names: vec![
+                "eight-bit".into(),
+                "emacs".into(),
+                "unicode".into(),
+                "iso-8859-1".into(),
+                "ascii".into(),
+            ],
+            charset_supplementary: ["emacs".to_string(), "eight-bit".to_string()]
+                .into_iter()
+                .collect(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             coding_systems: builtin_coding_systems(),
             ccl_programs: vec![None; 32],

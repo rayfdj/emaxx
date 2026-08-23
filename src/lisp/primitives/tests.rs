@@ -3879,9 +3879,11 @@ fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
     assert!(interp.has_charset("latin"));
 
     interp.set_charset_priority(&["ascii".into(), "unicode".into()]);
+    // charset.c Fset_charset_priority moves the given charsets to the
+    // front and keeps every other charset in its old relative order.
     assert_eq!(
         interp.charset_priority_list(),
-        vec!["ascii", "unicode", "eight-bit"]
+        vec!["ascii", "unicode", "iso-8859-1", "emacs", "eight-bit"]
     );
     assert_eq!(
         charsets_for_text("Aあ", &interp),

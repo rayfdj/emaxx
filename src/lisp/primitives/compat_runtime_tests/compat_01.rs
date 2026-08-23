@@ -492,7 +492,10 @@ fn nth_and_nthcdr_share_gnu_negative_count_and_keymap_semantics() {
                     (eq (nth -2 map) 'keymap)
                     (eq (nthcdr -2 map) map)
                     (char-table-p (nth 1 map))
-                    (equal (car (nthcdr 2 map)) '(120 . sample-command))))
+                    ;; keymap.c stores a single character in the full
+                    ;; keymap's char-table; the public list has no assoc
+                    ;; pair for it (GNU: nil).
+                    (car (nthcdr 2 map))))
             "#,
     )
     .read_all()
@@ -501,7 +504,10 @@ fn nth_and_nthcdr_share_gnu_negative_count_and_keymap_semantics() {
         .iter()
         .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
         .expect("keymap nth forms should evaluate");
-    assert_eq!(result, Value::list(vec![Value::T; 6]));
+    assert_eq!(
+        result,
+        Value::list(vec![Value::T, Value::T, Value::T, Value::T, Value::T, Value::Nil])
+    );
 }
 
 #[test]
@@ -756,13 +762,15 @@ fn length_equals_matches_sequence_lengths() {
             &mut env
         )
         .expect("length on char-table"),
-        Value::Integer(0x40_0000)
+        // fns.c Flength: a char-table's length is MAX_CHAR (GNU probe:
+        // (length (make-char-table 'fns-tests)) => 4194303).
+        Value::Integer(0x3f_ffff)
     );
     assert_eq!(
         call(
             &mut interp,
             "length=",
-            &[table, Value::Integer(0x40_0000)],
+            &[table, Value::Integer(0x3f_ffff)],
             &mut env,
         )
         .expect("length= on char-table"),
