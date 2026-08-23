@@ -178,6 +178,30 @@ corpus and answers it.
     `"30.2.0"` where GNU reports `"30.2"`, hidden behind a non-empty check;
     `max-lisp-eval-depth` scaled x384 with no test; `require`'s failure message
     dropping GNU's curly quotes.
+    [Step 6, 2026-08-23: fixed with oracle probes -- charset registration now
+    maintains `charset-list' (203 entries, aliases prepended) and the ordered
+    priority list (179, supplementary charsets after the rest) exactly as
+    charset.c does, byte-identical to the oracle; `(length CHAR-TABLE)' is
+    MAX_CHAR (4194303); `-b' is rejected as GNU rejects it (exit 255 path,
+    cli test flipped); the three native-comp `subrp' assertions plus
+    `function-get'/`remove-overlays' use `subr-primitive-p'; the invented
+    five `value<` fixnum/float orderings moved to the unordered test and
+    `value<` now implements fns.c value_cmp's numeric rules (double
+    promotion for fixnum-vs-float, sign-only for fixnum-vs-bignum, exact
+    mpz_cmp_d for float-vs-bignum) separately from exact arithcompare;
+    `define-key' on a full keymap keeps single characters in the char-table
+    only, so the public list carries no assoc pair (compat_01 expectation
+    corrected); `find-composition' no longer fabricates automatic
+    compositions from Rust grapheme clusters -- batch GNU reports nil and so
+    does emaxx now; `require' quotes the feature with curly quotes; the
+    `[127]`/`emacs-version`/`comp-el-to-eln-filename`/`define-key`
+    range/`message`-advice items were re-probed and already agree with the
+    oracle.  STILL OPEN: `max-lisp-eval-depth` -- GNU signals
+    excessive-lisp-nesting at depth 1592/1600 in under a second; emaxx's
+    x384-scaled check did not fire after minutes of the same probe (the
+    self-call recursion path appears not to advance the guarded counter).
+    Needs its own pass at the evaluator's depth accounting.  The five
+    deleted compat_runtime re-hosts (finding 34) also remain.]
 26. Sweep triage deleted 27 of 103 compat_runtime tests in the commit declaring
     the module green (`4093638`).  The rationale — they asserted native
     implementations of Lisp-owned features — was sound, but several deleted

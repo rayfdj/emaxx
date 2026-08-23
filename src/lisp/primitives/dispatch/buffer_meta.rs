@@ -1080,7 +1080,8 @@ define_dispatch!(
                 // C-layer attribute slots; the final slot is the canonical plist.
                 need_args(name, args, 17)?;
                 let charset = args[0].as_symbol()?.to_string();
-                interp.define_charset(&charset, args[16].clone());
+                let supplementary = args[9].is_truthy();
+                interp.define_charset(&charset, args[16].clone(), supplementary);
                 Ok(Value::Nil)
             }
             "define-charset-alias" => {

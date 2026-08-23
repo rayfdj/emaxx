@@ -390,44 +390,6 @@ fn glyph_string(chars: &[char], font: Value, compose_cluster: bool) -> Value {
     vector_value(body)
 }
 
-fn automatic_composition(
-    interp: &Interpreter,
-    string: &Value,
-    position: usize,
-) -> Result<Option<(usize, usize, Value)>, LispError> {
-    let (text, base) = if string.is_nil() {
-        (interp.buffer.full_buffer_string(), 1)
-    } else {
-        (
-            string_like(string)
-                .ok_or_else(|| wrong_type_argument("stringp", string.clone()))?
-                .text,
-            0,
-        )
-    };
-    let index = position.saturating_sub(base);
-    if index >= text.chars().count() {
-        return Ok(None);
-    }
-    use unicode_segmentation::UnicodeSegmentation;
-    let mut offset = 0;
-    for cluster in text.graphemes(true) {
-        let length = cluster.chars().count();
-        if offset <= index && index < offset + length {
-            if length <= 1 {
-                return Ok(None);
-            }
-            let chars = cluster.chars().collect::<Vec<_>>();
-            return Ok(Some((
-                offset + base,
-                offset + length + base,
-                glyph_string(&chars, Value::symbol("utf-8-unix"), true),
-            )));
-        }
-        offset += length;
-    }
-    Ok(None)
-}
 
 fn find_composition(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
     let string = &args[2];
@@ -484,13 +446,12 @@ fn find_composition(interp: &mut Interpreter, args: &[Value]) -> Result<Value, L
             Value::Integer(width),
         ]));
     }
-    if let Some((start, end, gstring)) = automatic_composition(interp, string, position)? {
-        return Ok(Value::list([
-            Value::Integer(start as i64),
-            Value::Integer(end as i64),
-            gstring,
-        ]));
-    }
+    // No automatic composition here: GNU's find_automatic_composition
+    // consults composition-function-table rules that produce a gstring only
+    // with a live frame's font (or terminal) machinery, so the batch oracle
+    // answers nil for text no static composition covers.  The previous
+    // grapheme-cluster substitute fabricated compositions GNU does not
+    // report in batch.
     Ok(Value::Nil)
 }
 

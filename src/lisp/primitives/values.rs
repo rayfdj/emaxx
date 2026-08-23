@@ -506,7 +506,9 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         item if string_like(item).is_some() => Ok(string_text(item)?.chars().count() as i64),
         Value::Nil => Ok(0),
         Value::Cons(_) if is_vector_value(value) => Ok(vector_items(value)?.len() as i64),
-        Value::CharTable(_) => Ok(0x40_0000),
+        // fns.c Flength: a char-table's length is MAX_CHAR (0x3FFFFF),
+        // not the number of covered codepoints.
+        Value::CharTable(_) => Ok(0x3f_ffff),
         item if is_bool_vector_value(interp, item) => {
             Ok(bool_vector_values(interp, item)?.len() as i64)
         }
@@ -902,7 +904,7 @@ pub(crate) fn value_ordering(
 ) -> Result<ValueOrder, LispError> {
     if is_number_value(left) || is_number_value(right) {
         if is_number_value(left) && is_number_value(right) {
-            return Ok(order_from_option(numeric_ordering(interp, left, right)?));
+            return Ok(order_from_option(value_cmp_numeric_ordering(left, right)));
         }
         return Err(type_mismatch_signal(left, right));
     }
@@ -1014,6 +1016,80 @@ pub(crate) fn value_ordering(
     }
 
     Err(type_mismatch_signal(left, right))
+}
+
+/// fns.c value_cmp's numeric rules, which are deliberately NOT
+/// arithcompare's: a fixnum against a float compares after C promotion to
+/// double (`ia < XFLOAT_DATA (b)`), so a fixnum a double cannot represent
+/// exactly can compare unordered against the neighbouring float where `<'
+/// still orders them; a fixnum against a bignum compares by the bignum's
+/// sign alone; a float against a bignum compares exactly (mpz_cmp_d), with
+/// NaN unordered.
+fn value_cmp_numeric_ordering(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    fn float_cmp(a: f64, b: f64) -> Option<Ordering> {
+        if a < b {
+            Some(Ordering::Less)
+        } else if a > b {
+            Some(Ordering::Greater)
+        } else if a == b {
+            Some(Ordering::Equal)
+        } else {
+            None
+        }
+    }
+    fn bignum_sign(value: &crate::lisp::types::SharedBigInt) -> Ordering {
+        use num_bigint::Sign;
+        match value.sign() {
+            Sign::Minus => Ordering::Less,
+            Sign::NoSign => Ordering::Equal,
+            Sign::Plus => Ordering::Greater,
+        }
+    }
+    fn bignum_vs_float(bignum: &crate::lisp::types::SharedBigInt, float: f64) -> Option<Ordering> {
+        if float.is_nan() {
+            return None;
+        }
+        if float.is_infinite() {
+            return Some(if float.is_sign_positive() {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            });
+        }
+        // mpz_cmp_d compares the integer with the double exactly: decompose
+        // the double into mantissa * 2^exponent and compare as integers,
+        // scaling whichever side needs it.
+        let bits = float.to_bits();
+        let sign = if bits >> 63 == 0 { 1i64 } else { -1i64 };
+        let biased_exponent = ((bits >> 52) & 0x7ff) as i64;
+        let raw_mantissa = bits & 0xf_ffff_ffff_ffff;
+        let (mantissa, exponent) = if biased_exponent == 0 {
+            (raw_mantissa as i64, -1074i64)
+        } else {
+            ((raw_mantissa | (1 << 52)) as i64, biased_exponent - 1075)
+        };
+        let mantissa = num_bigint::BigInt::from(sign * mantissa);
+        let big = &**bignum;
+        let cmp = if exponent >= 0 {
+            big.cmp(&(mantissa << exponent as usize))
+        } else {
+            (big.clone() << (-exponent) as usize).cmp(&mantissa)
+        };
+        Some(cmp)
+    }
+    match (left, right) {
+        (Value::Integer(a), Value::Integer(b)) => Some(a.cmp(b)),
+        (Value::Integer(a), Value::Float(b)) => float_cmp(*a as f64, *b),
+        (Value::Float(a), Value::Integer(b)) => float_cmp(*a, *b as f64),
+        (Value::Float(a), Value::Float(b)) => float_cmp(*a, *b),
+        (Value::Integer(_), Value::BigInteger(b)) => Some(bignum_sign(b).reverse()),
+        (Value::BigInteger(a), Value::Integer(_)) => Some(bignum_sign(a)),
+        (Value::BigInteger(a), Value::BigInteger(b)) => Some((**a).cmp(&**b)),
+        (Value::BigInteger(a), Value::Float(b)) => bignum_vs_float(a, *b),
+        (Value::Float(a), Value::BigInteger(b)) => bignum_vs_float(b, *a).map(Ordering::reverse),
+        _ => None,
+    }
 }
 
 pub(crate) fn value_less(
@@ -1938,38 +2014,41 @@ pub(crate) fn refresh_runtime_keymap_public_view(
     if has_name {
         items.push(name);
     }
-    items.extend(
-        bindings
-            .iter()
-            .filter(|binding| !binding.after_prompt)
-            .map(|binding| {
-                Value::cons(
-                    keymap_entry_key_value(&binding_key_parts(binding), &binding.key),
-                    public_keymap_value(interp, &binding.value),
-                )
-            }),
-    );
+    // keymap.c store_in_keymap: on a full keymap a single-character event
+    // lives in the char-table, so GNU's public list carries no assoc pair
+    // for it.  The runtime binding list still drives lookup either way.
+    let in_char_table = |entry_key: &Value| {
+        has_char_table
+            && matches!(entry_key, Value::Integer(code) if (0..=0x3f_ffff).contains(code))
+    };
+    let mut listed_pre_prompt = 0usize;
+    for binding in bindings.iter().filter(|binding| !binding.after_prompt) {
+        let entry_key = keymap_entry_key_value(&binding_key_parts(binding), &binding.key);
+        if in_char_table(&entry_key) {
+            continue;
+        }
+        listed_pre_prompt += 1;
+        items.push(Value::cons(
+            entry_key,
+            public_keymap_value(interp, &binding.value),
+        ));
+    }
     if has_name {
         // Pre-prompt bindings precede the prompt in GNU's public list.
         let prompt = items.remove(has_char_table as usize);
-        let index = has_char_table as usize
-            + bindings
-                .iter()
-                .filter(|binding| !binding.after_prompt)
-                .count();
+        let index = has_char_table as usize + listed_pre_prompt;
         items.insert(index, prompt);
     }
-    items.extend(
-        bindings
-            .iter()
-            .filter(|binding| binding.after_prompt)
-            .map(|binding| {
-                Value::cons(
-                    keymap_entry_key_value(&binding_key_parts(binding), &binding.key),
-                    public_keymap_value(interp, &binding.value),
-                )
-            }),
-    );
+    for binding in bindings.iter().filter(|binding| binding.after_prompt) {
+        let entry_key = keymap_entry_key_value(&binding_key_parts(binding), &binding.key);
+        if in_char_table(&entry_key) {
+            continue;
+        }
+        items.push(Value::cons(
+            entry_key,
+            public_keymap_value(interp, &binding.value),
+        ));
+    }
     if !parent.is_nil() {
         items.push(public_keymap_value(interp, &parent));
     }

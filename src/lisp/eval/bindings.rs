@@ -573,7 +573,7 @@ impl Interpreter {
             "system-configuration-features" => Some(Value::String("".into())),
             "system-configuration-options" => Some(Value::String("".into())),
             "charset-list" => Some(Value::list(
-                self.charset_priority_list()
+                self.charset_name_list()
                     .into_iter()
                     .map(|value| Value::Symbol(value.into()))
                     .collect::<Vec<_>>(),

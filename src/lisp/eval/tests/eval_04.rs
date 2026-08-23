@@ -697,7 +697,7 @@ fn require_with_explicit_target_requires_provided_feature() {
     assert!(
         error
             .to_string()
-            .contains("failed to provide feature sample-missing-feature")
+            .contains("failed to provide feature \u{2018}sample-missing-feature\u{2019}")
     );
     let _ = fs::remove_file(path);
 }
@@ -3908,7 +3908,9 @@ fn initialized_remove_overlays_uses_subr_el_and_eq_property_matching() {
                  (overlay-put ov nil 4)
                  (overlay-put ov 'tag needle)
                  (remove-overlays nil nil 'tag equal-but-not-eq)
-                 (list (not (subrp (symbol-function 'remove-overlays)))
+                 ;; The pinned oracle native-compiles remove-overlays
+                 ;; (subrp => t there); subr-primitive-p is nil on both.
+                 (list (not (subr-primitive-p (symbol-function 'remove-overlays)))
                        (overlay-get ov nil)
                        (length (overlays-in (point-min) (point-max))))))"
         ),

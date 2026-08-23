@@ -269,7 +269,7 @@ impl Interpreter {
         })?;
         if !self.has_feature(feature) && target.is_some() {
             return Err(LispError::Signal(format!(
-                "Loading file {load_target} failed to provide feature {feature}"
+                "Loading file {load_target} failed to provide feature \u{2018}{feature}\u{2019}"
             )));
         }
         if !self.has_feature(feature) {
@@ -277,7 +277,7 @@ impl Interpreter {
             // file did not provide FEATURE; self-providing here fabricated
             // success and a bogus load-history provide entry.
             return Err(LispError::Signal(format!(
-                "Loading file {load_target} failed to provide feature {feature}"
+                "Loading file {load_target} failed to provide feature \u{2018}{feature}\u{2019}"
             )));
         }
         Ok(Value::Symbol(feature.to_string().into()))

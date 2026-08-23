@@ -92,10 +92,9 @@ fn batch_symbol_readers_answer_piped_stdin_like_gnu() {
 }
 
 #[test]
-fn batch_accepts_gnu_single_dash_long_spelling_and_build_details_abbreviation() {
+fn batch_accepts_gnu_single_dash_long_spellings_and_rejects_dash_b() {
     let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
         .args([
-            "-b",
             "-batch",
             "-eval",
             r#"(progn
@@ -115,6 +114,23 @@ fn batch_accepts_gnu_single_dash_long_spelling_and_build_details_abbreviation() 
     );
     assert_eq!(output.stdout, b"single-dash-stdout");
     assert_eq!(output.stderr, b"single-dash-stderr\n");
+
+    // `-b' is not a GNU option: the oracle exits 255 with "Unknown option".
+    let rejected = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .args(["-b", "-batch", "-eval", "(princ \"hi\")"])
+        .output()
+        .unwrap();
+    assert_ne!(
+        rejected.status.code(),
+        Some(0),
+        "-b must be rejected as GNU rejects it:\nstdout: {}",
+        String::from_utf8_lossy(&rejected.stdout)
+    );
+    assert!(
+        rejected.stdout.is_empty(),
+        "a rejected invocation must not evaluate forms: {}",
+        String::from_utf8_lossy(&rejected.stdout)
+    );
 }
 
 #[test]

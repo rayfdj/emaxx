@@ -1317,31 +1317,6 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         ("float_fixnum", parse("1.9"), parse("2")),
         ("float_fixnum_neg_pos", parse("-2.0"), parse("1")),
         ("fixnum_float_neg_pos", parse("-2"), parse("1.0")),
-        (
-            "fixnum_float_unrepresentable_1",
-            parse("72057594037927935"),
-            parse("72057594037927936.0"),
-        ),
-        (
-            "fixnum_float_unrepresentable_2",
-            parse("72057594037927936.0"),
-            parse("72057594037927937"),
-        ),
-        (
-            "fixnum_float_unrepresentable_3",
-            parse("-72057594037927936.0"),
-            parse("-72057594037927935"),
-        ),
-        (
-            "fixnum_float_unrepresentable_4",
-            parse("-72057594037927937"),
-            parse("-72057594037927936.0"),
-        ),
-        (
-            "fixnum_float_unrepresentable_5",
-            parse("2305843009213693951"),
-            parse("2305843009213693952.0"),
-        ),
         ("bignum_float", big.clone(), float_double_big),
         ("float_bignum", float_big, double_big),
         ("symbol", parse("a"), parse("b")),
@@ -1680,6 +1655,34 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
             "large_int_float_equal",
             Value::big_integer(BigInt::from(72057594037927936_i128)),
             Value::Float(72057594037927936.0),
+        ),
+        // fns.c value_cmp promotes a fixnum to double before comparing, so
+        // a fixnum the double cannot represent compares unordered against
+        // the neighbouring float even though `<' still orders the pair.
+        (
+            "fixnum_float_unrepresentable_1",
+            Value::Integer(72057594037927935),
+            Value::Float(72057594037927936.0),
+        ),
+        (
+            "fixnum_float_unrepresentable_2",
+            Value::Float(72057594037927936.0),
+            Value::Integer(72057594037927937),
+        ),
+        (
+            "fixnum_float_unrepresentable_3",
+            Value::Float(-72057594037927936.0),
+            Value::Integer(-72057594037927935),
+        ),
+        (
+            "fixnum_float_unrepresentable_4",
+            Value::Integer(-72057594037927937),
+            Value::Float(-72057594037927936.0),
+        ),
+        (
+            "fixnum_float_unrepresentable_5",
+            Value::Integer(2305843009213693951),
+            Value::Float(2305843009213693952.0),
         ),
         ("nan", Value::Integer(1), Value::Float(f64::NAN)),
         (
