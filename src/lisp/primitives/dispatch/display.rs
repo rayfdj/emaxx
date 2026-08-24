@@ -1626,6 +1626,111 @@ pub(crate) fn store_window_hscroll_state(
     );
 }
 
+/// Which numbers `display-line-numbers' asks for (xdisp.c's
+/// Vdisplay_line_numbers): absolute buffer lines, distances from the
+/// line showing point, or distances in screen lines.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineNumberMode {
+    Absolute,
+    Relative,
+    Visual,
+}
+
+/// The line-number column a window reserves this redisplay, resolved
+/// from the buffer's `display-line-numbers' family of variables the way
+/// maybe_produce_line_number does.  `width' is the digit field
+/// (it->lnum_width); the column costs `width + 2' screen columns — the
+/// number right-justified in a width+1 field plus a blank separator
+/// (pint2str with lnum_width + 1, then the appended space).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LineNumberLayout {
+    pub(crate) mode: LineNumberMode,
+    pub(crate) width: usize,
+    pub(crate) cols: usize,
+    pub(crate) current_absolute: bool,
+    pub(crate) offset: i64,
+    pub(crate) widen: bool,
+    pub(crate) major_tick: i64,
+    pub(crate) minor_tick: i64,
+}
+
+/// maybe_produce_line_number's width computation for one window.
+/// TOP_LINE and POINT_LINE are 1-based absolute buffer lines,
+/// BEGV_LINE the absolute line where the accessible region begins:
+/// numbers count from there unless the layout widens.  TEXT_ROWS is
+/// the window's body height.  The maximal number a window row can show
+/// is the one belonging to its last row — a 0-based this_line at vpos
+/// 0 plus the matrix rows: this_line + nrows - 1 with nrows =
+/// text_rows + 1.
+pub(crate) fn window_line_number_layout(
+    interp: &Interpreter,
+    buffer_id: u64,
+    top_line: usize,
+    point_line: usize,
+    begv_line: usize,
+    text_rows: usize,
+) -> Option<LineNumberLayout> {
+    let buffer_local = |name: &str| {
+        interp
+            .buffer_local_value(buffer_id, name)
+            .or_else(|| interp.lookup_var(name, &Vec::new()))
+            .unwrap_or(Value::Nil)
+    };
+    let mode = match buffer_local("display-line-numbers") {
+        Value::Nil => return None,
+        Value::Symbol(ref name) if name == "relative" => LineNumberMode::Relative,
+        Value::Symbol(ref name) if name == "visual" => LineNumberMode::Visual,
+        _ => LineNumberMode::Absolute,
+    };
+    let current_absolute = buffer_local("display-line-numbers-current-absolute").is_truthy();
+    let offset = match mode {
+        LineNumberMode::Absolute => buffer_local("display-line-numbers-offset")
+            .as_integer()
+            .unwrap_or(0),
+        _ => 0,
+    };
+    // A non-zero offset forces counting from the buffer's beginning, as
+    // if display-line-numbers-widen were non-nil.
+    let widen = buffer_local("display-line-numbers-widen").is_truthy() || offset != 0;
+    let displayed = |line: usize| {
+        if widen {
+            line
+        } else {
+            line.saturating_sub(begv_line) + 1
+        }
+    };
+    let max_lnum = match mode {
+        LineNumberMode::Relative | LineNumberMode::Visual if !current_absolute => {
+            text_rows.saturating_sub(1)
+        }
+        LineNumberMode::Visual => displayed(point_line).saturating_add(text_rows) - 1,
+        _ => displayed(top_line).saturating_add(text_rows) - 1,
+    };
+    let needed = max_lnum.max(1).to_string().len();
+    let explicit = buffer_local("display-line-numbers-width")
+        .as_integer()
+        .ok()
+        .filter(|width| *width >= 0)
+        .unwrap_or(0) as usize;
+    let width = needed.max(explicit);
+    let tick = |name: &str| {
+        interp
+            .lookup_var(name, &Vec::new())
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(0)
+    };
+    Some(LineNumberLayout {
+        mode,
+        width,
+        cols: width + 2,
+        current_absolute,
+        offset,
+        widen,
+        major_tick: tick("display-line-numbers-major-tick"),
+        minor_tick: tick("display-line-numbers-minor-tick"),
+    })
+}
+
 fn set_window_hscroll_value(
     interp: &mut Interpreter,
     window_id: u64,
