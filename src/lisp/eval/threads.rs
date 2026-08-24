@@ -1691,6 +1691,41 @@ impl Interpreter {
     /// process.c Fprocess_tty_name: the pty device name, nil for pipes.
     /// STREAM selects which half must be a pty (stdin/stdout); nil accepts
     /// either.
+    /// Any spawned thread the scheduler could still advance: runnable now,
+    /// or parked in a sleep that a wake pass will finish.
+    pub(crate) fn has_advanceable_spawned_thread(&self) -> bool {
+        self.thread_states.iter().any(|thread| {
+            thread.record_id != self.main_thread_id
+                && matches!(
+                    thread.status,
+                    ThreadStatus::Runnable | ThreadStatus::Blocked(ThreadBlocker::Sleep)
+                )
+        })
+    }
+
+    pub(crate) fn current_thread_is_main(&self) -> bool {
+        self.active_thread_id == self.main_thread_id
+    }
+
+    pub(crate) fn note_stepped_yield(&mut self) {
+        self.fruitless_stepped_yields = self.fruitless_stepped_yields.saturating_add(1);
+        if std::env::var_os("EMAXX_DEBUG_YIELD").is_some()
+            && self.fruitless_stepped_yields % 10_000 == 0
+        {
+            eprintln!("YIELD-GUARD count={}", self.fruitless_stepped_yields);
+        }
+    }
+
+    pub(crate) fn reset_stepped_yields(&mut self) {
+        self.fruitless_stepped_yields = 0;
+    }
+
+    pub(crate) fn stepped_yield_exhausted(&self) -> bool {
+        // Generous: real cooperative handoffs reset this in drive_threads
+        // whenever another thread actually runs.
+        self.fruitless_stepped_yields > 10_000
+    }
+
     pub(crate) fn process_tty_name(
         &self,
         record_id: u64,
@@ -2451,10 +2486,18 @@ impl Interpreter {
     }
 
     pub fn drive_threads(&mut self, env: &mut Env, wake_sleepers: bool) -> Result<(), LispError> {
+        let entry_yield_count = self.fruitless_stepped_yields;
+        // Never re-step the thread that is currently executing: it reached
+        // this scheduler pass from inside its own body (thread-yield, a
+        // blocking wait), and stepping it again would re-enter that body
+        // from the top -- the recursion that wedged threads-let-binding.
         let thread_ids = self
             .thread_states
             .iter()
-            .filter(|thread| thread.record_id != self.main_thread_id)
+            .filter(|thread| {
+                thread.record_id != self.main_thread_id
+                    && thread.record_id != self.active_thread_id
+            })
             .map(|thread| thread.record_id)
             .collect::<Vec<_>>();
         for thread_id in thread_ids {
@@ -2463,13 +2506,19 @@ impl Interpreter {
                 .map(|thread| thread.status.clone())
                 .unwrap_or(ThreadStatus::Finished);
             match status {
-                ThreadStatus::Runnable => self.step_thread(thread_id, env)?,
+                ThreadStatus::Runnable => {
+                    if thread_id != self.active_thread_id {
+                        self.fruitless_stepped_yields = 0;
+                    }
+                    self.step_thread(thread_id, env)?;
+                }
                 ThreadStatus::Blocked(ThreadBlocker::Sleep) if wake_sleepers => {
                     self.finish_thread_success(thread_id, Value::Nil);
                 }
                 _ => {}
             }
         }
+        let _ = entry_yield_count;
         if wake_sleepers {
             // Native file operations enqueue their own exact events.  This
             // metadata scan supplies the host-backend half of kqueue for
@@ -2573,6 +2622,25 @@ impl Interpreter {
                 )
             }) {
                 break Ok(());
+            }
+            // Same cooperative-model limit as the yield loop (finding 84):
+            // a stepped thread waiting on a condvar only its suspended
+            // parent can notify would spin here forever; GNU's preemptive
+            // threads would block and get woken.  Signal instead.
+            if thread_id != self.main_thread_id {
+                self.note_stepped_yield();
+                if self.stepped_yield_exhausted() {
+                    self.reset_stepped_yields();
+                    if let Some(thread) = self.find_thread_state_mut(thread_id) {
+                        thread.status = ThreadStatus::Runnable;
+                    }
+                    while !self.try_lock_mutex(thread_id, mutex_id) {
+                        self.drive_threads(env, false)?;
+                    }
+                    break Err(LispError::Signal(
+                        "Cooperative thread model deadlock: condition variable can only be notified by the suspended parent thread".into(),
+                    ));
+                }
             }
             if let Err(error) = self.drive_threads(env, false) {
                 break Err(error);
