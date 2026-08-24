@@ -1038,6 +1038,9 @@ fn encode_key(key: KeyEvent) -> Vec<Value> {
         }
         KeyCode::Enter => Some(Value::Integer(13)),
         KeyCode::Tab => Some(Value::Integer(9)),
+        // term/xterm decodes `\e[Z' (kcbt) to the `backtab' function
+        // key; org's S-TAB global cycling lives on it.
+        KeyCode::BackTab => Some(Value::Symbol("backtab".into())),
         KeyCode::Backspace => Some(Value::Integer(127)),
         KeyCode::Esc => Some(Value::Integer(27)),
         KeyCode::Up => Some(Value::Symbol("up".into())),
@@ -1172,10 +1175,13 @@ fn window_render_geometry(
     lnum: Option<crate::lisp::primitives::LineNumberLayout>,
 ) -> RenderGeometry {
     let lnum_cols = lnum.map_or(0, |layout| layout.cols);
+    // The window's buffer decides; a buffer with no local binding sees
+    // the DEFAULT value — never the current buffer's local (the occur
+    // window must not truncate because the selected org buffer does).
     let buffer_local = |interpreter: &Interpreter, name: &str| {
         interpreter
             .buffer_local_value(info.buffer_id, name)
-            .or_else(|| interpreter.lookup_var(name, &Vec::new()))
+            .or_else(|| interpreter.default_value(name))
             .unwrap_or(Value::Nil)
     };
     let truncate_lines = buffer_local(interpreter, "truncate-lines").is_truthy();
@@ -1757,9 +1763,25 @@ fn fontify_window_ranges(
         // included); past that the window cannot reach this frame.
         let start = info.start.min(z);
         let end = info.start.saturating_add(info.width * info.height).min(z);
+        fontify_buffer_range(interpreter, env, start, end);
+    }
+    if interpreter.current_buffer_id() != saved_buffer {
+        let _ = interpreter.set_current_buffer_id(saved_buffer);
+    }
+}
+
+/// One fontification sweep over [START, END) of the current buffer:
+/// every position must carry a non-nil `fontified' property or
+/// `fontification-functions' runs for it.  The estimate pass above uses
+/// the window's cell count; the per-window pass after planning uses the
+/// planned window end, which invisible text (org's folds) can push far
+/// beyond the cell-count estimate.
+fn fontify_buffer_range(interpreter: &mut Interpreter, env: &mut Env, start: usize, end: usize) {
+    {
         let mut pos = start;
         let mut rounds = 0usize;
-        while pos < end && rounds < 512 {
+        let round_limit = end.saturating_sub(start).max(512);
+        while pos < end && rounds < round_limit {
             rounds += 1;
             let fontified = crate::lisp::primitives::buffer_char_property_at(
                 interpreter,
@@ -1795,9 +1817,6 @@ fn fontify_window_ranges(
                 break;
             }
         }
-    }
-    if interpreter.current_buffer_id() != saved_buffer {
-        let _ = interpreter.set_current_buffer_id(saved_buffer);
     }
 }
 
@@ -2054,6 +2073,7 @@ fn redraw_with_echo_policy(
         /// Left edge of the text area (past any line-number column).
         left: usize,
         lnum_cols: usize,
+        truncate: bool,
         body_width: usize,
         usable: usize,
         start: usize,
@@ -2161,6 +2181,75 @@ fn redraw_with_echo_policy(
             }
             lnum = settled;
         };
+        // The pre-pass fontified a cell-count estimate of the window;
+        // the plan knows the real end, which invisible text (org's
+        // folds) can push thousands of characters past the estimate.
+        // Fontify exactly the VISIBLE stretches: GNU's iterator jumps
+        // invisible runs, so hidden text is never fontified — a folded
+        // src block must not load its language mode (whose setup
+        // message would land in the echo area) until it unfolds.
+        {
+            let visible_ranges: Vec<(usize, usize)> = {
+                let window_buffer = if info.buffer_id == interpreter.current_buffer_id() {
+                    Some(&interpreter.buffer)
+                } else {
+                    interpreter.get_buffer_by_id(info.buffer_id)
+                };
+                if let Some(buffer) = window_buffer {
+                    let spec =
+                        resolve_buffer_invisibility(interpreter, buffer, info.buffer_id);
+                    let z = buffer.point_max();
+                    let mut pos = plan.top_pos.min(z);
+                    let end = plan.window_end.min(z);
+                    let mut ranges = Vec::new();
+                    if !spec.active {
+                        ranges.push((pos, end));
+                    } else {
+                        while pos < end {
+                            if crate::lisp::primitives::invisible_class_at(buffer, &spec, pos)
+                                != 0
+                            {
+                                let run_end = crate::lisp::primitives::invisible_run_at(
+                                    buffer, &spec, pos,
+                                )
+                                .map(|(run_end, _)| run_end)
+                                .unwrap_or(pos + 1);
+                                pos = run_end.max(pos + 1);
+                                continue;
+                            }
+                            let visible_start = pos;
+                            while pos < end
+                                && crate::lisp::primitives::invisible_class_at(
+                                    buffer, &spec, pos,
+                                ) == 0
+                            {
+                                pos += 1;
+                            }
+                            ranges.push((visible_start, pos));
+                        }
+                    }
+                    ranges
+                } else {
+                    Vec::new()
+                }
+            };
+            let saved = interpreter.current_buffer_id();
+            if saved == info.buffer_id
+                || interpreter.set_current_buffer_id(info.buffer_id).is_ok()
+            {
+                if interpreter
+                    .lookup_var("fontification-functions", env)
+                    .is_some_and(|value| !value.is_nil())
+                {
+                    for (start, end) in visible_ranges {
+                        fontify_buffer_range(interpreter, env, start, end);
+                    }
+                }
+                if interpreter.current_buffer_id() != saved {
+                    let _ = interpreter.set_current_buffer_id(saved);
+                }
+            }
+        }
         let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
         let text_left = info.left + lnum_cols;
         for (row, (rendered, _, _, _, _)) in plan.rendered.iter().enumerate() {
@@ -2249,6 +2338,7 @@ fn redraw_with_echo_policy(
             top: text_top,
             left: text_left,
             lnum_cols,
+            truncate: geometry.truncate,
             body_width: body_width.saturating_sub(lnum_cols).max(1),
             usable: body_width
                 .saturating_sub(lnum_cols)
@@ -2368,6 +2458,15 @@ fn redraw_with_echo_policy(
             let visual = visual_line_at(buffer, &job_invisibility, *line);
             let line_text = visual.text.clone();
             let line_begin = buffer.line_start_of(*line);
+            // The right-truncation `$' glyph keeps the default face
+            // (produce_special_glyphs); spans stop one cell short of it.
+            let col_cap = job.body_width
+                - usize::from(job.truncate
+                    && truncated_on_right(
+                        display_width(&line_text),
+                        *row_hscroll,
+                        job.body_width,
+                    ));
             for (span_begin, span_end, attrs) in &resolved {
                 let begin = (*span_begin).max(*row_start);
                 let end = (*span_end).min(row_end);
@@ -2403,7 +2502,7 @@ fn redraw_with_echo_policy(
                         column.saturating_sub(seg * job.usable)
                     }
                 };
-                let from_col = col_of(begin).min(job.body_width);
+                let from_col = col_of(begin).min(col_cap);
                 // A span covering the newline paints its glyph's cell —
                 // and an `:extend' face (the region) keeps painting to
                 // the window edge, GNU's whole-row highlight.
@@ -2416,7 +2515,7 @@ fn redraw_with_echo_policy(
                         to_col + 1
                     };
                 }
-                let to_col = to_col.min(job.body_width);
+                let to_col = to_col.min(col_cap);
                 if from_col >= to_col {
                     continue;
                 }
@@ -2436,14 +2535,14 @@ fn redraw_with_echo_policy(
                 } else {
                     column = column.saturating_sub(seg * job.usable);
                 }
-                if column == 0 || column >= job.body_width {
+                if column == 0 || column >= col_cap {
                     continue;
                 }
                 let row = &mut frame[job.top + index];
                 let inherited = row.attrs[(job.left + column - 1).min(row.attrs.len() - 1)];
                 for dot in 0..3usize {
                     let cell = job.left + column + dot;
-                    if column + dot < job.body_width && cell < row.attrs.len() {
+                    if column + dot < col_cap && cell < row.attrs.len() {
                         row.attrs[cell] = inherited;
                     }
                 }

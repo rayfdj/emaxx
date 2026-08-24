@@ -963,19 +963,32 @@ pub(crate) fn resolve_tty_face_attrs(
             .iter()
             .all(|item| matches!(item, Value::Symbol(name) if name != ":foreground" && name != ":background"))
     {
+        // Merge per attribute with override semantics: an earlier
+        // member's EXPLICIT value wins even when it turns an attribute
+        // off — org-headline-done's `:bold nil' (its 8-color spec) must
+        // unbold the level face under it, exactly as merge_face_ref
+        // leaves unspecified attributes alone and takes specified ones.
         let mut merged = TtyFaceAttrs::default();
         for item in items.iter().rev() {
-            let attrs = resolve_tty_face_attrs(interp, env, item);
-            if attrs.foreground.is_some() {
-                merged.foreground = attrs.foreground;
+            let options = resolve_tty_face_attr_options(interp, env, item);
+            if options.foreground.is_some() {
+                merged.foreground = options.foreground;
             }
-            if attrs.background.is_some() {
-                merged.background = attrs.background;
+            if options.background.is_some() {
+                merged.background = options.background;
             }
-            merged.bold |= attrs.bold;
-            merged.underline |= attrs.underline;
-            merged.reverse |= attrs.reverse;
-            merged.extend |= attrs.extend;
+            if let Some(bold) = options.bold {
+                merged.bold = bold;
+            }
+            if let Some(underline) = options.underline {
+                merged.underline = underline;
+            }
+            if let Some(reverse) = options.reverse {
+                merged.reverse = reverse;
+            }
+            if let Some(extend) = options.extend {
+                merged.extend = extend;
+            }
         }
         return merged;
     }
@@ -1026,6 +1039,71 @@ pub(crate) fn resolve_tty_face_attrs(
         underline: attribute(interp, env, ":underline").is_some_and(|value| value.is_truthy()),
         reverse: attribute(interp, env, ":inverse-video").is_some_and(|value| value.is_truthy()),
         extend: attribute(interp, env, ":extend").is_some_and(|value| value.is_truthy()),
+    }
+}
+
+/// One face member's tty attributes with per-attribute specificity: a
+/// `None' means the face leaves that attribute unspecified (inherit
+/// merged), a `Some' is an explicit value — explicit nil included, so
+/// a list merge can turn attributes off.
+pub(crate) struct TtyFaceAttrOptions {
+    pub(crate) foreground: Option<u8>,
+    pub(crate) background: Option<u8>,
+    pub(crate) bold: Option<bool>,
+    pub(crate) underline: Option<bool>,
+    pub(crate) reverse: Option<bool>,
+    pub(crate) extend: Option<bool>,
+}
+
+fn resolve_tty_face_attr_options(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    face: &Value,
+) -> TtyFaceAttrOptions {
+    let attribute = |interp: &mut Interpreter, env: &mut Env, name: &str| {
+        interp
+            .call_function_value(
+                Value::Symbol("face-attribute".into()),
+                Some("face-attribute"),
+                &[
+                    face.clone(),
+                    Value::Symbol(name.into()),
+                    Value::Nil,
+                    Value::T,
+                ],
+                env,
+            )
+            .ok()
+            .filter(|value| !matches!(value, Value::Symbol(s) if s == "unspecified"))
+    };
+    let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
+        let name = value?;
+        if !name.is_string() {
+            return None;
+        }
+        interp
+            .call_function_value(
+                Value::Symbol("tty-color-translate".into()),
+                None,
+                &[name],
+                env,
+            )
+            .ok()
+            .and_then(|index| index.as_integer().ok())
+            .and_then(|index| u8::try_from(index).ok())
+    };
+    let foreground = attribute(interp, env, ":foreground").filter(|value| !value.is_nil());
+    let background = attribute(interp, env, ":background").filter(|value| !value.is_nil());
+    TtyFaceAttrOptions {
+        foreground: color_index(interp, env, foreground),
+        background: color_index(interp, env, background),
+        bold: attribute(interp, env, ":weight").map(|weight| {
+            matches!(weight, Value::Symbol(ref s)
+                if s == "bold" || s == "semi-bold" || s == "extra-bold" || s == "ultra-bold")
+        }),
+        underline: attribute(interp, env, ":underline").map(|value| value.is_truthy()),
+        reverse: attribute(interp, env, ":inverse-video").map(|value| value.is_truthy()),
+        extend: attribute(interp, env, ":extend").map(|value| value.is_truthy()),
     }
 }
 
@@ -1788,7 +1866,7 @@ pub(crate) fn window_line_number_layout(
     let buffer_local = |name: &str| {
         interp
             .buffer_local_value(buffer_id, name)
-            .or_else(|| interp.lookup_var(name, &Vec::new()))
+            .or_else(|| interp.default_value(name))
             .unwrap_or(Value::Nil)
     };
     let mode = match buffer_local("display-line-numbers") {
@@ -3010,13 +3088,37 @@ define_dispatch!(
                 };
                 let start = window_start(interp, window)?;
                 let first_visible = start.max(point_min);
-                let visible_line = line_distance_in_buffer(interp, buffer_id, first_visible, pos);
-                let visible = pos >= first_visible
-                    && pos <= point_max
-                    && visible_line
-                        < interactive_window_metrics()
-                            .map(|metrics| metrics.text_height)
-                            .unwrap_or(DEFAULT_SELECTED_WINDOW_HEIGHT);
+                // GNU walks DISPLAY lines from the window start (its
+                // start_display iterator): invisible text collapses, so
+                // the end of a folded org subtree sits a couple of rows
+                // down, not the raw line count away —
+                // org-subtree-end-visible-p decides whether org-cycle
+                // recenters on exactly this answer.
+                let limit = interactive_window_metrics()
+                    .map(|metrics| metrics.text_height)
+                    .unwrap_or(DEFAULT_SELECTED_WINDOW_HEIGHT);
+                let rows = {
+                    let saved_buffer = interp.current_buffer_id();
+                    let switched = saved_buffer != buffer_id
+                        && interp.set_current_buffer_id(buffer_id).is_ok();
+                    let mut rows = 0usize;
+                    let mut cursor = first_visible;
+                    while rows < limit && pos >= first_visible {
+                        let (next, remaining) = crate::lisp::primitives::window::move_screen_lines(
+                            interp, env, cursor, 1,
+                        );
+                        if remaining != 0 || next <= cursor || pos < next {
+                            break;
+                        }
+                        cursor = next;
+                        rows += 1;
+                    }
+                    if switched {
+                        let _ = interp.set_current_buffer_id(saved_buffer);
+                    }
+                    rows
+                };
+                let visible = pos >= first_visible && pos <= point_max && rows < limit;
                 if !visible {
                     return Ok(Value::Nil);
                 }
@@ -3035,7 +3137,7 @@ define_dispatch!(
                     interp.buffer.goto_char(saved);
                     return Ok(Value::list([
                         Value::Integer(x),
-                        Value::Integer(visible_line as i64),
+                        Value::Integer(rows as i64),
                     ]));
                 }
                 Ok(Value::T)

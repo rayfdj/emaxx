@@ -486,6 +486,20 @@ WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird lin
 
 SEARCH_SAMPLE = "alpha beta gamma\nbeta delta beta\ngamma alpha beta\nlast line here\n"
 
+# A real-usage org shape: #+STARTUP folding, sections long enough that
+# raw line counts and display row counts disagree, a full-width tagged
+# headline that truncates, and a DONE entry for the done-headline face.
+FOLD_SAMPLE = (
+    "#+TITLE: Notes\n#+STARTUP: overview\n\n* Alpha section\n"
+    + "alpha body line with some words in it\n" * 28
+    + "** Alpha child\nchild body\n"
+    + "* Beta section, whose headline runs wide enough to truncate"
+    + " on the glass          :tagone:beta:\n"
+    + "beta body\n" * 28
+    + "* DONE Finished chores                                       :home:\n"
+    + "done body text\n* Gamma\ngamma body\n"
+)
+
 # Compilation timestamps can never agree between two processes; both
 # editors run the same defaliases, so the pinned text compares strictly.
 # suggest-key-bindings goes off because its 2-second suggestion timer
@@ -1274,6 +1288,30 @@ SCENARIOS = [
         SEARCH_SAMPLE,
         [b"\x1bxreplace-string\rbeta\rBETA\r"],
     ),
+    # #+STARTUP: overview folds on open; the fontification pass must
+    # cover the planned window (folds push its end far past any
+    # cell-count estimate) while never fontifying hidden stretches.
+    ("org-overview-open", FOLD_SAMPLE, [b"\x0e\x0e"], ".org"),
+    # S-TAB arrives as `\e[Z' (the backtab function key) and cycles the
+    # global visibility states, echoing CONTENTS on the repeat — the
+    # repeat only advances because last-command carries over.
+    ("org-backtab-cycle", FOLD_SAMPLE, [b"\x1b[Z", b"\x1b[Z"], ".org"),
+    # TAB on a headline whose folded subtree spans more raw lines than
+    # the window has rows: pos-visible-in-window-p counts DISPLAY rows,
+    # so org-cycle's optimize hook must not recenter.
+    ("org-tab-children", FOLD_SAMPLE, [b"\x0e\x0e\x0e", b"\t"], ".org"),
+    # The DONE headline: org-headline-done's 8-color spec turns bold
+    # OFF over the level face under it — the face-list merge honors an
+    # explicit nil, and the truncated tagged headline's `$' cell keeps
+    # the default face.
+    ("org-done-face", FOLD_SAMPLE, [b"\x1b[Z", b"\x1b[Z"], ".org"),
+    # M-x occur from an org buffer: org sets truncate-lines locally,
+    # but the *Occur* window follows its own buffer (default nil) and
+    # wraps its long entries.
+    ("org-occur-wraps", FOLD_SAMPLE, [b"\x1bsosection\r"], ".org"),
+    # Paging past the end: scroll-up signals (end-of-buffer) with nil
+    # DATA, so the echo reads "End of buffer" with no ": nil" tail.
+    ("page-past-end", "only\nthree\nlines\n", [b"\x16", b"\x16"]),
 ]
 
 
