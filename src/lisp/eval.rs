@@ -1573,6 +1573,11 @@ pub(crate) struct RunningProcess {
     /// bytes when the final slave closes, so keep one slave alive until the
     /// child has exited and its output has been drained.
     pub(crate) pty_slave_guard: Option<fs::File>,
+    /// The pty slave's device path ("/dev/ttysNNN"), when this process runs
+    /// on a pseudo-terminal.  `process-tty-name' reports it; python.el's
+    /// send path branches on it to route long lines through a temp file
+    /// instead of overflowing the canonical 1024-byte line buffer.
+    pub(crate) pty_slave_name: Option<String>,
 }
 
 impl std::fmt::Debug for RunningProcess {
