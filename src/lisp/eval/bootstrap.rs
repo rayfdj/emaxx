@@ -214,7 +214,8 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             base: "undecided".into(),
             kind: "undecided".into(),
             eol_type: None,
-            plist: coding_plist('?', std::iter::empty()),
+            // coding.c:12281: undecided's mnemonic is `-'.
+            plist: coding_plist('-', std::iter::empty()),
         },
         CodingSystemState {
             name: "no-conversion".into(),

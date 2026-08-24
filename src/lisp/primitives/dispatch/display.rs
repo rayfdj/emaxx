@@ -826,6 +826,121 @@ pub(crate) struct TtyFaceAttrs {
     pub(crate) extend: bool,
 }
 
+/// xfaces.c tty_supports_face_attributes_p: whether the requested
+/// attributes both render differently from the default face and lie
+/// within the terminal's capabilities.  The capability set mirrors GNU
+/// on the frontend's terminal class (TERM=xterm family): bold, italic,
+/// inverse video, and strike-through pass; dim and underline fail the
+/// capability test there; family, foundry, stipple, height, width,
+/// overline, and box never exist on a tty.  Color names must resolve
+/// on the terminal's palette and differ from the default face's.
+fn tty_supports_face_attributes(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    attributes: &Value,
+) -> Result<Value, LispError> {
+    let mut pairs: Vec<(String, Value)> = Vec::new();
+    let mut rest = attributes.clone();
+    while let Value::Cons(_) = rest {
+        let Ok(key) = rest.car() else { break };
+        let Ok(tail) = rest.cdr() else { break };
+        let Value::Cons(_) = tail else { break };
+        let Ok(value) = tail.car() else { break };
+        rest = tail.cdr().unwrap_or(Value::Nil);
+        if let Ok(key) = key.as_symbol() {
+            pairs.push((key.to_string(), value));
+        }
+    }
+    let lookup = |wanted: &str| {
+        pairs
+            .iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value.clone())
+    };
+    for (key, _) in &pairs {
+        if matches!(
+            key.as_str(),
+            ":family" | ":foundry" | ":stipple" | ":height" | ":width" | ":overline" | ":box"
+        ) {
+            return Ok(Value::Nil);
+        }
+    }
+    if let Some(weight) = lookup(":weight") {
+        // FONT_WEIGHT_NAME_NUMERIC: heavier than normal needs bold
+        // (supported), lighter needs dim (not on this terminal), and
+        // normal weights are the default's own.
+        match weight.as_symbol().unwrap_or("") {
+            "semi-bold" | "bold" | "extra-bold" | "ultra-bold" | "heavy" | "ultra-heavy"
+            | "black" => {}
+            "thin" | "ultra-light" | "extra-light" | "light" | "semi-light" => {
+                return Ok(Value::Nil);
+            }
+            "normal" | "medium" | "regular" | "book" => return Ok(Value::Nil),
+            _ => {}
+        }
+    }
+    if let Some(slant) = lookup(":slant") {
+        // Italic and oblique differ from the default's normal slant and
+        // the terminal renders italics.
+        if matches!(slant.as_symbol().unwrap_or(""), "normal") {
+            return Ok(Value::Nil);
+        }
+    }
+    if lookup(":underline").is_some() {
+        // The capability test fails for underline on this terminal
+        // class, styled variants included.
+        return Ok(Value::Nil);
+    }
+    for color_key in [":foreground", ":background"] {
+        if let Some(color) = lookup(color_key) {
+            if !color.is_string() {
+                return Ok(Value::Nil);
+            }
+            let default_color = interp
+                .call_function_value(
+                    Value::Symbol("face-attribute".into()),
+                    Some("face-attribute"),
+                    &[
+                        Value::Symbol("default".into()),
+                        Value::Symbol(color_key.into()),
+                    ],
+                    env,
+                )
+                .ok();
+            // face_attr_equal_p compares color strings case-insensitively.
+            let text_of = |value: &Value| -> Option<String> {
+                match value {
+                    Value::String(text) => Some(text.to_string()),
+                    Value::StringObject(state) => {
+                        Some(std::cell::RefCell::borrow(state).text.clone())
+                    }
+                    _ => None,
+                }
+            };
+            if let (Some(default_text), Some(color_text)) = (
+                default_color.as_ref().and_then(text_of),
+                text_of(&color),
+            ) && default_text.eq_ignore_ascii_case(&color_text)
+            {
+                return Ok(Value::Nil);
+            }
+            let index = interp
+                .call_function_value(
+                    Value::Symbol("tty-color-translate".into()),
+                    None,
+                    std::slice::from_ref(&color),
+                    env,
+                )?
+                .as_integer()
+                .unwrap_or(-1);
+            if index < 0 {
+                return Ok(Value::Nil);
+            }
+        }
+    }
+    Ok(Value::T)
+}
+
 /// Resolve FACE to its tty attributes through the runtime's own face
 /// machinery: `face-attribute' answers the realized (inherit-merged)
 /// attributes, and `tty-color-translate' maps color names onto the
@@ -2492,11 +2607,15 @@ define_dispatch!(
             }
             // Batch sessions have no color support (GNU: nil / 0).
 
-            // emaxx is a batch/TTY display: no face-attribute display support
-            // (rmc.el underlines the shortcut key only on graphical terminals).
+            // xfaces.c Fdisplay_supports_face_attributes_p: batch gives
+            // up before frames exist (noninteractive -> nil); a live tty
+            // frame dispatches to tty_supports_face_attributes_p.
             "display-supports-face-attributes-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                Ok(Value::Nil)
+                if interp.tty_display_color_cells() <= 0 {
+                    return Ok(Value::Nil);
+                }
+                tty_supports_face_attributes(interp, env, &args[0])
             }
             "internal-char-font" => {
                 need_arg_range(name, args, 1, 2)?;

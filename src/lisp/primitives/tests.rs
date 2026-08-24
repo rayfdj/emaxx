@@ -13963,6 +13963,29 @@ fn tty_real_minibuffer_history_recalls_through_simple_el() {
 }
 
 #[test]
+fn ascii_file_detection_records_undecided() {
+    // coding.c's detection decides nothing for pure-ASCII bytes: the
+    // recorded coding is `undecided' with the detected eol variant,
+    // whatever the priorities say (prefer-utf-8 cannot even be
+    // preferred, and a preferred utf-8-auto still answers
+    // undecided-unix).  occur relies on this: it copies the searched
+    // buffer's coding through set-buffer-file-coding-system, whose
+    // merge with the buffer default only fires for undecided.  The
+    // undecided mnemonic is `-' (coding.c:12281).
+    let contract = r#"
+        (let ((file (make-temp-file "emaxx-ascii" nil ".txt" "plain ascii\n")))
+          (unwind-protect
+              (with-temp-buffer
+                (insert-file-contents file)
+                (list last-coding-system-used
+                      (coding-system-mnemonic 'undecided)))
+            (delete-file file)))
+    "#;
+    let expected = r#"(undecided-unix 45)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+}
+
+#[test]
 fn replace_match_grafts_replacement_string_properties() {
     // search.c Freplace_match hands the replacement to replace_range,
     // which grafts the string's text-property intervals into the buffer
