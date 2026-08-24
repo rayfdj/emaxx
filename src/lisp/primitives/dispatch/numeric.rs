@@ -45,8 +45,14 @@ define_dispatch!(
             // ── Arithmetic ──
             "+" => {
                 if has_float(args) {
-                    let mut sum = 0.0;
-                    for a in args {
+                    // data.c arith_driver: the accumulator starts from the
+                    // FIRST argument, not from 0.0 -- (+ -0.0) is -0.0,
+                    // while seeding with 0.0 turns it into +0.0 (IEEE
+                    // 0.0 + -0.0 = +0.0).  Exposed by the bytecomp
+                    // signed-zero cases once `equal' stopped conflating
+                    // the zero signs.
+                    let mut sum = numeric_to_f64(interp, &args[0])?;
+                    for a in &args[1..] {
                         sum += numeric_to_f64(interp, a)?;
                     }
                     Ok(Value::Float(sum))

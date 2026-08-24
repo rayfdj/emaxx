@@ -50,6 +50,9 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 79 | set-network-process-option fabricated success | FIXED (processp signal + network check) |
 | 80 | command-error-default-function swallowed GNU's print-and-exit contract | FIXED (stderr + kill-emacs -1 in batch) |
 | 81 | HOSTNAME/COMPUTERNAME/EMAXX_USER_FULL_NAME identity knobs | FIXED (removed; gethostname/$NAME only) |
+| 82 | eq/eql/equal compared floats with IEEE ==, not GNU's representation equality | FIXED (to_bits at five sites; NaN self-eq restored, signed zeros distinct; boxed-float eq identity remains approximated) |
+| 83 | Interpreted (+ FLOAT) seeded its accumulator with 0.0, losing the zero sign | FIXED (accumulate from the first argument, data.c arith_driver) |
+| 84 | Cooperative thread model cannot suspend a thread mid-body | DISCLOSED (parent-held mutex deadlock now signals instead of spinning forever) |
 
 # Honesty audit — 2026-08-18
 
@@ -1073,3 +1076,32 @@ dispositions:
     timezone abbreviation, key-description modifier order, thread-join
     wording, overlay/char-table printed forms) recorded as open gaps in
     finding 76's class.
+
+82. **Floats compared by IEEE == in eq, eql, equal and their helpers**
+    where fns.c compares representations (same_float): (eql 0.0e+NaN
+    0.0e+NaN) was nil, (eql 0.0 -0.0) was t -- both backwards.  The NaN
+    case was fatal at scale: macroexp-macroexpand's fixpoint loop
+    `(while (not (eq form (macroexpand-1 form))))' relies on (eq X X)
+    holding for the atom it just got back, so loading ANY file with a
+    NaN literal spun forever.  That single bug produced six of the
+    eight zero-coverage files that kept aborting the frozen run
+    (cl-lib-, data-, fns-, floatfns-, esh-util-, dbus-tests).  FIXED:
+    representation equality at all five comparison sites; oracle-parity
+    probes byte-identical.  Residual disclosed approximation: emaxx
+    floats are immediates, so (eq A B) for two equal-bits floats is t
+    where GNU's separately-boxed floats give nil -- (eq 1.5 1.5) class,
+    pre-existing, now stated.
+83. Exposed immediately by 82: the interpreted `+' seeded its float
+    accumulator with 0.0, so (+ -0.0) returned +0.0 (IEEE 0.0 + -0.0);
+    GNU's arith_driver starts from the first argument.  FIXED and the
+    bytecomp signed-zero binding cases now pass with the honest
+    `equal'.
+84. **The cooperative thread scheduler runs a spawned thread's entire
+    body inside one step from the parent's context.**  GNU's
+    thread-tests.el has the child lock a mutex the parent holds across
+    the child's lifetime; preemptive GNU blocks and resumes, emaxx
+    span forever (the file produced zero outcomes).  DISCLOSED
+    degraded behavior: when the mutex holder is the suspended parent,
+    the lock attempt signals "Cooperative thread model deadlock"
+    instead of spinning; the file completes with two honest
+    mismatches.  A real fix needs resumable thread continuations.
