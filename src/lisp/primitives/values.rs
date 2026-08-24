@@ -207,7 +207,9 @@ pub(crate) fn values_equal_recursive(
         (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
             BigInt::from(*a) == **b
         }
-        (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
+        // fns.c internal_equal: floats compare by representation
+        // (same_float), like eql: NaN equals NaN, 0.0 differs from -0.0.
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::String(a), Value::String(b)) => a == b,
         (Value::StringObject(a), Value::StringObject(b)) => {
             let a = a.borrow();
@@ -361,7 +363,12 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
         (Value::Integer(a), Value::Integer(b)) => a == b,
         (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
-        (Value::Float(a), Value::Float(b)) => a == b,
+        // fns.c Feql via same_float: representation equality.  IEEE ==
+        // said NaN != NaN, and every fixpoint loop keyed on eql/memql
+        // diverged on forms containing a NaN literal -- eager
+        // macroexpansion of cl-lib/data/fns/floatfns-tests never
+        // terminated.  Bit equality also gives GNU's (eql 0.0 -0.0) nil.
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
@@ -398,7 +405,13 @@ pub(crate) fn values_eq_in_env(
         (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
         (Value::Integer(a), Value::Integer(b)) => a == b,
         (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
-        (Value::Float(a), Value::Float(b)) => a == b,
+        // GNU's eq on floats is object identity; with immediate floats the
+        // faithful approximation is representation equality -- (eq X X) must
+        // hold for a NaN (macroexp-macroexpand's `while (not (eq form
+        // (macroexpand-1 form)))' spun forever on a NaN atom, hanging the
+        // load of every test file containing a NaN literal), and 0.0 is
+        // not -0.0.  IEEE == answered both wrongly.
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
@@ -623,7 +636,7 @@ pub(crate) fn values_equal_including_properties_recursive(
         (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
             &BigInt::from(*a) == b
         }
-        (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Cons(_), Value::Cons(_)) => {
             let Some((left_car, _)) = left.cons_cells() else {

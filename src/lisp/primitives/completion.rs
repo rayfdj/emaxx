@@ -258,7 +258,8 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
             &BigInt::from(*a) == b
         }
-        (Value::Float(a), Value::Float(b)) => a == b,
+        // Representation equality, like eq/eql (see values_eq_in_env).
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),

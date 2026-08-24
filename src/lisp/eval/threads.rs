@@ -2450,6 +2450,30 @@ impl Interpreter {
             thread.status = ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id));
         }
         while !self.try_lock_mutex(thread_id, mutex_id) {
+            // This scheduler runs a spawned thread's whole body inside one
+            // `step_thread' call from the owning (usually main) thread.  If
+            // the mutex is held by a thread that is suspended up-stack
+            // waiting for THIS step to return -- the main thread cannot be
+            // driven by drive_threads at all -- no interleaving can ever
+            // release it: spinning here burned CPU forever on GNU's
+            // thread-tests.el, whose child locks a mutex its parent holds
+            // across the child's entire lifetime.  GNU's preemptive threads
+            // simply block and later resume; this model cannot, so the
+            // honest degraded behavior is to signal the deadlock (the file
+            // then completes with mismatching outcomes instead of hanging).
+            // Disclosed in docs/honesty-audit-2026-08-18.md.
+            let holder = self
+                .find_mutex_state_mut(mutex_id)
+                .and_then(|mutex| mutex.owner);
+            if holder == Some(self.main_thread_id) && thread_id != self.main_thread_id {
+                if let Some(thread) = self.find_thread_state_mut(thread_id) {
+                    thread.status = ThreadStatus::Runnable;
+                }
+                return Err(LispError::Signal(
+                    "Cooperative thread model deadlock: mutex is held by the suspended parent thread"
+                        .into(),
+                ));
+            }
             if let Err(error) = self.drive_threads(env, false) {
                 if let Some(thread) = self.find_thread_state_mut(thread_id) {
                     thread.status = ThreadStatus::Runnable;
