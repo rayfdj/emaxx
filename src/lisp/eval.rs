@@ -2718,6 +2718,12 @@ pub struct Interpreter {
     /// same-named lexical argument (bug#47552 semantics).
     pub(crate) special_scan_floor: usize,
     pub(crate) lisp_eval_depth: usize,
+    /// Consecutive `thread-yield's from a stepped (non-main) thread during
+    /// which drive_threads ran nothing else.  The parent that could change
+    /// this thread's loop condition is suspended up-stack until the step
+    /// returns, so past a threshold the yield loop can never progress and
+    /// signals the cooperative-model deadlock (finding 84's class).
+    pub(crate) fruitless_stepped_yields: u32,
     pub(crate) kbd_macro_executions: Vec<KbdMacroExecutionState>,
     pub(crate) kbd_macro_definition: Vec<Value>,
     pub(crate) kbd_macro_committed_len: usize,
@@ -3434,6 +3440,7 @@ impl Interpreter {
             dlet_active_names: HashMap::new(),
             special_scan_floor: 0,
             lisp_eval_depth: 0,
+            fruitless_stepped_yields: 0,
             kbd_macro_executions: Vec::new(),
             kbd_macro_definition: Vec::new(),
             kbd_macro_committed_len: 0,

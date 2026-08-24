@@ -1228,7 +1228,45 @@ define_dispatch!(
             }
             "thread-yield" => {
                 need_args(name, args, 0)?;
-                interp.drive_threads(env, false)?;
+                let stepped_thread = !interp.current_thread_is_main();
+                // GNU's thread-yield lets any other thread run, including
+                // one whose sleep has expired.  Main's yield therefore runs
+                // a waking pass; a stepped thread's yield must not re-enter
+                // the timer/notification machinery mid-step, so it drives
+                // without waking (its parent's next pass wakes sleepers).
+                interp.drive_threads(env, !stepped_thread)?;
+                if stepped_thread {
+                    // A spawned thread's body runs to completion inside one
+                    // scheduler step; its parent -- the only thread that can
+                    // flip this loop's condition -- stays suspended until we
+                    // return.  When repeated yields drive nothing else, the
+                    // loop can never progress: signal the cooperative-model
+                    // deadlock (honesty audit finding 84) instead of
+                    // spinning forever, as GNU's preemptive threads would
+                    // simply interleave here.
+                    interp.note_stepped_yield();
+                    if interp.stepped_yield_exhausted() {
+                        return Err(LispError::Signal(
+                            "Cooperative thread model deadlock: yield cannot reach the suspended parent thread".into(),
+                        ));
+                    }
+                } else if interp.has_advanceable_spawned_thread() {
+                    interp.reset_stepped_yields();
+                } else {
+                    // Main spinning on yield with no spawned thread the
+                    // scheduler can advance: nothing but this loop can
+                    // change Lisp state, so the loop can never exit.  GNU's
+                    // preemptive children would have progressed; this
+                    // model's children have finished or blocked for good.
+                    // Signal the cooperative-model deadlock (finding 84).
+                    interp.note_stepped_yield();
+                    if interp.stepped_yield_exhausted() {
+                        interp.reset_stepped_yields();
+                        return Err(LispError::Signal(
+                            "Cooperative thread model deadlock: no other thread can advance this yield loop".into(),
+                        ));
+                    }
+                }
                 Ok(Value::Nil)
             }
             "make-mutex" => {
