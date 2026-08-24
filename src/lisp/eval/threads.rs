@@ -1637,7 +1637,18 @@ impl Interpreter {
             };
             match write_result {
                 Ok(0) => return Err(LispError::Signal("Process stdin is closed".into())),
-                Ok(written) => offset += written,
+                Ok(written) => {
+                    if std::env::var_os("EMAXX_DEBUG_PROCESS_IO").is_some() {
+                        eprintln!(
+                            "PROC-IO send#{record_id} wrote {written} of {}: {:?}",
+                            input.len(),
+                            String::from_utf8_lossy(
+                                &input[offset..(offset + written).min(offset + 120)]
+                            )
+                        );
+                    }
+                    offset += written;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     let (out, err) = self.poll_process_output(record_id)?;
                     pumped_stdout.extend_from_slice(&out);
@@ -1675,6 +1686,28 @@ impl Interpreter {
         // later accepts process output.  Only output drained while waiting
         // for a full pipe is handed back for delivery here.
         Ok((pumped_stdout, pumped_stderr))
+    }
+
+    /// process.c Fprocess_tty_name: the pty device name, nil for pipes.
+    /// STREAM selects which half must be a pty (stdin/stdout); nil accepts
+    /// either.
+    pub(crate) fn process_tty_name(
+        &self,
+        record_id: u64,
+        stream: Option<&Value>,
+    ) -> Option<String> {
+        let process = self.find_process_state(record_id)?;
+        let runtime = process.runtime.as_ref()?;
+        let stream_matches = match stream.and_then(|value| value.as_symbol().ok()) {
+            Some("stdin") => runtime.pty_input.is_some(),
+            Some("stdout") | Some("stderr") => runtime.pty_output.is_some(),
+            _ => runtime.pty_input.is_some() || runtime.pty_output.is_some(),
+        };
+        if stream_matches {
+            runtime.pty_slave_name.clone()
+        } else {
+            None
+        }
     }
 
     pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
@@ -1739,6 +1772,7 @@ impl Interpreter {
         };
         let mut stdout = std::mem::take(&mut process.pending_stdout);
         let mut stderr = std::mem::take(&mut process.pending_stderr);
+        let before = (stdout.len(), stderr.len());
         if let Some(pipe) = runtime.child.stdout.as_mut() {
             read_nonblocking_pipe(pipe, &mut stdout)?;
         }
@@ -1747,6 +1781,16 @@ impl Interpreter {
         }
         if let Some(pty) = runtime.pty_output.as_mut() {
             read_nonblocking_pipe(pty, &mut stdout)?;
+        }
+        if std::env::var_os("EMAXX_DEBUG_PROCESS_IO").is_some()
+            && (stdout.len() > before.0 || stderr.len() > before.1)
+        {
+            eprintln!(
+                "PROC-IO poll#{record_id} +out {} +err {}: {:?}",
+                stdout.len() - before.0,
+                stderr.len() - before.1,
+                String::from_utf8_lossy(&stdout[before.0..stdout.len().min(before.0 + 120)])
+            );
         }
         if let Some(event) = poll_child_status(&mut runtime.child)
             .map_err(|error| LispError::Signal(error.to_string()))?

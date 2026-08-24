@@ -1666,10 +1666,17 @@ define_dispatch!(
             }
             "process-tty-name" => {
                 need_arg_range(name, args, 1, 2)?;
-                interp.resolve_process_id(&args[0])?;
-                // Emaxx currently implements child processes with pipes, not
-                // pseudo-terminals, so neither stdin nor stdout has a tty name.
-                Ok(Value::Nil)
+                let process_id = interp.resolve_process_id(&args[0])?;
+                // process.c: the name of the process's terminal, nil for a
+                // pipe.  The stale nil-for-everything answer here made
+                // python.el treat pty processes as pipes and send a
+                // 5 KB line into the canonical 1024-byte pty buffer -- the
+                // exchange wedged both sides and python-tests.el never
+                // finished (2026-08-24).
+                Ok(interp
+                    .process_tty_name(process_id, args.get(1))
+                    .map(|name| Value::String(name.into()))
+                    .unwrap_or(Value::Nil))
             }
             "get-process" => {
                 need_args(name, args, 1)?;
