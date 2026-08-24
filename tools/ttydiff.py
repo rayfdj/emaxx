@@ -484,6 +484,16 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
 
 WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird line\n"
 
+# Compilation timestamps can never agree between two processes; both
+# editors run the same defaliases, so the pinned text compares strictly.
+# suggest-key-bindings goes off because its 2-second suggestion timer
+# races the capture window.
+TIME_PIN = (
+    b"\x1b:(progn (defalias (quote current-time-string) (lambda (&rest _) "
+    b"\"Mon Jan  1 00:00:00 2026\")) (defalias (quote float-time) "
+    b"(lambda (&rest _) 0.0)) (setq suggest-key-bindings nil))\r"
+)
+
 ORG_SAMPLE = """* Head one
 body line one
 body line two
@@ -1170,6 +1180,59 @@ SCENARIOS = [
         ORG_SAMPLE,
         [b"\x1b:(setq display-line-numbers t)\r", b"\x1bxorg-cycle\r", b"\x0e\x0e"],
         ".org",
+    ),
+    # M-x compile end to end: compilation-mode buffer, filter output,
+    # sentinel annotations fontified by jit-lock in the non-selected
+    # window.  Wall-clock text pins through the Lisp-visible time
+    # functions, identically in both editors.
+    (
+        "compile-run",
+        "sample\n",
+        [TIME_PIN, b"\x1bxcompile\r", b"\x01\x0b", b"echo hi\r", b"\x0c"],
+    ),
+    # A file:line: message parsed by compilation-mode: the locus gets the
+    # error faces, "finished" its info face, and the mode line the exit
+    # status.
+    (
+        "compile-parse",
+        "sample\n",
+        [TIME_PIN, b"\x1bxcompile\r", b"\x01\x0b",
+         b"echo " + FIXTURE_PATH.encode() + b":2: boom\r", b"\x0c"],
+    ),
+    # next-error, then C-x ` for the next locus: the source file pops in
+    # the other window, the compilation window scrolls to the message,
+    # and the echo area names the locus buffer.
+    (
+        "compile-next-error",
+        "sample\n",
+        [TIME_PIN, b"\x1bxcompile\r", b"\x01\x0b",
+         b"echo " + FIXTURE_PATH.encode() + b":1: a; echo "
+         + FIXTURE_PATH.encode() + b":2: b\r",
+         b"\x0c", b"\x1bxnext-error\r", b"\x18`"],
+    ),
+    # M-x grep with the --null separator: the NUL renders as ":" through
+    # its `display' string property, and grep's SGR match highlight
+    # lands as the match face via replace-match's propertized insert.
+    (
+        "grep-null",
+        "sample\n",
+        [TIME_PIN, b"\x1bxgrep\r",
+         b"fixture " + FIXTURE_PATH.encode() + b"\r", b"\x0c"],
+    ),
+    # C-x ` from a grep: grep-mode is a compilation mode, so next-error
+    # jumps to the first hit.
+    (
+        "grep-next-error",
+        "sample\n",
+        [TIME_PIN, b"\x1bxgrep\r",
+         b"fixture " + FIXTURE_PATH.encode() + b"\r", b"\x0c", b"\x18`"],
+    ),
+    # Filename completion in M-x shell: comint's TAB completes the
+    # fixture path in place, and RET runs the completed command.
+    (
+        "shell-tab-complete",
+        "sample\n",
+        [b"\x1bxshell\r", b"cat " + FIXTURE_PATH.encode()[:-7], b"\t", b"\r", b"\x0c"],
     ),
 ]
 

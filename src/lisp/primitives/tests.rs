@@ -13963,6 +13963,26 @@ fn tty_real_minibuffer_history_recalls_through_simple_el() {
 }
 
 #[test]
+fn replace_match_grafts_replacement_string_properties() {
+    // search.c Freplace_match hands the replacement to replace_range,
+    // which grafts the string's text-property intervals into the buffer
+    // — grep-filter paints its match highlight exactly this way.  A
+    // backslash substitution rebuilds the text (build_string) and
+    // GNU loses the properties there, so only same-length inserts keep
+    // them.
+    let contract = r#"
+        (with-temp-buffer
+          (insert "abcdef")
+          (goto-char (point-min))
+          (re-search-forward "cd")
+          (replace-match (propertize "XY" 'font-lock-face 'match) t t)
+          (list (buffer-string) (get-text-property 3 'font-lock-face)))
+    "#;
+    let expected = r#"(#("abXYef" 2 4 (font-lock-face match)) match)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {contract})"), expected);
+}
+
+#[test]
 fn interactive_form_strips_command_modes_like_gnu() {
     // callint.c Finteractive_form answers exactly `(interactive SPEC)':
     // MODES entries after the descriptor belong to `command-modes', and
