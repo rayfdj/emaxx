@@ -1100,6 +1100,77 @@ SCENARIOS = [
         "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
         [b"\x1bxxterm-mouse-mode\r", b"\x1b[<18;10;5M", b"\x1b[<18;10;5m"],
     ),
+    # display-line-numbers t: the number column's width follows the
+    # window (digits of first line + body rows - 1), numbers sit
+    # right-justified before a blank separator in the line-number face,
+    # and every row at or past ZV keeps a blank prefix in that face.
+    (
+        "lnum-basic",
+        "".join(f"L{n}\n" for n in range(1, 13)),
+        [b"\x1b:(setq display-line-numbers t)\r"],
+    ),
+    # Three-digit numbers at the end of a 200-line buffer; the width
+    # grows with the window's first line as M-> scrolls.
+    (
+        "lnum-3digit",
+        "".join(f"line {n}\n" for n in range(1, 201)),
+        [b"\x1b:(setq display-line-numbers t)\r", b"\x1b>"],
+    ),
+    # A wrapped line: continuation rows show a blank prefix, and the
+    # text wraps at the narrowed width (the column eats text area).
+    ("lnum-wrap", WIDE_SAMPLE, [b"\x1b:(setq display-line-numbers t)\r", b"\x05\x05"]),
+    # display-line-numbers-mode, the user-facing wrapper, through M-x.
+    (
+        "lnum-mode",
+        "".join(f"L{n}\n" for n in range(1, 13)),
+        [b"\x1bxdisplay-line-numbers-mode\r", b"\x0e\x0e"],
+    ),
+    # Truncation plus auto-hscroll with the column present: the left `$'
+    # replaces the column's first cell, the numbers stay put while the
+    # text hscrolls, and the recentering step counts the column's width.
+    (
+        "lnum-hscroll",
+        WIDE_SAMPLE,
+        [b"\x1b:(setq truncate-lines t display-line-numbers t)\r", b"\x05"],
+    ),
+    # `relative': distances from point's line, the absolute number on
+    # the current line (display-line-numbers-current-absolute t).
+    (
+        "lnum-relative",
+        "".join(f"L{n}\n" for n in range(1, 13)),
+        [b"\x1b:(setq display-line-numbers (quote relative))\r",
+         b"\x1b:(forward-line 4)\r"],
+    ),
+    # `visual': screen-line distances — continuation rows count and get
+    # numbers of their own.
+    (
+        "lnum-visual",
+        WIDE_SAMPLE,
+        [b"\x1b:(setq display-line-numbers (quote visual))\r",
+         b"\x1b:(forward-line 2)\r"],
+    ),
+    # An explicit display-line-numbers-width wider than needed.
+    (
+        "lnum-width",
+        "".join(f"L{n}\n" for n in range(1, 13)),
+        [b"\x1b:(setq display-line-numbers-width 5 display-line-numbers t)\r"],
+    ),
+    # Screen-line motion under the narrowed text area: C-n through a
+    # wrapped line must land on the same visual row and column as GNU's
+    # iterator, whose lnum_width is primed before the walk.
+    (
+        "lnum-motion",
+        WIDE_SAMPLE,
+        [b"\x1b:(setq display-line-numbers t)\r", b"\x0e", b"\x0e", b"\x06\x06\x06"],
+    ),
+    # Folded org with line numbers: hidden lines keep their numbers, so
+    # the rows after a fold jump exactly as GNU's counter does.
+    (
+        "lnum-org-fold",
+        ORG_SAMPLE,
+        [b"\x1b:(setq display-line-numbers t)\r", b"\x1bxorg-cycle\r", b"\x0e\x0e"],
+        ".org",
+    ),
 ]
 
 

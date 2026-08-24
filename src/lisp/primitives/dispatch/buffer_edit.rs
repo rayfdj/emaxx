@@ -2517,6 +2517,42 @@ pub(crate) fn visual_char_widths(
 /// Screen-line segment start positions of the logical line [bol, eol),
 /// modeling GNU's batch display: continuation at frame-width (reserving the
 /// continuation column unless word-wrapping) minus prefix widths.
+/// The columns a `display-line-numbers' column occupies during
+/// screen-line motion: Fvertical_motion primes its iterator's
+/// lnum_width from line_number_display_width — the width redisplay
+/// computes at the window's start — so wrapped lines break that many
+/// columns earlier.
+fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize {
+    let buffer_id = interp.current_buffer_id();
+    let enabled = interp
+        .buffer_local_value(buffer_id, "display-line-numbers")
+        .or_else(|| interp.lookup_var("display-line-numbers", &Vec::new()))
+        .unwrap_or(Value::Nil);
+    if enabled.is_nil() {
+        return 0;
+    }
+    let text_rows = super::call(interp, "window-body-height", &[], env)
+        .ok()
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(0)
+        .max(1) as usize;
+    let start = interp
+        .selected_window_start()
+        .clamp(interp.buffer.point_min(), interp.buffer.point_max());
+    let top_line = interp.buffer.line_number_at_pos(start);
+    let point_line = interp.buffer.line_number_at_pos(interp.buffer.point());
+    let begv_line = interp.buffer.line_number_at_pos(interp.buffer.point_min());
+    crate::lisp::primitives::window_line_number_layout(
+        interp,
+        buffer_id,
+        top_line,
+        point_line,
+        begv_line,
+        text_rows,
+    )
+    .map_or(0, |layout| layout.cols)
+}
+
 pub(crate) fn visual_segment_starts(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -2532,7 +2568,12 @@ pub(crate) fn visual_segment_starts(
     }
     // GNU's batch display wraps mid-word at frame-width minus the
     // continuation column, even under `word-wrap' (vmotion in indent.c).
-    let frame_width = interp.frame_width().max(2) as usize;
+    // A line-number column narrows the text area on every row.
+    let frame_width = interp
+        .frame_width()
+        .max(2)
+        .saturating_sub(motion_line_number_columns(interp, env) as i64)
+        .max(2) as usize;
     let reserve = 1;
     let line_prefix_width = {
         let prop = interp.buffer.text_property_at(bol, "line-prefix");
